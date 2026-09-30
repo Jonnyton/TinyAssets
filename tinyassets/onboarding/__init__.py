@@ -1,6 +1,6 @@
 """Daemon-served onboarding web app (dark-flagged).
 
-Serves a self-contained single-page app at ``/mcp/app`` — SAME ORIGIN as the
+Serves a self-contained single-page app at ``/app`` — SAME ORIGIN as the
 canonical ``/mcp`` connector — so a founder can sign in (WorkOS AuthKit,
 in-browser OAuth 2.0 Authorization Code + PKCE), meet their universe, connect a
 subscription, and chat, with **zero local-machine dependency**. The app ships in
@@ -11,8 +11,14 @@ Design boundaries (mirrors the app-experience design note):
 - Same-origin to ``/mcp`` — no CORS, no proxy, no server-side Bearer injection.
   The browser holds the WorkOS access token (sessionStorage) and calls ``/mcp``
   directly with it. The token binds to the MCP resource via RFC 8707.
-- The app is served under ``/mcp/`` so the production Cloudflare tunnel (which
-  forwards only ``/mcp/*`` to the daemon) reaches it with no infra change.
+- The app is served at the apex ``/app`` (founder directive 2026-09-30; it used
+  to live at ``/mcp/app``, which is now simply absent — no redirect, no alias).
+  Reaching it publicly needs the Cloudflare Worker to bind
+  ``tinyassets.io/app*`` alongside ``/mcp*`` — the SUFFIX WILDCARD, because a
+  Cloudflare route matches the whole URL including the query, so an exact
+  ``/app`` route would miss ``/app?code=…`` and dark the sign-in. See
+  ``deploy/cloudflare-worker/wrangler.toml``. Still the same ORIGIN as ``/mcp``,
+  so nothing about the same-origin token/CORS story changes.
 - Dark-flagged: enabling is a pure env flip (``TINYASSETS_ONBOARDING_APP``); the
   route returns 404 until then.
 
@@ -45,7 +51,12 @@ _SCOPES = "openid profile email offline_access"
 # read, sent back solely to the token proxy. 7 days = AuthKit's default
 # maximum session length; AuthKit rotates the token on every refresh.
 _REFRESH_COOKIE = "ta_rt"
-_REFRESH_COOKIE_PATH = "/mcp/app/token"
+#: The app's single public path. One literal so the route table, the cookie
+#: scope and the redirect-URI check can never disagree about where the app
+#: lives. Moved off ``/mcp/app`` on 2026-09-30 (founder directive); the old path
+#: is not mounted, aliased or redirected.
+APP_PATH = "/app"
+_REFRESH_COOKIE_PATH = APP_PATH + "/token"
 _REFRESH_COOKIE_MAX_AGE = 7 * 24 * 3600
 _NO_STORE = {"Cache-Control": "no-store"}
 
@@ -177,7 +188,7 @@ def _csp(nonce: str, issuer: str) -> str:
     limited to same-origin ``/mcp`` plus the AuthKit token endpoint origin.
 
     ``frame-src 'self'`` is the one grant a user-authored UI bundle needs, and it
-    grants only the fixed ``/mcp/app/ui-frame`` bootstrap — which sandboxes itself
+    grants only the fixed ``/app/ui-frame`` bootstrap — which sandboxes itself
     to an opaque origin from its own response header (``ui_frame.FRAME_CSP``).
     ``script-src`` stays nonce-only on purpose: a bug that inserted bundle script
     into this page would still not execute it.
@@ -397,9 +408,13 @@ async def _handle_token(request: Any) -> Any:
         if not code or not verifier or not redirect_uri:
             return JSONResponse({"error": "missing_fields"}, status_code=400)
         # Defense in depth (AuthKit also re-validates redirect_uri against the
-        # authorize request): only accept an https URL whose path is this app's own.
+        # authorize request): only accept an https URL whose path is this app's
+        # own. EXACT equality, not `endswith`: the page builds the value from
+        # `location.origin + location.pathname`, which is always exactly the
+        # served path, so a suffix test only widened what a crafted body could
+        # claim (`https://host/anything/app` used to pass).
         parts = urlsplit(redirect_uri)
-        if parts.scheme != "https" or not parts.path.endswith("/mcp/app"):
+        if parts.scheme != "https" or parts.path != APP_PATH:
             return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
         token_form = {
             "grant_type": "authorization_code",
@@ -974,7 +989,6 @@ async def _handle_voice_session(request: Any) -> Any:
     from tinyassets.auth.middleware import current_identity
     from tinyassets.onboarding.realtime_voice import (
         RealtimeVoiceError,
-        allow_voice_session,
         create_voice_session,
         realtime_voice_enabled,
     )
@@ -1006,13 +1020,9 @@ async def _handle_voice_session(request: Any) -> Any:
             headers=_NO_STORE,
         )
 
+    # No per-user rate gate: the caller here is the authenticated owner asking
+    # their own universe to listen (founder, 2026-09-30 -- storage and seats only).
     identity = current_identity()
-    if not allow_voice_session(identity.user_id):
-        return JSONResponse(
-            {"error": "voice_session_rate_limited"},
-            status_code=429,
-            headers=_NO_STORE,
-        )
     home = await run_in_threadpool(_read_home, identity)
     if not home:
         return JSONResponse(
@@ -1041,7 +1051,7 @@ async def _handle_voice_status(request: Any) -> Any:
 
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.realtime_voice import allow_voice_status, voice_capability
+    from tinyassets.onboarding.realtime_voice import voice_capability
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -1049,12 +1059,6 @@ async def _handle_voice_status(request: Any) -> Any:
     if denied is not None:
         return denied
     identity = current_identity()
-    if not allow_voice_status(identity.user_id):
-        return JSONResponse(
-            {"error": "voice_status_rate_limited"},
-            status_code=429,
-            headers=_NO_STORE,
-        )
     home = await run_in_threadpool(_read_home, identity)
     result = await run_in_threadpool(
         voice_capability,
@@ -1182,6 +1186,74 @@ async def _handle_serving_bind(request: Any) -> Any:
     out = await run_in_threadpool(_bind)
     return JSONResponse({"serving": out}, headers={"Cache-Control": "no-store"})
 
+
+
+async def _handle_account_timezone(request: Any) -> Any:
+    """Record the signed-in user's own clock, as their browser reports it.
+
+    The app has always KNOWN the zone -- it formats every timestamp it displays
+    with ``Intl.DateTimeFormat`` -- and never sent it, while the scheduler
+    matched cron against the container's UTC clock. So a Pacific owner was told
+    "7am server time" for a note that would arrive at midnight (live
+    2026-09-30). This is the one route that closes that gap.
+
+    Same-origin JSON like the other account writes. An unresolvable name is
+    REFUSED rather than stored or blanked: a client that cannot name its zone
+    must not be able to clear one the owner already has, because the value
+    decides when their mornings happen.
+    """
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.schedule_timezone import UnknownTimezone
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    reported = str(data.get("timezone", "")).strip()
+    identity = current_identity()
+
+    def _store() -> str:
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.storage.account_timezone import set_account_timezone
+
+        with identity_context(identity):
+            return set_account_timezone(
+                _base_path(),
+                owner_user_id=identity.user_id,
+                timezone_name=reported,
+            )
+
+    try:
+        from starlette.concurrency import run_in_threadpool
+
+        stored = await run_in_threadpool(_store)
+    except UnknownTimezone as exc:
+        return JSONResponse(
+            {"error": "timezone_invalid", "detail": str(exc)},
+            status_code=400,
+            headers=_NO_STORE,
+        )
+    except Exception:  # noqa: BLE001 - a settings write never breaks sign-in
+        import logging
+
+        logging.getLogger("tinyassets.onboarding").warning(
+            "account timezone could not be stored"
+        )
+        return JSONResponse(
+            {"error": "timezone_unavailable"}, status_code=503, headers=_NO_STORE
+        )
+    return JSONResponse({"timezone": stored}, headers=_NO_STORE)
 
 
 async def _handle_account_delete(request: Any) -> Any:
@@ -1455,8 +1527,8 @@ async def _handle_billing_checkout(request: Any) -> Any:
                 try:
                     params = checkout_params(
                         universe_id=home,
-                        success_url=origin + "/mcp/app?subscribed=1",
-                        cancel_url=origin + "/mcp/app?subscribed=0",
+                        success_url=origin + "/app?subscribed=1",
+                        cancel_url=origin + "/app?subscribed=0",
                         expires_at=int(now + CHECKOUT_SESSION_SECONDS),
                     )
                 except AlreadySubscribed:
@@ -1685,11 +1757,18 @@ async def _handle_billing_webhook(request: Any) -> Any:
 
 
 def onboarding_routes() -> list[Any]:
-    """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
+    """Starlette routes for the app, mounted alongside ``/mcp``.
 
-    Served under ``/mcp/`` so the production tunnel reaches it with no infra
-    change, and same-origin so the page calls ``/mcp`` (and the token-exchange
-    proxy) with no CORS.
+    Served at the apex ``/app`` (founder directive 2026-09-30, moved off
+    ``/mcp/app``) — still SAME ORIGIN as ``/mcp``, so the page calls the
+    connector and the token-exchange proxy with no CORS. The public edge binds
+    ``tinyassets.io/app*`` to the same Worker that proxies ``/mcp``
+    (``deploy/cloudflare-worker/wrangler.toml``); that binding is what makes
+    these routes reachable, and the move is not live without it.
+
+    ``/mcp/app`` is GONE, not redirected: nothing here mounts it, and it gets no
+    carve-out anywhere, so it behaves exactly like any other absent path inside
+    the connector namespace (``401`` anonymously, ``404`` with a bearer).
     """
     from starlette.routing import Route
 
@@ -1700,28 +1779,29 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding.ui_frame import handle_ui_frame
 
     return [
-        Route("/mcp/app", _handle_app, methods=["GET", "HEAD"]),
-        Route("/mcp/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
-        Route("/mcp/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
-        Route("/mcp/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
-        Route("/mcp/app/token", _handle_token, methods=["POST"]),
-        Route("/mcp/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
-        Route("/mcp/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
-        Route("/mcp/app/openai/begin", _handle_openai_begin, methods=["POST"]),
-        Route("/mcp/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
-        Route("/mcp/app/voice/status", _handle_voice_status, methods=["GET"]),
-        Route("/mcp/app/voice/session", _handle_voice_session, methods=["POST"]),
-        Route("/mcp/app/me", _handle_me, methods=["GET"]),
-        Route("/mcp/app/trace", _handle_trace, methods=["POST"]),
-        Route("/mcp/app/serving/bind", _handle_serving_bind, methods=["POST"]),
-        Route("/mcp/app/models/preferences", handle_model_preferences, methods=["GET", "POST"]),
-        Route("/mcp/app/billing/status", _handle_billing_status, methods=["GET"]),
-        Route("/mcp/app/billing/checkout", _handle_billing_checkout, methods=["POST"]),
-        Route("/mcp/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
-        Route("/mcp/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
-        Route("/mcp/app/account/delete", _handle_account_delete, methods=["POST"]),
-        Route("/mcp/app/connections", handle_connections, methods=["GET", "POST"]),
-        Route("/mcp/app/files", handle_file_upload, methods=["POST"]),
+        Route("/app", _handle_app, methods=["GET", "HEAD"]),
+        Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
+        Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
+        Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
+        Route("/app/token", _handle_token, methods=["POST"]),
+        Route("/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
+        Route("/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
+        Route("/app/openai/begin", _handle_openai_begin, methods=["POST"]),
+        Route("/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
+        Route("/app/voice/status", _handle_voice_status, methods=["GET"]),
+        Route("/app/voice/session", _handle_voice_session, methods=["POST"]),
+        Route("/app/me", _handle_me, methods=["GET"]),
+        Route("/app/trace", _handle_trace, methods=["POST"]),
+        Route("/app/serving/bind", _handle_serving_bind, methods=["POST"]),
+        Route("/app/models/preferences", handle_model_preferences, methods=["GET", "POST"]),
+        Route("/app/billing/status", _handle_billing_status, methods=["GET"]),
+        Route("/app/billing/checkout", _handle_billing_checkout, methods=["POST"]),
+        Route("/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
+        Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
+        Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
+        Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
+        Route("/app/connections", handle_connections, methods=["GET", "POST"]),
+        Route("/app/files", handle_file_upload, methods=["POST"]),
     ]
 
 

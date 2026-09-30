@@ -1539,9 +1539,17 @@ def test_served_write_graph_preserves_opaque_workflow_data(monkeypatch):
     }
     s.write_graph(target="branch", operation="create", payload_json=json.dumps(spec))
     out = json.loads(captured["spec_json"])
+    # `state_schema` is CANONICALIZED to the field list by the sanitizer as of
+    # 2026-09-30 (PR #4123): the accepted shapes have to be one list shared with
+    # the builder, or the widest of them skips this very guard. The claim this
+    # test exists for is unchanged -- stripping is node-level, not recursive --
+    # so it is asserted on the canonical shape.
+    assert isinstance(out["state_schema"], list), out["state_schema"]
     # Opaque nested data preserved verbatim.
-    dv = out["state_schema"]["fields"][0]["default_value"]
+    dv = out["state_schema"][0]["default_value"]
     assert dv == {"author": "Ada", "public": True, "mode": "safe"}
+    # And the wrapper carried the field through rather than dropping it.
+    assert out["state_schema"][0]["field_name"] == "meta"
     node = out["node_defs"][0]
     assert node["config"] == {"author": "kept-here", "public": False}
     # But the node's OWN authoritative approval/author fields are stripped.

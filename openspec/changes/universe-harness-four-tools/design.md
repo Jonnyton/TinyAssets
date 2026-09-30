@@ -22,16 +22,24 @@ splits the folder into what the agent OWNS and what the platform does
 is the jail's: a path outside `/u` is passed through unchanged and simply does
 not exist inside.
 
-**The agent owns a small, explicit part of its folder.** The universe root is
-bound READ-ONLY at `/u`. Read-write binds go only to
+**The agent owns a small, explicit part of its folder.** `/u` is a tmpfs
+holding one `-try` bind per visible root entry, then remounted READ-ONLY.
+Read-write binds go only to
 `universe_tools.AGENT_BRAIN_FILES` (identity, founder, origin, body, orgchart,
 projects, goals, index, log, voice; bound only if present, since an empty brain
 file reads as "learned") and `AGENT_HARNESS_DIRS` (skills, prompts, extensions,
-workflows, bin, notes; created first). Every hidden root entry is masked: a
-directory by an empty `tmpfs`, a file by a read-only `/dev/null` (new
-`mask-file` mount op). Everything else (`soul.md`, `config.yaml`, `soul_versions/`,
-`wiki/`, `workspaces/` ...) is visible and read-only. No new root entry can be
-created. The set is pinned by `test_agent_owned_paths_are_pinned`.
+workflows, bin, notes; created first). Hidden root entries are never bound, so
+they do not exist in the jail. Everything else (`soul.md`, `config.yaml`,
+`soul_versions/`, `wiki/`, `workspaces/` ...) is visible and read-only. No new
+root entry can be created. The set is pinned by `test_agent_owned_paths_are_pinned`.
+
+Why an allowlist (2026-09-29): the first shape bound the root read-only and
+masked each hidden FILE with `/dev/null`. A WAL database's `-shm`/`-wal`
+sidecar exists only while a connection is open; one scanned and then deleted
+before bubblewrap ran left a mask with no mountpoint, which cannot be created
+on the read-only root, and the call was refused ("Can't create file
+/u/.effector_consents.db-shm"). A hidden file created after the scan was also
+visible through the root bind. `-try` binds skip an entry that is gone at launch.
 
 Why (found while fixing round 2): the credential vault
 (`.credential-vault.json`, `.credentials/`) and the per-universe authority

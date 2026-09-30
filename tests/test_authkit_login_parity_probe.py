@@ -91,7 +91,7 @@ def test_issuer_is_read_from_the_app_config():
 
 def test_main_discovers_authkit_and_fails(monkeypatch, capsys):
     pages = {
-        "https://tinyassets.io/mcp/app": '{"issuer": "https://env-1.authkit.app"}',
+        "https://tinyassets.io/app": '{"issuer": "https://env-1.authkit.app"}',
         "https://env-1.authkit.app/": GOOGLE_ONLY,
     }
     fetched = []
@@ -102,7 +102,7 @@ def test_main_discovers_authkit_and_fails(monkeypatch, capsys):
 
     monkeypatch.setattr(probe, "fetch", fake_fetch)
     assert probe.main([]) == 1
-    assert fetched == ["https://tinyassets.io/mcp/app", "https://env-1.authkit.app/"]
+    assert fetched == ["https://tinyassets.io/app", "https://env-1.authkit.app/"]
     assert "FAIL" in capsys.readouterr().out
 
 

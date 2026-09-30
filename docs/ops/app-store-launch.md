@@ -1,7 +1,7 @@
 # Apple App Store launch — runbook
 
 The iOS counterpart of `google-play-launch.md`. The iPhone app is the SAME
-Capacitor shell over `https://tinyassets.io/mcp/app` — one shared core with the
+Capacitor shell over `https://tinyassets.io/app` — one shared core with the
 Android + web + desktop surfaces. Staged so the founder's actions are limited to
 the Apple account, agreements, payment, signing/API assets, truthful console
 declarations, device testing, and the final submit.
@@ -224,7 +224,7 @@ The ordered capture contract and live-verified 6.5-inch pixel sizes are committe
 6. After approval, check the production web health and the TestFlight critical
    flow again, then have the founder click **Release This Version**. Watch the
    first hour for sign-in failures, native OAuth return failures, blank/offline
-   shells, and `/mcp/app` server errors.
+   shells, and `/app` server errors.
 
 The first public version is a manual release. For later updates, use Apple's
 7-day phased release (1% → 2% → 5% → 10% → 20% → 50% → 100%) and pause on any
@@ -234,7 +234,7 @@ automatic updates only; anyone can still manually download the current version.
 Rollback has two different shapes:
 
 - A web-app regression needs no store binary: revert/deploy the compatible
-  `/mcp/app` version and verify the public endpoint and real mobile flow.
+  `/app` version and verify the public endpoint and real mobile flow.
 - A native-shell regression cannot restore the previous App Store binary. Pause
   a phased update when available; for a first-version emergency, make the app
   unavailable for new downloads and submit a fixed higher build/version. Existing

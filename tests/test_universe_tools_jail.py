@@ -41,6 +41,11 @@ import pytest
 
 from tests.engine_authority_helpers import seed_engine_authority
 
+# Imported before ``world`` patches ``helpers._base_path``: permissions binds
+# ``_base_path`` at import, and a first import under the patch would keep this
+# module's deleted data root for every later test in the session.
+from tinyassets.api import permissions
+
 _BWRAP = shutil.which("bwrap") if sys.platform == "linux" else None
 
 pytestmark = pytest.mark.skipif(
@@ -549,3 +554,91 @@ def test_a_skill_the_agent_writes_changes_its_next_turn(world, monkeypatch):
 
     refused = _turn(monkeypatch, world, "read the other universe's founder file", fake_model)
     assert refused.startswith("error:") and FOREIGN_MARKER not in refused
+
+
+# ── a background run's file tools start while the daemon holds a database ──
+
+
+def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
+    world, monkeypatch, nobody,
+):
+    """Live 2026-09-28: the founder's background self could read its grants but
+    not ``notes/background-self.md`` -- "bwrap: Can't create file
+    /u/.effector_consents.db-shm: Read-only file system". Reading grants opens
+    the WAL consent database; the jail scanned the root while its ``-shm``
+    sidecar existed, SQLite deleted the sidecar when the connection closed, and
+    bubblewrap could not create a mask mountpoint on the read-only root.
+
+    Driven through the owner's claimed background run (the path an automation
+    takes), with the real consent store open during the scan and closed before
+    the launch -- the exact interleaving -- and the shipping tool handlers."""
+    from tinyassets import universe_tools
+    from tinyassets.daemon_server import claim_founder_home, ensure_universe_registered
+    from tinyassets.runtime.claimed_branch_execution import (
+        ClaimedBranchExecutorIdentity,
+        execute_claimed_branch_task,
+    )
+    from tinyassets.storage import effector_consents
+
+    owner = "workos|owner-bg"
+    a = world.universe_a
+    s = _engine(monkeypatch, world, actor=owner)
+    ensure_universe_registered(world.data_root, universe_id="u-alpha", universe_path=a)
+    claim_founder_home(world.data_root, owner, "u-alpha")
+    (a / "notes" / "background-self.md").write_text(OWN_MARKER + "\n", encoding="utf-8")
+    effector_consents.initialize_consents_db(a)
+    shm = a / ".effector_consents.db-shm"
+    raced: list[bool] = []
+    real_argv = universe_tools.TOOL_JAIL_ARGV
+
+    def argv_while_a_connection_closes(*args, **kwargs):
+        conn = effector_consents._connect(a)
+        conn.execute("SELECT count(*) FROM effector_consents").fetchone()
+        try:
+            assert shm.exists(), "precondition: the sidecar exists at the scan"
+            return real_argv(*args, **kwargs)
+        finally:
+            conn.close()
+            raced.append(not shm.exists())
+
+    monkeypatch.setattr(universe_tools, "TOOL_JAIL_ARGV", argv_while_a_connection_closes)
+    seen: dict = {}
+
+    def execute(_base, **_kwargs):
+        seen["actor"] = permissions.current_request_actor_id()
+        seen["read"] = _run(s.read_file(path="notes/background-self.md"))
+        seen["write"] = _run(s.write_file(path="notes/handoff.md", content="next: x\n"))
+        seen["root_write"] = _run(s.write_file(path="root-note.md", content="lost?\n"))
+        seen["listing"] = _run(s.run_bash(command="ls -A /u"))
+        seen["consents"] = _run(s.run_bash(command="cat /u/.effector_consents.db"))
+        return SimpleNamespace(run_id="run-a", status="completed", output={}, error="")
+
+    monkeypatch.setattr("tinyassets.runs.get_run_by_branch_task_id", lambda *_a, **_k: None)
+    monkeypatch.setattr("tinyassets.runs.execute_branch_version", execute)
+    from tinyassets.branch_tasks_v2 import Epoch2BranchTask
+
+    task = Epoch2BranchTask(
+        branch_task_id="bt2_" + "a" * 32, branch_def_id="branch-a", universe_id="u-alpha",
+        admission_id="adm_" + "c" * 32, request_id="req_" + "d" * 32, actor_id=owner,
+        automation_id="automation-a", automation_branch_version="branch-version-a",
+        automation_subject_ref="branch-version-a",
+        automation_subject_digest="sha256:" + "b" * 64, inputs={},
+    )
+    ok, error, _detail = execute_claimed_branch_task(
+        world.data_root, task, ClaimedBranchExecutorIdentity(daemon_id="d"), object(),
+    )
+    assert ok, error
+
+    assert seen["actor"] == owner, "the run is bound to its owner"
+    assert raced and all(raced), "the sidecar vanished between scan and launch every call"
+    assert OWN_MARKER in seen["read"], seen["read"]
+    assert seen["write"].startswith("wrote"), seen["write"]
+    assert (a / "notes" / "handoff.md").read_text(encoding="utf-8") == "next: x\n"
+    # Isolation held: no hidden root entry is in the jail at all.
+    listing = seen["listing"].split("[exit code")[0].split()
+    assert "notes" in listing and not [name for name in listing if name.startswith(".")], listing
+    assert "No such file" in seen["consents"], seen["consents"]
+    # /u itself is read-only: a root write is refused, not accepted into a
+    # tmpfs and silently lost when the call ends.
+    assert not seen["root_write"].startswith("wrote"), seen["root_write"]
+    assert "root-note.md" not in listing

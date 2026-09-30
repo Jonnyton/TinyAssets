@@ -8,7 +8,7 @@ descriptions did not describe it. This file pins both halves:
 1. the REGISTERED read_graph / write_graph / run_graph descriptions, on the
    served engine and the connector, carry one coherent recipe (red on the old
    descriptions, which said only "File references are unsupported/refused");
-2. a real authenticated ASGI ``POST /mcp/app/files`` -> served ``write_graph``
+2. a real authenticated ASGI ``POST /app/files`` -> served ``write_graph``
    create -> ``run_graph inputs_json`` -> completed exact-byte processing ->
    ``read_graph`` bounded export, with no authoring session, handle or
    storage-level bind helper standing in for admission.

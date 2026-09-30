@@ -145,11 +145,11 @@ def _pending_confirmation(base: Path, *, universe: Path, uid: str, owner: str,
     from tinyassets.provider_assignment_manifest import ModelAccess
     from tinyassets.providers.definition import get_definition
     from tinyassets.storage.outbound_connections import ConnectionLedger
-    from tinyassets.storage.pending_requests import MAX_PENDING, list_pending
+    from tinyassets.storage.pending_requests import list_pending
 
     matches = []
     ledger = ConnectionLedger(base / "outbound.db")
-    for request in list_pending(universe, limit=MAX_PENDING):
+    for request in list_pending(universe, limit=None):
         action = request.get("action") or {}
         if action.get("type") != "bind_model_access":
             continue

@@ -1007,6 +1007,82 @@ def _validate_served_effect_declaration(effects: object) -> None:
         )
 
 
+#: How much text either side of the decoder's position a parse error quotes.
+#: Small enough that a 200kB payload does not return 200kB of excerpt, wide
+#: enough that the offending character is visible in context.
+_PAYLOAD_JSON_EXCERPT_RADIUS = 60
+#: Cap on the decoder's OWN message. The excerpt was bounded from the start and
+#: `exc.msg` was not, which Codex broke on review with a 200k-char `msg`
+#: returning a 200,234-char error: the whole point of this helper is that a
+#: refusal costs the agent a few tokens, so every variable-length part of it
+#: needs a bound, not just the one whose size was obvious.
+_PAYLOAD_JSON_MESSAGE_MAX = 200
+
+
+def _payload_json_error(raw: str | None, exc: BaseException | None = None) -> str:
+    """"payload_json must be valid JSON" plus WHERE, and the bytes there.
+
+    Live 2026-09-30 (turn ``c7d6279d4af74d798375d3f13780140e``): six of a free
+    account's twenty-one rounds died on the bare six-word version of this
+    sentence. The model's ``prompt_template`` carried a literal newline and an
+    emoji; with no position, no decoder message and no excerpt it could not tell
+    which, and rewrote the whole spec instead of the one character. The decoder
+    already knows all three -- withholding them is the defect.
+
+    The excerpt is ``repr``-escaped so a raw control character (the usual cause)
+    is READABLE in a tool result rather than moving the cursor, and it is sliced
+    around the reported position so payload size never reaches the agent.
+    ``exc`` is optional: called without one, the payload is re-parsed here, so a
+    caller that only has the string still gets a positioned answer.
+
+    TOTAL on its input. It runs on the served refusal path, so it must never be
+    the thing that raises: a diagnostic that crashes turns a precise refusal
+    into a 500. Every attribute it reads off ``exc`` is validated rather than
+    trusted, because ``JSONDecodeError`` is subclassable and a subclass can
+    carry ``pos=None``, ``pos=-100`` or ``msg=None`` (Codex refute, all three
+    reproduced as TypeError / IndexError / AttributeError). Falling back to the
+    bare sentence is correct there -- it is what the caller had before.
+    """
+    import json
+
+    text = raw or ""
+    if exc is None:
+        try:
+            json.loads(text or "{}")
+        except (json.JSONDecodeError, RecursionError) as parsed:
+            exc = parsed
+        else:
+            return "payload_json must be valid JSON."
+    if not isinstance(exc, json.JSONDecodeError):
+        # RecursionError: no position exists -- nesting depth, not a bad byte.
+        return (
+            "payload_json must be valid JSON. It nests too deeply to parse; "
+            "flatten the structure."
+        )
+    pos = exc.pos
+    if type(pos) is not int or not 0 <= pos <= len(text):
+        return "payload_json must be valid JSON."
+    raw_message = exc.msg
+    if not isinstance(raw_message, str):
+        return "payload_json must be valid JSON."
+    start = max(0, pos - _PAYLOAD_JSON_EXCERPT_RADIUS)
+    end = min(len(text), pos + _PAYLOAD_JSON_EXCERPT_RADIUS)
+    excerpt = repr(text[start:end])[1:-1]
+    caret = "" if pos >= len(text) else (
+        f" The character at that position is {text[pos]!r}."
+    )
+    # `json`'s own message for a control character ends in " at", which would
+    # read "... at at line 1" once we append the position.
+    message = raw_message[:_PAYLOAD_JSON_MESSAGE_MAX].removesuffix(" at").rstrip()
+    return (
+        f"payload_json must be valid JSON. {message} at line {exc.lineno} "
+        f"column {exc.colno} (character {pos}).{caret} "
+        f"near: ...{excerpt}... "
+        "A newline, tab or emoji inside a JSON string must be escaped "
+        "(\\n, \\t, \\uXXXX); send the spec as one JSON object."
+    )
+
+
 def _sanitize_served_branch_spec(spec: dict) -> None:
     """Strip everything a served (autonomous) create must not carry, IN PLACE.
 
@@ -1049,20 +1125,29 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
         if f in spec and not isinstance(spec[f], str):
             raise ValueError(f"'{f}' must be a string")
     # state_schema entries carry text-metadata fields (name/description/reducer) that
-    # reach text columns; a dict/list there persists malformed (Codex #4). Tolerant of
-    # both shapes (a `{"fields": [...]}` object or a bare list); default_value/field_name
-    # and any unrecognized shape are left untouched so opaque workflow data survives.
-    state_schema = spec.get("state_schema")
-    if isinstance(state_schema, dict):
-        state_entries = state_schema.get("fields")
-    elif isinstance(state_schema, list):
-        state_entries = state_schema
-    else:
-        state_entries = None
-    if isinstance(state_entries, list):
+    # reach text columns; a dict/list there persists malformed (Codex #4).
+    #
+    # NORMALIZED FIRST, with the BUILDER's own helper, and written back in
+    # place. The shapes the sanitizer accepts and the shapes the builder accepts
+    # have to be one list, or the widest of them is an unguarded path: this
+    # block used to look only for a LIST, so when the builder learned the
+    # ``{"focus_note": "str"}`` mapping (turn f3617ca3) a field could arrive as
+    # a mapping value and skip the check entirely -- a `reducer` dict straight
+    # into a text column, and a dict `name` crashing the applicator (Codex
+    # refute, PR #4123). Normalizing here means there is one definition and the
+    # builder downstream only ever sees the canonical list.
+    if "state_schema" in spec:
+        from tinyassets.api.branches import _normalized_state_schema
+
+        state_entries, state_error = _normalized_state_schema(spec["state_schema"])
+        if state_error:
+            raise ValueError(state_error)
+        spec["state_schema"] = state_entries
         for sf in state_entries:
             if not isinstance(sf, dict):
-                continue
+                raise ValueError(
+                    "each state_schema entry must be a field object or a name"
+                )
             for f in _SERVED_STATE_FIELD_TEXT:
                 if f in sf and not isinstance(sf[f], str):
                     raise ValueError(f"state field '{f}' must be a string")
@@ -1147,6 +1232,108 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
 # resident in the description -- see
 # openspec/specs/served-agent-tool-guidance/spec.md.
 # ------------------------------------------------------------------------
+# Every JSON object in this chapter is submitted to the REAL served create path
+# by tests/test_served_branch_create_errors.py and must land. Editing an example
+# without running that file is how a worked example becomes a wrong one.
+_WRITE_GRAPH_BRANCHES_CHAPTER = """\
+    **The smallest branch that builds.** ``target="branch"``,
+    ``operation="create"``, and ``payload_json`` is ONE JSON object. This is a
+    complete, working payload -- nothing below it is required:
+
+        {"name": "Morning Focus",
+         "node_defs": [{"node_id": "note",
+                        "prompt_template": "Write a short note on what to focus on today"}]}
+
+    That is the whole shape: a ``name``, and ``node_defs`` with one entry that
+    has a ``node_id`` and a ``prompt_template``. The reply carries the new
+    ``branch_def_id``; that id is what schedules it and what runs it.
+
+    **What has a default, so I never send it to satisfy the validator.**
+
+    * ``display_name`` -- defaults to ``node_id``. Send one only when the user
+      should see a different label.
+    * ``entry_point`` -- defaults to the node nothing points at (for one node,
+      that node). Send one only to start somewhere other than the head.
+    * A node with **no outgoing edge ENDS the run**. A one-node branch needs no
+      ``edges`` at all, and the last node of a chain needs no edge to ``"END"``.
+      I add ``"END"`` only to exit a LOOP early.
+    * ``visibility`` -- always private here; publishing is a browser step.
+
+    **What has no default.** ``name``, and a ``node_id`` per node. A node takes
+    EITHER ``prompt_template`` (a model writes the step) or ``source_code`` (my
+    own Python -- see the ``code_nodes`` chapter), never both.
+
+    **Two nodes, passing a value.** ``edges`` orders them; ``output_keys`` /
+    ``input_keys`` name what moves, and every key they name must be declared in
+    ``state_schema`` when a schema is present. ``state_schema`` takes either the
+    list of field objects below or a plain mapping of name to type
+    (``{"agenda": "str", "brief": "str"}``), and JSON Schema's type words
+    (``string``, ``integer``, ``number``, ``boolean``, ``array``, ``object``)
+    are accepted for the Python ones. A type I get wrong is corrected and
+    reported back under ``notices`` rather than refusing the build:
+
+        {"name": "Morning brief",
+         "state_schema": [{"name": "agenda", "type": "str"},
+                          {"name": "brief", "type": "str"}],
+         "node_defs": [{"node_id": "gather",
+                        "prompt_template": "List what is on today",
+                        "output_keys": ["agenda"]},
+                       {"node_id": "write_up",
+                        "prompt_template": "Turn the agenda into three bullets",
+                        "input_keys": ["agenda"],
+                        "output_keys": ["brief"]}],
+         "edges": [{"from": "gather", "to": "write_up"}]}
+
+    ``entry_point`` is ``gather`` without being said: ``write_up`` is pointed at,
+    ``gather`` is not. ``write_up`` has no outgoing edge, so the run ends there.
+
+    **Edge spellings.** An edge's origin is ``from``, ``from_node`` OR
+    ``source``; its destination is ``to``, ``to_node`` OR ``target``. All six are
+    accepted, so a LangGraph-shaped ``{"source": ..., "target": ...}`` is fine.
+    A conditional edge takes the same origin keys plus ``conditions``, a map of
+    outcome string to target node id (``"END"`` is a valid target).
+
+    **Running it every morning.** A branch is a stored SHAPE; nothing runs until
+    something triggers it. ``target="automation"``, ``operation="create"``,
+    ``payload_json`` with the ``branch_def_id`` from the build and exactly one of
+    ``cron_expr`` or ``interval_seconds``:
+
+        {"name": "Morning focus note", "branch_def_id": "<from the build reply>",
+         "cron_expr": "0 7 * * *", "timezone": "America/Los_Angeles"}
+
+    Cron is five fields, minute first, and it runs in a TIMEZONE. ``timezone``
+    is an IANA name; omit it and the schedule uses the owner's own zone as
+    their app reported it, falling back to UTC only when none is known. I never
+    describe a schedule without its clock -- "7:00 AM America/Los_Angeles", not
+    "7am" -- and ``read_graph target="automations"`` hands me exactly that as
+    ``schedule_local``, beside ``timezone``, the absolute ``next_due_at``, and
+    ``revision`` (which I send back AS ``expected_revision`` to pause, resume or
+    delete). If I am unsure of the owner's zone I ASK rather than guess: a
+    wrong zone is a note that arrives at midnight.
+
+    Across a daylight-saving change each slot still fires once: a local time
+    that does not exist that day runs at the first valid instant after the gap,
+    and one that happens twice runs at the first. Runs of one branch never
+    overlap.
+
+    To control an existing trigger, first read ``read_graph target="automation"``
+    (or ``target="automations"``), then pass its automation_id and current
+    expected_revision.
+
+    **When a create is refused**, the reply carries ``errors`` (what is wrong)
+    and ``suggestions`` (which key to change), plus ``attempted_spec`` -- the
+    spec as it arrived, which is how I tell a dropped key from a rejected one. I
+    change the named key and resend; I do not reshape the payload.
+
+    **Workflow-wide choices**, as ``operation="patch"`` ops on an existing
+      branch. Workflow-wide choices use
+      ``{"op":"set_default_llm_policy","default_llm_policy":<policy object>}``
+      and ``{"op":"set_concurrency_budget","concurrency_budget":2}``.
+      Use explicit null to clear either choice; saved versions keep their choices.
+      These settings select among existing permissions and do not grant access.
+
+"""
+
 _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
     ANY HTTPS API with no service-specific code.** A node declaring
@@ -1231,6 +1418,38 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     -- "their page calls this either X or Y" is honest and the owner can resolve
     it in a second. A confidently wrong label is worse than an uncertain one.
 
+    **A WEBHOOK LINK IS NOT A TOKEN.** When the owner hands you a link whose
+    secret is IN the address — a Slack ``hooks.slack.com/services/T…/B…/<token>``,
+    a Discord ``discord.com/api/webhooks/<id>/<token>``, a Zapier catch hook, a
+    TinyAssets ``/mcp/hooks/<token>`` — there is no bearer token to ask for and
+    NOTHING about that link goes in ``path_template``. Use
+    ``"auth_scheme": "url_secret"``, write ``{secret}`` where the code is, and
+    ask for the WHOLE LINK in one field named ``capability_url``::
+
+        "action": {"type": "connect_http", "destination": "bug-reports",
+                   "auth_scheme": "url_secret",
+                   "endpoints": [{"host": "hooks.slack.com",
+                                  "path_template": "/services/{secret+}",
+                                  "methods": ["POST"]}]},
+        "fields": [{"name": "capability_url", "type": "secret",
+                    "label": "Webhook URL",
+                    "help": "the whole link they gave you, starting https://"}]
+
+    ``{secret}`` is one path segment; ``{secret+}`` is the rest of the path (use
+    it when the code is several segments, as Slack's is). It takes NO
+    ``param_patterns`` entry — the value comes from the vault. The platform
+    checks the pasted link against the host and template and pulls the code out
+    itself, so never ask the owner to "paste the part after the last slash".
+    Then the node's packet addresses the PLACEHOLDER, not the code::
+
+        "request": {"method": "POST", "path": "/services/{secret+}",
+                    "body": {"text": "..."}}
+
+    The real address only exists for the instant the call is made. That is why
+    a real code in ``path_template`` (or in a packet) is refused: a grant is
+    stored in the clear and shown to the owner, and a packet is part of the
+    graph anyone you share it with can read.
+
     **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
     a ``connect_http`` or ``extend_http`` ask and it means: everything this key
     can do on this channel -- any path, any verb, and clone or push to any
@@ -1306,6 +1525,18 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     A ``connect_http`` ask for a destination that already has a key makes the
     user paste a secret they already gave you — the one thing they must never
     be asked to do twice.
+
+    **A CDN block is NOT a key problem.** Failure class
+    ``destination_blocked_client`` means the destination's edge refused the
+    request before the service saw it — the body carries the edge's own code
+    (``error code: 1010`` and friends). The key was never presented to anything
+    that reads keys, so rotating it is the wrong ask and retrying gets the same
+    block. Every outbound call already sends this platform's own client string;
+    you do not set ``User-Agent`` on a packet and a request that tries is
+    refused. If a service insists on a particular one, it is declared ONCE on
+    the connection as a constant header, not per call. Say what happened, name
+    the destination and the code, and ask for the constant header — or tell
+    them the destination has to allow this platform at their end.
 
     **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
     ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the
@@ -1672,20 +1903,34 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
     does NOT run -- the only code that runs is ``script``. Bounds: markup 32768,
     style 16384, script 32768 characters, the whole component under 49152 UTF-8
-    bytes. There is no limit on how many UIs a library holds -- only on its total
-    size, 4194304 bytes. Nothing I write is rewritten, reformatted or sanitized on
-    the way in or out.
+    bytes. Those bound ONE component. There is no limit on how many UIs my library
+    holds and none on its total size -- the bytes count toward my universe's
+    storage, like everything else I keep. Nothing I write is rewritten, reformatted
+    or sanitized on the way in or out.
 
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
     token, no reach into the surrounding page, and NO network of its own -- fetch,
     WebSocket, form posts, remote images and WebRTC are all unavailable. Its only
-    capability is four calls on a ``tinyassets`` object, acting as whoever is
+    capability is these calls on a ``tinyassets`` object, acting as whoever is
     LOOKING at it, inside their own universe:
 
         await tinyassets.whoami()                  -> {universe_id, universe_name}
         await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
         await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
         await tinyassets.readConversation(limit)   -> {turns:[{speaker,text,at}]}
+        await tinyassets.listAutomations()         -> {automations:[{automation_id,name,
+                  branch_id,trigger,state,last_run_id,last_result,next_due_at,...}]}
+        await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,
+                  status,started_at,finished_at,last_node_id}]}   # newest first, <= 50
+        await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
+                  error,output_fields:[...]}
+        await tinyassets.readRunOutput(run_id, field, offset)
+                                                   -> {text,next_offset,...}  # 8192 chars a chunk
+
+    The last four are how a screen shows agents actually working: which
+    automations are live and when each fires next, which runs are going, and
+    what an agent node wrote (its output key). They read only, and polling them
+    every few seconds is fine.
 
     Anything else it calls is refused by name. ``sendMessage`` reaches the
     universe's currently selected conversation; naming a different agent is refused
@@ -1697,11 +1942,15 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``"ui_selection": {"version": 1, "state": "active", "ui_id": "<mine>"}`` to the
     same row; ``{"version": 1, "state": "default"}`` means ordinary chat.
 
-    **Sharing one.** ``write_graph target="agent" operation="publish"`` with the UI
-    component under ``components`` publishes it for anyone to copy, and
-    ``operation="remix"`` copies someone else's. A copy always runs as the person
-    who installed it, in THEIR universe -- it can never reach back to whoever wrote
-    it. Publishing is a separate, deliberate act: a UI I only install stays private.
+    **Sharing one.** Publishing is the person's own deliberate act, and it is not
+    a call I have here: they publish the UI component under ``components`` of a
+    public definition (the connector's ``write_graph target="agent"
+    operation="publish"``), and a UI I only install stays private. To use
+    someone else's, I read it with
+    ``read_commons_shape agent_definition_id=...`` and save its component into
+    this person's ``ui_library``; that copy is theirs, the same thing the
+    connector's ``operation="remix"`` does. A copy always runs as the person who
+    installed it, in THEIR universe -- it can never reach back to whoever wrote it.
 
 """
 
@@ -1725,7 +1974,7 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
           "allowed_senders": [],             # exact principals; [] is nobody
           "open_to_all": true,               # OR: any authenticated user
           "discoverable": true,              # listed so others can find it
-          "sender_rate_limit": 60,           # accepted sends per sender per hour
+          "sender_rate_limit": 0,            # MY optional policy; 0 = none
           "description": "what I accept and what I do with it"}
 
     It returns a ``receiver_id`` and ``generation``. Four things worth knowing:
@@ -1740,6 +1989,11 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
       tightened ``sender_rate_limit``. Closing an exposure is an explicit
       ``"open_to_all": false`` / ``"discoverable": false``, or ``operation="revoke"``
       to stop every sender at once.
+    * ``sender_rate_limit`` is MY policy on MY receiver, and it is off by default.
+      Any positive number is accepted sends per sender per hour, with no ceiling;
+      0 is no limit. The platform sets none for me: a delivered run queues for one
+      of my agent seats, so a chatty sender waits rather than spending something I
+      cannot get back.
     * ``input_keys`` is the whole advertised contract. Everything else about the
       workflow — the rest of its steps, a decision step I run on what arrives, my
       other senders, my other deliveries — a sender never sees.
@@ -1793,24 +2047,104 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     **Refusals, and what each means.** ``receiver_or_link_not_found`` covers "does
     not exist", "not open to me" and "revoked" on purpose — it discloses nothing
     either way. ``receiver_generation_changed``: re-read the contract and reconnect.
-    ``receiver_sender_rate_limit_exceeded``: the owner's per-sender hourly cap, and
-    the message names the limit and what I have sent. ``occurrence_conflict``: I
-    reused an ``occurrence_id`` with different content.
+    ``receiver_sender_rate_limit_exceeded``: only if that owner chose a per-sender
+    hourly policy of their own; the message names their limit and what I have
+    sent. ``occurrence_conflict``: I reused an ``occurrence_id`` with different
+    content.
 
     **Closing it.** ``operation="revoke"`` on the receiver (with
     ``expected_generation``) stops new deliveries at once, from every sender.
     ``operation="disconnect"`` with ``{"link_id": ...}`` drops one sender's link
     from my own side. Neither retracts something already accepted.
 
+    **Telling TinyAssets about a gap: a patch request.** When I hit a bug, a
+    missing capability or an idea worth building, I report it instead of
+    stopping or working around it silently. It is a PATCH REQUEST, and it is an
+    ordinary delivery to an intake another user runs -- exactly the five steps
+    above. There is NO token, NO URL and NO credential anywhere in it, so I must
+    never raise a ``connect_http``/``connect`` ask for this; asking my person for
+    a bearer token to file a bug report is the wrong shape and the field would
+    be unanswerable.
+
+    ``read_graph target="pending_requests"`` carries a ``patch_intake`` block
+    when this platform offers one::
+
+        {"receiver_id": "...", "label": "TinyAssets",
+         "granted": true|false, "request_pending": true|false, "how": "..."}
+
+    * ``granted: true`` -- my person has approved it. Read the contract
+      (``read_graph target="receiver" query="<receiver_id>"``), point one of my
+      own step's outputs at it (``target="output_link"``,
+      ``operation="connect"``), and send (``run_graph
+      operation="deliver_output"``). A one-node code branch whose outputs are
+      what-I-tried / what-was-missing is enough. I file it MID-TURN and carry on;
+      I do not interrupt my person to ask permission I already have.
+    * ``granted: false`` -- I read ``request_pending`` and follow ``how``. If the
+      ask is waiting in their rail ("Let your universe report problems to ..."),
+      I point them at that one and wait. If they already declined or cleared it,
+      I respect that decision. I do not compose a second request for it.
+    * No ``patch_intake`` block at all -- this deployment offers no intake. I
+      say so plainly rather than inventing an address.
+
+    Delivery to that intake is refused with ``patch_intake_consent_required``
+    until the grant exists, and again if it is taken back. Nothing else of mine
+    rides along: the intake owner sees the fields I map and nothing more.
+
+"""
+
+_WRITE_GRAPH_SYSTEMS_CHAPTER = """\
+    **Systems that keep running: several agents, shared work, their own screen.**
+    When someone asks for something always on, a team of agents that coordinate,
+    or a product other people can use, I build it INSIDE this universe from what
+    I already have. There is no server to deploy and nothing runs anywhere else.
+    Asking the person for a hosting destination, a deploy target or a code-host
+    token so the thing can run or be shared is the wrong shape; so is writing
+    a service under /u with deployment instructions. It's one mapping.
+
+    The mapping below is what to build; the ``branches`` chapter is how to write
+    the ``operation="create"`` payload that builds it -- a working one-node and
+    two-node spec, which keys have defaults, and the automation that schedules
+    one. I read that first if I am not already sure of the field names.
+
+    * **Each agent is an agent node**: a prompt node with ``"agent"`` in
+      ``tools_allowed`` (chapter ``code_nodes``). Its prompt is that agent's role.
+      One branch per agent lets each wake on its own. I grant only what it uses:
+      ``["agent", "read", "write", "edit"]`` for one that works in shared files.
+    * **Always on means automations** (``target="automation"``, create payload in
+      the resident text): ``interval_seconds`` or ``cron_expr`` for a heartbeat,
+      and ``event_type`` ``run_completed`` with ``event_filter``
+      ``{"branch_def_id"}`` so one agent finishing wakes another, or
+      ``pending_request_answered`` to resume when the person answers me. A code
+      node granted ``"enqueue_branch_run"`` wakes one of my branches now or not
+      before a time: ``invoke_mcp_action("enqueue_branch_run",
+      branch_def_id=..., inputs={...})``. Each automation holds its own lease, so
+      different agents run at the same time and none overlaps itself.
+    * **Shared state is files in /u** that the agents read and write: a board, a
+      queue, a log, one file per item. Every run reads them fresh, so the file IS
+      the coordination. Claim by writing a name into it, hand off by writing and
+      waking the next agent. Agents address each other through what they write.
+    * **Its screen is an app UI** (chapter ``interfaces``). I build it only from
+      the calls that chapter lists. What those calls cannot show, I do not fake
+      on screen or backfill with an outside service.
+    * **Sharing.** Publishing to the commons is the person's act, not a call I
+      have here, so I name exactly which workflows and which UI would become
+      public and let them publish it. Someone who wants another person's system
+      finds it with ``browse_commons``, copies each workflow with
+      ``remix_shape`` and the UI component into their own ``app_ui``, and
+      creates their own automations. Every copy is private and runs on its
+      owner's own compute.
+
 """
 
 #: Chapter name -> text, in the order the resident index names them.
 _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
+    "branches": _WRITE_GRAPH_BRANCHES_CHAPTER,
     "connections": _WRITE_GRAPH_CONNECTIONS_CHAPTER,
     "code_nodes": _WRITE_GRAPH_CODE_NODES_CHAPTER,
     "workspaces": _WRITE_GRAPH_WORKSPACES_CHAPTER,
     "delivering": _WRITE_GRAPH_DELIVERING_CHAPTER,
     "interfaces": _WRITE_GRAPH_INTERFACES_CHAPTER,
+    "systems": _WRITE_GRAPH_SYSTEMS_CHAPTER,
 }
 
 #: Every served handle that keeps chapters outside its description.
@@ -2355,15 +2689,15 @@ def write_graph(
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds or cron_expr. Runs never overlap per branch:
+    exactly one of interval_seconds or cron_expr. A cron_expr runs in the
+    owner's timezone and is never stated without it (``branches``).
+    Runs never overlap per branch:
     a short interval_seconds reruns as each run ends; runs count to usage
-    limits. overlap ``skip``/``cancel_previous`` drops the due run or stops
-    the running one. Or event_type ``run_completed`` (event_filter
+    limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
+    one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
     ``{"branch_def_id"}``) or ``pending_request_answered`` wakes it with
     ``inputs.event``.
-    To control an existing trigger, first read ``read_graph target="automation"``
-    (or ``target="automations"``), then pass its automation_id and current
-    expected_revision. Pause stops future triggers; resume reactivates the existing
+    Pause stops future triggers; resume reactivates the existing
     schedule; delete retires it and removes that automation's branch dependency.
     None cancels an already-running job. Read back the trigger and its last run
     before claiming work has stopped. These are existing owner-scoped controls;
@@ -2377,11 +2711,8 @@ def write_graph(
     - ``operation="patch"`` — edit one of YOUR OWN branches in place: pass its
       ``branch_id`` and a JSON array of edit ops in ``payload_json`` (add/remove
       edges + nodes, retune a node's prompt/source or its ``llm_policy`` model pin,
-      rename, retag, add skills). Workflow-wide choices use
-      ``{"op":"set_default_llm_policy","default_llm_policy":<policy object>}``
-      and ``{"op":"set_concurrency_budget","concurrency_budget":2}``.
-      Use explicit null to clear either choice; saved versions keep their choices.
-      These settings select among existing permissions and do not grant access. The
+      rename, retag, add skills). The ``branches`` chapter has the
+      workflow-wide ops. The
       edit is transactional (all-or-nothing). Publishing to the commons, changing
       visibility to public, and forking a foreign shape are NOT available here (they
       stay in the browser flow); a patched source_code node re-enters UNAPPROVED.
@@ -2396,15 +2727,16 @@ def write_graph(
     **Writing a file through an API that takes base64 (a contents API):
     NEVER generate base64 and NEVER re-type a file - both corrupt it (live
     2026-08-29: `422 not valid Base64`, then a file with 87 lines collapsed,
-    then a "repair" with 36 typos).** This one stays here rather than in the
-    handbook: skipping it produces a WRONG effectful call -- a corrupted file
-    written to somebody's repository -- not an absent one. The `connections`
-    chapter has the two-node shape that does it correctly.
+    then a "repair" with 36 typos).** The `connections` chapter has the
+    two-node shape that does it correctly.
 
     THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is five chapters I read when I need one,
+    every round of every turn -- it is chapters I read when I need one,
     exactly as I read a skill's SKILL.md when a request matches it:
 
+    * ``branches`` -- the minimal branch that builds, field by field: a working
+      one-node and two-node ``operation="create"`` payload, which keys have
+      defaults, every accepted edge spelling, and scheduling it every morning.
     * ``connections`` -- raising a credential ask (``target="pending_request"``),
       naming each field the way the site names it, looking the service up before
       asking rather than from memory, path patterns so one ask covers the job,
@@ -2417,9 +2749,12 @@ def write_graph(
       ``"sink": "workspace"`` packet every one of them carries, the two ways to
       get a workspace, and a repository checkout.
     * ``delivering`` -- other users' universes sending into one of my steps, and
-      mine sending into theirs: receivers, connecting an output, who sent what.
+      mine sending into theirs: receivers, connecting an output, who sent what,
+      filing a patch request to TinyAssets (no token).
     * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
       office plan, any interface they ask for: I write its HTML/CSS/JS myself.
+    * ``systems`` -- anything always on, several agents working together, or a
+      product for others: built HERE, never hosted elsewhere.
 
     I read one with ``read_graph target="handbook"
     query="write_graph.<chapter>"``; ``read_graph target="handbook"`` with no
@@ -2685,8 +3020,8 @@ def write_graph(
     try:
         try:
             payload = json.loads(payload_json or ("[]" if op == "patch" else "{}"))
-        except (json.JSONDecodeError, RecursionError):
-            return json.dumps({"error": "payload_json must be valid JSON."})
+        except (json.JSONDecodeError, RecursionError) as exc:
+            return json.dumps({"error": _payload_json_error(payload_json, exc)})
         if op == "delete":
             # DELETE an OWN private unpublished branch. delete_own_branch is
             # author-gated and refuses public/published shapes itself (the
@@ -3642,16 +3977,19 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     for key, value in payload_obj.items():
         if not isinstance(value, str):
             return json.dumps({"error": f"payload '{key}' must be a string."})
-    from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
+    from tinyassets.api.source_channel import person_only_sinks
 
     channel_type = (payload_obj.get("channel_type") or "").strip()
     # `sink` is checked too because `_approve_sink` reads `fields["sink"]` FIRST
     # and only falls back to `channel_type` -- refusing one spelling and not the
     # other would be a refusal with a documented way around it.
-    if act == "approve" and EXTERNAL_WRITE_SINK_WORKSPACE in {
-        channel_type,
-        (payload_obj.get("sink") or "").strip(),
-    }:
+    #
+    # The SET, not one sink name: `patch_intake` was added as a second
+    # rail-answered sink and a single-name check let the agent self-grant it
+    # (gpt-6-astra refute round on PR #4121, P1). `_approve_sink` refuses the
+    # same set at the write itself; this is the readable message.
+    named = {channel_type, (payload_obj.get("sink") or "").strip()}
+    if act == "approve" and named & person_only_sinks():
         # The `workspace` sink was admitted to the served build surface BECAUSE
         # its consents are typed per (op, connection, repo) and answered by the
         # owner on the request rail. This verb writes into the same
@@ -3666,10 +4004,11 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
         # person-only consent; the agent still cannot self-grant workspace access.
         return json.dumps({
             "error": (
-                "workspace consent cannot be self-approved: it is typed per "
-                "(operation, connection, repository) and is answered by the "
-                "universe's owner on the request rail. Ask for it there; this "
-                "verb approves outbound channel sinks only."
+                ", ".join(sorted(named & person_only_sinks()))
+                + " consent cannot be self-approved: it is answered by the "
+                "universe's owner on the request rail, where they read exactly "
+                "what it allows. Ask for it there; this verb approves outbound "
+                "channel sinks only."
             ),
         })
     if act == "approve" and channel_type == "source_code":

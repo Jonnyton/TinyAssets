@@ -260,8 +260,7 @@ def test_closing_an_open_receiver_stops_a_sender_who_already_connected(
     {"open_to_all": 1},
     {"discoverable": "false"},
     {"discoverable": 0},
-    {"sender_rate_limit": 0},
-    {"sender_rate_limit": store.MAX_SENDER_RATE_LIMIT + 1},
+    {"sender_rate_limit": -1},
     {"sender_rate_limit": True},
     {"sender_rate_limit": "60"},
     {"allowed_senders": ["*"]},
@@ -269,9 +268,10 @@ def test_closing_an_open_receiver_stops_a_sender_who_already_connected(
 def test_a_near_miss_exposure_value_is_refused_not_coerced(two_users, payload):
     """A truthy string must never open a private node, and "*" is still not a name.
 
-    `0` and `"false"` are refused too: an owner who meant to close something is told
-    their value was not understood, rather than having it read as the closed default
-    and appearing to have worked.
+    `"false"` is refused too: an owner who meant to close something is told their
+    value was not understood, rather than having it read as the closed default and
+    appearing to have worked. `sender_rate_limit` accepts 0 now -- that is its
+    default and means "no policy" -- so the near-miss for it is a negative number.
     """
     _, auth = two_users
     auth("receiver")
@@ -295,6 +295,67 @@ def test_an_omitted_exposure_field_means_keep_not_close(two_users):
     assert (kept["open_to_all"], kept["discoverable"]) == (True, True)
     assert kept["sender_rate_limit"] == 5
     assert opened["generation"] == 2 and kept["generation"] == 3
+
+
+def test_a_new_receiver_has_no_platform_sender_rate_limit(two_users):
+    """The platform default of 60/hour is gone, and there is no ceiling.
+
+    Founder, 2026-09-30: an account's only limits are cloud storage and concurrent
+    agent seats. A per-sender bound on someone's own receiver is THEIR policy, off
+    unless they set it. The old justification -- a stranger spending the owner's
+    run admission budget -- described a budget that no longer exists; a delivered
+    run queues for one of the owner's seats instead.
+    """
+    _, auth = two_users
+    auth("receiver")
+    created = _create(open_to_all=True)
+    assert created["sender_rate_limit"] == store.NO_SENDER_RATE_LIMIT == 0
+    assert not hasattr(store, "DEFAULT_SENDER_RATE_LIMIT")
+    assert not hasattr(store, "MAX_SENDER_RATE_LIMIT")
+
+    # No ceiling: a number far past the old 100_000 is accepted as-is.
+    raised = _create("update", receiver_id=created["receiver_id"],
+                     expected_generation=1, sender_rate_limit=10_000_000)
+    assert raised["sender_rate_limit"] == 10_000_000
+    # And it can be turned back off explicitly.
+    off = _create("update", receiver_id=created["receiver_id"],
+                  expected_generation=2, sender_rate_limit=0)
+    assert off["sender_rate_limit"] == 0
+
+
+def test_with_no_owner_policy_a_sender_is_never_rate_refused(two_users):
+    """Past the old 60/hour, every send is accepted on a default receiver."""
+    base, auth = two_users
+    auth("receiver")
+    receiver = _create(open_to_all=True)
+    assert receiver["sender_rate_limit"] == 0
+    auth("outsider")
+    link = _connect(receiver)
+    assert "link_id" in link, link
+    for i in range(65):
+        out = _send(link, occurrence=f"send-{i}")
+        assert "delivery_id" in out, out
+    with deliveries.transaction(base) as conn:
+        assert conn.execute("SELECT count(*) FROM graph_deliveries").fetchone()[0] == 65
+
+
+def test_an_owner_who_sets_a_policy_still_has_it_enforced(two_users):
+    """Removing the platform default must not remove the owner's own ability.
+
+    Mutation-check on the same gate: with a limit of 3 the fourth send is refused
+    by name, and the refusal says the limit belongs to the owner.
+    """
+    _, auth = two_users
+    auth("receiver")
+    receiver = _create(open_to_all=True, sender_rate_limit=3)
+    auth("outsider")
+    link = _connect(receiver)
+    assert "link_id" in link, link
+    for i in range(3):
+        assert "delivery_id" in _send(link, occurrence=f"ok-{i}")
+    refused = _send(link, occurrence="over")
+    assert refused.get("error"), refused
+    assert "receiver_sender_rate_limit_exceeded" in str(refused)
 
 
 # ---------------------------------------------------------------------------
@@ -640,16 +701,6 @@ def test_the_limit_is_usage_and_applies_to_an_enumerated_sender_too(two_users):
         assert conn.execute("SELECT count(*) FROM graph_deliveries").fetchone()[0] == 2
 
 
-def test_the_default_limit_applies_when_the_owner_says_nothing(two_users):
-    """A receiver an owner never tuned still has a bound, not unlimited traffic."""
-    _, auth = two_users
-    auth("receiver")
-    receiver = _create(open_to_all=True)
-    assert receiver["sender_rate_limit"] == store.DEFAULT_SENDER_RATE_LIMIT
-    assert store.DEFAULT_SENDER_RATE_LIMIT >= 1
-    assert store.MAX_SENDER_RATE_LIMIT > store.DEFAULT_SENDER_RATE_LIMIT
-
-
 # ---------------------------------------------------------------------------
 # Migration
 # ---------------------------------------------------------------------------
@@ -708,7 +759,9 @@ def test_a_receiver_table_that_predates_the_exposure_columns_migrates_closed(
     with ThreadPoolExecutor(max_workers=6) as pool:
         limits = [future.result() for future in
                   [pool.submit(open_and_read) for _ in range(6)]]
-    assert limits == [store.DEFAULT_SENDER_RATE_LIMIT] * 6
+    # A migrated receiver inherits no platform policy: the added column defaults
+    # to NO_SENDER_RATE_LIMIT, same as a freshly created one.
+    assert limits == [store.NO_SENDER_RATE_LIMIT] * 6
 
     # The write-lock precondition is CHECKED, not just documented -- the race that
     # violating it opens is timing-dependent, so the threaded assertion above is
@@ -729,7 +782,7 @@ def test_a_receiver_table_that_predates_the_exposure_columns_migrates_closed(
         row = conn.execute("SELECT * FROM graph_receivers").fetchone()
         assert row["open_to_all"] == 0
         assert row["discoverable"] == 0
-        assert row["sender_rate_limit"] == store.DEFAULT_SENDER_RATE_LIMIT
+        assert row["sender_rate_limit"] == store.NO_SENDER_RATE_LIMIT
         with pytest.raises(store.ReceiverAccessDenied):
             store._permitted_receiver(conn, "legacy-id", "outsider")
         with pytest.raises(store.ReceiverAccessDenied):

@@ -8,7 +8,8 @@ runs DB — NOT mocked ownership or spied enqueue. Each test reproduces a specif
   #2 dark flag is a boundary  — flag off => route absent AND no run is enqueued
   #3 revocation               — a revoked token triggers no run
   #4 replay                   — same/altered delivery fires once; a genuinely new body fires again
-  #5 execution back-pressure  — a universe at its in-flight cap is refused (503), enqueues nothing
+  #5 no execution refusal    — a busy universe is NEVER dropped; every delivery enqueues and
+                              queues for an agent seat (founder 2026-09-30)
   #6 header/credential leak    — only allowlisted headers reach durable run input; no token stored
   #7 uniform response          — every non-deliverable state answers 404 (no 500 usability leak)
 """
@@ -350,48 +351,65 @@ def test_concurrent_identical_deliveries_enqueue_exactly_one(env):
     assert len(_runs_for_universe(base, uid)) == 1          # exactly one real run across 8 racers
 
 
-# ── #5 Execution back-pressure (atomic reserve) ─────────────────────────────────
+# ── #5 No execution refusal: a busy universe queues ─────────────────────────────
 
-def test_a_universe_at_its_inflight_cap_is_refused(env, monkeypatch):
+def test_a_universe_with_many_runs_in_flight_is_still_delivered(env):
+    """The 503 "busy" drop is gone: delivery 4, 40 and 400 all enqueue.
+
+    ``_MAX_INFLIGHT_PER_UNIVERSE = 20`` used to answer 503 and throw the delivery
+    away once a universe had 20 inbound-triggered runs queued or running. Founder,
+    2026-09-30: over the seat count work WAITS and is never refused -- and a
+    webhook the sending channel will not retry is exactly the thing that must not
+    be dropped. The run is enqueued and waits for a seat.
+    """
     base, authenticate = env
     uid = _create_universe("founder-a", authenticate)
     _seed_branch(base, bid="b", author="founder-a")
     token = _mint(uid, "b")["token"]
 
-    # Fill the universe's in-flight reservation counter to the cap (real reservations).
-    monkeypatch.setattr(wh, "_MAX_INFLIGHT_PER_UNIVERSE", 3)
-    for _ in range(3):
+    # 30 real reservations held open, well past the old ceiling of 20.
+    for _ in range(30):
         rid, status = webhook_hooks.reserve_dispatch(
-            base, token=token, universe_id=uid, cap=3, ttl_s=wh._RESERVATION_TTL_S)
+            base, token=token, universe_id=uid, ttl_s=wh._RESERVATION_TTL_S)
         assert status == "ok" and rid
 
     status, payload = wh.handle_hook(token=token, body=b"{}", headers={}, base_path=base)
-    assert status == 503 and payload == {"error": "busy"}
-    assert _runs_for_universe(base, uid) == []              # nothing enqueued
+    assert status == 202 and payload.get("queued") is True
+    assert len(_runs_for_universe(base, uid)) == 1, "the run was enqueued, not dropped"
 
 
-def test_concurrent_requests_never_overshoot_the_inflight_cap(env, monkeypatch):
-    # N concurrent DISTINCT deliveries; the atomic reserve wired into handle_hook must never
-    # admit more than the cap at once. Enqueue is blocked so a reserved slot is never released
-    # during the burst (otherwise the trivial branch completes and correctly frees slots).
+def test_no_module_carries_an_inflight_or_per_universe_ceiling():
+    """Mutation guard. Re-adding either name is the regression."""
+    for name in ("_MAX_INFLIGHT_PER_UNIVERSE", "_UNIVERSE_RATE_MAX"):
+        assert not hasattr(wh, name), f"{name} came back"
+    import inspect
+
+    src = inspect.getsource(wh._handle_hook_inner)
+    assert '"busy"' not in src and "503" not in src, (
+        "the inbound path must have no saturation refusal"
+    )
+
+
+def test_a_burst_of_concurrent_deliveries_all_enqueue(env):
+    """N concurrent DISTINCT deliveries: every one is admitted, each exactly once.
+
+    This replaced a test asserting 6 of 10 got a 503. What still has to hold is
+    that the atomic reserve + dedupe never double-fires and never loses one.
+    """
     import threading
-    import time as _time
 
     base, authenticate = env
     uid = _create_universe("founder-a", authenticate)
     _seed_branch(base, bid="b", author="founder-a")
     token = _mint(uid, "b")["token"]
-    monkeypatch.setattr(wh, "_MAX_INFLIGHT_PER_UNIVERSE", 4)
 
-    gate = threading.Event()
     lock = threading.Lock()
-    enqueued = {"n": 0}
+    enqueued: list[str] = []
     statuses: list[int] = []
 
-    def _blocking_enqueue(b, *, universe_id, branch_def_id, inputs, principal_id):
+    def _recording_enqueue(b, *, universe_id, branch_def_id, inputs, principal_id):
         with lock:
-            enqueued["n"] += 1
-        gate.wait(timeout=5)               # hold the reserved slot until released below
+            enqueued.append(str(inputs["webhook"]["payload"]))
         return "run-x"
 
     # A worker thread starts with an EMPTY context: contextvars do not cross a
@@ -404,36 +422,22 @@ def test_concurrent_requests_never_overshoot_the_inflight_cap(env, monkeypatch):
 
     caller = _mw.current_identity_or_none()
 
-
     def _fire(i):
         _mw._current_identity.set(caller)
         st, _ = wh.handle_hook(token=token, body=f'{{"i":{i}}}'.encode(),
                                headers={}, base_path=base,
-                               enqueue=_blocking_enqueue)
+                               enqueue=_recording_enqueue)
         with lock:
             statuses.append(st)
 
     threads = [threading.Thread(target=_fire, args=(i,)) for i in range(10)]
     for t in threads:
         t.start()
-    # Wait for steady state: the 6 that lost the reserve returned 503; the 4 winners are
-    # blocked in enqueue holding their slots. Poll rather than sleep-guess.
-    deadline = _time.time() + 5
-    while _time.time() < deadline:
-        with lock:
-            settled = statuses.count(503)
-            reserved = enqueued["n"]
-        if settled == 6 and reserved == 4:
-            break
-        _time.sleep(0.01)
-    with lock:
-        assert enqueued["n"] == 4 and statuses.count(503) == 6, (
-            f"enqueued={enqueued['n']} statuses={sorted(statuses)}"
-        )
-    gate.set()
     for t in threads:
         t.join()
-    assert statuses.count(202) == 4
+
+    assert statuses == [202] * 10, f"a delivery was refused: {sorted(statuses)}"
+    assert len(enqueued) == 10 and len(set(enqueued)) == 10
 
 
 # ── #6 Header / credential persistence ───────────────────────────────────────────
@@ -505,7 +509,7 @@ def test_mcp_hooks_auth_carveout_exact_and_flag_gated(monkeypatch):
     ONLY when inbound is enabled and ONLY for a single-segment token — never a
     deeper path, never an empty token, never when inbound is off. The unguessable
     per-branch token + author-gated handler is the sole boundary (webhook Codex
-    review); this mirrors the /mcp/app carve-out with exact scoping."""
+    review); this mirrors the /app carve-out with exact scoping."""
     from tinyassets.auth.middleware import _auth_challenge_path
 
     monkeypatch.delenv("TINYASSETS_INBOUND_ENABLED", raising=False)

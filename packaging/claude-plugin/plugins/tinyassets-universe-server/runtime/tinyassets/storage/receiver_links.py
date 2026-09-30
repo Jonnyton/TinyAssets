@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS graph_receivers (
     revoked_at REAL,
     open_to_all INTEGER NOT NULL DEFAULT 0,
     discoverable INTEGER NOT NULL DEFAULT 0,
-    sender_rate_limit INTEGER NOT NULL DEFAULT 60
+    sender_rate_limit INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS graph_receivers_owner
     ON graph_receivers(owner_id, universe_id);
@@ -65,7 +65,7 @@ CREATE INDEX IF NOT EXISTS graph_output_links_owner
 _MIGRATIONS = (
     ("graph_receivers", "open_to_all", "INTEGER NOT NULL DEFAULT 0"),
     ("graph_receivers", "discoverable", "INTEGER NOT NULL DEFAULT 0"),
-    ("graph_receivers", "sender_rate_limit", "INTEGER NOT NULL DEFAULT 60"),
+    ("graph_receivers", "sender_rate_limit", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 #: Indexes over migrated columns, created after the migration rather than in
@@ -75,15 +75,21 @@ _MIGRATED_INDEXES = (
     "ON graph_receivers(discoverable, revoked_at)",
 )
 
-#: Accepted deliveries one sending principal may make to ONE receiver per rolling
-#: window, unless its owner says otherwise. A usage bound, never a structural cap:
-#: it limits traffic through a receiver, not how many receivers/nodes/fields exist.
-DEFAULT_SENDER_RATE_LIMIT = 60
-
-#: The owner may raise the limit to effectively-unlimited for a sender they trust,
-#: but never remove it: an open receiver with no bound lets one stranger consume
-#: the owner's whole run admission budget.
-MAX_SENDER_RATE_LIMIT = 100_000
+#: ``sender_rate_limit`` is the OWNER's OWN policy on their OWN receiver, and it
+#: is off by default. ``NO_SENDER_RATE_LIMIT`` (0) is the stored "no limit".
+#:
+#: The platform used to impose ``DEFAULT_SENDER_RATE_LIMIT = 60`` per sender per
+#: hour on every receiver, with a ``MAX_SENDER_RATE_LIMIT`` ceiling the owner
+#: could not lift. That made the platform the author of a policy about someone
+#: else's receiver, and it was justified by "a stranger could consume the owner's
+#: run admission budget" -- a budget that no longer exists. What bounds a
+#: delivered run now is the receiving universe's seats: over the seat count work
+#: WAITS, so a chatty sender queues rather than spending anything the owner
+#: cannot get back (founder, 2026-09-30).
+#:
+#: An owner who WANTS a per-sender bound sets any positive number, with no
+#: ceiling, and sets 0 to turn it off again.
+NO_SENDER_RATE_LIMIT = 0
 
 #: State fields the PLATFORM fills with the sender's authenticated identity, so an
 #: owner's downstream node can act on who sent a deliverable. Reserved: they are
@@ -265,8 +271,12 @@ def save_receiver(
     the first shape and was wrong. ``allowed_senders`` is a REQUIRED argument, so
     omitting it fails loudly; these are optional, so omitting them would silently
     change policy -- and silently reset a deliberately tightened ``sender_rate_limit``
-    back to the default, which LOOSENS a bound. Closing an exposure is an explicit
+    back to off, which LOOSENS a bound. Closing an exposure is an explicit
     ``false``. (Cross-family review, 2026-09-26.)
+
+    ``sender_rate_limit`` is the owner's own optional policy: any positive number
+    of accepted deliveries per sender per hour, with no ceiling, or
+    ``NO_SENDER_RATE_LIMIT`` (0) for none, which is the default on create.
     """
     for name in (owner_id, universe_id, branch_def_id):
         _name(name)
@@ -281,12 +291,14 @@ def save_receiver(
     for label, value in (("open_to_all", open_to_all), ("discoverable", discoverable)):
         if value is not None and type(value) is not bool:
             raise ValueError(f"{label} must be true or false")
+    # No upper bound: the owner decides how much traffic their own receiver takes.
+    # 0 is "no limit", which is also what a receiver is created with.
     if sender_rate_limit is not None and (
-        type(sender_rate_limit) is not int
-        or not 1 <= sender_rate_limit <= MAX_SENDER_RATE_LIMIT
+        type(sender_rate_limit) is not int or sender_rate_limit < 0
     ):
         raise ValueError(
-            f"sender_rate_limit must be a whole number from 1 to {MAX_SENDER_RATE_LIMIT}"
+            "sender_rate_limit must be a whole number: 0 for no limit, "
+            "or accepted deliveries per sender per hour"
         )
     with transaction(base_path) as conn:
         if receiver_id is None:
@@ -316,7 +328,7 @@ def save_receiver(
                     time.time(),
                     int(bool(open_to_all)),
                     int(bool(discoverable)),
-                    DEFAULT_SENDER_RATE_LIMIT if sender_rate_limit is None
+                    NO_SENDER_RATE_LIMIT if sender_rate_limit is None
                     else sender_rate_limit,
                 ),
             )
@@ -392,6 +404,30 @@ def discover_receivers(base_path, *, principal_id, query="", limit=25):
         or needle in row["owner_id"].lower()
     ]
     return {"receivers": [_receiver_view(row) for row in matched[:limit]]}
+
+
+def sender_is_permitted(base_path, *, receiver_id, sender_id) -> bool:
+    """Whether this principal could actually deliver here, right now.
+
+    The same ``_permitted_receiver`` question delivery asks, exposed so a caller
+    deciding whether a connection is worth offering does not have to reconstruct
+    it from a view. Reconstruction was wrong: the SENDER-facing
+    ``_receiver_view`` deliberately omits ``allowed_senders``, so
+    ``open_to_all or sender in allowed_senders`` reads False for a receiver that
+    names this sender explicitly -- refusing a sender who can in fact deliver.
+
+    Read-only and boolean by design: it discloses nothing about WHY, matching
+    the uniform ``receiver_or_link_not_found`` envelope. Never authority for an
+    acceptance -- that must call ``resolve_link_in_transaction`` in its own
+    transaction, as this module's header says.
+    """
+    _name(sender_id)
+    with transaction(base_path) as conn:
+        try:
+            _permitted_receiver(conn, receiver_id, sender_id)
+        except ReceiverAccessDenied:
+            return False
+    return True
 
 
 def revoke_receiver(base_path, *, receiver_id, owner_id, universe_id, expected_generation):

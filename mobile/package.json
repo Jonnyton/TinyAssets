@@ -2,7 +2,7 @@
   "name": "tinyassets-mobile",
   "version": "0.1.0",
   "private": true,
-  "description": "TinyAssets mobile app \u00e2\u20ac\u201d a Capacitor native shell (Android + iOS) over the live TinyAssets web app (https://tinyassets.io/mcp/app).",
+  "description": "TinyAssets mobile app \u00e2\u20ac\u201d a Capacitor native shell (Android + iOS) over the live TinyAssets web app (https://tinyassets.io/app).",
   "scripts": {
     "add:android": "cap add android",
     "sync": "cap sync android",

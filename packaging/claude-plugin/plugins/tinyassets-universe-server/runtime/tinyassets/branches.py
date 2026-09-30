@@ -710,27 +710,68 @@ def _reachable_from(
     return visited
 
 
-def _nodes_that_cannot_reach(
-    target: str,
+def _nodes_that_cannot_terminate(
     graph_nodes: set[str],
-    adjacency: dict[str, set[str]],
+    simple: dict[str, set[str]],
+    conditional: dict[str, set[str]],
 ) -> set[str]:
-    """Return graph nodes that have no path to ``target``.
+    """Graph nodes whose run cannot finish -- a cycle with no way out.
 
-    Used to detect cycles without an exit condition: if a node
-    cannot reach END, it is stuck in a cycle forever.
+    The rule follows LangGraph's own edge semantics, which differ between the
+    two edge kinds and are the whole reason a single merged "can it reach END"
+    walk gets this wrong:
+
+    * A **simple** edge is unconditional, and a node with several of them fans
+      out to **all** of them every superstep. So a node terminates only if
+      **every** simple successor terminates. One successor reaching END does
+      not save it -- the others still fire.
+    * A **conditional** edge is a router: exactly **one** target is taken. So
+      **any** conditional target that terminates is enough.
+    * A node with **no outgoing edge at all terminates**: END is implicit and
+      LangGraph halts the run after it.
+
+    Computed as a least fixpoint upward from the terminals, so a cycle -- which
+    can never be justified by anything outside itself -- is exactly what is left
+    over.
+
+    **Verified against the installed langgraph**, six shapes, `invoke` with
+    `recursion_limit=12` as the oracle::
+
+        single node, no edges         terminates      -> accepted
+        a -> b, b has no out-edge     terminates      -> accepted
+        a -> a, a -> tail             InvalidUpdate   -> a flagged
+        a <-> b, a -> tail            InvalidUpdate   -> a, b flagged
+        a <-> b, b -> END (simple)    GraphRecursion  -> a, b flagged
+        a -> b -> c -> b              GraphRecursion  -> flagged
+
+    History, and why both halves matter. The first two were REFUSED before
+    2026-09-30 ("Nodes in cycle without exit condition: n1" for a single node
+    with no edges -- live, round 19 of turn
+    ``c7d6279d4af74d798375d3f13780140e``), because a reverse walk from END alone
+    cannot see an implicit terminal. Crediting implicit terminals fixed that and,
+    on its own, admitted rows 3 and 4 (Codex refute, PR #4108): once ``tail``
+    terminates, a reverse walk credits everything that can reach it, including a
+    node that also loops on itself. Row 5 was accepted by the ORIGINAL code too
+    -- a pre-existing false accept, since two simple edges out of ``b`` both fire
+    and the loop never ends. Only the per-kind rule above matches the oracle on
+    all six.
     """
-    # Build reverse adjacency
-    reverse: dict[str, set[str]] = {}
-    for src, dsts in adjacency.items():
-        for dst in dsts:
-            reverse.setdefault(dst, set()).add(src)
-
-    # BFS backward from target
-    can_reach = _reachable_from(target, reverse)
-
-    # Nodes that cannot reach target
-    return graph_nodes - can_reach
+    terminating = {"END"} | {n for n in graph_nodes if not simple.get(n) and not conditional.get(n)}
+    changed = True
+    while changed:
+        changed = False
+        for node in graph_nodes - terminating:
+            simple_out = simple.get(node) or set()
+            cond_out = conditional.get(node) or set()
+            # Unconditional fan-out: every one of them fires.
+            if not simple_out <= terminating:
+                continue
+            # Router: one target is chosen, so one good exit suffices.
+            if cond_out and not (cond_out & terminating):
+                continue
+            terminating.add(node)
+            changed = True
+    return graph_nodes - terminating
 
 
 def _new_id() -> str:
@@ -1241,8 +1282,14 @@ class BranchDefinition:
                     f"node_def_id '{gn.node_def_id}'."
                 )
 
-        # Check edge references and build adjacency for reachability
+        # Check edge references and build adjacency for reachability.
+        # ``adjacency`` merges both kinds (reachability does not care which edge
+        # got you there); ``simple_out``/``cond_out`` keep them apart, because
+        # termination DOES care: a simple edge always fires, a conditional edge
+        # is one branch of a router. See ``_nodes_that_cannot_terminate``.
         adjacency: dict[str, set[str]] = {}
+        simple_out: dict[str, set[str]] = {}
+        cond_out: dict[str, set[str]] = {}
         for e in self.edges:
             if e.from_node not in all_node_ids:
                 errors.append(
@@ -1253,6 +1300,7 @@ class BranchDefinition:
                     f"Edge 'to' node '{e.to_node}' is not defined."
                 )
             adjacency.setdefault(e.from_node, set()).add(e.to_node)
+            simple_out.setdefault(e.from_node, set()).add(e.to_node)
 
         # Check conditional edge references
         for ce in self.conditional_edges:
@@ -1267,6 +1315,7 @@ class BranchDefinition:
                         f"'{ce.from_node}' is not defined."
                     )
                 adjacency.setdefault(ce.from_node, set()).add(target)
+                cond_out.setdefault(ce.from_node, set()).add(target)
 
         # Orphan detection: check all graph nodes are reachable from entry point
         if self.entry_point and seen_graph:
@@ -1280,16 +1329,19 @@ class BranchDefinition:
                         f"entry point '{self.entry_point}'."
                     )
 
-        # Cycle detection: check that every cycle has a path to END
+        # Cycle detection: check that every node's run can actually finish
         if seen_graph and not errors:
             # Only run if no structural errors so adjacency is valid
-            cycle_nodes = _nodes_that_cannot_reach(
-                "END", seen_graph, adjacency
+            cycle_nodes = _nodes_that_cannot_terminate(
+                seen_graph, simple_out, cond_out
             )
             if cycle_nodes:
                 errors.append(
                     f"Nodes in cycle without exit condition: "
-                    f"{', '.join(sorted(cycle_nodes))}."
+                    f"{', '.join(sorted(cycle_nodes))}. A plain edge always "
+                    "fires, so a loop needs a conditional edge with an 'END' "
+                    "target to leave it; a second plain edge to END does not "
+                    "end the loop, it runs alongside it."
                 )
 
         # Check state schema field names are unique (basic check on raw dicts)

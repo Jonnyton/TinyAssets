@@ -97,26 +97,26 @@ submissions SHALL remain tied to their original login and SHALL NOT replay.
 
 ### Requirement: The provider's sign-in page names the connection
 
-An installed acquisition preset MAY carry `authorize_params`: fixed, non-secret
-query parameters the provider documents for its authorize page (for example a
-key label), so the user sees what they are connecting rather than a generic
-"An app". They are installed data, not code or caller input. They MUST NOT set or
-override the flow's own `callback_url`, `code_challenge` or
-`code_challenge_method`; a malformed map (a non-string, empty, oversized, non-ASCII key,
-non-printable value, or more than 8 entries) MUST make the preset invalid.
+An installed acquisition preset MAY carry `authorize_params`: fixed, non-secret query parameters the provider documents for its authorize page (for example a key label), so the user sees what they are connecting rather than a generic "An app". They are installed data, not code or caller input. They MUST NOT set or override the flow's own `callback_url`, `code_challenge` or `code_challenge_method`; a malformed map (a non-string, empty, oversized, non-ASCII key, non-printable value, or more than 8 entries) MUST make the preset invalid.
 
 #### Scenario: A labelled preset starts sign-in
 - **WHEN** an owner starts sign-in for a preset whose `authorize_params` names the key
 - **THEN** the authorize URL carries that label alongside the flow's own parameters
 - **AND** a preset parameter that names a flow parameter never replaces the flow's value
 
-### Requirement: A connected universe's connect entry is optional, not outstanding
+### Requirement: A connected universe's connect entry is optional, and off the rail
 
-The rail's synthesized `sys_connect_llm` entry SHALL remain present once a
-universe is powered — it is the only route to adding a second source — but it
-SHALL report `status: optional` rather than `pending`, and it SHALL NOT be
-counted among the requests waiting on the user. The app SHALL render an optional
-entry collapsed and visually distinct from an ask, and the rail heading SHALL NOT
+The rail's synthesized `sys_connect_llm` entry SHALL remain present in the read
+once a universe is powered — every client reads it, and it is the only route to
+adding a second source — but it SHALL report `status: optional` rather than
+`pending`, and it SHALL NOT be counted among the requests waiting on the user.
+
+The app SHALL NOT render an optional entry as a rail card unless something opened
+it deliberately. "Waiting on you" is for work that blocks the user; a derived
+entry has nothing to accept, deny or clear, so a permanent card there is an item
+the user can neither act on nor remove (founder, 2026-09-30, on a free account
+whose only rail row was exactly that). The model picker SHALL be the route in,
+and closing the card SHALL take it off the rail again. The rail heading SHALL NOT
 claim work is waiting when every entry is optional. An entry with no `status`, or
 one the client does not recognize, SHALL be treated as a real ask.
 
@@ -125,11 +125,16 @@ The unpowered state is unchanged: its entry stays `pending` and `sticky`.
 #### Scenario: A powered universe has nothing waiting
 - **WHEN** the owner's universe has a current serving binding
 - **THEN** the connect entry is `status: optional`, `sticky: false`, still answerable, and no entry reports `pending`
-- **AND** the rail heading stops saying work is waiting, while the entry stays visible and openable
+- **AND** the rail heading stops saying work is waiting, and no card for it is on the rail
+
+#### Scenario: The model picker reaches the optional entry
+- **WHEN** the owner picks "Connect another model source…" from the model menu
+- **THEN** the menu closes and the connect card opens on the rail
+- **AND** closing that card removes it from the rail, with nothing left to dismiss
 
 #### Scenario: One real ask still asks
 - **WHEN** any non-optional request is in the rail beside the optional connect entry
-- **THEN** the heading asks again and only the connect entry renders as optional
+- **THEN** the heading asks again and only the real ask renders as a card
 
 #### Scenario: An unpowered universe still blocks
 - **WHEN** no serving binding exists
@@ -144,8 +149,9 @@ list the shapes the app completes itself. While the universe is unpowered,
 display name, key page and manual-key opt-in, read from installed data. The
 app SHALL present model setup only inside this request, and SHALL NOT render a
 full-page setup screen, vendor-specific cards or a raw credential-deposit
-select. A powered universe SHALL see the same request collapsed as an optional
-"Connect another LLM" with no primary sign-in.
+select. A powered universe's copy of the same request is the optional "Connect
+another LLM" with no primary sign-in, reached from the model picker rather than
+standing on the rail.
 
 #### Scenario: unpowered sign-in
 - **WHEN** an owner whose universe has no current serving connection signs in
@@ -154,7 +160,8 @@ select. A powered universe SHALL see the same request collapsed as an optional
 
 #### Scenario: powered universe
 - **WHEN** the owner arrives at a powered universe
-- **THEN** the connect request is collapsed, titled "Connect another LLM", and offers no first-power sign-in
+- **THEN** no connect card is on the rail, and opening it from the model picker
+  shows it titled "Connect another LLM" with no first-power sign-in
 
 #### Scenario: the universe becomes powered while its setup is open
 - **WHEN** setup succeeds in the request the owner had opened

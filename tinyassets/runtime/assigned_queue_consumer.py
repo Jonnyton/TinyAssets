@@ -516,10 +516,11 @@ class AssignedQueueConsumer:
             automation_lease_key,
             due_automations,
             lease_key_universe,
+            owed_since,
         )
 
         # Scanned even with no free slot: a due row whose agent is running must
-        # still get its policy -- a `skip` retired, a `cancel_previous` sent --
+        # still get its policy -- a `skip` spent, a `cancel_previous` sent --
         # rather than wait for a slot and then run (Codex refute 2026-09-28, P2).
         capacity, busy = self._reap_finished()
         started: set[str] = set()
@@ -551,7 +552,9 @@ class AssignedQueueConsumer:
                 continue
             ready: list[tuple[str, tuple[Any, str]]] = []
             seen: set[str] = set()
-            for automation, due_at in due:
+            # Longest-owed first, so neither a waiting one-shot wake nor a
+            # cadence is starved by the agent's other rows.
+            for automation, due_at in sorted(due, key=lambda item: owed_since(*item)):
                 key = automation_lease_key(automation)
                 if key in busy or self._agent_running_elsewhere(key, now):
                     self._apply_overlap(key, automation, due_at, now, refusal_store)
@@ -640,6 +643,7 @@ class AssignedQueueConsumer:
             OVERLAP_CANCEL_PREVIOUS,
             OVERLAP_SKIP,
             REFUSAL_KEY_PREFIX,
+            WAITING_FOR_PREVIOUS_RUN,
             AutomationStore,
             skip_overlapping,
         )
@@ -655,13 +659,13 @@ class AssignedQueueConsumer:
             logger.exception("attempt read failed automation=%s",
                              automation.automation_id)
             return
-        if policy == OVERLAP_SKIP:
-            skip_overlapping(
-                self.base_path, automation, due_at, now=now,
-                consumer_id=self.consumer_id,
-            )
+        # A one-shot wake under skip is not dropped: it waits like queue.
+        if policy == OVERLAP_SKIP and skip_overlapping(
+            self.base_path, automation, due_at, now=now,
+            consumer_id=self.consumer_id,
+        ) != WAITING_FOR_PREVIOUS_RUN:
             return
-        reason = "waiting_for_previous_run"
+        reason = WAITING_FOR_PREVIOUS_RUN
         if policy == OVERLAP_CANCEL_PREVIOUS:
             from tinyassets.runs import request_cancel
 
@@ -701,6 +705,7 @@ class AssignedQueueConsumer:
         from datetime import datetime as _dt
 
         from tinyassets.automations import (
+            REFUSAL_KEY_PREFIX,
             AutomationStore,
             automation_lease_key,
             run_due_automation,
@@ -735,6 +740,14 @@ class AssignedQueueConsumer:
                 universe_id,
                 reason,
             )
+            # And on each row, where its owner reads the automation.
+            for automation, _due_at in due:
+                self._record_reason(
+                    refusal_store,
+                    f"{REFUSAL_KEY_PREFIX}{automation.automation_id}",
+                    universe_id,
+                    reason,
+                )
             return
         stop_refresh = threading.Event()
         refresher = threading.Thread(

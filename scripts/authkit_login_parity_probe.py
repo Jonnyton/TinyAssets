@@ -15,7 +15,7 @@ the repository can see that setting. This probe reads it off the live page:
     python scripts/authkit_login_parity_probe.py
     python scripts/authkit_login_parity_probe.py --authkit https://<env>.authkit.app
 
-The AuthKit domain is discovered from the issuer the live ``/mcp/app`` page
+The AuthKit domain is discovered from the issuer the live ``/app`` page
 injects, so a WorkOS environment change is followed automatically.
 
 Each run loads the AuthKit page once, which opens (and abandons) one
@@ -34,7 +34,7 @@ import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_APP_URL = "https://tinyassets.io/mcp/app"
+DEFAULT_APP_URL = "https://tinyassets.io/app"
 _USER_AGENT = "tinyassets-authkit-login-parity-probe/1"
 
 _ISSUER = re.compile(r'"issuer"\s*:\s*"(https://[^"]+)"')

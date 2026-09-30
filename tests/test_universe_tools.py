@@ -120,9 +120,14 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     assert "--share-net" not in argv
     for flag in ("--unshare-all", "--clearenv", "--die-with-parent", "--new-session"):
         assert flag in argv, flag
-    # The universe root is READ-ONLY at /u; only agent-owned paths are rw.
-    assert (root, "/u") in _pairs(argv, "--ro-bind")
-    rw = dict((dest, src) for src, dest in _pairs(argv, "--bind"))
+    # /u is a tmpfs of binds, then made READ-ONLY; only agent-owned paths are rw.
+    tmpfs_at = argv.index("--tmpfs", argv.index("--tmpfs") + 1)
+    remount_at = argv.index("--remount-ro")
+    assert argv[tmpfs_at + 1] == "/u" and argv[remount_at + 1] == "/u"
+    assert all(tmpfs_at < argv.index(dest) < remount_at for _src, dest in (
+        _pairs(argv, "--bind-try") + _pairs(argv, "--ro-bind-try")))
+    assert root not in argv, "the root itself is never bound"
+    rw = dict((dest, src) for src, dest in _pairs(argv, "--bind-try"))
     assert rw["/u/identity.md"] == str(universe.resolve() / "identity.md")
     assert rw["/u/skills"] == str(universe.resolve() / "skills")
     assert "/u" not in rw
@@ -131,7 +136,8 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     for name in universe_tools.AGENT_HARNESS_DIRS:
         assert (universe / name).is_dir(), f"harness dir {name} is created first"
     # Nothing else of the data root, and no credential snapshot or install tree.
-    for source, _dest in _pairs(argv, "--bind") + _pairs(argv, "--ro-bind"):
+    for source, _dest in (_pairs(argv, "--bind") + _pairs(argv, "--ro-bind")
+                          + _pairs(argv, "--bind-try") + _pairs(argv, "--ro-bind-try")):
         assert source.startswith(root) or not source.startswith(str(tmp_path)), source
     env = {argv[i + 1]: argv[i + 2] for i, a in enumerate(argv) if a == "--setenv"}
     assert env["HOME"] == "/tmp" and set(env) == {"PATH", "HOME", "LANG", "TERM"}
@@ -139,16 +145,17 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     assert argv[argv.index("--") + 1:] == ["/bin/true"]
 
 
-def test_the_owners_credentials_and_authority_state_are_masked_from_the_agent(
+def test_the_owners_credentials_and_authority_state_are_absent_from_the_jail(
     tmp_path, monkeypatch,
 ):
     """The credential vault and the consent / usage databases live in the
-    universe ROOT, not .runtime. Every hidden root entry is masked: a dir by an
-    empty tmpfs, a file by a read-only /dev/null. None is bound read-write."""
+    universe ROOT, not .runtime. No hidden root entry is in the jail at all:
+    not bound, not masked. Visible platform files are read-only."""
     universe = _universe(tmp_path)
     (universe / ".credential-vault.json").write_text('{"k": "SECRET"}', encoding="utf-8")
     (universe / ".credentials").mkdir()
     (universe / ".effector_consents.db").write_bytes(b"sqlite")
+    (universe / ".effector_consents.db-shm").write_bytes(b"shm")
     (universe / ".usage_ledger.db").write_bytes(b"sqlite")
     (universe / ".runtime").mkdir()
     (universe / ".claude").mkdir()
@@ -157,27 +164,57 @@ def test_the_owners_credentials_and_authority_state_are_masked_from_the_agent(
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
 
-    masked_files = {dest for src, dest in _pairs(argv, "--ro-bind") if src == "/dev/null"}
-    assert {"/u/.credential-vault.json", "/u/.effector_consents.db",
-            "/u/.usage_ledger.db"} <= masked_files
-    tmpfs = {argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--tmpfs"}
-    assert {"/u/.credentials", "/u/.runtime", "/u/.claude"} <= tmpfs
-    rw = {dest for _src, dest in _pairs(argv, "--bind")}
-    # Control plane and platform state stay read-only (visible, never writable).
-    for name in ("soul.md", "config.yaml", ".credential-vault.json", ".effector_consents.db"):
-        assert f"/u/{name}" not in rw, name
+    for arg in argv:
+        assert "/." not in arg, f"a hidden root entry reached the jail argv: {arg}"
+    ro = {dest for _src, dest in _pairs(argv, "--ro-bind-try")}
+    assert {"/u/soul.md", "/u/config.yaml"} <= ro
+    rw = {dest for _src, dest in _pairs(argv, "--bind-try")}
+    assert not {"/u/soul.md", "/u/config.yaml"} & rw
 
 
-def test_a_symlinked_hidden_root_entry_is_refused_not_followed(tmp_path, monkeypatch):
+def test_a_symlinked_root_entry_is_never_bound(tmp_path, monkeypatch):
     universe = _universe(tmp_path)
     other = _universe(tmp_path, "u-bravo")
     try:
         (universe / ".runtime").symlink_to(other, target_is_directory=True)
+        (universe / "notes").symlink_to(other, target_is_directory=True)
+        (universe / "founder.md").symlink_to(other / "founder.md")
     except (OSError, NotImplementedError):
         pytest.skip("this host cannot create a symlink")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    with pytest.raises(UniverseToolError, match="is a link"):
-        universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    assert not any(str(other.resolve()) in arg for arg in argv)
+    assert "/u/notes" not in argv and "/u/founder.md" not in argv
+
+
+def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkeypatch):
+    """The daemon owns the folder concurrently: a SQLite sidecar or a temp file
+    that exists at the scan may be gone when bubblewrap runs. Every bind is a
+    ``-try``, and the view still validates when its source has vanished."""
+    universe = _universe(tmp_path)
+    (universe / "story.db-shm").write_bytes(b"shm")
+    view = universe_tools._universe_view(universe.resolve())
+    (universe / "story.db-shm").unlink()
+    argv = jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
+    assert (str(universe.resolve() / "story.db-shm"), "/u/story.db-shm") in _pairs(
+        argv, "--ro-bind-try")
+    # Replaced by a link after the scan: the argv is refused, not bound to it.
+    other = _universe(tmp_path, "u-bravo")
+    (universe / "wiki").mkdir()
+    view = universe_tools._universe_view(universe.resolve())
+    (universe / "wiki").rmdir()
+    try:
+        (universe / "wiki").symlink_to(other, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        with pytest.raises(ProviderConfinementError, match="inside its own universe"):
+            jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
+    with pytest.raises(ProviderConfinementError, match="does not exist"):
+        jail_argv(["/bin/true"], provider_jail.UniverseView(
+            universe_dir=universe, mounts=(provider_jail.JailMount(
+                "ro-bind", "/u/gone", universe / "gone"),),
+        ), bwrap_path="/usr/bin/bwrap")
 
 
 def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monkeypatch):
@@ -790,3 +827,102 @@ def test_agent_owned_paths_are_pinned():
     assert universe_tools.AGENT_HARNESS_DIRS == (
         "skills", "prompts", "extensions", "workflows", "bin", "notes",
     )
+
+
+# ---------------------------------------------------------------------------
+# Host slots: a busy host WAITS, and there is no per-universe count
+# ---------------------------------------------------------------------------
+
+
+def test_there_is_no_per_universe_tool_slot_count():
+    """``_PER_UNIVERSE_SLOTS = 2`` and the 30s refusal deadline are gone.
+
+    They were a second, account-shaped ceiling stacked on the host floor: a
+    universe was told it could not run a third tool even on an otherwise idle
+    host, and a busy host refused after thirty seconds. An account has exactly
+    two limits, cloud bytes and concurrent agent seats (founder, 2026-09-30), and
+    over the concurrency line work WAITS.
+    """
+    import inspect
+
+    assert not hasattr(universe_tools, "_PER_UNIVERSE_SLOTS")
+    assert not hasattr(universe_tools, "_SLOT_WAIT_SECONDS")
+    # The host floor stays -- it is what keeps one universe from being an outage
+    # for the others on a 1 vCPU box.
+    assert universe_tools._HOST_SLOTS == 4
+
+    # Read the CODE, not the prose: the docstring and comments explain what was
+    # removed, so parse the function and unparse it without its docstring.
+    import ast
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(universe_tools._slot)))
+    fn = tree.body[0]
+    if ast.get_docstring(fn) is not None:
+        fn.body = fn.body[1:]
+    body = ast.unparse(fn)
+    assert "deadline" not in body, "a deadline here is a refusal wearing a timeout"
+    assert "raise" not in body, "_slot must never refuse for the host being busy"
+    assert "UniverseToolError" not in body
+
+
+@posix_only
+def test_a_full_host_makes_the_next_call_wait_and_then_run(tmp_path, monkeypatch):
+    """Every host slot held: the next caller queues, is told it is waiting, and runs.
+
+    Drives the real ``_slot`` with real ``flock`` files. The held slots are
+    released after 0.25 s, so what this proves is the WAIT resolving into a run
+    and ``on_wait`` firing.
+
+    It does NOT by itself prove there is no deadline -- a restored 30-second one
+    would pass this too (Codex refute, 2026-09-30). What catches that is
+    ``test_there_is_no_per_universe_tool_slot_count``, which unparses ``_slot``
+    and refuses any ``deadline``, ``raise`` or ``UniverseToolError`` in its body.
+    Asserted here as well so the pair cannot drift apart.
+    """
+    import ast as _ast
+    import inspect as _inspect
+    import textwrap as _textwrap
+
+    _fn = _ast.parse(
+        _textwrap.dedent(_inspect.getsource(universe_tools._slot))
+    ).body[0]
+    if _ast.get_docstring(_fn) is not None:
+        _fn.body = _fn.body[1:]
+    assert "deadline" not in _ast.unparse(_fn)
+    import fcntl
+    import threading
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(universe_tools, "_HOST_SLOTS", 2)
+    monkeypatch.setattr(universe_tools, "_SLOT_POLL_SECONDS", 0.01)
+    universe = _universe(tmp_path)
+
+    directory = universe_tools._slot_dir()
+    held = []
+    for i in range(2):
+        fd = os.open(directory / f"host-{i}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held.append(fd)
+
+    waits: list[float] = []
+    released = threading.Event()
+
+    def _release():
+        for fd in held:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        released.set()
+
+    timer = threading.Timer(0.25, _release)
+    timer.start()
+    try:
+        with universe_tools._slot(universe, on_wait=waits.append):
+            assert released.is_set(), "the call ran only after a slot came free"
+    finally:
+        timer.cancel()
+        if not released.is_set():
+            _release()
+
+    assert len(waits) == 1, "a blocked caller is told exactly once that it is waiting"
+    assert waits[0] >= 0.0

@@ -124,7 +124,7 @@ pytestmark = pytest.mark.skipif(_NODE is None, reason="node is not installed")
 def test_the_bound_engine_is_tried_first_and_the_heal_runs_once_per_page():
     out = _run("bound_first_then_serving")
     assert [p["body"] for p in out["posts"]] == [{"service": "codex"}]
-    assert all(p["url"] == "/mcp/app/serving/bind" for p in out["posts"])
+    assert all(p["url"] == "/app/serving/bind" for p in out["posts"])
     assert out["attempted"] is True
     [(role, text)] = out["notes"]
     assert role == "system" and "OpenAI" in text

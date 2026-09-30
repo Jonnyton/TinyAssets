@@ -59,6 +59,14 @@ import json
 import logging
 import re
 from typing import Any
+from urllib.parse import urlsplit
+
+from tinyassets.credential_shape import looks_like_credential
+
+#: One definition, imported rather than repeated. ``tinyassets.patch_intake``
+#: pulls in nothing from ``tinyassets`` at import time, so this import
+#: cannot cycle.
+from tinyassets.patch_intake import ACTION_TYPE as PATCH_INTAKE_ACTION
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +123,22 @@ _SECRET_FIELD_TYPES = _DEPOSIT_TYPES | {"rotate_http"}
 #: A plain https link, no userinfo (`https://user:pw@host`), bounded.
 _MAX_URL_CHARS = 300
 _SAFE_URL_RE = re.compile(r"^https://[^\s/@]+(?:/[^\s]*)?$")
+#: A dotted-quad or bracketed-v6 host. See :func:`_unusable_field_url`.
+_IP_HOST_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+#: This platform's own hosts. A field link to one of these is checked against
+#: the pages the site serves, because an invented first-party page reads as
+#: platform help (live 2026-09-30: an agent offered ``/settings``, a 404).
+_FIRST_PARTY_HOSTS = frozenset({"tinyassets.io", "www.tinyassets.io"})
+#: Every route ``WebSite/site-react/app`` serves, plus the app itself. Kept in
+#: sync by ``tests/test_request_card_layout_and_links.py``, which reads that
+#: directory and fails when a page is added or removed without this list.
+_FIRST_PARTY_PATHS = frozenset({
+    "", "/", "/account", "/alliance", "/build", "/catalog", "/commons",
+    "/connect", "/contribute", "/developers", "/economy", "/fine-print",
+    "/goal", "/goals", "/graph", "/host", "/legal", "/loop", "/notebook",
+    "/patch-loop", "/patterns", "/proof", "/soul", "/start", "/status",
+    "/wiki", "/mcp", "/app",
+})
 _MAX_ANSWER_CHARS = 2000
 #: Every verb the egress layer knows. The owner reads each one on the tab and
 #: decides; a cap below the full set only made the agent raise a second ask.
@@ -125,9 +149,12 @@ _MAX_REQUEST_ENDPOINTS = 40
 #: Git scopes one ask may carry.
 _MAX_REQUEST_GIT_SCOPES = 40
 
-#: An unbroken run this long is a credential, not prose. Feedback is free text
-#: stored in the clear, so it gets the same screen the resolver applies.
-_ENTROPY_RUN_RE = re.compile(r"[A-Za-z0-9_\-]{16,}")
+#: Feedback, reasons and notes are free text stored in the clear, so they get
+#: the same screen the resolver applies -- a SHAPE screen, not a word screen.
+#: What was here (``[A-Za-z0-9_\-]{16,}``) had ``-`` inside its class, so
+#: ``self-authenticating`` was a "16+ character unbroken run" and a universe was
+#: refused twice, live 2026-09-30, for explaining in plain words that there was
+#: no token to paste. See :mod:`tinyassets.credential_shape`.
 
 
 def _payload(value: Any) -> dict[str, Any]:
@@ -183,6 +210,7 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         _DEPOSITABLE_AUTH_SCHEMES,
         _DESTINATION_RE,
     )
+    from tinyassets.storage.outbound_connections import _URL_SECRET_SCHEME
 
     action = raw if isinstance(raw, dict) else {"type": "answer"}
     kind = str(action.get("type") or "answer").strip().lower()
@@ -194,6 +222,8 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         return validate_action({**action, "type": kind})
     if kind == "grant_workspace_consent":
         return _validated_workspace_consent(action)
+    if kind == PATCH_INTAKE_ACTION:
+        return _validated_patch_intake(action)
     if kind == "extend_http":
         # Widening a grant the user already funded. No secret is involved: the
         # vault keeps the one they deposited, and answering this request IS the
@@ -283,8 +313,8 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     if kind != "connect_http":
         raise ValueError(
             "action type must be answer, connect, connect_http, extend_http, "
-            "rotate_http, remove_http, grant_workspace_consent or "
-            "bind_model_access"
+            "rotate_http, remove_http, grant_workspace_consent, "
+            f"{PATCH_INTAKE_ACTION} or bind_model_access"
         )
 
     destination = str(action.get("destination") or "").strip().lower()
@@ -303,6 +333,16 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     # paths is still least privilege -- it is not a widening, and the user sees
     # every line before pasting once.
     if _validated_access(action) == "full":
+        if scheme == _URL_SECRET_SCHEME:
+            # A capability URL's authority IS one declared path. `full` admits
+            # every other path on the host once the host matches, so the
+            # reserved placeholder would never be enforced and the secret would
+            # have nowhere to live. Refused at the ask so the owner never reads
+            # a tab the deposit will not honour.
+            raise ValueError(
+                f'a {_URL_SECRET_SCHEME} ask names the endpoint the link points '
+                'at, so it cannot be "full"'
+            )
         # A new key has no stored hosts yet, so a full deposit names the
         # channel's host(s). One GET endpoint per host is recorded so the
         # existing host derivation and the SSRF host pin have something to read;
@@ -349,6 +389,45 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         "access": "exact",
         **git_host,
     }
+
+
+def _validated_patch_intake(action: dict[str, Any]) -> dict[str, Any]:
+    """The platform's own "may I report gaps to <intake>?" ask.
+
+    It carries a receiver id and a display label and NOTHING else -- no
+    endpoints, no scheme, no secret -- because the connection it creates is one
+    grant naming one receiver. An extra key is refused rather than dropped: the
+    tab's promise is what gets granted, so a field nobody validated must not
+    ride along on the row the answer executes.
+
+    The receiver id is validated for SHAPE here. Whether it is the intake this
+    deployment offers is re-checked at answer time against the configuration,
+    because a stored row outlives the value it was created under.
+    """
+    from tinyassets.patch_intake import (
+        _MAX_LABEL_CHARS,
+        _RECEIVER_ID_RE,
+        DEFAULT_LABEL,
+    )
+
+    receiver_id = str(action.get("receiver_id") or "").strip()
+    if not _RECEIVER_ID_RE.match(receiver_id):
+        raise ValueError(
+            "receiver_id must be 8-128 characters of [A-Za-z0-9._:-] naming one "
+            "receiver"
+        )
+    label = str(action.get("label") or DEFAULT_LABEL).strip()
+    if not label or len(label) > _MAX_LABEL_CHARS or not label.isprintable():
+        raise ValueError(
+            f"label must be 1-{_MAX_LABEL_CHARS} printable characters on one line"
+        )
+    extra = sorted(set(action) - {"type", "receiver_id", "label"})
+    if extra:
+        raise ValueError(
+            f"a {PATCH_INTAKE_ACTION} ask carries a receiver_id and a label and "
+            "nothing else (got " + ", ".join(repr(name) for name in extra) + ")"
+        )
+    return {"type": PATCH_INTAKE_ACTION, "receiver_id": receiver_id, "label": label}
 
 
 def _validated_git_host(action: dict[str, Any]) -> dict[str, str]:
@@ -600,7 +679,10 @@ def _validated_workspace_consent(action: dict[str, Any]) -> dict[str, Any]:
 
 def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
     """Shared endpoint validation for connect_http and extend_http."""
-    from tinyassets.api.http_connection import _parse_allowed_endpoints
+    from tinyassets.api.http_connection import (
+        _parse_allowed_endpoints,
+        embedded_secret_refusal,
+    )
 
     raw_endpoints = action.get("endpoints")
     if not isinstance(raw_endpoints, list) or not raw_endpoints:
@@ -645,6 +727,14 @@ def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
         if "redirect_mode" in raw:
             endpoint["redirect_mode"] = raw["redirect_mode"]
         endpoints.append(endpoint)
+    # The hardcoded-secret refusal at the ASK door, which is the door the agent
+    # meets first. Raising it here means the correction reaches the agent while
+    # it is still composing the card, not after a person has read it: live
+    # 2026-09-30 a universe put a friend's webhook secret into path_template and
+    # nothing in the chain said a word.
+    hardcoded = embedded_secret_refusal(endpoints)
+    if hardcoded is not None:
+        raise ValueError(str(hardcoded["detail"]))
     parsed = _parse_allowed_endpoints(endpoints)   # same validation as deposit
     if any(endpoint.redirect_mode == "public_https_get" for endpoint in parsed):
         from tinyassets.api.http_connection import _canonical_policy
@@ -658,13 +748,59 @@ def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
     return endpoints
 
 
-def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
+def _unusable_field_url(url: str) -> str:
+    """Why this agent-composed field link cannot be offered, or ``""``.
+
+    Cheap, local checks only -- no fetch of an arbitrary third-party URL from
+    this process. Two classes, both live findings on 2026-09-30:
+
+    * a **raw address**. "Get it from 203.0.113.7" tells the owner nothing about
+      who they are about to trust while they hold a secret.
+    * an **invented first-party page**. The agent rendered "Get it from
+      tinyassets.io" over ``https://tinyassets.io/settings``, a path that does
+      not exist -- a dead end, and, styled as though the platform said it, a
+      phishing shape. First-party links are allow-listed against the pages the
+      site actually serves; everything else is the agent's own suggestion and is
+      labelled as such in the app.
+    """
+    host = urlsplit(url).hostname or ""
+    host = host.strip().strip(".").lower()
+    if not host:
+        return "url must name a host"
+    if _IP_HOST_RE.match(host) or ":" in host:
+        return (
+            "url must name a hostname, not a raw address -- the owner has to be "
+            "able to see whose page they are opening"
+        )
+    if host in _FIRST_PARTY_HOSTS:
+        path = "/" + urlsplit(url).path.strip("/")
+        if path.rstrip("/").lower() not in _FIRST_PARTY_PATHS:
+            return (
+                f"there is no {path} page on this site; a credential for another "
+                "service is not found here, so link that service's own page (or "
+                "leave url out and say where to look in 'help')"
+            )
+    return ""
+
+
+def _validated_fields(
+    raw: Any, action: dict[str, Any], *, has_items: bool = False,
+) -> list[dict[str, Any]]:
+    from tinyassets.api.http_connection import URL_SECRET_FIELD_NAME
+    from tinyassets.storage.outbound_connections import _URL_SECRET_SCHEME
     from tinyassets.storage.pending_requests import FIELD_TYPES
 
     fields = raw if isinstance(raw, list) else []
     if action["type"] == "bind_model_access":
         if raw not in (None, []):
             raise ValueError("model access is a fieldless owner confirmation")
+        return []
+    if not fields and has_items:
+        # The answerable parts ARE the items, each with its own fields, so an
+        # itemised note has nothing to type at the top level. Without this an
+        # ask with items and no top-level fields is refused outright ("a
+        # request needs at least one field"), which is every multi-item
+        # request (verified against the real handler, 2026-09-30).
         return []
     if not fields and _has_sign_in(action):
         # Signing in IS the answer; key fields, when present, are the fallback.
@@ -689,7 +825,8 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                 "'help' saying where to find it and a 'url' to that page) -- "
                 "not one unlabelled box for the owner to work out"
             )
-        if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent"):
+        if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent",
+                              PATCH_INTAKE_ACTION):
             # Nothing to type. For extend_http the key is already in the vault
             # and for remove_http it is on its way out; either way this is a
             # yes/no, and a paste box on a removal would be nonsense.
@@ -758,6 +895,9 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                     "(no credentials in it, at most "
                     f"{_MAX_URL_CHARS} chars)"
                 )
+            unusable = _unusable_field_url(url)
+            if unusable:
+                raise ValueError(f"field {name!r}: {unusable}")
             entry["url"] = url
         if ftype == "choice":
             options = [str(o).strip()[:60] for o in (field.get("options") or []) if str(o).strip()]
@@ -791,6 +931,20 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         # authenticate, failing at the far end with nothing to point at.
         secrets = [f for f in out if f["type"] == "secret"]
         scheme = str(action.get("auth_scheme") or "bearer").strip().lower()
+        if scheme == _URL_SECRET_SCHEME:
+            # ONE box, and it holds the WHOLE LINK. The live failure asked for
+            # "the code at the end of the link", which makes a person parse a
+            # URL and then sent that value as a header. The platform parses it
+            # (`extract_url_secret`), so the field must be the link -- and it is
+            # named the way the deposit reads it, like `oauth1a`'s four.
+            if len(secrets) != 1 or secrets[0]["name"] != URL_SECRET_FIELD_NAME:
+                raise ValueError(
+                    f"a {_URL_SECRET_SCHEME} card has exactly ONE secret field, "
+                    f"named {URL_SECRET_FIELD_NAME!r}, and the owner pastes the "
+                    "WHOLE link into it -- label it the way the service words it "
+                    '("Webhook URL"), and never ask them to pick the code out '
+                    "of it themselves"
+                )
         if len(secrets) > 1 and scheme not in _MULTI_VALUE_AUTH_SCHEMES:
             raise ValueError(
                 f"auth_scheme {scheme!r} takes a single value, so ask for one "
@@ -821,6 +975,107 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                 f"this connection stores a {scheme!r} credential, so the card "
                 "needs one secret field per value, named " + ", ".join(expected)
             )
+    return out
+
+
+def _notify_owner(uid: str, row: dict[str, Any]) -> None:
+    """Tell the owner's devices about a request that was just STORED.
+
+    Only a genuinely new pending row reaches here: a deduplicated ask returns
+    the existing row and a settled one returns a decision, and neither is a
+    new thing to be told about. The actor is the one ``_owner_gate`` already
+    verified, and dispatch re-checks it against the universe's admin owner
+    rather than trusting it.
+
+    Best effort by construction. Delivery is additive to a request that is
+    already durable and already in the rail, so nothing here may fail, delay
+    or alter the ask that caused it.
+    """
+    try:
+        from tinyassets.api import permissions
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.owner_notifications import notify_request_raised
+
+        notify_request_raised(
+            _base_path(), universe_id=uid,
+            raised_by=permissions.current_actor_id(), request=row,
+        )
+    except Exception:  # noqa: BLE001 - the ask is already stored; telling is a bonus
+        logger.warning(
+            "pending_requests: could not notify the owner of %s",
+            row.get("request_id"), exc_info=True,
+        )
+
+
+_ITEM_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+_MAX_ITEM_TITLE_CHARS = 120
+_MAX_ITEM_BODY_CHARS = 400
+
+
+def _validated_items(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
+    """The request's answerable items, or ValueError naming what is wrong.
+
+    One request that holds several things -- a note listing today's tasks --
+    instead of one tab per thing, which is what destroyed the grouping that
+    made it a note. Each item is answerable on its own.
+
+    ``item_id`` is the AGENT's, kept verbatim, because the universe has to
+    correlate an answer back to the thing it planned without re-reading the
+    request to learn what it just asked. It is a handle and never authority:
+    every read and write re-derives the principal, exactly as ``request_id``
+    does.
+
+    Items are only available on an ``answer`` action, and an item's fields go
+    through the same validator the request's own do -- which is what refuses a
+    ``secret`` field inside one. That is THE boundary from this module's
+    docstring, one level down: an item can never be the thing that deposits a
+    credential or widens a grant, so "compose them however you like" stays
+    safe at item granularity too.
+    """
+    from tinyassets.storage.pending_requests import MAX_ITEMS
+
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("items must be a list of objects")
+    if str(action.get("type") or "answer") != "answer":
+        raise ValueError(
+            "items are only available on an 'answer' request; an action that "
+            "deposits or changes a grant is one decision, not a checklist"
+        )
+    if len(raw) > MAX_ITEMS:
+        raise ValueError(f"a request may have at most {MAX_ITEMS} items")
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each item must be an object")
+        item_id = str(item.get("item_id") or "").strip()
+        if not _ITEM_ID_RE.fullmatch(item_id):
+            raise ValueError(
+                "each item needs an item_id of 1-64 lowercase letters, digits, "
+                "'_', '.' or '-', starting with a letter or digit -- you choose "
+                f"it and you read it back; got {item_id!r}"
+            )
+        if any(existing["item_id"] == item_id for existing in out):
+            # Duplicate ids would make one answer ambiguous, and the answer
+            # table's primary key would silently drop the second.
+            raise ValueError(f"item ids must be unique within a request: {item_id!r}")
+        title = str(item.get("title") or "").strip()[:_MAX_ITEM_TITLE_CHARS]
+        if not title:
+            raise ValueError(f"item {item_id!r} needs a title")
+        entry: dict[str, Any] = {"item_id": item_id, "title": title}
+        body = str(item.get("body") or "").strip()[:_MAX_ITEM_BODY_CHARS]
+        if body:
+            entry["body"] = body
+        if item.get("fields"):
+            try:
+                entry["fields"] = _validated_fields(item["fields"], {"type": "answer"})
+            except ValueError as exc:
+                raise ValueError(f"item {item_id!r}: {exc}") from exc
+        else:
+            # Nothing to type: an item the owner accepts, denies or replies to.
+            entry["fields"] = []
+        out.append(entry)
     return out
 
 
@@ -872,7 +1127,13 @@ def request_from_user(
             return verdict
         action = {**action, **verdict}
     try:
-        fields = _validated_fields(document.get("fields"), action)
+        items = _validated_items(document.get("items"), action)
+    except ValueError as exc:
+        return _bad(str(exc))
+    try:
+        fields = _validated_fields(
+            document.get("fields"), action, has_items=bool(items),
+        )
     except ValueError as exc:
         return _refused(exc)
 
@@ -950,12 +1211,26 @@ def request_from_user(
     # this?" about a harmless draft also silenced "Approve this?" about deleting
     # production data — the `answer` action normalizes to a bare {"type":"answer"},
     # so those two asks shared a key (Codex 2026-08-27, reproduced).
-    dedupe = json.dumps(
-        [kind, title, body, fields, action], sort_keys=True, separators=(",", ":")
-    )
+    #
+    # ITEMS are in the key for the same reason, and it is load-bearing: a daily
+    # note reuses its kind, title and body every day, so without the items
+    # today's note would dedupe onto yesterday's pending row -- no new request,
+    # and therefore no notification.
+    #
+    # An ITEMLESS request keeps the original FIVE-element key. Appending an
+    # empty list to every key changed the identity of every request that
+    # already exists: a live pending row stops deduplicating, so the agent
+    # opens a second identical tab, and every standing "don't ask me this
+    # again" -- looked up by EXACT key in `create_request` -- stops matching,
+    # so a question the owner already settled is asked again (gpt-6-astra,
+    # 2026-09-29). Items only extend the identity of requests that have items.
+    identity = [kind, title, body, fields, action]
+    if items:
+        identity.append(items)
+    dedupe = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
-        action=action, dedupe_key=dedupe, origin=origin,
+        action=action, dedupe_key=dedupe, origin=origin, items=items,
     )
     if row is None:
         return {"error": "request_storage_unavailable"}
@@ -977,6 +1252,13 @@ def request_from_user(
                 "decision rather than asking again."
             ),
         }
+    # `created` describes THIS call, not the request, so it is stripped before
+    # the agent sees the row -- and it is the one thing that separates "a
+    # request was raised" from "the one you raised before is still waiting".
+    # Only the first is something to put on the owner's phone.
+    created = row.pop("created", True)
+    if created:
+        _notify_owner(_uid, row)
     return {**row, "grant_sentence": _grant_sentence(row), **sign_in}
 
 
@@ -1301,6 +1583,8 @@ def _grants_git(action: dict[str, Any]) -> bool:
 
 def _grant_sentence(row: dict[str, Any]) -> str:
     """For a credential ask, the exact grant in one line. Empty otherwise."""
+    from tinyassets.storage.outbound_connections import _URL_SECRET_SCHEME
+
     action = row.get("action") or {}
     if action.get("type") == "bind_model_access":
         from tinyassets.api.model_access_requests import grant_sentence
@@ -1329,6 +1613,19 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             "Let this universe " + ", ".join(operations) + " "
             f"{action.get('repo')} on {host} with the key you already "
             "gave. Nothing to paste; this is the yes."
+        )
+    if action.get("type") == PATCH_INTAKE_ACTION:
+        label = str(action.get("label") or "").strip()
+        if not label:
+            return (
+                "This request does not say which intake it would connect to, so "
+                "it cannot be granted. Ask again."
+            )
+        return (
+            f"Let this universe send problem reports to {label} -- what it was "
+            "trying to do and what was missing. Only that one place, only what it "
+            "sends, and nothing else of yours. Nothing to paste; this is the yes, "
+            "and you can take it back."
         )
     if action.get("type") == "connect" and "setup" in action:
         # The synthesized setup entry grants nothing itself; each shape it
@@ -1377,6 +1674,21 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     # (observed live, 2026-08-28).
     where = f' as "{action.get("destination")}"' if action.get("destination") else ""
     git_to = _git_host_clause(action.get("git_host"))
+    if str(action.get("auth_scheme") or "").strip().lower() == _URL_SECRET_SCHEME:
+        # The owner is pasting a whole link, so say what happens to it. The
+        # `{secret}` in the endpoint line is the platform's placeholder, not a
+        # thing they have to fill in, and without this the tab reads like a
+        # template they are supposed to complete.
+        kept = (
+            " The code in the link is kept in your vault and put back into the "
+            "address only as the call is made; this request stores the rest of "
+            "the link, never the code."
+        )
+        joined = "; ".join(lines)
+        return (
+            f"This link{where} will be able to {joined} - nothing else."
+            f"{kept}{git_to}"
+        )
     if len(lines) == 1:
         return f"This key{where} will be able to {lines[0]} - nothing else.{git_to}"
     # "reach" is the established wording and describes an endpoint list. It does
@@ -1664,6 +1976,7 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     """
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path
+    from tinyassets.patch_intake import rail_entry
     from tinyassets.storage.pending_requests import (
         list_pending,
         list_resolved,
@@ -1674,6 +1987,17 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     uid, udir, denied = _owner_gate(universe_id)
     if denied is not None:
         return denied
+    # The offered patch intake, and whether this universe holds its grant. On the
+    # rail because the agent polls the rail anyway: current, costs no per-round
+    # tool-description bytes, and specific enough that a universe never invents a
+    # credential ask for an address that needs no credential.
+    #
+    # Resolved BEFORE the listing, so the entry the platform owes this universe
+    # is in the very first rail read of a new account (the same reason the
+    # model-connect entry is synthesized here) and an existing user gets it on
+    # their next sign-in with no migration. One call seeds and describes, so the
+    # block cannot contradict the rail it is describing. Never raises.
+    intake = rail_entry(uid, udir)
     rows = list_pending(udir, limit=limit)
     # Prepended, not stored: derived from current serving authority, so it
     # cannot go stale, cannot be dismissed into a state where the universe is
@@ -1689,6 +2013,7 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
         "universe_id": uid,
         "pending": [{**r, "grant_sentence": _grant_sentence(r)} for r in rows],
         "count": len(rows),
+        **({"patch_intake": intake} if intake is not None else {}),
         "recently_answered": [
             {k: v for k, v in r.items() if k != "action"}
             for r in list_resolved(udir, limit=5)
@@ -1757,7 +2082,7 @@ def withdraw_request(*, universe_id: str = "", payload: Any = None) -> dict[str,
             ),
         }
     reason = str(document.get("reason") or "").strip()[:_MAX_ANSWER_CHARS]
-    if reason and _ENTROPY_RUN_RE.search(reason):
+    if reason and looks_like_credential(reason):
         return _bad(
             "that reason looks like it contains a credential; it is stored in "
             "the clear, so say it in words instead"
@@ -1879,6 +2204,232 @@ def _grant_workspace_consent(
     }
 
 
+def _grant_patch_intake(
+    *,
+    uid: str,
+    udir: Any,
+    row: dict[str, Any],
+    action: dict[str, Any],
+    request_id: str,
+    answer: dict[str, Any],
+    feedback: str,
+) -> dict[str, Any]:
+    """Record the one send-only grant the owner just gave, and prove it can work.
+
+    Three things are checked before anything is written, and each one leaves the
+    request PENDING rather than consuming the owner's yes on a grant that would
+    do nothing (the shape ``_grant_workspace_consent`` established):
+
+    * the row still names the intake this deployment offers -- a stored ask
+      outlives the configuration it was created under, and a grant for a
+      retired address authorizes nothing;
+    * it accepts THIS sender. An intake that is merely discoverable lets a
+      sender read its terms while delivery refuses, so granting against one
+      would hand the owner a connection that cannot send. Refused with the
+      reason instead. Asked through ``sender_is_permitted``, which is the same
+      question delivery asks -- NOT reconstructed from the receiver view, whose
+      sender-facing form omits ``allowed_senders`` and would therefore refuse an
+      explicitly enumerated sender who can in fact deliver;
+    * its contract can be read, which is also how "it is actually there and not
+      revoked" is established.
+
+    Both reads run as the answering owner's own principal through the ordinary
+    receiver surfaces, so they disclose exactly what any sender may see and
+    nothing about the intake owner's graph.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.patch_intake import (
+        _intake_or_none,
+        grant_send_consent,
+    )
+    from tinyassets.storage import receiver_links as receiver_store
+    from tinyassets.storage.pending_requests import resolve_request
+
+    intake = _intake_or_none("answering the seeded request")
+    receiver_id = str(action.get("receiver_id") or "")
+    if intake is None or intake["receiver_id"] != receiver_id:
+        return {
+            "error": "patch_intake_changed",
+            "detail": (
+                "this request names an intake this platform no longer offers, so "
+                "approving it would grant nothing; it will be re-offered with the "
+                "current one"
+            ),
+            "request_pending": True,
+        }
+    actor = permissions.current_actor_id().strip()
+    base = _base_path()
+    if not receiver_store.sender_is_permitted(
+        base, receiver_id=receiver_id, sender_id=actor
+    ):
+        return {
+            "error": "patch_intake_closed",
+            "detail": (
+                f"the {intake['label']} intake is not accepting reports from "
+                "this account, so approving this would grant a connection that "
+                "cannot send; the request stays open"
+            ),
+            "request_pending": True,
+        }
+    try:
+        receiver = receiver_store.inspect_receiver(
+            base, receiver_id=receiver_id, principal_id=actor,
+        )
+    except (receiver_store.ReceiverAccessDenied, ValueError):
+        return {
+            "error": "patch_intake_unreachable",
+            "detail": (
+                f"the {intake['label']} intake is not reachable from this "
+                "account right now, so there is nothing to connect to; the "
+                "request stays open and you can approve it once it is back"
+            ),
+            "request_pending": True,
+        }
+    # RESOLVE FIRST, then grant. `resolve_request` is a guarded UPDATE that moves
+    # only a still-pending row, so it is the election: exactly one caller wins,
+    # and a concurrent Clear or a second tap loses. Granting first inverted that
+    # -- the loser's consent was written and committed while the request stayed
+    # pending, which is authority with no recorded decision behind it
+    # (gpt-6-astra refute round on PR #4121, P1).
+    #
+    # The residual asymmetry is deliberate. If the grant then fails, the owner
+    # has an answered request and no connection, and they are TOLD so; the
+    # alternative leaves authority nobody can see. Both stores are files in the
+    # same universe directory, so a failure that hits one almost certainly hits
+    # the other first, which is the resolution call above.
+    if not resolve_request(
+        udir, request_id, status="answered", answer=answer, feedback=feedback,
+        dont_ask_again=False, decision="allowed",
+    ):
+        return {"error": "request_resolution_unconfirmed", "request_pending": True}
+    try:
+        grant = grant_send_consent(udir, receiver_id=receiver_id, granted_by=actor)
+    except Exception as exc:  # noqa: BLE001 - say what happened; grant nothing
+        logger.exception("patch intake: the grant did not land after the owner's yes")
+        return {
+            "error": "patch_intake_grant_unavailable",
+            "detail": (
+                "your approval was recorded but the connection could not be "
+                f"saved ({exc}); nothing can be sent yet -- ask your universe to "
+                "raise the request again"
+            ),
+        }
+    return {
+        "status": "answered",
+        "decision": "allowed",
+        "request_id": request_id,
+        "universe_id": uid,
+        # The address and its contract, so the universe can wire its own step to
+        # it in the same turn instead of going looking for the id again.
+        "receiver_id": receiver_id,
+        "receiver_generation": receiver.get("generation"),
+        "contract": receiver.get("contract"),
+        "grant": {"sink": grant["sink"], "destination": grant["destination"]},
+        "receipt": _grant_sentence(row),
+        "secret_reused": True,
+        "suppressed": False,
+    }
+
+
+def _answer_item(
+    *,
+    udir: Any,
+    row: dict[str, Any],
+    item_id: str,
+    document: dict[str, Any],
+) -> dict[str, Any]:
+    """The owner answered ONE item of a request.
+
+    Items only exist on an ``answer`` action, so there is no act to perform
+    here and nothing to re-validate against a stored credential policy: the
+    answer IS the data. That is why this branch runs before the action
+    dispatch rather than inside it.
+
+    ``dont_ask_again`` is refused: the standing decision hangs on the request's
+    dedupe key, which covers the whole tuple, so remembering "allowed" for one
+    item of a daily note would replay that item's answer to every future note.
+    """
+    from tinyassets.storage.pending_requests import resolve_item
+
+    # BIND the row that resolves to the row that was displayed, exactly as the
+    # whole-request path does. This branch returned before that check, so an
+    # item answer skipped the pin entirely: an item edited after the tab was
+    # rendered still answered, and still closed the request (gpt-6-astra,
+    # 2026-09-29). The pin covers `items`, so this is the check that makes
+    # putting them inside it mean anything.
+    if not displayed_row_matches(row):
+        return {
+            "error": "request_changed",
+            "detail": (
+                "this request was edited after it was shown; it was not "
+                "answered -- read it again"
+            ),
+            "request_pending": True,
+        }
+    if str((row.get("action") or {}).get("type") or "answer") != "answer":
+        return _bad("this request is one decision, not a checklist")
+    if not row.get("items"):
+        return {"error": "not_found", "resource": "request_item"}
+    if document.get("dont_ask_again") is True:
+        return _bad(
+            "'don't ask again' settles a whole request, not one of its items"
+        )
+    feedback = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
+    if feedback and looks_like_credential(feedback):
+        return _bad(
+            "that feedback looks like it contains a credential; it is stored "
+            "in the clear, so say it in words instead"
+        )
+    item = next(
+        (i for i in row["items"]
+         if isinstance(i, dict) and str(i.get("item_id") or "") == item_id),
+        None,
+    )
+    if item is None:
+        return {"error": "not_found", "resource": "request_item"}
+
+    dismissed = document.get("dismiss") is True
+    answer: dict[str, Any] | None = None
+    if not dismissed:
+        values = document.get("values")
+        if values is None:
+            values = {}
+        if not isinstance(values, dict):
+            return _bad("values must be an object of field name -> value")
+        declared = {str(f.get("name") or "") for f in (item.get("fields") or [])
+                    if isinstance(f, dict)}
+        unknown = sorted(set(map(str, values)) - declared)
+        if unknown:
+            # The item's own fields are the only thing it asked for. Accepting
+            # extras would store data the owner was never shown a box for.
+            return _bad(
+                f"item {item_id!r} does not ask for " + ", ".join(map(repr, unknown))
+            )
+        answer = {
+            name: str(values[name])[:_MAX_ANSWER_CHARS]
+            for name in sorted(values)
+        } or None
+
+    result = resolve_item(
+        udir, row["request_id"], item_id,
+        status="dismissed" if dismissed else "answered",
+        answer=answer, feedback=feedback,
+    )
+    if result.get("error"):
+        return result
+    # The clear rides `resolve_item`'s own emit seam, so it is not repeated
+    # here: one definition of when a notification comes off the other devices.
+    return {
+        "status": result["status"],
+        "request_id": row["request_id"],
+        "item_id": item_id,
+        "request_status": result["request_status"],
+        "remaining": result["remaining"],
+        "feedback": feedback,
+    }
+
+
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """The user's answer.
 
@@ -1915,9 +2466,15 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     if row["status"] != "pending":
         return {"error": "already_resolved", "status": row["status"]}
 
+    item_id = str(document.get("item_id") or "").strip()
+    if item_id:
+        return _answer_item(
+            udir=udir, row=row, item_id=item_id, document=document,
+        )
+
     if document.get("dismiss") is True:
         fb = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
-        if fb and _ENTROPY_RUN_RE.search(fb):
+        if fb and looks_like_credential(fb):
             return _bad(
                 "that feedback looks like it contains a credential; it is stored "
                 "in the clear, so say it in words instead"
@@ -1939,7 +2496,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         # runs -- for an action-bearing ask the answer IS the act, so a deny
         # that fell through would extend the grant it was refusing.
         fb = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
-        if fb and _ENTROPY_RUN_RE.search(fb):
+        if fb and looks_like_credential(fb):
             return _bad(
                 "that feedback looks like it contains a credential; it is stored "
                 "in the clear, so say it in words instead"
@@ -2028,8 +2585,8 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         if str(k) in recordable
     }
     # Feedback is free text the user types, so it can hold anything — including a
-    # credential pasted into the wrong box. Same entropy screen the resolver uses.
-    if feedback and _ENTROPY_RUN_RE.search(feedback):
+    # credential pasted into the wrong box. Same shape screen the resolver uses.
+    if feedback and looks_like_credential(feedback):
         return _bad(
             "that feedback looks like it contains a credential; it is stored in "
             "the clear, so say it in words instead"
@@ -2057,6 +2614,21 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             return {"error": "request_resolution_unconfirmed", "request_pending": True}
         return {**result, "status": "answered", "request_id": request_id,
                 "receipt": _grant_sentence(row), "secret_reused": True, "suppressed": False}
+    if action.get("type") == PATCH_INTAKE_ACTION:
+        if row["fields"] or values:
+            return _bad(
+                "connecting the patch intake is a fieldless owner confirmation; "
+                "there is nothing to paste"
+            )
+        return _grant_patch_intake(
+            uid=_uid,
+            udir=udir,
+            row=row,
+            action=action,
+            request_id=request_id,
+            answer=answer,
+            feedback=feedback,
+        )
     if action.get("type") == "grant_workspace_consent":
         return _grant_workspace_consent(
             udir=udir,
@@ -2187,15 +2759,27 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
 def displayed_row_matches(row: dict[str, Any]) -> bool:
     """Whether the stored row still reproduces what the owner was shown.
 
-    The dedupe key is a hash of exactly [kind, title, body, fields, action] --
-    the tuple the tab renders from -- so a row whose action was rewritten after
-    rendering no longer reproduces it and must not execute.
+    The dedupe key is a hash of exactly
+    [kind, title, body, fields, action, items] -- the tuple the tab renders
+    from -- so a row whose action was rewritten after rendering no longer
+    reproduces it and must not execute. ``items`` is projected VERBATIM (the
+    owner's answers live under ``item_answers``) precisely so that answering
+    one item does not make the row stop reproducing itself.
+
+    An itemless request's key is the original five elements, unchanged by items
+    existing, so a row stored before them still reproduces itself and every
+    standing decision keyed on it still matches. Only a request that HAS items
+    carries the sixth. One shape per row -- "try a few shapes" would defeat the
+    pin.
     """
-    expected = json.dumps(
-        [row["kind"], row["title"], row["body"], row["fields"], row["action"]],
-        sort_keys=True, separators=(",", ":"),
-    )
-    return not row.get("dedupe_key") or row["dedupe_key"] == expected
+    stored = row.get("dedupe_key")
+    if not stored:
+        return True
+    identity = [row["kind"], row["title"], row["body"], row["fields"], row["action"]]
+    if row.get("items"):
+        identity.append(row["items"])
+    expected = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return stored == expected
 
 
 def _assembled_secret(

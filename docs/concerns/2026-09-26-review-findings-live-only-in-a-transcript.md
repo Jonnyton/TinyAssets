@@ -27,7 +27,7 @@ case counted as cited): 84 citations come from `openspec/changes/`, 26 from
 `docs/concerns/`, plus `docs/host-actions.md`, two `tinyassets/api/` modules, two
 tests and the packaging mirror.
 
-The 25 with an open concern citing them, by concern:
+The 24 with an open concern citing them, by concern (25 when this was measured; `2026-09-08-request-rail-refresh-erases-drafts` was resolved 2026-09-30 and its row removed, since a row pointing at a deleted concern misleads worse than no row):
 
 - `2026-08-27-pending-request-mute-bypass`, `2026-08-27-served-provider-authority-is-converse-only` → `2026-08-27-codex-paste-deposit-review.md`
 - `2026-08-29-background-loop-activation-is-fleet-era` → `2026-08-29-codex-background-loop-shape.md`
@@ -35,7 +35,6 @@ The 25 with an open concern citing them, by concern:
 - `2026-08-31-the-forge-table-is-platform-knowledge...` → `2026-08-31-codex-labelled-credential-fields.md`
 - `2026-09-04-provider-compatibility-is-not-open` → `2026-09-05-provider-native-model-defaults-claude.md`, `2026-09-05-provider-portability-exploration-claude.md`
 - `2026-09-08-workspace-hourly-cap-stalls-light-use` → `2026-09-08-attributable-storage-proof.md`, `2026-09-08-workspace-resource-policy-proof.md`, `2026-09-08-workspace-usage-diagnosis-claude.md`
-- `2026-09-08-request-rail-refresh-erases-drafts` → `2026-09-08-request-rail-refresh-shape-claude.md`
 - `2026-09-08-served-tool-capability-parity-gaps` → `2026-09-08-workflow-checklist-live-acceptance.md`
 - `2026-08-31-workspace-admission-claims-are-narrower-than-stated` → `2026-09-08-workspace-admission-exact-head-claude.md`
 - `2026-09-09-cross-user-deliverable-connections` → `2026-09-09-cross-user-delivery-existing-boundaries.md`, `2026-09-09-cross-user-node-shape-review.md`

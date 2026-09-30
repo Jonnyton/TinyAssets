@@ -405,21 +405,48 @@ def _run_mermaid_from_events(
 
 
 _RUNS_RECOVERY_DONE = False
+#: The held recovery lock, kept for the process lifetime.
+_RUNS_RECOVERY_LOCK: Any = None
+_RUNS_RECOVERY_LOCK_NAME = ".run_recovery.lock"
 
 
 def _ensure_runs_recovery() -> None:
-    """Once per process, mark any queued/running rows in the runs DB as
-    ``interrupted``. Called from Phase 3 run handlers so the recovery
-    happens on first use without needing a server start hook."""
-    global _RUNS_RECOVERY_DONE
+    """Once per process, interrupt the runs a dead process left in flight.
+
+    Only ONE live process sweeps: the one holding the data dir's recovery
+    lock, which the server takes at boot before it starts anything that runs.
+    Every engine MCP child is a separate process that also serves run tools,
+    and the first run tool in one used to sweep EVERY queued/running row --
+    the server's live automation runs included (live 2026-09-30: a background
+    run was marked interrupted while running, and its interrupted event fired
+    a second wake of the same loop). And the sweep takes only runs started
+    before this process began, so it never interrupts a run of its own.
+    """
+    global _RUNS_RECOVERY_DONE, _RUNS_RECOVERY_LOCK
     if _RUNS_RECOVERY_DONE:
         return
     try:
-        from tinyassets.runs import recover_in_flight_runs
+        from tinyassets.runs import PROCESS_STARTED_AT, recover_in_flight_runs
+        from tinyassets.singleton_lock import acquire_singleton_lock
 
-        recover_in_flight_runs(_base_path())
+        base = Path(_base_path())
+        base.mkdir(parents=True, exist_ok=True)
+        # Held already when an earlier attempt took it and then failed.
+        lock = _RUNS_RECOVERY_LOCK or acquire_singleton_lock(
+            base / _RUNS_RECOVERY_LOCK_NAME
+        )
+        if not lock.acquired:
+            logger.info(
+                "in-flight run recovery: another live process (pid %s) owns it",
+                lock.existing_pid,
+            )
+        else:
+            _RUNS_RECOVERY_LOCK = lock
+            recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
     except Exception:
+        # Not marked done: the next run tool tries again.
         logger.exception("in-flight run recovery failed")
+        return
     _RUNS_RECOVERY_DONE = True
 
 
@@ -774,6 +801,15 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     held = _held_attempt_annotation(error_str, _provider_chain_from_error(error_str))
     if held is not None:
         return held
+    from tinyassets.providers.owner_binding import AUTHORITY_HELD_DETAIL
+
+    if AUTHORITY_HELD_DETAIL.lower() in msg:
+        # A held run whose universe DOES have a provider connected: the message
+        # carries the refusal's own words after this lead-in. Keyed BEFORE the
+        # substring nets below, because those words are arbitrary -- a wrapped
+        # cause mentioning "timeout" or "credential" would otherwise be
+        # classified as a timeout or an expired key instead of held authority.
+        return ("permission_denied:provider_not_bound", _PROVIDER_NOT_BOUND_ACTION)
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",
@@ -1368,7 +1404,7 @@ def _compose_run_snapshot(
     """Pack run metadata + node statuses + mermaid into a phone-legible dict."""
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
-    from tinyassets.runs import build_node_status_map
+    from tinyassets.runs import SYSTEM_EVENT_NODE_ID, build_node_status_map
 
     declared_order: list[str] = []
     branch_name = ""
@@ -1418,10 +1454,14 @@ def _compose_run_snapshot(
         mermaid,
     ])
 
-    # Surface the applied recursion limit from the __system__ event if present.
+    # Surface the applied recursion limit from the system event if present. It
+    # is a run FACT, reported as its own field -- never as a node status, which
+    # is why `build_node_status_map` drops the row (live 2026-09-30: summaries
+    # listed `__system__: recursion_limit_applied` among the nodes).
     recursion_limit: int | None = None
     for ev in events:
-        if ev.get("node_id") == "__system__" and ev.get("status") == "recursion_limit_applied":
+        if (ev.get("node_id") == SYSTEM_EVENT_NODE_ID
+                and ev.get("status") == "recursion_limit_applied"):
             try:
                 recursion_limit = int(ev.get("detail", {}).get("recursion_limit", 0)) or None
             except (TypeError, ValueError):
@@ -1508,11 +1548,13 @@ def _compose_run_snapshot(
     # external-call phase", and stopped. Say what the window is.
     if run_record["status"] in ("running", "queued"):
         finished = {"ran", "completed", "skipped"}
-        # Every run also carries __system__ events (recursion_limit_applied,
-        # provider_calls); only real nodes decide whether the graph is done
-        # (Codex: with them counted, "delivering" was unreachable).
-        real = [s for s in node_statuses if s.get("node_id") != "__system__"]
-        all_ran = bool(real) and all(s.get("status") in finished for s in real)
+        # Only real nodes decide whether the graph is done (Codex: with the
+        # system rows counted, "delivering" was unreachable). `node_statuses`
+        # no longer carries one -- `build_node_status_map` drops them at the
+        # fold, which is the single place that decides what a node status is.
+        all_ran = bool(node_statuses) and all(
+            s.get("status") in finished for s in node_statuses
+        )
         if all_ran and declares_effects:
             snapshot["phase"] = "delivering_effects"
             snapshot["suggested_action"] = (
@@ -1576,6 +1618,7 @@ def _action_list_runs(kwargs: dict[str, Any]) -> str:
         branch_def_id=kwargs.get("branch_def_id", ""),
         status=kwargs.get("status", ""),
         limit=int(kwargs.get("limit", 50) or 50),
+        universe_id=str(kwargs.get("universe_id") or "").strip(),
     )
     # Do not expose runs of a private universe the caller cannot read.
     rows = [r for r in rows if _run_matches_scope(r, kwargs) and _run_read_allowed(r)]

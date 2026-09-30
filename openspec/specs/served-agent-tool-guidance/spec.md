@@ -10,11 +10,7 @@ every turn. Created by archiving change engine-tool-manual-on-demand.
 ## Requirements
 ### Requirement: Long-form served-agent guidance is reachable, not resident
 
-A served founder turn is an agentic loop, so the engine tool-definition block is
-re-sent on EVERY model round-trip of the turn. Long-form guidance for an engine
-handle SHALL therefore be reachable on demand rather than carried in the advertised
-description on every round, and relocation SHALL be verbatim: no guidance may be
-trimmed, summarised or rewritten by a relocation, and no capability may be removed.
+A served founder turn is an agentic loop, so the engine tool-definition block is re-sent on EVERY model round-trip of the turn. Long-form guidance for an engine handle SHALL therefore be reachable on demand rather than carried in the advertised description on every round, and relocation SHALL be verbatim: no guidance may be trimmed, summarised or rewritten by a relocation, and no capability may be removed.
 
 Guidance SHALL stay resident in the advertised description when its absence would
 produce a WRONG call rather than an absent one — the handle's purpose, its

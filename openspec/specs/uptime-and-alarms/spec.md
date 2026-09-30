@@ -864,22 +864,7 @@ Registry verification SHALL occur before acquiring the fence-then-mutation locks
 
 ### Requirement: No uptime probe expects the platform to hold a model
 
-The platform has no LLM (AGENTS.md Hard Rule 15), so no scheduled probe, deploy
-gate or keepalive SHALL require the daemon to report a bound model or SHALL
-exercise a host model login. The former LLM-binding canary, its post-deploy
-binding gate and the weekly Codex and Claude keepalives are retired. The
-production deploy SHALL instead run `deploy/retire_platform_llm_logins.sh` only
-after the public canary is green; it removes retired credential names from the
-host env file, deletes both platform login directories in full (founder
-decision 2026-09-24) behind exact-path, mount and symlink guards, and logs
-names and counts only. The same step
-retires the platform GitHub push credential: it scrubs the push-capability
-maps from the env file and removes the GitHub App token refresher's units,
-script, env file and documented private key, naming (not deleting) a key
-configured anywhere else. `tests/test_no_platform_llm_credentials.py` and
-`tests/test_no_platform_github_push_credential.py` fail if compose, the
-entrypoint, any workflow, the env template, the drop-first helper or the code
-reintroduces either.
+The platform has no LLM (AGENTS.md Hard Rule 15), so no scheduled probe, deploy gate or keepalive SHALL require the daemon to report a bound model or SHALL exercise a host model login. The former LLM-binding canary, its post-deploy binding gate and the weekly Codex and Claude keepalives are retired. The production deploy SHALL instead run `deploy/retire_platform_llm_logins.sh` only after the public canary is green; it removes retired credential names from the host env file, deletes both platform login directories in full (founder decision 2026-09-24) behind exact-path, mount and symlink guards, and logs names and counts only. The same step retires the platform GitHub push credential: it scrubs the push-capability maps from the env file and removes the GitHub App token refresher's units, script, env file and documented private key, naming (not deleting) a key configured anywhere else. `tests/test_no_platform_llm_credentials.py` and `tests/test_no_platform_github_push_credential.py` fail if compose, the entrypoint, any workflow, the env template, the drop-first helper or the code reintroduces either.
 
 #### Scenario: A green deploy retires what the host still holds
 

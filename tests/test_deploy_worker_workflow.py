@@ -150,8 +150,18 @@ def test_wrangler_toml_no_stale_name():
 def test_wrangler_toml_keeps_load_bearing_broad_route_and_runtime_settings():
     config = tomllib.loads(_load_wrangler_text())
     assert config["main"] == "worker.js"
+    # TWO public regions since 2026-09-30: the connector, and the app after it
+    # moved off `/mcp/app` to the apex `/app`.
+    #
+    # Both are SUFFIX WILDCARDS, and for `/app` that is load-bearing rather than
+    # stylistic: a Cloudflare route is matched against the whole URL including
+    # the query string, so an exact `tinyassets.io/app` route matches only a bare
+    # `/app` and the sign-in return `/app?code=…&state=…` plus the Stripe return
+    # `/app?subscribed=1` would match no route at all. Narrowing either entry
+    # darks a public surface while the shell still loads.
     assert config["routes"] == [
-        {"pattern": "tinyassets.io/mcp*", "zone_name": "tinyassets.io"}
+        {"pattern": "tinyassets.io/mcp*", "zone_name": "tinyassets.io"},
+        {"pattern": "tinyassets.io/app*", "zone_name": "tinyassets.io"},
     ]
     assert config["compatibility_date"] == "2025-10-01"
     assert config["compatibility_flags"] == []

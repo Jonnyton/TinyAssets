@@ -168,7 +168,7 @@ export default function HomePage() {
                 <tr>
                   <td>Web app</td>
                   <td>
-                    <a href={SITE.app}>tinyassets.io/mcp/app</a>
+                    <a href={SITE.app}>tinyassets.io/app</a>
                   </td>
                 </tr>
                 <tr>

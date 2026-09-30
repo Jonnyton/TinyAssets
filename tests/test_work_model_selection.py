@@ -125,7 +125,11 @@ def test_foreground_http_selection_reaches_exact_model(
     )
     reads, writes, errors = http_wire
     assert result["terminal_status"] == "completed", (result["terminal_error"], errors)
-    assert len(reads) == 3  # Serving readiness plus one refresh for each actual attempt.
+    # Serving readiness, the run's own captured model order, then one refresh
+    # per actual attempt. The order's read is what makes an unpinned node
+    # resolve from the account's FRESH catalogue instead of the source's
+    # declared default (tests/test_free_account_run_provider_parity.py).
+    assert len(reads) == 4
     assert len(writes) == 2
     assert all(verb == "POST" for verb, _ in writes)
     assert [doc["body"]["model"] for _, doc in writes] == [model or "synthetic-model"] * 2

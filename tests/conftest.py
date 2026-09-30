@@ -198,7 +198,7 @@ def _emulate_deployed_visibility_backfill(request, monkeypatch):
     production backfill derived ``public`` from the ``public_read`` bit, so the
     harness matched it. It no longer does — per the founder, the backfill now
     declares ``private`` and the platform never declares an open level on an
-    owner's behalf (openspec/changes/private-by-default-universes). The fixture
+    owner's behalf (openspec/changes/archive/2026-09-30-private-by-default-universes). The fixture
     keeps its behaviour and changes its MEANING: these modules' bare directories
     now stand in for a universe whose owner chose public, which is what each of
     those tests is actually about. Flipping the fixture to ``private`` instead

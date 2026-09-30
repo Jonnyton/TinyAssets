@@ -6,7 +6,7 @@ Source changes:
 `openspec/changes/archive/2026-09-04-add-realtime-voice-conversation/` and
 `openspec/changes/negotiate-user-owned-voice-capability/`
 
-The shared `/mcp/app` client contains a dark, foreground-only Voice slice. Voice is one composer
+The shared `/app` client contains a dark, foreground-only Voice slice. Voice is one composer
 control around the universe's existing canonical conversation. It does not select a second
 provider, infer external Realtime API entitlement from a ChatGPT subscription, or ask for a second
 Voice credential. The native release track owns the packaging and store declarations below. This

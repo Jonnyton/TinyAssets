@@ -67,6 +67,7 @@ _NODEIDS = (
     "tests/test_universe_tools_jail.py::test_cpu_output_and_wall_clock_limits_kill",
     "tests/test_universe_tools_jail.py::test_a_jail_that_fills_the_shared_disk_is_killed",
     "tests/test_universe_tools_jail.py::test_a_skill_the_agent_writes_changes_its_next_turn",
+    "tests/test_universe_tools_jail.py::test_a_background_run_reads_and_writes_its_notes_while_a_database_closes",
 )
 _RUN_STEP = "Run the jail proof modules"
 _JOB = "linux-jail-proof"

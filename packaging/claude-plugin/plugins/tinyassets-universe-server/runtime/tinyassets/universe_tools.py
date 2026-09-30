@@ -16,15 +16,23 @@ Every call -- reads included -- runs as a process inside bubblewrap, built by
 the SAME :func:`tinyassets.providers.provider_jail.jail_argv` as a provider
 launch, with a narrower view:
 
-* the owning universe at ``/u``, and nothing else of ``/data``. The root is
-  READ-ONLY; only what the agent owns is bound read-write (its brain files and
-  the harness directories ``skills/``, ``prompts/``, ``notes/`` ...), see
-  :data:`AGENT_BRAIN_FILES`;
-* every hidden root entry masked -- the credential vault
+* the owning universe at ``/u``, and nothing else of ``/data``. ``/u`` is an
+  allowlist, not the root with holes punched in it: a read-only tmpfs holding
+  one bind per VISIBLE root entry. Only what the agent owns is bound
+  read-write (its brain files and the harness directories ``skills/``,
+  ``prompts/``, ``notes/`` ...), see :data:`AGENT_BRAIN_FILES`; every other
+  visible entry is read-only;
+* no hidden root entry at all -- the credential vault
   (``.credential-vault.json``, ``.credentials/``), ``.runtime/``, the consent,
-  usage and receipt databases -- so the agent can neither read the owner's
-  credentials nor forge the platform's authority state, and cannot create a
-  new root entry the daemon would trust;
+  usage and receipt databases and their SQLite sidecars -- so the agent can
+  neither read the owner's credentials nor forge the platform's authority
+  state, and cannot create a new root entry the daemon would trust. Leaving
+  them out, rather than mounting over each one, is what lets a jail start
+  while the daemon has a database open: a ``-shm``/``-wal`` sidecar comes and
+  goes with the connection, and a mask needs its mountpoint to still exist
+  when bubblewrap reaches it (on the read-only root it cannot be created, so
+  the jail refused to start). A visible entry that vanishes between the scan
+  and the launch is skipped, for the same reason;
 * system binaries read-only, a private ``/tmp``, ``/dev`` and pid-namespace
   ``/proc``; NO ``/app``, no install tree, no credential snapshot at all;
 * NO network: no ``--share-net``, so the jail has its own empty network
@@ -64,7 +72,7 @@ run. There is no unjailed or unlimited fallback.
 from __future__ import annotations
 
 import contextlib
-import hashlib
+import logging
 import os
 import re
 import shutil
@@ -73,7 +81,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from tinyassets.providers import provider_jail
@@ -109,7 +117,7 @@ MOUNT_POINT = "/u"
 
 #: What the agent OWNS in its folder: the only paths bound read-write into the
 #: tool jail. Everything else at the universe root is the platform's and is
-#: either read-only (visible, e.g. ``soul.md``, ``config.yaml``) or masked
+#: either read-only (visible, e.g. ``soul.md``, ``config.yaml``) or absent
 #: (every hidden root entry: the credential vault ``.credential-vault.json`` and
 #: ``.credentials/``, ``.runtime/``, the consent / usage / receipt databases).
 #: The root itself is read-only, so no new root entry -- hidden or not -- can
@@ -130,6 +138,8 @@ AGENT_HARNESS_DIRS: tuple[str, ...] = (
 MASKED_DIRS: tuple[str, ...] = (PLATFORM_RUNTIME_DIR,)
 
 #: Environment inside the jail: fixed, secret-free, nothing inherited.
+logger = logging.getLogger(__name__)
+
 _JAIL_ENV: tuple[tuple[str, str], ...] = (
     ("PATH", "/usr/local/bin:/usr/bin:/bin"),
     ("HOME", "/tmp"),
@@ -152,11 +162,21 @@ DEFAULT_READ_LINES = 2000
 #: The longest a ``bash`` call may ask to run.
 MAX_BASH_SECONDS = 600.0
 
-#: How long a call waits for a free slot before it is refused.
-_SLOT_WAIT_SECONDS = 30.0
-#: Jails running at once for ONE universe, and on the whole host.
-_PER_UNIVERSE_SLOTS = 2
+#: Jails running at once on the whole HOST. A host-safety floor, not an account
+#: limit: four concurrent jails is what this box's memory and 1 vCPU can carry,
+#: and exceeding it is an outage for every universe on it.
+#:
+#: There is no per-universe count. ``_PER_UNIVERSE_SLOTS = 2`` was a second,
+#: account-shaped ceiling on top of it -- it told one universe it could not run a
+#: third tool even on an otherwise idle host. An account has exactly two limits,
+#: cloud bytes and concurrent agent seats (founder, 2026-09-30).
 _HOST_SLOTS = 4
+
+#: How often a waiting call re-tries for a free host slot. A busy host makes a
+#: call WAIT; it does not refuse it. There used to be a 30-second deadline here
+#: after which the call raised "every tool slot is busy" -- work over the
+#: concurrency line waits, and is never refused.
+_SLOT_POLL_SECONDS = 0.1
 
 _POLL_SECONDS = 0.05
 _KILL_GRACE_SECONDS = 5.0
@@ -232,6 +252,10 @@ class ToolRun:
     #: ``disk_limit`` or None.
     killed: str | None
     elapsed: float
+    #: Seconds this call spent QUEUED for a host tool slot before it started.
+    #: Reported in the result trailer: every tool here answers with text, and a
+    #: wait the caller cannot see is indistinguishable from a hang.
+    waited: float = 0.0
 
 
 # ── the jail ────────────────────────────────────────────────────────────────
@@ -249,38 +273,35 @@ def _system_binary(name: str) -> str:
 
 
 def _universe_view(root: Path) -> UniverseView:
-    """The tool jail's view of ``root``: read-only, hidden entries masked,
-    agent-owned paths read-write.
+    """The tool jail's view of ``root``: a read-only ``/u`` holding the visible
+    entries, agent-owned paths read-write, hidden entries absent.
 
-    Order is fixed: the read-only root first, then the masks and the
-    read-write binds, which land on top of it.
+    Order is fixed: the empty tmpfs, one bind per entry, then the remount that
+    makes ``/u`` itself read-only (the binds under it keep their own flags).
+    Every bind is ``-try``: the daemon owns this folder concurrently, and an
+    entry it removes after the scan is simply not in this call's view.
     """
     for name in AGENT_HARNESS_DIRS:
         path = root / name
         if not os.path.lexists(path):
             path.mkdir(mode=0o755)
-    mounts = [JailMount("ro-bind", MOUNT_POINT, root)]
+    mounts = [JailMount("tmpfs", MOUNT_POINT)]
     with os.scandir(root) as entries:
         listing = sorted(entries, key=lambda entry: entry.name)
     for entry in listing:
-        dest = f"{MOUNT_POINT}/{entry.name}"
-        if entry.name.startswith("."):
-            if entry.is_symlink():
-                raise UniverseToolError(
-                    f"the universe's {entry.name} is a link; the tool jail cannot mask it, "
-                    "so it will not start"
-                )
-            if entry.is_dir(follow_symlinks=False):
-                mounts.append(JailMount("tmpfs", dest))
-            else:
-                mounts.append(JailMount("mask-file", dest))
+        # Hidden: platform state. Symlink: never bound (a planted link must not
+        # be followed). Neither dir nor file: nothing the tools need.
+        if entry.name.startswith(".") or entry.is_symlink():
             continue
-        if entry.is_symlink():
-            continue  # never bound; the read-only root shows a dangling link
-        if entry.name in AGENT_HARNESS_DIRS and entry.is_dir(follow_symlinks=False):
-            mounts.append(JailMount("bind", dest, root / entry.name))
-        elif entry.name in AGENT_BRAIN_FILES and entry.is_file(follow_symlinks=False):
-            mounts.append(JailMount("bind", dest, root / entry.name))
+        is_dir = entry.is_dir(follow_symlinks=False)
+        if not is_dir and not entry.is_file(follow_symlinks=False):
+            continue
+        owned = (
+            entry.name in AGENT_HARNESS_DIRS if is_dir else entry.name in AGENT_BRAIN_FILES
+        )
+        op = "bind-try" if owned else "ro-bind-try"
+        mounts.append(JailMount(op, f"{MOUNT_POINT}/{entry.name}", root / entry.name))
+    mounts.append(JailMount("remount-ro", MOUNT_POINT))
     return UniverseView(
         universe_dir=root,
         mounts=tuple(mounts),
@@ -437,36 +458,62 @@ def _slot_dir() -> Path:
 
 
 @contextlib.contextmanager
-def _slot(universe_dir: Path) -> Iterator[None]:
-    """Hold one per-universe slot and one host slot, or refuse.
+def _slot(
+    universe_dir: Path,
+    *,
+    on_wait: Callable[[float], None] | None = None,
+    waited: list[float] | None = None,
+) -> Iterator[None]:
+    """WAIT for one host slot, then run. Never refuses for being busy.
 
     Lock files, so the bound holds across the per-universe engine processes.
+
+    ``on_wait`` is called once, with the seconds waited so far, the first time a
+    call actually has to queue -- so a surface that has a user in front of it can
+    say "waiting for a free slot" instead of going silent. ``waited`` (a
+    one-element sink list) receives the total seconds queued, which the result
+    trailer reports. Waiting is visible or it is indistinguishable from a hang.
+
+    KNOWN GAP (Codex refute, 2026-09-30, P2): this wait is not interruptible.
+    The engine tool wrappers reach it through ``asyncio.to_thread``, and
+    cancelling that await does not stop the worker thread, so a cancelled request
+    keeps its place in the queue until a slot frees. The waiter holds no lock and
+    no jail (one pipe descriptor only), and the queue's depth is the transport's
+    own thread pool rather than anything a universe chooses --
+    ``docs/concerns/2026-09-30-a-cancelled-tool-call-keeps-waiting.md``.
+
+    There is no deadline. A 30-second one used to turn a busy host into
+    ``every tool slot for this host is busy``, which is a refusal wearing a
+    timeout's clothes (founder, 2026-09-30: over the concurrency line, work
+    WAITS).
     """
     import fcntl
 
     directory = _slot_dir()
-    key = hashlib.sha256(str(universe_dir).encode("utf-8")).hexdigest()[:16]
-    pools = (
-        [directory / f"u-{key}-{i}.lock" for i in range(_PER_UNIVERSE_SLOTS)],
-        [directory / f"host-{i}.lock" for i in range(_HOST_SLOTS)],
-    )
-    held: list[int] = []
-    deadline = time.monotonic() + _SLOT_WAIT_SECONDS
+    pool = [directory / f"host-{i}.lock" for i in range(_HOST_SLOTS)]
+    started = time.monotonic()
+    fd: int | None = None
+    announced = False
     try:
-        for pool, what in zip(pools, ("this universe", "this host"), strict=True):
-            while True:
-                fd = _try_lock_one(pool, fcntl)
-                if fd is not None:
-                    held.append(fd)
-                    break
-                if time.monotonic() >= deadline:
-                    raise UniverseToolError(
-                        f"every tool slot for {what} is busy; try again shortly"
-                    )
-                time.sleep(0.1)
+        while True:
+            fd = _try_lock_one(pool, fcntl)
+            if fd is not None:
+                if waited is not None:
+                    waited.append(time.monotonic() - started if announced else 0.0)
+                break
+            if not announced:
+                announced = True
+                if on_wait is not None:
+                    with contextlib.suppress(Exception):
+                        on_wait(time.monotonic() - started)
+                logger.info(
+                    "universe_tools: every host tool slot is busy; waiting (universe %s)",
+                    universe_dir.name,
+                )
+            time.sleep(_SLOT_POLL_SECONDS)
         yield
     finally:
-        for fd in held:
+        if fd is not None:
             with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
@@ -549,8 +596,14 @@ def run_jailed(
     limits: ToolLimits = DEFAULT_LIMITS,
     wall_seconds: float | None = None,
     output_bytes: int | None = None,
+    on_wait: Callable[[float], None] | None = None,
 ) -> ToolRun:
-    """Run ``inner`` in the universe's tool jail under ``limits``, or refuse."""
+    """Run ``inner`` in the universe's tool jail under ``limits``.
+
+    If every host slot is taken the call WAITS for one; it is not refused for the
+    host being busy. ``on_wait`` is invoked once when that happens, so a caller
+    with a user in front of it can surface a waiting state.
+    """
     wall = float(wall_seconds if wall_seconds is not None else limits.wall_seconds)
     cap = int(output_bytes if output_bytes is not None else limits.output_bytes)
     cpu = min(int(limits.cpu_seconds), int(wall) + 1)
@@ -559,10 +612,18 @@ def run_jailed(
     # The jail itself adds up to three processes (bwrap, its pid-1, prlimit's
     # exec target); the tree cap is the rlimit plus that overhead.
     process_cap = int(limits.processes) + 3
+    queued: list[float] = []
+    # The jail is resolved and its seccomp descriptor opened BEFORE queueing, so
+    # a host that cannot jail at all refuses immediately instead of waiting to be
+    # told so. The cost is that a queued call holds ONE pipe descriptor for the
+    # length of its wait (Codex refute, 2026-09-30): bounded by the transport's
+    # own thread pool, so ~40 descriptors against a 1024 `nofile` limit. Taking
+    # the slot first instead ran the bwrap probe before validation and broke the
+    # refusal ordering these tests pin, which is a worse trade than 40 pipes.
     filter_fd = _seccomp_fd()
     try:
         argv = TOOL_JAIL_ARGV(root, limited, seccomp_fd=filter_fd)
-        with _slot(root):
+        with _slot(root, on_wait=on_wait, waited=queued):
             free = _free_disk(root)
             if 0 <= free < limits.min_free_disk_bytes:
                 raise UniverseToolError(
@@ -581,10 +642,11 @@ def run_jailed(
                     # the jail ever runs outside it. A failed join never execs.
                     argv = ["/bin/sh", "-c", 'echo $$ > "$0" && exec "$@"',
                             str(cgroup / "cgroup.procs"), *argv]
-                return _supervise(
+                run = _supervise(
                     argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
                     cap=cap, process_cap=process_cap,
                 )
+                return replace(run, waited=queued[0] if queued else 0.0)
     finally:
         os.close(filter_fd)
 
@@ -796,6 +858,18 @@ _SIGXCPU = getattr(signal, "SIGXCPU", 24)
 _SIGKILL = getattr(signal, "SIGKILL", 9)
 
 
+def _waited_note(run: ToolRun) -> str:
+    """The queued-for-a-slot note, or empty. Prepended to a tool's own answer.
+
+    A busy host makes a call WAIT rather than refusing it, so the only way the
+    caller learns that its 40-second read was 38 seconds of queueing is if the
+    answer says so.
+    """
+    if run.waited < 1.0:
+        return ""
+    return f"[waited {run.waited:.0f}s for a free tool slot on this host]\n"
+
+
 def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
     if run.killed == "timeout":
         return f"[killed: ran longer than {wall:g}s]"
@@ -831,15 +905,17 @@ def read_file(
         universe_dir, ["/bin/sh", "-c", script, "sh", target, str(start), str(count)],
         limits=limits,
     )
+    note = _waited_note(run)
     if run.killed == "output_limit":
         return (
-            _text(run.output)
+            note + _text(run.output)
             + f"\n[truncated at {limits.output_bytes} bytes; read a smaller range "
             "with offset and limit]"
         )
     if run.killed or run.exit_code != 0:
-        return f"error: {_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}"
-    return _text(run.output)
+        return (f"error: {note}"
+                f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
+    return note + _text(run.output)
 
 
 def write_file(
@@ -856,9 +932,11 @@ def write_file(
         universe_dir, ["/bin/sh", "-c", script, "sh", target],
         stdin=payload, limits=limits,
     )
+    note = _waited_note(run)
     if run.killed or run.exit_code != 0:
-        return f"error: {_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}"
-    return f"wrote {len(payload)} bytes to {target}"
+        return (f"error: {note}"
+                f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
+    return note + f"wrote {len(payload)} bytes to {target}"
 
 
 def edit_file(
@@ -875,10 +953,12 @@ def edit_file(
          "sh", target],
         limits=limits, output_bytes=MAX_EDIT_BYTES,
     )
+    note = _waited_note(run)
     if run.killed == "output_limit":
         return f"error: {target} is over the {MAX_EDIT_BYTES}-byte edit limit; use bash"
     if run.killed or run.exit_code != 0:
-        return f"error: {_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}"
+        return (f"error: {note}"
+                f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
     try:
         current = run.output.decode("utf-8")
     except UnicodeDecodeError:
@@ -896,7 +976,7 @@ def edit_file(
     )
     if written.startswith("error:"):
         return written
-    return f"edited {target}"
+    return note + f"edited {target}"
 
 
 def bash(
@@ -913,7 +993,7 @@ def bash(
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"
-    return body + _trailer(run, limits, wall)
+    return _waited_note(run) + body + _trailer(run, limits, wall)
 
 
 # ── the skill index (progressive disclosure) ────────────────────────────────
@@ -992,7 +1072,9 @@ _HARNESS_HEAD = (
     "`read` (a file, or a range of its lines), `write` (create or replace a "
     "file), `edit` (replace one exact passage in a file) and `bash` (a shell in "
     "/u with no network and bounded memory, processes and time, so long-running "
-    "work does not belong there). Relative paths are under /u. Nothing outside "
+    "work does not belong there: it is workflows and automations in this "
+    "universe, never a service hosted elsewhere -- handbook chapter "
+    "write_graph.systems). Relative paths are under /u. Nothing outside "
     "/u is mine or reachable. I can write my brain files (identity.md, "
     "founder.md, origin.md, body.md, orgchart.md, projects.md, goals.md, "
     "index.md, log.md, voice.md) and anything under skills/, prompts/, "

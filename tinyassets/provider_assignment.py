@@ -33,6 +33,9 @@ from tinyassets.provider_assignment_manifest import (
     manifest_digest,
     store_candidates,
 )
+from tinyassets.providers.owner_binding import (
+    CONNECT_PROVIDER_MESSAGE as _CONNECT_PROVIDER_MESSAGE,
+)
 from tinyassets.storage import db_path
 
 logger = logging.getLogger(__name__)
@@ -1451,10 +1454,8 @@ async def authorize_served_provider_call_async(
 #: launch will, rather than repeating the mapping.
 _SERVED_PROVIDER_SERVICE = {"codex": "codex", "claude-code": "claude"}
 
-_SERVED_AUTHORITY_HELD = (
-    "Connect your provider before running this universe. TinyAssets will not "
-    "borrow platform credentials or start a metered trial."
-)
+#: Imported, not re-declared: `providers.owner_binding` owns the sentence.
+_SERVED_AUTHORITY_HELD = _CONNECT_PROVIDER_MESSAGE
 
 
 def _seal_agent_launch_allowance(conn, store, assignment, capability) -> None:
