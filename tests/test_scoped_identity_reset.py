@@ -445,6 +445,17 @@ def test_active_root_run_schedule_and_market_obligation_block(
     assert any("active market" in blocker for blocker in scope.blockers)
 
 
+def test_the_run_recovery_lock_does_not_block_a_reset(seeded: Path) -> None:
+    """The live server holds it at the data root for its whole life."""
+    from tinyassets.scoped_reset import inspect_reset_scope
+
+    (seeded / ".run_recovery.lock").write_bytes(b"")
+    (seeded / ".run_recovery.lock.pid").write_text("7", encoding="utf-8")
+
+    scope = inspect_reset_scope(seeded, principal=_SUBJECT_A)
+    assert not [b for b in scope.blockers if ".run_recovery" in b], scope.blockers
+
+
 def test_unclassified_root_operational_store_blocks(seeded: Path) -> None:
     from tinyassets.scoped_reset import inspect_reset_scope
 
