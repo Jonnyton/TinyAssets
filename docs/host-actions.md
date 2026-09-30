@@ -12,6 +12,101 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Store launch: four founder steps (2026-09-29)
+
+Both stores are one founder action away from moving. Apple asked for more information
+(Guideline 2.1) and has build 3; Play approved build 4 on the closed track. The map is
+`docs/ops/mobile-launch-handoff.md`. The four steps are independent, so do them in any
+order. Only the Play one is on a 14-day clock, so it goes first.
+
+### Google Play: opt in and recruit the 12 testers
+
+1. On your phone's Google account, open `https://play.google.com/apps/testing/io.tinyassets.app`.
+   This is Play's standard opt-in address for the closed (Alpha) track. Play Console →
+   **Test and release → Closed testing → Alpha → Testers → Copy link** shows the
+   authoritative one. Tap **Become a tester**.
+2. Add 15 to 18 people's Google-account emails to the `Founder devices` tester list on
+   the same page. Only add people who said yes. The extra 3 to 6 cover drop-offs.
+3. Send each of them the opt-in link, using the invitation text under "start the
+   12-tester closed test" below.
+
+The clock starts when 12 people are actually opted in, and it runs for 14 days. Tell the
+lead the day it starts. The full engagement plan is in that section below.
+
+### Apple: turn on Sign in with Apple
+
+**Why:** the sign-in page offers **Continue with Google**. Apple Guideline 4.8 requires
+any app offering Google sign-in to also offer an equivalent private login, and Sign in
+with Apple is it. TinyAssets' own email/password does not count while Google is offered
+too. Apple has not cited this yet, but a full review would. Sign-in is the hosted WorkOS
+page, so this is dashboard setup only: no app rebuild, and build 3 stays as submitted.
+
+You need two browser tabs. In both, stay in the **Production** environment on the WorkOS
+side.
+
+1. **WorkOS** (`dashboard.workos.com`, Production) → **Authentication → OAuth providers
+   → Sign in with Apple → Enable**. Leave the dialog open. It shows a **Redirect URI**
+   and **Outbound email domains**; you paste both into Apple below.
+2. **Apple Developer** (`developer.apple.com/account` → Certificates, IDs & Profiles):
+   1. Note the **Team ID** shown under your name (top right).
+   2. **Identifiers** → `io.tinyassets.app` → tick **Sign in with Apple** (leave it
+      as *Enable as a primary App ID*) → **Save**. If Apple warns that profiles will be
+      invalidated, accept. Build 3 is already signed and is unaffected. Only a *future*
+      iOS build needs its profile regenerated, and the agent will ask when that comes up.
+   3. **Identifiers → +** → **Services IDs** → Description `TinyAssets Sign In`,
+      Identifier `io.tinyassets.signin` → **Register**. Open it, tick **Sign in with
+      Apple → Configure**: Primary App ID `io.tinyassets.app`; Domains and Subdomains
+      `api.workos.com`; Return URLs = the WorkOS **Redirect URI** from step 1 →
+      **Done → Continue → Save**.
+   4. **Keys → +** → Key Name `TinyAssets Sign in with Apple`, tick **Sign in with
+      Apple → Configure** → `io.tinyassets.app` → **Save → Continue → Register**.
+      Note the **Key ID** and click **Download**. Apple allows only one download.
+   5. **Services → Sign in with Apple for Email Communication → Configure → +**. Enter
+      the WorkOS **Outbound email domains** from step 1 → **Next → Register**. Without
+      this, users who choose *Hide My Email* never receive TinyAssets email.
+3. Back in the **WorkOS** dialog, choose **Your app's credentials** and enter: Apple Team
+   ID = the value from 2.1, Apple Service ID = `io.tinyassets.signin`, Private Key ID =
+   the Key ID from 2.4, Private Key = open the downloaded `AuthKey_<KeyID>.p8` in Notepad
+   and paste its whole contents. Toggle **Enable** on and save.
+4. **Where the key file goes:** Control Panel → **Credential Manager → Windows
+   Credentials → Add a generic credential**. Internet address `TinyAssets Apple SIWA
+   key`, user name = the Key ID, password = the whole `.p8` contents. Then delete the
+   `.p8` from Downloads and empty the Recycle Bin. Never paste it into chat or commit it.
+   The Team ID, Services ID and Key ID are not secret and can be sent to the lead.
+5. Tell the lead it's done. The agent runs `python scripts/authkit_login_parity_probe.py`
+   (it fails today, exit 1, and passes once Apple is offered). Then it checks one real
+   **Continue with Apple** sign-in on `https://tinyassets.io/mcp/app`.
+
+### Apple: renew the App Review inference key before 2026-10-10
+
+The dedicated App Review account (`play-review@tinyassets.io`, password in Windows
+Credential Manager) answers through a review-only OpenRouter key that **expires
+2026-10-10**. If Apple reviews after that date, the reviewer signs in to a universe that
+cannot reply, which is a certain rejection. The key must be renewed before resubmission.
+
+1. **OpenRouter** (the account that owns the current review key) → **Keys → Create
+   key**. Name `tinyassets-app-review`, credit limit **$5**, expiry at least
+   2026-12-31. Copy the key; do not save it anywhere else.
+2. In a private browser window, sign in to `https://tinyassets.io/mcp/app` as the review
+   account. Open **Connect**, choose OpenRouter, paste the key into **Paste only the
+   key**, and tap **Connect**.
+3. Send one message, for example "What can you help me with?", and confirm a reply
+   appears. This also proves the reviewer universe still answers after the September
+   prune.
+4. Back in OpenRouter, delete the old review key. Tell the lead the new expiry date.
+
+### Apple: record the review video on a physical iPhone
+
+This is Apple's actual ask (Guideline 2.1). Install build 3 from the TestFlight invite
+already sent to you, on an iPhone updated to the latest iOS. Record the six steps in
+`docs/ops/app-store-submission-packet.md`, "Guideline 2.1 response packet". A simulator
+recording is refused. Hand the `.mov` to the lead. The agent attaches it with the written
+answers and resubmits only after the lead's explicit go. Do the key renewal above first,
+or step 4 of the recording (a real reply) will fail after 2026-10-10. Full history is item
+12 under "Apple App Store: enroll" below.
+
+---
+
 ## Create the TinyAssets GitHub org (Free plan) and tell the lead (2026-09-27)
 
 You decided to move `Jonnyton/TinyAssets` into an org so the repo can use
