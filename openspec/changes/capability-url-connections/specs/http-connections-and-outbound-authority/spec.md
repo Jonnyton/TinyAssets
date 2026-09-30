@@ -96,10 +96,16 @@ resolution and the globally-routable-address check SHALL run after
 substitution, unchanged, on the same host.
 
 The substitution position SHALL be derived from the **template of the endpoint
-that admitted the request**, never by searching the concrete path, and a
-reserved token surviving anywhere in the path after substitution SHALL refuse
-the request. A request that no declared endpoint admitted, or that was admitted
-on a host match alone (`full`), SHALL be refused rather than substituted.
+that admitted the request**, never by searching the concrete path. A request
+that no declared endpoint admitted, or that was admitted on a host match alone
+(`full`), SHALL be refused rather than substituted.
+
+A reserved token appearing anywhere OTHER than the slot the matched endpoint's
+template declares SHALL refuse the request. That check SHALL cover the query
+string as well as the path, and SHALL consider the percent-decoded form as well
+as the raw one, and SHALL match a token embedded in a larger segment as well as
+one occupying a whole segment. On any other `auth_scheme`, no occurrence is
+legitimate and any SHALL refuse the request.
 
 The stored segment SHALL be re-validated against the segment grammar
 immediately before substitution, and a segment that fails SHALL refuse the
@@ -117,6 +123,10 @@ request.
 - **WHEN** an endpoint declares `/hooks/{secret}/{tail+}` with a permissive `tail` pattern and a node requests `/hooks/{secret}/echo/{secret+}`
 - **THEN** the request is refused, and the credential is never placed in the tail
 
+#### Scenario: a reserved token in the query, encoded, or embedded
+- **WHEN** a request carries `?q={secret}`, a `%7Bsecret%7D` path segment, or a `prefix{secret}` segment outside the declared slot
+- **THEN** the request is refused
+
 #### Scenario: a corrupted stored segment
 - **WHEN** the stored segment contains a `/`, a dot-segment, a control byte, or is shorter than 8 characters
 - **THEN** the request is refused before a socket is opened
@@ -131,15 +141,23 @@ SHALL all carry the placeholder form. A destination response that echoes the
 secret SHALL refuse the call rather than return it.
 
 A response echoing the secret SHALL be recognised whether it echoes the whole
-credential or any ONE of its path segments.
+credential or any one of its path segments that is long enough to be a
+credential rather than an address. A segment shorter than that SHALL NOT be
+scanned on its own: the leading segments of a real capability URL are public
+ids, and failing a clean response that happens to quote one would trade a leak
+for an outage.
 
 #### Scenario: a failing call
 - **WHEN** a `url_secret` call returns HTTP 500 with the request URL in its body
 - **THEN** the run's `external_write_errors` row and the effect evidence contain no part of the secret
 
 #### Scenario: a response echoing one segment of a multi-segment secret
-- **WHEN** a `{secret+}` connection's destination returns a body containing only the last segment of the credential
+- **WHEN** a `{secret+}` connection's destination returns a body containing only the token segment of the credential
 - **THEN** the call fails closed and that segment is not returned, persisted or quoted
+
+#### Scenario: a response quoting a public id from the same capability URL
+- **WHEN** a `{secret+}` connection's destination returns a clean 200 whose body contains a short leading segment of the credential (a workspace or channel id)
+- **THEN** the response is returned as ordinary evidence
 
 #### Scenario: the graph is read back
 - **WHEN** the owner reads the branch that posts to the webhook

@@ -253,6 +253,54 @@ files** (six concern drafts). The `codex` on this host is a shim that injects a
 bypass flag, so `-s read-only` did not hold. Inventory `git status` after a
 dispatched review.
 
+### Round 2 — `gpt-6-astra`, 2026-09-29, head `ec6a06b7`: `OVERALL: HOLES (2)`
+
+Refuting its **own** round-1 repairs, on three questions: did a repair create a
+new hole, is finding 1's disposition defensible, and is anything only narrowed.
+Four `AGREE`, two `DISAGREE_EVIDENCE`.
+
+The four `AGREE`s are the load-bearing part, because each is a claim I would
+otherwise only be asserting:
+
+- **The return-type change is sound.** `_enforce_endpoint_allowlist` now returns
+  the matched endpoint; every caller (including `_redirect_chain`) branches on
+  success-versus-exception, not truthiness. Fixed templates require equal
+  segment counts, an ordinary rest placeholder is final so it cannot shift an
+  earlier reserved slot, and `full` returning `None` cannot authorize a
+  substitution.
+- **The new bundle members collide with nothing.** No `secret_values()` consumer
+  assumes one value, and no `get()` name collides.
+- **Finding 1's disposition is right.** astra reproduced the redeposit race
+  with `bearer` on the **pre-feature** commit `7743112e` — which is the evidence
+  I wanted for filing it rather than fixing it here — and confirmed
+  `url_secret` does not widen its blast radius (substitution preserves
+  hostname and port, and the scheme forbids redirect-enabled endpoints).
+- **Round-1 findings 2, 5 and 6 are closed in their original forms.**
+
+The two open ones:
+
+| # | Finding | Disposition |
+|---|---|---|
+| R2-1 | Per-segment response scanning rejects clean responses that contain a platform wrapper key (`body_text/<token>` fails a 200) | **Already fixed** in `ada98dfa`, written before this round returned — the per-segment scan floor is 16 characters, and astra's colliding keys are 8-9. Pinned by `test_no_platform_response_key_can_collide_with_a_scanned_segment`, which fails if a wrapper key ever grows to 16. |
+| R2-2 | The closing invariant still permits reserved tokens outside the substituted slot | **Fixed** — `_reject_stray_reserved_tokens` |
+
+**R2-2 is the honest one.** The design said "nothing reserved survives
+substitution" and the check did not deliver it: it compared **whole, undecoded**
+path segments, and the query was appended unchanged. Three spellings survived —
+`?q={secret}`, `%7Bsecret%7D` inside a permissive `{tail+}`, and
+`prefix{secret}` embedded in a larger segment. astra was explicit that none of
+them substitutes a credential into the wrong slot; the positioned substituter
+had settled that. But a reserved token is a platform marker, and sending one
+tells a receiver what shape the connection is. The check is now a substring
+test, on the raw text **and** its percent-decoded form, over the path with the
+legitimate slot blanked and over the whole query — and it runs before the secret
+is joined in, so no refusal can carry it.
+
+**Stopping at two rounds.** Round 2's findings are fixed; a third round would be
+reviewing repairs to repairs, which this repo has measured as non-convergent
+(`AGENTS.md`: fixing round N's findings often creates round N+1's). What remains
+open is one filed concern that both rounds agree is pre-existing.
+
 ### Live proof
 
 Mint a hook on the **founder's own** universe (`write_graph target="webhook"

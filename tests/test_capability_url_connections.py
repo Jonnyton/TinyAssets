@@ -621,6 +621,93 @@ def test_substitution_is_positioned_by_the_template_not_by_a_search() -> None:
     assert out.path_qs == f"/hooks/{HOOK_SECRET}/echo/anything"
 
 
+@pytest.mark.parametrize(
+    "path_qs",
+    [
+        # astra refute round 2, FINDING 2 — three spellings that survived a
+        # whole-segment, undecoded closing check.
+        "/hooks/{secret}?q={secret}",          # in the QUERY, appended unchanged
+        "/hooks/{secret}/%7Bsecret%7D",        # percent-encoded (legal bytes)
+        "/hooks/{secret}/%7bsecret%7d",        # ...in lower case
+        "/hooks/{secret}/prefix{secret}",      # embedded in a larger segment
+        "/hooks/{secret}/a{secret+}b",         # ...the rest spelling, embedded
+    ],
+)
+def test_no_reserved_token_survives_substitution_in_any_spelling(
+    path_qs: str,
+) -> None:
+    """The invariant the design states is "nothing reserved survives". Whole-
+    segment equality on the undecoded path did not deliver it.
+
+    None of these substitutes a credential into the wrong slot -- the positioned
+    substituter settled that -- but the reserved token is a PLATFORM marker, and
+    sending one tells the receiver what shape this connection is. So the check
+    is a substring, on the raw text AND its percent-decoded form, over the path
+    with the legitimate slot blanked and over the whole query.
+
+    MUTATION CHECK: drop `_reject_stray_reserved_tokens` and every row here
+    reaches the wire with its token intact.
+    """
+    endpoint = _parse_allowed_endpoints(
+        [
+            {
+                "host": HOOK_HOST,
+                "path_template": "/hooks/{secret}/{tail+}",
+                "methods": ["POST"],
+                "param_patterns": {"tail": ".*"},
+                "allowed_query": ["q"],
+            }
+        ]
+    )[0]
+    with pytest.raises(SsrfValidationError) as exc:
+        _substitute(path_qs, endpoint)
+    assert "only where the endpoint declares it" in str(exc.value)
+    assert HOOK_SECRET not in str(exc.value)
+
+
+def test_a_reserved_token_is_refused_on_every_other_scheme_too() -> None:
+    """A header scheme has no slot at all, so no occurrence is legitimate --
+    including an encoded one in the query."""
+    with pytest.raises(SsrfValidationError):
+        _substitute_url_secret(
+            _canonical("/v1/messages?note=%7Bsecret%7D"),
+            auth_scheme="bearer",
+            bundle=ConnectionSecretBundle(token="tok"),
+        )
+
+
+def test_no_platform_response_key_can_collide_with_a_scanned_segment() -> None:
+    """astra refute round 2, FINDING 1.
+
+    Per-segment response scanning collides with the platform's OWN response
+    wrapper keys when the floor is low: astra reproduced
+    `body_text/HighEntropyTokenABC123` failing a clean HTTP 200, because
+    `body_text` was scanned as if it were a credential. The repair is the
+    16-character floor -- but the durable guard is this test, which fails if
+    someone adds a wrapper key long enough to collide again.
+    """
+    from tinyassets.storage.outbound_connections import (
+        _URL_SECRET_SCANNED_SEGMENT_CHARS,
+    )
+
+    # Every key the driver and `bounded_evidence` put on a response.
+    wrapper_keys = {
+        "status", "reason", "headers", "body", "body_text", "body_truncated",
+        "body_chars", "body_sha256", "body_hint", "header_names", "accepted",
+        "accepted_status", "delivered", "response",
+    }
+    too_long = {k for k in wrapper_keys if len(k) >= _URL_SECRET_SCANNED_SEGMENT_CHARS}
+    assert not too_long, (
+        "these platform response keys are long enough to be scanned as a "
+        f"credential segment and would fail clean responses: {sorted(too_long)}"
+    )
+    # astra's exact reproduction, on the current floor.
+    assert url_secret_sensitive_values("body_text/HighEntropyTokenABC123") == (
+        "body_text/HighEntropyTokenABC123",
+        "HighEntropyTokenABC123",
+    )
+
+
 def test_substitution_refuses_a_token_in_a_position_the_template_did_not_reserve(
 ) -> None:
     """The same hole through an ordinary `{param}`: the reserved token can ride

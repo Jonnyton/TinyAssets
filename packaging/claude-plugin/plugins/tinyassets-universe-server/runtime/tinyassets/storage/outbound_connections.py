@@ -1869,6 +1869,32 @@ def url_secret_sensitive_values(credential: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
+def _reject_stray_reserved_tokens(text: str, *, what: str) -> None:
+    """Refuse a reserved capability-url token ANYWHERE in ``text``.
+
+    Whole-segment equality was not enough (gpt-6-astra refute round 2,
+    FINDING 2). Three spellings survived it: a token in the QUERY string
+    (``?q={secret}``, which the substituter appended unchanged), a
+    percent-encoded token in a permissive ``{tail+}`` (``%7Bsecret%7D`` — legal
+    bytes, so the canonical parse admits it), and one embedded in a larger
+    segment (``prefix{secret}``).
+
+    None of them substitutes a credential into the wrong slot — the positioned
+    substituter settled that — but the reserved token is a PLATFORM marker, and
+    a request carrying one outside its declared slot is malformed. Sending it
+    tells the receiver what shape this connection is, and it leaves an invariant
+    the design states ("nothing reserved survives") not actually holding. So:
+    substring, on the raw text and on its percent-decoded form.
+    """
+    candidates = (text, urllib.parse.unquote(text))
+    for candidate in candidates:
+        if _URL_SECRET_TOKEN in candidate or _URL_SECRET_REST_TOKEN in candidate:
+            raise SsrfValidationError(
+                "the reserved capability-url placeholder may appear only where "
+                f"the endpoint declares it (found in the {what})"
+            )
+
+
 def _positioned_url_secret_path(
     path: str, endpoint: OutboundEndpoint, secret: str, token: str
 ) -> str:
@@ -1880,7 +1906,8 @@ def _positioned_url_secret_path(
     ``{secret+}`` in the caller-controlled tail and put the credential there,
     at a path the owner granted for arbitrary content. Positioning by the
     template puts it only where the template says, and the closing invariant
-    below refuses any reserved token left anywhere else.
+    below — evaluated on the path with the reserved slot BLANKED — refuses any
+    reserved token left anywhere else, in any spelling.
     """
     template_segments = endpoint.path_template.split("/")
     concrete = path.split("/")
@@ -1894,6 +1921,7 @@ def _positioned_url_secret_path(
                 "the capability-url placeholder is not where the endpoint declares it"
             )
         rebuilt = [*concrete[:prefix], secret]
+        remainder = [*concrete[:prefix], ""]
     else:
         try:
             index = template_segments.index(token)
@@ -1906,17 +1934,14 @@ def _positioned_url_secret_path(
                 "the capability-url placeholder is not where the endpoint declares it"
             )
         rebuilt = [*concrete[:index], secret, *concrete[index + 1:]]
-    result = "/".join(rebuilt)
-    # The closing invariant: nothing reserved may survive substitution. A token
-    # left in a `{param}`/`{tail+}` position would go on the wire literally,
-    # telling the receiver this is a capability URL and which shape it has.
-    segments = result.split("/")
-    if _URL_SECRET_TOKEN in segments or _URL_SECRET_REST_TOKEN in segments:
-        raise SsrfValidationError(
-            "the reserved capability-url placeholder may appear only where the "
-            "endpoint declares it"
-        )
-    return result
+        remainder = [*concrete[:index], "", *concrete[index + 1:]]
+    # The closing invariant: nothing reserved may survive substitution.
+    # Evaluated on the path WITH THE RESERVED SLOT BLANKED, so the one
+    # legitimate occurrence is excluded and every other spelling — encoded,
+    # embedded, or in a later segment — is caught (astra round 2, FINDING 2).
+    # Checked before the secret is joined in, so no refusal can carry it.
+    _reject_stray_reserved_tokens("/".join(remainder), what="request path")
+    return "/".join(rebuilt)
 
 
 def _substitute_url_secret(
@@ -1954,16 +1979,9 @@ def _substitute_url_secret(
     # query against `query_patterns`, and splicing a credential into a query
     # would put it somewhere the owner's grant never described.
     path, sep, query = canonical.path_qs.partition("?")
-    reserved_present = any(
-        candidate in path.split("/") or candidate in query
-        for candidate in (_URL_SECRET_TOKEN, _URL_SECRET_REST_TOKEN)
-    )
     if scheme != _URL_SECRET_SCHEME:
-        if reserved_present:
-            raise SsrfValidationError(
-                "the reserved capability-url placeholder is only substituted on a "
-                f"{_URL_SECRET_SCHEME} connection"
-            )
+        # No slot exists on this scheme, so no occurrence anywhere is legitimate.
+        _reject_stray_reserved_tokens(canonical.path_qs, what="request")
         return canonical
     if normalize_access_mode(access_mode) != ACCESS_EXACT:
         # A `full` connection is admitted on the HOST alone, so no template was
@@ -1984,6 +2002,10 @@ def _substitute_url_secret(
         raise SsrfValidationError(
             "the matched endpoint declares no capability-url placeholder"
         )
+    # The QUERY has no reserved slot: the secret of a capability URL is in the
+    # path. So no occurrence in it is legitimate, and it is refused rather than
+    # appended unchanged — which is what it was (astra round 2, FINDING 2).
+    _reject_stray_reserved_tokens(query, what="query string")
     secret = validate_url_secret_value(bundle.get("token"), token)
     return _CanonicalOutboundUrl(
         hostname=canonical.hostname,
