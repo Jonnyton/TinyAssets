@@ -89,9 +89,20 @@ _HELD_LOCK = threading.Lock()
 
 
 def _reset_after_fork() -> None:
-    """A forked child is a different process: its own token, no inherited claim."""
+    """A forked child is a different process: its own token, no inherited claim.
+
+    Its copies of the parent's lock descriptors are closed: the lock belongs to
+    the open file, so a child keeping a copy would keep a dead parent "alive".
+    """
     global _TOKEN, _HELD_LOCK
     _TOKEN = f"proc_{secrets.token_hex(12)}"
+    for held in _HELD.values():
+        fd = getattr(held, "fd", None)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     _HELD.clear()
     _HELD_LOCK = threading.Lock()
 

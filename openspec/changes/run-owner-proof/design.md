@@ -15,7 +15,8 @@ def owner_token() -> str           # this process's token, "proc_<hex>", lock ta
 def owner_state(token) -> "alive" | "dead" | "unknown"
 ```
 
-- The token is minted lazily on first use and re-minted after `fork`.
+- The token is minted lazily on first use. A fork child mints its own and closes its
+  copies of the parent's lock descriptors, so it cannot keep a dead parent "alive".
 - It matches the existing `^[A-Za-z0-9_-]{1,128}$` holder pattern. The seat holder
   `pid:hex` does not match it, which is why seats can never be proven alive today.
 - `unknown` covers a missing file, a probe error, or an unregistered token.
@@ -66,32 +67,37 @@ What changes for each kind of row:
 
 ## D4. Durable terminal-event outbox
 
-The runs DB gains this table:
-
 ```sql
 CREATE TABLE run_terminal_outbox (
-  run_id       TEXT PRIMARY KEY,   -- one terminal transition per run
-  status       TEXT NOT NULL,
-  created_at   REAL NOT NULL,
-  delivered_at REAL                -- NULL until emitted
+  run_id TEXT NOT NULL, seq INTEGER NOT NULL,   -- one row per terminal TRANSITION
+  status TEXT NOT NULL, created_at REAL NOT NULL, delivered_at REAL,
+  PRIMARY KEY (run_id, seq)
 );
+CREATE TRIGGER run_terminal_outbox_on_transition AFTER UPDATE OF status ON runs
+  WHEN NEW.status IN (terminal) AND OLD.status NOT IN (terminal) ...
 ```
 
-- **Written with the status.** Every transition into a terminal status inserts a
-  row in the same transaction as the status update: `update_run_status`, D3's
-  recovery, and #4125's boot sweep. `INSERT OR IGNORE` makes a second terminal
-  write a no-op.
-- **Delivered at least once.** The writer emits right after commit and marks the
-  row `delivered_at`. The watcher tick and boot re-emit rows still undelivered
-  after 30 s.
-- **Consumed at most once.** `automation_events._emit` registers a wake only if
-  no wake exists for `(subscription_id, event.run_id)`. A unique partial index on
-  the wake's `event_key` column is filled only for event wakes. Duplicate delivery
-  is then harmless, and delivery is effectively exactly once.
+- **Written by a trigger.** A trigger writes the row in the status write's own
+  transaction, so no terminal path can skip it: `update_run_status`, recovery,
+  `terminalize_unstarted_run`, delivery recovery, or any direct SQL. It fires only
+  on a non-terminal to terminal transition. `seq` counts transitions, so a resumed
+  run that ends again owes a second event (astra round 1).
+- **Delivery.** Delivery runs after commit: from the writer for its run, and from
+  the watcher and at boot for rows owed longer than 30 s.
+- **Acknowledgement only on success.** A delivery is acknowledged only after the
+  emit succeeds (`strict`). A failed emit stays owed.
+- **Idempotent wake.** The consumer registers at most one wake per
+  `(subscription, event occurrence)`, enforced by a unique partial index on
+  `automations.event_key`:
+  - a terminal event's occurrence is `<run>#<seq>`;
+  - a request answer's occurrence is its whole payload, because two answers
+    differ by item and status.
+- **Known gap (nonblocking).** Two deliveries racing past the pre-insert lookup
+  can both charge the registration usage meter before the unique insert keeps
+  one wake. The seats change deletes that meter.
 - **Why not transactional across both DBs.** The two databases are separate SQLite
-  files, and cross-file atomicity is not available. At-least-once plus an
-  idempotent consumer is the standard shape here. It is the same reason
-  `_enqueue_workspace_terminal` uses an outbox.
+  files, and cross-file atomicity is not available. At-least-once delivery plus an
+  idempotent consumer is the same shape `_enqueue_workspace_terminal` uses.
 
 ## D5. Seats reclaim on proven death (with `two-dimension-usage-limits`)
 

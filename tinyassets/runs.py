@@ -1332,14 +1332,32 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         requested_at   REAL NOT NULL
     );
 
-    -- run-owner-proof D4: every terminal transition, written in the same
-    -- transaction as the status and delivered at least once.
+    -- run-owner-proof D4: every terminal TRANSITION of a run (a resumed run
+    -- ends again), written by the trigger below in the same transaction as
+    -- the status, whatever wrote it, and delivered at least once.
     CREATE TABLE IF NOT EXISTS run_terminal_outbox (
-        run_id         TEXT PRIMARY KEY,
+        run_id         TEXT NOT NULL,
+        seq            INTEGER NOT NULL,
         status         TEXT NOT NULL,
         created_at     REAL NOT NULL,
-        delivered_at   REAL
+        delivered_at   REAL,
+        PRIMARY KEY (run_id, seq)
     );
+
+    CREATE TRIGGER IF NOT EXISTS run_terminal_outbox_on_transition
+    AFTER UPDATE OF status ON runs
+    WHEN NEW.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+     AND OLD.status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')
+    BEGIN
+        INSERT INTO run_terminal_outbox (run_id, seq, status, created_at)
+        VALUES (
+            NEW.run_id,
+            (SELECT COALESCE(MAX(seq), 0) + 1 FROM run_terminal_outbox
+              WHERE run_id = NEW.run_id),
+            NEW.status,
+            (julianday('now') - 2440587.5) * 86400.0
+        );
+    END;
 
     -- Phase 4: eval + iteration hooks.
 
@@ -2067,7 +2085,7 @@ def update_run_status(
     if token_count is not None:
         sets.append("token_count = ?")
         params.append(token_count)
-    if status == RUN_STATUS_RUNNING:
+    if status in (RUN_STATUS_RUNNING, RUN_STATUS_RESUMED):
         # Whoever takes the run forward owns it from here: a resume, or a
         # worker that is not the process that queued it.
         from tinyassets.process_liveness import owner_token
@@ -2169,7 +2187,7 @@ def update_run_status(
         ):
             # The transition, not every terminal write: a later write that
             # only re-persists output must not announce the run twice.
-            completed_row = _record_terminal_event(conn, run_id, status)
+            completed_row = True  # the trigger owed its event in this transaction
         if status in _TERMINAL_STATUSES:
             # A lease in this database is owed THROUGH the outbox in the same
             # transaction (workspace-node D0): never a direct delete.  A
@@ -2246,26 +2264,12 @@ def update_run_status(
         deliver_terminal_events(base_path, run_ids=[run_id])
 
 
-def _record_terminal_event(conn: sqlite3.Connection, run_id: str, status: str) -> bool:
-    """Owe this run's terminal event, in the caller's status transaction.
-
-    One row per run: ``INSERT OR IGNORE`` makes a second terminal write a
-    no-op. Delivery is after commit and repeated until it succeeds, so a crash
-    between the status and the event cannot lose it (run-owner-proof D4).
-    """
-    return conn.execute(
-        "INSERT OR IGNORE INTO run_terminal_outbox (run_id, status, created_at) "
-        "VALUES (?, ?, ?)",
-        (run_id, status, _now()),
-    ).rowcount == 1
-
-
 #: Undelivered outbox rows younger than this belong to the writer that is about
 #: to deliver them; older ones are redelivered by the watcher and at boot.
 TERMINAL_REDELIVERY_SECONDS = 30.0
 
 _OWED_EVENTS = (
-    "SELECT o.run_id, o.status, r.branch_def_id, r.actor, r.queue_universe_id, "
+    "SELECT o.run_id, o.seq, o.status, r.branch_def_id, r.actor, r.queue_universe_id, "
     "r.cause_principal FROM run_terminal_outbox o JOIN runs r USING (run_id) "
     "WHERE o.delivered_at IS NULL "
 )
@@ -2289,24 +2293,32 @@ def deliver_terminal_events(
             if run_ids is not None:
                 marks = ",".join("?" for _ in run_ids) or "''"
                 owed = conn.execute(
-                    _OWED_EVENTS + f"AND o.run_id IN ({marks})", list(run_ids),
+                    _OWED_EVENTS + f"AND o.run_id IN ({marks}) ORDER BY o.run_id, o.seq",
+                    list(run_ids),
                 ).fetchall()
             else:
                 owed = conn.execute(
-                    _OWED_EVENTS + "AND o.created_at <= ?", (_now() - older_than,),
+                    _OWED_EVENTS + "AND o.created_at <= ? ORDER BY o.run_id, o.seq",
+                    (_now() - older_than,),
                 ).fetchall()
     except sqlite3.Error:
         logger.exception("terminal outbox read failed")
         return 0
     delivered = 0
     for row in owed:
-        _emit_run_completed(base_path, row["run_id"], row["status"], row)
+        # Acknowledged only after the emit succeeded: a failure leaves the row
+        # owed and the watcher delivers it again (the wake is idempotent).
+        if not _emit_run_completed(
+            base_path, row["run_id"], row["status"], row,
+            event_id=f"{row['run_id']}#{row['seq']}", strict=True,
+        ):
+            continue
         try:
             with _connect(base_path) as conn:
                 conn.execute(
                     "UPDATE run_terminal_outbox SET delivered_at = ? "
-                    "WHERE run_id = ? AND delivered_at IS NULL",
-                    (_now(), row["run_id"]),
+                    "WHERE run_id = ? AND seq = ? AND delivered_at IS NULL",
+                    (_now(), row["run_id"], row["seq"]),
                 )
             delivered += 1
         except sqlite3.Error:
@@ -2314,11 +2326,19 @@ def deliver_terminal_events(
     return delivered
 
 
-def _emit_run_completed(base_path: str | Path, run_id: str, status: str, row: Any) -> None:
-    """Wake the owner's ``run_completed`` subscriptions. Never raises."""
+def _emit_run_completed(
+    base_path: str | Path, run_id: str, status: str, row: Any,
+    *, event_id: str = "", strict: bool = False,
+) -> bool:
+    """Wake the owner's ``run_completed`` subscriptions.
+
+    ``event_id`` names this terminal transition (``<run>#<seq>``) so a second
+    delivery of it finds the first wake. ``strict`` reports a failure instead
+    of swallowing it, so the outbox keeps the event owed.
+    """
     from tinyassets.automation_events import emit_run_completed
 
-    emit_run_completed(
+    return emit_run_completed(
         base_path,
         run_id=run_id,
         branch_def_id=str(row["branch_def_id"] or ""),
@@ -2326,7 +2346,9 @@ def _emit_run_completed(base_path: str | Path, run_id: str, status: str, row: An
         actor=str(row["actor"] or ""),
         queue_universe_id=str(row["queue_universe_id"] or ""),
         cause_principal=str(row["cause_principal"] or ""),
-    )
+        event_id=event_id,
+        strict=strict,
+    ) is not None
 
 
 def terminalize_unstarted_run(
@@ -2379,6 +2401,9 @@ def terminalize_unstarted_run(
         owed = _enqueue_workspace_terminal(conn, base_path, run_id)
         workspace_base = _workspace_terminal_base(conn, base_path, run_id)
     _finish_terminal_workspace_release(base_path, run_id, workspace_base, local_owed=owed)
+    # The status trigger owed this run's terminal event; deliver it now rather
+    # than on the watcher's next pass.
+    deliver_terminal_events(base_path, run_ids=[run_id])
     return settled
 
 
@@ -6584,9 +6609,9 @@ def in_flight_owner_tokens(base_path: str | Path) -> set[str]:
     with _connect(base_path) as conn:
         return {
             str(row["owner_token"]) for row in conn.execute(
-                "SELECT DISTINCT owner_token FROM runs WHERE status IN (?, ?) "
+                "SELECT DISTINCT owner_token FROM runs WHERE status IN (?, ?, ?) "
                 "AND owner_token IS NOT NULL",
-                (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
+                (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING, RUN_STATUS_RESUMED),
             )
         }
 
@@ -6621,10 +6646,10 @@ def recover_in_flight_runs(
         prepared_exclusion = _prepared_run_recovery_exclusion(conn)
         rows = conn.execute(
             "SELECT run_id, status, queue_universe_id, branch_def_id, actor, "
-            "cause_principal, owner_token, started_at FROM runs WHERE status IN (?, ?) "
+            "cause_principal, owner_token, started_at FROM runs WHERE status IN (?, ?, ?) "
             "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
             "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
-            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
+            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING, RUN_STATUS_RESUMED),
         ).fetchall()
         candidates = _dead_owner_rows(base_path, rows, started_before=started_before)
         # A run still waiting for the workspace never executed a node: it keeps
@@ -6637,18 +6662,17 @@ def recover_in_flight_runs(
         for run_id in in_flight:
             moved = conn.execute(
                 "UPDATE runs SET status = ?, error = ?, finished_at = ? "
-                "WHERE run_id = ? AND status IN (?, ?)",
+                "WHERE run_id = ? AND status IN (?, ?, ?)",
                 (
                     RUN_STATUS_INTERRUPTED,
                     "The process running this run stopped before it finished.",
                     now,
                     run_id,
-                    RUN_STATUS_QUEUED, RUN_STATUS_RUNNING,
+                    RUN_STATUS_QUEUED, RUN_STATUS_RUNNING, RUN_STATUS_RESUMED,
                 ),
             ).rowcount
             count += moved
             if moved:
-                _record_terminal_event(conn, run_id, RUN_STATUS_INTERRUPTED)
                 interrupted_rows.append(by_id[run_id])
         for run_id in in_flight:
             # Same-database work is atomic with the rewrite.  A separate

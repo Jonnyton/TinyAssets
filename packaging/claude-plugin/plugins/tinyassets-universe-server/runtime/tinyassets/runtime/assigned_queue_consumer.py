@@ -261,19 +261,27 @@ class AssignedQueueConsumer:
         # until then it is the proof another process needs to reclaim that
         # holder's lease or recover its run.
         try:
-            named = AutomationStore(self.base_path).lease_holders()
-            named |= in_flight_owner_tokens(self.base_path)
-            for stale in (self.base_path / LIVENESS_DIR).glob("*.lock"):
-                holder = stale.stem
-                if holder == self.consumer_id or holder in named:
+            # Probe FIRST, then read who is still named: a dead process can add
+            # no reference after its probe returned dead, so a snapshot taken
+            # before the probe could miss a run it committed just before dying.
+            dead = [
+                stale.stem
+                for stale in (self.base_path / LIVENESS_DIR).glob("*.lock")
+                if stale.stem != self.consumer_id
+                and owner_state(self.base_path, stale.stem) == DEAD
+            ]
+            named = AutomationStore(self.base_path).lease_holders() if dead else set()
+            if dead:
+                named |= in_flight_owner_tokens(self.base_path)
+            for holder in dead:
+                if holder in named:
                     continue
-                if owner_state(self.base_path, holder) == DEAD:
-                    path = liveness_path(self.base_path, holder)
-                    for leftover in (path, _pid_path(path)):
-                        try:
-                            leftover.unlink()
-                        except OSError:
-                            pass
+                path = liveness_path(self.base_path, holder)
+                for leftover in (path, _pid_path(path)):
+                    try:
+                        leftover.unlink()
+                    except OSError:
+                        pass
         except (OSError, sqlite3.Error):
             logger.exception("consumer liveness sweep failed")
 
