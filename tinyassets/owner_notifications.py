@@ -78,13 +78,41 @@ MAX_TITLE_CHARS = 60
 #: request cannot make an unbounded payload.
 MAX_ITEM_IDS = 20
 
+#: The whole payload has to fit one web-push record (RFC 8291), and the title
+#: and body are the only parts that vary in size. Bounded in BYTES, because a
+#: character budget is not a size budget: a 120-emoji title is 120 characters
+#: and 480 bytes, and JSON-escaping non-ASCII inflated it six-fold, so an ask
+#: the request API accepted produced 4164 bytes against a 4079-byte record and
+#: was refused at the transport -- a notification silently lost to input shape
+#: (gpt-6-astra round 2, 2026-09-29).
+MAX_TITLE_BYTES = 200
+MAX_BODY_BYTES = 600
+
 #: Anything that is not printable text. Newlines included: a body that can
 #: start a new line can fake a second notification inside one.
 _CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+#: Characters that OCCUPY NO SPACE. A name made of them renders as an
+#: invisible identity line, which is a notification that appears to come
+#: from nobody -- so they are removed rather than replaced with a space
+#: (gpt-6-astra round 2, 2026-09-29). Zero-width marks, the bidi overrides
+#: (which can visually reverse a name), and the word joiner.
+_INVISIBLE = re.compile(
+    "[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]"
+)
 
 
-def _flat(value: Any, limit: int) -> str:
-    return _CONTROL.sub(" ", str(value or "")).strip()[:limit]
+def _flat(value: Any, limit: int, *, byte_limit: int = 0) -> str:
+    """One line of printable text, bounded in characters and optionally bytes.
+
+    ``byte_limit`` is what actually matters for anything that reaches a
+    payload: the record a web push fits into is measured in bytes, and a
+    character cap is not a size cap. Truncation is on a UTF-8 boundary, so a
+    bounded string never ends in half a character.
+    """
+    text = _INVISIBLE.sub("", _CONTROL.sub(" ", str(value or ""))).strip()[:limit]
+    if byte_limit and len(text.encode("utf-8")) > byte_limit:
+        text = text.encode("utf-8")[:byte_limit].decode("utf-8", "ignore").strip()
+    return text
 
 
 def ask_key(request: dict[str, Any]) -> str:
@@ -115,7 +143,7 @@ def ask_key(request: dict[str, Any]) -> str:
 #: security-shaped title read as a platform notice (gpt-6-astra, 2026-09-29).
 #: No agent-supplied string can produce this suffix, because agent text only
 #: ever reaches the body.
-_SOURCE_SUFFIX = " asks"
+_SOURCE_SUFFIX = ""
 #: When the universe has no name of its own. Deliberately not the product name:
 #: "TinyAssets" in the identity position is exactly the impersonation the
 #: suffix exists to prevent.
@@ -125,10 +153,17 @@ _UNNAMED = "Your universe"
 def _universe_title(base: Path, universe_id: str) -> str:
     """The identity line: "<the universe's own name> asks".
 
-    Read off the universe's own record, never from the ask. An unreadable
-    record, a missing name, or a name that is merely the universe id all fall
-    back to a neutral phrase -- never to anything the agent wrote, because the
-    title is the one position no ask is allowed to occupy.
+    The **structure** is server-owned: the suffix is appended here and nothing
+    an ask supplies can reach the title, nor produce the suffix. The **name**
+    is the universe's own, read off its record -- which is the owner's content,
+    and on a universe that names itself from its soul is content its agent
+    influenced. That is a real limit and is stated rather than papered over
+    (``docs/concerns/2026-09-29-a-universe-can-name-itself-anything.md``): what
+    is enforced here is that the name is one line of visible text, is not the
+    bare product name, and cannot fake the structure.
+
+    An unreadable record, a missing name, or a name that is merely the universe
+    id all fall back to a neutral phrase.
     """
     try:
         from tinyassets.daemon_server import get_universe
@@ -136,9 +171,15 @@ def _universe_title(base: Path, universe_id: str) -> str:
         name = _flat(
             get_universe(base, universe_id=universe_id).get("display_name"),
             MAX_TITLE_CHARS - len(_SOURCE_SUFFIX),
+            byte_limit=MAX_TITLE_BYTES - len(_SOURCE_SUFFIX.encode("utf-8")),
         )
     except Exception:  # noqa: BLE001 - a name we cannot read is not a reason to leak one
         name = ""
+    # A name that already ends in the suffix would render "x asks asks", which
+    # reads like a malfunction and is a way to make the structure look
+    # accidental (gpt-6-astra round 2, 2026-09-29).
+    while name.endswith(_SOURCE_SUFFIX):
+        name = name[: -len(_SOURCE_SUFFIX)].rstrip()
     if not name or name == universe_id:
         name = _UNNAMED
     return name + _SOURCE_SUFFIX
@@ -146,8 +187,8 @@ def _universe_title(base: Path, universe_id: str) -> str:
 
 def _compose(base: Path, universe_id: str, request: dict[str, Any]) -> Notification:
     """What the owner sees. Identity server-side, words agent-side, ids only."""
-    kind = _flat(request.get("kind"), 24)
-    title = _flat(request.get("title"), MAX_BODY_CHARS)
+    kind = _flat(request.get("kind"), 24, byte_limit=96)
+    title = _flat(request.get("title"), MAX_BODY_CHARS, byte_limit=MAX_BODY_BYTES)
     body = f"{kind}: {title}" if kind else title
     items = [
         _flat(i.get("item_id"), 64)
@@ -161,13 +202,49 @@ def _compose(base: Path, universe_id: str, request: dict[str, Any]) -> Notificat
         "request_kind": kind,
     }
     if items:
-        data["item_ids"] = ",".join(items[:MAX_ITEM_IDS])
+        # Item ids are ASCII by validation, so the character bound IS a byte
+        # bound here -- but the JOIN is what has to fit, not each id.
+        joined = ",".join(items[:MAX_ITEM_IDS])[:MAX_ITEM_IDS * 65]
+        data["item_ids"] = joined
         data["item_count"] = str(len(items))
-    return Notification(
+    notification = Notification(
         title=_universe_title(base, universe_id),
-        body=_flat(body, MAX_BODY_CHARS) or "Something needs you.",
+        body=_flat(body, MAX_BODY_CHARS, byte_limit=MAX_BODY_BYTES)
+        or "Something needs you.",
         data=data,
     )
+    # The whole thing, as the web transport will serialise it. Composing each
+    # part to its own bound still let the SUM exceed one record, and the
+    # transport correctly refused to send -- losing the notification to input
+    # shape (gpt-6-astra round 2, 2026-09-29). Trimming the body is the right
+    # give: the identity line and the ids are what make it actionable.
+    return _within_record(notification)
+
+
+def _within_record(notification: Notification) -> Notification:
+    """Trim the body until the serialised payload fits one web-push record."""
+    from tinyassets.notify.webpush import payload_bytes, record_budget
+
+    budget = record_budget()
+    body = notification.body
+    while body and len(payload_bytes(notification)) > budget:
+        # Halve, then settle: a linear walk over a 4 KB body is pointless work.
+        body = body[: max(1, len(body) // 2)]
+        notification = Notification(
+            title=notification.title, body=body, data=notification.data,
+            silent=notification.silent,
+        )
+    if len(payload_bytes(notification)) > budget:
+        # The identity line and the ids alone do not fit, which means the ids
+        # are the size. Drop the optional ones rather than send nothing.
+        trimmed = {
+            k: v for k, v in notification.data.items() if k != "item_ids"
+        }
+        notification = Notification(
+            title=notification.title, body=notification.body, data=trimmed,
+            silent=notification.silent,
+        )
+    return notification
 
 
 def _owner_of(base: Path, universe_id: str) -> str:

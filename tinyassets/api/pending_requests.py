@@ -2036,6 +2036,21 @@ def _answer_item(
     """
     from tinyassets.storage.pending_requests import resolve_item
 
+    # BIND the row that resolves to the row that was displayed, exactly as the
+    # whole-request path does. This branch returns before that check, so an
+    # item answer skipped the pin entirely: an item edited after the tab was
+    # rendered still answered and still closed the request (gpt-6-astra round
+    # 2, 2026-09-29). The pin covers `items`, so it is the check that makes
+    # putting items inside it mean anything.
+    if not displayed_row_matches(row):
+        return {
+            "error": "request_changed",
+            "detail": (
+                "this request was edited after it was shown; it was not "
+                "answered -- read it again"
+            ),
+            "request_pending": True,
+        }
     if str((row.get("action") or {}).get("type") or "answer") != "answer":
         return _bad("this request is one decision, not a checklist")
     if not row.get("items"):

@@ -365,9 +365,11 @@ def test_an_unnamed_universe_never_borrows_the_product_name(base):
         assert "Security alert" not in notification.title
 
 
-def test_no_agent_string_can_produce_the_title_suffix(base):
-    """The suffix is the part that establishes provenance, so it has to be
-    unreachable from anything an ask supplies."""
+def test_nothing_an_ask_supplies_reaches_the_title(base):
+    """Scoped to what actually holds: an ASK cannot reach the title, and
+    cannot produce the suffix. The universe's NAME is a separate matter --
+    see test_a_universe_name_cannot_fake_the_title_structure and the concern
+    it points at."""
     from tinyassets.owner_notifications import _SOURCE_SUFFIX, _compose
 
     _home(base, A_UID, ALICE, A_NAME)
@@ -380,6 +382,120 @@ def test_no_agent_string_can_produce_the_title_suffix(base):
 
     assert notification.title == A_NAME + _SOURCE_SUFFIX
     assert notification.title.count(_SOURCE_SUFFIX) == 1
+
+
+def test_a_universe_name_cannot_fake_the_title_structure(base):
+    """A universe names itself, and on a soul-learned name that is content its
+    agent influenced (gpt-6-astra round 2, 2026-09-29). What is enforced is
+    that the name is one line of VISIBLE text and cannot counterfeit the
+    server-owned structure. Which name a person's universe may carry is a
+    naming-lane question -- see the concern."""
+    from tinyassets.daemon_server import set_universe_display_name
+    from tinyassets.owner_notifications import _UNNAMED, _compose
+
+    _home(base, A_UID, ALICE, A_NAME)
+    ask = {"request_id": "req_x", "kind": "TODO", "title": "Today"}
+
+    # A name that already ends in the suffix cannot render "x asks asks".
+    set_universe_display_name(base, universe_id=A_UID, display_name="x asks")
+    assert _compose(base, A_UID, ask).title == "x asks"
+    set_universe_display_name(base, universe_id=A_UID, display_name="y asks asks")
+    assert _compose(base, A_UID, ask).title == "y asks"
+
+    # A name made of invisible characters is not an identity line.
+    for invisible in ("​", "​‎⁠", "﻿"):
+        set_universe_display_name(
+            base, universe_id=A_UID, display_name=invisible,
+        )
+        assert _compose(base, A_UID, ask).title == _UNNAMED + " asks"
+
+    # A bidi override cannot visually reverse the line.
+    set_universe_display_name(
+        base, universe_id=A_UID, display_name="safe‮reversed",
+    )
+    assert "‮" not in _compose(base, A_UID, ask).title
+
+
+def test_a_retirement_reason_is_a_code_never_transport_text(base):
+    """`retired_reason` is the one string on this table a transport supplies,
+    and it comes back out of `list_devices`. Injecting a bearer token through
+    TransportGone returned that text verbatim (gpt-6-astra round 2,
+    2026-09-29)."""
+    _home(base, A_UID, ALICE, A_NAME)
+    _register(base, ALICE, "token-alice-phone")
+    leaky = TransportGone("Bearer ya29.SUPER-SECRET-TOKEN is dead")
+    _recorder, transports = _fake(raises=leaky)
+
+    _raise_request(base, A_UID, ALICE, transports)
+
+    [listed] = devices.list_devices(base, owner_user_id=ALICE)
+    assert listed["retired_reason"] == "unknown"
+    assert "SUPER-SECRET-TOKEN" not in json.dumps(listed)
+
+
+def test_a_known_gone_code_is_still_recorded(base):
+    """The allowlist must not erase the diagnostic it exists to protect."""
+    _home(base, A_UID, ALICE, A_NAME)
+    _register(base, ALICE, "token-alice-phone")
+    _recorder, transports = _fake(raises=TransportGone("UNREGISTERED"))
+
+    _raise_request(base, A_UID, ALICE, transports)
+
+    [listed] = devices.list_devices(base, owner_user_id=ALICE)
+    assert listed["retired_reason"] == "UNREGISTERED"
+
+
+def test_a_notification_of_accepted_input_always_fits_one_record(base):
+    """A 55-emoji universe name, 24-emoji kind, 120-emoji title and twenty
+    64-character item ids is accepted input, and composed to 4164 bytes
+    against a 4079-byte record -- so the transport refused it and the owner
+    got nothing (gpt-6-astra round 2, 2026-09-29). Composition fits the
+    record now, so accepted input always delivers."""
+    from tinyassets.daemon_server import set_universe_display_name
+    from tinyassets.notify.webpush import payload_bytes, record_budget
+    from tinyassets.owner_notifications import _compose
+
+    _home(base, A_UID, ALICE, A_NAME)
+    set_universe_display_name(
+        base, universe_id=A_UID, display_name="\U0001f600" * 55,
+    )
+    request = {
+        "request_id": "req_" + "a" * 24,
+        "kind": "\U0001f600" * 24,
+        "title": "\U0001f600" * 120,
+        "items": [{"item_id": f"{n:02d}" + "a" * 62, "title": "Task"}
+                  for n in range(20)],
+    }
+
+    notification = _compose(base, A_UID, request)
+
+    assert len(payload_bytes(notification)) <= record_budget()
+    # It is still a usable notification: the identity line and the ids survive.
+    assert notification.title.endswith(" asks")
+    assert notification.data["request_id"] == request["request_id"]
+
+
+def test_that_oversized_notification_actually_sends(base):
+    """The end of the same finding: not merely "fits", but delivers."""
+    from tinyassets.daemon_server import set_universe_display_name
+
+    _home(base, A_UID, ALICE, A_NAME)
+    set_universe_display_name(
+        base, universe_id=A_UID, display_name="\U0001f600" * 55,
+    )
+    _register(base, ALICE, "laptop", platform="web")
+    recorder, transports = _fake()
+
+    _row, result = _raise_request(
+        base, A_UID, ALICE, transports,
+        kind="\U0001f600" * 24, title="\U0001f600" * 120,
+        items=[{"item_id": f"{n:02d}" + "a" * 62, "title": "Task"}
+               for n in range(20)],
+        fields=[],
+    )
+
+    assert result["sent"] == 1
+    assert len(recorder.calls) == 1
 
 
 # --- cost, without a meter ----------------------------------------------------
@@ -446,9 +562,10 @@ def test_a_retry_notifies_once(base):
 
     assert first["sent"] == 1
     assert second["sent"] == 0
-    # The latch catches it before the delivery key does: one outstanding alert
-    # per device, so a second is coalesced rather than pushed.
-    assert list(second["outcomes"].values()) == ["latched"]
+    # The delivery key catches it first: this exact notification was already
+    # claimed. `replay` is decided BEFORE the latch is touched, so a refusal
+    # leaves no state -- that ordering is what a phantom latch came from.
+    assert list(second["outcomes"].values()) == ["replay"]
     assert len(recorder.calls) == 1
 
 
@@ -947,6 +1064,83 @@ def test_stored_web_subscriptions_are_narrowed_to_what_the_transport_reads(base)
     }
 
 
+_URL_ALIASES = [
+    # A fragment never leaves the client: urllib sends host + selector only.
+    "https://push.example.com/abc#bob",
+    "https://push.example.com/abc#",
+    # Host case is not significant.
+    "https://PUSH.EXAMPLE.COM/abc",
+    "https://Push.Example.Com/abc",
+    # The default https port is the same port.
+    "https://push.example.com:443/abc",
+]
+
+
+@pytest.mark.parametrize("alias", _URL_ALIASES)
+def test_a_url_alias_of_one_endpoint_cannot_retain_the_previous_owner(base, alias):
+    """These all address the same host and selector on the wire, so they are
+    one destination. Hashing the URL verbatim let each owner keep a live row
+    (gpt-6-astra round 2, 2026-09-29)."""
+    import urllib.request
+
+    canonical = "https://push.example.com/abc"
+    keys = {"p256dh": "k", "auth": "a"}
+    # What the transport would actually address, for both.
+    for url in (canonical, alias):
+        request = urllib.request.Request(url)
+        assert request.host.lower().removesuffix(":443") == "push.example.com"
+        assert request.selector.split("#")[0] == "/abc"
+    devices.register_device(
+        base, owner_user_id=ALICE, platform="web",
+        token={"endpoint": canonical, "keys": keys},
+    )
+
+    devices.register_device(
+        base, owner_user_id=BOB, platform="web",
+        token={"endpoint": alias, "keys": keys},
+    )
+
+    assert devices.list_devices(base, owner_user_id=ALICE) == []
+    assert len(devices.list_devices(base, owner_user_id=BOB)) == 1
+
+
+def test_a_genuinely_different_path_is_a_different_destination(base):
+    """The canonicalisation is narrow on purpose: merging two real
+    destinations would silently drop someone's device."""
+    keys = {"p256dh": "k", "auth": "a"}
+    for path in ("/abc", "/ABC", "/abc/", "/abc?x=1"):
+        devices.register_device(
+            base, owner_user_id=ALICE, platform="web",
+            token={"endpoint": f"https://push.example.com{path}", "keys": keys},
+        )
+
+    assert len(devices.list_devices(base, owner_user_id=ALICE)) == 4
+
+
+def test_an_android_token_cannot_delete_a_web_device_that_spells_the_same(base):
+    """One string, two protocols, two destinations. Sharing the digest
+    namespace let an FCM token whose characters equalled a web endpoint delete
+    that web device and its latch (gpt-6-astra round 2, 2026-09-29)."""
+    endpoint = "https://push.example.com/abc"
+    _home(base, A_UID, ALICE, A_NAME)
+    web = devices.register_device(
+        base, owner_user_id=ALICE, platform="web",
+        token={"endpoint": endpoint, "keys": {"p256dh": "k", "auth": "a"}},
+    )["device_id"]
+    _recorder, transports = _fake()
+    _raise_request(base, A_UID, ALICE, transports)
+    assert len(devices.outstanding_alerts(base, owner_user_id=ALICE)) == 1
+
+    devices.register_device(
+        base, owner_user_id=BOB, platform="android", token=endpoint,
+    )
+
+    assert [d["device_id"] for d in devices.list_devices(
+        base, owner_user_id=ALICE,
+    )] == [web]
+    assert len(devices.outstanding_alerts(base, owner_user_id=ALICE)) == 1
+
+
 @pytest.mark.parametrize("bad", [
     {"keys": {"p256dh": "k", "auth": "a"}},
     {"endpoint": "http://push.example.com/abc", "keys": {"p256dh": "k", "auth": "a"}},
@@ -1143,6 +1337,50 @@ def test_the_ask_key_bounds_the_loop_even_with_the_latch_released(base):
         monkeypatch.undo()
 
     assert len(recorder.calls) == 1
+
+
+def test_a_refused_claim_leaves_no_phantom_latch(base):
+    """The latch was inserted before the replay check, so a re-raise that had
+    already been delivered returned `replay` and committed a latch for a
+    request nobody was notified about -- and the NEXT request found the device
+    held by that phantom (gpt-6-astra round 2, 2026-09-29)."""
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.storage.pending_requests import withdraw_request
+
+    _home(base, A_UID, ALICE, A_NAME)
+    device_id = _register(base, ALICE, "phone")
+    recorder, transports = _fake()
+    import tinyassets.owner_notifications as notifications
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(notifications, "resolve_transports", lambda: transports)
+    try:
+        with identity_context(Identity(user_id=ALICE, username=ALICE)):
+            from tinyassets.api.pending_requests import request_from_user
+
+            ask_a = {
+                "kind": "TODO", "title": "A", "action": {"type": "answer"},
+                "fields": [{"name": "note", "type": "text", "label": "Reply"}],
+            }
+            first = request_from_user(universe_id=A_UID, payload=dict(ask_a))
+            devices.acknowledge_alert(
+                base, owner_user_id=ALICE, device_id=device_id,
+            )
+            withdraw_request(base / A_UID, first["request_id"], reason="x")
+            # Re-raising A is a replay: already delivered once.
+            second = request_from_user(universe_id=A_UID, payload=dict(ask_a))
+            withdraw_request(base / A_UID, second["request_id"], reason="x")
+            assert devices.outstanding_alerts(base, owner_user_id=ALICE) == []
+            recorder.calls.clear()
+            # A genuinely NEW ask must reach the device.
+            request_from_user(universe_id=A_UID, payload={**ask_a, "title": "B"})
+    finally:
+        monkeypatch.undo()
+
+    assert len(recorder.calls) == 1
+    [(_device, notification)] = recorder.calls
+    assert "B" in notification.body
 
 
 def test_withdrawal_neither_pushes_nor_rearms(base):

@@ -50,6 +50,10 @@ The answer path SHALL accept an optional `item_id`, resolving exactly that item 
 - **WHEN** the owner answers item `a` of a three-item request
 - **THEN** item `a` reads as answered with its values, and the request is still `pending` with `b` and `c` waiting
 
+#### Scenario: An item of an edited request is not answered
+- **WHEN** a request's stored items no longer reproduce what the owner was shown, and one of its items is answered
+- **THEN** the answer is refused naming that the request changed, and neither the item nor the request is resolved
+
 #### Scenario: The same item cannot be answered twice
 - **WHEN** the owner submits an answer for item `a` twice
 - **THEN** the second submission reports that the item is already resolved and does not overwrite the first answer

@@ -14,8 +14,16 @@ Device registration SHALL take the owning subject from the authenticated request
 - **THEN** A's row for that token is removed, and a later notification for A reaches no device holding that token
 
 #### Scenario: An alternate representation of one destination cannot alias
-- **WHEN** the same destination is registered by a second user in a form that differs only in metadata the transport does not read, in key serialisation, or in rotated keys on the same endpoint
+- **WHEN** the same destination is registered by a second user in a form that differs only in metadata the transport does not read, in key serialisation, in rotated keys on the same endpoint, or in a part of the address the transport does not send (a URL fragment, host case, the default port)
 - **THEN** it is still recognised as that one destination and the prior owner's row is removed
+
+#### Scenario: Two genuinely different destinations stay separate
+- **WHEN** addresses differing in path, path case or query are registered
+- **THEN** each is its own device, because merging real destinations would silently drop one
+
+#### Scenario: One string on two transports is two destinations
+- **WHEN** a token for one platform has the same characters as a destination registered for another platform
+- **THEN** registering it affects only its own platform's destination, and the other user's device and its outstanding alert are untouched
 
 #### Scenario: Relaunching keeps one device
 - **WHEN** the same owner registers the same destination again
@@ -51,6 +59,10 @@ The notification title SHALL be derived by the server from the universe record a
 - **WHEN** the universe has no display name of its own, or its record cannot be read
 - **THEN** the title is a neutral phrase carrying the same fixed indication, and never the platform's own name alone
 
+#### Scenario: A universe name cannot counterfeit the structure
+- **WHEN** the universe's own name already ends with the fixed indication, or consists of characters that occupy no space, or contains a direction override
+- **THEN** the delivered title carries the indication exactly once, is visible text, and cannot be visually reordered
+
 ### Requirement: Delivery addresses a destination verified at claim time
 Dispatch SHALL obtain the destination it sends to from the same transaction that claims the notification and verifies current ownership, not from an earlier read. A device that ceased to be this owner's, or was retired, between the start of dispatch and its own claim SHALL NOT be sent to.
 
@@ -80,6 +92,32 @@ A visible notification SHALL be dispatched to a device only when that device is 
 #### Scenario: Another user cannot acknowledge this owner's device
 - **WHEN** a different signed-in user acknowledges a device id belonging to this owner
 - **THEN** nothing is released and this owner's device is still holding its alert
+
+#### Scenario: A refused claim leaves no state behind
+- **WHEN** a notification is refused as a replay, or because the device already holds one
+- **THEN** nothing is recorded for it, and a later genuinely new request still reaches that device
+
+### Requirement: A notification the request surface accepted is deliverable
+Composition SHALL bound the notification in bytes, not only in characters, and SHALL fit the whole serialised payload within the transport's record so that any request the ask surface accepted can be delivered. Truncation SHALL fall on a character boundary, and SHALL reduce the agent's words before the identity line or the identifiers a client needs to open the request.
+
+#### Scenario: Multi-byte text at the accepted limits still sends
+- **WHEN** a request is raised at the accepted limits of kind, title and item count using multi-byte characters, in a universe whose name is also multi-byte
+- **THEN** the notification is delivered rather than refused by the transport
+
+#### Scenario: What survives trimming is what makes it actionable
+- **WHEN** a notification must be trimmed to fit
+- **THEN** the identity line and the request identifier remain
+
+### Requirement: Persisted device state records codes, never transport text
+A device's retirement reason SHALL be drawn from a fixed set of codes; a reason a transport supplies that is not one of them SHALL be recorded as unknown. No transport-supplied text SHALL be readable back from a device listing.
+
+#### Scenario: A transport error carrying a credential is not stored
+- **WHEN** a transport reports the destination gone with a message containing credential material
+- **THEN** the device's recorded reason is the unknown code and the message is not readable from any read
+
+#### Scenario: A known code is still recorded
+- **WHEN** a transport reports a recognised gone code
+- **THEN** that code is recorded, so the retirement stays diagnosable
 
 #### Scenario: Answered field values never leave in a payload
 - **WHEN** a request carries fields and items whose values the owner has filled in

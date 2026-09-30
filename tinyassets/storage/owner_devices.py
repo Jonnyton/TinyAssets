@@ -40,6 +40,7 @@ import json
 import logging
 import sqlite3
 import time
+import urllib.parse
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -160,8 +161,18 @@ def _connect(base_path: str | Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _token_digest(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+def _token_digest(platform: str, identity: str) -> str:
+    """The destination digest, NAMESPACED BY PLATFORM.
+
+    Without the namespace an FCM registration token whose characters happened
+    to equal a web-push endpoint deleted that web device and its latch, even
+    though the two strings do not address the same destination through
+    different transports (gpt-6-astra round 2, 2026-09-29). One string, two
+    protocols, two destinations.
+    """
+    return hashlib.sha256(
+        f"{platform}\x00{identity}".encode("utf-8")
+    ).hexdigest()
 
 
 #: Exactly the web-push subscription fields the transport uses. Anything else a
@@ -229,8 +240,32 @@ def _canonical_token(token: Any, platform: str) -> tuple[str, str]:
     )
     # The endpoint alone. NOT the narrowed document: re-subscribing in the same
     # browser can rotate the keys while keeping the endpoint, and that is the
-    # same destination.
-    return stored, endpoint
+    # same destination. Canonicalised first -- see `_canonical_endpoint`.
+    return stored, _canonical_endpoint(endpoint)
+
+
+def _canonical_endpoint(endpoint: str) -> str:
+    """The endpoint reduced to what the transport actually addresses.
+
+    ``urllib`` sends the scheme, host and selector; a **fragment** never leaves
+    the client and host case is not significant. So
+    ``https://push.example.com/abc`` and ``https://push.example.com/abc#bob``
+    are one destination, and treating them as two let each owner keep a live
+    row for the same browser (gpt-6-astra round 2, 2026-09-29).
+
+    Deliberately narrow: scheme and host are lowercased, the default port is
+    dropped, and the fragment is discarded. Nothing else is "normalised" --
+    path case, percent-encoding and DNS aliases are NOT assumed equivalent,
+    because assuming that without evidence would merge two real destinations
+    into one and silently drop a device.
+    """
+    parts = urllib.parse.urlsplit(endpoint)
+    host = (parts.hostname or "").lower()
+    if parts.port and not (parts.scheme == "https" and parts.port == 443):
+        host = f"{host}:{parts.port}"
+    return urllib.parse.urlunsplit(
+        (parts.scheme.lower(), host, parts.path, parts.query, "")
+    )
 
 
 def register_device(
@@ -267,7 +302,7 @@ def register_device(
         raise ValueError("token is required")
     if len(stored) > MAX_TOKEN_CHARS:
         raise ValueError(f"token is longer than {MAX_TOKEN_CHARS} characters")
-    digest = _token_digest(identity)
+    digest = _token_digest(kind, identity)
     now = time.time()
     with _connect(base_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -318,22 +353,43 @@ def register_device(
     return {"device_id": device_id, "platform": kind, "replaced": len(theirs)}
 
 
+#: Reasons a device row may record. A CLOSED SET, because the retirement
+#: reason is the one string on this table that comes from a transport, and a
+#: transport's exception text is a credential-leak channel: injecting
+#: ``TransportGone("Bearer TEST-SECRET-TOKEN")`` returned that text straight
+#: back out of ``list_devices`` (gpt-6-astra round 2, 2026-09-29). The shipped
+#: transports only ever pass fixed codes, so that was an incomplete boundary
+#: rather than a live leak -- but the boundary is where it has to be closed,
+#: not in each transport.
+RETIRE_REASONS = frozenset({
+    "UNREGISTERED", "NOT_FOUND", "INVALID_ARGUMENT",  # FCM
+    "404", "410",                                      # web push
+    "owner",                                           # the person removed it
+    "unknown",                                         # anything else
+})
+
+
 def retire_device(
     base_path: str | Path, *, owner_user_id: str, device_id: str, reason: str = "",
 ) -> bool:
     """The owner (or a transport reporting the destination gone) drops a device.
 
-    Scoped to ``owner_user_id``, so naming another user's device id does nothing.
+    Scoped to ``owner_user_id``, so naming another user's device id does
+    nothing. ``reason`` is mapped onto :data:`RETIRE_REASONS` and anything
+    unrecognised is stored as ``unknown`` -- never the text as given.
     """
     sub = (owner_user_id or "").strip()
     if not sub or not device_id:
         return False
+    recorded = (reason or "").strip()
+    if recorded not in RETIRE_REASONS:
+        recorded = "unknown"
     with _connect(base_path) as conn:
         cur = conn.execute(
             "UPDATE owner_devices SET enabled = 0, retired_at = ?, "
             "retired_reason = ? WHERE device_id = ? AND owner_user_id = ? "
             "AND retired_at IS NULL",
-            (time.time(), (reason or "")[:80], device_id, sub),
+            (time.time(), recorded, device_id, sub),
         )
         return cur.rowcount > 0
 
@@ -458,18 +514,36 @@ def reserve_delivery(
         ).fetchone()
         if row is None:
             return {"refused": "moved"}
+        # DECIDE FIRST, THEN WRITE. Interleaving the two let a refusal leave
+        # state behind: with the latch inserted before the replay check, a
+        # re-raise that was already delivered returned `replay` and committed
+        # a latch for a request nobody was ever notified about, so the NEXT
+        # request found the device held by a phantom (gpt-6-astra round 2,
+        # 2026-09-29). Both reads are inside BEGIN IMMEDIATE, so read-then-
+        # write is atomic and neither refusal path can half-apply.
+        already = conn.execute(
+            "SELECT 1 FROM request_notifications WHERE ask_key = ? AND item_id = ? "
+            "AND device_id = ? AND kind = ?",
+            (ask_key, item_id or "", device_id, kind),
+        ).fetchone()
+        if already is not None:
+            return {"refused": "replay"}
         if kind == KIND_RAISED:
             # One outstanding alert per device. A second while the first is
             # unanswered is coalesced: the person has already been told their
             # universe needs them, and telling them again says nothing new.
-            latched = conn.execute(
-                "INSERT OR IGNORE INTO device_alert_latch "
+            held = conn.execute(
+                "SELECT 1 FROM device_alert_latch WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+            if held is not None:
+                return {"refused": "latched"}
+            conn.execute(
+                "INSERT INTO device_alert_latch "
                 "(device_id, owner_user_id, request_id, ask_key, raised_at) "
                 "VALUES (?,?,?,?,?)",
                 (device_id, sub, request_id, ask_key, time.time()),
             )
-            if latched.rowcount <= 0:
-                return {"refused": "latched"}
         claimed = conn.execute(
             "INSERT OR IGNORE INTO request_notifications "
             "(ask_key, item_id, device_id, owner_user_id, kind, request_id, sent_at) "
@@ -639,6 +713,7 @@ __all__ = [
     "PLATFORMS",
     "PLATFORM_ANDROID",
     "PLATFORM_WEB",
+    "RETIRE_REASONS",
     "acknowledge_alert",
     "outstanding_alerts",
     "release_alerts_for_request",

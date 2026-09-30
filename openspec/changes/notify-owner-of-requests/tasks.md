@@ -72,8 +72,33 @@ collide with the app-URL move (#4112). Slice 2 (3.x) depends on #4112.
          `exc_info=True` put a bearer token.
       Plus a dedupe-key migration finding: appending an empty item list to
       every key broke existing pending rows and standing decisions.
-      One residual filed, not fixed:
-      `docs/concerns/2026-09-29-a-run-answering-its-own-request-rearms-the-alert.md`.
+      **Round 2: REJECT**, five more `DISAGREE_EVIDENCE` — two of them defects
+      the round-1 fixes introduced, which is the loop AGENTS.md warns about.
+      All fixed:
+      1. the endpoint was hashed verbatim, so a URL fragment, host case or the
+         default port still aliased one destination into two;
+      2. the digest namespace was shared across platforms, so an FCM token
+         spelling a web endpoint deleted that web device and its latch;
+      3. **(introduced in round 1)** the latch was written before the replay
+         check, so a replayed raise left a phantom latch and the device went
+         quiet;
+      4. `retired_reason` persisted transport text, readable back from
+         `list_devices`;
+      5. the title claim was too strong — a soul-learned universe name is
+         agent-influenced, and invisible or suffix-doubling names rendered;
+      6. **(introduced in round 1)** composition bounded characters while the
+         web-push record is bytes, so accepted emoji input exceeded it and was
+         refused at the transport — the notification was simply lost;
+      7. item answers returned before `displayed_row_matches`, so an edited
+         itemised row could still be answered.
+      Astra AGREED that claim-time ownership, the fifty-item clear fix and the
+      itemless dedupe compatibility all hold.
+      Two residuals filed, not fixed:
+      `docs/concerns/2026-09-29-a-run-answering-its-own-request-rearms-the-alert.md`
+      and `docs/concerns/2026-09-29-a-universe-can-name-itself-anything.md` —
+      the second belongs to the naming lane, because the only place to fix it
+      is where a display name is accepted, with its provenance in hand.
+      **Round 2 is the second of three. One round remains.**
 
 ## 3. Slice 2 — surfaces and the native release (depends on #4112)
 

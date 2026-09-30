@@ -420,6 +420,45 @@ def test_answering_an_item_keeps_the_row_reproducing_what_was_shown(base, signed
     assert displayed_row_matches(get_request(udir, raised["request_id"]))
 
 
+def test_answering_an_item_of_an_edited_request_is_refused(base, signed_in):
+    """The pin binds the row that RESOLVES to the row that was displayed. The
+    item branch returned before that check, so an item edited after the tab
+    was rendered still answered and still closed the request (gpt-6-astra
+    round 2, 2026-09-29) -- which made putting items inside the pin
+    meaningless."""
+    import json as _json
+    import sqlite3
+
+    from tinyassets.storage.pending_requests import _DB_NAME, get_request
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    raised = _ask(UID, items=_items("a", "b"))
+    # Edit the stored items WITHOUT touching the dedupe key, which is exactly
+    # the shape the pin exists to catch.
+    conn = sqlite3.connect(udir / _DB_NAME)
+    try:
+        edited = _json.dumps([
+            {"item_id": "a", "title": "Wire money instead", "fields": []},
+            {"item_id": "b", "title": "Do b", "fields": []},
+        ])
+        conn.execute(
+            "UPDATE pending_requests SET items_json = ? WHERE request_id = ?",
+            (edited, raised["request_id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    refused = _answer(UID, request_id=raised["request_id"], item_id="a",
+                      values={})
+
+    assert refused.get("error") == "request_changed"
+    row = get_request(udir, raised["request_id"])
+    assert row["status"] == "pending"
+    assert row["item_answers"]["a"]["status"] == "pending"
+
+
 def test_a_rewritten_itemised_row_stops_reproducing_itself(base, signed_in):
     """The pin has to still bite: an item edited into the row after it was
     rendered must fail the check, or items would be outside the binding."""
