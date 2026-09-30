@@ -24,6 +24,9 @@ from tinyassets.providers import agent_chat_codec as codec
 from tinyassets.providers.agent_capacity_boundary import capacity_boundary
 from tinyassets.providers.agent_inference import AgentInferenceRequest
 from tinyassets.providers.agent_model_plan import AgentModelPlan
+from tinyassets.providers.model_capacity import (
+    MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
+)
 from tinyassets.providers.native_agent_input import render_native_input
 from tinyassets.served_tools import granted_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
@@ -533,7 +536,10 @@ class AgentTurnCoordinator:
     #: bet that the source's window was per-model, and a bet re-taken without
     #: limit is just hammering. Three covers the live case (a busy free model
     #: with eligible siblings) without turning one message into a sweep.
-    MAX_FREE_SIBLING_RETRIES = 3
+    #:
+    #: Imported, not re-declared: a workflow node acts on the same guess and
+    #: must not get its own number (`providers.model_capacity`).
+    MAX_FREE_SIBLING_RETRIES = _MAX_FREE_SIBLING_RETRIES
 
     def _narrowed(self, boundary):
         """Exclude only the failed MODEL when excluding the account is a guess.

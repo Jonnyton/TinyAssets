@@ -1,3 +1,10 @@
+---
+severity: P2
+title: A cancelled universe-tool call keeps its place in the queue
+filed: 2026-09-30
+summary: Cancelling the async tool await leaves its worker thread waiting for a host slot and running the abandoned call.
+---
+
 # A cancelled universe-tool call keeps its place in the queue
 
 **Found:** Codex `gpt-6-astra` refute of PR #4134, 2026-09-30 (finding 5, P2).
