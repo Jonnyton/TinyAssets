@@ -260,7 +260,7 @@ def test_a_run_holding_only_the_lock_releases_it(tmp_path, monkeypatch):
     assert _pending(base, "r2") == [("release_lock_only", None)]
 
 
-@pytest.mark.parametrize("entry_point", ["read_sweep", "get_run", "startup"])
+@pytest.mark.parametrize("entry_point", ["startup"])
 def test_every_orphan_recovery_path_enqueues_the_owning_universe(
     tmp_path, monkeypatch, entry_point,
 ):
@@ -274,29 +274,11 @@ def test_every_orphan_recovery_path_enqueues_the_owning_universe(
     kicks: list[Path] = []
     monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: kicks.append(Path(p)))
 
-    if entry_point == "read_sweep":
-        monkeypatch.setattr(
-            runs, "ensure_workspace_reconciled", lambda *_a, **_k: False
-        )
-        monkeypatch.setattr(runs, "_mark_orphaned_run_if_needed", _always_orphan)
-        assert runs._recover_orphaned_runs_on_read(root) == 1
-    elif entry_point == "get_run":
-        monkeypatch.setattr(runs, "_mark_orphaned_run_if_needed", _always_orphan)
-        assert runs.get_run(root, run_id)["status"] == "interrupted"
-    else:
-        assert runs.recover_in_flight_runs(root) == 1
+    assert runs.recover_in_flight_runs(root) == 1
 
     assert _pending(root, run_id) == []
     assert _pending(universe, run_id) == [("wipe_scratch", lease.lease_id)]
     assert kicks == [universe]
-
-
-def _always_orphan(conn, *, run_id, status, started_at, now=None):
-    conn.execute(
-        "UPDATE runs SET status = 'interrupted', finished_at = ? WHERE run_id = ?",
-        (now or time.time(), run_id),
-    )
-    return True
 
 
 def test_startup_recovery_enqueues_every_in_flight_run(tmp_path, monkeypatch):

@@ -450,6 +450,52 @@ def _ensure_runs_recovery() -> None:
     _RUNS_RECOVERY_DONE = True
 
 
+#: How often the recovery-lock holder looks for runs whose owner died, and
+#: redelivers terminal events still owed (run-owner-proof D3/D4).
+RUN_OWNER_WATCH_SECONDS = 15.0
+
+
+def recover_dead_owner_runs_now() -> int:
+    """One recovery pass, only in the process that holds the recovery lock.
+
+    Interrupts the runs whose owning process is provably dead, then redelivers
+    every terminal event still owed. Called by the watcher and right after the
+    engine supervisor respawns a dead child. Never raises.
+    """
+    if _RUNS_RECOVERY_LOCK is None:
+        return 0
+    try:
+        from tinyassets.runs import (
+            PROCESS_STARTED_AT,
+            deliver_terminal_events,
+            recover_in_flight_runs,
+        )
+
+        base = Path(_base_path())
+        count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
+        deliver_terminal_events(base)
+        return count
+    except Exception:
+        logger.exception("dead-owner run recovery failed")
+        return 0
+
+
+def start_run_owner_watcher() -> Any:
+    """Start the recovery watcher when this process holds the recovery lock."""
+    import threading
+
+    if _RUNS_RECOVERY_LOCK is None:
+        return None
+    stop = threading.Event()
+
+    def _watch() -> None:
+        while not stop.wait(RUN_OWNER_WATCH_SECONDS):
+            recover_dead_owner_runs_now()
+
+    threading.Thread(target=_watch, name="run-owner-watcher", daemon=True).start()
+    return stop
+
+
 _FAILURE_TAXONOMY: list[tuple[type, str, str]] = []
 
 

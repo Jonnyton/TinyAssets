@@ -4833,9 +4833,12 @@ def main(
     # here, which is what lets an owner's run_completed loop survive a deploy.
     # The maintenance block above also calls it, but inside a try that an
     # earlier failure skips; this call is the one boot can rely on (once-only).
-    from tinyassets.api.runs import _ensure_runs_recovery
+    from tinyassets.api.runs import _ensure_runs_recovery, start_run_owner_watcher
 
     _ensure_runs_recovery()
+    # And keep recovering: an engine child that dies mid-run while this server
+    # lives is found within one tick, by proof that it died.
+    start_run_owner_watcher()
 
     # Enforceable visibility preflight (also fires in the HTTP app's lifespan;
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so

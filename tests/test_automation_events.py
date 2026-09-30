@@ -226,6 +226,7 @@ def test_a_deploy_killed_run_is_announced_as_interrupted(home: Path) -> None:
     _subscribe(home, "run_completed",
                {"branch_def_id": FOLLOWED, "outcome": "interrupted"})
     run_id = _start(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
+    _started_before_this_process(home, run_id)
     with _as(None):  # boot: no request is bound
         assert recover_in_flight_runs(home) == 1
     [wake] = _wakes(home)
@@ -289,7 +290,8 @@ def test_a_recovered_run_wakes_only_its_own_owner_not_a_co_admin(
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED}, owner=carol,
                branch_def_id="branch_carols")
-    _start(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
+    run_id = _start(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
+    _started_before_this_process(home, run_id)
     with _as(None):
         assert recover_in_flight_runs(home) == 1
     assert [wake.owner_principal_id for wake in _wakes(home)] == [OWNER]
@@ -743,12 +745,10 @@ def recovery(home: Path, monkeypatch):
 
 
 def _started_before_this_process(base: Path, run_id: str) -> None:
-    """The run was started by the process a deploy killed."""
-    from tinyassets.runs import PROCESS_STARTED_AT, runs_db_path
+    """The run was owned by the process a deploy killed."""
+    from tests.run_owner_helpers import mark_owner_dead
 
-    with sqlite3.connect(runs_db_path(base)) as conn:
-        conn.execute("UPDATE runs SET started_at = ? WHERE run_id = ?",
-                     (PROCESS_STARTED_AT - 60, run_id))
+    mark_owner_dead(base, run_id)
 
 
 def _status(base: Path, run_id: str) -> str:
@@ -838,3 +838,382 @@ def test_a_failed_recovery_is_retried_on_the_next_run_tool(
     assert recovery._RUNS_RECOVERY_DONE is False
     recovery._ensure_runs_recovery()
     assert recovery._RUNS_RECOVERY_DONE is True and len(calls) == 2
+
+
+# -- run-owner-proof: recovery on proven death, and the durable outbox --------
+
+
+def _run_owned_by_child(home: Path, *, die: bool):
+    """A real process that creates a running run of FOLLOWED, then dies (its
+    liveness lock released by the kernel) or stays alive and silent."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import os, sys
+        from tinyassets.runs import RUN_STATUS_RUNNING, create_run, update_run_status
+        base = {str(home)!r}
+        run_id = create_run(base, branch_def_id={FOLLOWED!r}, thread_id="t",
+                            inputs={{}}, actor={OWNER!r})
+        update_run_status(base, run_id, status=RUN_STATUS_RUNNING)
+        print(run_id, flush=True)
+        if {die!r}:
+            os._exit(0)  # no release, no terminal status: what a crash leaves
+        sys.stdin.readline()
+    """)
+    child = subprocess.Popen(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", script], cwd=str(Path(__file__).resolve().parents[1]),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    run_id = child.stdout.readline().strip()
+    assert run_id, "the child never created its run"
+    if die:
+        child.wait(timeout=30)
+    return child, run_id
+
+
+def test_a_crashed_processes_run_is_recovered_and_announced_once(home: Path) -> None:
+    """The P1 from #4125: an engine child dies mid-run while the server lives.
+    Its liveness lock is gone, so recovery has proof, interrupts the run and
+    announces it; a second delivery of the same event stores no second wake."""
+    from tinyassets.runs import deliver_terminal_events, runs_db_path
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    _child, run_id = _run_owned_by_child(home, die=True)
+
+    with _as(None):
+        assert recover_in_flight_runs(home) == 1
+    assert _status(home, run_id) == "interrupted"
+    [wake] = _wakes(home)
+    assert (wake.inputs["event"]["run_id"], wake.inputs["event"]["outcome"]) == (
+        run_id, "interrupted")
+
+    # At-least-once delivery: the event is owed again (a crash after the emit,
+    # before the mark) -- and the idempotent wake keeps it to one chain.
+    with sqlite3.connect(runs_db_path(home)) as conn:
+        conn.execute("UPDATE run_terminal_outbox SET delivered_at = NULL")
+    with _as(None):
+        assert deliver_terminal_events(home, older_than=0) == 1
+    assert [w.automation_id for w in _wakes(home)] == [wake.automation_id]
+
+
+def test_a_live_silent_processes_run_is_never_recovered(home: Path) -> None:
+    """However old and quiet, a run whose owner still holds its lock stands."""
+    from tinyassets.runs import runs_db_path
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    child, run_id = _run_owned_by_child(home, die=False)
+    try:
+        with sqlite3.connect(runs_db_path(home)) as conn:
+            conn.execute("UPDATE runs SET started_at = 1 WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM run_events WHERE run_id = ?", (run_id,))
+        with _as(None):
+            assert recover_in_flight_runs(home) == 0
+        assert _status(home, run_id) == RUN_STATUS_RUNNING
+        assert _wakes(home) == []
+    finally:
+        child.stdin.write("\n")
+        child.stdin.flush()
+        child.wait(timeout=30)
+
+
+def test_a_terminal_event_lost_between_commit_and_emit_is_redelivered(
+    home: Path, monkeypatch,
+) -> None:
+    import tinyassets.runs as runs_module
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    real = runs_module.deliver_terminal_events
+    monkeypatch.setattr(runs_module, "deliver_terminal_events", lambda *a, **k: 0)
+    run_id = _finish(home, actor=OWNER)  # the process "dies" before emitting
+    assert _wakes(home) == []
+    monkeypatch.setattr(runs_module, "deliver_terminal_events", real)
+    with _as(None):
+        assert runs_module.deliver_terminal_events(home, older_than=0) == 1
+    [wake] = _wakes(home)
+    assert wake.inputs["event"]["run_id"] == run_id
+    with _as(None):
+        assert runs_module.deliver_terminal_events(home, older_than=0) == 0
+
+
+def test_a_dead_owners_liveness_file_outlives_its_unrecovered_run(home: Path) -> None:
+    """The consumer's cleanup of dead holders' files must not delete the proof
+    a run still needs to be recovered."""
+    from tinyassets import process_liveness
+    from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+
+    _child, run_id = _run_owned_by_child(home, die=True)
+    token = _owner_token(home, run_id)
+    consumer = AssignedQueueConsumer(home)
+    try:
+        consumer._hold_liveness()
+    finally:
+        consumer._release_liveness()
+    assert process_liveness.owner_state(home, token) == process_liveness.DEAD
+
+
+def _owner_token(base: Path, run_id: str) -> str:
+    from tinyassets.runs import runs_db_path
+
+    with sqlite3.connect(runs_db_path(base)) as conn:
+        return str(conn.execute(
+            "SELECT owner_token FROM runs WHERE run_id = ?", (run_id,)).fetchone()[0])
+
+
+def test_only_the_recovery_lock_holder_recovers(home: Path, recovery) -> None:
+    _child, run_id = _run_owned_by_child(home, die=True)
+    assert recovery.recover_dead_owner_runs_now() == 0, "no lock, no recovery"
+    assert _status(home, run_id) == RUN_STATUS_RUNNING
+    with _as(None):
+        recovery._ensure_runs_recovery()
+    assert _status(home, run_id) == "interrupted"
+
+
+def test_the_process_that_takes_a_run_forward_owns_it(home: Path) -> None:
+    """Queued by one live process, taken running by another that then dies:
+    the run is the dead executor's, so it is recovered."""
+    import subprocess
+    import sys
+    import textwrap
+
+    run_id = _start(home, actor=OWNER)  # created here: this live process owns it
+    with sqlite3.connect(str(home / ".runs.db")) as conn:
+        conn.execute("UPDATE runs SET status = 'queued' WHERE run_id = ?", (run_id,))
+    script = textwrap.dedent(f"""
+        import os
+        from tinyassets.runs import RUN_STATUS_RUNNING, update_run_status
+        update_run_status({str(home)!r}, {run_id!r}, status=RUN_STATUS_RUNNING)
+        os._exit(0)
+    """)
+    subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", script], cwd=str(Path(__file__).resolve().parents[1]),
+        check=True, timeout=60,
+    )
+    with _as(None):
+        assert recover_in_flight_runs(home) == 1
+    assert _status(home, run_id) == "interrupted"
+
+
+# -- round 1 (gpt-6-astra): every terminal path, resumes, failed emits --------
+
+
+def test_a_failed_emit_stays_owed_and_is_delivered_later(home: Path, monkeypatch) -> None:
+    import tinyassets.automation_events as events
+    from tinyassets.runs import deliver_terminal_events
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    real = events._emit
+
+    def broken(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(events, "_emit", broken)
+    _finish(home, actor=OWNER)
+    assert _wakes(home) == []
+    monkeypatch.setattr(events, "_emit", real)
+    with _as(None):
+        assert deliver_terminal_events(home, older_than=0) == 1
+    assert len(_wakes(home)) == 1
+
+
+def test_a_terminal_status_written_by_any_path_is_announced(home: Path) -> None:
+    """terminalize_unstarted_run, delivery recovery and any direct write reach
+    the outbox through the status trigger, not through update_run_status."""
+    from tinyassets.runs import deliver_terminal_events, runs_db_path
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    run_id = _start(home, actor=OWNER)
+    with sqlite3.connect(runs_db_path(home)) as conn:
+        conn.execute("UPDATE runs SET status = 'failed' WHERE run_id = ?", (run_id,))
+    with _as(None):
+        assert deliver_terminal_events(home, older_than=0) == 1
+    [wake] = _wakes(home)
+    assert (wake.inputs["event"]["run_id"], wake.inputs["event"]["outcome"]) == (
+        run_id, "failed")
+
+
+def test_a_resumed_run_that_ends_again_is_announced_again(home: Path) -> None:
+    from tinyassets.runs import RUN_STATUS_RESUMED
+
+    _subscribe(home, "run_completed",
+               {"branch_def_id": FOLLOWED, "outcome": "completed"})
+    run_id = _start(home, actor=OWNER)
+    with _as("acct_stranger"):
+        update_run_status(home, run_id, status="interrupted", finished_at=1.0)
+    assert _wakes(home) == [], "the filter wants completed"
+    update_run_status(home, run_id, status=RUN_STATUS_RESUMED)
+    update_run_status(home, run_id, status=RUN_STATUS_RUNNING)
+    with _as("acct_stranger"):
+        update_run_status(home, run_id, status=RUN_STATUS_COMPLETED, finished_at=2.0)
+    [wake] = _wakes(home)
+    assert (wake.inputs["event"]["run_id"], wake.inputs["event"]["outcome"]) == (
+        run_id, "completed")
+
+
+def test_a_run_whose_resumer_died_before_it_ran_is_recovered(home: Path) -> None:
+    """Resumed by another process, which died before the run went running:
+    the resumer owns it, so it is recovered rather than stuck 'resumed'."""
+    import subprocess
+    import sys
+    import textwrap
+
+    run_id = _start(home, actor=OWNER)  # this live process created it
+    with _as("acct_stranger"):
+        update_run_status(home, run_id, status="interrupted", finished_at=1.0)
+    script = textwrap.dedent(f"""
+        import os
+        from tinyassets.runs import RUN_STATUS_RESUMED, update_run_status
+        update_run_status({str(home)!r}, {run_id!r}, status=RUN_STATUS_RESUMED)
+        os._exit(0)
+    """)
+    subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", script], cwd=str(Path(__file__).resolve().parents[1]),
+        check=True, timeout=60,
+    )
+    with _as(None):
+        assert recover_in_flight_runs(home) == 1
+    assert _status(home, run_id) == "interrupted"
+
+
+def test_each_terminal_transition_of_a_resumed_run_wakes_once(home: Path) -> None:
+    from tinyassets.runs import RUN_STATUS_RESUMED, deliver_terminal_events
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    run_id = _start(home, actor=OWNER)
+    with _as("acct_stranger"):
+        update_run_status(home, run_id, status="interrupted", finished_at=1.0)
+    update_run_status(home, run_id, status=RUN_STATUS_RESUMED)
+    update_run_status(home, run_id, status=RUN_STATUS_RUNNING)
+    with _as("acct_stranger"):
+        update_run_status(home, run_id, status=RUN_STATUS_COMPLETED, finished_at=2.0)
+    with _as(None):
+        deliver_terminal_events(home, older_than=0)  # nothing left owed, no dupes
+    assert sorted(w.inputs["event"]["outcome"] for w in _wakes(home)) == [
+        "completed", "interrupted"]
+
+
+def test_two_answers_on_one_request_are_two_events() -> None:
+    from types import SimpleNamespace
+
+    from tinyassets.automation_events import _event_key
+
+    sub = SimpleNamespace(automation_id="sub_1")
+    first = {"request_id": "r", "kind": "choice", "status": "open", "item_id": "a"}
+    second = {**first, "item_id": "b", "status": "answered"}
+    assert _event_key(sub, "pending_request_answered", first, "") != _event_key(
+        sub, "pending_request_answered", second, "")
+    assert _event_key(sub, "run_completed", {"run_id": "x"}, "x#1") != _event_key(
+        sub, "run_completed", {"run_id": "x"}, "x#2")
+
+
+def test_cleanup_reads_references_after_proving_death(home: Path, monkeypatch) -> None:
+    """A run committed just before its process died must keep that process's
+    lock file: the references are read AFTER the probe proves death."""
+    from tinyassets import process_liveness
+    from tinyassets.runs import runs_db_path
+    from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+
+    token = "proc_dead_race"
+    path = process_liveness.liveness_path(home, token)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    run_id = _start(home, actor=OWNER)
+    real = process_liveness.owner_state
+
+    def probe_then_commit(base, holder):
+        state = real(base, holder)
+        if holder == token:  # the dying process's last commit lands now
+            with sqlite3.connect(runs_db_path(home)) as conn:
+                conn.execute("UPDATE runs SET owner_token = ? WHERE run_id = ?",
+                             (token, run_id))
+        return state
+
+    monkeypatch.setattr(process_liveness, "owner_state", probe_then_commit)
+    consumer = AssignedQueueConsumer(home)
+    try:
+        consumer._hold_liveness()
+    finally:
+        consumer._release_liveness()
+    assert path.is_file(), "the run's proof of death was deleted"
+
+
+# -- round 2 (gpt-6-astra) ------------------------------------------------------
+
+
+def test_a_transient_refusal_keeps_the_event_owed(home: Path, monkeypatch) -> None:
+    """No serving assignment at the moment the run ends: the wake cannot be
+    stored yet, so the event stays owed and lands once the assignment is back."""
+    import tinyassets.provider_assignment as assignment
+    from tinyassets.runs import deliver_terminal_events
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    real = assignment.load_provider_assignment
+    monkeypatch.setattr(assignment, "load_provider_assignment", lambda *a, **k: None)
+    _finish(home, actor=OWNER)
+    with _as(None):
+        assert deliver_terminal_events(home, older_than=0) == 0
+    assert _wakes(home) == []
+    monkeypatch.setattr(assignment, "load_provider_assignment", real)
+    with _as(None):
+        assert deliver_terminal_events(home, older_than=0) == 1
+    assert len(_wakes(home)) == 1
+
+
+@pytest.mark.skipif(__import__("os").name != "posix",
+                    reason="Windows refuses to unlink a file another handle holds open")
+def test_a_registrant_whose_file_was_cleaned_up_locks_a_new_one(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Cleanup unlinked a fresh registrant's file between its creation and its
+    lock: the registrant notices and locks a file that is really at the path."""
+    from tinyassets import process_liveness, singleton_lock
+
+    real = singleton_lock.acquire_singleton_lock
+    calls: list[int] = []
+
+    def racing(path):
+        held = real(path)
+        if not calls:
+            Path(path).unlink()  # cleanup's unlink lands after our lock
+        calls.append(1)
+        return held
+
+    monkeypatch.setattr(singleton_lock, "acquire_singleton_lock", racing)
+    held = process_liveness.hold_liveness(tmp_path, "proc_racer")
+    assert held.acquired and len(calls) == 2
+    assert process_liveness.owner_state(tmp_path, "proc_racer") == process_liveness.ALIVE
+
+
+@pytest.mark.skipif(__import__("os").name != "posix",
+                    reason="Windows refuses to unlink a file another handle holds open")
+def test_cleanup_decides_and_deletes_under_the_files_lock(tmp_path: Path) -> None:
+    """Round 3: a registrant that locks the file while cleanup is deciding must
+    not end up holding a deleted file. Cleanup holds the lock from its decision
+    through the delete, so the registrant waits and then locks a live file."""
+    import threading
+
+    from tinyassets import process_liveness
+
+    token = "proc_fresh_registrant"
+    path = process_liveness.liveness_path(tmp_path, token)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()  # created, not yet locked: reads as dead
+    registered: list = []
+
+    def still_named(_token: str) -> bool:
+        # The registrant arrives while cleanup is deciding.
+        worker = threading.Thread(
+            target=lambda: registered.append(
+                process_liveness.hold_liveness(tmp_path, token)),
+        )
+        worker.start()
+        worker.join(0.3)
+        registered.append(worker)
+        return False
+
+    assert process_liveness.remove_if_dead(tmp_path, token, still_named)
+    registered[0].join(10)
+    held = registered[-1]
+    assert held.acquired
+    assert process_liveness.owner_state(tmp_path, token) == process_liveness.ALIVE
