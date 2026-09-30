@@ -34,19 +34,15 @@ Shape per design.md.
   the stray-token invariant and the segment-echo cases.
 - [x] 11. `python packaging/claude-plugin/build_plugin.py` (mirror parity green
   on every commit).
-- [ ] 12. Land, then, in order: `python scripts/deployed_sha.py
-  --assert-contains <sha>`; run
-  `scripts/probes/capability_url_live_proof.py --universe <founder uid>` inside
-  the daemon container (the invocation is deliberately not written out — see
-  the probe's own docstring and `drop-first-exec`); then sync + archive this
-  change.
-
-  The probe is committed, self-cleaning, and refuses to run without an explicit
-  `--universe` the named principal administers. Rehearsed 2026-09-30 against a
-  throwaway data dir (`PROOF_BASE=...`): 10 of its 12 checks pass there, and
-  the two that do not are exactly the two that need the token to exist in
-  **production's** hook DB — check 6 (the receiver's 202) and check 11 (the run
-  it enqueued).
+- [x] 12. Landed as PR #4115, merge `dedf69d7`, deployed in `8a7c8c00`
+  (release state `git_sha` asserted to contain the merge). Live proof green on
+  2026-09-30 against the founder's own universe: **12/12 checks**, including
+  a real **202 `{"queued":true}`** from `https://tinyassets.io/mcp/hooks/<token>`
+  through the real effector, and the run it enqueued recorded as
+  `run_name=webhook actor=universe:<uid>`, `completed`, `provider_used=NULL`
+  (no inference). Spec synced to
+  `openspec/specs/http-connections-and-outbound-authority/spec.md`; this change
+  archived.
 
 ## Review
 
