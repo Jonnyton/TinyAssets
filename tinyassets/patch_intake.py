@@ -171,30 +171,74 @@ def require_send_consent(*, universe_dir: str | Path, receiver_id: str) -> None:
     the platform put the address in front of the universe, so the platform holds
     the user's yes for it.
 
-    A present-but-invalid configuration gates NOTHING here, and that is not a
-    fail-open. An invalid value means no intake is being offered: nothing was
-    ever granted under it and no universe was handed an address by the platform.
-    Any receiver a universe reached on its own -- including, if it discovered it,
-    the one an operator meant to name -- is governed by its owner's exposure,
-    exactly as every other receiver is. Refusing every delivery instead would
-    break unrelated cross-user work over a typo in one variable, on a surface
-    nobody would connect to that variable.
+    "Offered" is a per-universe FACT, not the current value of an env var. The
+    requirement follows the ask this universe was actually shown, so unsetting
+    or retargeting the variable cannot un-fence an intake a universe already
+    holds a link to (gpt-6-astra refute round on PR #4121, P1: configure A,
+    connect, unset, and the same link delivered without consent). The current
+    configuration is also honoured, so a freshly configured intake is fenced
+    before its first ask is seeded.
+
+    What is NOT gated: a receiver this universe found on its own, which the
+    platform never put in front of it. There the receiving owner's exposure is
+    the only authority there is, and gating it would break ordinary cross-user
+    work. A present-but-invalid configuration therefore gates only what was
+    already offered -- it offers nothing new, so there is nothing new to fence.
     """
-    intake = _intake_or_none("fencing a delivery")
-    if intake is None or intake["receiver_id"] != str(receiver_id or ""):
+    address = str(receiver_id or "")
+    if not address:
         return
-    if not consent_is_active(universe_dir, intake["receiver_id"]):
-        raise PatchIntakeConsentMissing(
-            "patch_intake_consent_required: sending to the "
-            f"{intake['label']} patch intake needs the owner's approval of the "
-            '"Report a problem" request in their rail; nothing has been sent'
-        )
+    # Cheapest first: an active grant ends the question for any receiver.
+    if consent_is_active(universe_dir, address):
+        return
+    intake = _intake_or_none("fencing a delivery")
+    offered = intake is not None and intake["receiver_id"] == address
+    label = intake["label"] if offered else DEFAULT_LABEL
+    if not offered:
+        # Was this universe ever OFFERED this address? Only reached for a
+        # delivery with no patch-intake grant to a receiver that is not the
+        # current intake -- i.e. ordinary cross-user sends pay one indexed read.
+        prior = _offer_for(universe_dir, address)
+        if prior is None:
+            return
+        label = str((prior.get("action") or {}).get("label") or DEFAULT_LABEL)
+    raise PatchIntakeConsentMissing(
+        "patch_intake_consent_required: sending to the "
+        f"{label} patch intake needs the owner's approval of the "
+        f'"Let your universe report problems to {label}" request in their '
+        "rail; nothing has been sent"
+    )
 
 
 def _seeded_rows(universe_dir: Path) -> list[dict[str, Any]]:
     from tinyassets.storage.pending_requests import find_by_action_type
 
     return find_by_action_type(universe_dir, ACTION_TYPE)
+
+
+def _for_receiver(rows: list[dict[str, Any]], receiver_id: str) -> list[dict[str, Any]]:
+    return [
+        row for row in rows
+        if str((row.get("action") or {}).get("receiver_id") or "") == receiver_id
+    ]
+
+
+def _offer_for(universe_dir: Path, receiver_id: str) -> dict[str, Any] | None:
+    """The most recent ask that offered this universe this exact address."""
+    try:
+        rows = _for_receiver(_seeded_rows(universe_dir), receiver_id)
+    except Exception:  # noqa: BLE001 - an unreadable history must not open a gate
+        logger.warning("patch intake: offer history unreadable", exc_info=True)
+        return None
+    return rows[0] if rows else None
+
+
+#: Statuses that mean THE OWNER decided. ``withdrawn`` is deliberately absent:
+#: an agent shares its user's principal and can raise -- then withdraw -- an ask
+#: of this type, which would have suppressed the platform's offer for good
+#: (gpt-6-astra refute round on PR #4121). The platform retires its own obsolete
+#: cards to the same status, and those are not decisions either.
+_OWNER_DECIDED = frozenset({"answered", "dismissed"})
 
 
 def _already_answered(rows: list[dict[str, Any]], receiver_id: str) -> bool:
@@ -206,9 +250,8 @@ def _already_answered(rows: list[dict[str, Any]], receiver_id: str) -> bool:
     next deploy. The intake's address is what the decision was actually about.
     """
     return any(
-        row["status"] != "pending"
-        and str((row.get("action") or {}).get("receiver_id") or "") == receiver_id
-        for row in rows
+        row["status"] in _OWNER_DECIDED
+        for row in _for_receiver(rows, receiver_id)
     )
 
 
@@ -224,8 +267,8 @@ def request_payload(intake: dict[str, str]) -> dict[str, Any]:
             "Approving this lets it send those reports -- what it was trying to "
             "do and what was missing -- and nothing else: not your files, not "
             "your conversations, not your other work. Whoever runs the intake "
-            "sees only what your universe sends them, and you can take this back "
-            "at any time. There is nothing to paste."
+            "sees who sent it and what your universe sent them, nothing more, "
+            "and you can take this back at any time. There is nothing to paste."
         ),
         "fields": [],
         "action": {"type": ACTION_TYPE, "receiver_id": intake["receiver_id"],
@@ -233,50 +276,80 @@ def request_payload(intake: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def seed_consent_request(
-    universe_id: str, universe_dir: Path, *, view: dict[str, Any] | None = None
+def _retire_obsolete_offers(
+    universe_dir: Path, rows: list[dict[str, Any]], receiver_id: str
 ) -> None:
-    """Put the ask in this universe's rail if it is owed one. Never raises.
+    """Take down a still-pending ask for an intake that is no longer offered.
 
-    Runs on the rail read, which is the same code path every account and every
-    surface already uses -- so it is there at a new user's first sign-in for the
-    same reason the model-connect entry is, and an EXISTING user gets it on their
-    next sign-in without a migration. Idempotent by four separate checks, in
-    increasing cost order:
-
-    1. no intake configured -> nothing to offer;
-    2. the grant is already held -> the connection exists;
-    3. an ask for this intake is already pending -> it is already in their face;
-    4. this intake was already answered, denied or cleared -> they decided.
-
-    ``create_request`` then adds its own two: a pending row with an identical
-    dedupe key is returned rather than duplicated, and a standing "don't ask me
-    this again" is honoured by not creating one at all.
-
-    ``view`` lets the rail read hand over what :func:`rail_view` already worked
-    out, so one poll opens the consent store once rather than twice. It is the
-    same answer either way; passing nothing simply recomputes it.
+    Without this, a pending card for the OLD address blocked the new one from
+    ever being seeded, so the promise ``patch_intake_changed`` makes -- "it will
+    be re-offered with the current one" -- was never kept (gpt-6-astra refute
+    round on PR #4121). Retired rather than answered or dismissed: the owner
+    decided nothing, and neither of those statuses would be honest about it.
     """
-    if view is not None:
-        intake = {"receiver_id": view["receiver_id"], "label": view["label"]}
-        if view["granted"]:
-            return
-    else:
-        intake = _intake_or_none("seeding the rail entry")
-        if intake is None:
-            return
-    try:
-        if view is None and consent_is_active(universe_dir, intake["receiver_id"]):
-            return
-        rows = _seeded_rows(universe_dir)
-        if any(row["status"] == "pending" for row in rows):
-            return
-        if _already_answered(rows, intake["receiver_id"]):
-            return
-    except Exception:  # noqa: BLE001 - a rail that cannot seed must still render
-        logger.warning("patch intake: could not decide whether to seed", exc_info=True)
-        return
+    from tinyassets.storage.pending_requests import retire_platform_request
 
+    for row in rows:
+        if row["status"] != "pending":
+            continue
+        if str((row.get("action") or {}).get("receiver_id") or "") == receiver_id:
+            continue
+        retire_platform_request(
+            universe_dir, row["request_id"],
+            reason="this intake is no longer the one TinyAssets offers",
+        )
+
+
+def rail_entry(universe_id: str, universe_dir: Path) -> dict[str, Any] | None:
+    """Seed the ask if it is owed, then describe the RESULT for the agent.
+
+    One pass, because the two halves answer the same question and a rail read
+    that computed them separately contradicted itself: the block said "the
+    request is already waiting in their rail" whenever the grant was absent,
+    including right after the owner declined it and nothing was waiting at all
+    (gpt-6-astra refute round on PR #4121). The guidance is therefore built from
+    what is actually in the rail after seeding, not from the grant alone.
+
+    Runs on the rail read, the same code path every account and every surface
+    already uses -- so the ask is there at a new user's first sign-in for the
+    same reason the model-connect entry is, and an EXISTING user gets it on
+    their next sign-in with no migration. Never raises: a rail that cannot
+    decide must still render.
+
+    Idempotent by four checks, cheapest first: no intake configured, the grant
+    is already held, an ask for this intake is already pending, or the owner
+    already answered/cleared one for this intake. ``create_request`` adds two
+    more of its own -- an identical pending dedupe key is returned rather than
+    duplicated, and a standing "don't ask me this again" is honoured.
+    """
+    intake = _intake_or_none("the rail entry")
+    if intake is None:
+        return None
+    address, label = intake["receiver_id"], intake["label"]
+    granted = pending = decided = False
+    try:
+        granted = consent_is_active(universe_dir, address)
+        if not granted:
+            rows = _seeded_rows(universe_dir)
+            _retire_obsolete_offers(universe_dir, rows, address)
+            mine = _for_receiver(rows, address)
+            pending = any(row["status"] == "pending" for row in mine)
+            decided = _already_answered(rows, address)
+            if not pending and not decided:
+                pending = _seed(universe_id, intake)
+    except Exception:  # noqa: BLE001 - the rail must render either way
+        logger.warning("patch intake: rail entry could not be resolved", exc_info=True)
+    return {
+        "receiver_id": address,
+        "label": label,
+        "granted": granted,
+        "request_pending": pending,
+        "how": _how(address, label, granted=granted, pending=pending),
+    }
+
+
+def _seed(universe_id: str, intake: dict[str, str]) -> bool:
+    """Raise the platform's ask. True when one is now pending."""
     import json
 
     from tinyassets.api.pending_requests import request_from_user
@@ -294,44 +367,43 @@ def seed_consent_request(
             universe_id,
             result.get("detail") or result.get("error"),
         )
+        return False
+    return isinstance(result, dict) and bool(result.get("request_id"))
 
 
-def rail_view(universe_dir: Path) -> dict[str, Any] | None:
-    """What the rail read tells the universe about the offered intake.
+def _how(receiver_id: str, label: str, *, granted: bool, pending: bool) -> str:
+    """The short version of the ``delivering`` chapter, for the state it is in.
 
     Carried on the rail rather than in the resident tool description because the
     agent polls the rail anyway: it costs no per-round bytes and it is current.
-    ``how`` is the short version of the ``delivering`` handbook chapter -- enough
-    that a universe never has to guess, and specifically enough that it never
-    invents a credential ask for an address that needs no credential.
+    Specific enough that a universe never invents a credential ask for an
+    address that needs no credential -- and it must never claim an ask is
+    waiting when none is, or the agent tells its user to go tap something that
+    is not there.
     """
-    intake = _intake_or_none("the rail view")
-    if intake is None:
-        return None
-    granted = False
-    try:
-        granted = consent_is_active(universe_dir, intake["receiver_id"])
-    except Exception:  # noqa: BLE001 - the rail must render either way
-        logger.warning("patch intake: consent read failed", exc_info=True)
-    return {
-        "receiver_id": intake["receiver_id"],
-        "label": intake["label"],
-        "granted": granted,
-        "how": (
+    if granted:
+        return (
             'Read its contract with read_graph target="receiver" query='
-            f'"{intake["receiver_id"]}", connect one of your own step\'s outputs '
-            'with write_graph target="output_link" operation="connect", then send '
-            'with run_graph operation="deliver_output". No credential, no URL and '
-            "no token is involved -- see the handbook chapter "
-            'write_graph.delivering.'
-            if granted else
-            f"Your user has not approved sending to {intake['label']} yet. The "
-            'request "Let your universe report problems to '
-            f'{intake["label"]}" is already waiting in their rail -- point them '
-            "at it. Do NOT raise a connection or credential request for this: "
-            "there is no token, and approving that one request is the whole setup."
-        ),
-    }
+            f'"{receiver_id}", connect one of your own step\'s outputs with '
+            'write_graph target="output_link" operation="connect", then send with '
+            'run_graph operation="deliver_output". No credential, no URL and no '
+            "token is involved -- see the handbook chapter write_graph.delivering."
+        )
+    if pending:
+        return (
+            f"Your user has not approved sending to {label} yet. The request "
+            f'"Let your universe report problems to {label}" is waiting in their '
+            "rail -- point them at that one. Do NOT raise a connection or "
+            "credential request for this: there is no token, and approving that "
+            "one request is the whole setup."
+        )
+    return (
+        f"Your user has already declined or cleared sending to {label}, so "
+        "nothing is waiting and reports cannot be sent. Respect that: do NOT "
+        "raise another request for it, and do NOT raise a connection or "
+        "credential request -- there is no token involved. If they bring it up "
+        "themselves, they can lift it from the muted list in their rail."
+    )
 
 
 __all__ = [
@@ -346,8 +418,7 @@ __all__ = [
     "configured_intake",
     "consent_is_active",
     "grant_send_consent",
-    "rail_view",
+    "rail_entry",
     "request_payload",
     "require_send_consent",
-    "seed_consent_request",
 ]

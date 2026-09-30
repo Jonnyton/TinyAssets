@@ -528,6 +528,199 @@ def test_a_receiver_the_platform_never_offered_needs_no_patch_intake_grant(
 
 
 # ---------------------------------------------------------------------------
+# What the gpt-6-astra refute round found (PR #4121)
+# ---------------------------------------------------------------------------
+
+
+def _source_channel(action, payload):
+    """The served verb, with the universe PINNED by the module's own graph id."""
+    from tinyassets import engine_mcp_server as engine
+
+    fn = getattr(engine.source_channel, "fn", engine.source_channel)
+    return json.loads(fn(action=action, payload=json.dumps(payload)))
+
+
+def test_the_agent_cannot_grant_itself_the_intake_consent(world, monkeypatch):
+    """P1: the served channel verb writes into the SAME consent store.
+
+    The agent shares its user's principal, so no downstream check can tell the
+    two apart -- the refusal has to be at the write. `workspace` was already
+    refused by name; naming one sink instead of the class it belongs to is what
+    let the second one through.
+    """
+    from tests.engine_authority_helpers import seed_bound_engine
+    from tinyassets import engine_mcp_server as engine
+
+    base, auth = world
+    auth("receiver")
+    intake = _offered(monkeypatch)
+    auth("sender")
+    monkeypatch.setattr(engine, "_ACTOR_ID", "sender")
+    monkeypatch.setattr(engine, "_GRAPH_ID", "u-sender")
+    seed_bound_engine(monkeypatch)
+    row = _seeded(_rail())
+
+    refused = _source_channel("approve", {
+        "channel_type": patch_intake.PATCH_INTAKE_SINK,
+        "destination": intake["receiver_id"],
+    })
+    assert "cannot be self-approved" in json.dumps(refused), refused
+    # ...and under the other spelling `_approve_sink` reads first.
+    also = _source_channel("approve", {
+        "sink": patch_intake.PATCH_INTAKE_SINK,
+        "destination": intake["receiver_id"],
+    })
+    assert "cannot be self-approved" in json.dumps(also), also
+    assert not _grants(base), "no grant may exist without the owner's tap"
+    assert _seeded(_rail())["request_id"] == row["request_id"], "still waiting"
+
+
+def test_the_write_itself_refuses_the_person_only_sink(world, monkeypatch):
+    """The fence is at the grant, not only at the served entry point."""
+    from tinyassets.api.source_channel import _approve_sink, person_only_sinks
+
+    base, auth = world
+    auth("sender")
+    assert patch_intake.PATCH_INTAKE_SINK in person_only_sinks()
+    refused = json.loads(_approve_sink(
+        base, "u-sender", "sender", patch_intake.PATCH_INTAKE_SINK,
+        {"destination": "a" * 32},
+    ))
+    assert refused["error"] == "consent_is_person_only"
+    assert not _grants(base)
+
+
+def test_unsetting_the_variable_does_not_un_fence_an_offered_intake(
+    world, monkeypatch, provider_probe,
+):
+    """P1: "offered" is a per-universe fact, not the current value of an env var.
+
+    Configure A, let the universe connect a link to it, then unset or retarget
+    the variable. The fence has to follow the ask this universe was SHOWN, or
+    an operator's edit silently releases a connection the owner never approved.
+    """
+    base, auth = world
+    auth("receiver")
+    intake = _intake()
+    auth("sender")
+    _offer(monkeypatch, intake["receiver_id"])
+    assert _seeded(_rail()) is not None, "it was offered"
+    link = _link(intake)
+    assert "patch_intake_consent_required" in _send(link, occurrence="a").get("detail", "")
+
+    for mutation in (None, "c" * 32, "   "):
+        if mutation is None:
+            monkeypatch.delenv(patch_intake.RECEIVER_ID_VAR, raising=False)
+        else:
+            monkeypatch.setenv(patch_intake.RECEIVER_ID_VAR, mutation)
+        still = _send(link, occurrence=f"after-{mutation!r}")
+        assert "patch_intake_consent_required" in still.get("detail", ""), (
+            mutation, still,
+        )
+    assert not _grants(base)
+
+
+def test_a_retargeted_intake_is_actually_re_offered(world, monkeypatch):
+    """P2: the obsolete pending card must not block the replacement.
+
+    `patch_intake_changed` promises the ask "will be re-offered with the current
+    one", so the stale card is retired -- withdrawn, not answered, because the
+    owner decided nothing about it.
+    """
+    base, auth = world
+    auth("receiver")
+    first = _intake(description="First intake")
+    second = _intake(description="Second intake")
+    auth("sender")
+    _offer(monkeypatch, first["receiver_id"])
+    stale = _seeded(_rail())
+    assert stale["action"]["receiver_id"] == first["receiver_id"]
+
+    _offer(monkeypatch, second["receiver_id"])
+    assert _answer(stale["request_id"], values={})["error"] == "patch_intake_changed"
+    fresh = _seeded(_rail())
+    assert fresh is not None, "the replacement was never offered"
+    assert fresh["action"]["receiver_id"] == second["receiver_id"]
+    assert store.get_request(base / "u-sender", stale["request_id"])["status"] == (
+        "withdrawn"
+    )
+
+
+def test_an_agent_withdrawal_does_not_settle_it_for_the_user(world, monkeypatch):
+    """P2: only the OWNER's answer counts as a decision.
+
+    An agent shares its user's principal, so it can raise an ask of this type
+    and withdraw its own. Counting `withdrawn` as "already decided" let it
+    suppress the platform's offer permanently, with the user never shown it.
+    """
+    _base, auth = world
+    auth("receiver")
+    intake = _offered(monkeypatch)
+    auth("sender")
+    mine = api.request_from_user(
+        universe_id="u-sender",
+        payload=json.dumps(patch_intake.request_payload(
+            {"receiver_id": intake["receiver_id"], "label": "TinyAssets"}
+        )),
+    )
+    assert mine["origin"] == "agent", mine
+    gone = api.withdraw_request(
+        universe_id="u-sender",
+        payload=json.dumps({"request_id": mine["request_id"], "reason": "never mind"}),
+    )
+    assert gone["status"] == "withdrawn", gone
+
+    seeded = _seeded(_rail())
+    assert seeded is not None, "the platform's offer was suppressed by the agent"
+    assert seeded["origin"] == "platform"
+
+
+def test_a_long_history_does_not_forget_a_refusal(world, monkeypatch):
+    """P2: a capped lookup is not a sound basis for "already decided"."""
+    _base, auth = world
+    auth("receiver")
+    intake = _offered(monkeypatch)
+    auth("sender")
+    declined = _seeded(_rail())
+    assert _answer(declined["request_id"], decision="declined", values={})[
+        "decision"
+    ] == "declined"
+
+    # Sixty newer asks of the same type for OTHER addresses, each resolved.
+    for index in range(60):
+        payload = patch_intake.request_payload(
+            {"receiver_id": f"receiver-{index:04d}", "label": "Somewhere else"}
+        )
+        newer = api.request_from_user(
+            universe_id="u-sender", payload=json.dumps(payload)
+        )
+        assert "request_id" in newer, newer
+        _answer(newer["request_id"], decision="declined", values={})
+
+    assert _seeded(_rail()) is None, "the earlier refusal was forgotten"
+    assert _rail()["patch_intake"]["receiver_id"] == intake["receiver_id"]
+
+
+def test_the_rail_never_claims_a_declined_ask_is_waiting(world, monkeypatch):
+    """P2: guidance built from the grant alone pointed at a card that was gone."""
+    _base, auth = world
+    auth("receiver")
+    _offered(monkeypatch)
+    auth("sender")
+    row = _seeded(_rail())
+    _answer(row["request_id"], decision="declined", values={})
+
+    rail = _rail()
+    view = rail["patch_intake"]
+    assert _seeded(rail) is None
+    assert view["granted"] is False
+    assert view["request_pending"] is False
+    assert "is waiting in their rail" not in view["how"]
+    assert "already declined or cleared" in view["how"]
+    assert "do NOT raise another request" in view["how"]
+
+
+# ---------------------------------------------------------------------------
 # What the universe is told
 # ---------------------------------------------------------------------------
 
@@ -543,7 +736,8 @@ def test_the_rail_points_an_ungranted_universe_at_the_seeded_ask(world, monkeypa
     view = rail["patch_intake"]
     assert view["granted"] is False
     assert view["receiver_id"] == intake["receiver_id"]
-    assert "already waiting in their rail" in view["how"]
+    assert "is waiting in their rail" in view["how"]
+    assert view["request_pending"] is True
     assert "Do NOT raise a connection or credential request" in view["how"]
     assert "token" in view["how"]
 

@@ -3899,16 +3899,19 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     for key, value in payload_obj.items():
         if not isinstance(value, str):
             return json.dumps({"error": f"payload '{key}' must be a string."})
-    from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
+    from tinyassets.api.source_channel import person_only_sinks
 
     channel_type = (payload_obj.get("channel_type") or "").strip()
     # `sink` is checked too because `_approve_sink` reads `fields["sink"]` FIRST
     # and only falls back to `channel_type` -- refusing one spelling and not the
     # other would be a refusal with a documented way around it.
-    if act == "approve" and EXTERNAL_WRITE_SINK_WORKSPACE in {
-        channel_type,
-        (payload_obj.get("sink") or "").strip(),
-    }:
+    #
+    # The SET, not one sink name: `patch_intake` was added as a second
+    # rail-answered sink and a single-name check let the agent self-grant it
+    # (gpt-6-astra refute round on PR #4121, P1). `_approve_sink` refuses the
+    # same set at the write itself; this is the readable message.
+    named = {channel_type, (payload_obj.get("sink") or "").strip()}
+    if act == "approve" and named & person_only_sinks():
         # The `workspace` sink was admitted to the served build surface BECAUSE
         # its consents are typed per (op, connection, repo) and answered by the
         # owner on the request rail. This verb writes into the same
@@ -3923,10 +3926,11 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
         # person-only consent; the agent still cannot self-grant workspace access.
         return json.dumps({
             "error": (
-                "workspace consent cannot be self-approved: it is typed per "
-                "(operation, connection, repository) and is answered by the "
-                "universe's owner on the request rail. Ask for it there; this "
-                "verb approves outbound channel sinks only."
+                ", ".join(sorted(named & person_only_sinks()))
+                + " consent cannot be self-approved: it is answered by the "
+                "universe's owner on the request rail, where they read exactly "
+                "what it allows. Ask for it there; this verb approves outbound "
+                "channel sinks only."
             ),
         })
     if act == "approve" and channel_type == "source_code":

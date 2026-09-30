@@ -1724,7 +1724,7 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     """
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path
-    from tinyassets.patch_intake import rail_view, seed_consent_request
+    from tinyassets.patch_intake import rail_entry
     from tinyassets.storage.pending_requests import (
         list_pending,
         list_resolved,
@@ -1740,14 +1740,12 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     # tool-description bytes, and specific enough that a universe never invents a
     # credential ask for an address that needs no credential.
     #
-    # Read BEFORE the listing and handed to the seeder, so one poll opens the
-    # consent store once: the entry the platform owes this universe is then in
-    # the very first rail read of a new account (the same reason the
-    # model-connect entry is synthesized here), and an existing user gets it on
-    # their next sign-in with no migration. Idempotent, and never raises.
-    intake = rail_view(udir)
-    if intake is not None:
-        seed_consent_request(uid, udir, view=intake)
+    # Resolved BEFORE the listing, so the entry the platform owes this universe
+    # is in the very first rail read of a new account (the same reason the
+    # model-connect entry is synthesized here) and an existing user gets it on
+    # their next sign-in with no migration. One call seeds and describes, so the
+    # block cannot contradict the rail it is describing. Never raises.
+    intake = rail_entry(uid, udir)
     rows = list_pending(udir, limit=limit)
     # Prepended, not stored: derived from current serving authority, so it
     # cannot go stale, cannot be dismissed into a state where the universe is
@@ -2036,12 +2034,35 @@ def _grant_patch_intake(
             ),
             "request_pending": True,
         }
-    grant = grant_send_consent(udir, receiver_id=receiver_id, granted_by=actor)
+    # RESOLVE FIRST, then grant. `resolve_request` is a guarded UPDATE that moves
+    # only a still-pending row, so it is the election: exactly one caller wins,
+    # and a concurrent Clear or a second tap loses. Granting first inverted that
+    # -- the loser's consent was written and committed while the request stayed
+    # pending, which is authority with no recorded decision behind it
+    # (gpt-6-astra refute round on PR #4121, P1).
+    #
+    # The residual asymmetry is deliberate. If the grant then fails, the owner
+    # has an answered request and no connection, and they are TOLD so; the
+    # alternative leaves authority nobody can see. Both stores are files in the
+    # same universe directory, so a failure that hits one almost certainly hits
+    # the other first, which is the resolution call above.
     if not resolve_request(
         udir, request_id, status="answered", answer=answer, feedback=feedback,
         dont_ask_again=False, decision="allowed",
     ):
         return {"error": "request_resolution_unconfirmed", "request_pending": True}
+    try:
+        grant = grant_send_consent(udir, receiver_id=receiver_id, granted_by=actor)
+    except Exception as exc:  # noqa: BLE001 - say what happened; grant nothing
+        logger.exception("patch intake: the grant did not land after the owner's yes")
+        return {
+            "error": "patch_intake_grant_unavailable",
+            "detail": (
+                "your approval was recorded but the connection could not be "
+                f"saved ({exc}); nothing can be sent yet -- ask your universe to "
+                "raise the request again"
+            ),
+        }
     return {
         "status": "answered",
         "decision": "allowed",
