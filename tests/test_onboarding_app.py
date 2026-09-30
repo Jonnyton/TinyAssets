@@ -2756,15 +2756,24 @@ def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
     """The owner is invited to click this WHILE being asked for a secret, and
     the agent composing it may be running code pulled from the commons.
 
-    So the visible text is the HOST rather than friendly words -- someone who
-    is about to paste a key can see they are being sent to `evil.example` --
-    and the tab cannot reach back into the opener.
+    So the destination is visible before the click -- someone about to paste a
+    key can see they are being sent to `evil.example` -- the link says the
+    UNIVERSE suggested it rather than borrowing platform styling, and the tab
+    cannot reach back into the opener.
+
+    The host alone was not enough (live 2026-09-30: "Get it from tinyassets.io"
+    over an invented `/settings`), so the path is shown too. The rendered
+    behaviour is executed in ``tests/test_request_card_layout_and_links.py``;
+    this only pins that the page still has the three properties.
     """
     from tinyassets.onboarding import render_app_html
 
     page, _csp = render_app_html()
-    assert 'new URL(f.url).host' in page, "the link does not show its host"
-    assert '"noopener noreferrer"' in page
+    assert "railFieldLink" in page, "the rail no longer renders a field's link"
+    assert "Suggested by your universe:" in page, \
+        "an agent-chosen link is presented without saying who chose it"
+    assert "rtab-link--agent" in page, "an agent's link is styled as platform chrome"
+    assert "noopener noreferrer nofollow" in page
 
 
 def test_the_android_shell_shows_no_checkout_ui():

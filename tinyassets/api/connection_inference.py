@@ -71,6 +71,8 @@ import logging
 import re
 from typing import Any
 
+from tinyassets.credential_shape import looks_like_credential
+
 logger = logging.getLogger(__name__)
 
 #: A public credential prefix ends at a delimiter. This is what makes "we only
@@ -85,11 +87,12 @@ _PREFIX_RE = re.compile(r"^[a-z][a-z0-9]{0,7}[_-](?:[a-z0-9]{1,7}[_-])?$")
 _MAX_PREFIX_CHARS = 12
 _MAX_LABEL_CHARS = 40
 
-#: An unbroken run this long is a credential, not a field name or a sentence.
-#: Used to keep secret material out of ``label`` and ``intent``, which are
-#: otherwise free text (Codex 2026-08-27: both were length-checked only, so
-#: ``{"label": "sk_live_51ABCDEFSECRET"}`` sailed through).
-_ENTROPY_RUN_RE = re.compile(r"[A-Za-z0-9_\-]{16,}")
+#: ``label`` and ``intent`` are otherwise free text, so both are screened to keep
+#: secret material out of them (Codex 2026-08-27: both were length-checked only,
+#: so ``{"label": "sk_live_51ABCDEFSECRET"}`` sailed through). The screen is on
+#: credential SHAPE, not on any word: the flat pattern that was here read the
+#: hyphen in ``self-authenticating`` as part of one 19-character run. See
+#: :mod:`tinyassets.credential_shape`.
 _MAX_INTENT_CHARS = 300
 _MAX_HINT_CHARS = 253
 _MAX_SHAPE_ENTRIES = 40
@@ -213,7 +216,7 @@ def _validated_shape(raw: Any) -> list[dict[str, Any]]:
         label = str(entry.get("label") or "").strip()
         if len(label) > _MAX_LABEL_CHARS:
             raise ValueError(f"shape label exceeds {_MAX_LABEL_CHARS} chars")
-        if _ENTROPY_RUN_RE.search(label):
+        if looks_like_credential(label):
             # A field NAME is words ("Access Token Secret"). An unbroken 16+
             # character run is the value, and label was otherwise unscreened.
             raise ValueError(
@@ -403,7 +406,7 @@ def resolve_connection(*, universe_id: str = "", payload: Any = None) -> dict[st
     except ValueError as exc:
         return _bad(str(exc))
     intent = str(document.get("intent") or "").strip()[:_MAX_INTENT_CHARS]
-    if _ENTROPY_RUN_RE.search(intent):
+    if looks_like_credential(intent):
         # Free text, forwarded verbatim -- so a credential pasted into the wrong
         # box would have been disclosed to inference (Codex 2026-08-27).
         return _bad(

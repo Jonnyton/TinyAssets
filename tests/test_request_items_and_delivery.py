@@ -334,6 +334,38 @@ def test_malformed_items_are_refused_and_nothing_is_stored(base, signed_in):
     assert list_pending(udir) == []
 
 
+def test_an_items_feedback_is_screened_for_credential_SHAPE_not_for_words(base, signed_in):
+    """The sixth credential screen, and the newest -- so the easiest to miss.
+
+    ``_answer_item`` arrived after the flat ``[A-Za-z0-9_\\-]{16,}`` pattern was
+    replaced (2026-09-30), and a merge put the new call site next to a constant
+    that no longer existed. Ruff caught the undefined name, but nothing would
+    have caught a silent revert, so both halves of the contract are pinned here.
+
+    PLAIN WORDS PASS. That is the regression: a universe was refused twice for
+    explaining, in a sentence, that there was nothing to paste -- because the
+    hyphen in ``self-authenticating`` made it a 19-character "unbroken run".
+    """
+    signed_in(OWNER)
+    _home(base, UID, OWNER)
+    raised = _ask(UID, items=_items("a", "b"))
+
+    prose = ("No token exists for this destination: your friend's link is a "
+             "self-authenticating webhook URL, so there is nothing to paste.")
+    accepted = _answer(UID, request_id=raised["request_id"], item_id="a",
+                       values={"note": "ok"}, feedback=prose)
+    assert accepted.get("error") is None, accepted
+    assert accepted["feedback"] == prose
+
+    # ...and a real secret shape is still refused. Assembled at run time: a
+    # literal here is what GitHub push protection rejects.
+    key = "ghp" + "_16C7e42F292c6912E7710c838347Ae178B4a"
+    refused = _answer(UID, request_id=raised["request_id"], item_id="b",
+                      values={"note": "ok"}, feedback="use " + key)
+    assert refused.get("error") == "request_invalid"
+    assert "credential" in refused["detail"]
+
+
 # --- the boundary that keeps "however he likes" safe ---------------------------
 
 
