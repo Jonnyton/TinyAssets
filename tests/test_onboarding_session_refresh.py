@@ -82,7 +82,7 @@ def _drive(
             super().__init__(*a, **kw)
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    route = next(r for r in onboarding.onboarding_routes() if r.path == "/mcp/app/token")
+    route = next(r for r in onboarding.onboarding_routes() if r.path == "/app/token")
     raw = json.dumps(body).encode()
     headers = [
         (b"content-type", content_type.encode()),
@@ -96,7 +96,7 @@ def _drive(
     scope = {
         "type": "http",
         "method": "POST",
-        "path": "/mcp/app/token",
+        "path": "/app/token",
         "headers": headers,
         "query_string": b"",
     }
@@ -117,7 +117,7 @@ def test_exchange_sets_httponly_refresh_cookie_and_never_echoes_it(monkeypatch):
         )
 
     status, doc, cookies, _ = _drive(
-        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/app"},
         monkeypatch=monkeypatch,
         upstream=upstream,
     )
@@ -130,7 +130,7 @@ def test_exchange_sets_httponly_refresh_cookie_and_never_echoes_it(monkeypatch):
     c = cookies[0]
     assert c.startswith("ta_rt=REFRESH-SECRET;")
     assert "HttpOnly" in c and "Secure" in c and "SameSite=strict" in c.replace("Strict", "strict")
-    assert "Path=/mcp/app/token" in c
+    assert "Path=/app/token" in c
 
 
 def test_handle_path_survives_without_the_cookie(monkeypatch, tmp_path):
@@ -144,7 +144,7 @@ def test_handle_path_survives_without_the_cookie(monkeypatch, tmp_path):
         return _ok("a1", "RT1")
 
     status, doc, _, _ = _drive(
-        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/app"},
         monkeypatch=monkeypatch, upstream=exch, data_dir=dd,
     )
     assert status == 200
@@ -179,14 +179,14 @@ def test_the_old_handle_still_renews_with_the_rotated_token(monkeypatch, tmp_pat
     exercises the grace hop from the OLD handle onto the live record."""
     dd = str(tmp_path)
     _drive(
-        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/app"},
         monkeypatch=monkeypatch,
         upstream=lambda f: _ok("a1", "RT1"),
         data_dir=dd,
     )
     # recover the handle
     _, doc, _, _ = _drive(
-        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/app"},
         monkeypatch=monkeypatch,
         upstream=lambda f: _ok("a1", "RT1"),
         data_dir=dd,
@@ -216,7 +216,7 @@ def test_logout_drops_the_server_side_handle(monkeypatch, tmp_path):
     """After logout, the handle must be dead: a refresh with it hits no upstream."""
     dd = str(tmp_path)
     _, doc, _, _ = _drive(
-        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/app"},
         monkeypatch=monkeypatch,
         upstream=lambda f: _ok("a1", "RT1"),
         data_dir=dd,
@@ -307,7 +307,7 @@ def test_cross_origin_or_non_json_is_refused_before_any_grant(monkeypatch):
     def upstream(form):
         raise AssertionError("must not call AuthKit")
 
-    body = {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"}
+    body = {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/app"}
     for origin, ctype in (
         ("https://evil.example", "application/json"),
         ("", "application/json"),
@@ -330,7 +330,7 @@ def test_logout_clears_the_cookie_without_upstream(monkeypatch):
     )
     assert (status, doc, calls) == (200, {"ok": True}, [])
     assert cookies and cookies[0].startswith('ta_rt=""') and "Max-Age=0" in cookies[0]
-    assert "Path=/mcp/app/token" in cookies[0]
+    assert "Path=/app/token" in cookies[0]
 
 
 def test_exchange_failure_maps_to_stable_code(monkeypatch):
@@ -340,7 +340,7 @@ def test_exchange_failure_maps_to_stable_code(monkeypatch):
         )
 
     status, doc, _, _ = _drive(
-        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
+        {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/app"},
         monkeypatch=monkeypatch,
         upstream=upstream,
     )

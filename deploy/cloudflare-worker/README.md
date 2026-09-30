@@ -1,10 +1,11 @@
-# Cloudflare Worker — `tinyassets.io/mcp` path router
+# Cloudflare Worker — `tinyassets.io/mcp` + `/app` path router
 
 **Status:** The canonical proxy shipped after the 2026-04-20 single-entry
 cutover. This repository revision also retires `/mcp-directory*` at the edge;
 that newer behavior is not production truth until deploy and post-deploy proof
-complete. The Worker routes `tinyassets.io/mcp*` while leaving the GitHub Pages
-landing intact for all other paths.
+complete. The Worker routes `tinyassets.io/mcp*`, `tinyassets.io/app` and
+`tinyassets.io/app/*` while leaving the GitHub Pages landing intact for all other
+paths.
 
 **After deploy:** the canonical public MCP URL returns to
 `https://tinyassets.io/mcp`. Installed TinyAssets chatbot connectors pointing
@@ -26,11 +27,25 @@ With this Worker revision deployed:
 
 - Same DNS (tinyassets.io still Cloudflare-fronted).
 - Same GitHub Pages origin for apex paths (landing unchanged).
-- NEW: the Worker runs on route `tinyassets.io/mcp*`. Canonical `/mcp`
-  requests get proxied to `mcp.tinyassets.io` (tunnel origin) as a
-  streaming pass-through. Retired `/mcp-directory*` requests terminate at
-  the edge with an ordinary 404. Apex `/` + non-`/mcp` paths still hit
-  GitHub Pages.
+- NEW: the Worker runs on routes `tinyassets.io/mcp*`, `tinyassets.io/app`
+  and `tinyassets.io/app/*`. Canonical `/mcp` and `/app` requests get proxied
+  to `mcp.tinyassets.io` (tunnel origin) as a streaming pass-through. Retired
+  `/mcp-directory*` requests terminate at the edge with an ordinary 404. Apex
+  `/` + every other path still hits GitHub Pages.
+
+**Why `/app` is two routes and not `tinyassets.io/app*`.** A Cloudflare route
+`*` matches zero or more of *any* character, not a path segment. `/app*` would
+therefore also capture apex website assets whose path merely starts with `app` —
+`/apple-touch-icon.png` is one the site actually serves — and the Worker would
+404 them. The exact `tinyassets.io/app` plus the subtree `tinyassets.io/app/*`
+covers the app and nothing else. `worker.js`'s `shouldProxy` enforces the same
+boundary a second time, so a widened route still cannot leak.
+
+**`/mcp/app` is retired, not redirected** (founder directive 2026-09-30, no
+back-compat). It still matches the `/mcp*` binding, so it is proxied to the
+daemon — which no longer mounts it and answers an ordinary 404. Deliberate: the
+404 comes from the app origin, so "the app moved" stays distinguishable from
+"the edge is misrouted".
 
 ---
 
@@ -59,7 +74,8 @@ wrangler login
 # Validate the config + worker before pushing.
 wrangler deploy --dry-run --outdir /tmp/wrangler-out
 
-# Deploy. Publishes worker + registers the route tinyassets.io/mcp*.
+# Deploy. Publishes worker + registers every route in wrangler.toml
+# (tinyassets.io/mcp*, tinyassets.io/app, tinyassets.io/app/*).
 wrangler deploy
 ```
 
@@ -97,11 +113,16 @@ If you'd rather click than CLI:
    placeholder is fine at this step).
 4. Open the new Worker → **Edit code** → replace the entire editor
    contents with the body of `worker.js` from this directory → **Save and deploy**.
-5. On the Worker overview page: **Triggers** → **Routes** → **Add route**.
-   - Route: `tinyassets.io/mcp*`
-   - Zone: `tinyassets.io`
-   - Save.
-6. Verify with the canary (see path A verify step).
+5. On the Worker overview page: **Triggers** → **Routes** → **Add route**. Add
+   all three, each with Zone `tinyassets.io`:
+   - `tinyassets.io/mcp*`
+   - `tinyassets.io/app`
+   - `tinyassets.io/app/*`
+
+   Do **not** shorten the last two to `tinyassets.io/app*` — see "Why `/app` is
+   two routes" above; it would swallow `/apple-touch-icon.png`.
+6. Verify with the canary (see path A verify step), then confirm the app itself:
+   `curl -sS -o /dev/null -w '%{http_code}\n' https://tinyassets.io/app` → `200`.
 
 **If the Worker fails to save** with a syntax error, double-check the
 editor got the full `worker.js` body including the `export default {}`
@@ -118,7 +139,11 @@ This revision's routing contract (production proof pending):
 | URL | Purpose |
 |---|---|
 | `https://tinyassets.io/mcp` | **Canonical — installed TinyAssets chatbot connectors.** Worker routes to tunnel. |
+| `https://tinyassets.io/app` | **Canonical — the web app** (and the Play/desktop shells' load target). Worker routes to tunnel. |
+| `https://tinyassets.io/app/*` | The app's own API (token exchange, `me`, billing, uploads, voice, connections). Worker routes to tunnel. |
+| `https://tinyassets.io/mcp/app*` | **Retired 2026-09-30 — proxied to the daemon, which answers an ordinary 404. No redirect, no alias.** |
 | `https://tinyassets.io/mcp-directory*` | **Retired — ordinary edge 404; never redirected or proxied.** |
+| `https://tinyassets.io/apple-touch-icon.png` | GitHub Pages — NOT the Worker. The route shape exists to keep it that way. |
 | `https://mcp.tinyassets.io/mcp` | Direct-tunnel origin — Access-gated, not user-facing. Use only for internal Access/service-token debugging. |
 | `https://tinyassets.io/` | GitHub Pages landing (unchanged). |
 

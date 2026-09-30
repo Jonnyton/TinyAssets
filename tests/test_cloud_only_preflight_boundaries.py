@@ -60,34 +60,64 @@ def test_actual_probe_closes_successful_response(monkeypatch, capsys):
     assert responses[0].closed
 
 
-@pytest.mark.parametrize("pattern", ["tinyassets.io/mcp*", "https://tinyassets.io/mcp*"])
-def test_exact_canonical_worker_configuration(monkeypatch, pattern):
+# The as-built inventory (deploy/cloudflare-worker/wrangler.toml). Both public
+# regions need a binding: since 2026-09-30 the app lives at the apex `/app`, so
+# the `/mcp*` route no longer covers it.
+def _canonical_routes(scheme=""):
+    return [
+        {"pattern": scheme + "tinyassets.io/mcp*", "script": "expected"},
+        {"pattern": scheme + "tinyassets.io/app", "script": "expected"},
+        {"pattern": scheme + "tinyassets.io/app/*", "script": "expected"},
+    ]
+
+
+@pytest.mark.parametrize("scheme", ["", "https://"])
+def test_exact_canonical_worker_configuration(monkeypatch, scheme):
     monkeypatch.setattr(pf, "_get_json", lambda *a: (
-        {"success": True, "result": [{"pattern": pattern, "script": "expected"}]}, "ok",
+        {"success": True, "result": _canonical_routes(scheme)}, "ok",
     ))
     assert pf.audit_public_worker_route("t", "z", "tinyassets.io", "expected")[
         "verdict"
     ] == pf.PASS
 
 
+@pytest.mark.parametrize("dropped", [
+    "tinyassets.io/mcp*",
+    "tinyassets.io/app",
+    "tinyassets.io/app/*",
+])
+def test_every_canonical_region_binding_is_required(monkeypatch, dropped):
+    """Drop any one of the three and the audit must refuse to pass.
+
+    This is the regression the /app move could hide: the daemon can mount the
+    routes and the tests can be green while the edge never sends `/app` to the
+    Worker, leaving the app dark behind the website origin's 404.
+    """
+    routes = [r for r in _canonical_routes() if r["pattern"] != dropped]
+    monkeypatch.setattr(pf, "_get_json", lambda *a: ({"success": True, "result": routes}, "ok"))
+    assert pf.audit_public_worker_route("t", "z", "tinyassets.io", "expected")[
+        "verdict"
+    ] != pf.PASS
+
+
 @pytest.mark.parametrize("override", [
-    {"pattern": "tinyassets.io/mcp/app", "script": None},
-    {"pattern": "tinyassets.io/mcp/app", "script": "other"},
+    {"pattern": "tinyassets.io/app", "script": None},
+    {"pattern": "tinyassets.io/app", "script": "other"},
+    {"pattern": "tinyassets.io/app/me", "script": "other"},
+    {"pattern": "tinyassets.io/app/deep*", "script": "other"},
     {"pattern": "tinyassets.io/mcp/unlisted*", "script": "other"},
     {"pattern": "tinyassets.io/mcp/unlisted", "script": None},
 ])
 def test_unexpected_subpath_cannot_hide_between_probe_urls(monkeypatch, override):
     monkeypatch.setattr(pf, "_get_json", lambda *a: (
-        {"success": True, "result": [
-            {"pattern": "tinyassets.io/mcp*", "script": "expected"}, override,
-        ]}, "ok",
+        {"success": True, "result": _canonical_routes() + [override]}, "ok",
     ))
     assert pf.audit_public_worker_route("t", "z", "tinyassets.io", "expected")[
         "verdict"
     ] != pf.PASS
 
 
-def test_three_exact_probe_urls_do_not_prove_descendant_coverage(monkeypatch):
+def test_exact_probe_urls_do_not_prove_descendant_coverage(monkeypatch):
     monkeypatch.setattr(pf, "_get_json", lambda *a: (
         {"success": True, "result": [
             {"pattern": "tinyassets.io" + path, "script": "expected"}
@@ -97,6 +127,11 @@ def test_three_exact_probe_urls_do_not_prove_descendant_coverage(monkeypatch):
     assert pf.audit_public_worker_route("t", "z", "tinyassets.io", "expected")[
         "verdict"
     ] != pf.PASS
+
+
+def test_probe_paths_cover_both_regions_shell_and_subtree():
+    assert pf.CANONICAL_PUBLIC_REGIONS == ("/mcp", "/app")
+    assert pf.CANONICAL_PUBLIC_PATHS == ("/mcp", "/mcp/", "/app", "/app/")
 
 
 def test_unrelated_path_is_not_mcp_coverage(monkeypatch):
@@ -125,10 +160,10 @@ def test_declared_route_pagination_must_be_complete(monkeypatch, info):
 
 
 def test_complete_declared_route_inventory_can_pass(monkeypatch):
+    routes = _canonical_routes()
     monkeypatch.setattr(pf, "_get_json", lambda *a: (
-        {"success": True, "result_info": {"total_count": 1}, "result": [
-            {"pattern": "tinyassets.io/mcp*", "script": "expected"},
-        ]}, "ok",
+        {"success": True, "result_info": {"total_count": len(routes)}, "result": routes},
+        "ok",
     ))
     assert pf.audit_public_worker_route("t", "z", "tinyassets.io", "expected")[
         "verdict"

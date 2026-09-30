@@ -160,7 +160,7 @@ def _drive(
     from tinyassets.auth.middleware import identity_context
     from tinyassets.onboarding import onboarding_routes
 
-    route = next(r for r in onboarding_routes() if r.path == "/mcp/app/voice/session")
+    route = next(r for r in onboarding_routes() if r.path == "/app/voice/session")
     raw = json.dumps(body).encode()
     headers = [
         (b"content-type", b"application/json"),
@@ -172,7 +172,7 @@ def _drive(
     scope = {
         "type": "http",
         "method": "POST",
-        "path": "/mcp/app/voice/session",
+        "path": "/app/voice/session",
         "headers": headers,
         "query_string": b"",
     }
@@ -195,12 +195,12 @@ def _drive_status(*, identity=None) -> tuple[int, dict, dict]:
     from tinyassets.auth.middleware import identity_context
     from tinyassets.onboarding import onboarding_routes
 
-    route = next(r for r in onboarding_routes() if r.path == "/mcp/app/voice/status")
+    route = next(r for r in onboarding_routes() if r.path == "/app/voice/status")
     request = Request(
         {
             "type": "http",
             "method": "GET",
-            "path": "/mcp/app/voice/status",
+            "path": "/app/voice/status",
             "headers": [(b"host", b"tinyassets.test")],
             "query_string": b"",
         }

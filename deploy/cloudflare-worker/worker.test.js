@@ -1,7 +1,7 @@
 // Unit tests for worker.js — run with `node --test worker.test.js`.
 //
 // Tests cover:
-//   - shouldProxy: path matching (only /mcp* matches).
+//   - shouldProxy: path matching (/mcp* plus the apex /app subtree).
 //   - proxyToTunnel: header preservation, hop-by-hop stripping, streaming
 //     pass-through, 5xx → 502 translation, network-error → 502, X-Forwarded-*
 //     addition, Host rewrite, CF Access service-token injection.
@@ -89,6 +89,31 @@ describe('shouldProxy', () => {
         assert.equal(shouldProxy('/catalog'), false);
         assert.equal(shouldProxy('/assets/logo.png'), false);
     });
+
+    // The app moved from /mcp/app to the apex /app on 2026-09-30. The Worker is
+    // the only thing standing between that path and the website origin, so the
+    // binding is load-bearing: without these the app URL 404s from GitHub Pages.
+    it('accepts /app (the app shell)', () => {
+        assert.equal(shouldProxy('/app'), true);
+    });
+
+    it('accepts /app/ and the whole app subtree', () => {
+        assert.equal(shouldProxy('/app/'), true);
+        assert.equal(shouldProxy('/app/me'), true);
+        assert.equal(shouldProxy('/app/token'), true);
+        assert.equal(shouldProxy('/app/billing/webhook'), true);
+        assert.equal(shouldProxy('/app/model-callback/connect'), true);
+    });
+
+    // A single `tinyassets.io/app*` route would have swallowed these, because a
+    // Cloudflare `*` matches zero or more characters anywhere. The site really
+    // serves /apple-touch-icon.png, so the guard is not hypothetical.
+    it('rejects apex assets that merely start with "app"', () => {
+        assert.equal(shouldProxy('/apple-touch-icon.png'), false);
+        assert.equal(shouldProxy('/app-ads.txt'), false);
+        assert.equal(shouldProxy('/apps'), false);
+        assert.equal(shouldProxy('/appx/deep'), false);
+    });
 });
 
 // ------- handler routing ---------------------------------------------------
@@ -137,6 +162,54 @@ describe('worker handler — canonical /mcp routing', () => {
             assert.equal(response.status, 200);
         });
     }
+});
+
+describe('worker handler — canonical /app routing', () => {
+    for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS']) {
+        it(`proxies ${method} /app to the tunnel`, async () => {
+            const response = await worker.fetch(
+                new Request('https://tinyassets.io/app?subscribed=1', { method }),
+                {},
+            );
+
+            assert.ok(lastUpstreamRequest, 'the app URL must reach the daemon');
+            assert.equal(lastUpstreamRequest.method, method);
+            assert.equal(lastUpstreamRequest.url, `${TUNNEL_ORIGIN}/app?subscribed=1`);
+            assert.equal(response.status, 200);
+        });
+    }
+
+    it('proxies an app API subpath with its query intact', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/app/models/preferences?universe_id=u1', {
+                method: 'GET',
+            }),
+            {},
+        );
+
+        assert.ok(lastUpstreamRequest);
+        assert.equal(
+            lastUpstreamRequest.url,
+            `${TUNNEL_ORIGIN}/app/models/preferences?universe_id=u1`,
+        );
+        assert.equal(response.status, 200);
+    });
+
+    // No back-compat (founder directive 2026-09-30): the edge must NOT redirect
+    // or alias the retired path. It stays inside the /mcp/ family, so it is
+    // proxied to the daemon — which no longer mounts it and answers 404. That
+    // keeps the retirement diagnosable (our origin said no, not the website's).
+    it('does not redirect or alias the retired /mcp/app path', async () => {
+        const response = await worker.fetch(
+            new Request('https://tinyassets.io/mcp/app', { method: 'GET' }),
+            {},
+        );
+
+        assert.ok(lastUpstreamRequest, 'still proxied, never edge-redirected');
+        assert.equal(lastUpstreamRequest.url, `${TUNNEL_ORIGIN}/mcp/app`);
+        assert.equal(response.headers.get('Location'), null);
+        assert.ok(response.status < 300 || response.status >= 400);
+    });
 });
 
 // ------- proxyToTunnel: basic routing --------------------------------------
@@ -448,7 +521,7 @@ describe('proxyToTunnel — failure translation', () => {
             JSON.stringify({ error: 'billing_unavailable', detail: 'no key' }),
             { status: 503, headers: { 'Content-Type': 'application/json' } },
         );
-        const req = new Request('https://tinyassets.io/mcp/app/billing/checkout', {
+        const req = new Request('https://tinyassets.io/app/billing/checkout', {
             method: 'POST',
         });
         const res = await proxyToTunnel(req);

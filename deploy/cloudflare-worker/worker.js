@@ -9,15 +9,17 @@
 //     404 handler → "Session terminated" in Claude.ai (the 2026-04-19 P0).
 //
 // Fix:
-//   This Worker runs on route `tinyassets.io/mcp*`. Requests to `/mcp`
-//   are forwarded to the internal tunnel origin at `mcp.tinyassets.io`,
+//   This Worker runs on routes `tinyassets.io/mcp*` and `tinyassets.io/app*`.
+//   Requests to `/mcp` (the connector endpoint) and `/app` (the web app) are
+//   forwarded to the internal tunnel origin at `mcp.tinyassets.io`,
 //   authenticated via Cloudflare Access service-token headers. The broad
 //   route also catches retired `/mcp-directory*` requests so this Worker can
 //   terminate them consistently with an ordinary 404 instead of forwarding
 //   them to either origin.
 //
 // Security model (host directive 2026-04-20):
-//   - `tinyassets.io/mcp` is the ONLY public user-facing URL.
+//   - `tinyassets.io/mcp` is the only public connector URL, and
+//     `tinyassets.io/app` the only public app URL.
 //   - `mcp.tinyassets.io` exists in DNS as the tunnel origin but is
 //     Access-gated: direct requests without CF-Access service-token headers
 //     return 401/403. Only this Worker can reach it, via the secret headers
@@ -37,8 +39,9 @@
 //     the original P0; explicit status here.
 //   - Pure proxy: no response-body rewriting.
 //
-// Canonical URL: https://tinyassets.io/mcp  (apex + path, user-facing).
-// Tunnel origin: https://mcp.tinyassets.io  (Access-gated, internal only).
+// Canonical connector URL: https://tinyassets.io/mcp  (apex + path, user-facing).
+// Canonical app URL:       https://tinyassets.io/app  (apex + path, user-facing).
+// Tunnel origin:           https://mcp.tinyassets.io  (Access-gated, internal only).
 
 const TUNNEL_ORIGIN = 'https://mcp.tinyassets.io';
 
@@ -230,10 +233,24 @@ async function proxyToTunnel(request, env) {
  * themselves); this is purely the method-allow check.
  */
 function shouldProxy(pathname) {
-    // Only canonical `/mcp` belongs to the tunnel. The broader Cloudflare
-    // `tinyassets.io/mcp*` binding intentionally reaches this Worker so stale
-    // directory callers receive the same method-independent ordinary 404.
-    return pathname === '/mcp' || pathname.startsWith('/mcp/');
+    // Two path families belong to the tunnel:
+    //   /mcp   — the canonical MCP connector endpoint (and its sub-paths).
+    //   /app   — the web app (moved off /mcp/app on 2026-09-30).
+    // The broader Cloudflare `tinyassets.io/mcp*` binding intentionally reaches
+    // this Worker so stale directory callers receive the same
+    // method-independent ordinary 404.
+    //
+    // `/mcp/app*` still matches the `/mcp/` family here, so it is still
+    // PROXIED — and the daemon, which no longer mounts those routes, answers
+    // an ordinary 404. That is the intended retirement: the edge does not
+    // redirect or alias the old path, and the 404 comes from the app origin
+    // rather than the website origin, so it stays diagnosable.
+    //
+    // `/appfoo` must NOT match: the `*` in the Cloudflare route is a bare
+    // suffix wildcard, so the binding delivers sibling prefixes here too.
+    if (pathname === '/mcp' || pathname.startsWith('/mcp/')) return true;
+    if (pathname === '/app' || pathname.startsWith('/app/')) return true;
+    return false;
 }
 
 export default {

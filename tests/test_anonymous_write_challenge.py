@@ -375,7 +375,7 @@ def test_canary_bearer_is_refused_outside_its_allowlist(monkeypatch, body):
 
 def test_canary_bearer_is_refused_off_the_mcp_endpoint_and_off_post(monkeypatch):
     monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
-    for path, method in (("/mcp/app/settings", "POST"), ("/mcp", "GET"), ("/mcp", "DELETE")):
+    for path, method in (("/app/settings", "POST"), ("/mcp", "GET"), ("/mcp", "DELETE")):
         sent, app_called, _ = _drive(
             _rpc("tools/call", "get_status"), token=_CANARY_TOKEN, path=path, method=method,
         )

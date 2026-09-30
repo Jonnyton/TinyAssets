@@ -489,7 +489,7 @@ def auth_middleware(token: str | None) -> Identity | None:
 def _is_inbound_hook_path(path: str) -> bool:
     """Exactly ``/mcp/hooks/<one-segment-token>`` (non-empty, no deeper path).
 
-    The token is variable so this can't be an equality check like ``/mcp/app``;
+    The token is variable so this can't be an equality check like ``/app``;
     it is pinned to a single non-empty segment after the fixed prefix so no
     deeper ``/mcp/hooks/...`` path is ever exempted.
     """
@@ -527,43 +527,65 @@ _DISCOVERY_PATHS = frozenset({
 })
 
 
+def _is_app_path(path: str) -> bool:
+    """Exactly the web-app subtree: ``/app`` and ``/app/*``.
+
+    Anchored on the segment boundary so a sibling prefix the apex website owns
+    (``/apple-touch-icon.png``, ``/app-ads.txt``) is never mistaken for an app
+    route. Deliberately NOT traversal-normalised: every carve-out below is an
+    exact-equality test, so a ``..`` path can only ever be *challenged* here,
+    never exempted.
+    """
+    return path == "/app" or path.startswith("/app/")
+
+
 def _auth_challenge_path(path: str) -> bool:
-    """The MCP endpoint (``/mcp`` + sub-paths) requires auth in challenge mode.
+    """The MCP endpoint (``/mcp`` + sub-paths) and the web app (``/app`` +
+    sub-paths) require auth in challenge mode.
+
     Discovery routes stay public so the client can still find the authorization
     server, and unrelated paths are not swept in.
+
+    The app moved from ``/mcp/app`` to the apex ``/app`` on 2026-09-30. That move
+    took its routes OUT of the ``/mcp/`` prefix this function used to sweep, so
+    ``/app`` is enumerated here explicitly. Without it every app API route
+    (``/app/me``, ``/app/billing/checkout``, ``/app/account/delete``, …) would
+    lose its bearer 401 and reach the handler with no identity — the middleware
+    is the boundary those routes rely on. ``/mcp/app*`` is no longer mounted and
+    no longer exempt, so it is swept into the ordinary ``/mcp/`` rule.
     """
     if path in _DISCOVERY_PATHS:
         return False
-    if path.startswith("/mcp/app/model-callback/"):
+    if path.startswith("/app/model-callback/"):
         from tinyassets.onboarding.hosted_model_auth import is_callback_path
 
         if is_callback_path(path):
             return False  # Shell only; authenticated exchange remains challenged.
-    if path == "/mcp/app" or path == "/mcp/app/token":
+    if path == "/app" or path == "/app/token":
         # The onboarding SPA (tinyassets/onboarding) is a public page that MUST
-        # load before sign-in, and /mcp/app/token is its same-origin PKCE
+        # load before sign-in, and /app/token is its same-origin PKCE
         # token-exchange proxy — both run BEFORE any bearer exists, so neither may
         # be swept into the /mcp bearer 401 (mirrors the .well-known carve-out).
         # Their own authenticated /mcp tool calls are still challenged; the dark
         # flag still returns a bare 404 when the app is off.
         return False
-    # Billing webhook: Stripe POSTs here with no MCP bearer, so like /mcp/app and
+    # Billing webhook: Stripe POSTs here with no MCP bearer, so like /app and
     # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires
     # both Stripe provenance (signed, replay-bounded payload) and entitlement
     # authority (our HMAC-claimed exact plan). Exactly one path is opened; no deeper
-    # /mcp/app/billing/... route is exempt, so checkout and cancel stay identity-gated.
-    if path == "/mcp/app/billing/webhook":
+    # /app/billing/... route is exempt, so checkout and cancel stay identity-gated.
+    if path == "/app/billing/webhook":
         return False
     # Inbound webhook receiver: /mcp/hooks/<token> is a public POST endpoint whose
     # UNGUESSABLE per-branch token is the sole boundary (the run is author-gated,
     # durably rate-limited, and revocable — webhook Codex findings #1/#3/#5). It
-    # carries no MCP bearer, so — like /mcp/app — it must not be
+    # carries no MCP bearer, so — like /app — it must not be
     # swept into the /mcp/* bearer 401. Only exempt when inbound is enabled (the
     # route only exists then) and only the exact /mcp/hooks/<one-segment-token>
     # shape — no deeper /mcp/hooks/... path is opened.
     if _inbound_hooks_enabled() and _is_inbound_hook_path(path):
         return False
-    return path == "/mcp" or path.startswith("/mcp/")
+    return path == "/mcp" or path.startswith("/mcp/") or _is_app_path(path)
 
 
 def _challenge_prm_url() -> str:

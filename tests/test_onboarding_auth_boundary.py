@@ -1,10 +1,14 @@
 """The onboarding route's auth boundary, through the REAL AuthContextMiddleware.
 
 Reproduces the Codex-found scenario (require-auth mode) end to end at the ASGI
-layer: `/mcp/app` must load anonymously (no challenge) while `/mcp` and other
-`/mcp/*` paths still get the OAuth challenge. Complements the handler-level tests
-in test_onboarding_app.py, which called the handler directly and so could not have
-caught a middleware-level 401.
+layer: `/app` must load anonymously (no challenge) while `/mcp`, other `/mcp/*`
+paths, and every `/app/*` API route still get the OAuth challenge. Complements
+the handler-level tests in test_onboarding_app.py, which called the handler
+directly and so could not have caught a middleware-level 401.
+
+The app moved from `/mcp/app` to the apex `/app` on 2026-09-30, which took its
+API routes out of the `/mcp/` prefix the challenge rule swept. That made this
+file the guard for the move's one real security risk.
 """
 
 from __future__ import annotations
@@ -72,7 +76,7 @@ def _drive(path: str, method: str = "GET") -> int:
 
 def test_onboarding_path_not_challenged_in_require_auth_mode(require_auth_provider):
     # The blocker Codex found: without the exemption this returned 401.
-    assert _drive("/mcp/app") == 200
+    assert _drive("/app") == 200
 
 
 def test_mcp_endpoint_still_challenges_anonymous(require_auth_provider):
@@ -84,18 +88,86 @@ def test_other_mcp_subpath_still_challenges(require_auth_provider):
     assert _drive("/mcp/something-else") == 401
 
 
+def test_retired_app_path_challenges_through_the_middleware(require_auth_provider):
+    # /mcp/app is not the app any more and holds no exemption: it is an ordinary
+    # /mcp/* path, so anonymously it gets the connector challenge.
+    assert _drive("/mcp/app") == 401
+
+
+def test_app_api_route_challenges_through_the_middleware(require_auth_provider):
+    # The real ASGI path, not just the predicate: an app API route with no
+    # bearer must still be refused after the move off /mcp/app.
+    assert _drive("/app/me") == 401
+
+
 # --- pure predicate: the exemption itself ---
 
 
 def test_challenge_path_exempts_only_the_app_route():
-    assert mw._auth_challenge_path("/mcp/app") is False
+    assert mw._auth_challenge_path("/app") is False
     # The same-origin PKCE token-exchange proxy runs before any bearer exists.
-    assert mw._auth_challenge_path("/mcp/app/token") is False
+    assert mw._auth_challenge_path("/app/token") is False
     assert mw._auth_challenge_path("/mcp") is True
     assert mw._auth_challenge_path("/mcp/") is True
-    assert mw._auth_challenge_path("/mcp/app/callback") is True  # not the served path
-    assert mw._auth_challenge_path("/mcp/app/token/x") is True  # exact-match only, no prefix bypass
+    assert mw._auth_challenge_path("/app/callback") is True  # not the served path
+    assert mw._auth_challenge_path("/app/token/x") is True  # exact-match only, no prefix bypass
     assert mw._auth_challenge_path("/.well-known/oauth-protected-resource") is False
+
+
+def test_app_api_subtree_is_challenged_after_the_apex_move():
+    """The app left the /mcp/ prefix on 2026-09-30, so the challenge rule that
+    used to cover its API routes by accident now has to name them.
+
+    This is the regression the move could have silently introduced: every one of
+    these reached the middleware as a /mcp/app/... path before and got a 401
+    with no bearer. If the move had only renamed routes, they would answer
+    anonymously.
+    """
+    for path in (
+        "/app/me",
+        "/app/billing/checkout",
+        "/app/billing/cancel",
+        "/app/billing/status",
+        "/app/account/delete",
+        "/app/connections",
+        "/app/files",
+        "/app/serving/bind",
+        "/app/models/preferences",
+        "/app/voice/session",
+        "/app/voice/status",
+        "/app/trace",
+        "/app/ui-frame",
+        "/app/model-connect/connect",
+        "/app/openai/device/start",
+    ):
+        assert mw._auth_challenge_path(path) is True, path
+
+
+def test_app_challenge_is_anchored_on_the_segment_boundary():
+    """Apex website paths that merely start with "app" are not app routes.
+
+    `/apple-touch-icon.png` is a real file the site serves; a prefix test would
+    have started 401ing it the moment the Worker route widened.
+    """
+    for path in ("/apple-touch-icon.png", "/app-ads.txt", "/apps", "/appx/deep"):
+        assert mw._auth_challenge_path(path) is False, path
+
+
+def test_retired_mcp_app_paths_are_challenged_not_exempt():
+    """No back-compat: the old path keeps no carve-out of its own.
+
+    It falls through to the ordinary /mcp/ rule, so an anonymous caller gets the
+    connector's 401 rather than an exemption into a route that no longer exists.
+    """
+    for path in ("/mcp/app", "/mcp/app/token", "/mcp/app/billing/webhook", "/mcp/app/me"):
+        assert mw._auth_challenge_path(path) is True, path
+
+
+def test_billing_webhook_carve_out_moved_with_the_app():
+    # Stripe POSTs with no MCP bearer; exactly one path stays open, and it is
+    # the new one.
+    assert mw._auth_challenge_path("/app/billing/webhook") is False
+    assert mw._auth_challenge_path("/app/billing/webhook/x") is True
 
 
 def _drive_h(path: str, method: str = "POST", headers: dict | None = None) -> int:

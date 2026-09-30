@@ -1,7 +1,7 @@
 # TinyAssets mobile app (Capacitor: Android + iOS)
 
 A native Android/iOS app that wraps the live TinyAssets web app. It is a thin,
-maintainable **Capacitor** shell whose WebView loads `https://tinyassets.io/mcp/app`
+maintainable **Capacitor** shell whose WebView loads `https://tinyassets.io/app`
 (configured in `capacitor.config.json` → `server.url`). Because that page, the
 `/mcp` API, and the AuthKit sign-in all live on the same origin (`tinyassets.io`),
 the native shell handles the WorkOS OAuth return through `tinyassets://auth`.

@@ -3,7 +3,7 @@
   "appName": "TinyAssets",
   "webDir": "www",
   "server": {
-    "url": "https://tinyassets.io/mcp/app",
+    "url": "https://tinyassets.io/app",
     "allowNavigation": [
       "tinyassets.io"
     ],

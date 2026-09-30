@@ -239,11 +239,11 @@ def test_dev_mode_challenges_a_missing_token_too():
         ("/mcp", True),
         ("/mcp/", True),
         ("/mcp/anything", True),
-        ("/mcp/app", False),                       # the SPA shell loads before sign-in
-        ("/mcp/app/token", False),                 # its PKCE exchange
-        ("/mcp/app/settings", True),               # every other app route needs the bearer
-        ("/mcp/app/billing/webhook", False),       # Stripe-signed
-        ("/mcp/app/billing/checkout", True),
+        ("/app", False),                       # the SPA shell loads before sign-in
+        ("/app/token", False),                 # its PKCE exchange
+        ("/app/settings", True),               # every other app route needs the bearer
+        ("/app/billing/webhook", False),       # Stripe-signed
+        ("/app/billing/checkout", True),
         ("/mcp/pulse", True),                      # service-principal release facts
         ("/mcp/pulse/", True),                     # exact path, nothing under it
         ("/mcp/pulse/extra", True),
@@ -251,6 +251,14 @@ def test_dev_mode_challenges_a_missing_token_too():
         ("/.well-known/oauth-protected-resource", False),
         ("/not-mcp", False),
         ("/", False),
+        # The retired path (moved to the apex /app on 2026-09-30) keeps no
+        # carve-out: it is an ordinary /mcp/* path now.
+        ("/mcp/app", True),
+        ("/mcp/app/token", True),
+        ("/mcp/app/billing/webhook", True),
+        # Apex website paths that merely start with "app" are not app routes.
+        ("/apple-touch-icon.png", False),
+        ("/app-ads.txt", False),
     ],
 )
 def test_exempt_table_is_exact_paths_not_prefixes(path, challenged, monkeypatch):

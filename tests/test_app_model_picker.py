@@ -408,7 +408,7 @@ def test_save_exact_home_and_generation_never_grants_or_silently_switches(tmp_pa
     result = run_picker(tmp_path, choose("first") + "await ModelPicker.save();")
     assert result["requests"] == [
         {
-            "url": "/mcp/app/models/preferences?universe_id=home-a",
+            "url": "/app/models/preferences?universe_id=home-a",
             "method": "POST",
             "body": {
                 "expected_generation": 2,
@@ -465,7 +465,7 @@ def test_adding_a_fallback_in_the_dialog_saves_it(tmp_path):
     doc["preferences"]["policy"] = explicit("first")
     result = run_picker(tmp_path, add("second"), doc)
     assert result["requests"] == [{
-        "url": "/mcp/app/models/preferences?universe_id=home-a",
+        "url": "/app/models/preferences?universe_id=home-a",
         "method": "POST",
         "body": {"expected_generation": 2, "policy": explicit("first", ["second"])},
     }]

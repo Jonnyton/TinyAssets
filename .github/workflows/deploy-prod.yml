@@ -370,13 +370,22 @@ jobs:
           set -euo pipefail
           python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles
 
-      - name: Roll back if the public canary is red
-        if: ${{ failure() && steps.canary.outcome == 'failure' && steps.deploy.outputs.rc == '0' }}
+      # The app is the second public surface this deploy can break, and the MCP
+      # canary says nothing about it: the connector can be perfectly green while
+      # /app 404s. Folded into the same rollback condition below.
+      - name: Public app-surface probe
+        id: app_probe
+        run: |
+          set -euo pipefail
+          python scripts/probe_app_surface.py --verbose
+
+      - name: Roll back if a public surface is red
+        if: ${{ failure() && steps.deploy.outputs.rc == '0' && (steps.canary.outcome == 'failure' || steps.app_probe.outcome == 'failure') }}
         env:
           PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
         run: |
           set -euo pipefail
-          echo "::error::public canary red after a fresh deploy — rolling back to the captured previous image"
+          echo "::error::a public surface went red after a fresh deploy — rolling back to the captured previous image"
           if [ -z "${PREV_IMAGE}" ]; then
             echo "::error::no previous image captured; manual rollback required"; exit 3
           fi
@@ -512,6 +521,7 @@ jobs:
             echo "- deploy rc: \`${{ steps.deploy.outputs.rc }}\` result: \`${{ steps.deploy.outputs.result }}\`"
             echo "- deployed image: \`${{ steps.deploy.outputs.deployed_image }}\`"
             echo "- public canary: \`${{ steps.canary.outcome }}\`"
+            echo "- app surface probe: \`${{ steps.app_probe.outcome }}\`"
             echo "- protected receipt assertion: \`${{ steps.deployed_sha.outcome }}\`"
             echo "- image retention: \`${{ steps.retention.outcome }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

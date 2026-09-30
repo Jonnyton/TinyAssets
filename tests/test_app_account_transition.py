@@ -521,7 +521,7 @@ def _gate_script(html: str, body: str) -> str:
 
 def test_an_unpowered_first_session_lands_in_chat_with_the_request_first(html):
     """The first session's normal path is its own chat, with the account and
-    home learned from the verified /mcp/app/me before anything is restored,
+    home learned from the verified /app/me before anything is restored,
     and the connect request opened - never a separate full-page screen."""
     out = _run_node(_gate_script(html, r"""
     (async()=>{
@@ -557,7 +557,7 @@ def test_a_powered_session_lands_in_chat_without_opening_setup(html):
 
 
 def test_a_me_that_lands_after_the_login_changed_stamps_no_identity(html):
-    """A /mcp/app/me still in flight when the account changes describes
+    """A /app/me still in flight when the account changes describes
     somebody else. It must not write that identity onto the page."""
     out = _run_node(_gate_script(html, r"""
     (async()=>{
@@ -576,7 +576,7 @@ def test_a_me_that_lands_after_the_login_changed_stamps_no_identity(html):
     })();
     """))
     assert out["queueOwner"] == "principal-b", \
-        "a stale /mcp/app/me renamed the account now on screen"
+        "a stale /app/me renamed the account now on screen"
     assert out["queueScope"] == "universe-b", \
-        "a stale /mcp/app/me renamed the home now on screen"
-    assert out["painted"] == [], "a stale /mcp/app/me painted a view"
+        "a stale /app/me renamed the home now on screen"
+    assert out["painted"] == [], "a stale /app/me painted a view"

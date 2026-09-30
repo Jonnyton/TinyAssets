@@ -212,43 +212,68 @@ def test_voice_client_keeps_converse_as_the_only_writer():
 # --------------------------------------------------------------------------- #
 
 
-def test_route_is_mcp_app_get(monkeypatch):
+def test_route_is_apex_app_get(monkeypatch):
     routes = onboarding.onboarding_routes()
     by_path = {r.path: r for r in routes}
     # The SPA page (GET) + its same-origin PKCE token-exchange proxy (POST) +
     # the one-tap OpenAI device-auth broker (POST only, identity-gated) + the
     # fixed, unauthenticated bundle host a custom UI runs inside (GET).
     assert set(by_path) == {
-        "/mcp/app", "/mcp/app/token", "/mcp/app/me", "/mcp/app/ui-frame",
-        "/mcp/app/model-connect/{operation}", "/mcp/app/model-callback/{flow}",
-        "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
-        "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
-        "/mcp/app/voice/status", "/mcp/app/voice/session",
-        "/mcp/app/serving/bind", "/mcp/app/models/preferences",
-        "/mcp/app/billing/status", "/mcp/app/billing/checkout",
-        "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
-        "/mcp/app/account/delete", "/mcp/app/connections", "/mcp/app/files",
+        "/app", "/app/token", "/app/me", "/app/ui-frame",
+        "/app/model-connect/{operation}", "/app/model-callback/{flow}",
+        "/app/openai/device/start", "/app/openai/device/poll",
+        "/app/openai/begin", "/app/openai/exchange", "/app/trace",
+        "/app/voice/status", "/app/voice/session",
+        "/app/serving/bind", "/app/models/preferences",
+        "/app/billing/status", "/app/billing/checkout",
+        "/app/billing/cancel", "/app/billing/webhook",
+        "/app/account/delete", "/app/connections", "/app/files",
     }
-    assert by_path["/mcp/app/files"].methods == {"POST"}
-    assert "GET" in by_path["/mcp/app"].methods
+    assert by_path["/app/files"].methods == {"POST"}
+    assert "GET" in by_path["/app"].methods
     # The bundle host is read-only and takes no input: it carries no user content,
     # which is why it needs no authentication (tinyassets/onboarding/ui_frame.py).
-    assert by_path["/mcp/app/ui-frame"].methods == {"GET", "HEAD"}
-    assert "GET" in by_path["/mcp/app/billing/status"].methods
-    assert "GET" in by_path["/mcp/app/me"].methods
-    assert "GET" in by_path["/mcp/app/voice/status"].methods
-    assert {"GET", "POST"} <= by_path["/mcp/app/models/preferences"].methods
-    assert by_path["/mcp/app/connections"].methods == {"GET", "HEAD", "POST"}
+    assert by_path["/app/ui-frame"].methods == {"GET", "HEAD"}
+    assert "GET" in by_path["/app/billing/status"].methods
+    assert "GET" in by_path["/app/me"].methods
+    assert "GET" in by_path["/app/voice/status"].methods
+    assert {"GET", "POST"} <= by_path["/app/models/preferences"].methods
+    assert by_path["/app/connections"].methods == {"GET", "HEAD", "POST"}
     for post_only in (
-        "/mcp/app/token", "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
-        "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
-        "/mcp/app/voice/session",
-        "/mcp/app/serving/bind",
-        "/mcp/app/billing/checkout", "/mcp/app/billing/cancel",
-        "/mcp/app/billing/webhook", "/mcp/app/account/delete",
+        "/app/token", "/app/openai/device/start", "/app/openai/device/poll",
+        "/app/openai/begin", "/app/openai/exchange", "/app/trace",
+        "/app/voice/session",
+        "/app/serving/bind",
+        "/app/billing/checkout", "/app/billing/cancel",
+        "/app/billing/webhook", "/app/account/delete",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
+
+
+def test_no_route_is_mounted_under_the_retired_mcp_app_prefix():
+    """The 2026-09-30 move is clean: `/mcp/app` is not mounted, aliased or
+    redirected. Nothing under the old prefix exists to serve.
+
+    Founder directive: no back-compat. A route left behind — even a redirect —
+    would be the back-compat the move was meant to avoid.
+    """
+    paths = {r.path for r in onboarding.onboarding_routes()}
+    assert not [p for p in paths if p.startswith("/mcp")], sorted(paths)
+    assert all(p == "/app" or p.startswith("/app/") for p in paths), sorted(paths)
+
+
+def test_the_app_path_constant_is_the_single_source_of_truth():
+    """Route table, refresh-cookie scope and redirect-URI check must agree.
+
+    They disagreed once in spirit already: the cookie path was a separate
+    literal. One constant is what makes "the app lives at /app" checkable.
+    """
+    assert onboarding.APP_PATH == "/app"
+    assert onboarding._REFRESH_COOKIE_PATH == "/app/token"
+    paths = {r.path for r in onboarding.onboarding_routes()}
+    assert onboarding.APP_PATH in paths
+    assert onboarding._REFRESH_COOKIE_PATH in paths
 
 
 def test_app_embeds_build_and_serves_matching_header(monkeypatch):
@@ -945,7 +970,7 @@ let connectCalls=[]; function openConnectRequest(guidance){connectCalls.push({gu
   out.browserFallbackDecline={
     disclosureShown:!els["voice-disclosure"].hidden,
     recognitionInstances:recognitionInstances.length,
-    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/mcp/app/voice/session").length
+    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/app/voice/session").length
   };
   await Voice.requestStart();
   Voice.selectBrowserVoice("voice-choice");
@@ -971,7 +996,7 @@ let connectCalls=[]; function openConnectRequest(guidance){connectCalls.push({gu
     spokenVoices:spokenVoices.slice(),
     trailingEchoSuppressed:turns.length===turnsBeforeTrailingEcho,
     recognitionStarts:recognition.started,recognitionStops:recognition.stopped,
-    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/mcp/app/voice/session").length,
+    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/app/voice/session").length,
     connectCalls:connectCalls.slice()
   };
   out.browserVoiceChoice={
@@ -1170,7 +1195,7 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert out["unpowered"]["label"] == "Voice · Connect"
     assert out["unpowered"]["disclosureShown"] is False
     assert out["unpowered"]["mediaRequests"] == 0
-    assert set(out["unpowered"]["fetched"]) == {"/mcp/app/voice/status"}
+    assert set(out["unpowered"]["fetched"]) == {"/app/voice/status"}
     assert "provider connection" in out["unpowered"]["status"]
     assert out["unpowered"]["connectCalls"] == [
         {
@@ -1623,7 +1648,7 @@ __APP_FUNCTIONS__
 (async()=>{
   const out={};
   // The account half of a saved row's ownership. The page learns it from
-  // /mcp/app/me at sign-in; here a scenario states it, and `principal: null`
+  // /app/me at sign-in; here a scenario states it, and `principal: null`
   // is a page that never resolved one.
   setQueueOwner(SCENARIO.principal===null?"":(SCENARIO.principal||"p-1"));
   modelChoiceForNextTurn=SCENARIO.modelChoice||null;

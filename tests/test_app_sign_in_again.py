@@ -1,6 +1,6 @@
 """The sign-in shape's client, run as the page runs it.
 
-The daemon has had `/mcp/app/openai/device/start` and `/poll` for weeks and NO web
+The daemon has had `/app/openai/device/start` and `/poll` for weeks and NO web
 client called them, so a source whose saved sign-in died had no way back through the
 app. These drive the real `SignInConnect` object sliced out of the served page, with
 a stub `fetch` standing in for the routes, and assert the whole sequence: start, show
@@ -116,9 +116,9 @@ def test_start_shows_the_code_and_the_link_and_then_polls():
     # start, then a pending poll, then the connected poll -- and each poll carries
     # the OPAQUE handle, never the code the owner typed.
     assert [c["url"] for c in out["calls"]] == [
-        "/mcp/app/openai/device/start",
-        "/mcp/app/openai/device/poll",
-        "/mcp/app/openai/device/poll",
+        "/app/openai/device/start",
+        "/app/openai/device/poll",
+        "/app/openai/device/poll",
     ]
     assert out["calls"][1]["body"] == {"flow": "h-1"}
     assert out["calls"][2]["body"] == {"flow": "h-1"}

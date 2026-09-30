@@ -686,7 +686,7 @@
   // daemon log (identity-scoped, never a secret). Lets the flow be debugged
   // from a phone test without the tester narrating every screen.
   function trace(step, detail){
-    try{ fetch("/mcp/app/trace",{method:"POST",keepalive:true,
+    try{ fetch("/app/trace",{method:"POST",keepalive:true,
       headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
       body:JSON.stringify({step:String(step).slice(0,64), detail:String(detail||"").slice(0,200)})}).catch(()=>{}); }catch(_e){}
   }
@@ -735,7 +735,7 @@
   }
 
   async function finishExchange(code, saved){
-    // Exchange the code SAME-ORIGIN through the daemon proxy (/mcp/app/token).
+    // Exchange the code SAME-ORIGIN through the daemon proxy (/app/token).
     // The cross-origin AuthKit token endpoint fails inside an app WebView
     // ("Failed to fetch"); the proxy does the PKCE exchange server-side and
     // returns the access token. redirect_uri + code_verifier are re-checked there.
@@ -745,7 +745,7 @@
       // of the refresh cookie is serialized, so a late refresh can never
       // overwrite a fresh login.
       tokens = await withRefreshLock(async()=>{
-        const r = await fetch("/mcp/app/token", {
+        const r = await fetch("/app/token", {
           method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"},
           body: JSON.stringify({code, code_verifier:saved.verifier, redirect_uri:redirectUri()}),
         });
@@ -809,7 +809,7 @@
     }
     refreshing = withRefreshLock(async()=>{
       try{
-        const r = await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
+        const r = await fetch("/app/token", {method:"POST", credentials:"same-origin",
           headers:{"Content-Type":"application/json"},
           body: JSON.stringify({grant_type:"refresh_token", session_ref: sessionRef() || undefined})});
         if(!r.ok) return (r.status>=500 || r.status===429 || r.status===408) ? null : false;
@@ -840,7 +840,7 @@
     return withRefreshLock(async()=>{
       logoutPending = true;
       try{
-        const r = await fetch("/mcp/app/token", {method:"POST", credentials:"same-origin",
+        const r = await fetch("/app/token", {method:"POST", credentials:"same-origin",
           headers:{"Content-Type":"application/json"},
           body: JSON.stringify({grant_type:"logout", session_ref: sessionRef() || undefined})});
         if(r.ok){ logoutPending = false; clearSessionRef(); try{ localStorage.removeItem("ta_logout_pending"); }catch(_e){} return true; }
@@ -1913,12 +1913,12 @@
         if(expired)throw new Error("voice_status_timeout");
         const options={credentials:"same-origin",headers:authHeaders()};
         if(controller)options.signal=controller.signal;
-        let response=await fetch("/mcp/app/voice/status",options);
+        let response=await fetch("/app/voice/status",options);
         if(response.status===401){
           const refreshed=await refreshAccessToken();
           if(expired)throw new Error("voice_status_timeout");
           if(refreshed){
-            options.headers=authHeaders();response=await fetch("/mcp/app/voice/status",options);
+            options.headers=authHeaders();response=await fetch("/app/voice/status",options);
           }
         }
         let doc={};try{doc=await response.json();}catch(_e){}
@@ -2037,10 +2037,10 @@
       const options={method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
         body:JSON.stringify({offer_sdp:offerSdp})};
-      let response=await fetch("/mcp/app/voice/session",options);
+      let response=await fetch("/app/voice/session",options);
       if(response.status===401 && await refreshAccessToken()){
         options.headers=Object.assign({"Content-Type":"application/json"},authHeaders());
-        response=await fetch("/mcp/app/voice/session",options);
+        response=await fetch("/app/voice/session",options);
       }
       let doc={}; try{doc=await response.json();}catch(_e){}
       if(!response.ok) throw new Error(doc.error||"voice_session_failed");
@@ -3085,7 +3085,7 @@
         await ensureFreshToken();
         if(epoch!==this.epoch) return;
         // Explicit target prevents a stale dialog writing preferences into a newly rebound home.
-        const response=await fetch("/mcp/app/models/preferences?universe_id="+encodeURIComponent(uid),{
+        const response=await fetch("/app/models/preferences?universe_id="+encodeURIComponent(uid),{
           method:"POST",credentials:"same-origin",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body});
         if(epoch!==this.epoch) return;
         if(response.status===401){sessionExpired();return;}
@@ -3281,7 +3281,7 @@
   }
   // The ACCOUNT half of "may this page read what this browser saved". A home id
   // alone does not answer it: two accounts can sign in on one browser and the
-  // second must not read the first's held lines. Learned from /mcp/app/me.
+  // second must not read the first's held lines. Learned from /app/me.
   let queueOwner="";
   // Declared beside the owner it depends on: a change of account has to make
   // this page offer the new account's saved attachments, not keep the old
@@ -3976,8 +3976,8 @@
   async function fetchMe(){
     try{
       await ensureFreshToken();
-      let r = await fetch("/mcp/app/me", {headers: authHeaders()});
-      if(r.status===401 && await refreshAccessToken()) r = await fetch("/mcp/app/me", {headers: authHeaders()});
+      let r = await fetch("/app/me", {headers: authHeaders()});
+      if(r.status===401 && await refreshAccessToken()) r = await fetch("/app/me", {headers: authHeaders()});
       if(r.status===401){ sessionExpired(); return null; }
       if(!r.ok) return null;
       return await r.json();
@@ -3985,7 +3985,7 @@
   }
   async function enterSignedIn(){
     ModelPicker.reset();
-    // The login this answer is FOR. A /mcp/app/me that lands after a sign-out
+    // The login this answer is FOR. A /app/me that lands after a sign-out
     // or another account signed in describes somebody else: it must not be
     // allowed to stamp its identity onto the page that is there now.
     const epoch=MCP._loginEpoch;
@@ -4044,7 +4044,7 @@
 
   async function loadPlan(){
     try{
-      const r = await billingFetch("/mcp/app/billing/status", "GET");
+      const r = await billingFetch("/app/billing/status", "GET");
       if(!r || !r.ok) return;
       PLAN = await r.json();
       renderPlan();
@@ -4112,7 +4112,7 @@
     }
     let out = null;
     try{
-      const r = await billingFetch("/mcp/app/billing/checkout", "POST");
+      const r = await billingFetch("/app/billing/checkout", "POST");
       // A non-JSON body is what a proxy error page looks like; treat it as one
       // rather than throwing out of an unawaited click handler.
       out = r ? await r.json() : null;
@@ -4126,7 +4126,7 @@
   }
 
   async function startCancel(){
-    const r = await billingFetch("/mcp/app/billing/cancel", "POST");
+    const r = await billingFetch("/app/billing/cancel", "POST");
     const out = r ? await r.json() : null;
     if(out && out.cancelled){
       appendMessage("system", "Your subscription will end at the close of the "
@@ -4361,11 +4361,11 @@
       if(req&&current()) await this.answer(true);
     },
     takeCallback(){
-      const match=window.location.pathname.match(/^\/mcp\/app\/model-callback\/([A-Za-z0-9_-]{43})$/);
+      const match=window.location.pathname.match(/^\/app\/model-callback\/([A-Za-z0-9_-]{43})$/);
       if(!match) return null;
       const query=new URLSearchParams(window.location.search);
       // Strip before WorkOS handling, token refresh, network calls or rendering.
-      history.replaceState({},"","/mcp/app");
+      history.replaceState({},"","/app");
       let saved=null;
       try{saved=JSON.parse(sessionStorage.getItem(this.storageKey)||"null");}catch(_e){}
       sessionStorage.removeItem(this.storageKey); // one browser redemption attempt
@@ -4385,7 +4385,7 @@
       if(epoch!==this.epoch)throw new Error("sign_in_required");
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: exchange outcomes may be uncertain.
-      const response=await fetch("/mcp/app/model-connect/"+operation,{
+      const response=await fetch("/app/model-connect/"+operation,{
         method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
         body:JSON.stringify(payload),
@@ -4518,7 +4518,7 @@
   // phone uses; idempotent; returns {status:"serving"|"held", ...}, never throws.
   async function serveOn(service){
     try{
-      const r=await fetch("/mcp/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service})});
+      const r=await fetch("/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service})});
       return (await r.json()).serving||null;
     }catch(_e){ return null; }
   }
@@ -4534,7 +4534,7 @@
 
   // ---- File attachments: every accepted file is uploaded ------------------
   // EVERY accepted file - a small text note included - goes through ONE
-  // authenticated raw-body route, POST /mcp/app/files, and comes back as the
+  // authenticated raw-body route, POST /app/files, and comes back as the
   // existing immutable six-field reference. That reference is the authoritative
   // copy (Hard Rule #9: user uploads are preserved verbatim), and the agent
   // reads the ORIGINAL bytes from custody. A small readable text file ALSO
@@ -5157,7 +5157,7 @@
   // before it reads a byte or compares Content-Length, so this observes an
   // earlier upload instead of making a second copy.
   async function postUploadedFile({header, file, signal, metadataOnly}){
-    const response=await fetch("/mcp/app/files",{method:"POST", credentials:"same-origin",
+    const response=await fetch("/app/files",{method:"POST", credentials:"same-origin",
       cache:"no-store",
       signal:signal||undefined,
       headers:Object.assign({"Content-Type":"application/octet-stream",
@@ -5201,7 +5201,7 @@
     $("btn-plan").addEventListener("click", onPlanClick);
     $("btn-signin").addEventListener("click",beginSignIn);
     // ---- File attachments (paperclip). Every accepted file is uploaded
-    // through POST /mcp/app/files and its server-issued reference travels in
+    // through POST /app/files and its server-issued reference travels in
     // the turn; small text that round-trips byte-for-byte also rides inline
     // beside that reference. See createUploadController above - this is only
     // the wiring. ----
@@ -5305,7 +5305,7 @@
     // ordinary work while answering nothing about WHO is signed in - a rotation
     // is neither permission to act for a different owner nor a reason to stop
     // acting for the same one. The account and the home it is bound to are the
-    // durable pair (learned from the verified /mcp/app/me, both cleared on
+    // durable pair (learned from the verified /app/me, both cleared on
     // sign-out), the universe id is the target this write actually names, and
     // token presence catches a sign-out that has not yet learned a new pair.
     // Compared field by field, so not-yet-known is a DIFFERENT value from any
@@ -5341,7 +5341,7 @@
       status.textContent="Checking your connections…";
       const live=()=>generation===connectionsGeneration&&sameConnectionFence(connectionFence(""),fence);
       try{
-        const response=await fetch("/mcp/app/connections",{headers:authHeaders(),credentials:"same-origin"});
+        const response=await fetch("/app/connections",{headers:authHeaders(),credentials:"same-origin"});
         const doc=await response.json();
         // A late answer names the account that asked for it, not whoever is
         // signed in now, and never repaints a newer list.
@@ -5445,7 +5445,7 @@
         try{
           // Exactly the connection that was read and shown - never a target
           // rebuilt here, and never a second attempt.
-          const result=await fetch("/mcp/app/connections",{method:"POST",credentials:"same-origin",
+          const result=await fetch("/app/connections",{method:"POST",credentials:"same-origin",
             headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
             body:JSON.stringify({universe_id:universeId,destination:row.destination,incarnation:row.incarnation})});
           const removed=await result.json();
@@ -5474,7 +5474,7 @@
         // universe is a SEPARATE step: if it fails, the disconnect still
         // happened and must not be reported back as uncertain.
         try{
-          const me=await fetch("/mcp/app/me",{headers:authHeaders(),credentials:"same-origin"});
+          const me=await fetch("/app/me",{headers:authHeaders(),credentials:"same-origin"});
           const state=me.ok?await me.json():null;
           if(!live())return;
           if(!state||state.error)throw new Error("unreadable");
@@ -5501,7 +5501,7 @@
       if($("delete-confirm").value.trim()!=="DELETE") return;
       btn.disabled=true; st.textContent="Deleting your account…";
       const post=async()=>{ const h=authHeaders(); h["Content-Type"]="application/json";
-        return fetch("/mcp/app/account/delete",{method:"POST",credentials:"same-origin",headers:h,
+        return fetch("/app/account/delete",{method:"POST",credentials:"same-origin",headers:h,
           body:JSON.stringify({confirm:"DELETE",session_ref:sessionRef()||undefined})}); };
       try{
         await ensureFreshToken();
@@ -5744,14 +5744,14 @@
   // and the server returns no token, ever.
   const ConnectOAuth={
     storageKey:"ta_connect_oauth",
-    callbackPath:"/mcp/app/model-callback/connect",
+    callbackPath:"/app/model-callback/connect",
     pending:null,
     // Runs as the page loads, BEFORE account sign-in reads the query: the
     // provider's code and state must never be taken for an account sign-in.
     takeCallback(){
       if(window.location.pathname!==this.callbackPath) return null;
       const query=new URLSearchParams(window.location.search);
-      history.replaceState({},"","/mcp/app");
+      history.replaceState({},"","/app");
       let saved=null;
       try{saved=JSON.parse(sessionStorage.getItem(this.storageKey)||"null");}catch(_e){}
       sessionStorage.removeItem(this.storageKey); // one redemption attempt
@@ -5771,7 +5771,7 @@
       await ensureFreshToken();
       if(!token()) throw new Error("sign_in_required");
       // No automatic retry: a code is redeemed at most once.
-      const response=await fetch("/mcp/app/model-connect/"+operation,{
+      const response=await fetch("/app/model-connect/"+operation,{
         method:"POST",credentials:"same-origin",cache:"no-store",referrerPolicy:"no-referrer",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
         body:JSON.stringify(payload),
@@ -6164,7 +6164,7 @@
       const epoch=this.epoch;
       try{
         const h=authHeaders(); h["Content-Type"]="application/json";
-        const r=await fetch("/mcp/app/openai/device/start",{method:"POST",headers:h,
+        const r=await fetch("/app/openai/device/start",{method:"POST",headers:h,
           credentials:"same-origin",
           // The source the card names, and the home the rail is showing. The route
           // validates both rather than choosing for us; before this it always picked
@@ -6199,7 +6199,7 @@
       if(!this.flow||epoch!==this.epoch) return;
       try{
         const h=authHeaders(); h["Content-Type"]="application/json";
-        const r=await fetch("/mcp/app/openai/device/poll",{method:"POST",headers:h,
+        const r=await fetch("/app/openai/device/poll",{method:"POST",headers:h,
           credentials:"same-origin",body:JSON.stringify({flow:this.flow})});
         const doc=await r.json().catch(()=>({}));
         if(epoch!==this.epoch) return;
@@ -6755,7 +6755,7 @@
     };
     if(held()) return;
     try{
-      const r=await fetch("/mcp/app",{method:"HEAD",cache:"no-store",credentials:"omit"});
+      const r=await fetch("/app",{method:"HEAD",cache:"no-store",credentials:"omit"});
       const live=r.headers.get("X-TinyAssets-Build");
       if(live && live!==CFG.build && !held()) location.reload();
     }catch(_e){ /* offline or blocked: try again next time */ }

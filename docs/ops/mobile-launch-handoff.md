@@ -13,7 +13,15 @@ this one are history; where they disagree with this top section, this section wi
 ## The one-line status
 
 **Google Play: build 4 (1.0.3) was approved on 2026-09-08 and is live on the closed
-(Alpha) track, but the 12-tester, 14-day clock has not started.** As of the last record
+(Alpha) track, but the 12-tester, 14-day clock has not started.**
+
+> **Superseded by the app-URL move (2026-09-30).** The app moved to
+> `https://tinyassets.io/app` with no redirect from `/mcp/app`, and `server.url` is
+> compiled into the shell — so installed `4 (1.0.3)` opens a dead path. **Build and
+> upload `5 (1.0.4)` before inviting any tester**, or the opt-in clock starts on a
+> build that cannot load. `mobile/android-release.json` already carries the bump.
+
+As of the last record
 (2026-09-09), no tester had opted in, not even the founder. **Apple: iOS 1.0, build 3,
 is Rejected / Unresolved Issues under Guideline 2.1, "Information Needed"** (2026-09-10).
 Because the account has little review history, Apple wants a physical-iPhone recording
@@ -23,7 +31,7 @@ not cite 4.2 or 3.1.1. Release is set to go out automatically once approved.
 Rechecked 2026-09-29 on `origin/main` `4ad5deb5`, after the move to the `TinyAssets`
 org. `ios-build` and `android-build` were green on 2026-09-27. The four
 `ANDROID_UPLOAD_*` repository secrets and the eight `app-store` environment secrets
-are present. `/mcp/app` serves the in-app **Delete my account** flow. The Upgrade (Stripe)
+are present. `/app` serves the in-app **Delete my account** flow. The Upgrade (Stripe)
 button stays hidden in both native shells (`NATIVE` guard in `renderPlan`), so 3.1.1
 needs no in-app purchase.
 
