@@ -251,7 +251,9 @@ def _vapid_public() -> str:
     import base64
     import os
 
-    pem = (os.environ.get("TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY") or "").strip()
+    from tinyassets.notify.webpush import vapid_private_pem
+
+    pem = vapid_private_pem(os.environ)
     if not pem:
         return ""
     try:

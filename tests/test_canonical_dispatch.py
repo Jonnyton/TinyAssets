@@ -233,7 +233,7 @@ def _publish_version(
         base_path,
         branch_dict=branch_dict,
         notes=notes,
-        publisher=publisher,
+        public=True, publisher=publisher,
     )
     return version.branch_version_id
 
@@ -410,7 +410,7 @@ def test_route_back_executes_real_immutable_version_to_terminal_state(base_path)
     branch_version_id = publish_branch_version(
         base_path,
         branch.to_dict(),
-        publisher="alice",
+        public=True, publisher="alice",
     ).branch_version_id
     set_goal_canonical(
         base_path,
@@ -1089,7 +1089,7 @@ def _publish_version_with_distinct_content(
         base_path,
         branch_dict=branch_dict,
         notes=state_field_name,
-        publisher=publisher,
+        public=True, publisher=publisher,
     )
     return version.branch_version_id
 

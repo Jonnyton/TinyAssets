@@ -75,10 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     print("# browser has to subscribe again. Rotate deliberately.")
     print()
     for name, value in values.items():
-        if "\n" in value:
-            print(f"{name}=<<'PEM'\n{value}PEM")
-        else:
-            print(f"{name}={value}")
+        # One line per variable, so the output pastes straight into an env file
+        # (/etc/tinyassets/env); the server reads the escaped newlines back.
+        escaped = value.strip().replace("\n", "\\n")
+        print(f"{name}={escaped}")
     return 0
 
 

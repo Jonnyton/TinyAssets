@@ -96,7 +96,12 @@ EVENT_WOKE_PREFIX = "woke:"
 #: refused at registration.
 EVENT_RUN_COMPLETED = "run_completed"
 EVENT_PENDING_REQUEST_ANSWERED = "pending_request_answered"
-EVENT_TYPES = frozenset({EVENT_RUN_COMPLETED, EVENT_PENDING_REQUEST_ANSWERED})
+#: Emitted by the owner's own session -- a click in a UI they built, through
+#: ``run_graph operation="emit_event"`` -- to wake the agent subscribed to that
+#: NAME. The name is required in every subscription: a UI can wake only what
+#: its owner (or their universe) subscribed to that name, never "any".
+EVENT_APP = "app_event"
+EVENT_TYPES = frozenset({EVENT_RUN_COMPLETED, EVENT_PENDING_REQUEST_ANSWERED, EVENT_APP})
 
 #: Payload keys each event carries, which are also the keys a subscription may
 #: filter on (equality). ``run_completed`` must name the branch it follows: an
@@ -108,10 +113,12 @@ EVENT_FILTER_KEYS: dict[str, frozenset[str]] = {
     EVENT_PENDING_REQUEST_ANSWERED: frozenset(
         {"request_id", "kind", "status", "item_id"}
     ),
+    EVENT_APP: frozenset({"name"}),
 }
 EVENT_REQUIRED_FILTER_KEYS: dict[str, frozenset[str]] = {
     EVENT_RUN_COMPLETED: frozenset({"branch_def_id"}),
     EVENT_PENDING_REQUEST_ANSWERED: frozenset(),
+    EVENT_APP: frozenset({"name"}),
 }
 
 #: A ``once`` row whose attempt never reached a run is retried this much later
@@ -119,8 +126,11 @@ EVENT_REQUIRED_FILTER_KEYS: dict[str, frozenset[str]] = {
 ONCE_RETRY_SECONDS = 60
 MAX_ONCE_ATTEMPTS = 5
 
-#: How far ahead a ``once`` row may be parked.
-MAX_NOT_BEFORE = timedelta(days=366)
+#: How far ahead a ``once`` row may be parked: as far as the author likes.
+#: ``MAX_NOT_BEFORE = timedelta(days=366)`` refused a wake scheduled for two
+#: years out with ``trigger_invalid``, which is a structural cap on what someone
+#: may build, not a limit on what they use (founder, 2026-09-30). A parked row
+#: costs one row of storage until it fires.
 STATE_ACTIVE = "active"
 STATE_PAUSED = "paused"
 
@@ -164,11 +174,20 @@ REFUSAL_KEY_PREFIX = "automation:"
 #: forever while staying active). Reset by any successful run.
 MAX_CONSECUTIVE_FAILURES = 3
 
-#: Default ceiling on one automation run. Not a policy on how long work may
-#: take -- a served turn runs until it is finished -- but a bound on how long a
-#: consumer slot and a universe lease may be held by a run nothing will ever
-#: finish. On expiry the run is CANCELLED through the runs API, not abandoned.
-DEFAULT_RUN_TIMEOUT_SECONDS = 10800
+#: There is NO ceiling on one automation run. ``DEFAULT_RUN_TIMEOUT_SECONDS =
+#: 10800`` cancelled a run at three hours; its own comment already conceded that
+#: a turn runs until it is finished, and justified itself as a bound on a run
+#: "nothing will ever finish" -- which is a LIVENESS question a clock cannot
+#: answer. Founder, 2026-09-30: a turn runs until it is finished, and a dead run
+#: is caught by liveness, not by duration.
+#:
+#: What catches a dead run instead: the seat lease
+#: (``universe_seats.SEAT_LEASE_SECONDS``, 120s) expires on a holder that stops
+#: stamping, and run-owner proof terminalizes a run whose owner is gone. A LIVE
+#: long run keeps stamping and keeps its seat, which is the whole point.
+#:
+#: An operator may still set ``AUTOMATION_RUN_TIMEOUT_SECONDS`` for a host they
+#: are nursing; it defaults to none.
 
 #: How long a cancelled run is given to actually stop before the pump gives
 #: up on it. The lease is held for the whole of it -- releasing sooner would
@@ -324,11 +343,16 @@ def _rebuild_trigger_check(conn: sqlite3.Connection) -> None:
         raise
 
 
-def run_timeout_seconds() -> float:
-    """Ceiling on one automation run (``AUTOMATION_RUN_TIMEOUT_SECONDS``)."""
+def run_timeout_seconds() -> float | None:
+    """The operator's ceiling on one automation run, or ``None`` for no ceiling.
+
+    ``None`` is the default and the normal case: a run finishes when it is
+    finished. ``AUTOMATION_RUN_TIMEOUT_SECONDS`` exists for a host being nursed
+    through something, not as a product limit.
+    """
     raw = os.environ.get("AUTOMATION_RUN_TIMEOUT_SECONDS", "").strip()
     if not raw:
-        return float(DEFAULT_RUN_TIMEOUT_SECONDS)
+        return None
     value = float(raw)
     if value <= 0:
         raise ValueError("AUTOMATION_RUN_TIMEOUT_SECONDS must be positive")
@@ -336,7 +360,8 @@ def run_timeout_seconds() -> float:
 
 
 class AutomationRunTimeout(Exception):
-    """The run outlived ``run_timeout_seconds()``, was cancelled, and stopped."""
+    """The run outlived an OPERATOR-set ``run_timeout_seconds()``, was cancelled,
+    and stopped. Unreachable unless a host sets one: there is no default."""
 
 
 class AutomationRunUnstopped(AutomationRunTimeout):
@@ -966,9 +991,10 @@ class AutomationStore:
         wedge its work forever. So is one whose holder is PROVABLY dead
         (``process_liveness.owner_state``): a deploy kills the process mid-run, and
         waiting out a TTL as long as the run timeout froze automations for
-        hours. A holder merely late to refresh is not dead. TTL is the run
-        timeout, and the holder re-stamps it while it works, so expiry means
-        "nobody is refreshing".
+        hours. A holder merely late to refresh is not dead. The TTL only has to
+        outlive the gap to the next re-stamp, and the holder re-stamps while it
+        works, so expiry means "nobody is refreshing" -- which is the whole
+        property, and it never needed a run duration behind it.
 
         ``excluded_by`` / ``excluded_by_prefix`` name OTHER keys whose live
         lease also keeps this one out, checked in the same transaction: an
@@ -1290,8 +1316,6 @@ def _validated_not_before(not_before: Any, now: datetime) -> str:
     moment = _as_utc(now)
     parsed = _parse(str(not_before or ""))
     if parsed is None:
-        raise AutomationUnavailable("trigger_invalid")
-    if parsed > moment + MAX_NOT_BEFORE:
         raise AutomationUnavailable("trigger_invalid")
     return _iso(max(parsed, moment))
 
@@ -2092,9 +2116,12 @@ def _execute(
     attempt records the outcome rather than "queued", and the universe's one
     active slot stays held for as long as its automation is really running.
 
-    The wait is bounded by ``run_timeout_seconds()``. On expiry the run is
-    CANCELLED through the runs API rather than abandoned, so the worker and its
-    provider authority claim unwind instead of leaking (Codex ADAPT §1).
+    The wait is UNBOUNDED unless an operator set ``run_timeout_seconds()``: a run
+    finishes when it is finished (founder, 2026-09-30). A dead run is caught by
+    the seat lease expiring on a holder that stopped stamping, not by a clock on
+    the work. If an operator did set one, expiry CANCELS the run through the runs
+    API rather than abandoning it, so the worker and its provider authority claim
+    unwind instead of leaking (Codex ADAPT §1).
     """
     from dataclasses import replace as _replace
 
@@ -2120,6 +2147,12 @@ def _execute(
             inputs=inputs,
             run_name=f"automation:{automation.automation_id[:8]}",
             actor=f"universe:{automation.universe_id}",
+            # The persisted owner, as every other universe:<id> run records it
+            # (direct input, conversation turns, deliveries). Without it the
+            # run's own children -- the owner's private branch, or an
+            # unpublished pinned version -- had no owner to be authorized
+            # against, and a co-admin's definition could not be told apart.
+            owner_user_id=automation.owner_principal_id,
             provider_call=provider_call,
             on_node_status=_authority_guard(base_path, automation),
             _enqueue_universe_id=automation.universe_id,
@@ -2567,7 +2600,6 @@ def _pause_if_hopeless(
 
 
 __all__ = [
-    "DEFAULT_RUN_TIMEOUT_SECONDS",
     "LEASE_REFRESH_SECONDS",
     "MAX_CONSECUTIVE_FAILURES",
     "MAX_ONCE_ATTEMPTS",

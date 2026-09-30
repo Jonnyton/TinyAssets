@@ -403,7 +403,16 @@ def _run_with_timeout(
     Neither touches work that has already begun: the check is before the
     first line of ``fn``, so a call past it settles untouched.
     """
-    executor = _get_timeout_executor()
+    from tinyassets.provider_admission import blocking_parent_slot
+
+    # A fixed worker pool can itself fill with blocked ancestors. A blocking
+    # provider child needs a worker independent of that pool, just as it needs
+    # its ancestor's slot rather than one behind that ancestor in the queue.
+    nested_executor = (
+        concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        if blocking_parent_slot() is not None else None
+    )
+    executor = nested_executor or _get_timeout_executor()
     deadline = time.monotonic() + timeout_s
 
     def _guarded() -> Any:
@@ -416,7 +425,12 @@ def _run_with_timeout(
             )
         return fn()
 
-    future = executor.submit(_guarded)
+    import contextvars
+
+    # Preserve the explicit blocking-invoke loan across the node worker hop.
+    future = executor.submit(contextvars.copy_context().run, _guarded)
+    if nested_executor is not None:
+        nested_executor.shutdown(wait=False)
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError as exc:
@@ -1284,10 +1298,16 @@ def _build_prompt_template_node(
         except ValueError as exc:
             raise CompilerError(f"Node '{node.node_id}': {exc}") from exc
         # An agent node is the converse turn, which runs until it finishes: its
-        # slot is that turn's own runaway backstop, not a node timeout.
-        from tinyassets.universe_intelligence import served_absolute_cap_s
+        # seat is that turn's bound, not a node timeout. The executor wants a
+        # number, so an unset universe cap becomes an unreachable one rather than
+        # a made-up hour (founder, 2026-09-30: a turn runs until it is finished).
+        from tinyassets.universe_intelligence import (
+            UNBOUNDED_TURN_SECONDS,
+            served_absolute_cap_s,
+        )
 
-        timeout_s = served_absolute_cap_s(getattr(universe_context, "config", None))
+        own_cap = served_absolute_cap_s(getattr(universe_context, "config", None))
+        timeout_s = UNBOUNDED_TURN_SECONDS if own_cap is None else own_cap
     strict_isolation = bool(getattr(node, "strict_input_isolation", True))
     declared_inputs = list(node.input_keys)
     # BUG-085 (Codex checker finding 1): state_schema fields carrying a
@@ -2607,37 +2627,30 @@ def _wrap_with_checkpoints(
     return _fn
 
 
-# Phase A item 5 / Task #76b — threadlocal global cap on child-run retries
-# within a single parent run. Each parent run executes on its own thread
-# from the executor pool; threadlocal naturally scopes per-run. Children
-# spawn into their own threads with independent counters; only the
-# parent's invoke nodes consume from this counter.
+# Child-run retries are the AUTHOR'S policy: `retry_budget` on the invoke spec,
+# and nothing overrides it. `TINYASSETS_MAX_CHILD_RETRIES_TOTAL` (default 5) used
+# to cap the total across a parent run, so a branch whose author asked for three
+# retries on each of four children silently got five in total and then behaved as
+# `propagate` -- the author's declared policy quietly replaced by a host env var
+# (founder, 2026-09-30: honour the author's retry policy).
+#
+# What bounds a retry storm instead: every child run charges the universe's
+# admission and holds a seat like any other run, and the parent waits on each
+# child in turn, so retries are serial work inside one seat rather than fan-out.
+#
+# `_retry_state` is kept for the per-run counter that the receipt reports; it
+# counts, and refuses nothing.
 _retry_state = threading.local()
 
 
-def _retry_budget_max() -> int:
-    """Read ``TINYASSETS_MAX_CHILD_RETRIES_TOTAL`` env (default 5)."""
-    raw = os.environ.get("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "").strip()
-    try:
-        return max(0, int(raw)) if raw else 5
-    except ValueError:
-        return 5
-
-
-def _retry_budget_remaining() -> bool:
-    """True iff the threadlocal retry counter has budget left."""
-    used = getattr(_retry_state, "used", 0)
-    return used < _retry_budget_max()
-
-
 def _retry_budget_consume() -> None:
-    """Increment the threadlocal retry counter by 1."""
+    """Increment the threadlocal retry counter by 1. Counts; never refuses."""
     _retry_state.used = getattr(_retry_state, "used", 0) + 1
 
 
 def _retry_budget_reset() -> None:
     """Reset the threadlocal counter — called by ``_invoke_graph`` at run
-    start so each parent run gets a fresh budget."""
+    start so each parent run's count starts at zero."""
     _retry_state.used = 0
 
 
@@ -2832,7 +2845,8 @@ _CHILD_UNAVAILABLE = "invoke_branch child is not available"
 
 
 def _authorize_child_ref(
-    base: "Path", child_def_id: str, ctx: "BranchExecutionContext", *, parent_run_id: str = ""
+    base: "Path", child_def_id: str, ctx: "BranchExecutionContext", *, parent_run_id: str = "",
+    require_authorship: bool = False,
 ) -> "Any":
     """Authorize an AUTHOR-chosen child branch ref under DELEGATED authority.
 
@@ -2864,7 +2878,7 @@ def _authorize_child_ref(
     # error. Missing/blank/malformed visibility is NOT public -> fail closed (#6).
     visibility = str(raw.get("visibility") or "").strip().lower()
     author = str(raw.get("author") or "").strip()
-    is_public = visibility == "public"
+    is_public = visibility == "public" and not require_authorship
     if ctx.caller_provenance == "own":
         authorized = is_public or (bool(author) and author == ctx.actor)
         if (not authorized and author and author == ctx.owner_user_id
@@ -3037,16 +3051,21 @@ def _build_invoke_branch_node(
                     raise CompilerError(f"Node '{node.node_id}': {_STACK_EXHAUSTED}.")
                 ticket = _charge_child_run(node, _ctx)
                 try:
-                    outcome = execute_branch(
-                        _base, branch=child_branch, inputs=child_inputs,
-                        actor=actor_arg,
-                        owner_user_id=_ctx.owner_user_id or None,
-                        _workspace_parent=_workspace_invocation_parent(_ctx),
-                        _enqueue_universe_id=_ctx.universe_id,
-                        provider_call=provider_call,
-                        on_node_status=on_node_status,
-                        _invocation_depth=depth + 1,
-                    )
+                    from tinyassets.provider_admission import blocking_provider_child
+
+                    # Blocking invoke transfers ownership just like a parent seat;
+                    # the async branch below must acquire its own provider slot.
+                    with blocking_provider_child():
+                        outcome = execute_branch(
+                            _base, branch=child_branch, inputs=child_inputs,
+                            actor=actor_arg,
+                            owner_user_id=_ctx.owner_user_id or None,
+                            _workspace_parent=_workspace_invocation_parent(_ctx),
+                            _enqueue_universe_id=_ctx.universe_id,
+                            provider_call=provider_call,
+                            on_node_status=on_node_status,
+                            _invocation_depth=depth + 1,
+                        )
                 except RecursionError:
                     raise CompilerError(
                         f"Node '{node.node_id}': {_STACK_EXHAUSTED}."
@@ -3073,9 +3092,8 @@ def _build_invoke_branch_node(
                     retry_budget - (attempt - 1)
                     if on_child_fail == "retry" else 0
                 )
-                if on_child_fail == "retry" and retries_left > 0 and (
-                    _retry_budget_remaining()
-                ):
+                # The author's `retry_budget` is the whole decision.
+                if on_child_fail == "retry" and retries_left > 0:
                     _retry_budget_consume()
                     continue
                 updates, _failure = _dispatch_invoke_outcome(
@@ -3295,6 +3313,15 @@ def _build_invoke_branch_version_node(
         child_def_id = (getattr(child, "branch_def_id", "") or "").strip()
         if not child_def_id or child_def_id != ver_def_id:
             raise CompilerError(_CHILD_UNAVAILABLE)
+        from tinyassets.branch_versions import branch_version_is_public
+
+        if not branch_version_is_public(_base, child_branch_version_id):
+            # An unmarked snapshot is private even when its live branch is public.
+            # Reuse the delegated-author gate, including owner-bound run checks.
+            _authorize_child_ref(
+                _base, ver_def_id, _ctx, parent_run_id=parent_run_id,
+                require_authorship=True,
+            )
 
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         # Lazy module-attribute lookups so unittest.mock.patch on
@@ -3333,21 +3360,28 @@ def _build_invoke_branch_version_node(
                 # Async helper handles the snapshot-load + reconstruction +
                 # SnapshotSchemaDrift + KeyError contract per Task #65b.
                 ticket = _charge_child_run(node, _ctx)
-                outcome = execute_branch_version_async(
-                    _base,
-                    branch_version_id=child_branch_version_id,
-                    inputs=child_inputs,
-                    actor=actor_arg,
-                    owner_user_id=_ctx.owner_user_id or None,
-                    _workspace_parent=_workspace_invocation_parent(_ctx),
-                    _enqueue_universe_id=_ctx.universe_id,
-                    provider_call=provider_call,
-                    on_node_status=on_node_status,
-                    _invocation_depth=depth + 1,
+                from tinyassets.provider_admission import (
+                    blocking_parent_slot,
+                    blocking_provider_child,
                 )
-                _bind_child_ticket(ticket, str(outcome.run_id or ""))
-                # Block until the child terminates; harvest its output dict.
-                record = poll_child_run_status(_base, outcome.run_id)
+
+                with blocking_provider_child():
+                    outcome = execute_branch_version_async(
+                        _base,
+                        branch_version_id=child_branch_version_id,
+                        inputs=child_inputs,
+                        actor=actor_arg,
+                        owner_user_id=_ctx.owner_user_id or None,
+                        _workspace_parent=_workspace_invocation_parent(_ctx),
+                        _enqueue_universe_id=_ctx.universe_id,
+                        provider_call=provider_call,
+                        on_node_status=on_node_status,
+                        _invocation_depth=depth + 1,
+                        _provider_parent=blocking_parent_slot(),
+                    )
+                    _bind_child_ticket(ticket, str(outcome.run_id or ""))
+                    # Block until the child terminates; harvest its output dict.
+                    record = poll_child_run_status(_base, outcome.run_id)
                 child_status = record.get("status", "")
                 child_output = record.get("output") or {}
 
@@ -3374,9 +3408,8 @@ def _build_invoke_branch_version_node(
                     retry_budget - (attempt - 1)
                     if on_child_fail == "retry" else 0
                 )
-                if on_child_fail == "retry" and retries_left > 0 and (
-                    _retry_budget_remaining()
-                ):
+                # The author's `retry_budget` is the whole decision.
+                if on_child_fail == "retry" and retries_left > 0:
                     _retry_budget_consume()
                     continue
                 updates, _failure = _dispatch_invoke_outcome(

@@ -1543,6 +1543,20 @@ def test_unclassified_home_store_aborts_without_deletion(
     assert (seeded / _HOME_A / "soul.md").is_file()
 
 
+def test_branch_version_tables_are_all_classified(seeded: Path) -> None:
+    """Initializing branch versions -- including its one-time migration marker
+    table -- must not leave a table reset refuses as unclassified."""
+    from tinyassets.branch_versions import initialize_branch_versions_db
+    from tinyassets.scoped_reset import plan_test_identity_reset
+
+    initialize_branch_versions_db(seeded)
+    plan = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+    assert not any(
+        "unclassified root run-history table" in blocker
+        for blocker in plan["blockers"]
+    ), plan["blockers"]
+
+
 def test_unclassified_root_store_and_runs_table_abort_reset(
     seeded: Path,
 ) -> None:

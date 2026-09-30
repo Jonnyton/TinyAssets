@@ -61,7 +61,8 @@ BRANCH_VERSIONS_SCHEMA = """
         rolled_back_at        TEXT,
         rolled_back_by        TEXT,
         rolled_back_reason    TEXT,
-        watch_window_seconds  INTEGER NOT NULL DEFAULT 86400
+        watch_window_seconds  INTEGER NOT NULL DEFAULT 86400,
+        public                INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_bv_branch_def
@@ -105,6 +106,9 @@ class BranchVersion:
     rolled_back_by: str | None = None
     rolled_back_reason: str | None = None
     watch_window_seconds: int = DEFAULT_WATCH_WINDOW_SECONDS
+    #: The publication mark: its owner published THIS version. Anyone but the
+    #: author reads a version only when this is set AND its branch is readable.
+    public: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -121,6 +125,7 @@ class BranchVersion:
             "rolled_back_by": self.rolled_back_by,
             "rolled_back_reason": self.rolled_back_reason,
             "watch_window_seconds": self.watch_window_seconds,
+            "public": self.public,
         }
 
 
@@ -170,7 +175,8 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
                 rolled_back_at        TEXT,
                 rolled_back_by        TEXT,
                 rolled_back_reason    TEXT,
-                watch_window_seconds  INTEGER NOT NULL DEFAULT 86400
+                watch_window_seconds  INTEGER NOT NULL DEFAULT 86400,
+                public                INTEGER NOT NULL DEFAULT 0
             )
         """)
         # Step 2: ALTER TABLE for any pre-Task-#22 DBs missing the new
@@ -186,6 +192,15 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
                 conn.execute(
                     f"ALTER TABLE branch_versions ADD COLUMN {col_name} {col_ddl}"
                 )
+        if "public" not in existing_cols:
+            # The publication mark (in-platform-agent-systems, founder
+            # 2026-09-30): a version is readable by anyone but its author
+            # only when its owner published THAT version. Existing rows start
+            # unmarked; _backfill_publication_marks below marks exactly the
+            # ones the previous read rule already exposed, once.
+            conn.execute(
+                "ALTER TABLE branch_versions ADD COLUMN public INTEGER NOT NULL DEFAULT 0"
+            )
         # Step 3: indexes — including the new idx_bv_status / idx_bv_published_at
         # which reference columns the ALTER step just added on migrated DBs.
         conn.execute(
@@ -204,6 +219,97 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_bv_published_at "
             "ON branch_versions(published_at)"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS branch_versions_migrations ("
+            " name TEXT PRIMARY KEY, applied_at TEXT NOT NULL, detail TEXT NOT NULL)"
+        )
+        conn.commit()
+        _backfill_publication_marks(conn, base_path)
+
+
+#: One-time data migration marker (a row in ``branch_versions_migrations``).
+PUBLICATION_MARK_BACKFILL = "2026-09-30-publication-mark-backfill"
+
+
+def _public_branch_ids(base_path: str | Path) -> set[str] | None:
+    """Branches the PREVIOUS read rule exposed to every caller, or None when the
+    branch-definition store cannot be read yet.
+
+    That rule (``_resolve_readable_branch`` before the publication mark) let a
+    non-author read a version exactly when its branch row exists and
+    ``(visibility or "private") == "public"``: a missing row, a NULL or empty
+    visibility, and every other value were unreadable. Opened read-only, so
+    the runs-side migration never creates the branch store.
+    """
+    from tinyassets.storage import db_path
+
+    path = db_path(base_path)
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "branch_definitions" not in tables:
+            return None
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(branch_definitions)")}
+        if "visibility" not in columns:
+            return set()
+        return {str(r[0]) for r in conn.execute(
+            "SELECT branch_def_id FROM branch_definitions WHERE visibility = 'public'")}
+    finally:
+        conn.close()
+
+
+def _backfill_publication_marks(conn: sqlite3.Connection, base_path: str | Path) -> None:
+    """Mark, once, every version the previous read rule already made public.
+
+    Before the publication mark, anyone could read any version of a branch
+    whose CURRENT visibility is public (its history included), and no
+    version of any other branch. Exactly those versions get the mark, so a
+    public shape that was readable stays readable; nothing the old rule hid
+    becomes visible. After the marker row lands, the mark is the only rule
+    and this never runs again -- versions minted later are marked only by an
+    explicit publish.
+    """
+    if conn.execute(
+        "SELECT 1 FROM branch_versions_migrations WHERE name = ?",
+        (PUBLICATION_MARK_BACKFILL,),
+    ).fetchone():
+        return
+    public_ids = _public_branch_ids(base_path)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute(
+            "SELECT 1 FROM branch_versions_migrations WHERE name = ?",
+            (PUBLICATION_MARK_BACKFILL,),
+        ).fetchone():
+            conn.rollback()
+            return
+        if public_ids is None:
+            if conn.execute("SELECT 1 FROM branch_versions LIMIT 1").fetchone():
+                # Versions exist but their branches cannot be read: deciding
+                # now would guess. Leave the marker unset; the next open retries.
+                conn.rollback()
+                return
+            public_ids = set()
+        marked = 0
+        for branch_def_id in sorted(public_ids):
+            marked += conn.execute(
+                "UPDATE branch_versions SET public = 1 "
+                "WHERE branch_def_id = ? AND public = 0",
+                (branch_def_id,),
+            ).rowcount
+        conn.execute(
+            "INSERT INTO branch_versions_migrations (name, applied_at, detail) "
+            "VALUES (?, ?, ?)",
+            (PUBLICATION_MARK_BACKFILL, datetime.now(timezone.utc).isoformat(),
+             json.dumps({"public_branches": len(public_ids), "versions_marked": marked})),
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
@@ -256,8 +362,14 @@ def publish_branch_version(
     notes: str = "",
     parent_version_id: str | None = None,
     watch_window_seconds: int | None = None,
+    public: bool = False,
 ) -> BranchVersion:
     """Mint an immutable snapshot of branch_dict.
+
+    ``public`` marks THIS version as published by its owner -- the only way a
+    version becomes readable to anyone but its author (see
+    :func:`mark_versions_public`). An identical snapshot that already exists is
+    returned, and marked when ``public`` is set.
 
     Returns the BranchVersion. If an identical content_hash already exists
     for this branch_def_id, returns the existing record (deterministic).
@@ -289,6 +401,15 @@ def publish_branch_version(
             (branch_def_id, content_hash),
         ).fetchone()
         if existing is not None:
+            if public and not existing["public"]:
+                conn.execute(
+                    "UPDATE branch_versions SET public = 1 WHERE branch_version_id = ?",
+                    (existing["branch_version_id"],),
+                )
+                existing = conn.execute(
+                    "SELECT * FROM branch_versions WHERE branch_version_id = ?",
+                    (existing["branch_version_id"],),
+                ).fetchone()
             return _row_to_version(existing)
 
         branch_version_id = f"{branch_def_id}@{content_hash[:8]}"
@@ -309,8 +430,8 @@ def publish_branch_version(
             INSERT OR IGNORE INTO branch_versions
                 (branch_version_id, branch_def_id, content_hash,
                  snapshot_json, notes, publisher, published_at, parent_version_id,
-                 status, watch_window_seconds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                 status, watch_window_seconds, public)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
             """,
             (
                 branch_version_id,
@@ -322,6 +443,7 @@ def publish_branch_version(
                 published_at,
                 parent_version_id,
                 resolved_watch_window,
+                1 if public else 0,
             ),
         )
         # Re-fetch to get exact stored row (handles INSERT OR IGNORE race).
@@ -414,6 +536,17 @@ def branch_version_def_id(base_path: str | Path, branch_version_id: str) -> str:
     return (row["branch_def_id"] or "").strip()
 
 
+def branch_version_is_public(base_path: str | Path, branch_version_id: str) -> bool:
+    """Read only the publication mark, without loading private snapshot content."""
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT public FROM branch_versions WHERE branch_version_id = ?",
+            (branch_version_id,),
+        ).fetchone()
+    return bool(row and row["public"])
+
+
 def list_branch_versions(
     base_path: str | Path,
     branch_def_id: str,
@@ -503,6 +636,42 @@ def _validate_version_exists(conn: sqlite3.Connection, version_id: str) -> None:
         raise KeyError(f"parent_version_id '{version_id}' not found.")
 
 
+def branch_readable_by(actor: str | None, *, author: Any, visibility: Any) -> bool:
+    """THE branch read rule: public, or the caller wrote it.
+
+    A missing, NULL or blank visibility is PRIVATE (private by default, founder
+    2026-09-26): a legacy row without the field is never readable by everyone
+    because the field is absent. Its author still reads it.
+    """
+    if (visibility or "private") == "public":
+        return True
+    return actor is not None and (author or "") == actor
+
+
+def version_readable_by(
+    actor: str | None, *, author: Any, visibility: Any, public: Any,
+) -> bool:
+    """THE version read rule: its branch's author reads every version, history
+    included; anyone else needs a publicly readable branch AND the version's
+    publication mark (founder 2026-09-30)."""
+    if actor is not None and (author or "") == actor:
+        return True
+    return branch_readable_by(None, author=author, visibility=visibility) and bool(public)
+
+
+def mark_versions_public(
+    base_path: str | Path, version_ids: list[str], *, public: bool = True,
+) -> None:
+    """Set (or clear) the publication mark on exactly these versions."""
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        for version_id in version_ids:
+            conn.execute(
+                "UPDATE branch_versions SET public = ? WHERE branch_version_id = ?",
+                (1 if public else 0, version_id),
+            )
+
+
 def _row_to_version(row: sqlite3.Row) -> BranchVersion:
     try:
         snapshot = json.loads(row["snapshot_json"])
@@ -538,11 +707,13 @@ def _row_to_version(row: sqlite3.Row) -> BranchVersion:
             and row["watch_window_seconds"] is not None
             else DEFAULT_WATCH_WINDOW_SECONDS
         ),
+        public=bool(row["public"]) if "public" in row_keys else False,
     )
 
 
 __all__ = [
     "BranchVersion",
+    "mark_versions_public",
     "BRANCH_VERSIONS_SCHEMA",
     "DEFAULT_WATCH_WINDOW_SECONDS",
     "compute_content_hash",

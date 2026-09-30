@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -455,6 +456,41 @@ def test_the_key_script_output_configures_the_transport_it_is_for(
     for name, value in generate("mailto:ops@example.com").items():
         monkeypatch.setenv(name, value)
 
+    transports = resolve_transports()
+    assert "web" in transports
+    wire.answer(PUSH_ENDPOINT, _Response(b""))
+    assert transports["web"](
+        {"token": json.dumps(_subscription())}, _note(),
+    ) == OUTCOME_SENT
+
+
+def test_the_printed_key_lines_load_from_an_env_file(
+    monkeypatch, wire, capsys,
+):
+    """Production reads these from /etc/tinyassets/env, one line per variable.
+    A multi-line PEM cannot live there, so the script prints each value on one
+    line and the reader accepts the escaped newlines. This drives the PRINTED
+    text, which is what an operator pastes, not the generator's return value."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    try:
+        from webpush_keys import main
+    finally:
+        sys.path.pop(0)
+
+    assert main(["--subject", "https://tinyassets.io"]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines()
+             if ln and not ln.startswith("#")]
+    assert len(lines) == 3, lines
+    for line in lines:
+        name, _, value = line.partition("=")
+        assert "\n" not in value
+        monkeypatch.setenv(name, value)
+
+    from tinyassets.onboarding.notifications import _vapid_public
+
+    assert _vapid_public() == os.environ["TINYASSETS_WEBPUSH_VAPID_PUBLIC_KEY"]
     transports = resolve_transports()
     assert "web" in transports
     wire.answer(PUSH_ENDPOINT, _Response(b""))
