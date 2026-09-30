@@ -3983,6 +3983,26 @@
       return await r.json();
     }catch(_e){ return null; }
   }
+  // The browser is the only thing that knows which clock the owner is on. It
+  // has always known -- every timestamp on this page is formatted with
+  // Intl.DateTimeFormat -- and until 2026-09-30 it never told the server, while
+  // the scheduler matched cron against the container's UTC clock. So a Pacific
+  // owner asking for a 7am note was scheduled for midnight and told "7am
+  // server time". Reported once per sign-in, best-effort: a failure here must
+  // never block getting into the app, and the server refuses a name it cannot
+  // resolve rather than storing it.
+  async function reportTimezone(){
+    try{
+      const zone=(Intl.DateTimeFormat().resolvedOptions().timeZone||"").trim();
+      if(!zone) return;
+      await ensureFreshToken();
+      await fetch("/mcp/app/account/timezone", {
+        method:"POST",
+        headers:Object.assign({"Content-Type":"application/json"}, authHeaders()),
+        body:JSON.stringify({timezone:zone}),
+      });
+    }catch(_e){ /* a clock we could not report is not a broken sign-in */ }
+  }
   async function enterSignedIn(){
     ModelPicker.reset();
     // The login this answer is FOR. A /mcp/app/me that lands after a sign-out
@@ -3998,6 +4018,9 @@
     // saved attachments), which is readable only once owner and home are known.
     if(me&&me.universe_id) setQueueScope(me.universe_id);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
+    // Not awaited: the owner's clock is for the NEXT schedule they create, so
+    // it must not sit in front of the page they are waiting for.
+    reportTimezone();
     HostedModelConnect.setup=me&&me.setup||"unavailable";
     const connected=HostedModelConnect.setup==="connected";
     engineConnected = connected ? true : HostedModelConnect.setup==="unavailable" ? null : false;

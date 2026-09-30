@@ -1184,6 +1184,74 @@ async def _handle_serving_bind(request: Any) -> Any:
 
 
 
+async def _handle_account_timezone(request: Any) -> Any:
+    """Record the signed-in user's own clock, as their browser reports it.
+
+    The app has always KNOWN the zone -- it formats every timestamp it displays
+    with ``Intl.DateTimeFormat`` -- and never sent it, while the scheduler
+    matched cron against the container's UTC clock. So a Pacific owner was told
+    "7am server time" for a note that would arrive at midnight (live
+    2026-09-30). This is the one route that closes that gap.
+
+    Same-origin JSON like the other account writes. An unresolvable name is
+    REFUSED rather than stored or blanked: a client that cannot name its zone
+    must not be able to clear one the owner already has, because the value
+    decides when their mornings happen.
+    """
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.schedule_timezone import UnknownTimezone
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    reported = str(data.get("timezone", "")).strip()
+    identity = current_identity()
+
+    def _store() -> str:
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.storage.account_timezone import set_account_timezone
+
+        with identity_context(identity):
+            return set_account_timezone(
+                _base_path(),
+                owner_user_id=identity.user_id,
+                timezone_name=reported,
+            )
+
+    try:
+        from starlette.concurrency import run_in_threadpool
+
+        stored = await run_in_threadpool(_store)
+    except UnknownTimezone as exc:
+        return JSONResponse(
+            {"error": "timezone_invalid", "detail": str(exc)},
+            status_code=400,
+            headers=_NO_STORE,
+        )
+    except Exception:  # noqa: BLE001 - a settings write never breaks sign-in
+        import logging
+
+        logging.getLogger("tinyassets.onboarding").warning(
+            "account timezone could not be stored"
+        )
+        return JSONResponse(
+            {"error": "timezone_unavailable"}, status_code=503, headers=_NO_STORE
+        )
+    return JSONResponse({"timezone": stored}, headers=_NO_STORE)
+
+
 async def _handle_account_delete(request: Any) -> Any:
     """Delete the signed-in user's account: their universe (memory, history,
     deposited credentials), every row keyed to it, any paid plan (cancelled
@@ -1720,6 +1788,9 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
         Route("/mcp/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/mcp/app/account/delete", _handle_account_delete, methods=["POST"]),
+        Route(
+            "/mcp/app/account/timezone", _handle_account_timezone, methods=["POST"],
+        ),
         Route("/mcp/app/connections", handle_connections, methods=["GET", "POST"]),
         Route("/mcp/app/files", handle_file_upload, methods=["POST"]),
     ]

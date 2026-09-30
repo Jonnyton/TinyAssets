@@ -227,9 +227,12 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/serving/bind", "/mcp/app/models/preferences",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
-        "/mcp/app/account/delete", "/mcp/app/connections", "/mcp/app/files",
+        "/mcp/app/account/delete", "/mcp/app/account/timezone",
+        "/mcp/app/connections", "/mcp/app/files",
     }
     assert by_path["/mcp/app/files"].methods == {"POST"}
+    # The owner's clock is a WRITE from their client, never a readable setting.
+    assert by_path["/mcp/app/account/timezone"].methods == {"POST"}
     assert "GET" in by_path["/mcp/app"].methods
     # The bundle host is read-only and takes no input: it carries no user content,
     # which is why it needs no authentication (tinyassets/onboarding/ui_frame.py).
