@@ -1515,6 +1515,18 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     user paste a secret they already gave you — the one thing they must never
     be asked to do twice.
 
+    **A CDN block is NOT a key problem.** Failure class
+    ``destination_blocked_client`` means the destination's edge refused the
+    request before the service saw it — the body carries the edge's own code
+    (``error code: 1010`` and friends). The key was never presented to anything
+    that reads keys, so rotating it is the wrong ask and retrying gets the same
+    block. Every outbound call already sends this platform's own client string;
+    you do not set ``User-Agent`` on a packet and a request that tries is
+    refused. If a service insists on a particular one, it is declared ONCE on
+    the connection as a constant header, not per call. Say what happened, name
+    the destination and the code, and ask for the constant header — or tell
+    them the destination has to allow this platform at their end.
+
     **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
     ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the
     workspace sink clone or push that ONE repository; the HTTP methods still come

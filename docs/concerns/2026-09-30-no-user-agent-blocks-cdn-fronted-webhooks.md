@@ -60,11 +60,30 @@ So every ordinary outbound call — **every** auth scheme, not just the new
 CDN-fronted: Slack, Discord, Zapier and Make webhooks all sit behind one, as
 does `tinyassets.io` itself.
 
-The failure is also **unactionable from the owner's seat**. `error code: 1010`
-in a `far_side_error` row says nothing about a missing header. The agent's
-documented repair for a 4xx is to rotate or widen the credential
-(`engine_mcp_server.py`, the `connections` chapter), and neither will ever help
-— so the likely outcome is an owner pasting a working key two or three times.
+The failure is also **unactionable from the owner's seat** — and the owner is
+never told at all.
+
+**Re-verified 2026-09-30, and the original wording here was too strong.** This
+file first said "the agent's documented repair for a 4xx is to rotate or widen
+the credential". That is not what the guidance says: the `connections` chapter
+conditions rotation on failure **class** `credential_rejected` (a delivered 401,
+or a 403 whose body names the key itself), and a `1010` body carries no
+credential vocabulary, so it never reaches that class. Corrected in place
+rather than left standing — a premise a reader would act on has to be the real
+one.
+
+What actually happens, reproduced against `_classify_external_write`:
+
+```
+'far side answered http 403: error code: 1010'  ->  external_write_failed
+```
+
+whose served advice is *"An effect failed for a reason you can fix … Fix that
+and run again yourself, in this turn — this is yours to fix. Try at most twice"*
+and whose owner routing is `chatbot`. So the universe is told an edge block is
+its to fix, retries it twice, and the **founder — who holds both of the real
+repairs — never hears about it.** That is the half that makes this a P1 rather
+than a cosmetic omission.
 
 ## Repair
 

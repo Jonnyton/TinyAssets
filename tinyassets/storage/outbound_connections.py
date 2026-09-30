@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from tinyassets import __version__ as _tinyassets_version
 from tinyassets.storage.workspace_authority import (
     is_git_scope,
     normalize_git_host,
@@ -1591,6 +1592,25 @@ _SSRF_READ_CHUNK = 65536
 # followed; a 3xx is returned as-is. If a connection ever opts into redirects,
 # the full scheme/host/DNS/peer check must re-run per hop with no cross-origin
 # credential forwarding — deliberately not implemented while it is off.
+#: The client string every outbound call carries when nothing declared one.
+#:
+#: HONEST on purpose: it names this platform and links to it, and it
+#: impersonates no browser. A CDN in front of a destination is entitled to know
+#: who is calling, and the alternative -- a UA-less request -- is what
+#: Cloudflare answers with `error code: 1010` before the origin sees it
+#: (reproduced live 2026-09-30 against this platform's own `/mcp/hooks`).
+#:
+#: The version is read from the package rather than repeated here, so a release
+#: cannot ship a client string that lies about which build is calling.
+#: ``tinyassets/__init__.py`` is deliberately side-effect free (its public API
+#: is lazy), so importing it here costs nothing and cannot cycle.
+OUTBOUND_USER_AGENT = f"TinyAssets/{_tinyassets_version} (+https://tinyassets.io)"
+
+#: The one header a NODE may not set per call, over and above the security
+#: denylist below: see `OUTBOUND_USER_AGENT` and the effector's
+#: `_declared_user_agent_error`. An owner declares it on the connection.
+OUTBOUND_USER_AGENT_HEADER = "user-agent"
+
 #: Headers a caller may never set: auth is applied inside the child from the
 #: typed bundle (D5); Host/proxy routing is owned by the transport, not the
 #: packet. Any ``proxy-*`` header is also refused (prefix check below).
@@ -3639,6 +3659,24 @@ class _SsrfHardenedHttpDriver:
             if name.lower() not in auth_names
         }
         request_headers.update(auth_headers)
+        # Say who we are, honestly, on every outbound call. A CDN answers a
+        # UA-less POST before the origin ever sees it -- reproduced live
+        # 2026-09-30 against this platform's own /mcp/hooks receiver, where
+        # Cloudflare returned `error code: 1010` (403), and the same request
+        # with a User-Agent reached the application. The destinations users
+        # actually build channels to are all CDN-fronted, so a missing
+        # User-Agent is not a cosmetic omission: it is a channel that cannot
+        # work and whose failure names nothing the owner can act on.
+        #
+        # A DEFAULT, not an override: the connection's declared constant
+        # headers are merged before this (`merge_constant_headers`) and win, so
+        # an owner whose service wants a particular client string says so once,
+        # on the connection, where it is visible in the grant. A per-CALL
+        # User-Agent is refused at the effector instead of silently accepted,
+        # because impersonating another client is not the platform's to do on a
+        # node's say-so.
+        if not any(name.lower() == "user-agent" for name in request_headers):
+            request_headers["User-Agent"] = OUTBOUND_USER_AGENT
         # Everything to scrub from the response: raw bundle members AND the exact
         # auth values placed on the wire (e.g. the base64 blob of a Basic
         # credential, which matches no raw member).
