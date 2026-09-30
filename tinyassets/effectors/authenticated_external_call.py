@@ -689,6 +689,76 @@ def _resolve_host(request: dict[str, Any], connection_view: Any) -> tuple[str, s
     return "", "host_ambiguous"
 
 
+def _declared_user_agent_error(headers: Any) -> str:
+    """Refuse a per-CALL ``User-Agent``; it belongs on the connection.
+
+    Every outbound call now carries the platform's own honest client string
+    (``OUTBOUND_USER_AGENT``), because a UA-less request is answered by a CDN
+    before the destination sees it. A service that wants a different client
+    string is a property of the CONNECTION, not of one call: the owner declares
+    it once through the connection's constant headers, where it is visible in
+    the grant and the same for every node.
+
+    Refused rather than dropped, and refused rather than accepted. Dropping it
+    silently would leave an author believing they had set something. Accepting
+    it would let a node choose what to claim to be, per call, which is how a
+    platform ends up impersonating a browser to get past a bot policy on a
+    node's say-so — and this platform says who it is.
+    """
+    from tinyassets.storage.outbound_connections import OUTBOUND_USER_AGENT_HEADER
+
+    if not isinstance(headers, dict):
+        return ""
+    named = [
+        str(name)
+        for name in headers
+        if str(name).strip().lower() == OUTBOUND_USER_AGENT_HEADER
+    ]
+    if not named:
+        return ""
+    return (
+        f"request.headers may not set {named[0]!r}: every outbound call already "
+        "carries this platform's own client string. If this service needs a "
+        "particular one, it is a property of the connection rather than of one "
+        "call — declare it in the connection's constant headers, where the "
+        "owner can see it in the grant and every node sends the same thing."
+    )
+
+
+def _capability_url_shape_error(url: str, connection_view: Any) -> str:
+    """Refuse a ``url_secret`` request that does not address the placeholder.
+
+    The credential of a capability URL — the common incoming-webhook shape,
+    where the secret is a path segment rather than a header — is substituted by
+    the broker child. A node therefore writes ``…/{secret}`` and NEVER the code,
+    so this effector, the run state, the evidence and the receipt only ever hold
+    the placeholder form (design.md D7: redaction is structural). No channel is
+    named here or anywhere in this module: the shape is what is recognised.
+
+    Returns a secret-free message, or ``""``. The message never echoes the
+    offending url: if the author did hardcode a secret, repeating it in the
+    error would put it in the very run record this exists to keep clean.
+    """
+    from tinyassets.storage.outbound_connections import (
+        _URL_SECRET_REST_TOKEN,
+        _URL_SECRET_SCHEME,
+        _URL_SECRET_TOKEN,
+    )
+
+    scheme = str(getattr(connection_view, "auth_scheme", "") or "").strip().lower()
+    if scheme != _URL_SECRET_SCHEME:
+        return ""
+    path = url.partition("?")[0]
+    if _URL_SECRET_TOKEN in path or _URL_SECRET_REST_TOKEN in path:
+        return ""
+    return (
+        "this connection's secret is a path segment held in the vault, so the "
+        f"request path must address it as {_URL_SECRET_TOKEN} (or "
+        f"{_URL_SECRET_REST_TOKEN}) exactly as the endpoint declares it — never "
+        "the code itself, which would be stored with this run"
+    )
+
+
 def _build_url(request: dict[str, Any], host: str) -> tuple[str, str]:
     """Return ``(url, error_kind)``. Accepts an absolute ``url`` or ``host``+``path``.
 
@@ -956,8 +1026,34 @@ def _run(
             "connection_id": connection_id,
         }
 
+    capability_error = _capability_url_shape_error(url, view)
+    if capability_error:
+        # A capability-URL connection addresses the PLACEHOLDER, never the code.
+        # The allowlist in the child would refuse a real secret here anyway (its
+        # reserved pattern matches only the literal token), but that refusal
+        # arrives AFTER this url has been recorded on the returned evidence and
+        # persisted with the run. Refusing it here keeps a node-authored secret
+        # out of the run record entirely, and tells the author the one thing
+        # they need to change.
+        return {
+            "error": capability_error,
+            "error_kind": "capability_url_not_addressed_by_placeholder",
+            "matched_output_key": matched_key,
+            "connection_id": connection_id,
+            "destination": destination,
+        }
+
     wire_request: dict[str, Any] = {"url": url}
     headers = request.get("headers")
+    user_agent_error = _declared_user_agent_error(headers)
+    if user_agent_error:
+        return {
+            "error": user_agent_error,
+            "error_kind": "user_agent_is_declared_on_the_connection",
+            "matched_output_key": matched_key,
+            "connection_id": connection_id,
+            "destination": destination,
+        }
     if headers is not None:
         wire_request["headers"] = headers
     if "body" in request:

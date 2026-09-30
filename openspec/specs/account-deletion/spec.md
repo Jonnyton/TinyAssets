@@ -10,7 +10,7 @@ Google Play requires any app that lets people create an account to offer account
 
 ### Requirement: Self-Service Deletion Route
 
-The onboarding app SHALL expose `POST /mcp/app/account/delete`. The route SHALL require a resolved non-anonymous identity (401 otherwise), a same-origin JSON request (403 otherwise — the same login-CSRF guard as the token endpoint), and a body whose `confirm` field is exactly `DELETE` (400 otherwise). It SHALL delete only the identity that made the request; a client-supplied principal or universe id SHALL be ignored. On success it SHALL drop the request's refresh-session handle, clear the refresh cookie, and return `{"deleted": true, "home_removed", "billing", "identity"}` with `Cache-Control: no-store`. When the deletion is refused before anything changed it SHALL return 409 `deletion_refused`.
+The onboarding app SHALL expose `POST /app/account/delete`. The route SHALL require a resolved non-anonymous identity (401 otherwise), a same-origin JSON request (403 otherwise — the same login-CSRF guard as the token endpoint), and a body whose `confirm` field is exactly `DELETE` (400 otherwise). It SHALL delete only the identity that made the request; a client-supplied principal or universe id SHALL be ignored. On success it SHALL drop the request's refresh-session handle, clear the refresh cookie, and return `{"deleted": true, "home_removed", "billing", "identity"}` with `Cache-Control: no-store`. When the deletion is refused before anything changed it SHALL return 409 `deletion_refused`.
 
 #### Scenario: A stray or cross-site post cannot delete an account
 
@@ -157,7 +157,7 @@ Deletion SHALL be refused, with nothing changed, for an empty or `anonymous` pri
 #### Scenario: The app page carries the path
 
 - **WHEN** `app.html` is served
-- **THEN** it contains the `btn-account`, `btn-connect-account` and `btn-delete-account` controls, posts to `/mcp/app/account/delete` with `confirm:"DELETE"`, and states that deletion cannot be undone
+- **THEN** it contains the `btn-account`, `btn-connect-account` and `btn-delete-account` controls, posts to `/app/account/delete` with `confirm:"DELETE"`, and states that deletion cannot be undone
 
 ### Requirement: Pending hosted authorizations follow personal erasure
 The existing satellite deletion sweep SHALL remove pending hosted authorization

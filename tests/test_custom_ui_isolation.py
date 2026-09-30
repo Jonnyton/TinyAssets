@@ -115,7 +115,7 @@ def test_frame_closes_the_egress_channels_csp_does_not_cover() -> None:
 
 
 def test_frame_route_is_registered_for_reads_only() -> None:
-    frame_routes = [r for r in onboarding_routes() if getattr(r, "path", "") == "/mcp/app/ui-frame"]
+    frame_routes = [r for r in onboarding_routes() if getattr(r, "path", "") == "/app/ui-frame"]
     assert len(frame_routes) == 1
     assert set(frame_routes[0].methods) == {"GET", "HEAD"}
 

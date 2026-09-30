@@ -188,7 +188,7 @@ services:
       # Pass through anything in the env file.
       TINYASSETS_MCP_CANARY_URL: ${TINYASSETS_MCP_CANARY_URL:-https://tinyassets.io/mcp}
       # MVP go-live (founder directive 2026-08-20): un-dark the two surfaces the
-      # onboarding funnel needs — the daemon-served onboarding SPA at /mcp/app, and
+      # onboarding funnel needs — the daemon-served onboarding SPA at /app, and
       # claude serving so the universe answers on the founder's deposited subscription.
       # Baked here (compose `environment` wins over the env_file) so they ship with
       # the deploy — no droplet SSH / env-file edit needed. Inbound webhook + outbound

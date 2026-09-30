@@ -120,6 +120,32 @@ def _coerce_status(value: Any) -> int | None:
     return None
 
 
+def _pre_generation(error):
+    """Declare an ADMISSION refusal side-effect-free, as a FACT.
+
+    Only for the statuses with which a source refuses a request *before*
+    generating: 429 (its own rate limit) and the model-refusal statuses
+    (access refused, no such model). The source answered with a status and
+    nothing else, so no token was generated and no tool could have run, and
+    saying so at the raise site is what lets `capacity_boundary` certify the
+    transition to the next model.
+
+    **A 5xx is deliberately NOT included.** It can come from a gateway after an
+    upstream model already began producing output, so zero remote generation is
+    unproved and the honest value is "unknown" -- which holds the node rather
+    than replaying it elsewhere. Codex refutation R3, 2026-09-30: an earlier
+    head labelled every 5xx side-effect-free and could not rule out a 502/504
+    following generation.
+
+    Said HERE rather than inferred at the router, because absence of the fact
+    must keep meaning "unknown" for a streaming or native attempt, where a
+    failure genuinely can follow partial work. It travels on the existing
+    `attempt_telemetry` channel so there is one reader, not two.
+    """
+    error.attempt_telemetry = {"side_effect_state": "none"}
+    return error
+
+
 class ApiKeyHttpProvider(BaseProvider):
     """Compute over a user-registered http provider, via the credential-blind proxy."""
 
@@ -374,26 +400,43 @@ class ApiKeyHttpProvider(BaseProvider):
             # the network failed. Fail loud with the secret-free reason.
             reason = str(result.get("reason") or result.get("error") or "unknown")
             raise ProviderUnavailableError(f"compute call failed: {reason}")
-        if agent_request is not None and contract.capacity_decoder is not None:
+        # EVERY call, not only an agent round. `agent_request` is a tool-loop
+        # concern and says nothing about whether the source reported a capacity
+        # window, but it used to gate this decode -- so the identical 429, from
+        # the identical source, through the identical decoder, reached a workflow
+        # node as a bare `ProviderRateLimitedError` with no scope, no
+        # `Retry-After` and no side-effect fact. `capacity_boundary` could not
+        # certify that as a safe transition, so one 429 ended the whole run
+        # while a chat turn on the same source stepped to the next free model
+        # (live 2026-09-30, run `c22c1cb12db74d6a`, one attempt on an account
+        # holding 632 models).
+        if selection is not None and contract.capacity_decoder is not None:
             from tinyassets.exceptions import SelectedModelCapacityError
 
             capacity = contract.capacity_decoder(status, result.get("headers"))
             if capacity is not None:
-                raise SelectedModelCapacityError(
+                error = SelectedModelCapacityError(
                     capacity, detail=self._capacity_detail(status, result)
                 )
+                # Only a 4xx admission refusal proves nothing was generated; a
+                # 5xx may be a gateway answering after upstream output began.
+                raise _pre_generation(error) if status < 500 else error
         if status == 401:
             # Still refused after the broker's one refresh-and-retry (oauth2),
             # or a key the service no longer accepts: a sign-in problem.
             raise ProviderAuthenticationError("compute provider rejected the credential (401)")
         if status == 429:
-            raise ProviderRateLimitedError("compute provider rate limited (429)")
+            raise _pre_generation(
+                ProviderRateLimitedError("compute provider rate limited (429)")
+            )
         if 500 <= status < 600:
             raise ProviderOverloadedError(f"compute provider error (HTTP {status})")
         if status in _MODEL_REFUSAL_STATUSES:
             # Access refused, or no such model to serve: nothing was generated,
             # so this is neither a reply we failed to read nor a sick source.
-            raise ProviderModelRefusedError(self._capacity_detail(status, result))
+            raise _pre_generation(
+                ProviderModelRefusedError(self._capacity_detail(status, result))
+            )
         if not (200 <= status < 300):
             raise ProviderProtocolError(
                 self._capacity_detail(status, result)

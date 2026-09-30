@@ -1,4 +1,4 @@
-"""POST /mcp/app/files: authenticated raw-byte upload into existing file custody.
+"""POST /app/files: authenticated raw-byte upload into existing file custody.
 
 Authenticates, checks origin, the custom metadata header, the signed-in user's
 complete current home and capacity BEFORE any body byte is read. Bytes stream

@@ -27,8 +27,8 @@ from tinyassets.storage.subscription_state import (
 
 PARAMS = {
     "price_id": "price_x",
-    "success_url": "https://tinyassets.io/mcp/app?subscribed=1",
-    "cancel_url": "https://tinyassets.io/mcp/app?subscribed=0",
+    "success_url": "https://tinyassets.io/app?subscribed=1",
+    "cancel_url": "https://tinyassets.io/app?subscribed=0",
     "expires_at": 2_000_000_000,
     "entitlement_version": "2",
     "entitlement_claim": "claim",

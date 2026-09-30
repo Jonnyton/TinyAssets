@@ -10,9 +10,12 @@ Two events are emitted, each from the one place its state changes:
 
 * ``run_completed`` -- ``runs.update_run_status``, on a run's transition into a
   terminal status. Payload: ``run_id``, ``branch_def_id``, ``outcome``.
-* ``pending_request_answered`` -- ``storage.pending_requests.resolve_request``,
-  when a pending request is answered or dismissed from any surface. Payload:
-  ``request_id``, ``kind``, ``status``.
+* ``pending_request_answered`` -- ``storage.pending_requests.resolve_request``
+  and ``resolve_item``, when a pending request or one of its items is answered
+  or dismissed from any surface. Payload: ``request_id``, ``kind``, ``status``,
+  ``item_id`` (empty unless one item was resolved). An item that closes its
+  request emits ONCE, carrying both the item and the closed status, so a single
+  act never wakes an unfiltered subscription twice.
 
 The cross-user floor: an event is stamped with the principal that caused it,
 and wakes only subscriptions that principal owns, in that principal's own home
@@ -43,6 +46,7 @@ from tinyassets.automations import (
     EVENT_FILTER_KEYS,
     EVENT_PENDING_REQUEST_ANSWERED,
     EVENT_RUN_COMPLETED,
+    EVENT_WOKE_PREFIX,
     REFUSAL_KEY_PREFIX,
     STATE_ACTIVE,
     TRIGGER_EVENT,
@@ -170,10 +174,20 @@ def _emit(
                     now=now,
                 )
             except AutomationUnavailable as exc:
-                _record_refusal(base, sub, f"event_wake_refused:{exc.reason}")
+                reason = f"event_wake_refused:{exc.reason}"
+                _record_refusal(base, sub, reason)
+                _record_fire(base, sub, reason, now)
                 continue
+        _record_fire(base, sub, f"{EVENT_WOKE_PREFIX}{wake.automation_id}", now)
         stored.append(wake.automation_id)
     return stored
+
+
+def _record_fire(base: Path, sub: Automation, reason: str, now: datetime) -> None:
+    try:
+        AutomationStore(base).record_event_fire(sub.automation_id, reason=reason, now=now)
+    except Exception:  # noqa: BLE001 - an event must never fail its cause
+        logger.exception("event fire record failed sub=%s", sub.automation_id)
 
 
 def emit_run_completed(
@@ -214,21 +228,36 @@ def emit_pending_request_answered(
     request_id: str,
     kind: str,
     status: str,
+    item_id: str = "",
 ) -> list[str]:
-    """A pending request was answered or dismissed, from any surface."""
+    """A pending request was answered or dismissed, from any surface.
+
+    ``item_id`` names the ONE item the owner just resolved, when they answered
+    an item rather than the whole request; ``status`` is then the REQUEST's
+    status after that answer, so a subscription learns whether the tab closed.
+
+    A whole-request answer OMITS the key rather than carrying it empty, so its
+    payload is byte-identical to the pre-items one: nothing an existing
+    subscription reads changes shape, and a filter naming an ``item_id``
+    correctly fails to match (``_matches`` compares against ``""``) instead of
+    waking on every answer.
+    """
     from tinyassets.api.permissions import current_request_actor_id
 
     udir = Path(universe_dir)
+    payload = {
+        "request_id": str(request_id or ""),
+        "kind": str(kind or ""),
+        "status": str(status or ""),
+    }
+    if item_id:
+        payload["item_id"] = str(item_id)
     return emit(
         udir.parent,
         event_type=EVENT_PENDING_REQUEST_ANSWERED,
         universe_id=udir.name,
         principal_id=current_request_actor_id(),
-        payload={
-            "request_id": str(request_id or ""),
-            "kind": str(kind or ""),
-            "status": str(status or ""),
-        },
+        payload=payload,
     )
 
 

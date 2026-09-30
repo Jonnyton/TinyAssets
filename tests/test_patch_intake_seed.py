@@ -765,5 +765,7 @@ def test_the_handbook_chapter_says_a_patch_request_needs_no_token():
     assert "NO credential" in chapter
     assert "patch_intake" in chapter
     assert "patch_intake_consent_required" in chapter
+    assert "request_pending" in chapter
+    assert "already declined or cleared" in chapter
     # And it names the wrong move explicitly, because that is what happened.
     assert "connect_http" in chapter

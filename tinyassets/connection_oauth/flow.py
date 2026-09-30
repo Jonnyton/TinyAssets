@@ -13,7 +13,7 @@ exchange is standard RFC 6749 §4.1.
    and the exact action, and returns the provider's authorize URL with the
    handle as ``state``.
 2. The provider sends the browser back to the fixed callback
-   ``/mcp/app/model-callback/connect?code=..&state=..`` (public shell only).
+   ``/app/model-callback/connect?code=..&state=..`` (public shell only).
 3. **complete**: the signed-in app posts ``state``, ``code``, the verifier and
    any RFC 9207 ``iss``. The flow is taken exactly once, ``iss`` is checked
    against the discovered issuer (required when the server advertises it), the

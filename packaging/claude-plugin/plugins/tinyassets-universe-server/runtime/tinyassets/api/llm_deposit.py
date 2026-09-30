@@ -15,9 +15,9 @@ Security honesty (MVP, chatbot transport): the base64 ``auth_material_b64`` the
 caller submits unavoidably enters the MCP request and the model/connector context
 on the chatbot path, and the decoded Claude token is stored in the per-universe
 vault, which is 0600 JSON and **not** encrypted at rest (credential-vault task
-1.8). The secure browser transport (``byo-llm-deposit-browser-form``) removes the
-chat-context exposure and is a prerequisite before any multi-tenant (second-user)
-use. Beyond that inherent transport exposure, this handler never returns, logs, or
+1.8). The app's own connect flows (the OpenAI device sign-in calls this handler
+directly) keep the material out of any chat. Beyond that inherent transport
+exposure, this handler never returns, logs, or
 echoes the material, and its exceptions carry no secret.
 """
 

@@ -408,7 +408,7 @@ def test_save_exact_home_and_generation_never_grants_or_silently_switches(tmp_pa
     result = run_picker(tmp_path, choose("first") + "await ModelPicker.save();")
     assert result["requests"] == [
         {
-            "url": "/mcp/app/models/preferences?universe_id=home-a",
+            "url": "/app/models/preferences?universe_id=home-a",
             "method": "POST",
             "body": {
                 "expected_generation": 2,
@@ -465,7 +465,7 @@ def test_adding_a_fallback_in_the_dialog_saves_it(tmp_path):
     doc["preferences"]["policy"] = explicit("first")
     result = run_picker(tmp_path, add("second"), doc)
     assert result["requests"] == [{
-        "url": "/mcp/app/models/preferences?universe_id=home-a",
+        "url": "/app/models/preferences?universe_id=home-a",
         "method": "POST",
         "body": {"expected_generation": 2, "policy": explicit("first", ["second"])},
     }]
@@ -879,3 +879,33 @@ def test_restore_does_not_overwrite_changed_or_working_state(tmp_path, changed):
     )
     assert len(result["writes"]) == 2
     assert "no restore was attempted" in result["ui"]["model-status"]["text"]
+
+
+def test_the_menu_is_the_route_to_connecting_another_model_source(tmp_path):
+    """"Optional extras live in the model picker" (founder, 2026-09-30).
+
+    A standing offer to add a second source used to be a permanent card in
+    "Waiting on you" with no Accept, Deny or Clear on it, because a derived
+    entry has nothing to resolve. It is off the rail now, so the picker has to
+    reach it -- one tap from "Change model", not two through the dialog.
+    """
+    result = run_picker(tmp_path, "")
+    rows = result["ui"]["model-menu"]["children"]
+    connect = [row for row in rows if "Connect another model source" in row["text"]]
+    assert len(connect) == 1, "the picker has no route to adding a source"
+    # Classed apart from the model choices, because it is not one of them: a
+    # keyboard user tabbing the list must not land on it as a pick.
+    assert "model-menu-item--more" in connect[0]["cls"]
+    assert connect[0]["disabled"] is False
+
+
+def test_the_connect_row_opens_the_connect_request_and_closes_the_menu(tmp_path):
+    result = run_picker(tmp_path, """
+      const label=c=>c.children.map(g=>g.textContent).join("");
+      const row=$("model-menu").children
+        .find(c=>label(c).includes("Connect another model source"));
+      if(!row) throw new Error("no connect row in the menu");
+      row.click();
+    """)
+    assert result["connects"] == 1, "the menu row did not open the connect request"
+    assert result["ui"]["model-menu"]["hidden"] is True, "the menu stayed open over the card"

@@ -30,6 +30,13 @@ from tinyassets.runs import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _pin_data_dir(tmp_path, monkeypatch):
+    """The run handlers sweep in-flight runs in the data dir on first use:
+    never the developer's real one."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+
 def _seed_branch(base_path, branch_id: str = "b1"):
     from tinyassets.branches import (
         BranchDefinition,

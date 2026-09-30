@@ -84,7 +84,7 @@ export default function StartPage() {
           <div className="cols cols--2">
             <div className="sheet" id="app">
               <span className="eyebrow">Web app</span>
-              <h3>tinyassets.io/mcp/app</h3>
+              <h3>tinyassets.io/app</h3>
               <p>
                 Sign in, connect, talk. This is the reference surface and the one every other
                 surface wraps.

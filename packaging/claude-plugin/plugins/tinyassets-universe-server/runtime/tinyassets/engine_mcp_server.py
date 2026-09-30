@@ -1125,20 +1125,29 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
         if f in spec and not isinstance(spec[f], str):
             raise ValueError(f"'{f}' must be a string")
     # state_schema entries carry text-metadata fields (name/description/reducer) that
-    # reach text columns; a dict/list there persists malformed (Codex #4). Tolerant of
-    # both shapes (a `{"fields": [...]}` object or a bare list); default_value/field_name
-    # and any unrecognized shape are left untouched so opaque workflow data survives.
-    state_schema = spec.get("state_schema")
-    if isinstance(state_schema, dict):
-        state_entries = state_schema.get("fields")
-    elif isinstance(state_schema, list):
-        state_entries = state_schema
-    else:
-        state_entries = None
-    if isinstance(state_entries, list):
+    # reach text columns; a dict/list there persists malformed (Codex #4).
+    #
+    # NORMALIZED FIRST, with the BUILDER's own helper, and written back in
+    # place. The shapes the sanitizer accepts and the shapes the builder accepts
+    # have to be one list, or the widest of them is an unguarded path: this
+    # block used to look only for a LIST, so when the builder learned the
+    # ``{"focus_note": "str"}`` mapping (turn f3617ca3) a field could arrive as
+    # a mapping value and skip the check entirely -- a `reducer` dict straight
+    # into a text column, and a dict `name` crashing the applicator (Codex
+    # refute, PR #4123). Normalizing here means there is one definition and the
+    # builder downstream only ever sees the canonical list.
+    if "state_schema" in spec:
+        from tinyassets.api.branches import _normalized_state_schema
+
+        state_entries, state_error = _normalized_state_schema(spec["state_schema"])
+        if state_error:
+            raise ValueError(state_error)
+        spec["state_schema"] = state_entries
         for sf in state_entries:
             if not isinstance(sf, dict):
-                continue
+                raise ValueError(
+                    "each state_schema entry must be a field object or a name"
+                )
             for f in _SERVED_STATE_FIELD_TEXT:
                 if f in sf and not isinstance(sf[f], str):
                     raise ValueError(f"state field '{f}' must be a string")
@@ -1256,7 +1265,12 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
 
     **Two nodes, passing a value.** ``edges`` orders them; ``output_keys`` /
     ``input_keys`` name what moves, and every key they name must be declared in
-    ``state_schema`` when a schema is present:
+    ``state_schema`` when a schema is present. ``state_schema`` takes either the
+    list of field objects below or a plain mapping of name to type
+    (``{"agenda": "str", "brief": "str"}``), and JSON Schema's type words
+    (``string``, ``integer``, ``number``, ``boolean``, ``array``, ``object``)
+    are accepted for the Python ones. A type I get wrong is corrected and
+    reported back under ``notices`` rather than refusing the build:
 
         {"name": "Morning brief",
          "state_schema": [{"name": "agenda", "type": "str"},
@@ -1393,6 +1407,38 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     -- "their page calls this either X or Y" is honest and the owner can resolve
     it in a second. A confidently wrong label is worse than an uncertain one.
 
+    **A WEBHOOK LINK IS NOT A TOKEN.** When the owner hands you a link whose
+    secret is IN the address — a Slack ``hooks.slack.com/services/T…/B…/<token>``,
+    a Discord ``discord.com/api/webhooks/<id>/<token>``, a Zapier catch hook, a
+    TinyAssets ``/mcp/hooks/<token>`` — there is no bearer token to ask for and
+    NOTHING about that link goes in ``path_template``. Use
+    ``"auth_scheme": "url_secret"``, write ``{secret}`` where the code is, and
+    ask for the WHOLE LINK in one field named ``capability_url``::
+
+        "action": {"type": "connect_http", "destination": "bug-reports",
+                   "auth_scheme": "url_secret",
+                   "endpoints": [{"host": "hooks.slack.com",
+                                  "path_template": "/services/{secret+}",
+                                  "methods": ["POST"]}]},
+        "fields": [{"name": "capability_url", "type": "secret",
+                    "label": "Webhook URL",
+                    "help": "the whole link they gave you, starting https://"}]
+
+    ``{secret}`` is one path segment; ``{secret+}`` is the rest of the path (use
+    it when the code is several segments, as Slack's is). It takes NO
+    ``param_patterns`` entry — the value comes from the vault. The platform
+    checks the pasted link against the host and template and pulls the code out
+    itself, so never ask the owner to "paste the part after the last slash".
+    Then the node's packet addresses the PLACEHOLDER, not the code::
+
+        "request": {"method": "POST", "path": "/services/{secret+}",
+                    "body": {"text": "..."}}
+
+    The real address only exists for the instant the call is made. That is why
+    a real code in ``path_template`` (or in a packet) is refused: a grant is
+    stored in the clear and shown to the owner, and a packet is part of the
+    graph anyone you share it with can read.
+
     **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
     a ``connect_http`` or ``extend_http`` ask and it means: everything this key
     can do on this channel -- any path, any verb, and clone or push to any
@@ -1468,6 +1514,18 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     A ``connect_http`` ask for a destination that already has a key makes the
     user paste a secret they already gave you — the one thing they must never
     be asked to do twice.
+
+    **A CDN block is NOT a key problem.** Failure class
+    ``destination_blocked_client`` means the destination's edge refused the
+    request before the service saw it — the body carries the edge's own code
+    (``error code: 1010`` and friends). The key was never presented to anything
+    that reads keys, so rotating it is the wrong ask and retrying gets the same
+    block. Every outbound call already sends this platform's own client string;
+    you do not set ``User-Agent`` on a packet and a request that tries is
+    refused. If a service insists on a particular one, it is declared ONCE on
+    the connection as a constant header, not per call. Say what happened, name
+    the destination and the code, and ask for the constant header — or tell
+    them the destination has to allow this platform at their end.
 
     **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
     ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the
@@ -1993,7 +2051,7 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     when this platform offers one::
 
         {"receiver_id": "...", "label": "TinyAssets",
-         "granted": true|false, "how": "..."}
+         "granted": true|false, "request_pending": true|false, "how": "..."}
 
     * ``granted: true`` -- my person has approved it. Read the contract
       (``read_graph target="receiver" query="<receiver_id>"``), point one of my
@@ -2002,9 +2060,10 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
       operation="deliver_output"``). A one-node code branch whose outputs are
       what-I-tried / what-was-missing is enough. I file it MID-TURN and carry on;
       I do not interrupt my person to ask permission I already have.
-    * ``granted: false`` -- the ask is ALREADY waiting in their rail ("Let your
-      universe report problems to ..."). I point them at that one and wait. I do
-      not compose a second request of my own for the same thing.
+    * ``granted: false`` -- I read ``request_pending`` and follow ``how``. If the
+      ask is waiting in their rail ("Let your universe report problems to ..."),
+      I point them at that one and wait. If they already declined or cleared it,
+      I respect that decision. I do not compose a second request for it.
     * No ``patch_intake`` block at all -- this deployment offers no intake. I
       say so plainly rather than inventing an address.
 

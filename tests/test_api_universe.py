@@ -187,6 +187,16 @@ def test_write_actions_entries_are_extractor_gate_tuples() -> None:
 # ── Pattern A2 wrapper round-trip ────────────────────────────────────────────
 
 
+def test_listing_a_fresh_data_dir_twice_gives_one_answer(tmp_path, monkeypatch) -> None:
+    """The first list initializes the ownership store in the data dir; it must
+    not report the directory as it was before that (CI: "empty", then "1
+    entries" on the next call -- order-dependent on which test ran first)."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "fresh"))
+    (tmp_path / "fresh").mkdir()
+    first = univ_mod._universe_impl(action="list")
+    assert first == univ_mod._universe_impl(action="list")
+
+
 def test_pattern_a2_wrapper_delegates_to_api_universe() -> None:
     """`tinyassets.universe_server.universe` MUST be a thin wrapper that
     delegates to `tinyassets.api.universe._universe_impl`.
