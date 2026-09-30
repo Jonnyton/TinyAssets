@@ -82,7 +82,8 @@ NOT consume `MAX_ONCE_ATTEMPTS`, SHALL NOT count toward
 gets SHALL be given back before its run is queued: a seat held by a run still
 waiting for a run-pool worker, behind workers waiting for that account's seats,
 is a deadlock. The run's agent calls SHALL take their own seats at the executor,
-and no run timeout SHALL turn a wait there into a failure.
+and no run timeout, and no deadline of a blocking invoke waiting on a child,
+SHALL turn a wait there into a failure.
 
 #### Scenario: A wake outlasts a busy account
 - **WHEN** a wake is due on more polls than it has attempts while its account's background seats are full

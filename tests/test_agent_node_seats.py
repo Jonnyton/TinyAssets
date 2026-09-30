@@ -307,3 +307,75 @@ def test_a_blocking_agent_call_nested_in_another_reenters_its_seat(ledger):
     finally:
         seats.release(other.seat_id, db=db)
     assert _wait_until(lambda: _running(ledger) == 0)
+
+
+def test_a_blocking_version_child_waiting_for_a_seat_does_not_fail_its_parent(
+    ledger, monkeypatch,
+):
+    """gpt-6-astra round 3, P1. A blocking version invoke polled its child with a
+    300 s default deadline, and a child waiting for its account's seat counted
+    against it -- the parent failed although nothing had run. The parent now waits
+    until the child ends. The default is shrunk to 0.5 s here and the child is
+    kept waiting well past it, so a call site that still relies on the default
+    fails in seconds instead of five minutes."""
+    from tinyassets import runs
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import save_branch_definition
+    from tinyassets.runs import execute_branch_async, get_run, list_events, wait_for
+
+    monkeypatch.setitem(runs.poll_child_run_status.__kwdefaults__, "timeout_seconds", 0.5)
+    child = BranchDefinition(
+        branch_def_id="seat_child", name="Seat child", author="alice", visibility="public",
+        graph_nodes=[GraphNodeRef(id="c1", node_def_id="c1")],
+        edges=[EdgeDefinition(from_node="c1", to_node="END")], entry_point="c1",
+        node_defs=[NodeDefinition(node_id="c1", display_name="C1", prompt_template="child",
+                                  output_keys=["child_out"])],
+        state_schema=[{"name": "child_out", "type": "str"}],
+    )
+    save_branch_definition(ledger, branch_def=child.to_dict())
+    version = publish_branch_version(ledger, child.to_dict(), publisher="alice")
+    parent = BranchDefinition(
+        branch_def_id="seat_parent", name="Seat parent", author="alice", visibility="public",
+        graph_nodes=[GraphNodeRef(id="p1", node_def_id="p1")],
+        edges=[EdgeDefinition(from_node="p1", to_node="END")], entry_point="p1",
+        node_defs=[NodeDefinition(
+            node_id="p1", display_name="P1",
+            invoke_branch_version_spec={
+                "branch_version_id": version.branch_version_id, "wait_mode": "blocking",
+                "inputs_mapping": {}, "output_mapping": {"parent_out": "child_out"},
+            },
+        )],
+        state_schema=[{"name": "parent_out", "type": "str"}],
+    )
+    save_branch_definition(ledger, branch_def=parent.to_dict())
+
+    db = seats.ledger_path(ledger)
+    blockers = [seats.acquire(ALICE, db=db) for _ in range(2)]
+
+    def free_after_the_child_has_waited():
+        # Release only once the child is really queued, and well after the
+        # shrunken 0.5 s default would have expired.
+        _wait_until(lambda: seats.occupancy(ALICE, db=db)["waiting"] >= 1)
+        time.sleep(2.0)
+        for held in blockers:
+            seats.release(held.seat_id, db=db)
+
+    releaser = threading.Thread(target=free_after_the_child_has_waited, daemon=True)
+    releaser.start()
+    run_id = execute_branch_async(
+        ledger, branch=parent, inputs={}, provider_call=lambda p, s="", **k: "[ok]",
+        _enqueue_universe_id="village", actor="alice", owner_user_id="alice",
+    ).run_id
+    wait_for(run_id, timeout=90)
+    releaser.join(60)
+    record = get_run(ledger, run_id)
+    assert record["status"] == "completed", record.get("error")
+    assert record["output"].get("parent_out") == "[ok]"
+    with runs._connect(ledger) as conn:
+        children = [row[0] for row in conn.execute(
+            "SELECT run_id FROM runs WHERE run_id <> ?", (run_id,),
+        )]
+    assert any(e["status"] == "waiting_for_seat"
+               for child_id in children for e in list_events(ledger, child_id)), (
+        "the child must really have waited for a seat, or this proves nothing"
+    )

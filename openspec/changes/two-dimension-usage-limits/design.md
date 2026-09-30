@@ -475,6 +475,10 @@ person, shared across all their universes; universe creation stays unlimited.
   to the call. A queued run (`execute_branch_async`, resume) detaches the
   caller's seat from its copied context; only a blocking version invoke lends it
   (`_lend_seat`).
+- **Enclosing deadlines (astra round 3).** A blocking version invoke polled its
+  child with a 300 s default, which a child's seat wait counted against. It now
+  waits until the child ends, as the blocking definition invoke always has; a
+  dead child still ends through run-owner proof.
 
 Known and not fixed here, both filed as concerns: the run pool
 (`TINYASSETS_RUN_MAX_CONCURRENT`, 4) is shared by all accounts, and a prompt

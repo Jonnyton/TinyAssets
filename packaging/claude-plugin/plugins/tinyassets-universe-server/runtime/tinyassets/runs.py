@@ -7015,12 +7015,14 @@ def poll_child_run_status(
     base_path: str | Path,
     run_id: str,
     *,
-    timeout_seconds: float = 300.0,
+    timeout_seconds: float | None = 300.0,
     poll_interval: float = 1.0,
     expected_actor: str | None = None,
     expected_universe_id: str | None = None,
 ) -> dict[str, Any]:
     """Block until *run_id* reaches a terminal status or *timeout_seconds* elapses.
+
+    ``timeout_seconds=None`` waits until the run is terminal.
 
     Returns the run record dict (same shape as ``get_run``).
     Raises ``TimeoutError`` if the run does not terminate in time.
@@ -7033,7 +7035,7 @@ def poll_child_run_status(
     """
     want_actor = (expected_actor or "").strip()
     want_universe = (expected_universe_id or "").strip()
-    deadline = time.monotonic() + timeout_seconds
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
     while True:
         record = get_run(base_path, run_id)
         if record is None:
@@ -7046,6 +7048,9 @@ def poll_child_run_status(
             raise KeyError(f"Child run '{run_id}' not found in runs DB.")
         if record.get("status") in _TERMINAL_STATUSES:
             return record
+        if deadline is None:
+            time.sleep(poll_interval)
+            continue
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ChildRunAwaitTimeout(

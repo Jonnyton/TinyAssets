@@ -3455,7 +3455,13 @@ def _build_invoke_branch_version_node(
                     )
                     _bind_child_ticket(ticket, str(outcome.run_id or ""))
                     # Block until the child terminates; harvest its output dict.
-                    record = poll_child_run_status(_base, outcome.run_id)
+                    # No deadline, as the blocking definition invoke has none: the
+                    # child may first wait for its account's seat, and a wait is
+                    # never a failure (gpt-6-astra round 3). A dead child still
+                    # ends -- its run is terminalized on its owner's proven death.
+                    record = poll_child_run_status(
+                        _base, outcome.run_id, timeout_seconds=None,
+                    )
                 child_status = record.get("status", "")
                 child_output = record.get("output") or {}
 
