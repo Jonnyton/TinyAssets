@@ -410,13 +410,29 @@ class ApiKeyHttpProvider(BaseProvider):
         # while a chat turn on the same source stepped to the next free model
         # (live 2026-09-30, run `c22c1cb12db74d6a`, one attempt on an account
         # holding 632 models).
-        if selection is not None and contract.capacity_decoder is not None:
+        if selection is not None:
             from tinyassets.exceptions import SelectedModelCapacityError
+            from tinyassets.providers.daily_quota import daily_detail, daily_quota_signal
+            from tinyassets.providers.free_sources import billing_url_for_host, source_for_host
 
-            capacity = contract.capacity_decoder(status, result.get("headers"))
+            capacity = daily_quota_signal(
+                status, result.get("headers"), result.get("body"),
+                daily_request_headers=source_for_host(host).get("daily_request_headers", False),
+                daily_reset_timezone=source_for_host(host).get("daily_reset_timezone"),
+            )
+            detail = None
+            if capacity is not None:
+                detail = daily_detail(capacity, billing_url=billing_url_for_host(host))
+            elif status == 402:
+                from tinyassets.providers.model_capacity import CapacitySignal
+
+                capacity = CapacitySignal("account", "provider_credit_exhausted")
+                detail = "Provider credit exhausted. Add credit: " + billing_url_for_host(host)
+            elif contract.capacity_decoder is not None:
+                capacity = contract.capacity_decoder(status, result.get("headers"))
             if capacity is not None:
                 error = SelectedModelCapacityError(
-                    capacity, detail=self._capacity_detail(status, result)
+                    capacity, detail=detail or self._capacity_detail(status, result)
                 )
                 # Only a 4xx admission refusal proves nothing was generated; a
                 # 5xx may be a gateway answering after upstream output began.

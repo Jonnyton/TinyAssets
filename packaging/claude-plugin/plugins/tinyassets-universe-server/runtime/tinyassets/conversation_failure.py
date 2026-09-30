@@ -48,8 +48,16 @@ _CLASS_WORDS = {
         "usually better than sending the whole request again"
     ),
     "provider_rate_limited": (
-        "your model provider is rate-limiting it right now; this usually clears "
-        "within a few minutes, so send again then"
+        "your model provider is rate-limiting it right now; try another connected "
+        "source or check the provider's limits"
+    ),
+    "provider_daily_quota": (
+        "this model source has reached its daily quota; connect another free "
+        "source, or add credit at that provider"
+    ),
+    "provider_credit_exhausted": (
+        "this model source has run out of credit; connect another free source, "
+        "or add credit at that provider"
     ),
     "provider_overloaded": (
         "your model provider is overloaded right now; nothing is wrong with your "
@@ -69,8 +77,8 @@ _CLASS_WORDS = {
         "your credentials or your usage limits, and sending again may well work"
     ),
     "quota_or_cooldown": (
-        "model access was in a usage-limit or cooldown window; wait a moment, "
-        "then send again"
+        "this model source is in a cooldown window after a provider refusal; "
+        "try another connected source or check the provider's limits"
     ),
     "timed_out": "the model attempt timed out",
     "native_auth_clue": (
@@ -125,6 +133,8 @@ STAGE_OF_CLASS = {
     "native_auth_clue": "connection",
     "endpoint_unreachable": "connection",
     "provider_rate_limited": "model_request",
+    "provider_daily_quota": "model_request",
+    "provider_credit_exhausted": "model_request",
     "provider_overloaded": "model_request",
     "quota_or_cooldown": "model_request",
     "timed_out": "model_request",
@@ -232,11 +242,13 @@ def _wait_words(seconds: int) -> str:
 def failure_notice(value: object) -> str:
     """Compose the notice from the record's fields; no per-failure copy."""
     failure = _coerce(value)
+    stage = ("Your model source is unavailable" if failure.code == "provider_daily_quota"
+             else _STAGE_WORDS.get(failure.stage, _NO_STAGE))
     parts = [
-        f"{_STAGE_WORDS.get(failure.stage, _NO_STAGE)} — {_CLASS_WORDS[failure.code]}.",
+        f"{stage} — {_CLASS_WORDS[failure.code]}.",
         _EFFECT_WORDS[failure.effects],
     ]
-    if failure.retry_after_s is not None:
+    if failure.retry_after_s is not None and failure.code != "provider_daily_quota":
         parts.append(_wait_words(failure.retry_after_s))
     if failure.provider_detail:
         parts.append(f'Detail: "{failure.provider_detail}"')

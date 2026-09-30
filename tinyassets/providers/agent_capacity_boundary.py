@@ -17,6 +17,7 @@ from tinyassets.providers.model_policy import Exhaustion, ModelRef
 
 _FAILURES = frozenset({
     "provider_credit_exhausted", "provider_rate_limited", "provider_overloaded",
+    "provider_daily_quota",
 })
 
 
@@ -32,6 +33,7 @@ class CapacityBoundary:
     #: tell. Evidence, never a decision -- it exists so a caller can see WHY the
     #: exhaustion is account-wide instead of assuming a source proved it.
     observed_scope: str = "account"
+    daily_detail: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +125,11 @@ def capacity_boundary(
         else "unknown"
     )
     scope = "model" if observed == "model" else "account"
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+
+    daily = next((redacted_failure_detail(a.detail) for a in reversed(attempts)
+                  if a.failure_class == "provider_daily_quota"), "")
     return CapacityBoundary(
         Exhaustion(scope, current), attempted, failures[-1] if failures else None,
-        max(delays) if delays else None, observed,
+        max(delays) if delays else None, observed, daily,
     )
