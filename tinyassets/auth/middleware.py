@@ -587,6 +587,20 @@ def _auth_challenge_path(path: str) -> bool:
         # Their own authenticated /mcp tool calls are still challenged; the dark
         # flag still returns a bare 404 when the app is off.
         return False
+    if path == "/app/sw.js":
+        # The web-push service worker. `navigator.serviceWorker.register()` is a
+        # plain same-origin fetch with NO bearer — the browser, not the page,
+        # issues it — so challenging this path makes web push unregisterable,
+        # which is the whole notification channel that needs no third-party
+        # project. Same category as /app itself: a static script that runs
+        # before any bearer exists.
+        #
+        # It carries no secret. The VAPID *public* key is handed to
+        # `pushManager.subscribe` by the already-authenticated page (GET
+        # /app/notify), never baked into the worker, and the worker holds no
+        # identity — so serving it openly grants nothing. Exactly one path, by
+        # equality; no deeper /app/... route is opened.
+        return False
     # Billing webhook: Stripe POSTs here with no MCP bearer, so like /app and
     # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires
     # both Stripe provenance (signed, replay-bounded payload) and entitlement

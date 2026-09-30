@@ -229,6 +229,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/billing/cancel", "/app/billing/webhook",
         "/app/account/delete", "/app/account/timezone",
         "/app/connections", "/app/files",
+        "/app/devices", "/app/notify", "/app/sw.js",
     }
     assert by_path["/app/files"].methods == {"POST"}
     # The owner's clock is a WRITE from their client, never a readable setting.
