@@ -2832,7 +2832,8 @@ _CHILD_UNAVAILABLE = "invoke_branch child is not available"
 
 
 def _authorize_child_ref(
-    base: "Path", child_def_id: str, ctx: "BranchExecutionContext", *, parent_run_id: str = ""
+    base: "Path", child_def_id: str, ctx: "BranchExecutionContext", *, parent_run_id: str = "",
+    require_authorship: bool = False,
 ) -> "Any":
     """Authorize an AUTHOR-chosen child branch ref under DELEGATED authority.
 
@@ -2864,7 +2865,7 @@ def _authorize_child_ref(
     # error. Missing/blank/malformed visibility is NOT public -> fail closed (#6).
     visibility = str(raw.get("visibility") or "").strip().lower()
     author = str(raw.get("author") or "").strip()
-    is_public = visibility == "public"
+    is_public = visibility == "public" and not require_authorship
     if ctx.caller_provenance == "own":
         authorized = is_public or (bool(author) and author == ctx.actor)
         if (not authorized and author and author == ctx.owner_user_id
@@ -3295,6 +3296,15 @@ def _build_invoke_branch_version_node(
         child_def_id = (getattr(child, "branch_def_id", "") or "").strip()
         if not child_def_id or child_def_id != ver_def_id:
             raise CompilerError(_CHILD_UNAVAILABLE)
+        from tinyassets.branch_versions import branch_version_is_public
+
+        if not branch_version_is_public(_base, child_branch_version_id):
+            # An unmarked snapshot is private even when its live branch is public.
+            # Reuse the delegated-author gate, including owner-bound run checks.
+            _authorize_child_ref(
+                _base, ver_def_id, _ctx, parent_run_id=parent_run_id,
+                require_authorship=True,
+            )
 
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         # Lazy module-attribute lookups so unittest.mock.patch on

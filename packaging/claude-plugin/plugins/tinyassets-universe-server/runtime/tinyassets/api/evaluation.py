@@ -315,10 +315,15 @@ def _action_suggest_node_edit(kwargs: dict[str, Any]) -> str:
             "error": f"Node '{nid}' not found on branch '{bid}'.",
         })
 
-    # Recent runs on this branch.
+    from tinyassets.api.runs import _run_read_allowed
+    from tinyassets.runs import get_run
+
+    # A public shape does not publish its users' private run data.
     recent_runs = _list_runs(_base_path(), branch_def_id=bid, limit=5)
     recent_outputs: list[dict[str, Any]] = []
     for r in recent_runs:
+        if not _run_read_allowed(r):
+            continue
         snap = node_output_from_run(
             _base_path(), run_id=r["run_id"], node_id=nid,
         )
@@ -344,6 +349,8 @@ def _action_suggest_node_edit(kwargs: dict[str, Any]) -> str:
     judgments = _list_judgments(
         _base_path(), branch_def_id=bid, node_id=nid, limit=30,
     )
+    judgments = [j for j in judgments
+                 if (run := get_run(_base_path(), j["run_id"])) and _run_read_allowed(run)]
 
     body_kind = (
         "prompt_template" if node.prompt_template else (

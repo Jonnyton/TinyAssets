@@ -242,3 +242,88 @@ def test_public_node_history_does_not_expose_private_edit_audits(
     authenticate("alice")
     assert SECRET in json.dumps(
         _ext("list_node_versions", branch_def_id="node-history", node_id="s"))
+
+
+@pytest.mark.parametrize("reader", ["leaderboard", "canonical", "handoff"])
+def test_indirect_readers_hide_unpublished_versions(
+    branch_authority_env, reader,  # noqa: F811 - imported fixture
+):
+    from tinyassets.api.canonical_dispatch import _latest_published_version_id
+    from tinyassets.api.quality_leaderboard import _latest_active_version_id
+    from tinyassets.branch_versions import mark_versions_public, publish_branch_version
+    from tinyassets.handoffs.models import HandoffValidationError
+    from tinyassets.handoffs.service import list_declarations
+
+    base, authenticate = branch_authority_env
+    branch = _seed_branch(base, branch_def_id="indirect", author="alice", node_ids=("s",))
+    vid = publish_branch_version(base, branch, publisher="alice").branch_version_id
+    authenticate("bob")
+    if reader == "handoff":
+        with pytest.raises(HandoffValidationError, match="not found"):
+            list_declarations(actor_id="bob", base_path=base, branch_version_id=vid)
+        mark_versions_public(base, [vid])
+        assert list_declarations(actor_id="bob", base_path=base,
+                                 branch_version_id=vid)["branch_version_id"] == vid
+    else:
+        read = (_latest_active_version_id if reader == "leaderboard"
+                else _latest_published_version_id)
+        assert not read(base, branch_def_id="indirect")
+        mark_versions_public(base, [vid])
+        assert read(base, branch_def_id="indirect") == vid
+
+
+@pytest.mark.parametrize("actor,provenance", [("bob", "own"), ("alice", "public-foreign")])
+def test_nested_invoke_cannot_run_unpublished_history(
+    branch_authority_env, monkeypatch, actor, provenance,  # noqa: F811 - imported fixture
+):
+    from types import SimpleNamespace
+
+    from tinyassets.branch_versions import mark_versions_public, publish_branch_version
+    from tinyassets.branches import NodeDefinition
+    from tinyassets.graph_compiler import (
+        BranchExecutionContext,
+        CompilerError,
+        _build_invoke_branch_version_node,
+    )
+
+    base, _authenticate = branch_authority_env
+    branch = _seed_branch(base, branch_def_id="nested", author="alice", node_ids=("s",))
+    vid = publish_branch_version(base, branch, publisher="alice").branch_version_id
+    called = []
+
+    def launch(*args, **kwargs):
+        called.append(kwargs["branch_version_id"])
+        return SimpleNamespace(run_id="child-run")
+
+    monkeypatch.setattr("tinyassets.runs.execute_branch_version_async", launch)
+    node = NodeDefinition(node_id="invoke", display_name="Invoke",
+                          invoke_branch_version_spec={"branch_version_id": vid,
+                                                      "wait_mode": "async"})
+    invoke = _build_invoke_branch_version_node(
+        node, base_path=base, event_sink=None,
+        execution_context=BranchExecutionContext(actor=actor, universe_id="u",
+                                                 caller_provenance=provenance),
+    )
+    with pytest.raises(CompilerError, match="not available"):
+        invoke({})
+    assert called == []
+    mark_versions_public(base, [vid])
+    invoke({})
+    assert called == [vid]
+
+
+def test_suggest_edit_filters_private_run_context(
+    branch_authority_env, monkeypatch,  # noqa: F811 - imported fixture
+):
+    base, authenticate = branch_authority_env
+    _seed_branch(base, branch_def_id="suggest", author="alice", node_ids=("s",))
+    authenticate("bob")
+    monkeypatch.setattr("tinyassets.runs.list_runs", lambda *a, **k: [{"run_id": "private"}])
+    monkeypatch.setattr("tinyassets.runs.node_output_from_run",
+                        lambda *a, **k: {"detail": {"output": SECRET}})
+    monkeypatch.setattr("tinyassets.runs.list_judgments",
+                        lambda *a, **k: [{"run_id": "private", "text": SECRET}])
+    monkeypatch.setattr("tinyassets.runs.get_run", lambda *a, **k: {"run_id": "private"})
+    monkeypatch.setattr("tinyassets.api.runs._run_read_allowed", lambda row: False)
+    seen = _ext("suggest_node_edit", branch_def_id="suggest", node_id="s")
+    assert SECRET not in json.dumps(seen), seen

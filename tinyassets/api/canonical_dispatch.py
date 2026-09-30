@@ -756,7 +756,7 @@ def _latest_published_version_id(
         )
         return None
     for version in versions:
-        if getattr(version, "status", "active") == "active":
+        if version.public and getattr(version, "status", "active") == "active":
             bvid = version.branch_version_id or ""
             if bvid:
                 return bvid

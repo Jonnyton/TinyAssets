@@ -451,6 +451,17 @@ def branch_version_def_id(base_path: str | Path, branch_version_id: str) -> str:
     return (row["branch_def_id"] or "").strip()
 
 
+def branch_version_is_public(base_path: str | Path, branch_version_id: str) -> bool:
+    """Read only the publication mark, without loading private snapshot content."""
+    initialize_branch_versions_db(base_path)
+    with _connect(base_path) as conn:
+        row = conn.execute(
+            "SELECT public FROM branch_versions WHERE branch_version_id = ?",
+            (branch_version_id,),
+        ).fetchone()
+    return bool(row and row["public"])
+
+
 def list_branch_versions(
     base_path: str | Path,
     branch_def_id: str,
