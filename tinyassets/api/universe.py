@@ -182,6 +182,10 @@ def _extract_submit_request(
         {
             "request_type": kwargs.get("request_type", "") or None,
             "branch_id": kwargs.get("branch_id", "") or None,
+            "pickup_incentive": kwargs.get("pickup_incentive", "") or None,
+            "directed_daemon_id": kwargs.get("directed_daemon_id", "") or None,
+            "request_classification": result.get("request_classification"),
+            "loop_dispatch": result.get("loop_dispatch"),
             "idempotent_replay": result.get("idempotent_replay"),
         },
     )
