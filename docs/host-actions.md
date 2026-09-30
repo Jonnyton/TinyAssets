@@ -12,6 +12,39 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Expose your patch intake as a receiver, so new users can be offered it (2026-09-30)
+
+**Why:** PR #4121 seeds a consent request in every new user's rail — "Let your universe
+report problems to TinyAssets" — and approving it connects their universe to your intake.
+The platform has to be TOLD which intake to offer: it is your universe's node, owned by
+you like any user's, so there is no id in the code. It needs a `receiver_id`, and
+production has none yet (`/data/.runs.db` `graph_receivers`: 0 rows, read 2026-09-30).
+
+Your two intakes exist today only as inbound `/mcp/hooks/<token>` webhooks. Those are
+anonymous — whatever arrives is attached to nobody's universe, and the sender has to hold
+a secret. Native delivery carries the sender's identity and needs no secret at all, which
+is why the seeded request has nothing to paste.
+
+**Ask your universe, in the app or the chatbot** (branch `bc19127bde44` is the general
+patch-request one, with `what_they_tried` / `what_was_missing_or_broken` / `request_type`):
+
+> Expose the entry step of my patch-request workflow as a receiver any authenticated user
+> can send to, and list it so they can find it. Accept `what_they_tried`,
+> `what_was_missing_or_broken` and `request_type`. Tell me the receiver id.
+
+It will call `write_graph target="receiver" operation="create"` with `open_to_all: true`
+and `discoverable: true`. **Send the lead the `receiver_id` it returns** — that value goes
+into `TINYASSETS_PATCH_INTAKE_RECEIVER_ID` in the deploy env, and until it is set the
+seeded request does not appear for anyone.
+
+Optional: `TINYASSETS_PATCH_INTAKE_LABEL` changes what the platform calls your intake in
+that request. It defaults to `TinyAssets`.
+
+This blocks the Play closed test: the founder asked for patch requests to be live before
+testers arrive.
+
+---
+
 ## Store launch: four founder steps (2026-09-29)
 
 Both stores are one founder action away from moving. Apple asked for more information

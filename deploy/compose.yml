@@ -196,6 +196,16 @@ services:
       # deep hardening is post-live per AGENTS.md § Review sequencing).
       TINYASSETS_ONBOARDING_APP: "1"
       TINYASSETS_ALLOW_CLAUDE_SERVING: "1"
+      # TINYASSETS_PATCH_INTAKE_RECEIVER_ID is deliberately ABSENT from this
+      # block and belongs in /etc/tinyassets/env. It names the receiver of the
+      # TinyAssets patch intake, which is a node in an ordinary user's universe
+      # (the founder's today) -- so it changes when that node is re-exposed, and
+      # it must be settable without a code deploy. Declaring it here as
+      # `${...:-}` would be worse than useless: `environment` WINS over
+      # `env_file`, so an unset host variable would override the env file with
+      # empty and silently stop offering the intake to every new user.
+      # Unset = the platform offers no intake (see
+      # docs/reference/environment-variables.md).
     env_file:
       - /etc/tinyassets/env
       - /etc/tinyassets/agent-interchange.env
