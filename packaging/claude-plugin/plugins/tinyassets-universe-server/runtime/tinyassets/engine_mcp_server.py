@@ -2057,6 +2057,39 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     ``operation="disconnect"`` with ``{"link_id": ...}`` drops one sender's link
     from my own side. Neither retracts something already accepted.
 
+    **Telling TinyAssets about a gap: a patch request.** When I hit a bug, a
+    missing capability or an idea worth building, I report it instead of
+    stopping or working around it silently. It is a PATCH REQUEST, and it is an
+    ordinary delivery to an intake another user runs -- exactly the five steps
+    above. There is NO token, NO URL and NO credential anywhere in it, so I must
+    never raise a ``connect_http``/``connect`` ask for this; asking my person for
+    a bearer token to file a bug report is the wrong shape and the field would
+    be unanswerable.
+
+    ``read_graph target="pending_requests"`` carries a ``patch_intake`` block
+    when this platform offers one::
+
+        {"receiver_id": "...", "label": "TinyAssets",
+         "granted": true|false, "request_pending": true|false, "how": "..."}
+
+    * ``granted: true`` -- my person has approved it. Read the contract
+      (``read_graph target="receiver" query="<receiver_id>"``), point one of my
+      own step's outputs at it (``target="output_link"``,
+      ``operation="connect"``), and send (``run_graph
+      operation="deliver_output"``). A one-node code branch whose outputs are
+      what-I-tried / what-was-missing is enough. I file it MID-TURN and carry on;
+      I do not interrupt my person to ask permission I already have.
+    * ``granted: false`` -- I read ``request_pending`` and follow ``how``. If the
+      ask is waiting in their rail ("Let your universe report problems to ..."),
+      I point them at that one and wait. If they already declined or cleared it,
+      I respect that decision. I do not compose a second request for it.
+    * No ``patch_intake`` block at all -- this deployment offers no intake. I
+      say so plainly rather than inventing an address.
+
+    Delivery to that intake is refused with ``patch_intake_consent_required``
+    until the grant exists, and again if it is taken back. Nothing else of mine
+    rides along: the intake owner sees the fields I map and nothing more.
+
 """
 
 _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
@@ -2716,7 +2749,8 @@ def write_graph(
       ``"sink": "workspace"`` packet every one of them carries, the two ways to
       get a workspace, and a repository checkout.
     * ``delivering`` -- other users' universes sending into one of my steps, and
-      mine sending into theirs: receivers, connecting an output, who sent what.
+      mine sending into theirs: receivers, connecting an output, who sent what,
+      filing a patch request to TinyAssets (no token).
     * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
       office plan, any interface they ask for: I write its HTML/CSS/JS myself.
     * ``systems`` -- anything always on, several agents working together, or a
@@ -3943,16 +3977,19 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     for key, value in payload_obj.items():
         if not isinstance(value, str):
             return json.dumps({"error": f"payload '{key}' must be a string."})
-    from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
+    from tinyassets.api.source_channel import person_only_sinks
 
     channel_type = (payload_obj.get("channel_type") or "").strip()
     # `sink` is checked too because `_approve_sink` reads `fields["sink"]` FIRST
     # and only falls back to `channel_type` -- refusing one spelling and not the
     # other would be a refusal with a documented way around it.
-    if act == "approve" and EXTERNAL_WRITE_SINK_WORKSPACE in {
-        channel_type,
-        (payload_obj.get("sink") or "").strip(),
-    }:
+    #
+    # The SET, not one sink name: `patch_intake` was added as a second
+    # rail-answered sink and a single-name check let the agent self-grant it
+    # (gpt-6-astra refute round on PR #4121, P1). `_approve_sink` refuses the
+    # same set at the write itself; this is the readable message.
+    named = {channel_type, (payload_obj.get("sink") or "").strip()}
+    if act == "approve" and named & person_only_sinks():
         # The `workspace` sink was admitted to the served build surface BECAUSE
         # its consents are typed per (op, connection, repo) and answered by the
         # owner on the request rail. This verb writes into the same
@@ -3967,10 +4004,11 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
         # person-only consent; the agent still cannot self-grant workspace access.
         return json.dumps({
             "error": (
-                "workspace consent cannot be self-approved: it is typed per "
-                "(operation, connection, repository) and is answered by the "
-                "universe's owner on the request rail. Ask for it there; this "
-                "verb approves outbound channel sinks only."
+                ", ".join(sorted(named & person_only_sinks()))
+                + " consent cannot be self-approved: it is answered by the "
+                "universe's owner on the request rail, where they read exactly "
+                "what it allows. Ask for it there; this verb approves outbound "
+                "channel sinks only."
             ),
         })
     if act == "approve" and channel_type == "source_code":
