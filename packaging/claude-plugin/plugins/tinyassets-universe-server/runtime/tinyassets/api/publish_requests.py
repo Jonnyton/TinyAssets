@@ -327,7 +327,11 @@ def _flip_if_unchanged(snap: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
 
 
 def _unflip(prior: dict[str, tuple[Any, Any]]) -> None:
-    """Undo this request's flip only: each branch goes back to what it was."""
+    """Undo this request's flip only: each branch goes back to what it was.
+
+    Only while the row still shows the flip. If the owner made the branch
+    private meanwhile, that later choice stands; restoring an earlier "public"
+    over it would re-expose what they just withdrew."""
     from tinyassets.api.helpers import _base_path
     from tinyassets.daemon_server import _connect
 
@@ -336,7 +340,8 @@ def _unflip(prior: dict[str, tuple[Any, Any]]) -> None:
         for bid, (visibility, published) in prior.items():
             conn.execute(
                 "UPDATE branch_definitions SET visibility = ?, published = ? "
-                "WHERE branch_def_id = ?", (visibility, published, bid),
+                "WHERE branch_def_id = ? AND visibility = 'public'",
+                (visibility, published, bid),
             )
 
 

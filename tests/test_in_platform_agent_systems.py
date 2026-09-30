@@ -722,6 +722,29 @@ def test_a_failed_publish_does_not_withdraw_an_earlier_publication(
             assert "not found" in _bob_reads_version(version_id), version_id
 
 
+def test_a_failed_publish_does_not_undo_a_privacy_change_made_meanwhile(
+    home: Path, monkeypatch,
+) -> None:
+    """Astra round 3: compensation restored the pre-flip "public" even after the
+    owner made the branch private while the bundle write was pending."""
+    import tinyassets.api.custom_agents as api_custom_agents
+    from tinyassets.daemon_server import update_branch_definition
+
+    _library(home)
+    update_branch_definition(home, branch_def_id=SCOUT,
+                             updates={"visibility": "public", "published": True})
+    ask = _ask_publish(home)
+
+    def owner_withdraws_then_storage_fails(**_kw):
+        update_branch_definition(home, branch_def_id=SCOUT, updates={"visibility": "private"})
+        return {"error": "agent_storage_unavailable"}
+
+    monkeypatch.setattr(api_custom_agents, "custom_agents", owner_withdraws_then_storage_fails)
+    out = _answer(ask["request_id"])
+    assert out.get("error") == "publish_refused", out
+    assert _visibility(home, SCOUT) == "private", "the owner's later withdrawal stands"
+
+
 def test_only_the_portable_ui_fields_are_published(home: Path) -> None:
     """Codex refute 2026-09-29 P1: a stored component carrying `inputs` rode
     into the public definition. Only the seven fields the app renders go."""
