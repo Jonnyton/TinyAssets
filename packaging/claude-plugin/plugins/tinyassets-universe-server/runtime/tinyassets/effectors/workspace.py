@@ -964,16 +964,24 @@ def _checkout(
         home = staging / "populate-home"
         home.mkdir(parents=True, exist_ok=True)
         checkout_ref = f"tiny/{_universe_short(universe_id)}/checkout"
+        from tinyassets import workspace_git as _workspace_git
+        from tinyassets import workspace_staging as _workspace_staging
+
         try:
-            populate_workspace_from_bundle(
-                bundle,
-                repo_dir,
-                str(answer.get("ref_name") or "refs/tiny/export"),
-                checkout_ref,
-                home_dir=home,
-                path=_git_path(),
-                dest_fd=_descriptor_or_none(repo_fd),
-            )
+            # The git that populates reads staging's bundle and uses its HOME,
+            # in its own session: it inherits this process's in-use share, so
+            # it keeps the tree marked even if this process is killed first
+            # (gpt-6-astra, PR #4143 round 3).
+            with _workspace_git.inheriting(_workspace_staging.in_use_fd(staging)):
+                populate_workspace_from_bundle(
+                    bundle,
+                    repo_dir,
+                    str(answer.get("ref_name") or "refs/tiny/export"),
+                    checkout_ref,
+                    home_dir=home,
+                    path=_git_path(),
+                    dest_fd=_descriptor_or_none(repo_fd),
+                )
         except _Refused:
             raise
         except Exception as exc:
@@ -985,15 +993,13 @@ def _checkout(
         # is deleted BEFORE the capability is published, and the deletion is
         # CHECKED: a workspace published while staging survives is a workspace
         # published next to the material it was supposed to replace.
-        try:
-            shutil.rmtree(staging)
-            if staging.exists():
-                raise OSError(f"{staging} still exists after rmtree")
-        except OSError as exc:
+        from tinyassets import workspace_staging
+
+        if not workspace_staging.remove(staging) or os.path.lexists(staging):
             raise _Refused(
                 "workspace_checkout_failed",
-                f"staging could not be removed, so nothing was published: {exc}",
-            ) from None
+                "staging could not be removed, so nothing was published",
+            )
 
         provision_evidence = {}
         if packet.get("provision") is not None:
@@ -1696,8 +1702,6 @@ def _pool_detail(exc: Exception) -> str:
 
 
 def _git_path() -> str:
-    import shutil
-
     found = shutil.which("git")
     if not found:
         raise _Refused("workspace_checkout_failed", "git is not available on this host")

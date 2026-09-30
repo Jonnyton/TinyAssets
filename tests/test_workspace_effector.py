@@ -3006,8 +3006,8 @@ def test_cancellation_after_install_before_publication_still_owes_wipe(
 
 
 # --------------------------------------------------------------------------- #
-# Staging is removed on EVERY exit (concern 2026-09-30-workspace-staging-leaks-
-# on-failed-checkouts: 334 leaked credentialed staging trees on production).
+# Staging is removed on EVERY exit (production held 334 leaked credentialed
+# staging trees until the 2026-09-30 boot sweep removed them).
 # --------------------------------------------------------------------------- #
 
 
