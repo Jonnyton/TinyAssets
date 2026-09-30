@@ -40,3 +40,12 @@ A published definition's branch-refs SHALL be copyable only through the existing
 - **WHEN** another user's universe remixes each branch-ref, saves the UI, and recreates the automations from their specs
 - **THEN** every copy is private to that user and runs on that user's compute
 - **AND** the UI's reads return that user's automations and runs
+
+#### Scenario: Publishing preserves private history
+- **WHEN** the owner confirms a workflow with existing private edit history
+- **THEN** only the confirmed version is marked public, and other readers cannot read unmarked versions or private node edit audits through history or lineage
+- **AND** versions minted by a refused confirmation remain unreadable even if the branch later becomes public
+
+#### Scenario: Public metadata changes after consent
+- **WHEN** stats or version changes between the ask and acceptance
+- **THEN** publication is refused and the request stays pending; only visibility, published and updated_at are excluded from the digest

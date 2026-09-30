@@ -466,7 +466,7 @@ def test_descendant_projection_includes_public_and_owner_private_only(
         author="bob",
         node_ids=("root_node",),
     )
-    parent_version = _publish(base, parent, publisher="bob")
+    parent_version = _publish(base, parent, publisher="bob", public=True)
     _seed_branch(
         base,
         branch_def_id="public-descendant",

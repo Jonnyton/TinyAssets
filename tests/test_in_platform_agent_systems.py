@@ -669,6 +669,15 @@ def test_a_bundle_that_fails_to_publish_leaves_nothing_public(home: Path, monkey
     assert out.get("error") == "publish_refused", out
     assert "nothing was left public" in out["detail"], out
     assert _visibility(home, SCOUT) == "private" and _visibility(home, SCRIBE) == "private"
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.daemon_server import update_branch_definition
+
+    for bid in (SCOUT, SCRIBE):
+        versions = list_branch_versions(home, bid)
+        assert versions
+        update_branch_definition(home, branch_def_id=bid, updates={"visibility": "public"})
+        for version in versions:
+            assert "not found" in _bob_reads_version(version.branch_version_id)
 
 
 def test_only_the_portable_ui_fields_are_published(home: Path) -> None:
