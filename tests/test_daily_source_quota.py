@@ -64,6 +64,26 @@ def test_request_headers_need_declared_daily_semantics():
     assert signal.retry_after_s == 7384.5
 
 
+def test_installed_shapes_can_describe_new_error_fields_and_headers(monkeypatch):
+    from tinyassets.providers import daily_quota
+
+    monkeypatch.setattr(daily_quota, "_SHAPES", {
+        **daily_quota._SHAPES,
+        "fact_paths": [["limits", "*", "period"]],
+        "nested_headers_path": ["response", "headers"],
+        "daily_windows": [{"remaining": "daily-left", "reset": "daily-reset"}],
+    })
+    body = {"error": {"limits": [{"period": "daily"}], "response": {
+        "headers": {"daily-left": "0", "daily-reset": "2h"},
+    }}}
+    signal = daily_quota_signal(429, {}, json.dumps(body), now=NOW)
+    assert (signal.scope, signal.failure_class, signal.retry_after_s) == (
+        "account", DAILY_QUOTA, 7200,
+    )
+    # Unconfigured nested fields must not turn an ambiguous refusal into daily evidence.
+    assert daily_quota_signal(429, {}, '{"error":{"message":"daily"}}') is None
+
+
 def test_documented_midnight_reset_ignores_short_generic_retry_after():
     signal = daily_quota_signal(429, {"retry-after": "20"},
         '{"error":{"message":"Requests per day quota exceeded"}}', now=NOW,

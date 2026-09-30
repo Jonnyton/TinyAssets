@@ -488,7 +488,10 @@ class ProviderRouter:
                 "keeps this source", provider_name, seconds,
             )
             return False
-        self._quota.cooldown(provider_name, seconds, daily_detail=daily_detail)
+        if daily_detail:
+            self._quota.cooldown(provider_name, seconds, daily_detail=daily_detail)
+        else:
+            self._quota.cooldown(provider_name, seconds)
         return True
 
     # ------------------------------------------------------------------

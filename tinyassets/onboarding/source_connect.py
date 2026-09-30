@@ -40,7 +40,7 @@ def connect_source(*, base, uid, owner, preset, key):
         require_founder_home(base, uid, owner)
         applied = apply_connection_uses(
             base=base, uid=uid, actor=owner, grant_id=deposit["grant_id"],
-            uses={"model": {"wire": "openai_chat", "billing": "free", "models": models}},
+            uses={"model": {"wire": preset["wire"], "billing": "free", "models": models}},
             constant_headers={}, owner_confirmed=True,
         )
         if applied.get("error") or not applied.get("provider"):

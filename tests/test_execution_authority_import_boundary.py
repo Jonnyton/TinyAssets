@@ -271,6 +271,9 @@ def test_database_check_use_swap_fails_before_authority_initialization(
             mode="test",
             state_dir=tmp_path / "state",
         )
+    assert not (tmp_path / "state" / ".d0-authority-initialized").exists()
+    with original_connect(tmp_path / "state" / "execution-authority.sqlite3") as conn:
+        assert conn.execute("SELECT name FROM sqlite_master").fetchall() == []
 
 
 def test_built_plugin_and_wheel_package_set_exclude_fake_authority() -> None:

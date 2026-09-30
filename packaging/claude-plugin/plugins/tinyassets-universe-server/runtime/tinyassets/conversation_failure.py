@@ -49,7 +49,7 @@ _CLASS_WORDS = {
     ),
     "provider_rate_limited": (
         "your model provider is rate-limiting it right now; try another connected "
-        "source or check the provider's limits"
+        "source or check the provider's limits and send again when capacity is available"
     ),
     "provider_daily_quota": (
         "this model source has reached its daily quota; connect another free "

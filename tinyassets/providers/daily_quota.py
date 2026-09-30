@@ -4,12 +4,14 @@ import json
 import math
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tinyassets.providers.model_capacity import CapacitySignal
 
 DAILY_QUOTA = "provider_daily_quota"
-_DAY = re.compile(r"per[ _-]?day|daily|\b[rt]pd\b", re.I)
+_SHAPES = json.loads(Path(__file__).with_name("daily_quota_shapes.json").read_text("utf-8"))
+_DAY = re.compile(_SHAPES["daily_fact_pattern"], re.I)
 _DURATION = re.compile(r"(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?\Z")
 
 
@@ -24,6 +26,17 @@ def _seconds(value):
             return None
         number = sum(float(v or 0) * scale for v, scale in zip(match.groups(), (3600, 60, 1)))
     return number if math.isfinite(number) and 0 < number <= 86400 else None
+
+
+def _path_values(value, path):
+    """Read installed wire paths, bounding every repeated error-detail array."""
+    if not path:
+        yield value
+    elif path[0] == "*" and isinstance(value, list):
+        for item in value[:32]:
+            yield from _path_values(item, path[1:])
+    elif isinstance(value, dict) and path[0] in value:
+        yield from _path_values(value[path[0]], path[1:])
 
 
 def daily_quota_signal(status, headers, body, *, now=None, daily_request_headers=False,
@@ -50,44 +63,28 @@ def daily_quota_signal(status, headers, body, *, now=None, daily_request_headers
     if not isinstance(error, dict):
         error = {}
     # Scan only error facts, not an echoed request or an arbitrary nested document.
-    facts = [error.get("message", ""), error.get("code", "")]
-    details = error.get("details", [])
-    if isinstance(details, list):
-        for detail in details[:32]:
-            if isinstance(detail, dict):
-                violations = detail.get("violations")
-                if not isinstance(violations, list):
-                    continue
-                for violation in violations[:32]:
-                    if isinstance(violation, dict):
-                        facts.extend(violation.get(k, "") for k in ("quotaId", "quotaMetric"))
+    facts = (fact for path in _SHAPES["fact_paths"] for fact in _path_values(error, path))
     daily = any(isinstance(f, str) and _DAY.search(f) for f in facts)
     values = {}
-    metadata = error.get("metadata")
-    nested = metadata.get("headers") if isinstance(metadata, dict) else None
+    nested = next(_path_values(error, _SHAPES["nested_headers_path"]), None)
     for source in (nested, headers):
         if isinstance(source, dict):
             values.update({k.lower(): v for k, v in source.items()
                            if isinstance(k, str) and isinstance(v, str)})
     delays = []
-    if daily_request_headers and values.get("x-ratelimit-remaining-requests") == "0":
-        daily = True
-    for unit in ("requests", "tokens"):
-        for suffix in ("-day", "-per-day"):
-            if values.get(f"x-ratelimit-remaining-{unit}{suffix}") == "0":
-                daily = True
-                delay = _seconds(values.get(f"x-ratelimit-reset-{unit}{suffix}"))
-                if delay is not None:
-                    delays.append(delay)
-    # A reset-requests duration alone doesn't prove its window is daily. Groq's
-    # error names RPD; other OpenAI-compatible APIs use this header for RPM.
+    windows = list(_SHAPES["daily_windows"])
+    if daily_request_headers:
+        windows.append(_SHAPES["declared_daily_window"])
+    for window in windows:
+        if values.get(window["remaining"]) == "0":
+            daily = True
+            delay = _seconds(values.get(window["reset"]))
+            if delay is not None:
+                delays.append(delay)
+    # A reset duration alone doesn't prove that its window is daily.
     if not daily:
         return None
-    if daily_request_headers and values.get("x-ratelimit-remaining-requests") == "0":
-        delay = _seconds(values.get("x-ratelimit-reset-requests"))
-        if delay is not None:
-            delays.append(delay)
-    epoch = values.get("x-ratelimit-reset", "")
+    epoch = values.get(_SHAPES["epoch_reset_header"], "")
     if epoch.isascii() and epoch.isdecimal() and len(epoch) in (10, 13):
         reset = int(epoch) / (1000 if len(epoch) == 13 else 1)
         seconds = reset - (now or datetime.now(UTC)).timestamp()

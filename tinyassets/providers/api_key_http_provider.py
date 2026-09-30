@@ -423,13 +423,17 @@ class ApiKeyHttpProvider(BaseProvider):
             detail = None
             if capacity is not None:
                 detail = daily_detail(capacity, billing_url=billing_url_for_host(host))
-            elif status == 402:
-                from tinyassets.providers.model_capacity import CapacitySignal
-
-                capacity = CapacitySignal("account", "provider_credit_exhausted")
-                detail = "Provider credit exhausted. Add credit: " + billing_url_for_host(host)
             elif contract.capacity_decoder is not None:
                 capacity = contract.capacity_decoder(status, result.get("headers"))
+            if status == 402:
+                from tinyassets.providers.model_capacity import CapacitySignal, retry_after_seconds
+
+                if capacity is None:
+                    capacity = CapacitySignal(
+                        "account", "provider_credit_exhausted",
+                        retry_after_seconds(result.get("headers")),
+                    )
+                detail = "Provider credit exhausted. Add credit: " + billing_url_for_host(host)
             if capacity is not None:
                 error = SelectedModelCapacityError(
                     capacity, detail=detail or self._capacity_detail(status, result)

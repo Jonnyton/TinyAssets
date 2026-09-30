@@ -292,11 +292,15 @@ class TestAuthorityRoot:
         )
         evidence: ExecutionEvidenceStore | None = None
         try:
-            evidence = ExecutionEvidenceStore(
-                database_path,
-                initialize=initialize,
-            )
-            _require_open_file_unchanged(database_path, database_descriptor)
+            try:
+                evidence = ExecutionEvidenceStore(
+                    database_path,
+                    initialize=initialize,
+                )
+            finally:
+                # The store can reject a swap before returning. Still enforce
+                # this root's pinned-file boundary and configuration error.
+                _require_open_file_unchanged(database_path, database_descriptor)
             if initialize:
                 marker_descriptor = _open_plain_file(
                     marker_path,

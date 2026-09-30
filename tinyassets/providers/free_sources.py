@@ -5,7 +5,9 @@ Models are an agent-capable allowlist intersected with the owner's /models
 response at connection time, not an invented catalogue or a claim of access.
 """
 
+import json
 from copy import deepcopy
+from pathlib import Path
 from urllib.parse import urlsplit
 
 # Endpoint, keys, free eligibility and model docs:
@@ -21,46 +23,7 @@ from urllib.parse import urlsplit
 # https://docs.mistral.ai/getting-started/quickstarts/studio/activate-and-generate-api-key
 # https://docs.mistral.ai/api/endpoint/models
 # https://docs.mistral.ai/admin/billing-usage/usage-limits
-_SOURCES = (
-    {
-        "id": "google_ai_studio", "name": "Google AI Studio",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "help_url": "https://aistudio.google.com/apikey",
-        "billing_url": "https://aistudio.google.com/billing",
-        "offer": ("Free tier on eligible Gemini models; project and model limits apply. "
-                  "Daily requests reset at midnight Pacific."),
-        "models": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite"],
-        "daily_reset_timezone": "America/Los_Angeles",
-    },
-    {
-        "id": "groq", "name": "Groq",
-        "base_url": "https://api.groq.com/openai/v1",
-        "help_url": "https://console.groq.com/keys",
-        "billing_url": "https://console.groq.com/settings/billing",
-        "offer": ("Free plan, no credit card required. "
-                  "Model-specific daily request and token limits apply."),
-        "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"],
-        "daily_request_headers": True,
-    },
-    {
-        "id": "cerebras", "name": "Cerebras",
-        "base_url": "https://api.cerebras.ai/v1",
-        "help_url": "https://cloud.cerebras.ai/platform/api-keys",
-        "billing_url": "https://cloud.cerebras.ai",
-        "offer": ("$5 trial credit expires after 30 days; a verified payment method is required. "
-                  "No recurring free tier. Buy credit there only if you choose."),
-        "models": ["gpt-oss-120b", "qwen-3.8-27b"],
-    },
-    {
-        "id": "mistral", "name": "Mistral",
-        "base_url": "https://api.mistral.ai/v1",
-        "help_url": "https://console.mistral.ai/api-keys",
-        "billing_url": "https://admin.mistral.ai/organization/billing",
-        "offer": ("Free mode includes limited monthly usage, with no credit card required. "
-                  "Current model limits appear in your account."),
-        "models": ["mistral-small-latest"],
-    },
-)
+_SOURCES = json.loads(Path(__file__).with_name("free_source_presets.json").read_text("utf-8"))
 
 
 def source_cards():
@@ -77,9 +40,6 @@ def source_for_host(host):
 
 def billing_url_for_host(host):
     # Existing hosted acquisition presets also supply recovery links as data.
-    import json
-    from pathlib import Path
-
     source = source_for_host(host)
     if source:
         return source["billing_url"]
