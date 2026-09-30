@@ -11,6 +11,7 @@ import pytest
 
 from tinyassets import runs
 from tinyassets.principals import named_principal
+from tinyassets.process_liveness import owner_token
 
 
 def _legacy_create_run(
@@ -107,10 +108,11 @@ def test_normal_run_record_matches_pre_extraction_behavior(tmp_path, monkeypatch
             )
     # Authentication does not activate resource lifecycle. With no managed
     # startup publisher every field matches the original executable contract,
-    # plus the one column added since: who caused the run, which for a
-    # principal actor is that actor.
+    # except the explicitly asserted additions: cause and process ownership.
     assert records[1].pop("cause_principal") == kwargs["actor"]
     assert records[0].pop("cause_principal") == ""
+    assert records[1].pop("owner_token") == owner_token(tmp_path / "candidate")
+    assert records[0].pop("owner_token") is None
     assert records[0] == records[1]
 
 

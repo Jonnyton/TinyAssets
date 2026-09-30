@@ -272,8 +272,31 @@ def test_database_check_use_swap_fails_before_authority_initialization(
             state_dir=tmp_path / "state",
         )
     assert not (tmp_path / "state" / ".d0-authority-initialized").exists()
-    with original_connect(tmp_path / "state" / "execution-authority.sqlite3") as conn:
-        assert conn.execute("SELECT name FROM sqlite_master").fetchall() == []
+    assert (tmp_path / "state" / "execution-authority.sqlite3").stat().st_size == 0
+
+
+def test_database_schema_failure_with_unchanged_path_is_preserved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.support.execution_authority as fake_module
+    from tinyassets.execution_authority.evidence_store import EvidenceSchemaError
+
+    _, root_type, sentinel = _fake_api()
+    failure = EvidenceSchemaError("evidence schema is corrupt")
+
+    def reject_schema(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(fake_module, "ExecutionEvidenceStore", reject_schema)
+    with pytest.raises(EvidenceSchemaError) as caught:
+        root_type.create(
+            sentinel=sentinel(),
+            mode="test",
+            state_dir=tmp_path / "state",
+        )
+    assert caught.value is failure
+    assert not (tmp_path / "state" / ".d0-authority-initialized").exists()
 
 
 def test_built_plugin_and_wheel_package_set_exclude_fake_authority() -> None:

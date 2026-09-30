@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from tinyassets.execution_authority.blob_proof import BlobProofStore, BlobRef
 from tinyassets.execution_authority.evidence_store import (
+    EvidenceSchemaError,
     ExecutionEvidenceStore,
     LeaseAllocation,
     TerminalReceipt,
@@ -297,10 +298,13 @@ class TestAuthorityRoot:
                     database_path,
                     initialize=initialize,
                 )
-            finally:
-                # The store can reject a swap before returning. Still enforce
-                # this root's pinned-file boundary and configuration error.
+            except EvidenceSchemaError:
+                # The store can reject a swapped path before construction
+                # returns. Keep the composition root's identity-error contract
+                # on that path too, without masking an actual schema failure.
                 _require_open_file_unchanged(database_path, database_descriptor)
+                raise
+            _require_open_file_unchanged(database_path, database_descriptor)
             if initialize:
                 marker_descriptor = _open_plain_file(
                     marker_path,
