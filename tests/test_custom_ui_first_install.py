@@ -357,7 +357,8 @@ def test_an_unknown_operation_is_refused_by_name(homes) -> None:
         refused = json.loads(write_graph(target="app_ui", operation="delete",
                                          graph_id="u-alice", payload_json="{}"))
     assert refused["error"] == "unknown_app_ui_operation"
-    assert refused["allowed_operations"] == ["save"]
+    assert refused["allowed_operations"] == [
+        "save", "activate", "use_default", "add_ui", "replace_ui", "edit_ui", "remove_ui"]
 
 
 def test_the_route_the_handbook_names_works_on_the_engine_surface(tmp_path, monkeypatch) -> None:
@@ -380,6 +381,10 @@ def test_the_route_the_handbook_names_works_on_the_engine_surface(tmp_path, monk
         payload_json=json.dumps({"ui_library": [_bundle()]}),
     ))
     assert saved["status"] == "saved", saved
-    assert json.loads(engine.read_graph(target="app_ui"))["app_ui"] == saved["app_ui"]
+    # The engine reads an index, never the whole library (a model's result is
+    # bounded); the full row is the connector's no-query read.
+    index = json.loads(engine.read_graph(target="app_ui"))["app_ui"]
+    assert index["revision"] == saved["app_ui"]["revision"]
+    assert [u["ui_id"] for u in index["uis"]] == ["office"]
     rows = _rows(tmp_path)
     assert [(r["owner_user_id"], r["universe_id"]) for r in rows] == [(ALICE, HOME)]

@@ -3803,6 +3803,7 @@
       if(!stillHere()) return;
       renderConverse(answer);
       delivered=true;setStatusLine("");
+      if(typeof AppUI!=="undefined") AppUI.turnSettled();
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(!stillHere()) return;

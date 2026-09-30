@@ -55,6 +55,13 @@ let me={principal_id:PRINCIPAL,universe_id:HOME,setup:'connected'};
 let binding=null, definitions={}, calls=[], allCalls=[], sends=[], conversation=[];
 let appUi=null, raceNext=false;
 const clone=v=>JSON.parse(JSON.stringify(v));
+// What the store hands back: canonical JSON (custom_agents._canonical_json,
+// sort_keys=True) parsed again, so every object comes back with SORTED keys.
+// A double that echoed the client's own key order hid a live bug: the app
+// compared its save by JSON.stringify and called its own saved choice a
+// mismatch (founder, 2026-10-01: "UI choice save did not match").
+const canonical=v=>Array.isArray(v)?v.map(canonical):(v&&typeof v==='object')?
+ Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 const stored=(library,selection)=>({universe_id:HOME,ui_library:library||[],
  ui_selection:selection||null,revision:1,updated_at:1});
 const settle=async(n)=>{for(let i=0;i<(n||10);i++)await new Promise(r=>setImmediate(r));};
@@ -91,7 +98,7 @@ const MCP={
     return {error:'app_ui_conflict',detail:'app UI changed: expected revision '+args.expected_revision+', current is '+current};
    const changes=JSON.parse(args.payload_json);
    for(const key of Object.keys(changes)) assert(['ui_library','ui_selection'].includes(key),key);
-   appUi={...(appUi||stored([],null)),...clone(changes),revision:current+1,updated_at:2};
+   appUi={...(appUi||stored([],null)),...canonical(changes),revision:current+1,updated_at:2};
    return {status:'saved',app_ui:clone(appUi)};
   }
   if(tool==='read_graph'&&args.target==='agent_bindings')return {bindings:binding?[binding]:[]};

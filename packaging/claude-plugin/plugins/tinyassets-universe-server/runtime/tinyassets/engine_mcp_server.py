@@ -750,6 +750,18 @@ def read_graph(
             except Exception:
                 return json.dumps({"error": "conversation_read_failed"})
             return _untrusted("conversation", json.dumps(payload, ensure_ascii=False))
+        if normalized == "app_ui":
+            # Never the whole library here: a model reads the index (no bodies)
+            # and then ONE UI or one field chunk, so a library of any size never
+            # meets the result ceiling (live 2026-09-30: a cut read stopped a
+            # universe switching its founder's screen).
+            from tinyassets.api.app_ui import INDEX, read_app_ui
+
+            return json.dumps(read_app_ui(
+                universe_id=_GRAPH_ID, ui_id=(query or "").strip() or INDEX,
+                field_name=field_name, output_offset=output_offset,
+                output_max_chars=output_max_chars,
+            ))
         if normalized == "access":
             from tinyassets.api.agent_access import read_access
 
@@ -2046,20 +2058,37 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
 
     **Where it lives.** One private row per person and universe, holding their
     UI library and which one they are using. Nothing is published by it, and
-    there is no setup step: the first save creates it. Read it first:
+    there is no setup step: the first change creates it. I never read or write
+    the whole library -- it can be far bigger than one tool result. I work ONE
+    UI at a time:
 
-        read_graph target="app_ui"   -> {"app_ui": {"ui_library": [...],
-                                          "ui_selection": ..., "revision": N}}
+        read_graph target="app_ui"                  -> {"app_ui": {"uis": [{ui_id, name,
+                                   etag, chars}], "ui_selection": ..., "revision": N}}
+        read_graph target="app_ui" query="<ui_id>"  -> {"ui": {...}, "etag": "..."}
+        read_graph target="app_ui" query="<ui_id>" field_name="script"
+                   output_offset=0                  -> one chunk + next_offset
 
-    then send back the whole edited list with the revision I read (0 when there
-    is no row yet):
+    and change it with one call, ``payload_json`` naming only that UI:
 
-        write_graph target="app_ui" operation="save" expected_revision=N
-          payload_json={"ui_library": [ <one or more UI components> ]}
+        operation="activate"    {"ui_id": "..."}     # switch the person's screen to it
+        operation="use_default" {}                   # back to ordinary chat
+        operation="add_ui"      {"component": {...}} # a new UI (its ui_id is new)
+        operation="replace_ui"  {"component": {...}} # the whole UI with that ui_id
+        operation="edit_ui"     {"ui_id": "...",
+            "set": {"style": "..."},                 # whole fields, and/or
+            "edits": [{"field": "script", "old": "<exact text, once>",
+                       "new": "..."}]}               # small exact replacements
+        operation="remove_ui"   {"ui_id": "..."}     # (its choice falls back to chat)
 
-    A field I leave out keeps its stored value, so saving a library never
-    clears the choice. If someone else saved in between, the save is refused as
-    a conflict and nothing is overwritten; I read again and redo the edit.
+    all as ``write_graph target="app_ui"``. No revision is needed: each applies
+    to what is stored now and never overwrites anything else. Adding
+    ``"expected_etag"`` (from my read) to replace/edit/remove refuses the change
+    if that UI changed since I read it. An ``edits`` entry whose old text is not
+    there exactly once is refused, so I quote enough of it. When the person
+    asks to try, open or switch to a UI, I ``activate`` it: the app shows it
+    after my reply. ``write_graph target="app_ui" operation="save"`` with
+    ``expected_revision`` and a whole ``ui_library`` rewrites everything; I do
+    not need it.
 
     **The UI component.** Exactly these seven fields, no others, or the app refuses
     it and says which field it did not expect:
@@ -2120,18 +2149,16 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     rather than quietly redirected, so a room-per-agent screen should call
     ``listAgents()`` and act on ``selected`` instead of assuming.
 
-    **Switching to it.** The person uses "Switch UI" in the app, and their choice is
-    remembered. I can preselect one by saving
-    ``"ui_selection": {"version": 1, "state": "active", "ui_id": "<mine>"}`` to the
-    same row; ``{"version": 1, "state": "default"}`` means ordinary chat.
+    **Switching to it.** I switch it with ``activate`` / ``use_default`` above; the
+    person can also use "Switch UI" in the app, and the choice is remembered.
 
     **Sharing one.** Publishing is the person's own deliberate act: I raise a
     ``publish`` ask (chapter ``systems``) and they confirm it in their app; a
     UI I only install stays private. (The connector's ``write_graph
     target="agent" operation="publish"`` is the person's own direct route, not a
     call I have.) To use someone else's, I read it with
-    ``read_commons_shape agent_definition_id=...`` and save its component into
-    this person's ``ui_library``; that copy is theirs, the same thing the
+    ``read_commons_shape agent_definition_id=...`` and ``add_ui`` its component
+    into this person's library; that copy is theirs, the same thing the
     connector's ``operation="remix"`` does. A copy always runs as the person who
     installed it, in THEIR universe -- it can never reach back to whoever wrote it.
 
@@ -2325,8 +2352,8 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       ``tinyassets.automation-spec.v1`` per trigger (never its inputs).
     * **Installing someone else's**: ``browse_commons kind="agents"``, then
       ``read_commons_shape agent_definition_id=...``; ``remix_shape`` each
-      branch-ref's ``published_version_id``; save the ``ui`` component into this
-      person's ``app_ui``; create an automation per automation-spec against the
+      branch-ref's ``published_version_id``; ``add_ui`` the ``ui`` component into
+      this person's ``app_ui``; create an automation per automation-spec against the
       copy its ``workflow`` names (an ``event_filter.branch_def_id`` that names a
       workflow key means that copy's id). Every copy is private, runs on this
       person's own compute, and never reaches the author's universe.
@@ -3151,20 +3178,32 @@ def write_graph(
         finally:
             _current_identity.reset(token)
     if t == "app_ui":
-        # The founder's own UI library + choice, compare-and-set. The row is keyed
-        # by the bound founder identity, so there is no universe or person to name.
-        if (operation or "save").strip().lower() != "save":
-            return json.dumps({"error": "app_ui supports operation='save' only"})
+        # The founder's own UI library + choice. The row is keyed by the bound
+        # founder identity, so there is no universe or person to name. ``save``
+        # is the whole-row compare-and-set; every other operation changes ONE UI
+        # or only the choice and needs no revision (custom_agents.change_app_ui_entry).
+        op = (operation or "save").strip().lower()
+        from tinyassets.custom_agents import APP_UI_ENTRY_OPERATIONS
+
+        if op != "save" and op not in APP_UI_ENTRY_OPERATIONS:
+            return json.dumps({
+                "error": "unknown_app_ui_operation", "operation": operation,
+                "allowed_operations": ["save", *APP_UI_ENTRY_OPERATIONS],
+            })
         ticket, refused = _admission_parts(
             _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
         )
         if ticket is None:
             return _engine_refusal("app_ui", refused)
-        from tinyassets.api.app_ui import write_app_ui
+        from tinyassets.api.app_ui import change_app_ui, write_app_ui
         from tinyassets.auth.middleware import _current_identity
 
         token = _bind_founder_identity(("write",))
         try:
+            if op != "save":
+                return json.dumps(change_app_ui(
+                    universe_id=_GRAPH_ID, operation=op, payload=payload_json,
+                ))
             return json.dumps(write_app_ui(
                 universe_id=_GRAPH_ID, payload=payload_json,
                 expected_revision=expected_revision,
@@ -3800,14 +3839,13 @@ _BRAIN_WRITE_CAPABILITIES = ("read", "list", "write")
 
 
 @mcp.tool
-def read_brain() -> str:
+def read_brain(section: str = "") -> str:
     """Read YOUR OWN brain — the durable files that ARE your system prompt every
     turn: who you are, who your founder is, where you came from, and your body /
     how you work, plus your learned self-model.
 
-    This is your project folder / harness. Whatever you save here with
-    ``write_brain`` is what you wake up already knowing next turn — read it first
-    so an edit builds on what's there instead of blanking it.
+    Your harness. What ``write_brain`` saves you wake up knowing — read first so
+    an edit builds on it, not blanks it. ``section`` (e.g. "body") reads one.
     """
     import json
 
@@ -3833,29 +3871,36 @@ def read_brain() -> str:
         # round-trip stays clean: write_brain re-wraps managed frontmatter, so
         # echoing a frontmatter-laden read back would otherwise NEST it (Codex
         # brain-loop review 2026-08-22).
+        wanted = (section or "").strip().lower()
+        if wanted and wanted not in _BRAIN_SECTIONS:
+            return json.dumps({"error": f"unknown brain section {wanted!r}",
+                               "sections": list(_BRAIN_SECTIONS)})
+        # One section when named: a whole brain can outgrow one tool result,
+        # and a write builds on the section it read (write_brain is per section).
+        chosen = {wanted: _BRAIN_SECTIONS[wanted]} if wanted else _BRAIN_SECTIONS
         brain = {}
-        for section, fname in _BRAIN_SECTIONS.items():
+        for key, fname in chosen.items():
             # A brain file symlinked out of the universe would disclose an external
             # file's contents to the agent — refuse to read through it (Codex
             # re-review); a contained regular file reads normally.
             try:
                 assert_contained(udir, udir / fname)
             except SoulEditError:
-                brain[section] = ""
+                brain[key] = ""
                 continue
             raw = _read_bundle_body(udir, fname)
             try:
                 _meta, body = _split_frontmatter(raw)
             except Exception:  # noqa: BLE001 - a malformed file still reads as-is
                 body = raw
-            brain[section] = body.strip()
+            brain[key] = body.strip()
         try:
             governed = set(read_governed_files(udir))
         except SoulEditError:
             governed = set()
         editable = [s for s, f in _BRAIN_SECTIONS.items() if f in governed]
         try:
-            self_model = read_self_model(udir)
+            self_model = {} if wanted else read_self_model(udir)
         except Exception:  # noqa: BLE001 - never break a read on a bad model file
             self_model = {}
         return json.dumps({
