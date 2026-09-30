@@ -420,6 +420,44 @@ def test_a_key_that_is_not_a_pem_leaves_web_unconfigured(monkeypatch):
     assert "web" not in resolve_transports()
 
 
+def test_the_key_script_output_configures_the_transport_it_is_for(
+    monkeypatch, wire,
+):
+    """The generator and the reader have to agree. A script that prints a key
+    the transport cannot load is a stale pointer in the docstring that names
+    it, so this asserts the round trip rather than the key's shape."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    try:
+        from webpush_keys import generate
+    finally:
+        sys.path.pop(0)
+
+    for name, value in generate("mailto:ops@example.com").items():
+        monkeypatch.setenv(name, value)
+
+    transports = resolve_transports()
+    assert "web" in transports
+    wire.answer(PUSH_ENDPOINT, _Response(b""))
+    assert transports["web"](
+        {"token": json.dumps(_subscription())}, _note(),
+    ) == OUTCOME_SENT
+
+
+def test_the_key_script_refuses_a_subject_a_push_service_cannot_contact():
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    try:
+        from webpush_keys import generate
+    finally:
+        sys.path.pop(0)
+
+    with pytest.raises(ValueError, match="mailto:"):
+        generate("ops@example.com")
+
+
 # --- and the two together, through dispatch -----------------------------------
 
 
