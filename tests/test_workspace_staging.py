@@ -1,7 +1,7 @@
 """Workspace staging: removed on every exit, swept only when its owner is dead.
 
-Concern 2026-09-30-workspace-staging-leaks-on-failed-checkouts: 334 leaked staging
-directories (2.8 GiB, possibly credentialed clones) in one production universe.
+Production held 334 leaked staging directories (2.8 GiB, possibly credentialed
+clones) in one universe until the boot sweep removed them on 2026-09-30.
 The sweep that removes them must never touch a directory a live checkout owns --
 proven here with a REAL second process holding one.
 """

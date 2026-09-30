@@ -5,8 +5,8 @@ holds the credentialed clone, the bundle and the git homes, so a staging directo
 left behind is both a disk leak and possibly retained credential material.
 Measured 2026-09-30 on production: 334 leaked directories, 2.8 GiB, in one universe
 -- every checkout that failed before its success-path ``rmtree`` left its staging
-behind, and push staging was never removed at all (concern
-2026-09-30-workspace-staging-leaks-on-failed-checkouts).
+behind, and push staging was never removed at all. The boot sweep removed all
+334 (2,936,213,247 bytes) on 2026-09-30 at 20:00:54Z.
 
 The rules:
 
