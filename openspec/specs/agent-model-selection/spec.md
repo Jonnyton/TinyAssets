@@ -212,11 +212,7 @@ Restart or eviction MAY lose advisory health; it SHALL NOT change authority.
 
 ### Requirement: A sign-in refused before launch falls back inside the same turn
 
-When a served turn's chosen source is refused for AUTHENTICATION before anything is
-launched, the turn SHALL continue to the next model already in the owner's accepted
-order, in that same turn, and SHALL NOT stop. The refusal SHALL be reported as a
-sign-in failure rather than a provider outage, so the source is marked for reconnect
-instead of placed on a provider cooldown.
+When a served turn's chosen source is refused for AUTHENTICATION before anything is launched, the turn SHALL continue to the next model already in the owner's accepted order, in that same turn, and SHALL NOT stop. The refusal SHALL be reported as a sign-in failure rather than a provider outage, so the source is marked for reconnect instead of placed on a provider cooldown.
 
 This is distinct from the Automatic-planning requirement above, which orders a LATER
 turn's plan: this one is the turn that is already running. It is also narrower than a
@@ -255,12 +251,7 @@ substitute a source the owner has not accepted; the reconnect card is the recove
 
 ### Requirement: An unproven capacity refusal is narrowed to the model that failed, for every account
 
-A source contract reports a capacity refusal's scope as `model`, `account` or
-`unknown`, and that reported scope SHALL remain the evidence unchanged. When the
-scope is `unknown` and the failure class is a transient window
-(`provider_rate_limited`, `provider_overloaded`), a served agent turn SHALL narrow
-the resulting exhaustion to the MODEL that failed rather than the whole account,
-and the router SHALL NOT apply a source-wide cooldown to that attempt.
+A source contract reports a capacity refusal's scope as `model`, `account` or `unknown`, and that reported scope SHALL remain the evidence unchanged. When the scope is `unknown` and the failure class is a transient window (`provider_rate_limited`, `provider_overloaded`), a served agent turn SHALL narrow the resulting exhaustion to the MODEL that failed rather than the whole account, and the router SHALL NOT apply a source-wide cooldown to that attempt.
 
 This decision SHALL read only what the SOURCE reported. It SHALL NOT read the
 owner's accepted cost ceilings, their plan or any other account attribute: the
