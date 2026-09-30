@@ -37,7 +37,8 @@ const plugin={
   unregister:async()=>calls.push('unregister'),
   removeAllDeliveredNotifications:async()=>calls.push('removeAll'),
 };
-const nativePlugin=name=>name==='PushNotifications'?plugin:null;
+let replyPlugin=null;
+const nativePlugin=name=>name==='PushNotifications'?plugin:(name==='NotificationReply'?replyPlugin:null);
 const fetch=async(path,options)=>{posts.push({path,options,body:JSON.parse(options.body||'null')});
   return {ok:postOk,status:postOk?200:500,json:async()=>({device_id:'dev_1'})};};
 const out=()=>console.log(JSON.stringify({calls,posts,store}));
@@ -137,6 +138,19 @@ out();""")
 
     assert out["calls"] == ["unregister", "removeAll"]
     assert "app.push.fcm" not in out["store"]
+
+
+def test_signing_out_discards_a_reply_the_previous_owner_never_submitted():
+    out = run("""
+localStorage.setItem('app.push.fcm','1');
+pendingReply={request_id:'req_1',item_id:'',text:'alice private words',seen:0};
+let consumedNatively=0;
+replyPlugin={consume:async()=>{consumedNatively++;return {};}};
+await unregisterNativeNotifications();
+console.log(JSON.stringify({pending:pendingReply,consumedNatively,calls}));""")
+
+    # Both halves: the page's copy and the one parked natively.
+    assert out["pending"] is None and out["consumedNatively"] == 1
 
 
 # --- the inline Reply hand-off --------------------------------------------------

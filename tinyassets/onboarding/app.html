@@ -6047,8 +6047,12 @@
     }
   }
   async function unregisterNativeNotifications(){
-    const P=nativePush();
+    const P=nativePush(), R=nativePlugin("NotificationReply");
     localStorage.removeItem(NATIVE_PUSH_FLAG);
+    // A reply the previous owner typed but this page never submitted belongs to
+    // that owner: drop it natively and here, so the next sign-in never sees it.
+    pendingReply=null;
+    if(R){ try{ await R.consume(); }catch(_error){ /* nothing parked */ } }
     if(!P) return;
     try{ await P.unregister(); await P.removeAllDeliveredNotifications(); }
     catch(_error){ console.warn("Could not remove this phone's push registration."); }
