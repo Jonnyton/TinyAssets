@@ -1,7 +1,6 @@
-"""The engine run-admission ledger: writes are charged at admission, reads are
-reclassified off the write budget once the run proves it wrote nothing, and a
-total bound still holds for reads (docs/concerns/2026-08-29-run-rate-cap-
-stalls-a-normal-github-job.md, option 1)."""
+"""The run-settlement ledger: every run is admitted, never refused; a run is
+settled as a read or a write by what it fired. No count here is a limit
+(change `two-dimension-usage-limits`)."""
 
 from __future__ import annotations
 
@@ -12,11 +11,11 @@ import pytest
 
 from tinyassets import engine_admissions as adm
 
-W, T, WIN = 20, 60, 3600
+W = 20
 
 
-def _admit(db, uid="u-tiny", **kw):
-    return adm.admit(uid, db=db, **kw)
+def _admit(db, uid="u-tiny"):
+    return adm.admit(uid, db=db)
 
 
 def _rows(db, uid="u-tiny"):
@@ -62,7 +61,7 @@ def test_an_old_ledger_is_migrated_and_its_rows_count_as_writes(tmp_path):
     assert {"kind", "run_id"} <= cols
 
 
-def test_a_symlinked_ledger_is_refused_by_every_entry_point(tmp_path):
+def test_a_symlinked_ledger_is_written_by_no_entry_point_and_refuses_no_run(tmp_path):
     real = tmp_path / "elsewhere.db"
     real.touch()
     link = tmp_path / adm.LEDGER_NAME
@@ -70,8 +69,8 @@ def test_a_symlinked_ledger_is_refused_by_every_entry_point(tmp_path):
         link.symlink_to(real)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable here")
-    assert _admit(link) is None
-    assert _admit(link, fail_closed=False) is None
+    assert _admit(link) == adm.ADMITTED_UNRECORDED, "the run goes ahead, unrecorded"
+    assert real.read_bytes() == b"", "nothing was written through the link"
     assert adm.attach_run(1, "r", db=link) is False
     assert adm.reclassify_read("r", db=link) is False
 

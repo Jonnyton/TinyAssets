@@ -96,7 +96,8 @@ def _seed_published_branch(us, base, name="canonical-target"):
     )
     branch_dict = branch.to_dict()
     save_branch_definition(base, branch_def=branch_dict)
-    version = publish_branch_version(base, branch_dict, publisher="alice")
+    # The author's explicit publish: only a marked version is selectable by others.
+    version = publish_branch_version(base, branch_dict, publisher="alice", public=True)
     return version.branch_version_id
 
 

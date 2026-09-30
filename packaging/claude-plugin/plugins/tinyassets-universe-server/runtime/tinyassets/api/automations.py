@@ -107,12 +107,13 @@ _UNAVAILABLE_DETAIL = {
     ),
     "event_type_unknown": (
         "That event is not one the engine emits, so the automation would never "
-        "fire. Subscribe to run_completed or pending_request_answered."
+        "fire. Subscribe to run_completed, pending_request_answered or app_event."
     ),
     "event_filter_invalid": (
         "event_filter must be an object of non-empty strings over the event's "
         "own fields: run_completed takes branch_def_id (required), outcome and "
-        "run_id; pending_request_answered takes request_id, kind and status."
+        "run_id; pending_request_answered takes request_id, kind and status; "
+        "app_event takes name (required)."
     ),
     "overlap_invalid": (
         "overlap must be queue (wait for the running one, the default), skip "

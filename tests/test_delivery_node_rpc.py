@@ -206,10 +206,8 @@ def test_node_replay_content_conflict_and_direct_key_collision_preserve_original
 def test_transfer_settles_source_write_even_after_terminal_read_settlement(node_env):
     base, _, _, link, branch, _ = node_env
     run_id = _prepare(base, branch)
-    ticket = engine_admissions.admit(
-        "u-sender", fail_closed=True, write_max=20, total_max=40, window_s=60,
-    )
-    assert ticket is not None
+    ticket = engine_admissions.admit("u-sender")
+    assert ticket > 0
     engine_admissions.attach_run(ticket, run_id)
     result = _execute(base, branch, link, run_id=run_id)
     assert result.status == "completed", result.error

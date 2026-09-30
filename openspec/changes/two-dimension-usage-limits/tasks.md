@@ -40,7 +40,7 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
 
 ## 2. PR 2 — delete every other meter
 
-- [ ] 2.1 Rebase onto #4107; delete its `ea.admit_detail` block and
+- [x] 2.1 Rebase onto #4107; delete its `ea.admit_detail` block and
       `usage_limit` return in `api/app_events.py` so an emit only stores a
       wake.
 - [x] 2.2 Delete the meters and every refusal that reads them:

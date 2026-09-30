@@ -1794,11 +1794,21 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
                   error,output_fields:[...]}
         await tinyassets.readRunOutput(run_id, field, offset)
                                                    -> {text,next_offset,...}  # 8192 chars a chunk
+        await tinyassets.listFiles(path)           -> {entries:[{name,kind,size_bytes}]}
+        await tinyassets.readFile(path, offset)    -> {content,encoding,next_offset,...}
+        await tinyassets.emit(name, data)          -> {emitted, woke}
 
-    The last four are how a screen shows agents actually working: which
-    automations are live and when each fires next, which runs are going, and
-    what an agent node wrote (its output key). They read only, and polling them
-    every few seconds is fine.
+    These are how a screen shows agents actually working: which automations are
+    live and when each fires next, which runs are going, what an agent node
+    wrote (its output key), and the files in /u the agents share (a path under
+    /u, e.g. ``notes/board.md``). Reads only, and polling every few seconds is
+    fine. ``emit`` is the one way a screen starts work: it wakes the viewer's
+    automation subscribed to ``event_type`` ``app_event`` with ``event_filter``
+    ``{"name": <that name>}``, and ``data`` arrives in the run as
+    ``inputs.event.data`` -- input written by a screen, not the person's words.
+    It can wake nothing else. A copy of a UI runs in someone else's universe
+    where every id differs, so a UI finds its agents by automation or workflow
+    NAME, never by an id written into its code.
 
     Anything else it calls is refused by name. ``sendMessage`` reaches the
     universe's currently selected conversation; naming a different agent is refused
@@ -1810,11 +1820,11 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``"ui_selection": {"version": 1, "state": "active", "ui_id": "<mine>"}`` to the
     same row; ``{"version": 1, "state": "default"}`` means ordinary chat.
 
-    **Sharing one.** Publishing is the person's own deliberate act, and it is not
-    a call I have here: they publish the UI component under ``components`` of a
-    public definition (the connector's ``write_graph target="agent"
-    operation="publish"``), and a UI I only install stays private. To use
-    someone else's, I read it with
+    **Sharing one.** Publishing is the person's own deliberate act: I raise a
+    ``publish`` ask (chapter ``systems``) and they confirm it in their app; a
+    UI I only install stays private. (The connector's ``write_graph
+    target="agent" operation="publish"`` is the person's own direct route, not a
+    call I have.) To use someone else's, I read it with
     ``read_commons_shape agent_definition_id=...`` and save its component into
     this person's ``ui_library``; that copy is theirs, the same thing the
     connector's ``operation="remix"`` does. A copy always runs as the person who
@@ -1982,7 +1992,8 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       the resident text): ``interval_seconds`` or ``cron_expr`` for a heartbeat,
       and ``event_type`` ``run_completed`` with ``event_filter``
       ``{"branch_def_id"}`` so one agent finishing wakes another, or
-      ``pending_request_answered`` to resume when the person answers me. A code
+      ``pending_request_answered`` to resume when the person answers me, or
+      ``app_event`` with ``{"name": ...}`` so a click on the screen wakes it. A code
       node granted ``"enqueue_branch_run"`` wakes one of my branches now or not
       before a time: ``invoke_mcp_action("enqueue_branch_run",
       branch_def_id=..., inputs={...})``. Each automation holds its own lease, so
@@ -1991,16 +2002,29 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       queue, a log, one file per item. Every run reads them fresh, so the file IS
       the coordination. Claim by writing a name into it, hand off by writing and
       waking the next agent. Agents address each other through what they write.
-    * **Its screen is an app UI** (chapter ``interfaces``). I build it only from
-      the calls that chapter lists. What those calls cannot show, I do not fake
-      on screen or backfill with an outside service.
-    * **Sharing.** Publishing to the commons is the person's act, not a call I
-      have here, so I name exactly which workflows and which UI would become
-      public and let them publish it. Someone who wants another person's system
-      finds it with ``browse_commons``, copies each workflow with
-      ``remix_shape`` and the UI component into their own ``app_ui``, and
-      creates their own automations. Every copy is private and runs on its
-      owner's own compute.
+    * **Its screen is an app UI** (chapter ``interfaces``) that reads the real
+      thing: automations, runs, what each agent wrote, the shared files. I build
+      it only from the calls that chapter lists and never fake state on it.
+    * **Sharing it** is a ``publish`` ask the person confirms; I cannot publish
+      myself::
+
+        write_graph target="pending_request" operation="ask" payload_json={
+          "action": {"type": "publish", "name": "...", "description": "...",
+                     "branch_ids": ["<mine>", ...], "ui_id": "<in my library>",
+                     "automation_ids": ["<mine, driving a listed branch>"]}}
+
+      The platform writes the tab listing everything that becomes public, pins
+      it, and publishes only if nothing changed before they confirm: each
+      workflow goes public with a version, and ONE definition bundles the UI, a
+      ``tinyassets.branch-ref.v1`` per workflow and a
+      ``tinyassets.automation-spec.v1`` per trigger (never its inputs).
+    * **Installing someone else's**: ``browse_commons kind="agents"``, then
+      ``read_commons_shape agent_definition_id=...``; ``remix_shape`` each
+      branch-ref's ``published_version_id``; save the ``ui`` component into this
+      person's ``app_ui``; create an automation per automation-spec against the
+      copy its ``workflow`` names (an ``event_filter.branch_def_id`` that names a
+      workflow key means that copy's id). Every copy is private, runs on this
+      person's own compute, and never reaches the author's universe.
 
 """
 

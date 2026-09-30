@@ -95,7 +95,12 @@ EVENT_WOKE_PREFIX = "woke:"
 #: refused at registration.
 EVENT_RUN_COMPLETED = "run_completed"
 EVENT_PENDING_REQUEST_ANSWERED = "pending_request_answered"
-EVENT_TYPES = frozenset({EVENT_RUN_COMPLETED, EVENT_PENDING_REQUEST_ANSWERED})
+#: Emitted by the owner's own session -- a click in a UI they built, through
+#: ``run_graph operation="emit_event"`` -- to wake the agent subscribed to that
+#: NAME. The name is required in every subscription: a UI can wake only what
+#: its owner (or their universe) subscribed to that name, never "any".
+EVENT_APP = "app_event"
+EVENT_TYPES = frozenset({EVENT_RUN_COMPLETED, EVENT_PENDING_REQUEST_ANSWERED, EVENT_APP})
 
 #: Payload keys each event carries, which are also the keys a subscription may
 #: filter on (equality). ``run_completed`` must name the branch it follows: an
@@ -107,10 +112,12 @@ EVENT_FILTER_KEYS: dict[str, frozenset[str]] = {
     EVENT_PENDING_REQUEST_ANSWERED: frozenset(
         {"request_id", "kind", "status", "item_id"}
     ),
+    EVENT_APP: frozenset({"name"}),
 }
 EVENT_REQUIRED_FILTER_KEYS: dict[str, frozenset[str]] = {
     EVENT_RUN_COMPLETED: frozenset({"branch_def_id"}),
     EVENT_PENDING_REQUEST_ANSWERED: frozenset(),
+    EVENT_APP: frozenset({"name"}),
 }
 
 #: A ``once`` row whose attempt never reached a run is retried this much later
@@ -2093,6 +2100,12 @@ def _execute(
             inputs=inputs,
             run_name=f"automation:{automation.automation_id[:8]}",
             actor=f"universe:{automation.universe_id}",
+            # The persisted owner, as every other universe:<id> run records it
+            # (direct input, conversation turns, deliveries). Without it the
+            # run's own children -- the owner's private branch, or an
+            # unpublished pinned version -- had no owner to be authorized
+            # against, and a co-admin's definition could not be told apart.
+            owner_user_id=automation.owner_principal_id,
             provider_call=provider_call,
             on_node_status=_authority_guard(base_path, automation),
             _enqueue_universe_id=automation.universe_id,

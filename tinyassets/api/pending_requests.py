@@ -222,6 +222,10 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         return validate_action({**action, "type": kind})
     if kind == "grant_workspace_consent":
         return _validated_workspace_consent(action)
+    if kind == "publish":
+        from tinyassets.api.publish_requests import validate_action as _validate_publish
+
+        return _validate_publish({**action, "type": kind})
     if kind == PATCH_INTAKE_ACTION:
         return _validated_patch_intake(action)
     if kind == "extend_http":
@@ -314,7 +318,7 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         raise ValueError(
             "action type must be answer, connect, connect_http, extend_http, "
             "rotate_http, remove_http, grant_workspace_consent, "
-            f"{PATCH_INTAKE_ACTION} or bind_model_access"
+            f"{PATCH_INTAKE_ACTION}, bind_model_access or publish"
         )
 
     destination = str(action.get("destination") or "").strip().lower()
@@ -826,7 +830,7 @@ def _validated_fields(
                 "not one unlabelled box for the owner to work out"
             )
         if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent",
-                              PATCH_INTAKE_ACTION):
+                              PATCH_INTAKE_ACTION, "publish"):
             # Nothing to type. For extend_http the key is already in the vault
             # and for remove_http it is on its way out; either way this is a
             # yes/no, and a paste box on a removal would be nonsense.
@@ -1145,6 +1149,19 @@ def request_from_user(
             action = capture_action(_uid, action)
         except (ValueError, LookupError, PermissionError, CurrentHomeChanged) as exc:
             return _bad(str(exc))
+    if action.get("type") == "publish":
+        # The consent is the PLATFORM's words about what it pinned: the agent's
+        # own kind/title/body are replaced, and the ask carries no fields.
+        from tinyassets.api.publish_requests import capture_action as _capture_publish
+        from tinyassets.api.publish_requests import tab_text
+
+        if fields:
+            return _bad("a publish ask is a fieldless owner confirmation")
+        try:
+            action = _capture_publish(_uid, action)
+        except (ValueError, LookupError, PermissionError) as exc:
+            return _bad(str(exc))
+        kind, title, body = tab_text(action)
     if action.get("type") == "connect" and "model" in (action.get("uses") or {}):
         refused = _model_use_refusal(_uid, action)
         if refused is not None:
@@ -1586,6 +1603,8 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     from tinyassets.storage.outbound_connections import _URL_SECRET_SCHEME
 
     action = row.get("action") or {}
+    if action.get("type") == "publish":
+        return f"Accepting publishes \"{action.get('name', '')}\" for anyone to copy."
     if action.get("type") == "bind_model_access":
         from tinyassets.api.model_access_requests import grant_sentence
 
@@ -2624,6 +2643,21 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             return {"error": "request_resolution_unconfirmed", "request_pending": True}
         return {**result, "status": "answered", "request_id": request_id,
                 "receipt": _grant_sentence(row), "secret_reused": True, "suppressed": False}
+    if action.get("type") == "publish":
+        from tinyassets.api.publish_requests import execute_action as _execute_publish
+
+        if row["fields"] or values:
+            return _bad("publishing is a fieldless owner confirmation")
+        try:
+            result = _execute_publish(_uid, action, request_id=request_id)
+        except (ValueError, LookupError, PermissionError) as exc:
+            return {"error": "publish_refused", "detail": str(exc), "request_pending": True}
+        if not resolve_request(udir, request_id, status="answered", answer=answer,
+                               feedback=feedback, dont_ask_again=False, decision="allowed"):
+            return {"error": "request_resolution_unconfirmed", "request_pending": True}
+        return {**result, "status": "answered", "request_id": request_id,
+                "receipt": f"Published \"{action['name']}\" for anyone to copy.",
+                "suppressed": False}
     if action.get("type") == PATCH_INTAKE_ACTION:
         if row["fields"] or values:
             return _bad(

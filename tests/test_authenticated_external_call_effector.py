@@ -1071,7 +1071,7 @@ def _seed_engine_admission(tmp_path, monkeypatch, run_id, universe_id="universe-
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     db = tmp_path / adm.LEDGER_NAME
-    ticket = adm.admit(universe_id, write_max=20, total_max=60, window_s=3600, db=db)
+    ticket = adm.admit(universe_id, db=db)
     assert adm._is_ticket(ticket)
     assert adm.attach_run(ticket, run_id, db=db)
     return db
