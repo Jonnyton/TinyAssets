@@ -29,7 +29,9 @@ _SENTENCES = re.compile(_SHAPES["sentence_split_pattern"])
 def _daily_fact(fact) -> bool:
     if not isinstance(fact, str):
         return False
-    for sentence in _SENTENCES.split(fact[:4096]):
+    # Never sliced: a cut can drop the qualifier that makes a sentence a balance
+    # (gpt-6-astra round 3). The body is already bounded by the caller.
+    for sentence in _SENTENCES.split(fact):
         if _BALANCE.search(sentence) and not _EXHAUSTED.search(sentence):
             continue
         if _DAY.search(sentence) and not _SHORTER.search(sentence):
