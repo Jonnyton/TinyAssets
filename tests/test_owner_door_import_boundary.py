@@ -2,9 +2,9 @@
 
 ``PLAN.md`` (*Owner surfaces are complete; bounding is a model-door projection;
 the only per-account input is account type*) and
-``openspec/changes/owner-door-complete-reads``. On 2026-09-30 the founder's request
-rail vanished because the app read it through the connector, whose 24 KB model
-ceiling cut his 34 KB queue. The fix the founder asked for is one a future session
+``openspec/changes/archive/2026-09-30-owner-door-complete-reads/``.
+On 2026-09-30 the founder's request rail vanished because the app read it
+through the connector, whose 24 KB model ceiling cut his 34 KB queue. The fix the founder asked for is one a future session
 cannot undo by accident: "not in some rule but architecturally".
 
 So these tests assert STRUCTURE:

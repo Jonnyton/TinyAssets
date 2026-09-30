@@ -437,18 +437,22 @@
       }
       return {automations};
     },
+    // Newest first, as many as the bundle asks for (50 when it names none), and
+    // the page SAYS whether older runs exist: one extra row is read to know.
+    // A fixed ceiling of 50 with no continuation cut the oldest runs off
+    // silently (Codex round 2); the bundle now asks for a bigger page to see them.
     async listRuns(args){
-      const limit=Number.isInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_LIST_RUNS):this.MAX_LIST_RUNS;
-      const call={target:"runs",graph_id:this.home,limit};
+      const limit=Number.isSafeInteger(args.limit)&&args.limit>0?args.limit:this.MAX_LIST_RUNS;
+      const call={target:"runs",graph_id:this.home,limit:limit+1};
       if(typeof args.status==="string"&&args.status.trim()) call.run_status=args.status.trim();
       const doc=await Owner.read(call);
       if(!doc||doc.error||!Array.isArray(doc.runs)) throw new Error("your runs are unavailable");
       const runs=[];
-      for(const r of doc.runs){
+      for(const r of doc.runs.slice(0,limit)){
         if(!r||typeof r!=="object") continue;
         runs.push(this.runSummary(r));
       }
-      return {runs};
+      return {runs,has_more:doc.runs.length>limit};
     },
     runSummary(r){
       return {run_id:String(r.run_id||""),branch_id:String(r.branch_def_id||""),

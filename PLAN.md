@@ -319,7 +319,7 @@ once, per account; connections and data volume never change what an account sees
 The rule is enforced by structure: import boundaries, not an exempt list. On
 2026-09-30 the founder's request rail vanished because his 34 KB queue crossed a
 24 KB model ceiling that the app shared with chatbots. That bug is the failure
-mode this rule prevents. Change: `openspec/changes/owner-door-complete-reads/`.
+mode this rule prevents. Change: `openspec/changes/archive/2026-09-30-owner-door-complete-reads/`.
 
 **Platform state transitions are the core abstraction.** Orient, plan, draft, commit, learn, reflect, enrich, task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
 

@@ -1,7 +1,7 @@
 """The ``read_graph`` dispatch: ONE domain read, shared by both doors.
 
 Moved out of ``tinyassets/universe_server.py`` (2026-09-30,
-``openspec/changes/owner-door-complete-reads``). Two callers use it:
+``openspec/changes/archive/2026-09-30-owner-door-complete-reads/``). Two callers use it:
 
 * the **model door**, ``universe_server.read_graph`` (the MCP connector). It
   projects what this returns for a model's context: the single-result ceiling in

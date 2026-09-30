@@ -1612,6 +1612,9 @@
         }
         let doc=null;
         try{ doc=await resp.json(); }catch(_e){ doc=null; }
+        // The body arrives after the headers: a sign-in change while it
+        // downloaded makes it the PREVIOUS account's data (Codex round 2).
+        MCP._assertLogin(loginEpoch);
         if(resp.ok && doc && typeof doc==="object" && !Array.isArray(doc)) return doc;
         if((resp.status>=500 || resp.status===408 || resp.status===429) && attempt<1){
           await MCP._pause(1500); continue;

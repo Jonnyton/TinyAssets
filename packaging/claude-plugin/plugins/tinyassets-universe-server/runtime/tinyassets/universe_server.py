@@ -194,7 +194,8 @@ def _connector_ceiling_exempt():
     Three entries, each a CONTRACT a truncation marker would break. None is here
     because it is big (being big is what the ceiling is for), and none is here
     because the owner's app reads it: the app reads through the owner door, which
-    has no ceiling (``openspec/changes/owner-door-complete-reads``). Adding an
+    has no ceiling
+    (``openspec/changes/archive/2026-09-30-owner-door-complete-reads/``). Adding an
     entry "so the app sees all of it" is the mistake that door exists to make
     unnecessary. ``model_options`` left this set for exactly that reason: its only
     claim was the app's picker, and on this surface it is now the compact
