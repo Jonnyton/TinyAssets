@@ -1257,6 +1257,56 @@ async def _handle_account_timezone(request: Any) -> Any:
     return JSONResponse({"timezone": stored}, headers=_NO_STORE)
 
 
+async def _handle_turn_interrupt(request: Any) -> Any:
+    """Stop the signed-in user's own running conversation turn (the Stop button).
+
+    Founder, 2026-09-30: "i can press escape to interrupt and send all pending
+    messages, basically just like it works in claude code". The page posts here,
+    waits for its in-flight ``converse`` to come back marked ``interrupted``, and
+    then sends what was queued behind it.
+
+    Keyed on the VERIFIED caller, never on anything in the body but which
+    universe: ``turn_interrupt.request_interrupt`` only reaches turns this same
+    subject started, so a body naming another user's universe finds nothing to
+    stop. ``interrupted: 0`` is an honest answer, not an error -- the turn may
+    have finished while the button was being pressed.
+    """
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.turn_interrupt import request_interrupt
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    identity = current_identity()
+    universe_id = str(data.get("universe_id", "") or "").strip()
+    if not universe_id:
+        from starlette.concurrency import run_in_threadpool
+
+        try:
+            universe_id = await run_in_threadpool(_read_home, identity, raise_errors=True)
+        except Exception:  # noqa: BLE001 - an unreadable home stops nothing
+            universe_id = ""
+    if not universe_id:
+        return JSONResponse({"interrupted": 0}, headers=_NO_STORE)
+    try:
+        count = request_interrupt(identity.user_id, universe_id)
+    except ValueError:
+        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
+    return JSONResponse({"interrupted": count, "universe_id": universe_id}, headers=_NO_STORE)
+
+
 async def _handle_account_delete(request: Any) -> Any:
     """Delete the signed-in user's account: their universe (memory, history,
     deposited credentials), every row keyed to it, any paid plan (cancelled
@@ -1806,6 +1856,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
+        Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
         Route("/app/connections", handle_connections, methods=["GET", "POST"]),
         Route("/app/files", handle_file_upload, methods=["POST"]),
         # Notifications. `/app/devices` and `/app/notify` are identity-gated by

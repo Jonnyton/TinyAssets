@@ -1,5 +1,9 @@
 {
   "daily_fact_pattern": "per[ _-]?day|daily|\\b[rt]pd\\b",
+  "shorter_window_pattern": "(?<![a-z])per[ _-]?(?:minute|second|hour|min|sec)\\b|\\b[rt]p[msh]\\b",
+  "balance_pattern": "\\b(?:remaining|left)\\b",
+  "exhausted_pattern": "exceed|reach|exhaust|used up",
+  "sentence_split_pattern": "(?<=[.!?;])(?:\\s+|(?=[A-Z]))|\\n",
   "fact_paths": [
     ["message"],
     ["code"],

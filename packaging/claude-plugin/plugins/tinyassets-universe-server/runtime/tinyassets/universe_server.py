@@ -2921,6 +2921,48 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
         return turn_failure("unknown", ref=uuid.uuid4().hex[:16])
 
 
+def _interrupted_turn_payload(uid, universe_dir, session, message, exc) -> dict:
+    """What a turn the owner stopped leaves in the thread and returns.
+
+    Recorded exactly where every other ended turn is (``record_failure``: the
+    founder's message plus one platform row), composed from the turn's OWN
+    ledger: whether actions ran, and the tools it completed before the stop.
+    A path with no ledger (the unplanned served call) says it cannot tell.
+    """
+    from tinyassets.conversation_failure import (
+        failure_notice,
+        normalize_turn_failure,
+        turn_failure,
+    )
+    from tinyassets.conversation_store import record_failure
+
+    evidence = _ledger_evidence(exc)
+    effects, stage, ref = evidence if evidence is not None else ("unknown", None, None)
+    completed = tuple(getattr(exc, "completed_tools", ()) or ())
+    record = turn_failure(
+        "interrupted", stage=stage, effects=effects,
+        provider_detail=(
+            "Completed before the stop: " + ", ".join(completed) if completed else ""
+        ),
+        ref=ref if isinstance(ref, str) and ref else uuid.uuid4().hex[:16],
+    )
+    try:
+        saved = record_failure(universe_dir, session, message, record)
+    except Exception:  # noqa: BLE001 - the stop still happened; memory is best-effort
+        logger.warning("converse: interrupted-turn history could not be saved")
+        saved = False
+    notice = failure_notice(record)
+    logger.info("converse: owner interrupted turn %s in %s", record.ref, uid)
+    return {
+        "error": notice,
+        "interrupted": True,
+        "universe_id": uid,
+        "turn_failure": normalize_turn_failure(record),
+        "failure_notice": notice,
+        "history_saved": saved,
+    }
+
+
 def _served_failure_notice(exc: BaseException, record=None) -> str:
     """The user-facing sentence for a failed served turn, composed from fields.
 
@@ -3167,17 +3209,27 @@ def converse(
         turn_began_at = latest_turn_no(memory_universe_dir, memory_session)
     except Exception:  # noqa: BLE001 - no cursor bookkeeping is never a failed turn
         turn_began_at = None
+    from tinyassets.turn_interrupt import TurnInterrupted, interactive_turn
+
     try:
-        reply = _converse_impl(
-            uid,
-            message,
-            actor_id=current_actor_id(),
-            tier=turn.interlocutor.tier,
-            conversation_history=conversation_history,
-            input_method=input_method,
-            response_observer=execution_receipt.observe,
-            learning_observer=lesson_settled.append,
-            **({} if model_choice is None else {"model_choice": model_choice}),
+        # Registered under the VERIFIED caller and this universe, so the owner's
+        # Stop from any of their surfaces reaches it and nobody else's can.
+        with interactive_turn(current_actor_id(), uid):
+            reply = _converse_impl(
+                uid,
+                message,
+                actor_id=current_actor_id(),
+                tier=turn.interlocutor.tier,
+                conversation_history=conversation_history,
+                input_method=input_method,
+                response_observer=execution_receipt.observe,
+                learning_observer=lesson_settled.append,
+                **({} if model_choice is None else {"model_choice": model_choice}),
+            )
+    except TurnInterrupted as exc:
+        # The owner stopped it: no provider failure to diagnose, log or cool.
+        return json.dumps(
+            _interrupted_turn_payload(uid, memory_universe_dir, memory_session, message, exc)
         )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot

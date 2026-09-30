@@ -12,6 +12,31 @@ from tinyassets.providers.model_capacity import CapacitySignal
 DAILY_QUOTA = "provider_daily_quota"
 _SHAPES = json.loads(Path(__file__).with_name("daily_quota_shapes.json").read_text("utf-8"))
 _DAY = re.compile(_SHAPES["daily_fact_pattern"], re.I)
+#: Daily evidence is judged per SENTENCE of a fact, because providers put the
+#: refused window and other windows' balances in one message (gpt-6-astra,
+#: 2026-09-30, both directions): "Requests per minute exceeded. Daily quota
+#: remaining: 49." is a MINUTE refusal -- read as daily it cooled the whole
+#: source and dropped a sibling that works -- while "Daily token limit exceeded.
+#: Requests per minute remaining: 49." IS daily. A sentence that also names a
+#: shorter window is about that window; a balance that exhausts nothing
+#: ("... remaining: 49") is information, not a refusal.
+_SHORTER = re.compile(_SHAPES["shorter_window_pattern"], re.I)
+_BALANCE = re.compile(_SHAPES["balance_pattern"], re.I)
+_EXHAUSTED = re.compile(_SHAPES["exhausted_pattern"], re.I)
+_SENTENCES = re.compile(_SHAPES["sentence_split_pattern"])
+
+
+def _daily_fact(fact) -> bool:
+    if not isinstance(fact, str):
+        return False
+    # Never sliced: a cut can drop the qualifier that makes a sentence a balance
+    # (gpt-6-astra round 3). The body is already bounded by the caller.
+    for sentence in _SENTENCES.split(fact):
+        if _BALANCE.search(sentence) and not _EXHAUSTED.search(sentence):
+            continue
+        if _DAY.search(sentence) and not _SHORTER.search(sentence):
+            return True
+    return False
 _DURATION = re.compile(r"(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?\Z")
 
 
@@ -64,7 +89,7 @@ def daily_quota_signal(status, headers, body, *, now=None, daily_request_headers
         error = {}
     # Scan only error facts, not an echoed request or an arbitrary nested document.
     facts = (fact for path in _SHAPES["fact_paths"] for fact in _path_values(error, path))
-    daily = any(isinstance(f, str) and _DAY.search(f) for f in facts)
+    daily = any(_daily_fact(f) for f in facts)
     values = {}
     nested = next(_path_values(error, _SHAPES["nested_headers_path"]), None)
     for source in (nested, headers):
