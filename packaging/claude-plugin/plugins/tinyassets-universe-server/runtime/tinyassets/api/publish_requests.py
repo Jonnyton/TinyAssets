@@ -92,6 +92,22 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+#: Fields of a branch row that publishing may change or that move on their own
+#: (run stats, edit bookkeeping). EVERYTHING ELSE becomes publicly readable, so
+#: everything else is pinned -- a denylist of volatile fields, never an allowlist
+#: of the ones someone remembered to include (Codex refute 2026-09-29: tags
+#: were outside the digest and published changed).
+_UNPINNED_BRANCH_FIELDS = frozenset({"visibility", "published", "updated_at", "version", "stats"})
+
+
+def branch_digest(branch: dict[str, Any]) -> str:
+    """Digest of every field of a branch row that becomes public on publish."""
+    from tinyassets.branches import BranchDefinition
+
+    normalized = BranchDefinition.from_dict(branch).to_dict()
+    return _digest({k: v for k, v in normalized.items() if k not in _UNPINNED_BRANCH_FIELDS})
+
+
 def _branch_facts(base: Path, actor: str, branch_def_id: str) -> dict[str, Any]:
     """What the owner is shown and what is pinned, for one of THEIR branches."""
     from tinyassets.branch_versions import _canonical_snapshot
@@ -104,18 +120,28 @@ def _branch_facts(base: Path, actor: str, branch_def_id: str) -> dict[str, Any]:
     if (raw.get("author") or "").strip() != actor:
         # Same words as absent: an ask cannot probe another author's ids.
         raise LookupError(f"no branch of yours is {branch_def_id}")
-    snapshot = _canonical_snapshot(raw)
-    # Visibility is what publishing CHANGES, so it is not part of what the owner
-    # approved; everything that decides what the workflow does is.
-    snapshot.pop("visibility", None)
     return {
         "branch_def_id": branch_def_id,
         "name": str(raw.get("name") or branch_def_id),
         "description": str(raw.get("description") or ""),
-        "nodes": len(snapshot.get("graph_nodes") or []),
-        "digest": _digest({"snapshot": snapshot, "name": raw.get("name"),
-                           "description": raw.get("description")}),
+        "nodes": len(_canonical_snapshot(raw).get("graph_nodes") or []),
+        "digest": branch_digest(raw),
     }
+
+
+#: The portable fields of a UI component -- exactly what the app renders
+#: (``AppUI.FIELDS`` in onboarding/app_ui.js). A stored component may carry
+#: anything else; none of it is published (Codex refute 2026-09-29: an
+#: ``inputs`` field rode into the public definition).
+UI_PORTABLE_FIELDS = ("kind", "version", "ui_id", "name", "markup", "style", "script")
+
+
+def export_ui_component(component: dict[str, Any]) -> dict[str, Any]:
+    exported = {k: component[k] for k in UI_PORTABLE_FIELDS if k in component}
+    missing = [k for k in UI_PORTABLE_FIELDS if k not in exported]
+    if missing:
+        raise ValueError(f"that UI is missing {', '.join(missing)} and cannot be published")
+    return json.loads(json.dumps(exported))
 
 
 def _ui_facts(base: Path, actor: str, uid: str, ui_id: str) -> dict[str, Any]:
@@ -126,8 +152,9 @@ def _ui_facts(base: Path, actor: str, uid: str, ui_id: str) -> dict[str, Any]:
         if isinstance(component, dict) and component.get("ui_id") == ui_id:
             if component.get("kind") != UI_KIND:
                 break
-            return {"ui_id": ui_id, "name": str(component.get("name") or ui_id),
-                    "component": component, "digest": _digest(component)}
+            exported = export_ui_component(component)
+            return {"ui_id": ui_id, "name": str(exported.get("name") or ui_id),
+                    "component": exported, "digest": _digest(exported)}
     raise LookupError(f"no UI of yours is {ui_id}")
 
 
@@ -246,11 +273,52 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
             "\n".join(lines))
 
 
+def _make_public_if_unchanged(pins: dict[str, str]) -> dict[str, dict[str, Any]]:
+    """Compare-and-set: flip EVERY branch public only if each is what was approved.
+
+    One write transaction holds every check and every flip, so an edit cannot
+    land between them and the set goes public whole or not at all (Codex refute
+    2026-09-29: checking first and patching after let a concurrent edit publish
+    a description the owner never saw). Returns each row AS FLIPPED, which is
+    what its version is minted from -- never a second, unchecked read.
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import _branch_def_from_row, _connect
+
+    flipped: dict[str, dict[str, Any]] = {}
+    with _connect(_base_path()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for branch_def_id, digest in pins.items():
+            row = conn.execute(
+                "SELECT * FROM branch_definitions WHERE branch_def_id = ?", (branch_def_id,),
+            ).fetchone()
+            if row is None or branch_digest(_branch_def_from_row(row)) != digest:
+                # Raising inside the transaction rolls every flip back.
+                raise ValueError(
+                    "something in this ask changed after you were shown it, so "
+                    "nothing was published; ask again and the tab will show what "
+                    "is there now"
+                )
+            conn.execute(
+                "UPDATE branch_definitions SET visibility = 'public', published = 1 "
+                "WHERE branch_def_id = ?", (branch_def_id,),
+            )
+            flipped[branch_def_id] = _branch_def_from_row(conn.execute(
+                "SELECT * FROM branch_definitions WHERE branch_def_id = ?", (branch_def_id,),
+            ).fetchone())
+    return flipped
+
+
 def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict[str, Any]:
     """Publish exactly what was pinned, or nothing. Raises to leave the ask pending."""
+    from tinyassets.api import permissions
     from tinyassets.api.custom_agents import custom_agents
-    from tinyassets.api.extensions import _extensions_impl
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.branch_versions import publish_branch_version
     from tinyassets.custom_agents import AGENT_SCHEMA_VERSION
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
 
     facts = _facts(uid, action)
     if _pins(facts) != action.get("digests"):
@@ -258,28 +326,18 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
             "something in this ask changed after you were shown it, so nothing "
             "was published; ask again and the tab will show what is there now"
         )
-    published_public: list[str] = []
+    approved_rows = _make_public_if_unchanged(
+        {b["branch_def_id"]: b["digest"] for b in facts["branches"]})
+    published_public = [b["name"] for b in facts["branches"]]
     versions: dict[str, str] = {}
     try:
         for branch in facts["branches"]:
             bid = branch["branch_def_id"]
-            patched = json.loads(_extensions_impl(
-                action="patch_branch", branch_def_id=bid,
-                changes_json=json.dumps([
-                    {"op": "set_visibility", "visibility": "public"},
-                    {"op": "set_published", "published": True},
-                ]),
-            ))
-            if patched.get("error"):
-                raise ValueError(f"could not make {branch['name']} public: {patched['error']}")
-            published_public.append(branch["name"])
-            version = json.loads(_extensions_impl(
-                action="publish_version", branch_def_id=bid, notes=action["name"],
-            ))
-            if version.get("error") or not version.get("branch_version_id"):
-                raise ValueError(f"could not publish {branch['name']}: {version.get('error')}")
-            versions[bid] = version["branch_version_id"]
-    except ValueError as exc:
+            approved = approved_rows[bid]
+            version = publish_branch_version(
+                _base_path(), approved, publisher=actor, notes=action["name"])
+            versions[bid] = version.branch_version_id
+    except (KeyError, ValueError) as exc:
         # A public branch cannot be made unseen: someone may already have read
         # it. Say exactly what is public so the owner and the agent know.
         made = ", ".join(published_public) or "nothing"

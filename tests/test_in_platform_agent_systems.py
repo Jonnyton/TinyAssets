@@ -394,6 +394,69 @@ def test_work_changed_after_the_tab_was_shown_publishes_nothing(home: Path) -> N
     assert len(list_definitions(home, author_id=OWNER)) == before
 
 
+@pytest.mark.parametrize("edit", [
+    [{"op": "set_tags", "tags": ["PRIVATE customer account 12345"]}],
+    [{"op": "set_description", "description": "private text"}],
+])
+def test_any_public_field_changed_after_the_tab_publishes_nothing(home: Path, edit) -> None:
+    """Codex refute 2026-09-29 P1: tags sat outside the digest. The digest now
+    covers every field that becomes public, not a remembered list of them."""
+    from tinyassets.api.extensions import _extensions_impl
+
+    _library(home)
+    ask = _ask_publish(home)
+    with _as(OWNER):
+        patched = json.loads(_extensions_impl(
+            action="patch_branch", branch_def_id=SCOUT, changes_json=json.dumps(edit)))
+    assert not patched.get("error"), patched
+    out = _answer(ask["request_id"])
+    assert out.get("error") == "publish_refused", out
+    assert _visibility(home, SCOUT) == "private"
+
+
+def test_an_edit_racing_the_confirm_cannot_go_public(home: Path, monkeypatch) -> None:
+    """Codex refute 2026-09-29 P1: the edit lands AFTER the up-front check. The
+    flip is a compare-and-set, so it refuses the changed branch by itself."""
+    from tinyassets.api import publish_requests
+    from tinyassets.api.extensions import _extensions_impl
+
+    _library(home)
+    ask = _ask_publish(home)
+    pinned = ask["action"]["digests"]
+    real_facts = publish_requests._facts
+
+    def facts_then_edit(uid, action):
+        facts = real_facts(uid, action)          # the up-front check sees the approved rows
+        with _as(OWNER):
+            _extensions_impl(action="patch_branch", branch_def_id=SCRIBE, changes_json=json.dumps(
+                [{"op": "set_description", "description": "PRIVATE DESCRIPTION"}]))
+        return facts
+
+    monkeypatch.setattr(publish_requests, "_facts", facts_then_edit)
+    out = _answer(ask["request_id"])
+    assert out.get("error") == "publish_refused", out
+    assert f"branch:{SCRIBE}" in pinned
+    # The set goes public whole or not at all: the unchanged branch listed
+    # before the changed one did not go public either.
+    assert _visibility(home, SCRIBE) == "private", "the changed branch never went public"
+    assert _visibility(home, SCOUT) == "private", "nor did the rest of the set"
+    assert "Already public" not in out["detail"], out
+
+
+def test_only_the_portable_ui_fields_are_published(home: Path) -> None:
+    """Codex refute 2026-09-29 P1: a stored component carrying `inputs` rode
+    into the public definition. Only the seven fields the app renders go."""
+    from tinyassets.custom_agents import get_definition, save_app_ui
+
+    save_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE, expected_revision=0,
+                changes={"ui_library": [{**UI, "inputs": {"customer_note": "PRIVATE INPUT"}}]})
+    done = _answer(_ask_publish(home)["request_id"])
+    assert done.get("published") is True, done
+    ui = get_definition(home, done["agent_definition_id"])["components"]["ui"]
+    assert sorted(ui) == sorted(UI)
+    assert "PRIVATE INPUT" not in json.dumps(ui)
+
+
 def test_nobody_but_the_owner_can_confirm(home: Path) -> None:
     _library(home)
     ask = _ask_publish(home)

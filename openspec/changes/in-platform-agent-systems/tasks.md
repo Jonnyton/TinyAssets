@@ -9,7 +9,11 @@
 ## 2. Prove
 - [x] 2.1 Test through the real handlers and the shipped bridge, including cross-user refusals and the changed-after-shown refusal.
 - [x] 2.2 Mutation-check the admin gate, the path checks, the filter floor, the digest re-check and the served-cannot-answer rule. Result: 14 of 15 went red. The path-check mutation stayed green because the no-follow reader refuses the same components, which is defence in depth. The comment-only decoy stayed green.
-- [ ] 2.3 Run a gpt-6-astra refute round on cross-user reach and consent.
+- [x] 2.3 Run a gpt-6-astra refute round on cross-user reach and consent. Verdict ADAPT, with three P1s, all fixed and mutation-checked:
+  - the digest now pins every public branch field (tags were outside it);
+  - UI export is limited to the seven portable fields (`inputs` was riding along);
+  - the flip is one compare-and-set for the whole set (an edit could land between the check and the patch).
+  Runaway cost is covered by `tests/test_app_event_runaway.py`: no run can emit, and both the ping-pong and the screen loop stop at the meter with a visible refusal.
 - [ ] 2.4 Deploy and run `python scripts/deployed_sha.py --assert-contains <sha>`. The lead re-runs the naive request, and a second account installs.
 
 ## 3. Land

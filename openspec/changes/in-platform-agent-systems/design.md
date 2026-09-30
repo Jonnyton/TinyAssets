@@ -92,7 +92,13 @@ tab.
 
 ### Answer (person's surface only: app rail, connector `answer_request`)
 
-1. Recompute every digest. If any differs, refuse with `request_pending: true`
+1. Recompute every digest. A branch digest covers every field that becomes
+   public, apart from a short denylist of volatile ones (visibility,
+   published, updated_at, version, stats). The UI is exported as its seven
+   portable fields only. The flip to public is a compare-and-set for the
+   whole set, done in one write transaction: an edit racing the confirm
+   refuses everything, and each version is minted from the row as flipped.
+   If any digest differs, refuse with `request_pending: true`
    and "this changed after you were shown it; ask again". Nothing is published.
 2. For each branch: patch `set_visibility public` + `set_published true`, then
    `publish_version`. Collect `branch_version_id`s.
