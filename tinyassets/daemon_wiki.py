@@ -502,7 +502,6 @@ def read_daemon_wiki_context(
         base_path,
         daemon_id=daemon_id,
         max_chars=max_chars,
-        enforce_cap=True,
     )
     packet["schema_version"] = SCHEMA_VERSION
     return packet

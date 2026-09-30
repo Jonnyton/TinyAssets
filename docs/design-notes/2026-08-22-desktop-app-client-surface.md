@@ -11,13 +11,13 @@ saved to the same universe if it's the same user."
 ## What this is
 
 A thin **desktop shell (Electron)** whose window loads the *same* live
-onboarding SPA the Android app already wraps — `https://tinyassets.io/mcp/app`.
+onboarding SPA the Android app already wraps — `https://tinyassets.io/app`.
 No second chat UI, no reimplementation. The desktop app is a fourth window onto
 one shared brain (chatbot connector, phone, web, and now desktop), so continuity
 is automatic rather than something the client has to synchronise.
 
 This is deliberately the **mobile pattern, again**: `mobile/` is a Capacitor
-shell over `tinyassets.io/mcp/app`; `desktop-app/` is an Electron shell over the
+shell over `tinyassets.io/app`; `desktop-app/` is an Electron shell over the
 same URL. Product logic (WorkOS sign-in, connect-subscription, chat) stays in the
 SPA and is reused verbatim; web-app changes ship to all three surfaces the moment
 the daemon deploys, with no client rebuild.
@@ -190,10 +190,10 @@ for the first correct-shape MVP.
 The SPA exposes two sign-in paths (`tinyassets/onboarding/__init__.py`):
 
 - **WorkOS AuthKit (primary, MVP-complete with zero native glue).** Authorization
-  Code + PKCE with `redirect_uri = https://tinyassets.io/mcp/app` — *same origin*
-  as the page. The token exchange is proxied same-origin through `/mcp/app/token`
+  Code + PKCE with `redirect_uri = https://tinyassets.io/app` — *same origin*
+  as the page. The token exchange is proxied same-origin through `/app/token`
   and the refresh token lives in an HttpOnly cookie (`ta_rt`, path
-  `/mcp/app/token`, 7-day max-age). Because the whole round-trip is same-origin
+  `/app/token`, 7-day max-age). Because the whole round-trip is same-origin
   inside the Chromium window, it "just works" exactly as in the Android WebView —
   **no deep-link / custom-protocol plumbing.** Electron's default *persistent*
   session partition keeps the `ta_rt` cookie across app restarts, so the SPA's
@@ -207,7 +207,7 @@ The SPA exposes two sign-in paths (`tinyassets/onboarding/__init__.py`):
   `LocalCallbackService`. On desktop, the Electron main process runs a short-lived
   Node `http` loopback listener, opens the system browser to OpenAI's authorize
   URL, catches the `?code=` on `127.0.0.1:<port>/auth/callback`, and posts
-  `(flow, code, verifier)` to `/mcp/app/openai/exchange`. This is **not required
+  `(flow, code, verifier)` to `/app/openai/exchange`. This is **not required
   for the MVP loop** — WorkOS sign-in + the Claude/Codex browser deposit form
   cover "sign in → connect → chat" — so it is scaffolded as a documented follow-up,
   not built in the first slice.
@@ -217,7 +217,7 @@ The SPA exposes two sign-in paths (`tinyassets/onboarding/__init__.py`):
 Built in this scaffold (branch `feat/desktop-app`, `desktop-app/`):
 - Electron main + preload, hardened (contextIsolation, no nodeIntegration,
   sandbox, navigation allow-list, external links to system browser).
-- Loads `https://tinyassets.io/mcp/app`; local loading/offline fallback page.
+- Loads `https://tinyassets.io/app`; local loading/offline fallback page.
 - `npm start` runs it; README with run + build notes.
 
 Remains (host/founder + later hardening — tracked, not MVP-blocking):

@@ -62,6 +62,11 @@ RUN_STATUS_COMPLETED = "completed"
 RUN_STATUS_FAILED = "failed"
 RUN_STATUS_CANCELLED = "cancelled"
 RUN_STATUS_INTERRUPTED = "interrupted"
+
+#: When this process could first have created a run: every run it creates
+#: starts after this. A recovery sweep uses it so a process never interrupts a
+#: run it is executing itself.
+PROCESS_STARTED_AT = time.time()
 RUN_STATUS_RESUMED = "resumed"
 
 NODE_STATUS_PENDING = "pending"
@@ -69,6 +74,13 @@ NODE_STATUS_RUNNING = "running"
 NODE_STATUS_RAN = "ran"
 NODE_STATUS_FAILED = "failed"
 NODE_STATUS_CANCELLED = "cancelled"
+
+#: ``node_id`` for run events that record something about the RUN, not a node
+#: (``recursion_limit_applied``, ``provider_calls``, ``concurrency_stats``,
+#: ``effect``). Not a node: it carries no node status and is never rendered as
+#: one. The literal used to be spelled at every emitter and every reader; the
+#: one reader that did not spell it put it in run summaries as a node.
+SYSTEM_EVENT_NODE_ID = "__system__"
 
 
 class RunCancelledError(Exception):
@@ -306,7 +318,6 @@ def _reset_workspace_reconciliation_after_fork() -> None:
 if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
     os.register_at_fork(after_in_child=_reset_workspace_reconciliation_after_fork)
 _WORKSPACE_SWEEP_INTERVAL_S = 30.0
-_WORKSPACE_PROCESS_STARTED_AT = time.time()
 #: Every workspace failure class the executor classifies (design D6): one
 #: actionable class per refusal, all the universe's to act on.
 WORKSPACE_FAILURE_KINDS: tuple[str, ...] = (
@@ -1330,6 +1341,11 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_base, local_owed=owed
         )
+    # Deliberately NOT announced: this is a guess from a missing local Future
+    # and elapsed time, not proof the owner died, and a run it wrongly ends can
+    # still finish and announce itself -- two wakes, two chains of an owner's
+    # loop (Codex refute 2026-09-30, P1). See
+    # docs/concerns/2026-09-30-run-liveness-has-no-owner-proof.md.
     if count:
         logger.info("Recovered %d orphaned in-flight runs on read", count)
     return count
@@ -4596,7 +4612,7 @@ def _invoke_graph(
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
                 step_index=step + _PENDING_OFFSET,
-                node_id="__system__",
+                node_id=SYSTEM_EVENT_NODE_ID,
                 status="effect",
                 started_at=_now(),
                 finished_at=_now(),
@@ -4763,7 +4779,7 @@ def _invoke_graph(
     record_event(base_path, RunStepEvent(
         run_id=run_id,
         step_index=0,
-        node_id="__system__",
+        node_id=SYSTEM_EVENT_NODE_ID,
         status="recursion_limit_applied",
         started_at=_now(),
         detail={"recursion_limit": recursion_limit},
@@ -5034,7 +5050,7 @@ def _invoke_graph(
         record_event(base_path, RunStepEvent(
             run_id=run_id,
             step_index=step + _PENDING_OFFSET,
-            node_id="__system__",
+            node_id=SYSTEM_EVENT_NODE_ID,
             status="concurrency_stats",
             started_at=_now(),
             detail=stats,
@@ -5049,7 +5065,7 @@ def _invoke_graph(
         record_event(base_path, RunStepEvent(
             run_id=run_id,
             step_index=step + _PENDING_OFFSET,
-            node_id="__system__",
+            node_id=SYSTEM_EVENT_NODE_ID,
             status="provider_calls",
             started_at=_now(),
             detail={"calls": provider_tracker["calls"]},
@@ -6467,7 +6483,7 @@ def _invoke_graph_resume(
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
                 step_index=step + _PENDING_OFFSET,
-                node_id="__system__",
+                node_id=SYSTEM_EVENT_NODE_ID,
                 status="effect",
                 started_at=_now(),
                 finished_at=_now(),
@@ -6646,11 +6662,16 @@ def _invoke_graph_resume(
     )
 
 
-def recover_in_flight_runs(base_path: str | Path) -> int:
+def recover_in_flight_runs(
+    base_path: str | Path, *, started_before: float | None = None,
+) -> int:
     """Interrupt legacy unowned in-flight rows, not family/prepared executions.
 
     Called at TinyAssets Server startup to clean up runs that were in
     flight when the server died. Returns the number of rows updated.
+    ``started_before`` limits the sweep to rows started before that instant:
+    the boot sweep passes this process's start, so a run it began itself is
+    never taken for a dead one.
 
     v1 contract: ``interrupted`` is terminal. Callers rerun with the
     same ``inputs_json`` to continue; the MCP surface exposes this via
@@ -6670,8 +6691,10 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
             "SELECT run_id, status, queue_universe_id, branch_def_id, actor, "
             "cause_principal FROM runs WHERE status IN (?, ?) "
             "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
-            "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
-            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
+            "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion
+            + ("" if started_before is None else " AND started_at < ?"),
+            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING)
+            + (() if started_before is None else (float(started_before),)),
         ).fetchall()
         # A run still waiting for the workspace never executed a node: it keeps
         # its place instead of being interrupted, and is nominated below.
@@ -6738,11 +6761,25 @@ def build_node_status_map(
     Later events dominate earlier ones: a node seen as ``ran`` wins over
     its earlier ``pending`` row. This is the shape Claude.ai visualises
     to auto-build a state diagram.
+
+    ``__system__`` rows are NOT nodes and never appear here. Every emitter of
+    one already says so ("recorded as a system row (never a node status)"), and
+    two readers already re-filtered it, but this fold did not -- so a run
+    summary listed ``__system__: recursion_limit_applied`` among its nodes and
+    the mermaid diagram drew a box for it. Live 2026-09-30 (runs
+    ``61184d8f21724915`` / ``4828ae18e2414e77``): the row reads as a failed step
+    of the workflow to both a user and a chatbot. The applied limit is still
+    surfaced, off the EVENT, as ``recursion_limit``
+    (``api/runs._compose_run_snapshot``).
     """
-    statuses: dict[str, str] = {nid: NODE_STATUS_PENDING for nid in declared_order}
+    statuses: dict[str, str] = {
+        nid: NODE_STATUS_PENDING
+        for nid in declared_order
+        if nid != SYSTEM_EVENT_NODE_ID
+    }
     for ev in events:
         node_id = ev.get("node_id", "")
-        if not node_id:
+        if not node_id or node_id == SYSTEM_EVENT_NODE_ID:
             continue
         statuses.setdefault(node_id, NODE_STATUS_PENDING)
         current = statuses[node_id]
@@ -6758,7 +6795,7 @@ def build_node_status_map(
         if priority.get(incoming, 0) >= priority.get(current, 0):
             statuses[node_id] = incoming
     # Preserve declared order, then append any out-of-order nodes.
-    ordered_ids = list(declared_order)
+    ordered_ids = [nid for nid in declared_order if nid != SYSTEM_EVENT_NODE_ID]
     for nid in statuses:
         if nid not in ordered_ids:
             ordered_ids.append(nid)
@@ -7231,6 +7268,16 @@ ACTIONABLE_BY: dict[str, str] = {
     # -> "chatbot", so the universe retried twice and then said "please
     # reconnect" in chat prose, and the connection stayed dead for ten days.
     "credential_rejected": "user",
+    # user — the destination's EDGE refused our client before the application
+    # saw the request. Nothing in the packet is wrong, the key was never
+    # presented to anything that reads keys, and an identical retry gets an
+    # identical block. The two real repairs are both the owner's: a client
+    # string this service accepts, declared on the connection, or an allowance
+    # at the destination. Live 2026-09-30: Cloudflare answered a UA-less POST
+    # `error code: 1010`, which landed in `external_write_failed` -> "chatbot",
+    # so the universe was told it was "a reason you can fix", retried twice,
+    # and the founder never heard about it.
+    "destination_blocked_client": "user",
     # user — opaque/internal; chatbot escalates raw error for human judgment
     "unknown": "user",
     "error": "user",
@@ -7329,6 +7376,42 @@ _EXTERNAL_WRITE_REFUSED_KINDS = (
 _EXTERNAL_WRITE_REFUSED_WORDS = (
     "consent", "grant", "revoked", "allowlist", "allow-list", "ssrf",
     "not allowed", "scope", "authority refused",
+)
+
+#: A CDN edge block, by the one wire format that states it unambiguously.
+#:
+#: Cloudflare sits in front of a large share of the services a universe builds
+#: a channel to (and in front of this platform), and it names its own refusals:
+#: the body is literally `error code: NNNN`. The CLIENT-block family is what
+#: this class is for -- 1010 (browser/client refused, the one seen live on
+#: 2026-09-30), 1012/1013, the 1006-1008 bans, and 1020 (an access rule).
+#:
+#: This class earns its place regardless of how OFTEN an edge blocks: whenever
+#: one does, the advice the row carried before was wrong in every part (see
+#: DESTINATION_BLOCKED_CLIENT_ACTION). Frequency changes the priority, never
+#: whether the guidance should be correct.
+#:
+#: Deliberately NOT here: 1015, which is rate limiting. Its repair is to slow
+#: down, not to change who we say we are, and guessing them into one class
+#: would give one of them the wrong advice. Another CDN's shape gets added when
+#: there is a reproduction to add it from -- a guessed pattern in a classifier
+#: is a wrong answer waiting for the first real one.
+_CDN_CLIENT_BLOCK_CODES = ("1006", "1007", "1008", "1010", "1012", "1013", "1020")
+_CDN_CLIENT_BLOCK_RE = re.compile(
+    r"error code:\s*(" + "|".join(_CDN_CLIENT_BLOCK_CODES) + r")\b"
+)
+
+DESTINATION_BLOCKED_CLIENT_ACTION = (
+    "The destination's CDN blocked this request at its edge - the service "
+    "itself never saw it. Nothing in your packet is wrong and the stored key "
+    "was never presented, so DO NOT rotate or widen anything, and do not retry: "
+    "an identical request gets an identical block. Say so plainly and name the "
+    "two fixes, both of which are the owner's. Either this service wants a "
+    "particular client string, which is declared ONCE on the connection (its "
+    "constant headers) rather than per call - raise that as the ask - or the "
+    "destination has to allow calls from this platform, which only they can do "
+    "at their end. Report the destination and the edge's own error code from "
+    "the external_write_errors row so they have something to act on."
 )
 
 CREDENTIAL_REJECTED_ACTION = (
@@ -7443,6 +7526,14 @@ def _classify_external_write(lower: str) -> str:
     for kind in _EXTERNAL_WRITE_REFUSED_KINDS:
         if f"[{kind}]" in lower:
             return "external_write_refused"
+    # BEFORE both nets below. A CDN edge block is a DELIVERED 4xx, so the
+    # credential check reads it next and the refusal-word net reads it after
+    # that -- and 1020's own wording ("access denied") is one word away from
+    # both. It is neither: the application never saw the request. Matching the
+    # edge's own error code first is exact, so it cannot be borrowed by either
+    # heuristic (live 2026-09-30).
+    if _CDN_CLIENT_BLOCK_RE.search(lower):
+        return "destination_blocked_client"
     # BEFORE the refusal-word net below, which is a heuristic over the whole
     # line: a revoked token's own body says "revoked", so a dead key classified
     # as an authority refusal and the agent was told to raise `extend_http` --
@@ -7461,6 +7552,8 @@ def external_write_suggested_action(failure_class: str) -> str:
         return EFFECT_BUDGET_EXHAUSTED_ACTION
     if failure_class == "external_write_refused":
         return EXTERNAL_WRITE_REFUSED_ACTION
+    if failure_class == "destination_blocked_client":
+        return DESTINATION_BLOCKED_CLIENT_ACTION
     if failure_class == "credential_rejected":
         return CREDENTIAL_REJECTED_ACTION
     if failure_class == "external_write_failed":

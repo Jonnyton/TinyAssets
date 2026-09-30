@@ -81,7 +81,8 @@ _SCHEMA = (
 )
 
 
-#: Rolling window the per-sender delivery limit is measured over.
+#: Rolling window an OWNER's optional per-sender policy is measured over. There
+#: is no platform default and no ceiling; see ``receiver_links`` for why.
 SENDER_RATE_WINDOW_SECONDS = 3600.0
 
 

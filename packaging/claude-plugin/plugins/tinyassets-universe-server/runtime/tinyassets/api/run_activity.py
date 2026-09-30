@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, TypedDict
 
 from tinyassets.providers.execution_receipt import normalize_execution_receipt
+from tinyassets.runs import SYSTEM_EVENT_NODE_ID
 
 ACTIVITY_EVIDENCE = (
     "Stored node events are local observations, not provider acknowledgments or "
@@ -117,7 +118,7 @@ def build_node_activity(
     activity: dict[str, NodeActivity] = {}
     for node in node_statuses:
         node_id, status = node.get("node_id"), node.get("status")
-        if isinstance(node_id, str) and node_id and node_id != "__system__":
+        if isinstance(node_id, str) and node_id and node_id != SYSTEM_EVENT_NODE_ID:
             activity[node_id] = _empty(node_id, _label(status, 80) or "unknown")
 
     for event in events:

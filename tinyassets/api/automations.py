@@ -36,14 +36,18 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe
 from tinyassets.automations import (
+    EVENT_WOKE_PREFIX,
     REFUSAL_KEY_PREFIX,
     STATE_ACTIVE,
     STATE_PAUSED,
+    TRIGGER_EVENT,
+    TRIGGER_ONCE,
     Automation,
     AutomationStore,
     AutomationUnavailable,
@@ -78,6 +82,11 @@ _UNAVAILABLE_DETAIL = {
     "not_owner_home": (
         "Automations run in your own home universe. Create this one there, or "
         "make this universe your home first."
+    ),
+    "timezone_invalid": (
+        "That timezone is not one I recognize. Pass an IANA name such as "
+        "'America/Los_Angeles', 'Europe/Berlin' or 'UTC' -- or leave it out "
+        "and I will use the zone your app reported."
     ),
     "no_serving_assignment": (
         "This universe has no model serving it yet, so a run would have "
@@ -186,6 +195,40 @@ def _next_due_at(automation: Automation) -> str:
         return ""
 
 
+def _cron_timezone(automation: Automation) -> str:
+    """The zone a cron row runs in; '' for a trigger with no wall-clock slot."""
+    from tinyassets.automations import TRIGGER_CRON, cron_zone_name
+
+    if automation.trigger_kind != TRIGGER_CRON:
+        return ""
+    return cron_zone_name(automation)
+
+
+def _schedule_local(automation: Automation) -> str:
+    """``7:00 AM America/Los_Angeles``, or '' when there is no single slot.
+
+    One place builds this string, so no surface can reintroduce a bare time --
+    which is the whole defect: the universe said "7am server time" because
+    nothing gave it the zone to say instead. A multi-slot expression (``0,30 *``)
+    has no single wall time to name and returns '', leaving ``cron_expr`` as the
+    honest answer rather than picking one of its slots to display.
+    """
+    from tinyassets.automations import TRIGGER_CRON, cron_zone_name
+    from tinyassets.schedule_timezone import describe_slot
+    from tinyassets.scheduler import CronParseError, CronSchedule
+
+    if automation.trigger_kind != TRIGGER_CRON:
+        return ""
+    try:
+        schedule = CronSchedule.parse(automation.cron_expr)
+    except CronParseError:
+        return ""
+    if len(schedule.hours) != 1 or len(schedule.minutes) != 1:
+        return ""
+    slot = dt_time(next(iter(schedule.hours)), next(iter(schedule.minutes)))
+    return describe_slot(slot, cron_zone_name(automation))
+
+
 def _projection(
     automation: Automation,
     *,
@@ -207,6 +250,15 @@ def _projection(
             "kind": automation.trigger_kind,
             "interval_seconds": automation.interval_seconds,
             "cron_expr": automation.cron_expr,
+            # WHICH CLOCK the cron expression is written in. A schedule was
+            # returned without one until 2026-09-30, so the only true thing a
+            # universe could tell its owner was "7am server time" -- which is
+            # midnight for a Pacific user. '' for a non-cron trigger, which has
+            # no wall-clock slot.
+            "timezone": _cron_timezone(automation),
+            # The same fact as prose, so a surface cannot render the time
+            # without the zone: "7:00 AM America/Los_Angeles".
+            "schedule_local": _schedule_local(automation),
             # A one-shot wake's instant (kind "once"); '' for a cadence.
             "not_before": automation.not_before,
             # A subscription's event and filter (kind "event").
@@ -350,6 +402,7 @@ def _create(
     event_type = document.get("event_type", "")
     event_filter = document.get("event_filter", {})
     overlap = document.get("overlap", "")
+    timezone_name = document.get("timezone", "")
 
     if not isinstance(name, str) or not name.strip():
         return _payload_invalid("name must be a non-empty string")
@@ -365,6 +418,8 @@ def _create(
         return _payload_invalid("event_filter must be a JSON object")
     if not isinstance(overlap, str):
         return _payload_invalid("overlap must be a string")
+    if not isinstance(timezone_name, str):
+        return _payload_invalid("timezone must be an IANA name string")
     # A bool is an int in Python; interval_seconds=true is a malformed payload,
     # not a zero-second interval.
     if isinstance(raw_interval, bool) or not isinstance(raw_interval, (int, str)):
@@ -386,6 +441,7 @@ def _create(
             event_type=event_type.strip(),
             event_filter=event_filter,
             overlap=overlap.strip(),
+            timezone_name=timezone_name.strip(),
             inputs=inputs,
         )
     except AutomationUnavailable as exc:
@@ -416,11 +472,11 @@ def _list(
     reasons = _recent_reasons(base, universe_id)
     bound = max(1, int(limit or 30))
     records = [
-        _projection(
+        _with_last_wake(base, row, _projection(
             row,
             actor=actor,
             recent_reason=reasons.get(f"{REFUSAL_KEY_PREFIX}{row.automation_id}", ""),
-        )
+        ))
         for row in rows[:bound]
     ]
     records.extend(_legacy_rows(base, universe_id))
@@ -430,6 +486,49 @@ def _list(
         "count": len(records),
         "include_retired": include_retired,
     }
+
+
+def _with_last_wake(
+    base: Path, automation: Automation, projected: dict[str, Any],
+) -> dict[str, Any]:
+    """An event subscription's latest wake and what its run did.
+
+    The subscription row records only that it fired (``woke:<id>``); the run
+    lives on the wake. Read here, never copied, and only a wake this
+    subscription stored: the id comes from the runtime, but the lookup checks.
+    """
+    if automation.trigger_kind != TRIGGER_EVENT:
+        return projected
+    wake_id = automation.last_reason.removeprefix(EVENT_WOKE_PREFIX)
+    if wake_id == automation.last_reason or not wake_id:
+        return projected
+    try:
+        wake = AutomationStore(base).get(wake_id)
+    except Exception:  # noqa: BLE001 - enrichment, never a precondition
+        logger.warning("last wake lookup failed for %r", wake_id, exc_info=True)
+        return projected
+    # Provenance, not only scope: a one-shot wake of the same owner that this
+    # subscription itself stored (refute concern, 2026-09-30).
+    event = (wake.inputs or {}).get("event") if wake is not None else None
+    if (
+        wake is None
+        or wake.universe_id != automation.universe_id
+        or wake.owner_principal_id != automation.owner_principal_id
+        or wake.trigger_kind != TRIGGER_ONCE
+        or not isinstance(event, dict)
+        or event.get("subscription_id") != automation.automation_id
+    ):
+        return projected
+    projected["last_wake"] = {
+        "automation_id": wake.automation_id,
+        "not_before": wake.not_before,
+        "last_run_id": wake.last_run_id,
+        "last_reason": wake.last_reason,
+        "last_finished_at": wake.last_finished_at,
+        "pause_reason": wake.pause_reason,
+        "retired_at": wake.retired_at,
+    }
+    return projected
 
 
 def _controllable(
@@ -590,13 +689,13 @@ def automations(
             return _not_found()
         reasons = _recent_reasons(base, uid)
         return {
-            "automation": _projection(
+            "automation": _with_last_wake(base, automation, _projection(
                 automation,
                 actor=actor,
                 recent_reason=reasons.get(
                     f"{REFUSAL_KEY_PREFIX}{automation.automation_id}", ""
                 ),
-            )
+            ))
         }
     return _control(
         base,

@@ -158,6 +158,29 @@ jobs:
         run: |
           python scripts/probe_retired_mcp_routes.py
 
+      # The app's public URL (tinyassets.io/app) is a Worker route like /mcp, so
+      # this workflow is where the BINDING can break: a deploy that dropped or
+      # narrowed the /app route would otherwise stay green while the app served
+      # from the website origin -- the 2026-04-19 P0 shape, one path over.
+      #
+      # This asserts the binding, read from the Cloudflare API, and NOT that
+      # /app serves the app end to end. That distinction is load-bearing: the
+      # end-to-end probe needs a daemon mounting /app, which ships from
+      # build-image -> deploy-prod, a different workflow. When both changed
+      # together on 2026-09-30 this step published the route correctly and then
+      # failed anyway because the old daemon was still answering. A gate that
+      # goes red during a correct rollout gets ignored, so it now checks only
+      # what this workflow owns. `probe_app_surface.py` runs in deploy-prod,
+      # after the daemon is current, with rollback authority.
+      - name: Prove the public routes are bound to this Worker
+        if: >
+          github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python scripts/verify_worker_routes.py --worker-name tinyassets-mcp-proxy
+
       - name: Summary
         if: always()
         run: |

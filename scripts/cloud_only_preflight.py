@@ -776,12 +776,22 @@ def audit_internal_origin_dns(
 
 _SCHEME_RE = re.compile(r"^(https?)://", re.IGNORECASE)
 
-# The canonical MCP surface is `/mcp` **and its descendants** (Hard Rule 11;
-# as-built `deploy/cloudflare-worker/wrangler.toml` binds `tinyassets.io/mcp*`
-# to the `tinyassets-mcp-proxy` Worker). Checking only `/mcp` would miss a
-# more-specific competing route that steals `/mcp/app`, so each of these is
+# Two public path regions must reach the expected Worker, each as a shell AND
+# its descendants (as-built `deploy/cloudflare-worker/wrangler.toml`, which binds
+# `tinyassets.io/mcp*`, `tinyassets.io/app` and `tinyassets.io/app/*` to the
+# `tinyassets-mcp-proxy` Worker):
+#
+#   /mcp  the connector endpoint (Hard Rule 11)
+#   /app  the web app (moved off `/mcp/app` on 2026-09-30, so it is no longer
+#         covered incidentally by the `/mcp*` route and needs its own binding)
+#
+# Checking only a region's shell would miss a more-specific competing route that
+# steals a descendant, so the shell and a descendant of each region are
 # adjudicated separately and all of them must land on the expected Worker.
-CANONICAL_PUBLIC_PATHS = ("/mcp", "/mcp/", "/mcp/app")
+CANONICAL_PUBLIC_REGIONS = ("/mcp", "/app")
+CANONICAL_PUBLIC_PATHS = tuple(
+    part for region in CANONICAL_PUBLIC_REGIONS for part in (region, region + "/")
+)
 
 
 def _parse_route_pattern(pattern: str) -> dict[str, Any] | None:
@@ -848,13 +858,15 @@ def audit_public_worker_route(
     public_name: str | None,
     worker_name: str | None,
 ) -> dict[str, Any]:
-    """The canonical `/mcp` surface must be served by the expected Worker.
+    """Both canonical surfaces (`/mcp`, `/app`) must be served by the expected
+    Worker.
 
     An apex CNAME alone does not establish that the public surface reaches the
     internal origin. This check observes only the configured script binding,
     not the deployed script's code or origin target. Route selection is per-URL and
-    most-specific-wins, so the question is which script wins at `/mcp` and at
-    its descendants -- not whether the hostname appears in the route list.
+    most-specific-wins, so the question is which script wins at each region's
+    shell and at its descendants -- not whether the hostname appears in the route
+    list.
     """
     if not token:
         return unknown(
@@ -989,29 +1001,60 @@ def audit_public_worker_route(
                 routes_matching_public_name=len(supported),
             )
 
-    # Finite sample URLs are not proof for every descendant. Require a
-    # continuous expected-worker prefix covering the canonical region, and
-    # decline a pass for any potentially overriding route outside the samples.
-    coverage = [p for p in supported if p["wildcard"]
-                and p["script"] == worker_name and _route_matches(p, host, "/mcp")]
-    if not coverage:
-        return unknown(
-            "public_worker_route", "continuous_mcp_coverage_unproved",
-            "the sampled URLs match, but no expected-worker prefix covers "
-            "the full canonical MCP region; inspect the remaining route shape",
-        )
-    covering_specificity = max(_specificity(p) for p in coverage)
-    for route in supported:
-        if route["scheme"] == "http" or route["script"] == worker_name:
-            continue
-        overlaps = (route["literal"].startswith("/mcp")
-                    or (route["wildcard"] and "/mcp".startswith(route["literal"])))
-        if overlaps and _specificity(route) >= covering_specificity:
-            return unknown(
-                "public_worker_route", "unsampled_mcp_override_requires_resolution",
-                "a differently bound route can override part of the canonical "
-                "region outside the checked URLs; a finite sample cannot clear it",
-            )
+    # Finite sample URLs are not proof for every descendant. For EACH canonical
+    # region require a continuous expected-worker prefix, and decline a pass for
+    # any potentially overriding route outside the samples. Per-region, not once
+    # for `/mcp`: the app left the `/mcp` region on 2026-09-30, so a single
+    # `/mcp*` wildcard no longer says anything about whether `/app/...` reaches
+    # the Worker.
+    #
+    # BOTH anchors are required, and requiring only the subtree was a real
+    # regression (gpt-6-astra review 2026-09-29). Counterexample it found:
+    # `/mcp` -> expected, `/mcp/*` -> expected, `/mcp*` -> other. Every sampled
+    # path is bound correctly and the subtree is covered, yet `/mcp?x=1` matches
+    # only the OTHER Worker -- a Cloudflare route is matched against the whole
+    # URL including the query, so the region's shell needs a wildcard of its own.
+    # `/mcp/*` does not cover `/mcp`, which is exactly why the two anchors
+    # cannot be collapsed.
+    for region in CANONICAL_PUBLIC_REGIONS:
+        anchors = {
+            "shell": region,            # covers `/mcp` itself and `/mcp?query`
+            "subtree": region + "/",    # covers every descendant
+        }
+        specificities = []
+        for anchor_name, anchor in anchors.items():
+            coverage = [p for p in supported if p["wildcard"]
+                        and p["script"] == worker_name
+                        and _route_matches(p, host, anchor)]
+            if not coverage:
+                return unknown(
+                    "public_worker_route", "continuous_region_coverage_unproved",
+                    "the sampled URLs match, but no expected-worker prefix "
+                    f"covers the canonical {region} region's {anchor_name}; a "
+                    "route is matched against the whole URL including the query, "
+                    "so an exact path proves nothing about the same path with a "
+                    "query string. Inspect the remaining route shape",
+                    uncovered_region=region, uncovered_anchor=anchor_name,
+                )
+            specificities.append(max(_specificity(p) for p in coverage))
+        # The WEAKEST anchor sets the bar: a competitor only has to outrank the
+        # least specific covering route to steal part of the region.
+        covering_specificity = min(specificities)
+        for route in supported:
+            if route["scheme"] == "http" or route["script"] == worker_name:
+                continue
+            overlaps = (route["literal"].startswith(region)
+                        or (route["wildcard"] and region.startswith(route["literal"])))
+            if overlaps and _specificity(route) >= covering_specificity:
+                return unknown(
+                    "public_worker_route", "unsampled_region_override_requires_resolution",
+                    "a differently bound route can override part of the canonical "
+                    f"{region} region outside the checked URLs; a finite sample "
+                    "cannot clear it. This also covers the documented "
+                    "`/prefix*` vs `/prefix/*` overlap, where literal length "
+                    "does not settle which route wins",
+                    contested_region=region,
+                )
 
     return fact(
         "public_worker_route", PASS, "canonical_paths_bound_to_expected_worker",

@@ -271,16 +271,14 @@ def test_a_foreground_run_survives_a_rotation_between_its_nodes(
     assert len(provider.calls) == 2
 
 
-def test_a_background_attempt_survives_a_rotation_between_its_nodes(tmp_path, monkeypatch):
-    """The founder's always-on agent: its attempt's one receipt spans a rotation
-    another session makes between two nodes, and the attempt still succeeds."""
+def test_a_background_automation_survives_a_rotation_between_its_nodes(
+    tmp_path, monkeypatch,
+):
+    """The founder's always-on agent: its run's one receipt spans a rotation
+    another session makes between two nodes, and the automation still succeeds."""
     from tests import test_background_budget_finalization_e2e as background
+    from tests.test_workflow_lanes_refresh import run_automation_once
     from tinyassets import subscription_refresh
-    from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
-
-    def serving():
-        background._seed_serving_assignment(tmp_path)
-        _redeposit_stale_alice(tmp_path)
 
     spent = _spend_as(monkeypatch)
     real_stale = subscription_refresh.document_is_stale
@@ -289,10 +287,12 @@ def test_a_background_attempt_survives_a_rotation_between_its_nodes(tmp_path, mo
         subscription_refresh, "document_is_stale",
         lambda document, now: armed["now"] and real_stale(document, now),
     )
+
     real_complete = background._CountingProvider.complete
     launches = {"n": 0}
 
     async def complete(self, *args, **kwargs):
+        # Node 1 has returned; node 2 has not launched yet.
         response = await real_complete(self, *args, **kwargs)
         launches["n"] += 1
         if launches["n"] == 1:
@@ -306,11 +306,12 @@ def test_a_background_attempt_survives_a_rotation_between_its_nodes(tmp_path, mo
 
     monkeypatch.setattr(background._CountingProvider, "complete", complete)
 
-    task_id, _audience, _consumer, _fake, _states = background._run_consumer_once(
-        tmp_path, monkeypatch, setup_serving=serving, policy=[None, None],
+    reason, fake, run = run_automation_once(
+        tmp_path, monkeypatch, policy=[None, None],
+        setup_serving=lambda: _redeposit_stale_alice(tmp_path),
     )
 
-    task = Epoch2BranchTaskAdapter(tmp_path).get(task_id)
     assert spent == ["r-1"], "the other session's rotation did not happen"
-    assert task is not None and task.status == "succeeded", task and task.error
+    assert reason.startswith("ok:ran:"), (reason, run and run.get("error"))
     assert launches["n"] == 2
+    assert len(fake.calls) == 2

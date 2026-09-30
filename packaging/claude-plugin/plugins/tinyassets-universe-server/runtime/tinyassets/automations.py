@@ -47,14 +47,24 @@ import logging
 import os
 import re
 import sqlite3
-import time
 import uuid
 from dataclasses import dataclass
+from datetime import date as _date
 from datetime import datetime, timedelta, timezone
+from datetime import time as _time
 from pathlib import Path
 from typing import Any
 
 from tinyassets.principals import named_principal
+from tinyassets.schedule_timezone import (
+    DEFAULT_TIMEZONE,
+    UnknownTimezone,
+    local_now,
+    normalize_timezone,
+    resolve_zone,
+    slot_instant,
+    slot_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +89,8 @@ TRIGGER_ONCE = "once"
 #: stores a ``once`` wake for it each time its event is emitted, so the fired
 #: run takes the same pump, fence, admission and authority checks as any other.
 TRIGGER_EVENT = "event"
+#: An event subscription's ``last_reason`` after it fired: ``woke:<wake id>``.
+EVENT_WOKE_PREFIX = "woke:"
 
 #: The events the engine emits (``automation_events.EVENT_FILTER_KEYS``). A
 #: subscription to anything else would be stored and never fire, so it is
@@ -99,7 +111,9 @@ EVENT_TYPES = frozenset({EVENT_RUN_COMPLETED, EVENT_PENDING_REQUEST_ANSWERED, EV
 #: just has to be named.
 EVENT_FILTER_KEYS: dict[str, frozenset[str]] = {
     EVENT_RUN_COMPLETED: frozenset({"branch_def_id", "outcome", "run_id"}),
-    EVENT_PENDING_REQUEST_ANSWERED: frozenset({"request_id", "kind", "status"}),
+    EVENT_PENDING_REQUEST_ANSWERED: frozenset(
+        {"request_id", "kind", "status", "item_id"}
+    ),
     EVENT_APP: frozenset({"name"}),
 }
 EVENT_REQUIRED_FILTER_KEYS: dict[str, frozenset[str]] = {
@@ -235,6 +249,8 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("automations", "not_before", "TEXT NOT NULL DEFAULT ''"),
     ("automations", "event_type", "TEXT NOT NULL DEFAULT ''"),
     ("automations", "event_filter_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("automations", "timezone", "TEXT NOT NULL DEFAULT ''"),
+    ("automations", "last_due_local", "TEXT NOT NULL DEFAULT ''"),
     ("automations", "overlap", "TEXT NOT NULL DEFAULT 'queue'"),
     ("universe_leases", "run_id", "TEXT NOT NULL DEFAULT ''"),
 )
@@ -434,6 +450,17 @@ class Automation:
     event_type: str = ""
     event_filter: dict[str, Any] | None = None
     overlap: str = "queue"
+    #: ``cron`` rows only. The IANA zone the expression is written in, resolved
+    #: ONCE at create (passed -> owner's account -> UTC) and authoritative
+    #: thereafter, so changing the account zone later cannot silently move an
+    #: existing schedule. Empty reads as UTC, which is what every row written
+    #: before 2026-09-30 already did.
+    timezone: str = ""
+    #: The local slot that last fired, ``YYYY-MM-DDTHH:MM`` in ``timezone``.
+    #: Separate from ``last_due_at`` (a UTC instant, and the run-claim fence
+    #: key) because a UTC key fires an AMBIGUOUS slot twice: the two 01:00s on a
+    #: fall-back day are different UTC minutes but one slot the owner asked for.
+    last_due_local: str = ""
     #: ``once`` rows only, read from ``automation_attempts``: how many attempts
     #: were claimed, and when the latest was.
     attempt_count: int = 0
@@ -591,6 +618,15 @@ def _from_row(row: sqlite3.Row) -> Automation:
         event_type=str(row["event_type"] or ""),
         event_filter=_decoded_filter(row["event_filter_json"]),
         overlap=str(row["overlap"] or OVERLAP_QUEUE),
+        # Guarded by `.keys()` like the two below: a row read through a SELECT
+        # that predates the column, or a test fixture built from an older
+        # schema, reads as unset rather than raising.
+        timezone=str(
+            (row["timezone"] if "timezone" in row.keys() else "") or ""
+        ),
+        last_due_local=str(
+            (row["last_due_local"] if "last_due_local" in row.keys() else "") or ""
+        ),
         attempt_count=int(
             (row["attempt_count"] if "attempt_count" in row.keys() else 0) or 0
         ),
@@ -705,9 +741,10 @@ class AutomationStore:
                     inputs_json, desired_state, pause_reason, revision,
                     created_at, updated_at, retired_at, last_due_at,
                     last_run_id, last_reason, last_finished_at, not_before,
-                    event_type, event_filter_json, overlap
+                    event_type, event_filter_json, overlap, timezone,
+                    last_due_local
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          ?, ?, ?)
+                          ?, ?, ?, ?, ?)
                 """,
                 (
                     automation.automation_id,
@@ -733,6 +770,8 @@ class AutomationStore:
                     automation.event_type,
                     json.dumps(automation.event_filter or {}, sort_keys=True),
                     automation.overlap,
+                    automation.timezone,
+                    automation.last_due_local,
                 ),
             )
             conn.execute("COMMIT")
@@ -804,8 +843,12 @@ class AutomationStore:
                 )
                 conn.execute(
                     "UPDATE automations SET last_due_at = ?, last_reason = ?, "
-                    "updated_at = ? WHERE automation_id = ?",
-                    (due_at, reason, stamp, automation_id),
+                    "last_due_local = ?, updated_at = ? WHERE automation_id = ?",
+                    (
+                        due_at, reason,
+                        self._slot_key(conn, automation_id, due_at),
+                        stamp, automation_id,
+                    ),
                 )
                 conn.execute("COMMIT")
             except BaseException:
@@ -865,12 +908,13 @@ class AutomationStore:
                 conn.execute(
                     "UPDATE automations SET last_due_at = ?, last_run_id = ?, "
                     f"last_reason = ?, last_finished_at = ?, {failures_sql}"
-                    "updated_at = ? WHERE automation_id = ?",
+                    "last_due_local = ?, updated_at = ? WHERE automation_id = ?",
                     (
                         due_at,
                         run_id,
                         reason if row_reason is None else row_reason,
                         stamp,
+                        self._slot_key(conn, automation_id, due_at),
                         stamp,
                         automation_id,
                     ),
@@ -882,7 +926,57 @@ class AutomationStore:
         finally:
             conn.close()
 
+    def record_event_fire(
+        self, automation_id: str, *, reason: str, now: datetime,
+    ) -> None:
+        """Roll an event subscription's latest fire onto its own row.
+
+        A subscription never runs itself: each matching event stores a one-shot
+        wake, so without this its ``last_*`` stayed empty however often it fired
+        and its owner could not tell a live subscription from a dead one.
+        ``last_due_at`` is when it fired; ``last_reason`` is ``woke:<wake id>``
+        or why the wake was refused. The wake's own run stays on the wake's row.
+        No ``revision`` bump: this is the runtime's record, not an owner edit.
+        An older fire that lands late never replaces a newer one, and never
+        moves ``updated_at`` back (Codex refute 2026-09-30, P2).
+        """
+        stamp = _iso(now)
+        conn = self._connect(create=True)
+        if conn is None:  # pragma: no cover - create=True always connects
+            raise RuntimeError("automation store connection is unavailable")
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE automations SET last_due_at = ?, last_reason = ?, "
+                    "updated_at = MAX(updated_at, ?) "
+                    "WHERE automation_id = ? AND trigger_kind = ? AND last_due_at <= ?",
+                    (stamp, reason, stamp, automation_id, TRIGGER_EVENT, stamp),
+                )
+        finally:
+            conn.close()
+
     # -- Cross-process per-universe lease ----------------------------------
+
+    @staticmethod
+    def _slot_key(
+        conn: sqlite3.Connection, automation_id: str, due_at: str,
+    ) -> str:
+        """The local slot a recorded cron ``due_at`` belongs to, or ``""``.
+
+        Read inside the caller's own transaction, so the expression and zone the
+        key is derived from are the ones the row holds at the moment it is
+        written. Non-cron rows have no wall-clock slot and store ``""``.
+        """
+        row = conn.execute(
+            "SELECT trigger_kind, cron_expr, timezone FROM automations "
+            "WHERE automation_id = ?",
+            (automation_id,),
+        ).fetchone()
+        if row is None or str(row["trigger_kind"]) != TRIGGER_CRON:
+            return ""
+        return slot_key_for_due(
+            str(row["cron_expr"] or ""), str(row["timezone"] or ""), due_at,
+        )
 
     def _lease_blocks(self, row: sqlite3.Row, holder: str, moment: datetime,
                       *, same_key: bool) -> bool:
@@ -1318,6 +1412,7 @@ def register_automation(
     event_type: str = "",
     event_filter: dict[str, Any] | None = None,
     overlap: str = "",
+    timezone_name: str = "",
     inputs: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> Automation:
@@ -1389,6 +1484,26 @@ def register_automation(
         trigger_kind, seconds, expr = _validated_trigger(interval_seconds, cron_expr)
         once_at = ""
 
+    # The zone the expression is written in, resolved ONCE and stored. Passed
+    # value wins; else the owner's own clock as their client reported it; else
+    # UTC, which is stated rather than guessed. Only `cron` has a wall-clock
+    # slot, so the other kinds store nothing and cannot be read as scheduled in
+    # a zone they do not use.
+    zone_stored = ""
+    if trigger_kind == TRIGGER_CRON:
+        requested = str(timezone_name or "").strip()
+        if requested:
+            try:
+                zone_stored = normalize_timezone(requested)
+            except UnknownTimezone:
+                raise AutomationUnavailable("timezone_invalid") from None
+        else:
+            from tinyassets.storage.account_timezone import get_account_timezone
+
+            zone_stored = (
+                get_account_timezone(base, owner_user_id=owner) or DEFAULT_TIMEZONE
+            )
+
     # Usage, not shape: a registration is an engine write against this
     # universe's admission window, like any other durable edit it makes. A node
     # that enqueues in a loop, or an owner who registers hundreds, is refused
@@ -1424,8 +1539,200 @@ def register_automation(
             event_type=kind_event,
             event_filter=event_match,
             overlap=policy,
+            timezone=zone_stored,
         ),
     )
+
+
+# -- Cron in a timezone -------------------------------------------------------
+#
+# A cron expression is a WALL-CLOCK statement, so it cannot be evaluated by
+# matching UTC fields (which is what this module did until 2026-09-30, via
+# `time.localtime` on a UTC container -- hence a Pacific owner being promised
+# 7am and scheduled for midnight). Slots are enumerated per LOCAL DATE and each
+# one resolved to an instant through the zone, which is also what makes the
+# decided DST policy expressible at all; `tinyassets.schedule_timezone` owns
+# that resolution and states the policy.
+
+#: How many local days back to enumerate when looking for the most recent slot.
+#: One is enough: a slot just after local midnight has to be findable from the
+#: minute before it, and nothing older than `_CRON_GRACE` is owed anyway.
+_CRON_LOOKBACK_DAYS = 1
+
+#: How late a slot may be claimed. This is the difference between "the poller
+#: was a few minutes late" and "the daemon was off all morning", and it must
+#: stay small for a reason the owner cares about: the pre-timezone code matched
+#: only the CURRENT minute, so a slot the daemon slept through was skipped. A
+#: generous window would turn that into a surprise run hours late -- a "morning
+#: note" arriving at lunchtime, or, worse, a schedule created at noon
+#: immediately firing for a slot that passed before it existed. An hour covers
+#: a restart and a deploy; past that the slot is missed, which is the behaviour
+#: this replaces and the honest one.
+_CRON_GRACE = timedelta(hours=1)
+
+
+def cron_zone_name(automation: Automation) -> str:
+    """The zone this automation's expression is written in.
+
+    Empty means UTC, which is exactly what every row written before the column
+    existed already did -- so an unmigrated row keeps its current behaviour
+    instead of silently moving.
+    """
+    return (automation.timezone or "").strip() or DEFAULT_TIMEZONE
+
+
+def _cron_slots_on(schedule: Any, local_day: _date) -> list[_time]:
+    """Wall-clock slots this expression matches on ``local_day``, ascending.
+
+    Day-of-month / month / day-of-week are matched on the LOCAL date, which is
+    the point: "every Monday at 7am" means the owner's Monday.
+    """
+    dow = (local_day.weekday() + 1) % 7
+    if not (
+        local_day.day in schedule.days_of_month
+        and local_day.month in schedule.months
+        and dow in schedule.days_of_week
+    ):
+        return []
+    return [
+        _time(hour, minute)
+        for hour in sorted(schedule.hours)
+        for minute in sorted(schedule.minutes)
+    ]
+
+
+def _latest_cron_slot(
+    automation: Automation,
+    moment: datetime,
+    *,
+    grace: timedelta | None = _CRON_GRACE,
+) -> tuple[_date, _time] | None:
+    """The most recent (local date, slot) whose instant is at or before ``moment``.
+
+    Candidates are ordered by INSTANT, not by wall-clock label. Across a
+    spring-forward gap the two orders differ -- several absent labels clamp to
+    the moment the gap closes, so a later label can hold an earlier or equal
+    instant -- and a label-ordered walk then picks a slot whose instant is not
+    the latest (Codex refute, PR #4128: Lord Howe ``15,30 2 * * *`` promised
+    15:45Z while selection owed 15:30Z).
+
+    ``grace`` bounds how late a slot may be claimed; ``None`` removes the bound,
+    which is what `slot_key_for_due` needs when it asks "which slot IS this
+    recorded instant" rather than "what is owed now".
+
+    A slot before the automation existed is never owed: the grace window is for
+    a poller that is late, not a licence to run history. Without that floor,
+    creating a 7am schedule at 07:59 local immediately owed 07:00 -- before
+    there was an automation (same review, claim 3).
+    """
+    from tinyassets.scheduler import CronParseError, CronSchedule
+
+    try:
+        schedule = CronSchedule.parse(automation.cron_expr)
+        # A stored zone can stop resolving -- the tz database drops and renames
+        # names, and a host-specific one may not exist on the next host at all
+        # (`docs/concerns/automation-timezone-host-aliases.md`). One such row
+        # must leave itself un-runnable, not raise out of the poll that is
+        # scanning EVERY automation for this universe. Same shape as the
+        # unparseable expression beside it.
+        zone = resolve_zone(cron_zone_name(automation))
+    except (CronParseError, UnknownTimezone):
+        logger.warning(
+            "automation %s cannot be scheduled: unusable cron expression or "
+            "timezone", automation.automation_id or "<unsaved>",
+        )
+        return None
+    born = _parse(automation.created_at)
+    today = local_now(moment, zone).date()
+    candidates: list[tuple[datetime, _date, _time]] = []
+    for back in range(_CRON_LOOKBACK_DAYS + 1):
+        local_day = today - timedelta(days=back)
+        for slot in _cron_slots_on(schedule, local_day):
+            instant = slot_instant(local_day, slot, zone)
+            if instant > moment:
+                continue
+            if grace is not None and moment - instant > grace:
+                continue
+            if born is not None and instant < born:
+                continue
+            candidates.append((instant, local_day, slot))
+    if not candidates:
+        return None
+    # Latest instant; the local slot breaks a tie deterministically, so two
+    # pollers reading the same row at the same wall-clock agree.
+    instant, local_day, slot = max(candidates)
+    return local_day, slot
+
+
+def slot_key_for_due(
+    cron_expr: str, zone_name: str, due_at: str,
+) -> str:
+    """The local slot key a recorded ``due_at`` belongs to, or ``""``.
+
+    ONE definition of "which slot", shared by selection and persistence.
+    `_due_instant` asks `_latest_cron_slot` for the slot owed at a moment; this
+    asks the SAME function at the recorded instant, so the key stored is by
+    construction the key that selection will later compare against.
+
+    The first version inverted instead -- re-deriving the slot by matching
+    instants -- and UTC to local is not injective across a spring-forward gap,
+    where every absent wall time clamps to the moment the gap closes and a real
+    slot can sit there too. Selection chose one of them and inversion chose
+    another (the earliest), so the recorded key never matched and the slot
+    stayed owed for the rest of the day (Codex refute, PR #4128, claim 2: Los
+    Angeles hourly at 10:00Z selected local 03:00 and stored 02:00). Deriving
+    both from one function removes the disagreement instead of trying to keep
+    two derivations in step.
+
+    Returns ``""`` for a non-cron row or an unparseable expression, which leaves
+    the UTC-instant bridge in `_already_fired` as the guard.
+    """
+    instant = _parse(due_at)
+    if instant is None or not (cron_expr or "").strip():
+        return ""
+    probe = Automation(
+        automation_id="", universe_id="", owner_principal_id="", name="",
+        branch_def_id="", trigger_kind=TRIGGER_CRON, interval_seconds=0,
+        cron_expr=cron_expr, inputs={}, desired_state=STATE_ACTIVE,
+        pause_reason="", revision=1, created_at="", updated_at="", retired_at="",
+        last_due_at="", last_run_id="", last_reason="", last_finished_at="",
+        timezone=zone_name or DEFAULT_TIMEZONE,
+    )
+    found = _latest_cron_slot(probe, instant, grace=None)
+    if found is None:
+        return ""
+    # The slot selection picks at this moment must actually BE this moment. It
+    # normally is -- `due_at` came from selection -- and demanding it means an
+    # instant no slot produces reports "" instead of quietly claiming the
+    # preceding slot, which would suppress that slot's real fire.
+    try:
+        zone = resolve_zone(cron_zone_name(probe))
+    except UnknownTimezone:
+        return ""
+    if slot_instant(found[0], found[1], zone) != instant:
+        return ""
+    return slot_key(*found)
+
+
+def _already_fired(automation: Automation, local_day: _date, slot: _time) -> bool:
+    """Has this LOCAL slot already fired?
+
+    Keyed on the local slot, not the UTC instant, because an ambiguous slot has
+    two instants and is one slot: 01:00 on a Los Angeles fall-back day is both
+    08:00Z and 09:00Z, and the owner asked for one 1am run.
+
+    Bridge for a row written before `last_due_local` existed: fall back to
+    comparing the stored UTC instant, so an upgrade cannot re-fire a slot that
+    already ran.
+    """
+    key = slot_key(local_day, slot)
+    if automation.last_due_local:
+        return key <= automation.last_due_local
+    previous = _parse(automation.last_due_at)
+    if previous is None:
+        return False
+    zone = resolve_zone(cron_zone_name(automation))
+    return slot_instant(local_day, slot, zone) <= previous
 
 
 # -- Due selection ------------------------------------------------------------
@@ -1474,16 +1781,16 @@ def _due_instant(automation: Automation, now: datetime) -> str:
         # run, not ten. The naive anchor+interval form replays the backlog.
         return _iso(anchor + timedelta(seconds=periods * automation.interval_seconds))
     if automation.trigger_kind == TRIGGER_CRON:
-        from tinyassets.scheduler import _cron_matches
-
-        bucket = moment.replace(second=0, microsecond=0)
-        if last is not None and last >= bucket:
+        # The owner's clock, from the row -- not the process's. See
+        # `cron_zone_name` and `tinyassets.schedule_timezone`.
+        found = _latest_cron_slot(automation, moment)
+        if found is None:
             return ""
-        # Local time, matching the scheduler: a cron expression an owner wrote
-        # means their clock, and two cron surfaces disagreeing would be worse.
-        if not _cron_matches(automation.cron_expr, time.localtime(moment.timestamp())):
+        local_day, slot = found
+        if _already_fired(automation, local_day, slot):
             return ""
-        return _iso(bucket)
+        zone = resolve_zone(cron_zone_name(automation))
+        return _iso(slot_instant(local_day, slot, zone))
     if automation.trigger_kind == TRIGGER_ONCE:
         due = _once_due(automation)
         if due is None or due > moment:
@@ -1524,30 +1831,40 @@ def next_due_at(automation: Automation, now: datetime) -> str:
 
         try:
             schedule = CronSchedule.parse(automation.cron_expr)
-        except CronParseError:
+            # Guarded together with the expression, and for the same reason: a
+            # stored zone that no longer resolves makes a row un-runnable, and
+            # this function is read by the projection every time an automation
+            # is listed. "No next fire" is the truthful answer for a row that
+            # cannot be scheduled.
+            zone = resolve_zone(cron_zone_name(automation))
+        except (CronParseError, UnknownTimezone):
             return ""
-        # The current minute is either not a match or already fired.
-        bucket = moment.replace(second=0, microsecond=0) + timedelta(minutes=1)
-        limit = moment + NEXT_DUE_HORIZON
-        while bucket <= limit:
-            local = time.localtime(bucket.timestamp())
-            dow = (local.tm_wday + 1) % 7
-            if not (
-                local.tm_mday in schedule.days_of_month
-                and local.tm_mon in schedule.months
-                and dow in schedule.days_of_week
-            ):
-                # Skip to the next local midnight.
-                bucket += timedelta(
-                    minutes=(23 - local.tm_hour) * 60 + (60 - local.tm_min)
+        # Walks LOCAL DATES and resolves each day's slots through the zone, so
+        # this agrees with `_due_instant` by construction rather than by two
+        # implementations happening to match. The previous form walked UTC
+        # minutes and skipped by arithmetic derived from local fields; that
+        # survived DST (measured), but it read the PROCESS's clock, which is the
+        # defect this replaces.
+        today = local_now(moment, zone).date()
+        limit = (moment + NEXT_DUE_HORIZON).astimezone(zone).date()
+        local_day = today
+        while local_day <= limit:
+            # Sorted by INSTANT within the day: wall-label order is not instant
+            # order across a spring-forward gap, where absent labels clamp to
+            # the gap's end. Promising the first label past `moment` returned an
+            # instant LATER than the one selection would owe, so the promised
+            # slot was never the one that ran (Codex refute, PR #4128).
+            ahead = sorted(
+                instant
+                for instant in (
+                    slot_instant(local_day, slot, zone)
+                    for slot in _cron_slots_on(schedule, local_day)
                 )
-                continue
-            if local.tm_hour not in schedule.hours:
-                bucket += timedelta(minutes=60 - local.tm_min)
-                continue
-            if local.tm_min in schedule.minutes:
-                return _iso(bucket)
-            bucket += timedelta(minutes=1)
+                if instant > moment
+            )
+            if ahead:
+                return _iso(ahead[0])
+            local_day += timedelta(days=1)
     return ""
 
 
@@ -2304,6 +2621,7 @@ __all__ = [
     "EVENT_RUN_COMPLETED",
     "EVENT_TYPES",
     "TRIGGER_EVENT",
+    "EVENT_WOKE_PREFIX",
     "TRIGGER_ONCE",
     "REFUSAL_KEY_PREFIX",
     "WAITING_FOR_PREVIOUS_RUN",

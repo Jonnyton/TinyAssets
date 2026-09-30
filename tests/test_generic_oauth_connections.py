@@ -52,7 +52,7 @@ VERIFIER = "v" * 43
 CHALLENGE = base64.urlsafe_b64encode(hashlib.sha256(VERIFIER.encode()).digest()).rstrip(
     b"=").decode()
 RESOURCE = "https://tinyassets.io/mcp"
-REDIRECT = "https://tinyassets.io/mcp/app/model-callback/connect"
+REDIRECT = "https://tinyassets.io/app/model-callback/connect"
 
 
 # --------------------------------------------------------------------------- #
@@ -263,7 +263,7 @@ def _post(operation, data, *, home=UID):
             app=Starlette(routes=onboarding.onboarding_routes())),
             base_url="https://tinyassets.io",
         ) as client:
-            return await client.post("/mcp/app/model-connect/" + operation, json=data,
+            return await client.post("/app/model-connect/" + operation, json=data,
                                      headers={"Origin": "https://tinyassets.io"})
     return asyncio.run(run())
 
@@ -483,8 +483,8 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     from tinyassets.auth.middleware import _auth_challenge_path
 
     # The fixed callback is a public shell; exchange stays behind the bearer.
-    assert _auth_challenge_path("/mcp/app/model-callback/connect") is False
-    assert _auth_challenge_path("/mcp/app/model-connect/oauth_exchange") is True
+    assert _auth_challenge_path("/app/model-callback/connect") is False
+    assert _auth_challenge_path("/app/model-connect/oauth_exchange") is True
 
     with _as(OWNER):
         asked = _ask()
@@ -763,7 +763,7 @@ const document={createElement:t=>new El(t)};
 const storage=new Map(),navigations=[],posts=[];
 const sessionStorage={getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),
  removeItem:k=>storage.delete(k)};
-const window={location:{pathname:'/mcp/app',search:'',assign:u=>navigations.push(u)}};
+const window={location:{pathname:'/app',search:'',assign:u=>navigations.push(u)}};
 const history={replaceState:(a,b,u)=>{window.location.pathname=u;window.location.search='';}};
 const NATIVE=false,token=()=>'t',authHeaders=()=>({}),ensureFreshToken=async()=>{};
 const randToken=()=> 'v'.repeat(43),challengeFor=async()=> 'c'.repeat(43);
@@ -811,7 +811,7 @@ console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag
 """)
     assert out["first"] == "Sign in with auth.tasklark.io"
     assert out["folded"] == "details" and out["foldedHoldsKey"] is True
-    assert out["posts"] == [{"url": "/mcp/app/model-connect/oauth_begin",
+    assert out["posts"] == [{"url": "/app/model-connect/oauth_begin",
                              "body": {"request_id": "r1", "code_challenge": "c" * 43}}]
     assert out["navigations"][0].startswith("https://auth.tasklark.io/authorize")
     assert out["saved"]["flow"] == "f" * 43 and out["saved"]["verifier"] == "v" * 43
@@ -823,7 +823,7 @@ def test_the_callback_is_taken_before_account_sign_in_and_only_once():
     out = _run_rail("""
 storage.set('ta_connect_oauth',JSON.stringify({verifier:'v'.repeat(43),flow:'f'.repeat(43),
   title:'Connect tasklark',expires:Date.now()+60000}));
-window.location.pathname='/mcp/app/model-callback/connect';
+window.location.pathname='/app/model-callback/connect';
 window.location.search='?code=abc&state='+'f'.repeat(43);
 const taken=ConnectOAuth.takeCallback();
 const again=ConnectOAuth.takeCallback();
@@ -833,7 +833,7 @@ console.log(JSON.stringify({taken,again,path:window.location.pathname,search:win
     assert out["taken"] == {"flow": "f" * 43, "code": "abc", "code_verifier": "v" * 43,
                             "title": "Connect tasklark"}
     assert out["again"] is None  # the URL is stripped; nothing is left to redeem
-    assert out["path"] == "/mcp/app" and out["search"] == "" and out["left"] is False
+    assert out["path"] == "/app" and out["search"] == "" and out["left"] is False
 
 
 def test_no_vendor_names_in_the_oauth_code():

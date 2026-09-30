@@ -9,7 +9,7 @@ deposit succeeded and chat worked on it, and every run failed:
 `get_status` said `no_serving_runtime` -- "registering a provider is not
 selecting it". The deposit result carried `next: bind_serving_provider` as a
 hint, to a surface where nobody reads hints. The claude path and the phone
-already finish the gesture through `/mcp/app/serving/bind`; the pasted
+already finish the gesture through `/app/serving/bind`; the pasted
 credential path printed the receipt and stopped.
 
 The deposit itself stays write-only: the spec

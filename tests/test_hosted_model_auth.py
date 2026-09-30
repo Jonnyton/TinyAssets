@@ -80,10 +80,10 @@ def test_authorize_url_uses_fixed_origin_and_distinct_callback():
     assert set(result) == {"flow", "authorize_url", "display_name", "expires_in"}
 
 
-@pytest.mark.parametrize("path", ["/mcp/app", "/mcp/app/model-callback/",
-    "/mcp/app/model-callback/" + "x" * 42,
-    "/mcp/app/model-callback/" + "x" * 43 + "/exchange",
-    "/mcp/app/model-callback/" + "x" * 43 + "\n"])
+@pytest.mark.parametrize("path", ["/app", "/app/model-callback/",
+    "/app/model-callback/" + "x" * 42,
+    "/app/model-callback/" + "x" * 43 + "/exchange",
+    "/app/model-callback/" + "x" * 43 + "\n"])
 def test_callback_exemption_is_narrow(path):
     assert not auth.is_callback_path(path)
 

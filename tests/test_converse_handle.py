@@ -374,9 +374,10 @@ def test_exchange_is_atomic_and_retention_bounded(tmp_path, monkeypatch):
     # empty reply -> nothing recorded (no half-turn)
     assert cs.record_exchange(tmp_path / "u-x", "s", "q2", "") is False
     assert len(cs.load_recent(tmp_path / "u-x", "s", limit=100)) == 2
-    # retention: the store itself is bounded, oldest first
-    monkeypatch.setattr(cs, "RETENTION_TURNS", 6)
+    # no retention: the store keeps every turn, oldest first
     for i in range(10):
         cs.record_exchange(tmp_path / "u-x", "s", f"q{i}", f"a{i}")
-    kept = cs.load_recent(tmp_path / "u-x", "s", limit=100)
-    assert len(kept) == 6 and kept[-1].text == "a9" and kept[0].text == "q7"
+    kept = cs.load_recent(tmp_path / "u-x", "s", limit=500)
+    assert len(kept) == 22, "2 earlier turns + 20 new ones, none deleted"
+    assert kept[0].text == "q1" and kept[-1].text == "a9"
+    assert not hasattr(cs, "RETENTION_TURNS"), "the retention ceiling is gone"

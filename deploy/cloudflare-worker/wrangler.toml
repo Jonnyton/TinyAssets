@@ -3,7 +3,8 @@
 #
 # Deploy targets:
 #   zone: tinyassets.io
-#   route: tinyassets.io/mcp*  (canonical /mcp proxy plus retired-path guard)
+#   routes: tinyassets.io/mcp*  (canonical /mcp proxy plus retired-path guard)
+#           tinyassets.io/app*  (the web app; siblings handed to the website)
 #
 # Reference: https://developers.cloudflare.com/workers/wrangler/configuration/
 
@@ -19,14 +20,49 @@ compatibility_date = "2025-10-01"
 # bundle small + avoids tree-shake surprises.
 compatibility_flags = []
 
-# Route — deliberately matches any request whose path starts with /mcp.
-# worker.js proxies only canonical /mcp and returns the same ordinary 404 for
-# every retired /mcp-directory* variant. Narrowing this binding would leak
-# stale calls to the website origin and make rejection method-dependent.
-# Cloudflare route syntax uses `*` as a match-any suffix.
+# Routes — two public path families reach the daemon through this Worker.
+#
+#   tinyassets.io/mcp*  the MCP connector endpoint (Hard Rule 11 canonical URL)
+#                       plus the retired /mcp-directory* variants, which
+#                       worker.js terminates as ordinary 404s. Narrowing this
+#                       binding would leak stale calls to the website origin and
+#                       make rejection method-dependent.
+#   tinyassets.io/app*  the web app -- shell, API subtree, and the
+#                       QUERY-BEARING returns (2026-09-30 move off /mcp/app).
+#                       The SPA and its API now live in the apex /app subtree,
+#                       so the Worker must bind it or the apex website origin
+#                       answers and the app is dark. This route is the infra
+#                       half of the move: without it the daemon's /app routes
+#                       are unreachable from the public URL.
+#
+#                       It MUST be the suffix wildcard, not an exact
+#                       `tinyassets.io/app` plus `tinyassets.io/app/*`. A
+#                       Cloudflare route is matched against the ENTIRE URL
+#                       INCLUDING THE QUERY STRING, so an exact `/app` route
+#                       matches only a bare `/app` -- and the two URLs that
+#                       carry the whole sign-in and billing flow,
+#                       `/app?code=...&state=...` (AuthKit return, built at
+#                       tinyassets/onboarding/app.html `redirectUri()`) and
+#                       `/app?subscribed=1` (Stripe return), would match
+#                       NOTHING and land on the website origin. Caught by a
+#                       gpt-6-astra review round, 2026-09-29.
+#
+#                       The cost of the wildcard: `*` matches any character,
+#                       not a path segment, so this binding also captures apex
+#                       assets whose path merely STARTS with "app" --
+#                       `/apple-touch-icon.png` is one the site really serves.
+#                       worker.js `belongsToWebsite` hands exactly those back
+#                       to the website origin, so widening the route does not
+#                       take the site's paths away. Do not narrow this route
+#                       without re-proving the callback URLs.
+#
+# Cloudflare route syntax uses `*` as a match-any wildcard (zero or more of ANY
+# character -- it does not respect path-segment or label boundaries).
 # Zone name must match the Cloudflare zone that owns tinyassets.io.
+# Reference: https://developers.cloudflare.com/workers/configuration/routing/routes/
 routes = [
     { pattern = "tinyassets.io/mcp*", zone_name = "tinyassets.io" },
+    { pattern = "tinyassets.io/app*", zone_name = "tinyassets.io" },
 ]
 
 # Observability — enable request logs so post-P0 debugging has a trail.

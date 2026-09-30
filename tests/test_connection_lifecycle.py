@@ -211,7 +211,7 @@ def test_app_lists_and_removes_without_llm(rig, monkeypatch):
     conn, _ = source(rig)
     _home(monkeypatch, "u-owner")
     status, doc = _drive_get(
-        "/mcp/app/connections", identity=_user("owner"), monkeypatch=monkeypatch
+        "/app/connections", identity=_user("owner"), monkeypatch=monkeypatch
     )
     assert status == 200, doc
     assert len(doc["connections"]) == 1
@@ -235,7 +235,7 @@ def test_app_foreign_owner_cannot_inspect_or_remove(rig, monkeypatch):
     conn, _ = source(rig)
     _home(monkeypatch, "u-owner")
     status, doc = _drive_get(
-        "/mcp/app/connections", identity=_user("foreign"), monkeypatch=monkeypatch
+        "/app/connections", identity=_user("foreign"), monkeypatch=monkeypatch
     )
     assert status == 403, doc
     assert (
@@ -326,7 +326,7 @@ def post_connections(body, *, identity, monkeypatch, origin="https://tinyassets.
                     {
                         "type": "http",
                         "method": "POST",
-                        "path": "/mcp/app/connections",
+                        "path": "/app/connections",
                         "headers": [
                             (b"origin", origin.encode()),
                             (b"content-type", b"application/json"),

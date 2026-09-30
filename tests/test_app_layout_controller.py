@@ -46,9 +46,23 @@ for(const delta of [{created_by:'bob'},{universe_id:'u-bob'},{status:'serving'},
  {configuration:{role:'app_experience',provider_ref:'secret'}},{configuration:{role:'other'}}])assert(!a.eligible({...binding,...delta}));
 rows=[{...binding,created_by:'bob'}];assert.deepEqual(await a.currentBindings(),[]);
 rows=[binding,{...binding,agent_binding_id:'b2'}];await assert.rejects(a.currentBindings(),/ambiguous/);
-rows=Array.from({length:100},()=>({...binding,created_by:'bob'}));await assert.rejects(a.currentBindings(),/incomplete/);
+// A hundred bindings that belong to somebody else no longer stop anything: the
+// old LIST_LIMIT of 100 flagged the list incomplete and disabled Apply here.
+// The loader pages until the list comes back short, then filters.
+rows=Array.from({length:100},(x,i)=>({...binding,agent_binding_id:'other-'+i,created_by:'bob'}));
+assert.deepEqual(await a.currentBindings(),[]);
+assert(a.loaded,'the list loaded rather than refusing');
+// And the owner's ONE eligible installation is still found past that hundred.
+const past=rows.concat([binding]);rows=past;
+assert.deepEqual(await a.currentBindings(),[binding]);
+// apply() writes nothing while the choice is ambiguous. That is the surviving
+// guard of this shape: an over-long list is no longer a state to be blocked on,
+// so the block has to come from two eligible installations, which it does.
+rows=[binding,{...binding,agent_binding_id:'b2'}];
+await assert.rejects(a.currentBindings(),/ambiguous/);
 a.inspected={read:{ok:true,layout:{surfaces:['models','conversation'],density:'compact'}}};
 a.draft=a.draftFrom(a.inspected.read.layout);calls=[];await a.apply();assert.equal(calls.length,0);
+a.candidates=[];rows=past.slice(0,100);assert.deepEqual(await a.currentBindings(),[]);
 const component={kind:a.KIND,version:1,surfaces:['models','conversation'],density:'compact'};
 assert(a.parseComponent(component).ok);assert(!a.parseComponent({...component,html:'<script>'}).ok);
 assert(!a.parseComponent({...component,surfaces:['models','models']}).ok);
@@ -65,7 +79,7 @@ assert.equal(a.root.children[0].children[0],$('model-bar'));
 assert.equal($('composer-input').value,'private unsent draft');a.restore();
 assert.deepEqual(host.children,original);assert.deepEqual(body.children,bodyOriginal);
 assert.equal($('composer-input').value,'private unsent draft');
-a.enabled=true;a.home='u-alice';a.principal='alice';a.loaded=true;a.saturated=false;a.candidates=[];
+a.enabled=true;a.home='u-alice';a.principal='alice';a.loaded=true;a.candidates=[];
 rows=[binding];calls=[];
 a.installation={binding_id:'b',revision:1,configuration:binding.configuration};
 let wrongReadback=true;

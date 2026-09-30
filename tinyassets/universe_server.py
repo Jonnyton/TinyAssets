@@ -4656,7 +4656,7 @@ def create_streamable_http_app() -> Starlette:
             *starlette_discovery_routes(),
             _PulseRoute("/mcp/pulse", _pulse_endpoint, methods=["GET"]),
             *_inbound_routes,
-            # Onboarding SPA at /mcp/app — same-origin to /mcp, dark-flagged
+            # Onboarding SPA at /app — same-origin to /mcp, dark-flagged
             # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted
             # before the MCP transport so the exact path resolves first.
             *onboarding_routes(),
@@ -4849,6 +4849,17 @@ def main(
         ).start()
     except Exception:  # noqa: BLE001 - boot must not fail on budget maintenance
         logger.exception("served budget: maintenance not started")
+
+    # Take the run-recovery lock and interrupt what the previous process left in
+    # flight BEFORE starting anything that runs: the engine MCP children serve
+    # run tools too, and whichever process sweeps must be the one whose runs
+    # are not in the table yet. A deploy-killed run is announced as interrupted
+    # here, which is what lets an owner's run_completed loop survive a deploy.
+    # The maintenance block above also calls it, but inside a try that an
+    # earlier failure skips; this call is the one boot can rely on (once-only).
+    from tinyassets.api.runs import _ensure_runs_recovery
+
+    _ensure_runs_recovery()
 
     # Enforceable visibility preflight (also fires in the HTTP app's lifespan;
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so
