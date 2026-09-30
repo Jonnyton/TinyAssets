@@ -241,11 +241,17 @@ def admit(
     token: str,
     universe_id: str,
     token_max: int,
-    universe_max: int,
     window_s: float,
     now: float | None = None,
 ) -> bool:
-    """Durable atomic sliding-window RATE admission (Codex #3). True if admitted."""
+    """Durable atomic sliding-window per-TOKEN rate admission. True if admitted.
+
+    Per-token only. The per-universe aggregate that used to sit beside it was an
+    account limit, and an account has exactly two -- cloud bytes and concurrent
+    agent seats (founder, 2026-09-30). This one survives because it is not aimed
+    at the account holder: ``/hooks/<token>`` is an unauthenticated public
+    ingress, and the flood it stops comes from a stranger who found the URL.
+    """
     token_hash = _hash_token(token)
     ts = time.time() if now is None else now
     cutoff = ts - window_s
@@ -257,11 +263,7 @@ def admit(
             "SELECT COUNT(*) FROM webhook_admissions WHERE token_hash = ? AND ts > ?",
             (token_hash, cutoff),
         ).fetchone()[0]
-        uni_count = conn.execute(
-            "SELECT COUNT(*) FROM webhook_admissions WHERE universe_id = ? AND ts > ?",
-            (universe_id, cutoff),
-        ).fetchone()[0]
-        if tok_count >= token_max or uni_count >= universe_max:
+        if tok_count >= token_max:
             conn.commit()
             return False
         conn.execute(
@@ -321,19 +323,23 @@ def reserve_dispatch(
     *,
     token: str,
     universe_id: str,
-    cap: int,
     ttl_s: float,
     terminal_run_ids: Iterable[str] = (),
     now: float | None = None,
 ) -> tuple[str | None, str]:
-    """ATOMIC combined active-check + in-flight reservation (Codex #3 + #5).
+    """ATOMIC combined active-check + in-flight reservation (Codex #3).
 
     In ONE ``BEGIN IMMEDIATE`` transaction: (1) re-verify the token is still ACTIVE — this
     serializes with a concurrent ``revoke`` on the same DB, so a revoke cannot land between
     the check and the reservation; (2) reconcile away reservations whose run finished
-    (``terminal_run_ids``) or that were abandoned (unlinked past TTL); (3) reserve a slot IFF
-    the universe is under ``cap``. Returns ``(reservation_id, "ok")`` on success, else
-    ``(None, "revoked")`` or ``(None, "busy")``."""
+    (``terminal_run_ids``) or that were abandoned (unlinked past TTL); (3) reserve.
+    Returns ``(reservation_id, "ok")`` on success, else ``(None, "revoked")``.
+
+    There is no in-flight ceiling. The ``cap`` this took used to answer ``"busy"``
+    and drop the delivery with a 503 past 20 concurrent runs; an inbound-triggered
+    run now queues for a seat like any other run (founder, 2026-09-30: over the
+    seat count work WAITS and is never refused). The reservation row stays: it is
+    what serializes against revoke and what ``link_dispatch`` binds to a run."""
     token_hash = _hash_token(token)
     ts = time.time() if now is None else now
     terminal = [t for t in terminal_run_ids if t]
@@ -357,13 +363,6 @@ def reserve_dispatch(
             "DELETE FROM webhook_inflight WHERE run_id IS NULL AND ts <= ?",
             (ts - ttl_s,),
         )
-        n = conn.execute(
-            "SELECT COUNT(*) FROM webhook_inflight WHERE universe_id = ?",
-            (universe_id,),
-        ).fetchone()[0]
-        if n >= cap:
-            conn.commit()
-            return None, "busy"
         reservation_id = secrets.token_hex(16)
         conn.execute(
             "INSERT INTO webhook_inflight (reservation_id, universe_id, run_id, ts) "

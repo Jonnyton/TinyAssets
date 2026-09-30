@@ -1903,9 +1903,10 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
     does NOT run -- the only code that runs is ``script``. Bounds: markup 32768,
     style 16384, script 32768 characters, the whole component under 49152 UTF-8
-    bytes. There is no limit on how many UIs a library holds -- only on its total
-    size, 4194304 bytes. Nothing I write is rewritten, reformatted or sanitized on
-    the way in or out.
+    bytes. Those bound ONE component. There is no limit on how many UIs my library
+    holds and none on its total size -- the bytes count toward my universe's
+    storage, like everything else I keep. Nothing I write is rewritten, reformatted
+    or sanitized on the way in or out.
 
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
     token, no reach into the surrounding page, and NO network of its own -- fetch,
@@ -1944,7 +1945,8 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     **Sharing one.** Publishing is the person's own deliberate act, and it is not
     a call I have here: they publish the UI component under ``components`` of a
     public definition (the connector's ``write_graph target="agent"
-    operation="publish"``), and a UI I only install stays private. To use someone else's, I read it with
+    operation="publish"``), and a UI I only install stays private. To use
+    someone else's, I read it with
     ``read_commons_shape agent_definition_id=...`` and save its component into
     this person's ``ui_library``; that copy is theirs, the same thing the
     connector's ``operation="remix"`` does. A copy always runs as the person who
@@ -1972,7 +1974,7 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
           "allowed_senders": [],             # exact principals; [] is nobody
           "open_to_all": true,               # OR: any authenticated user
           "discoverable": true,              # listed so others can find it
-          "sender_rate_limit": 60,           # accepted sends per sender per hour
+          "sender_rate_limit": 0,            # MY optional policy; 0 = none
           "description": "what I accept and what I do with it"}
 
     It returns a ``receiver_id`` and ``generation``. Four things worth knowing:
@@ -1987,6 +1989,11 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
       tightened ``sender_rate_limit``. Closing an exposure is an explicit
       ``"open_to_all": false`` / ``"discoverable": false``, or ``operation="revoke"``
       to stop every sender at once.
+    * ``sender_rate_limit`` is MY policy on MY receiver, and it is off by default.
+      Any positive number is accepted sends per sender per hour, with no ceiling;
+      0 is no limit. The platform sets none for me: a delivered run queues for one
+      of my agent seats, so a chatty sender waits rather than spending something I
+      cannot get back.
     * ``input_keys`` is the whole advertised contract. Everything else about the
       workflow — the rest of its steps, a decision step I run on what arrives, my
       other senders, my other deliveries — a sender never sees.
@@ -2040,9 +2047,10 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     **Refusals, and what each means.** ``receiver_or_link_not_found`` covers "does
     not exist", "not open to me" and "revoked" on purpose — it discloses nothing
     either way. ``receiver_generation_changed``: re-read the contract and reconnect.
-    ``receiver_sender_rate_limit_exceeded``: the owner's per-sender hourly cap, and
-    the message names the limit and what I have sent. ``occurrence_conflict``: I
-    reused an ``occurrence_id`` with different content.
+    ``receiver_sender_rate_limit_exceeded``: only if that owner chose a per-sender
+    hourly policy of their own; the message names their limit and what I have
+    sent. ``occurrence_conflict``: I reused an ``occurrence_id`` with different
+    content.
 
     **Closing it.** ``operation="revoke"`` on the receiver (with
     ``expected_generation``) stops new deliveries at once, from every sender.

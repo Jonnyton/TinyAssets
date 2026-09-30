@@ -301,14 +301,44 @@ def test_retrying_the_same_ask_does_not_stack_tabs(base):
     assert _rail("u-1")["count"] == 1
 
 
-def test_the_rail_is_capped(base):
-    from tinyassets.storage.pending_requests import MAX_PENDING
+def test_the_rail_has_no_ceiling(base):
+    """Past the old MAX_PENDING of 50, and the 51st through 60th still land.
+
+    Founder, 2026-09-30: an account's only limits are cloud storage and
+    concurrent agent seats. A looping universe is bounded by its seats, not by a
+    count of tabs, so ``too_many_pending`` is gone.
+    """
+    from tinyassets.storage import pending_requests as pr
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
-    for i in range(MAX_PENDING):
+    for i in range(60):
+        out = _ask("u-1", title="ask %d" % i)
+        assert "error" not in out, f"ask {i} was refused: {out}"
+    from pathlib import Path
+
+    assert len(pr.list_pending(Path(base) / "u-1", limit=None)) == 60
+    assert not hasattr(pr, "MAX_PENDING"), "the pending ceiling is gone"
+
+
+def test_listing_every_pending_row_is_not_silently_paged(base):
+    """``limit=None`` must mean all of them, not the old 50.
+
+    Reconciliation callers (a revoked connection, a model-access match) pass
+    None. Under the old code they passed MAX_PENDING, which would have become a
+    real cutoff the moment the ceiling stopped existing.
+    """
+    from pathlib import Path
+
+    from tinyassets.storage.pending_requests import list_pending
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    for i in range(55):
         _ask("u-1", title="ask %d" % i)
-    assert _ask("u-1", title="overflow")["error"] == "too_many_pending"
+    udir = Path(base) / "u-1"
+    assert len(list_pending(udir, limit=None)) == 55
+    assert len(list_pending(udir)) == 10, "the default page size is unchanged"
 
 
 @pytest.mark.parametrize("fn", ["ask", "rail", "answer"])

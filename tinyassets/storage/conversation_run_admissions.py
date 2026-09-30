@@ -491,8 +491,8 @@ def _write_pair(scope, row):
                           f"consumer:{row['admission_id']}:{suffix}", execution, failure))
         conn.execute("INSERT INTO conversation_terminal_projections VALUES (?,?,?,?,?,?)",
                      (row["admission_id"], scope.session, digest, number, number + 1, now))
-        conn.execute("DELETE FROM conversation_turns WHERE session_id=? AND turn_no<=?",
-                     (scope.session, number + 1 - conversation_store.RETENTION_TURNS))
+        # No retention delete. The projected pair joins the transcript and stays
+        # there; see conversation_store, where the 400-turn ceiling used to be.
         conn.commit()
         return number
     finally:
