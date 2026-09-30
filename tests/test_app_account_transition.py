@@ -27,7 +27,12 @@ _NODE = shutil.which("node")
 # import error) against a tree that does not have it yet.
 _LIFT = ("setQueueScope", "setQueueOwner", "ownsSavedRow", "savedItem",
          "flushSendQueue", "enterSignedOut", "loadHistory")
-_OPTIONAL = ("clearAccountScopedState", "clearThread", "clearComposerState")
+_OPTIONAL = ("clearAccountScopedState", "clearThread", "clearComposerState",
+             # Added 2026-09-26 with the sign-out credential fix: this harness
+             # runs the page's REAL `enterSignedOut`, so a collaborator it gained
+             # has to be lifted here too. Optional, like its siblings, so this
+             # file stays green against a tree without the fix.
+             "clearCredentialFields")
 
 
 def _run_node(script: str):
@@ -202,6 +207,14 @@ const Voice={ stop(){}, conversationSettled(){} };
 const ModelPicker={ reset(){} };
 const HostedModelConnect={ reset(){}, setup:"connected" };
 const AppLayout={ reset(){ LOG.push(["layoutReset"]); } };
+// The credential fields the sign-out clears. Modelled so the account
+// boundary test runs the page's real `enterSignedOut` end to end; what those
+// fields hold afterwards is asserted in
+// tests/test_app_signout_clears_typed_credentials.py.
+const CREDENTIAL_FIELDS=[{id:"hosted-key-input",value:""},{id:"endpoint-key",value:""}];
+const document={ querySelectorAll(selector){
+  return selector==='input[type="password"]' ? CREDENTIAL_FIELDS : [];
+} };
 const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; }, invalidateSession(){},
   _conv:null, getConversation(){ return this._conv; } };
 function threadText(){
