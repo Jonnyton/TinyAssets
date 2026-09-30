@@ -368,6 +368,85 @@ def _get_shared_router() -> Any:
     return _SHARED_ROUTER
 
 
+def _acquire_node_seat(universe_context, node_id: str, event_sink):
+    """Take one of the universe's seats for this node's model call, waiting.
+
+    Returns the held ``Seat``, or None when there is no universe to charge (the
+    local daemon, and every test that compiles a graph without one). A node with
+    no universe is not metered, exactly as an unowned run was never metered.
+
+    Waits with ``wait_s=None``: over the seat limit, an agent node QUEUES. The
+    owner is told it is waiting through ``event_sink``, so a run that is not
+    moving says why instead of looking stalled.
+    """
+    # The universe id is the DIRECTORY NAME. `UniverseContext` carries
+    # `universe_dir`, not `universe_id` -- a `getattr(ctx, "universe_id")` here
+    # would always be empty and would silently disable seats altogether, which
+    # is what the first draft of this function did.
+    universe_dir = getattr(universe_context, "universe_dir", None)
+    universe_id = str(getattr(universe_dir, "name", "") or "").strip()
+    if not universe_id:
+        return None
+    try:
+        from tinyassets import universe_seats as useats
+    except Exception:  # pragma: no cover - defensive import
+        return None
+
+    def _notify(state) -> None:
+        if event_sink is None:
+            return
+        try:
+            event_sink(
+                node_id=node_id,
+                phase="waiting",
+                kind="waiting_for_seat",
+                detail=useats.waiting_message(universe_id, running=state.running),
+            )
+        except Exception:
+            logger.debug("event_sink raised while reporting a seat wait")
+
+    try:
+        held = useats.acquire_blocking(
+            universe_id,
+            seat_class=useats.CLASS_BACKGROUND,
+            kind=useats.KIND_AGENT_NODE,
+            on_waiting=_notify,
+        )
+    except useats.SeatLedgerUnusable:
+        # A seat store that cannot be trusted must not silently admit unbounded
+        # work, and must not take down a universe either. Loud, and unmetered:
+        # the same position `engine_admissions` took for a tampered ledger.
+        logger.warning(
+            "seat store unusable; node %s runs unmetered", node_id, exc_info=True,
+        )
+        return None
+    return held
+
+
+def _release_node_seat(seat) -> None:
+    """Give the node's seat back -- unless its work is still running.
+
+    `_run_with_timeout` cannot kill a worker that has already started, so on
+    ``NodeTimeoutError`` the provider call is still live. Releasing then would
+    hand the seat to a second agent call while the first is still calling a
+    provider: the bound undercounting exactly when the universe is busiest.
+    Such a seat is left to its LEASE, so capacity returns in at most
+    ``SEAT_LEASE_SECONDS`` instead of immediately -- deliberately the
+    conservative direction.
+    """
+    if seat is None:
+        return
+    import sys
+
+    from tinyassets import universe_seats as useats
+
+    pending = sys.exc_info()[1]
+    if isinstance(pending, NodeTimeoutError):
+        useats.leave_to_lease(seat.seat_id)
+        return
+    useats.release(seat.seat_id)
+
+
 def _run_with_timeout(
     fn: Callable[[], Any],
     *,
@@ -1502,6 +1581,14 @@ def _build_prompt_template_node(
 
         if concurrency_tracker is not None:
             concurrency_tracker.acquire()
+        # One of this universe's SEATS, held for the whole of this node's model
+        # call. Taken HERE and not in whatever started the run: `runs.start_run`
+        # submits a worker and returns `queued`, so a seat scoped to the caller
+        # would release before the work began (astra round 1, finding 2). This is
+        # the executor, and already the point the concurrency tracker calls
+        # "executing". A node that cannot get a seat WAITS -- it is not failed
+        # and not skipped, because the directive's word is "pending".
+        _node_seat = _acquire_node_seat(universe_context, node.node_id, event_sink)
         try:
             from tinyassets.providers.execution_receipt import (
                 WriterExecutionReceipt,
@@ -1631,6 +1718,7 @@ def _build_prompt_template_node(
         finally:
             if concurrency_tracker is not None:
                 concurrency_tracker.release()
+            _release_node_seat(_node_seat)
 
         if not response:
             raise EmptyResponseError(

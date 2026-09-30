@@ -731,6 +731,36 @@ def release(seat_id: str, *, db: Path | None = None) -> bool:
         return False
 
 
+#: Seats whose work was abandoned while still running. `hold` must NOT release
+#: these: their lease must expire them instead. See `leave_to_lease`.
+_abandoned: set[str] = set()
+
+
+def leave_to_lease(seat_id: str) -> None:
+    """Stop refreshing this seat and DO NOT release it when the body exits.
+
+    For the one case where a `finally` would lie: `graph_compiler._run_with_timeout`
+    raises `NodeTimeoutError` while the worker thread it started **keeps running**
+    (Python cannot safely kill it, and an interrupted provider call leaves an
+    effect nobody can classify -- its own docstring says so). Releasing the seat
+    there would hand it to a second agent call while the first is still calling a
+    provider: the bound undercounting exactly when the system is busiest, which is
+    astra round 1 finding 2.
+
+    So the seat is left to its lease. Capacity comes back in at most
+    `SEAT_LEASE_SECONDS` instead of immediately -- a couple of minutes of
+    deliberate over-counting, which is the right direction to be wrong in. The
+    refresher drops it here, so the expiry actually fires rather than being
+    stamped forever.
+    """
+    seat_id = (seat_id or "").strip()
+    if not seat_id:
+        return
+    with _held_lock:
+        _held.pop(seat_id, None)
+        _abandoned.add(seat_id)
+
+
 def abandon(ticket: int | None, *, db: Path | None = None) -> bool:
     """Give up a queue position. For a caller that decided not to run after all --
     never for one that is still waiting, which would be the drop this module
@@ -874,8 +904,7 @@ def stop_refresher() -> None:
         _held.clear()
 
 
-@contextmanager
-def hold(
+def acquire_blocking(
     universe_id: str,
     *,
     seat_class: str = CLASS_BACKGROUND,
@@ -887,35 +916,16 @@ def hold(
     seats: int | None = None,
     reserve: int | None = None,
     db: Path | None = None,
-):
-    """Hold a seat for the body, waiting for one.
+) -> Seat | Waiting:
+    """`acquire`, but WAIT for a seat rather than returning a queue position.
 
-    ``wait_s=None`` waits until served. That is what an INTERACTIVE chat turn
-    passes, and it is the directive's own contract: work *"is never refused and
-    never dropped"*, so a turn that has queued must not bounce back to the user
-    after 20 seconds -- a bounce reads as a refusal however it is worded. The wait
-    is bounded in practice by the interactive reserve: an interactive turn only
-    ever waits behind ANOTHER interactive turn, never behind background work.
+    The wait loop, shared by `hold` and by call sites whose surrounding
+    `try`/`finally` is already explicit (the agent node's, which wraps a
+    hundred lines this must not re-indent). A held seat is registered with the
+    refresher here, so the caller only has to release it.
 
-    A float ``wait_s`` gives up after that long, and is for callers whose work is
-    durable elsewhere and will be retried on the next tick -- an automation pump,
-    a wake. Giving up there costs nothing, because the row is still due.
-
-    ``on_waiting`` is called with the :class:`Waiting` as soon as the caller
-    starts waiting and every `WAITING_NOTICE_SECONDS` after, so the owner sees
-    "Waiting for a free seat (N running)" with a live count instead of a silent
-    hang. It must not raise; it is a notification, not a step.
-
-    Yields a :class:`Seat` when held, or a :class:`Waiting` if a BOUNDED wait
-    elapsed. Check `isinstance(x, Seat)`.
-
-    ``seats`` / ``reserve`` override the tier lookup. Production callers leave
-    them None so the account's own tier decides; they exist so a test can drive
-    the real wait loop against a chosen seat algebra instead of reimplementing it.
-
-    Released on every exit path including exceptions -- success, failure,
-    cancellation and timeout. A crash is covered by the lease, the only path a
-    `finally` cannot reach.
+    Returns a :class:`Seat`, or a :class:`Waiting` if a BOUNDED ``wait_s``
+    elapsed. ``wait_s=None`` waits until served.
     """
     deadline = None if wait_s is None else time.monotonic() + max(0.0, wait_s)
     ticket: int | None = None
@@ -965,24 +975,92 @@ def hold(
             reserve=reserve,
             db=db,
         )
+    if isinstance(outcome, Seat) and not outcome.reentrant:
+        # A re-entered seat is its parent's: the parent's refresher already
+        # stamps it, and registering it twice would have two owners racing to
+        # drop it.
+        with _held_lock:
+            _held[outcome.seat_id] = db
+        _start_refresher()
+    return outcome
+
+
+@contextmanager
+def hold(
+    universe_id: str,
+    *,
+    seat_class: str = CLASS_BACKGROUND,
+    kind: str = KIND_AGENT_NODE,
+    run_id: str = "",
+    parent_seat_id: str | None = None,
+    wait_s: float | None = SEAT_WAIT_SECONDS,
+    on_waiting: object | None = None,
+    seats: int | None = None,
+    reserve: int | None = None,
+    db: Path | None = None,
+):
+    """Hold a seat for the body, waiting for one.
+
+    ``wait_s=None`` waits until served. That is what an INTERACTIVE chat turn
+    passes, and it is the directive's own contract: work *"is never refused and
+    never dropped"*, so a turn that has queued must not bounce back to the user
+    after 20 seconds -- a bounce reads as a refusal however it is worded. The wait
+    is bounded in practice by the interactive reserve: an interactive turn only
+    ever waits behind ANOTHER interactive turn, never behind background work.
+
+    A float ``wait_s`` gives up after that long, and is for callers whose work is
+    durable elsewhere and will be retried on the next tick -- an automation pump,
+    a wake. Giving up there costs nothing, because the row is still due.
+
+    ``on_waiting`` is called with the :class:`Waiting` as soon as the caller
+    starts waiting and every `WAITING_NOTICE_SECONDS` after, so the owner sees
+    "Waiting for a free seat (N running)" with a live count instead of a silent
+    hang. It must not raise; it is a notification, not a step.
+
+    Yields a :class:`Seat` when held, or a :class:`Waiting` if a BOUNDED wait
+    elapsed. Check `isinstance(x, Seat)`.
+
+    ``seats`` / ``reserve`` override the tier lookup. Production callers leave
+    them None so the account's own tier decides; they exist so a test can drive
+    the real wait loop against a chosen seat algebra instead of reimplementing it.
+
+    Released on every exit path including exceptions -- success, failure,
+    cancellation and timeout. A crash is covered by the lease, the only path a
+    `finally` cannot reach.
+    """
+    outcome = acquire_blocking(
+        universe_id,
+        seat_class=seat_class,
+        kind=kind,
+        run_id=run_id,
+        parent_seat_id=parent_seat_id,
+        wait_s=wait_s,
+        on_waiting=on_waiting,
+        seats=seats,
+        reserve=reserve,
+        db=db,
+    )
     if isinstance(outcome, Waiting):
         # A BOUNDED wait elapsed. Hand it back WITHOUT abandoning the ticket:
         # the position is the promise that the work runs.
         yield outcome
         return
-    # A re-entered seat is its parent's: the parent's refresher already stamps it,
-    # and registering it twice would have two owners racing to drop it.
-    if not outcome.reentrant:
-        with _held_lock:
-            _held[outcome.seat_id] = db
-        _start_refresher()
     try:
         yield outcome
     finally:
-        if not outcome.reentrant:
-            with _held_lock:
-                _held.pop(outcome.seat_id, None)
-        release(outcome.seat_id, db=db)
+        with _held_lock:
+            _held.pop(outcome.seat_id, None)
+            abandoned = outcome.seat_id in _abandoned
+            _abandoned.discard(outcome.seat_id)
+        if abandoned:
+            # The work is still running somewhere we cannot join. Its lease is
+            # the only honest way to end this seat (see `leave_to_lease`).
+            _log.warning(
+                "seat %s left to its lease: its work was abandoned while running",
+                outcome.seat_id,
+            )
+        else:
+            release(outcome.seat_id, db=db)
 
 
 __all__ = [
@@ -1004,7 +1082,9 @@ __all__ = [
     "Waiting",
     "abandon",
     "acquire",
+    "acquire_blocking",
     "hold",
+    "leave_to_lease",
     "ledger_path",
     "occupancy",
     "refresh",
