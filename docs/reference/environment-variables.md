@@ -146,6 +146,18 @@ letting free test-mode subscriptions grant the paid tier.
 
 Readiness: `python scripts/stripe_go_live.py --check`.
 
+## Owner notifications (push)
+
+A request reaches its owner's registered devices as a notification. Each channel is independent: with neither set, nothing is dispatched and the dispatch reports `no_transport` — a request is durable and readable in the rail on its own, so push is additive to it and never fails the ask. See `tinyassets/notify/`.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `TINYASSETS_FCM_SERVICE_ACCOUNT_JSON` | **Secret.** The Firebase service-account document, as JSON, for Android push over FCM HTTP v1. Exchanged for a short-lived access token by signing a JWT with the account's own key; the send endpoint is derived from the document's own `project_id`, never from a caller. Malformed → logged once at ERROR and Android push stays off, rather than raising into whatever raised the request. Creating the Firebase project is a founder action (`docs/host-actions.md`). | unset (Android push off). |
+| `TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY` | **Secret.** PEM P-256 private key for browser/desktop web push (RFC 8292). **Self-issued** — `python scripts/webpush_keys.py --subject mailto:…` mints it and there is no third party to ask, which is why this channel can be proven live before FCM exists. Rotating it invalidates every existing browser subscription. | unset (web push off). |
+| `TINYASSETS_WEBPUSH_VAPID_SUBJECT` | `mailto:` address or `https://` URL a push service uses to contact the sender. Anything else leaves web push unconfigured. | unset. |
+
+`TINYASSETS_WEBPUSH_VAPID_PUBLIC_KEY` is printed by the same script for the **client** to pass to `pushManager.subscribe({applicationServerKey})`. The server never reads it — it is derived from the private key, and storing it twice is how two copies of one fact drift.
+
 ## Local secrets — vault-first
 
 Local operator secrets (Cloudflare tokens, DigitalOcean token, Hetzner creds, OpenAI key) load from a password manager, not a plaintext file. Vendor is chosen via `TINYASSETS_SECRETS_VENDOR` — `1password` (default), `bitwarden`, or `plaintext` (migration-period opt-out, to be retired after cutover).
