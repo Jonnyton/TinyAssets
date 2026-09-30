@@ -34,6 +34,7 @@ from tinyassets.exceptions import (
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
+    ProviderReplyTimeoutError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     SelectedModelCapacityError,
@@ -873,6 +874,13 @@ class ProviderRouter:
                         output_limit, cfg.selected_model.context_tokens - required_input,
                     )
                     if output_limit < 1:
+                        # Our own measurement, before any launch: this call's
+                        # reservation charged nothing, so it must not hold the
+                        # run's aggregate budget the next model needs.
+                        settle_carrier(
+                            ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                            input_tokens=0, output_tokens=0, cost_microunits=0,
+                        )
                         raise SelectedModelContextError(
                             "selected model cannot fit this workflow context",
                             required_tokens=required_input + 1,
@@ -906,6 +914,11 @@ class ProviderRouter:
                 cfg.max_tokens is None
                 or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
             ):
+                if invocation_carrier is not None:
+                    settle_carrier(
+                        ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                        input_tokens=0, output_tokens=0, cost_microunits=0,
+                    )
                 raise SelectedModelContextError(
                     "selected model cannot fit this inference context",
                     required_tokens=required_context + (cfg.max_tokens or 1),
@@ -1403,7 +1416,9 @@ class ProviderRouter:
                     **_tool_wait_evidence(exc),
                 ))
                 continue
-            except (ProviderIdleTimeoutError, InteractiveDeadlineError) as exc:
+            except (
+                ProviderIdleTimeoutError, InteractiveDeadlineError, ProviderReplyTimeoutError,
+            ) as exc:
                 # A transient attempt timeout is NOT proof the credential is
                 # down. Do NOT cool the sole served writer — the next turn stays
                 # eligible. The process was already killed by the provider.

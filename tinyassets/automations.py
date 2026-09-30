@@ -60,14 +60,13 @@ logger = logging.getLogger(__name__)
 
 DB_FILENAME = ".automations.db"
 
-#: Cadence floor. A tighter loop spends the owner's subscription faster than a
-#: human can notice and cancel it (design.md "Risks": runaway cadence).
-MIN_INTERVAL_SECONDS = 300
-
-#: Per-universe ceiling on live automations. Counts every non-retired row:
-#: pausing does not free a slot, deleting one does. A paused row still holds an
-#: owner's intent and can be resumed without passing registration again.
-MAX_ACTIVE_PER_UNIVERSE = 200
+#: The shortest cadence: one second. There is no policy floor and no count
+#: ceiling (plan item 6, founder 2026-08-30 "limit USAGE, not shape"). What
+#: bounds a tight or numerous cadence is usage: every registration is charged
+#: to the universe's engine admissions, and every run it fires is charged as a
+#: run, per hour and per day (``tinyassets.engine_admissions``). A cadence
+#: shorter than the pump's poll simply fires once per poll.
+MIN_INTERVAL_SECONDS = 1
 
 TRIGGER_INTERVAL = "interval"
 TRIGGER_CRON = "cron"
@@ -158,10 +157,6 @@ DEFAULT_CANCEL_GRACE_SECONDS = 300
 #: How often a held universe lease is re-stamped while its run is in flight.
 LEASE_REFRESH_SECONDS = 60
 
-#: Cadence floor for cron, in seconds. Same floor the interval trigger uses:
-#: `* * * * *` across 20 automations declares 1,200 launches/hour against a
-#: foreground `run_graph` budget of 20 (Codex ADAPT 2026-08-29 §7).
-MIN_CRON_GAP_SECONDS = 300
 
 #: The automations table, parameterised on its name so the CHECK rebuild in
 #: ``_rebuild_trigger_check`` creates its successor from the same text.
@@ -679,29 +674,14 @@ class AutomationStore:
             conn.close()
         return [_from_row(row) for row in rows]
 
-    def insert(
-        self, automation: Automation, *, max_active: int | None = None,
-    ) -> Automation:
-        """Store a row; with ``max_active``, only under the universe's ceiling.
-
-        The count and the insert share one ``BEGIN IMMEDIATE``: a node fanning
-        out wakes from parallel branches must not all read "room for one more"
-        and all insert past the ceiling.
-        """
+    def insert(self, automation: Automation) -> Automation:
+        """Store a row. What bounds how many is usage, charged by the caller
+        (``register_automation``), never a count of rows here."""
         conn = self._connect(create=True)
         if conn is None:  # pragma: no cover - create=True always connects
             raise RuntimeError("automation store connection is unavailable")
         try:
             conn.execute("BEGIN IMMEDIATE")
-            if max_active is not None:
-                (live,) = conn.execute(
-                    "SELECT COUNT(*) FROM automations "
-                    "WHERE universe_id = ? AND retired_at = ''",
-                    (automation.universe_id,),
-                ).fetchone()
-                if int(live) >= max_active:
-                    conn.execute("ROLLBACK")
-                    raise AutomationUnavailable("too_many_automations")
             conn.execute(
                 """
                 INSERT INTO automations (
@@ -779,6 +759,40 @@ class AutomationStore:
                 )
                 conn.execute("COMMIT")
                 return True
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
+
+    def skip_refused_instant(
+        self, automation_id: str, due_at: str, *, reason: str, now: datetime,
+    ) -> None:
+        """Advance a cadence past an instant that never ran, keeping no row.
+
+        The claim's attempt row is deleted and ``last_due_at`` moves on, in one
+        transaction, so the instant is neither re-run nor retained. The
+        consecutive-failure count is untouched: a refusal by the meter is not
+        a failure of the work.
+        """
+        stamp = _iso(now)
+        conn = self._connect(create=True)
+        if conn is None:  # pragma: no cover - create=True always connects
+            raise RuntimeError("automation store connection is unavailable")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "DELETE FROM automation_attempts "
+                    "WHERE automation_id = ? AND due_at = ?",
+                    (automation_id, due_at),
+                )
+                conn.execute(
+                    "UPDATE automations SET last_due_at = ?, last_reason = ?, "
+                    "updated_at = ? WHERE automation_id = ?",
+                    (due_at, reason, stamp, automation_id),
+                )
+                conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
@@ -1271,13 +1285,8 @@ def _validated_trigger(interval_seconds: Any, cron_expr: Any) -> tuple[str, int,
         CronSchedule.parse(expr)
     except CronParseError as exc:
         raise AutomationUnavailable("trigger_invalid") from exc
-    # The interval floor was meaningless while cron could express `* * * * *`:
-    # 20 rows x 60/hour is 1,200 launches against a foreground budget of 20
-    # (Codex ADAPT §7). The floor is on the SMALLEST gap the expression can
-    # produce, including the wrap past the end of its cycle -- `0,3 * * * *`
-    # looks hourly until you notice the three-minute gap inside each hour.
-    if cron_min_gap_seconds(expr) < MIN_CRON_GAP_SECONDS:
-        raise AutomationUnavailable("trigger_invalid")
+    # No gap floor: `* * * * *` is a real cadence, and what it may spend is
+    # the universe's run admission, charged on every fire (plan item 6).
     return TRIGGER_CRON, 0, expr
 
 
@@ -1368,10 +1377,15 @@ def register_automation(
         trigger_kind, seconds, expr = _validated_trigger(interval_seconds, cron_expr)
         once_at = ""
 
+    # Usage, not shape: a registration is an engine write against this
+    # universe's admission window, like any other durable edit it makes. A node
+    # that enqueues in a loop, or an owner who registers hundreds, is refused
+    # by the same meter -- not by a count of rows (plan item 6).
+    from tinyassets.engine_mcp_server import _engine_run_admit
+
+    if not _engine_run_admit(universe_id=uid, fail_closed=True, kind="engine"):
+        raise AutomationUnavailable("usage_limited")
     store = AutomationStore(base)
-    # Usage, not shape: outstanding work per universe, counted atomically with
-    # the insert. A one-shot retires once it has run, so a branch that re-wakes
-    # itself holds a single row.
     stamp = _iso(moment)
     return store.insert(
         Automation(
@@ -1399,7 +1413,6 @@ def register_automation(
             event_filter=event_match,
             overlap=policy,
         ),
-        max_active=MAX_ACTIVE_PER_UNIVERSE,
     )
 
 
@@ -2020,22 +2033,33 @@ def run_due_automation(
             _engine_run_admit(
                 universe_id=automation.universe_id,
                 want_ticket=True,
-                # A wake can re-wake itself, so its budget must be real: an
-                # unreadable ledger refuses rather than admitting with no
-                # count (Codex refute 2026-09-27, P1). Cadences keep their
-                # existing behaviour.
-                fail_closed=automation.trigger_kind == TRIGGER_ONCE,
+                # Usage is the only bound on background work now (plan item
+                # 6), so an unreadable ledger refuses rather than admitting
+                # with no count -- for wakes (Codex refute 2026-09-27, P1) and
+                # cadences alike (Codex refute 2026-09-28, P1).
+                fail_closed=True,
             )
         )
         if ticket is None:
-            store.finish_attempt(
-                automation.automation_id,
-                due_at,
-                run_id="",
-                status="refused",
-                reason="run_rate_limited",
-                now=moment,
-            )
+            if automation.trigger_kind == TRIGGER_ONCE:
+                # A wake's attempts are its bounded retry count; keep them.
+                store.finish_attempt(
+                    automation.automation_id,
+                    due_at,
+                    run_id="",
+                    status="refused",
+                    reason="run_rate_limited",
+                    now=moment,
+                )
+            else:
+                # A cadence moves on to its next instant, and a refused one
+                # leaves no attempt row: a one-second cadence on a full meter
+                # would otherwise add a durable row every poll, outside the
+                # meter (Codex refute 2026-09-28, P1).
+                store.skip_refused_instant(
+                    automation.automation_id, due_at,
+                    reason="run_rate_limited", now=moment,
+                )
             _record_refusal(base, automation, "run_rate_limited", moment, consumer_id)
             _retire_once(store, automation, ran=False, now=moment)
             return "run_rate_limited"
@@ -2233,9 +2257,7 @@ __all__ = [
     "DEFAULT_RUN_TIMEOUT_SECONDS",
     "LEASE_REFRESH_SECONDS",
     "LIVENESS_DIR",
-    "MAX_ACTIVE_PER_UNIVERSE",
     "MAX_CONSECUTIVE_FAILURES",
-    "MIN_CRON_GAP_SECONDS",
     "MAX_ONCE_ATTEMPTS",
     "MIN_INTERVAL_SECONDS",
     "OVERLAP_CANCEL_PREVIOUS",

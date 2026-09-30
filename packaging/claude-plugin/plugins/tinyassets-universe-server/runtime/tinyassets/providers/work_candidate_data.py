@@ -180,7 +180,15 @@ class WorkCandidateData:
             message += ": " + "; ".join(parts)
         return WorkModelExhaustedError(message)
 
-    def next_candidate(self, policy, exhaustion=()):
+    def next_candidate(self, policy, exhaustion=(), *, min_context=None):
+        """The next admitted ref, or None.
+
+        ``min_context`` is ONE agent turn's measured need (its own pre-send
+        overflow), applied to this call only: other nodes of the same run keep
+        the models whose windows fit THEIR context. It raises the minimum on the
+        plan's interaction and on every per-source policy, because a per-source
+        interaction replaces the plan's for that source's models.
+        """
         with self._lock:
             if self._fitted is None or policy_key(policy) not in self._fitted:
                 raise PermissionError("work model order was not admitted")
@@ -188,11 +196,25 @@ class WorkCandidateData:
                 if item not in self._exhaustion:
                     self._exhaustion += (item,)
             refs = self._fitted[policy_key(policy)]
+            interaction, source_policies = self.interaction, self.source_policies
+            if min_context is not None:
+                interaction = _at_least(interaction, min_context)
+                source_policies = tuple(
+                    replace(item, interaction=_at_least(item.interaction, min_context))
+                    for item in source_policies
+                )
             # This is a DATA filter over retained capacity identity, not discovery
             # or fresh authority. It cannot throw for a now-absent old source.
             ordered = order_models(
                 self.catalog, ModelPolicy(0, "explicit", refs[1:], saved_default=refs[0]),
-                self.interaction, owner_id=self.owner, universe_id=self.universe,
-                exhaustion=self._exhaustion, source_policies=self.source_policies,
+                interaction, owner_id=self.owner, universe_id=self.universe,
+                exhaustion=self._exhaustion, source_policies=source_policies,
             )
             return ordered.candidates[0].ref if ordered.candidates else None
+
+
+def _at_least(interaction, tokens):
+    """The interaction with its minimum context raised to ``tokens``, never lowered."""
+    if interaction.min_context is not None and interaction.min_context >= tokens:
+        return interaction
+    return replace(interaction, min_context=tokens)

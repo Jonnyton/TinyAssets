@@ -41,10 +41,13 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS refused_model_marks (
   expires_at TEXT NOT NULL,
   PRIMARY KEY(owner_user_id, connection_id, model_id))"""
 
-#: How long a refusal is remembered. Long enough that a busy owner's turns stop
-#: rediscovering it, short enough that a model the owner re-enabled comes back
-#: the same day without anyone clearing anything.
-REFUSAL_TTL = timedelta(hours=6)
+#: How long a refusal is remembered. The refusals met so far are durable gates,
+#: not blips: live 2026-09-29, OpenRouter answered a free model with "only
+#: available on agentic harnesses" (routing step "Gate Free Endpoints by Agentic
+#: Harness") on every turn. A day stops that costing a request per turn while a
+#: model the owner or source re-enables still comes back without anyone
+#: clearing anything; choosing it for a turn retries it at once.
+REFUSAL_TTL = timedelta(hours=24)
 
 _BUSY_WAIT_MS = 250
 _IDENTIFIER = re.compile(r"\A[\x21-\x7e]{1,300}\Z", re.ASCII)

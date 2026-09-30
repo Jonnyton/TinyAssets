@@ -124,7 +124,7 @@ Tip: to discover any action-based tool's full catalog live, send a bogus `action
 
 **Write / mutate (gate behind explicit user intent):**
 - Steer a universe: `universe submit_request` (queue a `scene_direction` or `branch_run`), `give_direction`, `set_premise`, `add_canon`, daemon lifecycle (`daemon_pause/resume/restart/summon/banish`, `control_daemon text=pause|resume|status`).
-- Build/run workflows: `extensions build_branch | create_branch | add_node | connect_nodes | set_entry_point | add_state_field | validate_branch | patch_branch | update_node` (edits node source in place — don't rebuild whole branches), then `run_branch` (state via `inputs_json`) → `get_run | wait_for_run | stream_run | get_run_output` → `judge_run`. Publish/fork: `publish_version | fork_tree`. Schedule/subscribe: `schedule_branch` (cron/interval) | `subscribe_branch` (event).
+- Build/run workflows: `extensions build_branch | create_branch | add_node | connect_nodes | set_entry_point | add_state_field | validate_branch | patch_branch | update_node` (edits node source in place — don't rebuild whole branches), then `run_branch` (state via `inputs_json`) → `get_run | wait_for_run | stream_run | get_run_output` → `judge_run`. Publish/fork: `publish_version | fork_tree`. Recurring runs: `write_graph target=automation` (cron/interval); event triggers: `subscribe_branch`.
 - Intent: `goals propose | update | bind | set_canonical | run_canonical`.
 - Knowledge & intake: `wiki write | patch | file_bug (kind=bug|patch_request|feature|design) | cosign_bug` (`file_bug` does server-side dedup; no need to pre-search). Use `expected_sha256` on `patch`/`delete` for safe concurrent writes.
 
