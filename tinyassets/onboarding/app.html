@@ -1743,7 +1743,9 @@
   // running finishes and is recorded), the in-flight reply comes back marked
   // "Interrupted", and THEN everything queued behind it goes out as ONE message,
   // in the order it was typed. Nothing queued: the turn just stops.
-  let interruptRequested=false, flushAfterInterrupt=false, interruptPending=null;
+  let interruptRequested=false, flushAfterInterrupt=false, interruptPending=null, batchAfterStop=false;
+  //: How long a Stop request may hold the composer before it is given up on.
+  const STOP_REQUEST_MS=10000;
   function renderStop(){
     const stop=$("btn-stop"), send=$("btn-send");
     if(!stop||!send) return;
@@ -1759,14 +1761,18 @@
     return batch;
   }
   // A turn's cleanup hands the composer to what is queued. While a Stop request
-  // is still on the wire it WAITS for it (astra round 1): sending the next turn
-  // first would let that request land on the new turn, and its late answer
-  // would rewrite state that now belongs to the new one.
+  // is still on the wire NO turn starts -- not the queue, not a manual send,
+  // not a spoken line (astra rounds 1-2): a Stop that arrived after the next
+  // turn began would stop THAT turn. Everything waits, bounded by
+  // STOP_REQUEST_MS, and goes out when the request settles.
   function flushAfterTurn(){
     const batch=takeInterruptFlush();
-    const pending=interruptPending;
-    if(!pending) return flushSendQueue(batch);
-    pending.then(()=>flushSendQueue(batch),()=>flushSendQueue(batch));
+    if(!interruptPending) return flushSendQueue(batch);
+    batchAfterStop=batchAfterStop||batch;
+  }
+  function drainAfterStop(){
+    const batch=batchAfterStop; batchAfterStop=false;
+    flushSendQueue(batch);
   }
   async function interruptTurn(){
     if(interruptRequested || !workingSince()) return;
@@ -1780,18 +1786,26 @@
     setStatusLine("Stopping your universe's turn..."+(waiting
       ? " then sending the "+waiting+" waiting message"+(waiting===1?"":"s")+" together."
       : ""));
+    const abort=typeof AbortController==="function"?new AbortController():null;
     const post=()=>fetch("/app/turn/interrupt",{method:"POST",credentials:"same-origin",
       headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-      body:JSON.stringify({universe_id:scope})});
+      body:JSON.stringify({universe_id:scope}),signal:abort?abort.signal:undefined});
     const request=(async()=>{
       let r=await post();
       if(r.status===401 && await refreshAccessToken()) r=await post();
       return r.ok?await r.json():null;
     })();
-    const settled=request.catch(()=>null);
-    interruptPending=settled;
+    // Bounded: a request that never answers must not hold the composer forever.
+    let timer=null;
+    const deadline=new Promise(resolve=>{ timer=setTimeout(()=>{
+      if(abort) abort.abort(); resolve(null); },STOP_REQUEST_MS); });
+    const settled=Promise.race([request.catch(()=>null),deadline]);
+    interruptPending=settled; renderStop();
     const doc=await settled;
-    if(interruptPending===settled) interruptPending=null;
+    clearTimeout(timer);
+    // Only the request that still holds the composer releases it; a sign-out in
+    // the meantime already cleared it (clearComposerState).
+    if(interruptPending===settled){ interruptPending=null; drainAfterStop(); }
     // The turn it was pressed for already ended (its cleanup consumed the
     // flags), or the page moved to another account or home: nothing to change.
     if(!stillMine()){ renderStop(); return; }
@@ -3597,7 +3611,7 @@
       .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
   }
   function flushSendQueue(batch){
-    if(sendQueueHeld || $("btn-send").disabled || !sendQueue.length) return;
+    if(sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
     if(batch===true) return flushBatch();
     const next=sendQueue.shift();
     // A queued line goes out only under the account and home that queued it.
@@ -3667,7 +3681,7 @@
 
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
-    if($("btn-send").disabled) return queueTurn(message, display, opts);
+    if($("btn-send").disabled || interruptPending) return queueTurn(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the universe (file content
     // embedded verbatim). They differ only when an attachment rode along.
@@ -3782,7 +3796,7 @@
     // Voice does not queue silently behind another turn: overlapping speech
     // would make delivery ambiguous. Keep the audio session alive, but ask the
     // founder to wait and say the line again.
-    if($("btn-send").disabled) throw new Error("voice_turn_busy");
+    if($("btn-send").disabled || interruptPending) throw new Error("voice_turn_busy");
     const opts=captureTurnOptions({inputMethod:"spoken"});
     appendMessage("founder",message);
     rememberInflight(message,message,undefined,"spoken",opts.modelChoice);
@@ -4387,6 +4401,7 @@
     activeTurn=null; turnStartedAt=0; liveInflight=null;
     // A Stop pressed for the previous account's turn is not this account's.
     interruptRequested=false; flushAfterInterrupt=false;
+    interruptPending=null; batchAfterStop=false;
     // The working indicator is this screen's state as much as the composer is:
     // the previous account's turn must not be reported to whoever signs in next.
     serverTurn=null; serverStatusLine=false;

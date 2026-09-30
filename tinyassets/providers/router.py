@@ -260,6 +260,24 @@ def _live_interactive_turn():
     return current()
 
 
+def _stoppable_native_turn(operation, provider):
+    """The live chat turn whose Stop may cancel this dispatch, or ``None``.
+
+    Only a NATIVE agent on the ``converse`` operation: cancellation is what ends
+    its process family. An HTTP request cannot be aborted (its provider waits for
+    it even when cancelled), so it returns and its real usage settles, and the
+    turn stops at its next boundary (``tinyassets/turn_interrupt``). A Stop
+    already asked for cancels before anything is claimed or launched, so the
+    reservation is released and the carrier settles cancelled-before-launch
+    rather than indeterminate.
+    """
+    if operation != "converse":
+        return None
+    if getattr(provider, "agent_execution_kind", None) != "native_agent":
+        return None
+    return _live_interactive_turn()
+
+
 def _sync_call_timeout_s(cfg: ModelConfig) -> float:
     """Timeout for a sync-wrapper call: at least the stream absolute cap.
 
@@ -1152,6 +1170,9 @@ class ProviderRouter:
                         nested=_is_nested(universe_context),
                         parent_slot=blocking_parent_slot(),
                     ):
+                        live_turn = _stoppable_native_turn(operation, provider)
+                        if live_turn is not None and live_turn.requested():
+                            raise asyncio.CancelledError()  # Stop: nothing launched
                         before_launch = getattr(
                             served_authority, "before_provider_launch", None
                         ) if served_authority is not None else None
@@ -1187,17 +1208,7 @@ class ProviderRouter:
                             dispatch = provider.complete(
                                 prompt, system, cfg, universe_dir=universe_dir,
                             )
-                            # The owner's Stop on a chat turn ends a NATIVE agent
-                            # at once: cancellation is what kills its process
-                            # family. An HTTP request cannot be aborted (its
-                            # provider waits for it even when cancelled), so it
-                            # returns and its real usage settles; the turn then
-                            # stops at its next boundary (tinyassets/turn_interrupt).
-                            live_turn = (
-                                _live_interactive_turn() if operation == "converse" else None
-                            )
-                            if (live_turn is not None and getattr(
-                                    provider, "agent_execution_kind", None) == "native_agent"):
+                            if live_turn is not None:
                                 resp = await live_turn.cancel_on_stop(dispatch)
                             else:
                                 resp = await dispatch

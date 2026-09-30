@@ -1857,7 +1857,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "restoreInflight", "setQueueScope", "setQueueOwner", "ownsSavedRow",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
         "flushSendQueue", "queueTurn",
-        "takeInterruptFlush", "flushAfterTurn", "takeBatch", "flushBatch",
+        "takeInterruptFlush", "flushAfterTurn", "drainAfterStop", "takeBatch", "flushBatch",
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
         "sameSavedLine",
         "restoreQueue", "claimedElsewhere", "offerSavedLine",

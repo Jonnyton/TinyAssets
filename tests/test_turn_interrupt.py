@@ -299,6 +299,43 @@ def test_an_unplanned_native_served_call_is_cancelled_by_the_stop():
     assert time.monotonic() - started < 10 and state.cancelled and not state.finished
 
 
+def test_a_stop_already_asked_for_launches_nothing_and_charges_nothing():
+    """astra round 2: a native call cancelled before its coroutine ran was settled
+    INDETERMINATE (its reservation consumed) although nothing launched."""
+    from unittest.mock import patch
+
+    from tests.support.owner_bound import owner_carrier
+    from tinyassets.provider_work_authority import (
+        ProviderInvocationReservationState,
+        ProviderInvocationSettlementOwner,
+    )
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.router import ProviderRouter
+
+    provider, state = _slow_provider("native_agent", 30.0)
+    entered = []
+    original = provider.complete
+
+    async def complete(*args, **kwargs):
+        entered.append(True)
+        return await original(*args, **kwargs)
+
+    provider.complete = complete
+    router = ProviderRouter(providers={provider.name: provider})
+    carrier = owner_carrier(provider.name, operation="converse")
+    carrier.settlement_owner = ProviderInvocationSettlementOwner.ROUTER
+    context = UniverseContext(universe_dir=Path("u-owner-bound"), provider_invocation=carrier)
+    with interactive_turn("owner", "u-1") as live:
+        live.request()
+        with patch("tinyassets.providers.router._provider_invocation_carrier",
+                   return_value=carrier), pytest.raises(TurnInterrupted):
+            router.call_sync("writer", "p", "s", ModelConfig(absolute_cap_s=60.0),
+                             operation="converse", universe_context=context)
+    assert entered == [], "the provider was launched after the owner's Stop"
+    settled = [call.args[0] for call in carrier.settle.call_args_list]
+    assert settled == [ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH], settled
+
+
 def test_an_http_call_is_never_cancelled_so_its_usage_settles():
     """astra round 1: cancelling an HTTP call lost its response and its real spend.
 
