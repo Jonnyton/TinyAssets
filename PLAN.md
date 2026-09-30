@@ -306,6 +306,21 @@ all existing code and deployed bindings already enforce it.
 
 **Context is a managed working set.** Prompts are lossy projections over durable state. The goal is not "pack more context" but "give the model the smallest high-signal working set for the current step."
 
+**Owner surfaces are complete; bounding is a model-door projection; the only
+per-account input is account type** (founder, 2026-09-30). There are two doors.
+The *owner door* (`tinyassets/owner_door/`, `/app/api/*`) serves the owner's app
+on web, phone and desktop, and it always returns complete data: it has no size,
+limit or truncation logic and cannot import one. The *model door* (the MCP
+connector and the served-agent engine) bounds what enters a model's context, as a
+projection applied only there. Shared domain reads return every row. Paging is an
+explicit cursor the client drives, never a silent default. The only per-account
+input that may change behaviour is `AccountType` (free | subscription), resolved
+once, per account; connections and data volume never change what an account sees.
+The rule is enforced by structure: import boundaries, not an exempt list. On
+2026-09-30 the founder's request rail vanished because his 34 KB queue crossed a
+24 KB model ceiling that the app shared with chatbots. That bug is the failure
+mode this rule prevents. Change: `openspec/changes/owner-door-complete-reads/`.
+
 **Platform state transitions are the core abstraction.** Orient, plan, draft, commit, learn, reflect, enrich, task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
 
 **Every scaffold is a falsifiable hypothesis.** Counters, thresholds, phase gates, routing rules all encode a claim about model weakness. Prove the simpler approach fails before adding; prove removing hurts before defending. When a stronger model lands, re-test the harness. Trend toward less prescriptive control.
