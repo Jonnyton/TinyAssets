@@ -496,6 +496,163 @@ def test_an_itemless_requests_identity_is_unchanged_by_items_existing(
     assert len(_json.loads(row["dedupe_key"])) == 5
 
 
+def _predecessor_row(base, uid) -> tuple[str, str, dict]:
+    """A pending request exactly as the DEPLOYED version stored it.
+
+    Returns ``(request_id, six_element_key, stored_columns)``.
+
+    The key is DERIVED: raise a normal request with the current writer, take
+    its five-element key, and append the empty item list the deployed writer
+    added unconditionally. Hand-typing the tuple would bind the test to the
+    field-normalisation shape; deriving it binds the test to the one thing that
+    matters -- that the seeded key is the six-element form the current writer
+    never produces.
+
+    This is why derivation matters: a test that creates both sides with the
+    current writer passes even when the writer is still broken, which
+    gpt-6-astra demonstrated against the first version of these tests
+    (2026-09-30).
+    """
+    import json as _json
+    import sqlite3
+
+    from tinyassets.storage.pending_requests import _DB_NAME, get_request
+
+    live = _ask(uid)
+    assert live.get("request_id"), live
+    udir = base / uid
+    row = get_request(udir, live["request_id"])
+    six = _json.dumps(
+        [*_json.loads(row["dedupe_key"]), []],
+        sort_keys=True, separators=(",", ":"),
+    )
+    assert len(_json.loads(six)) == 6
+    # Rewrite the live row's key to the predecessor's, and reset the migration
+    # marker so opening the store migrates rather than skipping.
+    conn = sqlite3.connect(udir / _DB_NAME)
+    try:
+        conn.execute(
+            "UPDATE pending_requests SET dedupe_key = ? WHERE request_id = ?",
+            (six, live["request_id"]),
+        )
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+    finally:
+        conn.close()
+    return live["request_id"], six, row
+
+
+def _seed_predecessor_row(base, uid) -> str:
+    return _predecessor_row(base, uid)[0]
+
+
+def test_a_predecessor_itemless_row_is_migrated_to_one_identity(base, signed_in):
+    """#4122 deployed a writer that put items in EVERY key, including the empty
+    list, so an itemless row written by it has an identity nothing else
+    reproduces. A one-time rewrite restores it, rather than teaching three
+    lookups to accept two shapes -- which would widen the execution pin
+    (gpt-6-astra, 2026-09-30)."""
+    import json as _json
+
+    from tinyassets.storage.pending_requests import get_request
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    request_id, six, _before = _predecessor_row(base, UID)
+    assert len(_json.loads(six)) == 6
+
+    row = get_request(udir, request_id)  # opening the store migrates it
+
+    assert len(_json.loads(row["dedupe_key"])) == 5
+    from tinyassets.api.pending_requests import displayed_row_matches
+
+    assert displayed_row_matches(row)
+
+
+def test_a_predecessor_row_deduplicates_after_the_upgrade(base, signed_in):
+    """The half that matters most: without the rewrite, re-asking opens a
+    SECOND identical tab because storage compares exact keys."""
+    from tinyassets.storage.pending_requests import list_pending
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    seeded = _seed_predecessor_row(base, UID)
+
+    again = _ask(UID)
+
+    assert again["request_id"] == seeded
+    assert len(list_pending(udir)) == 1
+
+
+def test_a_predecessor_row_can_still_be_answered(base, signed_in):
+    from tinyassets.storage.pending_requests import get_request
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    seeded = _seed_predecessor_row(base, UID)
+
+    answered = _answer(UID, request_id=seeded, values={"note": "done"})
+
+    assert answered.get("status") == "answered", answered
+    assert get_request(udir, seeded)["status"] == "answered"
+
+
+def test_a_predecessor_standing_decision_still_settles_the_ask(base, signed_in):
+    """A suppression written under the six-element key never matched again, so
+    a question the owner had settled came back. The rewrite covers the
+    suppression table too -- fixing only the pin leaves this broken."""
+    import sqlite3
+    import time as _time
+
+    from tinyassets.storage.pending_requests import _DB_NAME, list_pending
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    request_id, six, _before = _predecessor_row(base, UID)
+    conn = sqlite3.connect(udir / _DB_NAME)
+    try:
+        # The owner settled it under the predecessor's key, and the tab is gone.
+        conn.execute(
+            "DELETE FROM pending_requests WHERE request_id = ?", (request_id,),
+        )
+        conn.execute(
+            "INSERT INTO request_suppressions (dedupe_key, kind, title, "
+            "feedback, decision, answer_json, created_at) "
+            "VALUES (?,?,?,?,'declined',NULL,?)",
+            (six, "TODO", "Today", "not interested", _time.time()),
+        )
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+    finally:
+        conn.close()
+
+    again = _ask(UID)
+
+    assert again.get("status") == "settled", again
+    assert again.get("decision") == "declined"
+    assert list_pending(udir) == []
+
+
+def test_the_rewrite_leaves_every_other_key_alone(base, signed_in):
+    """Narrow on purpose: only a six-element key whose sixth element is an
+    empty list AND which is itself canonical. Anything else is an identity we
+    do not understand, and rewriting it would destroy one rather than restore
+    one."""
+    from tinyassets.storage.pending_requests import _canonical_itemless_key
+
+    assert _canonical_itemless_key('["a","b","",[],{},[]]') is not None
+    for untouched in (
+        '["a","b","",[],{}]',                      # already five
+        '["a","b","",[],{},[{"item_id":"x"}]]',    # real items
+        '["a","b","",[],{},{}]',                   # sixth is not a list
+        '["a","b","",[],{},[],"extra"]',           # seven
+        '[ "a","b","",[],{},[] ]',                 # not canonical spacing
+        "not json",
+        "",
+    ):
+        assert _canonical_itemless_key(untouched) is None, untouched
+
+
 def test_a_settled_decision_still_matches_the_same_itemless_ask(base, signed_in):
     """The end-to-end shape of the same finding: dismiss with "don't ask me
     this again", then ask identically. It must be refused, not re-raised."""

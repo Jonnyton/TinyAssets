@@ -113,6 +113,12 @@ def test_owner_creates_and_lists_their_own_automation(tmp_path: Path, env) -> No
         "not_before": "",
         "event_type": "",
         "event_filter": {},
+        # `automation-schedule-timezone` (2026-09-30): a cron trigger carries
+        # the clock it runs in and a "7:00 AM America/Los_Angeles" rendering.
+        # An INTERVAL has no wall-clock slot, so both are empty here -- an
+        # interval must not appear to be scheduled in a zone it never uses.
+        "timezone": "",
+        "schedule_local": "",
     }
     assert row["inputs"] == {"topic": "spec drift"}
     assert row["desired_state"] == "active"

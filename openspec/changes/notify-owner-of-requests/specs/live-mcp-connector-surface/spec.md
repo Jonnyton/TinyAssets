@@ -52,7 +52,19 @@ The answer path SHALL accept an optional `item_id`, resolving exactly that item 
 - **THEN** the request is `answered` and those two items are reported as unanswered
 
 ### Requirement: Items do not change the identity of a request without them
-A request's deduplication identity SHALL include its items only when it has items, so a request with none keeps the identity it had before items existed. A live pending request SHALL still deduplicate, and a standing decision recorded against it SHALL still match.
+A request's deduplication identity SHALL include its items only when it has items, so a request with none keeps the identity it had before items existed. A live pending request SHALL still deduplicate, and a standing decision recorded against it SHALL still match. A request or standing decision stored under the superseded identity — the same tuple with an empty item list appended — SHALL be rewritten once to the canonical one, so deduplication, the standing decision and the execution pin all agree again; no other stored identity SHALL be altered.
+
+#### Scenario: A request stored under the superseded identity still deduplicates
+- **WHEN** an itemless request was stored with an empty item list in its identity, and the identical ask is raised after the upgrade
+- **THEN** it lands on that pending request rather than opening a second tab, and that request is still answerable
+
+#### Scenario: A standing decision stored under the superseded identity still settles
+- **WHEN** the owner recorded "don't ask me this again" under the superseded identity, and the identical ask is raised after the upgrade
+- **THEN** the ask is refused as already settled
+
+#### Scenario: No other identity is rewritten
+- **WHEN** a stored identity has real items, a different element count, a non-list final element, or a non-canonical serialisation
+- **THEN** it is left exactly as stored
 
 #### Scenario: A standing decision survives
 - **WHEN** an owner dismissed a request with "don't ask me this again", and the identical request with no items is asked afterwards

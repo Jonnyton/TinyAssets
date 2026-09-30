@@ -227,9 +227,12 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind", "/app/models/preferences",
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
-        "/app/account/delete", "/app/connections", "/app/files",
+        "/app/account/delete", "/app/account/timezone",
+        "/app/connections", "/app/files",
     }
     assert by_path["/app/files"].methods == {"POST"}
+    # The owner's clock is a WRITE from their client, never a readable setting.
+    assert by_path["/app/account/timezone"].methods == {"POST"}
     assert "GET" in by_path["/app"].methods
     # The bundle host is read-only and takes no input: it carries no user content,
     # which is why it needs no authentication (tinyassets/onboarding/ui_frame.py).

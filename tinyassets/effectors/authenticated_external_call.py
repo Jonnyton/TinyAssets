@@ -689,6 +689,42 @@ def _resolve_host(request: dict[str, Any], connection_view: Any) -> tuple[str, s
     return "", "host_ambiguous"
 
 
+def _declared_user_agent_error(headers: Any) -> str:
+    """Refuse a per-CALL ``User-Agent``; it belongs on the connection.
+
+    Every outbound call now carries the platform's own honest client string
+    (``OUTBOUND_USER_AGENT``), because a UA-less request is answered by a CDN
+    before the destination sees it. A service that wants a different client
+    string is a property of the CONNECTION, not of one call: the owner declares
+    it once through the connection's constant headers, where it is visible in
+    the grant and the same for every node.
+
+    Refused rather than dropped, and refused rather than accepted. Dropping it
+    silently would leave an author believing they had set something. Accepting
+    it would let a node choose what to claim to be, per call, which is how a
+    platform ends up impersonating a browser to get past a bot policy on a
+    node's say-so — and this platform says who it is.
+    """
+    from tinyassets.storage.outbound_connections import OUTBOUND_USER_AGENT_HEADER
+
+    if not isinstance(headers, dict):
+        return ""
+    named = [
+        str(name)
+        for name in headers
+        if str(name).strip().lower() == OUTBOUND_USER_AGENT_HEADER
+    ]
+    if not named:
+        return ""
+    return (
+        f"request.headers may not set {named[0]!r}: every outbound call already "
+        "carries this platform's own client string. If this service needs a "
+        "particular one, it is a property of the connection rather than of one "
+        "call — declare it in the connection's constant headers, where the "
+        "owner can see it in the grant and every node sends the same thing."
+    )
+
+
 def _capability_url_shape_error(url: str, connection_view: Any) -> str:
     """Refuse a ``url_secret`` request that does not address the placeholder.
 
@@ -1009,6 +1045,15 @@ def _run(
 
     wire_request: dict[str, Any] = {"url": url}
     headers = request.get("headers")
+    user_agent_error = _declared_user_agent_error(headers)
+    if user_agent_error:
+        return {
+            "error": user_agent_error,
+            "error_kind": "user_agent_is_declared_on_the_connection",
+            "matched_output_key": matched_key,
+            "connection_id": connection_id,
+            "destination": destination,
+        }
     if headers is not None:
         wire_request["headers"] = headers
     if "body" in request:

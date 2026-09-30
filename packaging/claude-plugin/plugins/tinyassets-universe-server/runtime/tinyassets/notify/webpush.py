@@ -52,6 +52,32 @@ def _unb64(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + padding)
 
 
+def record_budget() -> int:
+    """The largest plaintext one record holds. The composer's byte budget.
+
+    Exposed so composition can fit the record instead of discovering at the
+    transport that it does not. A notification refused here is a notification
+    the owner never gets, and the shape that caused it (emoji) is accepted
+    input (gpt-6-astra round 2, 2026-09-29).
+    """
+    return _MAX_PLAINTEXT
+
+
+def payload_bytes(notification: Notification) -> bytes:
+    """Exactly the bytes :func:`webpush_transport` will encrypt.
+
+    ONE definition, used by both the composer and the sender: a second copy of
+    "how big is this" is how the two drift and the budget stops meaning
+    anything.
+    """
+    return json.dumps({
+        "title": notification.title,
+        "body": notification.body,
+        "data": notification.data,
+        "silent": notification.silent,
+    }, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
 def _subscription(device: dict) -> dict:
     """The browser's own subscription document off the device row."""
     raw = device.get("token")
@@ -152,12 +178,7 @@ def webpush_transport(env: dict[str, str]):
 
     def send(device: dict, notification: Notification) -> str:
         subscription = _subscription(device)
-        payload = json.dumps({
-            "title": notification.title,
-            "body": notification.body,
-            "data": notification.data,
-            "silent": notification.silent,
-        }, separators=(",", ":")).encode("utf-8")
+        payload = payload_bytes(notification)
         token, public = _assertion(pem, subject, subscription["endpoint"])
         request = urllib.request.Request(
             subscription["endpoint"],
@@ -192,4 +213,4 @@ def webpush_transport(env: dict[str, str]):
     return send
 
 
-__all__ = ["webpush_transport"]
+__all__ = ["payload_bytes", "record_budget", "webpush_transport"]

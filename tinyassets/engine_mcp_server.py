@@ -1299,15 +1299,26 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
     ``cron_expr`` or ``interval_seconds``:
 
         {"name": "Morning focus note", "branch_def_id": "<from the build reply>",
-         "cron_expr": "0 7 * * *"}
+         "cron_expr": "0 7 * * *", "timezone": "America/Los_Angeles"}
 
-    Cron is five fields, minute first, matched against the SERVER's local clock:
-    there is no per-owner timezone, so "7am" is 7am where the daemon runs, which
-    may not be where the owner is. I say which clock I used, and I confirm the
-    real answer with ``read_graph target="automations"`` -- it reports
-    ``next_due_at``, the instant it will actually fire, beside ``revision``
-    (which I then send back AS ``expected_revision`` to pause, resume or
-    delete). Runs of one branch never overlap.
+    Cron is five fields, minute first, and it runs in a TIMEZONE. ``timezone``
+    is an IANA name; omit it and the schedule uses the owner's own zone as
+    their app reported it, falling back to UTC only when none is known. I never
+    describe a schedule without its clock -- "7:00 AM America/Los_Angeles", not
+    "7am" -- and ``read_graph target="automations"`` hands me exactly that as
+    ``schedule_local``, beside ``timezone``, the absolute ``next_due_at``, and
+    ``revision`` (which I send back AS ``expected_revision`` to pause, resume or
+    delete). If I am unsure of the owner's zone I ASK rather than guess: a
+    wrong zone is a note that arrives at midnight.
+
+    Across a daylight-saving change each slot still fires once: a local time
+    that does not exist that day runs at the first valid instant after the gap,
+    and one that happens twice runs at the first. Runs of one branch never
+    overlap.
+
+    To control an existing trigger, first read ``read_graph target="automation"``
+    (or ``target="automations"``), then pass its automation_id and current
+    expected_revision.
 
     **When a create is refused**, the reply carries ``errors`` (what is wrong)
     and ``suggestions`` (which key to change), plus ``attempted_spec`` -- the
@@ -1514,6 +1525,18 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     A ``connect_http`` ask for a destination that already has a key makes the
     user paste a secret they already gave you — the one thing they must never
     be asked to do twice.
+
+    **A CDN block is NOT a key problem.** Failure class
+    ``destination_blocked_client`` means the destination's edge refused the
+    request before the service saw it — the body carries the edge's own code
+    (``error code: 1010`` and friends). The key was never presented to anything
+    that reads keys, so rotating it is the wrong ask and retrying gets the same
+    block. Every outbound call already sends this platform's own client string;
+    you do not set ``User-Agent`` on a packet and a request that tries is
+    refused. If a service insists on a particular one, it is declared ONCE on
+    the connection as a constant header, not per call. Say what happened, name
+    the destination and the code, and ask for the constant header — or tell
+    them the destination has to allow this platform at their end.
 
     **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
     ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the
@@ -2625,15 +2648,15 @@ def write_graph(
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds or cron_expr. Runs never overlap per branch:
+    exactly one of interval_seconds or cron_expr. A cron_expr runs in the
+    owner's timezone and is never stated without it (``branches``).
+    Runs never overlap per branch:
     a short interval_seconds reruns as each run ends; runs count to usage
     limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
     one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
     ``{"branch_def_id"}``) or ``pending_request_answered`` wakes it with
     ``inputs.event``.
-    To control an existing trigger, first read ``read_graph target="automation"``
-    (or ``target="automations"``), then pass its automation_id and current
-    expected_revision. Pause stops future triggers; resume reactivates the existing
+    Pause stops future triggers; resume reactivates the existing
     schedule; delete retires it and removes that automation's branch dependency.
     None cancels an already-running job. Read back the trigger and its last run
     before claiming work has stopped. These are existing owner-scoped controls;
