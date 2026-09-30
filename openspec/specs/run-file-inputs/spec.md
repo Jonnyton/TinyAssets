@@ -15,7 +15,7 @@ The broader origin/materialization proposal remains in
 
 The app paperclip SHALL offer bounded raw-byte upload into the same immutable
 run-file custody without an authoring session or operator-created handle.
-`POST /mcp/app/files` SHALL derive owner and current home from authenticated
+`POST /app/files` SHALL derive owner and current home from authenticated
 request context, require the allowed origin and exact custom upload metadata,
 reserve capacity before reading bytes, verify size and digest, and recheck
 authority before commit. Missing capacity or incomplete home SHALL refuse

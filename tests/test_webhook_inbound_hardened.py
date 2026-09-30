@@ -505,7 +505,7 @@ def test_mcp_hooks_auth_carveout_exact_and_flag_gated(monkeypatch):
     ONLY when inbound is enabled and ONLY for a single-segment token — never a
     deeper path, never an empty token, never when inbound is off. The unguessable
     per-branch token + author-gated handler is the sole boundary (webhook Codex
-    review); this mirrors the /mcp/app carve-out with exact scoping."""
+    review); this mirrors the /app carve-out with exact scoping."""
     from tinyassets.auth.middleware import _auth_challenge_path
 
     monkeypatch.delenv("TINYASSETS_INBOUND_ENABLED", raising=False)

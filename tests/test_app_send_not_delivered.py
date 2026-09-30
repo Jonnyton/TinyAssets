@@ -4,7 +4,7 @@ Live, 2026-09-24 18:31-18:39 UTC, founder account, Chrome: a tab resumed after
 the machine had slept since 07:22 UTC (its last token renewal in the daemon
 access log). Two typed sends showed no reply and nothing was delivered. The
 browser logged ``POST /mcp`` 503s, and the daemon logged no 5xx. In the droplet
-log, the tab's first renewal after the sleep (``POST /mcp/app/token``) appears
+log, the tab's first renewal after the sleep (``POST /app/token``) appears
 only at the 18:33:38 reload, so its requests between the resume and that reload
 never reached the droplet. The 503 was authored in front of the origin.
 

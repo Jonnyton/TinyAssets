@@ -5,7 +5,7 @@
 
 // The live onboarding SPA — same origin as the /mcp API and the WorkOS AuthKit
 // sign-in, so the OAuth round-trip stays inside the window with no deep-linking.
-const PROD_APP_URL = 'https://tinyassets.io/mcp/app';
+const PROD_APP_URL = 'https://tinyassets.io/app';
 
 // Development-only override (Codex 2026-08-23 #6): a packaged build IGNORES the
 // env override entirely — a launcher must never be able to start the signed

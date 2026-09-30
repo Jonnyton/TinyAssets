@@ -3,7 +3,7 @@
   // agent writes, and this renders them. A bundle is somebody's arbitrary code —
   // usually somebody the viewer has never met, because bundles are shared by
   // publish/remix — so nothing here sanitizes it. It runs in the sandboxed,
-  // opaque-origin document `/mcp/app/ui-frame` serves (see ui_frame.py for the
+  // opaque-origin document `/app/ui-frame` serves (see ui_frame.py for the
   // policy), which owns no storage, no cookies and no network of its own.
   //
   // Everything the bundle can do is in ACTIONS below and nowhere else. Each
@@ -21,7 +21,7 @@
   const AppUI={
     KIND:"tinyassets.app-ui.v1",VERSION:1,PROTOCOL:1,
     SHELL_KIND:"tinyassets.app-experience-shell.v1",
-    FRAME_SRC:"/mcp/app/ui-frame",
+    FRAME_SRC:"/app/ui-frame",
     // No `allow-same-origin`: that single word is the whole isolation boundary.
     // With it the frame would share this page's origin and could read
     // `sessionStorage` (the access token), `localStorage` and the parent DOM.

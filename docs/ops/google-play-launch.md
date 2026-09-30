@@ -11,7 +11,7 @@ All content below is copy-paste ready.
 
 Package name (permanent once published): **`io.tinyassets.app`**
 (`mobile/capacitor.config.json`). App is the Capacitor shell over
-`https://tinyassets.io/mcp/app` — see `desktop-app/README.md` + `mobile/README.md`.
+`https://tinyassets.io/app` — see `desktop-app/README.md` + `mobile/README.md`.
 
 > **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
 > first.** This file is the procedure; that one is where both platforms actually
@@ -101,10 +101,23 @@ repeats annually.
 ## 1b. Version and release gates — generated defaults are not a release strategy
 
 `mobile/android-release.json` is the checked-in Android release source of truth. It
-records the next candidate: package `io.tinyassets.app`, version code `4`, version
-name `1.0.3`, min SDK 24, target/compile SDK 36. Play has already consumed code `3`,
-name `1.0.2`; the Alpha draft references that artifact and must be replaced with code
-4 before the immediate-notification fix can reach testers.
+records the next candidate: package `io.tinyassets.app`, version code `5`, version
+name `1.0.4`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
+(`1.0.2`) and `4` (`1.0.3`).
+
+**Code 5 / `1.0.4` is not optional maintenance.** The app's public URL moved from
+`https://tinyassets.io/mcp/app` to `https://tinyassets.io/app` on 2026-09-30 with no
+redirect left behind (founder directive: no back-compat). `server.url` is COMPILED
+INTO the shell, so every installed `4 (1.0.3)` WebView opens a path that no longer
+serves. Shipping this bundle IS the fix for installed users — there is no
+server-side remedy, which is why the version bump belongs to the same change as
+the move.
+
+**The bump is checked in; the BUNDLE waits.** Code 5 must carry the push-notification
+native change (`@capacitor/push-notifications` + FCM config, owner-notify lane) as
+well, so testers get one update rather than two. Build the AAB only once both have
+landed on `main`, and do **not** bump again in between — see
+[`mobile-launch-handoff.md`](mobile-launch-handoff.md) for the ordering.
 
 Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
 seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's
@@ -253,7 +266,7 @@ in-app and at `/account`, email fallback within 30 days).
 
 Play also requires an **account-deletion path in-app and on the web** for any app
 with sign-in. Both exist as of 2026-09-02: the app's **Account → Delete my
-account** view (`POST /mcp/app/account/delete` → `tinyassets.account_deletion`)
+account** view (`POST /app/account/delete` → `tinyassets.account_deletion`)
 and `https://tinyassets.io/account`, which documents the steps, what is removed,
 what is kept, and the email route. Confirm `https://tinyassets.io/legal#app-data`
 and `https://tinyassets.io/account` render before submitting.
@@ -451,7 +464,7 @@ nothing was submitted for review or published.
 ## 10. Screenshot capture
 
 Screenshots come from the live app so they're honest:
-1. Open `https://tinyassets.io/mcp/app` (or the installed app) at phone width.
+1. Open `https://tinyassets.io/app` (or the installed app) at phone width.
 2. Capture a representative set without account, universe, credential, branch, run,
    debug, notification, or browser-chrome identifiers.
 3. Save to `docs/ops/play-assets/screenshots/`; run the release artwork verifier;

@@ -1168,7 +1168,7 @@ def test_the_agent_gets_the_exact_references_once_with_expiry_beside_them(result
         assert block["unbound_expires_at"][ref["file_id"]] == 1_000_000_000 + 3600
     # no bytes, no base64 payload, no credential, no path or URL
     assert "\x00" not in send and "Bearer" not in send
-    assert "/mcp/app/files" not in send
+    assert "/app/files" not in send
 
 
 def test_a_failed_file_blocks_send_and_keeps_the_draft(results):
@@ -1259,11 +1259,11 @@ def test_the_release_call_is_the_existing_owner_handle():
 def test_the_upload_route_is_the_one_new_boundary():
     html = _app_html()
     source = _function_source(html, "postUploadedFile")
-    assert '"/mcp/app/files"' in source
+    assert '"/app/files"' in source
     assert 'application/octet-stream' in source and "X-TinyAssets-Upload" in source
     assert "authHeaders()" in source
     assert "FormData" not in source and "btoa(" not in source
-    assert html.count('"/mcp/app/files"') == 1
+    assert html.count('"/app/files"') == 1
 
 
 def test_the_composed_turn_reaches_the_default_and_the_selected_consumer(results, tmp_path):
@@ -1686,7 +1686,7 @@ def test_the_shipped_transport_forwards_the_controllers_abort_signal(results):
     upload then only stopped the page from LOOKING, while the bytes kept going."""
     out = results["real_transport"]["upload"]
     assert out["signalForwarded"] is True, "fetch never received the aborter"
-    assert out["url"] == "/mcp/app/files" and out["method"] == "POST"
+    assert out["url"] == "/app/files" and out["method"] == "POST"
     assert out["credentials"] == "same-origin"
     assert out["contentType"] == "application/octet-stream"
     assert out["bodyIsFile"] is True, "an ordinary upload still sends the bytes"

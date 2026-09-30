@@ -1044,7 +1044,7 @@ def test_the_app_page_carries_the_deletion_path():
     assert 'id="btn-account"' in chat
     assert '$("btn-account").addEventListener("click", showAccount);' in html
     assert 'id="btn-delete-account"' in html
-    assert '"/mcp/app/account/delete"' in html
+    assert '"/app/account/delete"' in html
     assert 'confirm:"DELETE"' in html
     assert "cannot be undone" in html
 
@@ -1055,6 +1055,6 @@ def test_the_android_shell_cannot_reach_checkout():
     html = _app_html()
     start = html.index("async function startSubscribe()")
     guard = html.index("if(NATIVE){", start)
-    checkout = html.index('billingFetch("/mcp/app/billing/checkout"', start)
+    checkout = html.index('billingFetch("/app/billing/checkout"', start)
     assert guard < checkout, "the native guard must precede any checkout call"
     assert "if(!b || !PLAN || NATIVE) return;" in html, "and the button stays hidden"

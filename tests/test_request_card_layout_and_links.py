@@ -1,6 +1,7 @@
 """A pending-request card the user can actually read, click and reply from.
 
-Live 2026-09-30 on the "Waiting on you" rail at https://tinyassets.io/mcp/app:
+Live 2026-09-30 on the "Waiting on you" rail at https://tinyassets.io/mcp/app
+(the app's URL at the time; it moved to https://tinyassets.io/app in #4112):
 
 1. The action row ``[Accept][Deny][Clear][Send reply]`` overflowed the 16rem
    rail. At innerWidth 1509 "Send reply" was cut to "S"/"r"; at 2400 it spanned
