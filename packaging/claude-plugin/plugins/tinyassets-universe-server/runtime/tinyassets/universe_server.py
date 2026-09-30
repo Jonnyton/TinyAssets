@@ -1899,12 +1899,33 @@ def stop_scheduler_for_serving() -> None:
 def stop_workspace_sweepers_for_serving() -> None:
     """Join workspace sweepers when this serving lifespan ends."""
     from tinyassets.runs import _stop_all_workspace_sweepers
+    from tinyassets.workspace_staging import stop_sweeper
 
     try:
         if not _stop_all_workspace_sweepers():
             logger.warning("workspace sweeper shutdown exceeded its timeout")
     except Exception:  # noqa: BLE001 - shutdown fault must not mask teardown
         logger.exception("workspace sweeper shutdown failed")
+    try:
+        if not stop_sweeper():
+            logger.warning("workspace staging sweeper shutdown exceeded its timeout")
+    except Exception:  # noqa: BLE001 - shutdown fault must not mask teardown
+        logger.exception("workspace staging sweeper shutdown failed")
+
+
+def start_staging_sweeper_for_serving(data_root: Any) -> None:
+    """Sweep leaked workspace staging at boot and periodically.
+
+    Hygiene, not a gate: it runs on its own thread and a failure is logged, never
+    raised into startup. It removes only what no live process owns
+    (`tinyassets.workspace_staging`), and logs the inventory it removed.
+    """
+    from tinyassets.workspace_staging import start_sweeper
+
+    try:
+        start_sweeper(data_root)
+    except Exception:  # noqa: BLE001 - serving must not wait on cleanup
+        logger.exception("workspace staging sweeper failed to start")
 
 
 _WEBHOOK_OP_ACTIONS = {
@@ -4409,6 +4430,7 @@ def create_streamable_http_app() -> Starlette:
             else:
                 if orphans:
                     logger.warning("settled %d orphaned agent turn(s)", len(orphans))
+            start_staging_sweeper_for_serving(data_dir())
             # The scheduler starts whenever the daemon serves — schedules are a user's
             # own automations and do not belong to the inbound channel surface
             # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates
@@ -4807,6 +4829,7 @@ def main(
             assigned_consumer = AssignedQueueConsumer(data_dir())
             assigned_consumer.start()
         run_visibility_startup_gate()
+        start_staging_sweeper_for_serving(data_dir())
         if transport in ("sse", "stdio"):
             # Neither transport carries a bearer, and neither runs behind the
             # auth middleware, so the principal is the local operator, bound
