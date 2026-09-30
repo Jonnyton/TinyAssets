@@ -192,6 +192,10 @@
     .composer-input{flex:1;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
       border-radius:12px;padding:.7rem .8rem;font:inherit;resize:none;max-height:40vh}
     .btn--send{align-self:flex-end}
+    .btn--send[hidden],.btn--stop[hidden]{display:none}
+    .btn--stop{align-self:flex-end;background:var(--surface-2);color:var(--ink);
+      border:1px solid var(--accent);min-width:4.3rem}
+    .btn--stop:disabled{opacity:.6}
     .btn--attach{align-self:flex-end;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
       padding:.55rem .6rem;font-size:1.1rem;line-height:1}
     .btn--attach:hover{background:var(--surface)}
@@ -246,6 +250,7 @@
       .composer .btn--voice{grid-column:2;grid-row:2}
       .composer .composer-input{grid-column:3;grid-row:2;min-width:0}
       .composer .btn--send{grid-column:4;grid-row:2}
+      .composer .btn--stop{grid-column:4;grid-row:2}
     }
     .result{background:#0b0c17;border:1px solid var(--line);border-radius:10px;padding:.8rem;
       overflow-x:auto;font-size:.8rem;white-space:pre-wrap}
@@ -459,6 +464,12 @@
         <textarea id="composer-input" class="composer-input" rows="1"
                   placeholder="Message your universe" autocomplete="off"></textarea>
         <button id="btn-send" class="btn btn--primary btn--send" type="submit">Send</button>
+        <!-- Stop: shown in Send's place while the universe is working (Escape does
+             the same on a keyboard). Messages typed meanwhile queue, and after a
+             stop they go out together as the next turn. -->
+        <button id="btn-stop" class="btn btn--stop" type="button" hidden
+                aria-label="Stop your universe's current turn"
+                title="Stop this turn (Esc). Anything you queued is sent next.">Stop</button>
       </form>
       <div id="status-line" class="status-line" role="status" aria-live="polite"
            aria-label="Conversation status"></div>
@@ -1726,7 +1737,68 @@
   // sentence is; a queue count, an attachment notice or a failure line belongs to
   // whoever wrote it and is never touched here.
   let serverStatusLine=false;
+  // ---- Stop (founder 2026-09-30: "just like it works in claude code") --------
+  // While the universe is working, Send gives its place to Stop; Escape does the
+  // same. The server stops the turn at its next safe point (a tool call already
+  // running finishes and is recorded), the in-flight reply comes back marked
+  // "Interrupted", and THEN everything queued behind it goes out as ONE message,
+  // in the order it was typed. Nothing queued: the turn just stops.
+  let interruptRequested=false, flushAfterInterrupt=false;
+  function renderStop(){
+    const stop=$("btn-stop"), send=$("btn-send");
+    if(!stop||!send) return;
+    const working=workingSince()>0;
+    if(!working && !turnStartedAt) interruptRequested=false;
+    stop.hidden=!working; send.hidden=working;
+    stop.disabled=interruptRequested;
+    stop.textContent=interruptRequested?"Stopping\u2026":"Stop";
+  }
+  // The queue flushes once per ended turn; after a stop it flushes as one batch.
+  function takeInterruptFlush(){
+    const batch=flushAfterInterrupt; flushAfterInterrupt=false; interruptRequested=false;
+    return batch;
+  }
+  async function interruptTurn(){
+    if(interruptRequested || !workingSince()) return;
+    interruptRequested=true; flushAfterInterrupt=true; renderStop();
+    const waiting=sendQueue.length;
+    setStatusLine("Stopping your universe's turn..."+(waiting
+      ? " then sending the "+waiting+" waiting message"+(waiting===1?"":"s")+" together."
+      : ""));
+    const post=()=>fetch("/app/turn/interrupt",{method:"POST",credentials:"same-origin",
+      headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+      body:JSON.stringify({universe_id:queueScope})});
+    let doc=null;
+    try{
+      let r=await post();
+      if(r.status===401 && await refreshAccessToken()) r=await post();
+      doc=r.ok?await r.json():null;
+    }catch(_e){ doc=null; }
+    if(!doc || typeof doc.interrupted!=="number"){
+      interruptRequested=false; flushAfterInterrupt=false; renderStop();
+      setStatusLine("Could not stop the turn. It is still running; try Stop again.");
+      return;
+    }
+    if(doc.interrupted===0){
+      // No conversation turn of yours was running on the server. Either this
+      // page's reply is already on its way back -- it lands normally, and what
+      // is queued still goes out together when it does -- or the work the
+      // indicator shows is not a conversation turn (an automation runs on its
+      // own and a Stop here never touches it).
+      interruptRequested=false;
+      if(!turnStartedAt) flushAfterInterrupt=false;
+      setStatusLine(turnStartedAt
+        ? "Your universe's reply is already on its way; anything queued goes out together when it lands."
+        : "Nothing you can stop is running: the work shown is not a conversation turn.");
+    }else if(!turnStartedAt){
+      // A turn another window started ends on the server's word; stop painting
+      // it now rather than until the next beat.
+      serverTurn=null; renderWorking();
+    }
+    renderStop();
+  }
   function renderWorking(){
+    renderStop();
     // ONE indicator, and it is the original line under the composer. #4020 added a
     // second, louder banner alongside it and the founder had both at once: "there
     // are now 2 indicators at once that my universe is thinking, i preferred only
@@ -3467,8 +3539,44 @@
     });
     note.appendChild(drop);
   }
-  function flushSendQueue(){
+  // After a stop, what was queued goes out as ONE turn, the way Claude Code
+  // sends its queued messages: in the order typed, separated by a blank line.
+  // Only lines that can share a turn are joined -- same account and home, same
+  // model choice, not tied to a chosen conversation; anything else waits and
+  // goes out after, as before.
+  function takeBatch(){
+    const group=[];
+    while(sendQueue.length){
+      const next=sendQueue[0];
+      if((next.owner&&next.owner!==queueOwner)||(next.scope&&next.scope!==queueScope)){
+        sendQueue.shift(); unmarkQueued(next.bubble); continue;
+      }
+      if(claimedElsewhere(next)){ sendQueue.shift(); unmarkQueued(next.bubble); continue; }
+      const first=group[0];
+      if(next.opts.consumerRequest) break;
+      if(first&&JSON.stringify(first.opts.modelChoice)!==JSON.stringify(next.opts.modelChoice)) break;
+      group.push(sendQueue.shift());
+    }
+    return group;
+  }
+  function flushBatch(){
+    const group=takeBatch();
+    saveQueue();
+    if(!group.length) return flushSendQueue();
+    group.forEach(item=>unmarkQueued(item.bubble));
+    const methods=group.map(item=>turnInputMethod(item.opts.inputMethod));
+    const same=methods.every(m=>m===methods[0]);
+    const message=group.map(item=>item.message).join("\n\n");
+    const display=group.map(item=>item.display||item.message).join("\n\n");
+    // Each line is already on screen as its own bubble; the turn is not drawn again.
+    const opts=Object.assign({},group[0].opts,{echoed:true,keepComposer:true,relay:false,
+      sentAt:Date.now(),inputMethod:same?methods[0]:"unknown"});
+    sendTurn(message, display, opts)
+      .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
+  }
+  function flushSendQueue(batch){
     if(sendQueueHeld || $("btn-send").disabled || !sendQueue.length) return;
+    if(batch===true) return flushBatch();
     const next=sendQueue.shift();
     // A queued line goes out only under the account and home that queued it.
     // SAME rule as the in-flight record's (restoreInflight): a stamped pair
@@ -3622,8 +3730,8 @@
         // working on this one, on the strength of a guess the transport
         // explicitly refused to make. The lines stay queued, on disk, until
         // the user explicitly resumes them, even after another manual send.
-        if(unconfirmed) noteHeldQueue();
-        else flushSendQueue();
+        if(unconfirmed){ takeInterruptFlush(); noteHeldQueue(); }
+        else flushSendQueue(takeInterruptFlush());
         Voice.conversationSettled(delivered,{message,ts:sentAt,
           consumerRequest:opts.consumerRequest||null,owner:sentOwner,scope:sentScope});
       }
@@ -3720,8 +3828,8 @@
       // Queued lines and the voice session belong to the account and home
       // that are on screen now; a turn that outlived its own is not theirs.
       if(stillHere()&&mine){
-        if(unconfirmed) noteHeldQueue();
-        else flushSendQueue();
+        if(unconfirmed){ takeInterruptFlush(); noteHeldQueue(); }
+        else flushSendQueue(takeInterruptFlush());
         Voice.conversationSettled(delivered,{message,ts:voiceSentAt,
           consumerRequest:opts.consumerRequest||null,owner:sentOwner,scope:sentScope});
       }
@@ -5350,6 +5458,15 @@
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
+    $("btn-stop").addEventListener("click",()=>interruptTurn());
+    // Escape stops the turn, as in Claude Code -- unless something else on the
+    // page already used this Escape (a menu or dialog closing handles it first).
+    document.addEventListener("keydown",(e)=>{
+      if(e.key!=="Escape"||e.defaultPrevented||e.isComposing) return;
+      if($("btn-stop").hidden||$("btn-stop").disabled) return;
+      if(document.querySelector("dialog[open]")) return;
+      e.preventDefault(); interruptTurn();
+    });
     $("btn-rail-add").addEventListener("click",toggleAddKey);
     $("connect-shapes").addEventListener("click",e=>{
       const b=e.target&&e.target.closest?e.target.closest("button[data-shape]"):null;

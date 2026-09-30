@@ -114,6 +114,13 @@ _CLASS_WORDS = {
         "was sent; connecting a model with a larger context window is the fix, "
         "and starting a fresh conversation for this request also works"
     ),
+    # The owner pressed Stop (``tinyassets/turn_interrupt``). Not a failure of
+    # anything, so it names no cause to fix; the effects clause still says
+    # whether actions ran, from the turn's own ledger.
+    "interrupted": (
+        "you stopped this turn, so it ended there and whatever it finished "
+        "before the stop stands"
+    ),
     "unknown": (
         "we could not identify why; we cannot tell whether this is a connection, "
         "usage, billing, or platform problem, so rather than guess we have "
@@ -242,10 +249,16 @@ def _wait_words(seconds: int) -> str:
 def failure_notice(value: object) -> str:
     """Compose the notice from the record's fields; no per-failure copy."""
     failure = _coerce(value)
-    stage = ("Your model source is unavailable" if failure.code == "provider_daily_quota"
-             else _STAGE_WORDS.get(failure.stage, _NO_STAGE))
+    # A stop is led by what happened, not by where: "Running one of your
+    # universe's tools" would read as the tool failing.
+    if failure.code == "interrupted":
+        lead = "Interrupted"
+    elif failure.code == "provider_daily_quota":
+        lead = "Your model source is unavailable"
+    else:
+        lead = _STAGE_WORDS.get(failure.stage, _NO_STAGE)
     parts = [
-        f"{stage} — {_CLASS_WORDS[failure.code]}.",
+        f"{lead} — {_CLASS_WORDS[failure.code]}.",
         _EFFECT_WORDS[failure.effects],
     ]
     if failure.retry_after_s is not None and failure.code != "provider_daily_quota":

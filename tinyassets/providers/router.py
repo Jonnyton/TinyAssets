@@ -1820,6 +1820,12 @@ class ProviderRouter:
         queued_at = time.monotonic()
         node_budget_s = _caller_deadline_budget_s(cfg)
         drain_deadline = queued_at + inner_timeout
+        # Read on the CALLER's thread: the pool worker below does not inherit
+        # context variables. Set only inside a served converse turn, so an
+        # automation or node call is never stoppable from here.
+        from tinyassets.turn_interrupt import current as _live_interactive_turn
+
+        live_turn = _live_interactive_turn() if operation == "converse" else None
 
         def _run() -> ProviderResponse:
             waited = time.monotonic() - queued_at
@@ -1843,15 +1849,18 @@ class ProviderRouter:
             )
             loop = asyncio.new_event_loop()
             try:
+                bounded = asyncio.wait_for(
+                    self.call(
+                        role, prompt, system, run_cfg,
+                        operation=operation,
+                        universe_context=universe_context,
+                    ),
+                    timeout=run_timeout,
+                )
+                # The owner's stop cancels the call, which is what ends a CLI
+                # process family; see tinyassets/turn_interrupt.py.
                 return loop.run_until_complete(
-                    asyncio.wait_for(
-                        self.call(
-                            role, prompt, system, run_cfg,
-                            operation=operation,
-                            universe_context=universe_context,
-                        ),
-                        timeout=run_timeout,
-                    )
+                    bounded if live_turn is None else live_turn.run(bounded)
                 )
             except asyncio.TimeoutError:
                 # wait_for already cancelled the coroutine (subprocess killed).

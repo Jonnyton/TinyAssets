@@ -228,6 +228,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
         "/app/account/delete", "/app/account/timezone",
+        "/app/turn/interrupt",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
     }
@@ -250,6 +251,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind",
         "/app/billing/checkout", "/app/billing/cancel",
         "/app/billing/webhook", "/app/account/delete",
+        "/app/turn/interrupt",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
@@ -1837,7 +1839,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let liveInflight=[^\n]*;",
                     r"const renderedConsumerTurns=[^\n]*;",
                     r"const renderedConsumerFounders=[^\n]*;",
-                    r"let Uploads=[^\n]*;")
+                    r"let Uploads=[^\n]*;",
+                    r"let interruptRequested=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
@@ -1853,7 +1856,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "messageBody", "expansionHandle", "offerFullMessage", "loadFullMessage",
         "restoreInflight", "setQueueScope", "setQueueOwner", "ownsSavedRow",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
-        "flushSendQueue", "queueTurn",
+        "flushSendQueue", "queueTurn", "takeInterruptFlush", "takeBatch", "flushBatch",
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
         "sameSavedLine",
         "restoreQueue", "claimedElsewhere", "offerSavedLine",
