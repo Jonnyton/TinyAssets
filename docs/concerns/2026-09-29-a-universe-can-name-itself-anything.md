@@ -1,3 +1,10 @@
+---
+severity: P3
+title: A universe's display name can be agent-set, and notifications put it in an identity line
+filed: '2026-09-29'
+summary: A soul-learned display name is chosen by the universe's own agent, not typed by its owner, and notifications render it as "<name> asks". So an agent can name its universe "TinyAssets Security". No cross-user reach and the owner's own device only, but the fix belongs where a name is accepted, with its provenance in hand, not in each surface that renders one.
+---
+
 # A universe's display name can be agent-set, and it is an identity line
 
 Found by `gpt-6-astra` reviewing PR #4122 round 2. Partly fixed there; the rest
