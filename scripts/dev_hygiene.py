@@ -18,8 +18,9 @@ Five classes, each with its own proof of disposability:
     Directories directly under the OS temp root whose name matches an
     agent-convention prefix AND whose contents have pytest's numbered-dir shape,
     untouched for ``--min-age-hours``. A directory with NO agent prefix is a
-    candidate only when it holds pytest's own ``test_*N``/``popen-gw*N`` session
-    dirs — lanes also pick bare names like ``orunb``.
+    candidate only when it holds pytest's ``tmp_path`` dirs named for tests in
+    this repo's suite (or ``popen-gw*N`` roots of them) — lanes also pick bare
+    names like ``orunb``.
 ``worktree``
     Git worktrees **of this repository only**, taken from ``git worktree list
     --porcelain``. Removed only when clean of tracked *and* ignored content,
@@ -33,8 +34,9 @@ Five classes, each with its own proof of disposability:
     confirms the path is ignored and it is older than ``--min-age-days``.
 ``toolcache``
     Package-manager download caches, cleared by the owning tool's own command
-    (``uv cache clean``, ``pip cache purge``, ``npm cache clean --force``) and
-    located by asking that tool. Never a directory this script picks.
+    (``pip cache purge``, ``npm cache clean --force``) and located by asking
+    that tool. Never a directory this script picks. uv's is only reported: a
+    linked environment can depend on it.
 
 Everything else is KEPT, with a reason. **Every unknown is a KEEP**: an
 undecidable git query, a directory shape the collector does not recognise, and
@@ -140,10 +142,16 @@ DRIVE_ROOT_PREFIXES = ("ta-",)
 _NUMBERED_DIR = re.compile(r".*\d+\Z")
 
 # What an UNPREFIXED temp dir must hold to be a candidate at all: pytest's own
-# per-test dirs (``test_<name>N``, truncated to 30 chars) or xdist's per-worker
-# roots. On 2026-09-28 lanes had left 140 such dirs (``orunb``, ``orset*``,
-# ``ct_x1``...) holding ~3.8 GB that no prefix rule could see.
-_PYTEST_SESSION_CHILD = re.compile(r"(test_\w*|popen-gw)\d+\Z")
+# per-test dirs or xdist's per-worker roots. On 2026-09-28 lanes had left 140 such
+# dirs (``orunb``, ``orset*``, ``ct_x1``...) holding ~3.8 GB that no prefix rule
+# could see. A ``test_<word>N`` NAME is not provenance (Codex, PR #4089, P1:
+# ``recovery/test_import0/manuscript.md``), so a per-test dir must also be named
+# for a test that exists in this repo's suite -- see ``is_suite_tmp_dir``.
+_XDIST_WORKER = re.compile(r"popen-gw\d+\Z")
+_TEST_DEF = re.compile(r"^[ \t]*(?:async[ \t]+)?def[ \t]+(test\w*)[ \t]*\(", re.MULTILINE)
+# pytest's tmp_path: the node name with non-word characters replaced by "_",
+# cut to this many characters, then a number.
+_TMP_PATH_NAME_MAX = 30
 # Files the TinyAssets suite writes at a basetemp root. Accepted only beside a
 # pytest session child — an exact app filename, not an extension.
 PYTEST_ROOT_FILES = frozenset({".tinyassets.db", ".tinyassets.db-wal", ".tinyassets.db-shm"})
@@ -186,9 +194,9 @@ DISPOSABLE_IGNORED = (
 # and then never archived (Codex round 1, P0).
 DISPOSABLE_IGNORED_FILES_ROOT = ("_PURPOSE.md", "junit.xml")
 DISPOSABLE_IGNORED_BASENAMES = (".DS_Store", "Thumbs.db", "next-env.d.ts")
-# Root-anchored ignored DIRECTORIES. `out/` is Next's static export, but the bare
-# name is too generic to accept anywhere, so only the site's own copy qualifies.
-DISPOSABLE_IGNORED_DIRS_ROOT = ("WebSite/site-react/out",)
+# `out/` (Next's static export) is NOT accepted, not even the site's own copy: the
+# export copies `public/` verbatim, and nothing tells a copied file from one written
+# there by hand (Codex, PR #4089, P1: `WebSite/site-react/out/review-notes.md`).
 # Compiled artifacts only. `*.db`/`*.db-wal`/`*.db-shm` were here and are NOT:
 # this repo ignores `*.db` for the SQLite mirror of the YAML catalog, but the same
 # pattern covers a user's own local database, and Codex round 1 reproduced a
@@ -513,14 +521,51 @@ def _is_pytest_artifact(entry: os.DirEntry) -> bool:
     return name.endswith("-current")
 
 
-def is_pytest_session_dir(path: Path) -> bool:
-    """Whether an UNPREFIXED directory is provably one pytest session's basetemp.
+def suite_test_names(repo: Path) -> frozenset[str]:
+    """Every ``def test_*`` name in ``repo/tests``: what this suite's tmp dirs are called."""
+    names: set[str] = set()
+    for path in (repo / "tests").rglob("*.py"):
+        try:
+            names.update(_TEST_DEF.findall(path.read_text(encoding="utf-8", errors="replace")))
+        except OSError:
+            continue
+    return frozenset(names)
+
+
+def is_suite_tmp_dir(name: str, test_names: frozenset[str]) -> bool:
+    """Whether ``name`` is a ``tmp_path`` dir pytest made for a test in ``test_names``.
+
+    pytest names it ``<node name, non-word chars -> "_", first 30 chars><N>``. A
+    parametrized node ``test_x[a-b]`` becomes ``test_x_a_b_``, so a stem may also
+    be a known name followed by ``_``. Every split of the trailing digits is
+    tried, because a test name can itself end in a digit.
+    """
+    for cut in range(len(name) - 1, 0, -1):
+        if not name[cut].isdigit():
+            break
+        stem = name[:cut]
+        if len(stem) > _TMP_PATH_NAME_MAX:
+            continue
+        if stem in test_names:
+            return True
+        if len(stem) == _TMP_PATH_NAME_MAX and any(
+            t[:_TMP_PATH_NAME_MAX] == stem for t in test_names
+        ):
+            return True
+        if any(stem[j] == "_" and stem[:j] in test_names for j in range(len(stem))):
+            return True
+    return False
+
+
+def is_pytest_session_dir(path: Path, test_names: frozenset[str]) -> bool:
+    """Whether an UNPREFIXED directory is provably one session of this repo's suite.
 
     Stricter than ``classify_temp_dir`` because there is no name hint at all:
-    every child directory must be a pytest session child (``test_<name>N`` or
-    ``popen-gwN``) — a bare ``chapter1/`` does not qualify — at least one must
-    exist, and every file must be a pytest artifact or one of
-    ``PYTEST_ROOT_FILES``. Unreadable means no.
+    every child directory must be a ``tmp_path`` dir of a test in this suite
+    (``is_suite_tmp_dir``) or an xdist ``popen-gwN`` root holding only those, at
+    least one must exist, and every file must be a pytest artifact or one of
+    ``PYTEST_ROOT_FILES``. A bare ``chapter1/`` or an invented ``test_import0/``
+    does not qualify. Unreadable means no.
     """
     found = False
     try:
@@ -528,7 +573,10 @@ def is_pytest_session_dir(path: Path) -> bool:
             for entry in entries:
                 name = entry.name
                 if entry.is_dir(follow_symlinks=False):
-                    if not _PYTEST_SESSION_CHILD.match(name):
+                    if _XDIST_WORKER.match(name):
+                        if not _only_suite_tmp_dirs(Path(entry.path), test_names):
+                            return False
+                    elif not is_suite_tmp_dir(name, test_names):
                         return False
                     found = True
                     continue
@@ -540,13 +588,25 @@ def is_pytest_session_dir(path: Path) -> bool:
     return found
 
 
+def _only_suite_tmp_dirs(worker: Path, test_names: frozenset[str]) -> bool:
+    """An xdist worker root: suite ``tmp_path`` dirs and pytest's own files, nothing else."""
+    with os.scandir(worker) as entries:
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                if not is_suite_tmp_dir(entry.name, test_names):
+                    return False
+            elif entry.name not in PYTEST_ROOT_FILES | {".lock", "pytest-current"}:
+                return False
+    return True
+
+
 def collect_basetemps(
     temp_root: Path,
     *,
     min_age_hours: float,
     now: float,
     prefixes: tuple[str, ...] = BASETEMP_PREFIXES,
-    unprefixed_sessions: bool = False,
+    unprefixed_sessions: frozenset[str] | None = None,
 ) -> list[Item]:
     """Inventory one temp root. ``prefixes`` is narrower for a drive root.
 
@@ -555,8 +615,9 @@ def collect_basetemps(
     basetemps there to dodge MAX_PATH and a drive root also holds system
     directories that must never be candidates.
 
-    ``unprefixed_sessions`` (OS temp root only) also admits a directory of any
-    name that ``is_pytest_session_dir`` proves is a pytest session.
+    ``unprefixed_sessions`` (OS temp root only) is this repo's test names; given,
+    it also admits a directory of any name that ``is_pytest_session_dir`` proves
+    is a session of this suite.
     """
     items: list[Item] = []
     here = Path.cwd().resolve()
@@ -569,9 +630,9 @@ def collect_basetemps(
         name = child.name
         session = False
         if not any(name.startswith(p) for p in prefixes):
-            if not unprefixed_sessions or child.is_symlink() or not child.is_dir():
+            if unprefixed_sessions is None or child.is_symlink() or not child.is_dir():
                 continue
-            if (child / ".git").exists() or not is_pytest_session_dir(child):
+            if (child / ".git").exists() or not is_pytest_session_dir(child, unprefixed_sessions):
                 continue
             session = True
         # A checkout is never basetemp, whatever it is called. The shape gate below
@@ -735,8 +796,6 @@ def is_disposable_ignored(rel: str) -> bool:
             return True
 
     if trimmed in DISPOSABLE_IGNORED_FILES_ROOT:  # root-anchored, exact
-        return True
-    if any(trimmed == d or trimmed.startswith(d + "/") for d in DISPOSABLE_IGNORED_DIRS_ROOT):
         return True
     if parts[-1] in DISPOSABLE_IGNORED_BASENAMES:  # exact final component
         return True
@@ -1259,6 +1318,11 @@ TOOL_CACHES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
     ("pip", ("cache", "dir"), ("cache", "purge"), ""),
     ("npm", ("config", "get", "cache"), ("cache", "clean", "--force"), "_cacache"),
 )
+# Measured and reported, never cleared. uv installs by link, and an environment
+# made with `--link-mode symlink` (a CLI flag, invisible to this script) points
+# into the cache, so `uv cache clean` breaks its imports (Codex, PR #4089, P1).
+# pip and npm copy out of theirs.
+TOOL_CACHES_REPORT_ONLY = {"uv": "cache_may_back_linked_envs"}
 # A download cache is not a safety question, so an oversized one is still cleared;
 # the budget only bounds how long the pass spends measuring it.
 TOOL_CACHE_MAX_ENTRIES = 1_000_000
@@ -1293,6 +1357,10 @@ def collect_tool_caches(*, which=None) -> list[Item]:
         if size == 0 and "unmeasured" not in detail:
             items.append(Item("toolcache", str(target), 0, "KEEP", "nothing_reclaimable"))
             continue
+        if tool in TOOL_CACHES_REPORT_ONLY:
+            reason = TOOL_CACHES_REPORT_ONLY[tool]
+            items.append(Item("toolcache", str(target), size, "KEEP", reason, detail))
+            continue
         items.append(
             Item("toolcache", str(target), size, "REMOVE", "tool_owned_cache", detail, tool=tool)
         )
@@ -1302,6 +1370,8 @@ def collect_tool_caches(*, which=None) -> list[Item]:
 def clean_tool_cache(item: Item, *, which=None) -> tuple[bool, str]:
     which = which or shutil.which
     spec = next((t for t in TOOL_CACHES if t[0] == item.tool), None)
+    if item.tool in TOOL_CACHES_REPORT_ONLY:
+        return False, f"{item.tool} cache is report-only; refusing to clean"
     if spec is None:
         return False, f"unknown tool {item.tool!r}; refusing to clean"
     exe = which(spec[0])
@@ -1629,7 +1699,10 @@ def inventory(
     items: list[Item] = []
     if "basetemp" in classes:
         items += collect_basetemps(
-            temp_root, min_age_hours=min_age_hours, now=now, unprefixed_sessions=True
+            temp_root,
+            min_age_hours=min_age_hours,
+            now=now,
+            unprefixed_sessions=suite_test_names(repo),
         )
         for root in extra_temp_roots:
             items += collect_basetemps(
