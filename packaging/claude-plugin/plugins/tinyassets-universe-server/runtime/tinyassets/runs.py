@@ -5773,6 +5773,7 @@ def _execute_branch_core(
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
     _provider_parent=None,
+    _lend_seat: bool = False,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -5899,6 +5900,13 @@ def _execute_branch_core(
     # blocking compiler invoke may explicitly hand a slot to this worker.
     with independent_provider_work(parent_slot=_provider_parent):
         worker_context = contextvars.copy_context()
+    if not _lend_seat:
+        # Nor its account seat: a queued run's caller keeps running, so a borrowed
+        # seat would carry two concurrent agent calls (gpt-6-astra round 2). Only
+        # a blocking invoke, whose caller waits for this run, lends it.
+        from tinyassets.universe_seats import detach_seat
+
+        worker_context.run(detach_seat)
     future = executor.submit(worker_context.run, _worker)
     _track_future(run_id, future)
 
@@ -6110,6 +6118,7 @@ def execute_branch_version_async(
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
     _provider_parent=None,
+    _lend_seat: bool = False,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -6156,6 +6165,7 @@ def execute_branch_version_async(
         owner_user_id=owner_user_id,
         _workspace_parent=_workspace_parent,
         _provider_parent=_provider_parent,
+        _lend_seat=_lend_seat,
         _enqueue_universe_id=_enqueue_universe_id,
         _invocation_depth=_invocation_depth,
     )
@@ -6377,6 +6387,9 @@ def resume_run(
 
     with independent_provider_work():
         worker_context = contextvars.copy_context()
+    from tinyassets.universe_seats import detach_seat
+
+    worker_context.run(detach_seat)  # a resumed run takes its own seats
     future = executor.submit(worker_context.run, _owned_resume_worker)
     _track_future(run_id, future)
 

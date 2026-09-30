@@ -803,6 +803,13 @@ def _wait_for_seat(account_id, *, seat_class, kind, universe_id, run_id, ticket_
         time.sleep(_POLL_SECONDS)
 
 
+def detach_seat() -> None:
+    """Clear the current seat in THIS context. For a copied context handed to
+    work that runs alongside its caller (a queued run), which must take its own
+    seats rather than borrow one its still-running caller is using."""
+    _current_seat.set(None)
+
+
 @contextmanager
 def carrying(seat: Seat):
     """Make ``seat`` the current one for the body WITHOUT releasing it after:
@@ -913,6 +920,7 @@ __all__ = [
     "bound",
     "carrying",
     "current_seat",
+    "detach_seat",
     "hold",
     "holder_is_named",
     "ledger_path",

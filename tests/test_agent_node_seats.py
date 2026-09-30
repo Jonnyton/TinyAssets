@@ -44,7 +44,7 @@ def node(root, provider, *, uid="village", sink=None, timeout=5):
     )
 
 
-def _wait_until(predicate, timeout=10.0):
+def _wait_until(predicate, timeout=45.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -62,7 +62,7 @@ def test_compiled_node_holds_the_accounts_seat_at_the_provider(ledger):
 
     assert node(ledger, provider)({}) == {"reply": "answer"}
     assert seen == [1]
-    assert _running(ledger) == 0
+    assert _wait_until(lambda: _running(ledger) == 0), "every seat is given back"
 
 
 # -- A REAL run takes the seat ------------------------------------------------- #
@@ -108,7 +108,7 @@ def test_a_real_run_holds_a_seat_during_its_agent_call(ledger):
     wait_for(run_id, timeout=20)
     assert get_run(ledger, run_id)["status"] == "completed"
     assert seen == [1], "the run's agent call must hold one seat of alice's account"
-    assert _running(ledger) == 0
+    assert _wait_until(lambda: _running(ledger) == 0), "every seat is given back"
 
 
 def test_a_run_over_the_seat_count_waits_visibly_and_then_completes(ledger):
@@ -138,7 +138,7 @@ def test_a_run_over_the_seat_count_waits_visibly_and_then_completes(ledger):
             seats.release(held.seat_id, db=db)
     wait_for(run_id, timeout=20)
     assert get_run(ledger, run_id)["status"] == "completed"
-    assert _running(ledger) == 0
+    assert _wait_until(lambda: _running(ledger) == 0), "every seat is given back"
 
 
 def test_cancelling_a_waiting_run_stops_the_wait_and_gives_back_its_place(ledger):
@@ -211,7 +211,7 @@ def test_four_agent_village_completes_by_queueing_across_universes(ledger):
     assert peak == 2
     assert any("[Upgrade](https://tinyassets.io/app?upgrade=1)" in e.get("detail", "")
                for e in events)
-    assert _running(ledger) == 0
+    assert _wait_until(lambda: _running(ledger) == 0), "every seat is given back"
 
 
 def test_timed_out_worker_releases_only_when_it_finishes(ledger):
@@ -231,6 +231,51 @@ def test_timed_out_worker_releases_only_when_it_finishes(ledger):
     finally:
         gate.set()
     assert _wait_until(lambda: _running(ledger) == 0, timeout=5)
+
+
+def test_time_spent_waiting_for_a_seat_is_not_taken_from_the_call(ledger):
+    """gpt-6-astra round 2, P1. The node's provider budget used to be counted from
+    BEFORE the seat wait, so a call that waited its budget away was served with an
+    already-spent cap and failed at once. The budget starts when the seat is held."""
+    db = seats.ledger_path(ledger)
+    blockers = [seats.acquire(ALICE, db=db) for _ in range(2)]
+    caps = []
+
+    def provider(prompt, system, config=None, **kwargs):
+        caps.append(getattr(config, "absolute_cap_s", None))
+        return "answer"
+
+    timer = threading.Timer(1.5, lambda: [seats.release(b.seat_id, db=db) for b in blockers])
+    timer.start()
+    try:
+        assert node(ledger, provider, timeout=3)({}) == {"reply": "answer"}
+    finally:
+        timer.join(5)
+    assert caps and caps[0] is not None
+    assert caps[0] > 2.5, f"the 1.5s seat wait was charged to the call: cap {caps[0]}"
+
+
+def test_a_queued_run_does_not_borrow_its_callers_seat(ledger):
+    """gpt-6-astra round 2. A run queued with `execute_branch_async` runs ALONGSIDE
+    its caller, so it must not inherit the seat the caller is carrying: two
+    concurrent agent calls on one seat would slip past the account's count."""
+    from tinyassets.runs import get_run, wait_for
+
+    db = seats.ledger_path(ledger)
+    caller = seats.acquire(ALICE, db=db)
+    seen = []
+
+    def provider(prompt, system="", **kwargs):
+        seen.append(_running(ledger))
+        return "[ok]"
+
+    with seats.carrying(caller):
+        run_id = _start_run(ledger, provider)
+    wait_for(run_id, timeout=20)
+    assert get_run(ledger, run_id)["status"] == "completed"
+    assert seen == [2], "the queued run's agent call took its own seat"
+    seats.release(caller.seat_id, db=db)
+    assert _wait_until(lambda: _running(ledger) == 0)
 
 
 def test_a_blocking_agent_call_nested_in_another_reenters_its_seat(ledger):

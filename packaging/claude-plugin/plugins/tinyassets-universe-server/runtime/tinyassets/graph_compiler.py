@@ -387,7 +387,7 @@ def _seat_scope(universe_context, seat_scope) -> tuple[Path, str] | None:
 
 
 def _run_agent_with_timeout(fn, *, timeout_s, node_id, universe_context, event_sink,
-                            seat_scope=None):
+                            seat_scope=None, on_seated=None):
     """Run one agent call holding a seat of the universe's ACCOUNT.
 
     This is the executor, never the enqueuer: the seat is taken here, where the
@@ -400,6 +400,9 @@ def _run_agent_with_timeout(fn, *, timeout_s, node_id, universe_context, event_s
     parent) re-enters it; a parallel sibling pays for its own. Once the call is
     submitted, its future owns the release -- a timed-out call that is still
     running keeps its seat until it actually ends.
+
+    ``on_seated`` runs once the seat is held, before the call is submitted: the
+    node's provider budget starts THEN, never during the wait.
     """
     from tinyassets import universe_seats as seats
 
@@ -430,6 +433,8 @@ def _run_agent_with_timeout(fn, *, timeout_s, node_id, universe_context, event_s
         parent=seats.current_seat(), wait_s=None, on_waiting=waiting,
         db=seats.ledger_path(root),
     )
+    if on_seated is not None:
+        on_seated()
     # The call runs carrying its seat (the worker hop copies this context), so a
     # blocking agent call nested inside it re-enters the seat instead of waiting
     # for one its own blocked parent holds.
@@ -1628,7 +1633,13 @@ def _build_prompt_template_node(
             # budget as its provider cap — it would outlive the node's own
             # deadline by exactly the queue wait. Measured on the worker (these
             # closures run there), so it reflects real wait, not submit time.
-            _submitted_at = time.monotonic()
+            # Restamped when the call gets its account seat (`_seated`): a wait
+            # for a seat is not the provider's time, and charging it would hand a
+            # served call an already-spent budget (gpt-6-astra round 2, P1).
+            _submitted = [time.monotonic()]
+
+            def _seated() -> None:
+                _submitted[0] = time.monotonic()
 
             def _deadline_cfg() -> Any:
                 """The node's REMAINING budget as a provider cap.
@@ -1639,7 +1650,7 @@ def _build_prompt_template_node(
                 """
                 if _node_cfg is None:
                     return None
-                waited = time.monotonic() - _submitted_at
+                waited = time.monotonic() - _submitted[0]
                 if waited < _QUEUE_WAIT_SUBTRACT_THRESHOLD_S:
                     # Scheduling jitter, not queue wait. Hand over the node's
                     # own config unchanged so an unqueued call is unaffected.
@@ -1696,7 +1707,7 @@ def _build_prompt_template_node(
                             timeout_s=timeout_s,
                             node_id=node.node_id,
                             universe_context=universe_context, event_sink=event_sink,
-                            seat_scope=seat_scope,
+                            seat_scope=seat_scope, on_seated=_seated,
                         )
                         response, provider_served, provider_meta = text_and_name
                     else:
@@ -1709,7 +1720,7 @@ def _build_prompt_template_node(
                             timeout_s=timeout_s,
                             node_id=node.node_id,
                             universe_context=universe_context, event_sink=event_sink,
-                            seat_scope=seat_scope,
+                            seat_scope=seat_scope, on_seated=_seated,
                         )
                 except NodeTimeoutError:
                     raise
@@ -1728,7 +1739,7 @@ def _build_prompt_template_node(
                         timeout_s=timeout_s,
                         node_id=node.node_id,
                         universe_context=universe_context, event_sink=event_sink,
-                        seat_scope=seat_scope,
+                        seat_scope=seat_scope, on_seated=_seated,
                     )
                 except NodeTimeoutError:
                     raise
@@ -3438,6 +3449,9 @@ def _build_invoke_branch_version_node(
                         on_node_status=on_node_status,
                         _invocation_depth=depth + 1,
                         _provider_parent=blocking_parent_slot(),
+                        # This node blocks until the child ends, so the child
+                        # may borrow the seat it is carrying, if any.
+                        _lend_seat=True,
                     )
                     _bind_child_ticket(ticket, str(outcome.run_id or ""))
                     # Block until the child terminates; harvest its output dict.

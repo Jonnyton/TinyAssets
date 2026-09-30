@@ -470,6 +470,14 @@ person, shared across all their universes; universe creation stays unlimited.
   after two hours. The `settlement_unavailable` refusal the first draft
   introduced in place of the meters is gone with them.
 
-Known and not fixed here: the run pool (`TINYASSETS_RUN_MAX_CONCURRENT`, 4) is
-shared by all accounts, and a prompt node waiting for its account's seat waits
-inside a pool thread. Filed as a concern.
+- **Budget and borrowing (astra round 2).** A node's provider budget is
+  restamped when its seat is held (`on_seated`), so a seat wait is never charged
+  to the call. A queued run (`execute_branch_async`, resume) detaches the
+  caller's seat from its copied context; only a blocking version invoke lends it
+  (`_lend_seat`).
+
+Known and not fixed here, both filed as concerns: the run pool
+(`TINYASSETS_RUN_MAX_CONCURRENT`, 4) is shared by all accounts, and a prompt
+node waiting for its account's seat waits inside a pool thread; and a timed-out
+borrower whose parent released first remembers a stale depth, so it cannot lend
+the seat on to a nested blocking call.
