@@ -211,7 +211,7 @@ class EventDeliveryDeferred(RuntimeError):
 #: window refills, the consumer is switched on. A durable event refused for one
 #: of these stays owed. Every other refusal (the owner lost admin, the branch
 #: is gone) is final for this event and is recorded on the subscription.
-RETRYABLE_REFUSALS = frozenset({"no_serving_assignment", "usage_limited", "consumer_disabled"})
+RETRYABLE_REFUSALS = frozenset({"no_serving_assignment", "settlement_unavailable", "consumer_disabled"})
 
 
 def _event_key(

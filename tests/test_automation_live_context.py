@@ -161,7 +161,7 @@ class AutomationContextTests(unittest.TestCase):
 
     def rate_limited_history(self, rows):
         self.auto.last_due_at = "2026-09-11T01:00:00+00:00"
-        self.auto.last_reason = "run_rate_limited"
+        self.auto.last_reason = "settlement_unavailable"
         with sqlite3.connect(self.base / ".automations.db") as conn:
             self.addCleanup(conn.close)
             conn.execute("CREATE TABLE automation_attempts "
@@ -173,7 +173,7 @@ class AutomationContextTests(unittest.TestCase):
     def test_rate_limited_tick_recovers_prior_result(self):
         self.rate_limited_history([
             ("a-owner", "2026-09-11T00:00:00+00:00", "r1", "completed", "ok"),
-            ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused", "run_rate_limited"),
+            ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused", "settlement_unavailable"),
             ("a-other", "2026-09-11T01:00:00+00:00", "foreign", "completed", "ok"),
         ])
         recovered = self.resolve(self.prior())["context"]["previous_run"]
@@ -183,7 +183,7 @@ class AutomationContextTests(unittest.TestCase):
     def test_initial_rate_limit_does_not_wedge_first_wake(self):
         self.rate_limited_history([
             ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused",
-             "run_rate_limited"),
+             "settlement_unavailable"),
         ])
         self.assertIsNone(self.resolve()["context"]["previous_run"])
 
@@ -192,7 +192,7 @@ class AutomationContextTests(unittest.TestCase):
             ("a-owner", "2026-09-11T00:00:00+00:00", "r1", "completed", "ok"),
             ("a-owner", "2026-09-11T00:30:00+00:00", "", "failed", "unknown"),
             ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused",
-             "run_rate_limited"),
+             "settlement_unavailable"),
         ])
         with self.assertRaisesRegex(ValueError, "previous_run_missing"):
             self.resolve(self.prior())

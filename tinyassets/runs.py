@@ -4395,7 +4395,24 @@ def _require_managed_start_status(base_path, run_id, expected_status):
             raise RunExecutionAuthorityLost("Execution lost its expected start status; no replay.")
 
 
+def _holds_account_seat(function):
+    from functools import wraps
+
+    @wraps(function)
+    def execute(base_path, *, run_id, **kwargs):
+        from tinyassets.universe_seats import worker_seat
+
+        row = get_run(base_path, run_id) or {}
+        universe = row.get("queue_universe_id")
+        if not universe:
+            return function(base_path, run_id=run_id, **kwargs)
+        with worker_seat(universe, root=base_path, kind="workflow"):
+            return function(base_path, run_id=run_id, **kwargs)
+    return execute
+
+
 @_owns_managed_execution
+@_holds_account_seat
 def _invoke_graph(
     base_path: str | Path,
     *,

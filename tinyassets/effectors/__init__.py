@@ -350,34 +350,6 @@ def _budget_refusal(chain: "EffectChain", key: str, sink: str) -> "EffectFailedE
             f"(budget {RUN_BYTES_MAX}); fetch less or split the work across runs",
             "effect_budget_exhausted",
         )
-    if chain.universe_id:
-        try:
-            from tinyassets.engine_admissions import (
-                BUDGET_WINDOW_S,
-                BYTES_PER_HOUR,
-                DISPATCHES_PER_HOUR,
-                dispatch_window_usage,
-            )
-
-            used_n, used_b = dispatch_window_usage(chain.universe_id)
-        except Exception:  # noqa: BLE001 - the per-run budget still holds
-            return None
-        if used_n >= DISPATCHES_PER_HOUR:
-            return EffectFailedError(
-                key, sink,
-                f"hourly budget exhausted: {used_n} effect dispatches in the last "
-                f"{BUDGET_WINDOW_S // 60} min (budget {DISPATCHES_PER_HOUR}); "
-                "wait for the window to clear",
-                "effect_budget_exhausted",
-            )
-        if used_b >= BYTES_PER_HOUR:
-            return EffectFailedError(
-                key, sink,
-                f"hourly budget exhausted: {used_b} outbound bytes in the last "
-                f"{BUDGET_WINDOW_S // 60} min (budget {BYTES_PER_HOUR}); "
-                "wait for the window to clear",
-                "effect_budget_exhausted",
-            )
     return None
 
 
@@ -791,13 +763,6 @@ def dispatch_node_effects(
         with chain.lock:
             chain.evidence[key] = per_node
             chain.bytes_out += moved
-        if chain.universe_id:
-            try:
-                from tinyassets.engine_admissions import charge_dispatch
-
-                charge_dispatch(chain.universe_id, dispatches=1, nbytes=moved)
-            except Exception:  # noqa: BLE001 - never let accounting break a dispatch
-                logging.getLogger(__name__).exception("dispatch budget charge failed")
     finally:
         with chain.lock:
             chain.inflight.discard(key)

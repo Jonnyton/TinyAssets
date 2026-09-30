@@ -1466,7 +1466,7 @@ def register_automation(
     from tinyassets.engine_mcp_server import _engine_run_admit
 
     if not _engine_run_admit(universe_id=uid, fail_closed=True, kind="engine"):
-        raise AutomationUnavailable("usage_limited")
+        raise AutomationUnavailable("settlement_unavailable")
     store = AutomationStore(base)
     stamp = _iso(moment)
     candidate = Automation(
@@ -2222,7 +2222,15 @@ def _failure_pause_reason(error_text: str) -> str:
     return ""
 
 
-def run_due_automation(
+def run_due_automation(base_path, automation, due_at, **kwargs):
+    """The claimed consumer worker waits before spending an attempt."""
+    from tinyassets.universe_seats import KIND_AUTOMATION, worker_seat
+
+    with worker_seat(automation.universe_id, root=base_path, kind=KIND_AUTOMATION):
+        return _run_due_automation(base_path, automation, due_at, **kwargs)
+
+
+def _run_due_automation(
     base_path: str | Path,
     automation: Automation,
     due_at: str,
@@ -2361,7 +2369,7 @@ def run_due_automation(
                     due_at,
                     run_id="",
                     status="refused",
-                    reason="run_rate_limited",
+                    reason="settlement_unavailable",
                     now=moment,
                 )
             else:
@@ -2371,11 +2379,11 @@ def run_due_automation(
                 # meter (Codex refute 2026-09-28, P1).
                 store.skip_refused_instant(
                     automation.automation_id, due_at,
-                    reason="run_rate_limited", now=moment,
+                    reason="settlement_unavailable", now=moment,
                 )
-            _record_refusal(base, automation, "run_rate_limited", moment, consumer_id)
+            _record_refusal(base, automation, "settlement_unavailable", moment, consumer_id)
             _retire_once(store, automation, ran=False, now=moment)
-            return "run_rate_limited"
+            return "settlement_unavailable"
 
         branch = _load_branch(base, automation)
         provider_call = _bind_automation_provider_call(base, automation)

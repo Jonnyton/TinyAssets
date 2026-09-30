@@ -1680,7 +1680,10 @@
   const STATUS_IDLE_MS=30000, STATUS_WORKING_MS=10000;
   let statusBeatMs=STATUS_IDLE_MS;
   let serverTurn=null;
+  let seatWait=null;
   function readServerTurn(payload){
+    seatWait=payload&&payload.seats&&payload.seats.interactive_waiting>0
+      ?payload.seats:null;
     const row=payload&&payload.active_turn;
     // `active_turn` absent (an older daemon) leaves whatever this page already
     // believed; an explicit null, a stale row, or a non-working state is an
@@ -1715,6 +1718,19 @@
   // whoever wrote it and is never touched here.
   let serverStatusLine=false;
   function renderWorking(){
+    if(seatWait){
+      const line=$("status-line");
+      line.textContent="Waiting for a free seat ("+seatWait.running+" running)";
+      if(seatWait.upgrade_url){
+        line.appendChild(document.createTextNode(" \u2014 "));
+        const link=document.createElement("a");
+        link.textContent="Upgrade";link.href=seatWait.upgrade_url;
+        line.appendChild(link);
+        line.appendChild(document.createTextNode(" for more seats"));
+      }
+      serverStatusLine=true;
+      return;
+    }
     // ONE indicator, and it is the original line under the composer. #4020 added a
     // second, louder banner alongside it and the founder had both at once: "there
     // are now 2 indicators at once that my universe is thinking, i preferred only
@@ -4103,6 +4119,12 @@
       if(!r || !r.ok) return;
       PLAN = await r.json();
       renderPlan();
+      const entry=new URL(location.href);
+      if(!NATIVE && entry.searchParams.get("upgrade")==="1"){
+        entry.searchParams.delete("upgrade");
+        history.replaceState(null,"",entry.href);
+        if(PLAN.tier!=="paid") await startSubscribe();
+      }
     }catch(_e){ /* the plan chip is never load-bearing for chat */ }
   }
 

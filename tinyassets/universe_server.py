@@ -1884,13 +1884,9 @@ def _inbound_event_run_fn(
         )
         if reservation_id:
             webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
-    except Exception as exc:  # noqa: BLE001 - a single failed event must not kill the loop
+    except Exception:  # noqa: BLE001 - a single failed event must not kill the loop
         logger.exception("event bus: failed to fire branch %s for %s", branch_def_id, actor)
         _release()
-        if str(exc).startswith("run_usage_limited"):
-            # Re-raised so the event loop logs it as a failed dispatch
-            # (plan item 6: a limit is never a silent drop).
-            raise
 
 
 def start_scheduler_for_serving() -> bool:

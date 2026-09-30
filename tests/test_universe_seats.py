@@ -72,7 +72,7 @@ def test_every_terminal_path_releases_the_seat(db, ending):
     raised = {"failure": RuntimeError, "timeout": TimeoutError,
               "cancellation": Cancelled}.get(ending)
     with pytest.raises(raised) if raised else _nullctx():
-        with seats.hold("u1", db=db, wait_s=0.0) as held:
+        with seats.hold("u1", db=db, wait_s=0.0, seats=3, reserve=1) as held:
             assert isinstance(held, Seat)
             if raised:
                 raise raised("ended")
@@ -86,6 +86,115 @@ class _nullctx:
 
     def __exit__(self, *_):
         return False
+
+
+# -- Waiting, for a caller that must not bounce ------------------------------ #
+
+
+def test_a_chat_turn_waits_until_served_instead_of_bouncing(db, monkeypatch):
+    """`wait_s=None`. A turn that queued must not come back to the user after a
+    timeout: a bounce reads as a refusal however it is worded, and the directive
+    says work is never refused. So the turn waits, and is served when the seat
+    frees."""
+    # A short bounded deadline, so "waits far past where a bounce would fire"
+    # is a fraction of a second rather than minutes.
+    monkeypatch.setattr(seats, "SEAT_WAIT_SECONDS", 0.05)
+    blocker = seats.acquire(
+        "u1", seat_class=CLASS_INTERACTIVE, seats=1, reserve=0, db=db,
+    )
+    assert isinstance(blocker, Seat)
+
+    served: list[object] = []
+    notices: list[Waiting] = []
+
+    def turn():
+        with seats.hold(
+            "u1", seat_class=CLASS_INTERACTIVE, kind=seats.KIND_CHAT_TURN,
+            wait_s=None, on_waiting=notices.append, seats=1, reserve=0, db=db,
+        ) as got:
+            served.append(got)
+
+    thread = threading.Thread(target=turn, daemon=True)
+    thread.start()
+    # Outlive the BOUNDED deadline by a wide margin. Joining for less than
+    # `SEAT_WAIT_SECONDS` would pass even if `wait_s=None` silently bounced,
+    # which is exactly what a mutation check caught.
+    thread.join(timeout=seats.SEAT_WAIT_SECONDS * 8)
+    assert thread.is_alive(), "an interactive turn must keep waiting, not bounce"
+    assert not served, "nothing may be yielded before a seat exists"
+    assert notices, "a waiting turn must publish its waiting state"
+    assert notices[0].running == 1
+
+    seats.release(blocker.seat_id, db=db)
+    thread.join(timeout=5.0)
+    seats.stop_refresher()
+    assert not thread.is_alive()
+    assert len(served) == 1
+    assert isinstance(served[0], Seat), "the turn is served once a seat frees"
+
+
+def test_the_waiting_notice_carries_the_live_running_count(db):
+    """The owner watches this number, so it must come from the ledger each time
+    rather than being captured once."""
+    seats.acquire("u1", seat_class=CLASS_BACKGROUND, seats=2, reserve=1, db=db)
+    waiting = seats.acquire("u1", seat_class=CLASS_BACKGROUND, seats=2, reserve=1, db=db)
+    assert isinstance(waiting, Waiting)
+    message = seats.waiting_message("u1", running=waiting.running, tier="free")
+    assert "(1 running)" in message
+    assert "[Upgrade](" in message
+
+
+def test_a_bounded_waiter_keeps_its_ticket_when_it_gives_up(db):
+    """A pump gives up and retries next tick. Its queue position must survive,
+    or a busy universe would send it to the back forever."""
+    seats.acquire("u1", seat_class=CLASS_BACKGROUND, seats=2, reserve=1, db=db)
+    with seats.hold(
+        "u1", seat_class=CLASS_BACKGROUND, wait_s=0.0, seats=2, reserve=1, db=db,
+    ) as got:
+        assert isinstance(got, Waiting)
+        ticket = got.ticket
+    again = seats.acquire(
+        "u1", seat_class=CLASS_BACKGROUND, seats=2, reserve=1, ticket=ticket, db=db,
+    )
+    assert isinstance(again, Waiting)
+    assert again.ticket == ticket, "giving up on a bounded wait must not lose the position"
+
+
+def test_a_failing_waiting_notice_does_not_lose_the_seat(db):
+    """A notice is a notification, not a step. If the owner's surface is down the
+    caller must still get its seat."""
+    blocker = seats.acquire(
+        "u1", seat_class=CLASS_INTERACTIVE, seats=1, reserve=0, db=db,
+    )
+
+    calls: list[int] = []
+
+    def boom(_state):
+        calls.append(1)
+        raise RuntimeError("owner surface unavailable")
+
+    served: list[object] = []
+
+    def turn():
+        with seats.hold(
+            "u1", seat_class=CLASS_INTERACTIVE, wait_s=None, on_waiting=boom,
+            seats=1, reserve=0, db=db,
+        ) as got:
+            served.append(got)
+
+    thread = threading.Thread(target=turn, daemon=True)
+    thread.start()
+    # Let it actually wait, so the notice actually fires and actually raises.
+    thread.join(timeout=0.5)
+    assert calls, "the notice must have been attempted while waiting"
+    assert thread.is_alive()
+
+    seats.release(blocker.seat_id, db=db)
+    thread.join(timeout=5.0)
+    seats.stop_refresher()
+    assert served and isinstance(served[0], Seat), (
+        "a notice that raises must not cost the caller the seat it is owed"
+    )
 
 
 # -- The queue --------------------------------------------------------------- #
@@ -260,13 +369,19 @@ def test_an_expired_seat_of_a_dead_holder_is_reaped(db):
     """The only path a `finally` cannot cover is a crash, so the lease has to."""
     stranded = take(db, now=1000.0)
     assert isinstance(stranded, Seat)
-    # Forge a holder that is not this process and cannot be proven alive.
-    import sqlite3
+    import subprocess
+    import sys
 
-    conn = sqlite3.connect(str(db))
-    conn.execute("UPDATE universe_seats SET holder = 'gone:1'")
-    conn.commit()
-    conn.close()
+    from tinyassets.process_liveness import DEAD, owner_state
+
+    script = (
+        "import os, sys; from tinyassets.process_liveness import hold_liveness; "
+        "proof = hold_liveness(sys.argv[1], 'dead_holder'); os._exit(7)"
+    )
+    crashed = subprocess.run([sys.executable, "-c", script, str(db.parent)], check=False)
+    assert crashed.returncode == 7
+    assert owner_state(db.parent, "dead_holder") == DEAD
+    _reseat_to(db, "dead_holder")
     later = take(db, now=1000.0 + seats.SEAT_LEASE_SECONDS + 1)
     assert isinstance(later, Seat), "a crashed holder's seat must not strand capacity"
     assert seats.occupancy(
@@ -274,28 +389,82 @@ def test_an_expired_seat_of_a_dead_holder_is_reaped(db):
     )["running"] == 1
 
 
-def test_a_live_holder_keeps_an_expired_seat(db, monkeypatch):
+def _reseat_to(db, holder: str) -> None:
+    """Rewrite the holder of every seat row, standing in for a seat taken by a
+    different process."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE universe_seats SET holder = ?", (holder,))
+    conn.commit()
+    conn.close()
+
+
+def test_the_holder_token_is_one_the_liveness_lock_can_verify(db):
+    """The bug that made the guard below dead code, pinned directly.
+
+    The first draft's holder was `f"{pid}:{hex}"`. `automations._HOLDER_RE` is
+    `^[A-Za-z0-9_-]{1,128}$`, so the colon meant `holder_liveness_path` returned
+    None, every probe answered "unknown", and `holder_is_provably_alive` could
+    never be true. A separator choice silently disabled a safety check, and the
+    test that should have caught it had monkeypatched the predicate.
+    """
+    from tinyassets.process_liveness import ALIVE, liveness_path, owner_state
+
+    holder = seats._holder(db.parent)
+    assert liveness_path(db.parent, holder) is not None
+    assert owner_state(db.parent, holder) == ALIVE
+
+
+def test_taking_a_seat_registers_this_process_as_provably_alive(db):
+    import sqlite3
+
+    from tinyassets.process_liveness import ALIVE, owner_state
+
+    got = take(db)
+    assert isinstance(got, Seat)
+    with sqlite3.connect(db) as conn:
+        holder = conn.execute("SELECT holder FROM universe_seats").fetchone()[0]
+    assert owner_state(db.parent, holder) == ALIVE
+
+
+def test_a_live_holder_keeps_an_expired_seat(db):
     """astra round 1, finding 1. Unconditional reclamation admits a replacement
     while the original holder is still calling a provider: kill the refresher,
     leave the provider running, wait out the lease, and two agent calls execute on
-    one seat. `automations._lease_blocks` refuses this for the same reason."""
-    import sqlite3
+    one seat. `automations._lease_blocks` refuses this for the same reason.
 
-    held = take(db, seats_n=2, reserve=1, now=1000.0)
-    conn = sqlite3.connect(str(db))
-    conn.execute("UPDATE universe_seats SET holder = 'still-running:1'")
-    conn.commit()
-    conn.close()
-    monkeypatch.setattr(
-        seats, "_holder_is_alive", lambda holder: holder == "still-running:1"
+    Drives the REAL liveness probe against a REAL OS lock -- no monkeypatch of
+    `_holder_is_alive`, because mocking it is exactly how the broken holder token
+    stayed hidden.
+    """
+    from tinyassets.process_liveness import hold_liveness as hold_process_liveness
+
+    other = "seat_other_process_1"
+    lock = hold_process_liveness(db.parent, other)
+    assert getattr(lock, "acquired", True), "test could not take the liveness lock"
+
+    take(db, seats_n=2, reserve=1, now=1000.0)
+    _reseat_to(db, other)
+    expired = 1000.0 + seats.SEAT_LEASE_SECONDS + 1
+
+    blocked = take(db, seats_n=2, reserve=1, now=expired)
+    assert isinstance(blocked, Waiting), (
+        "an expired lease whose holder is PROVABLY ALIVE must not be reclaimed: "
+        "the holder may still be calling a provider"
     )
-    after = take(
-        db, seats_n=2, reserve=1, now=1000.0 + seats.SEAT_LEASE_SECONDS + 1
+
+    # Now the holder dies -- the kernel drops its lock -- and the seat is free.
+    # The ticket from the blocked attempt is re-presented, because that attempt
+    # took a queue position and the no-overtake rule would otherwise put this
+    # call behind it.
+    import os
+
+    os.close(lock.fd)
+    reclaimed = take(db, seats_n=2, reserve=1, ticket=blocked.ticket, now=expired)
+    assert isinstance(reclaimed, Seat), (
+        "once the holder is provably dead its seat must not strand capacity"
     )
-    assert isinstance(after, Waiting), (
-        "an expired lease whose holder is provably alive must not be reclaimed"
-    )
-    assert held.seat_id
 
 
 def test_refresh_keeps_a_long_running_seat_alive(db):
@@ -391,7 +560,7 @@ def test_a_symlinked_seat_store_is_refused_loudly(db, tmp_path):
 
 def test_the_waiting_message_names_the_running_count_and_links_upgrade():
     message = seats.waiting_message("u1", running=2, tier="free")
-    assert "Waiting for a free seat (2 running)." in message
+    assert "Waiting for a free seat (2 running)" in message
     assert "[Upgrade](https://tinyassets.io/" in message
     assert "?upgrade=1)" in message
     assert "for more seats." in message
@@ -399,7 +568,7 @@ def test_the_waiting_message_names_the_running_count_and_links_upgrade():
 
 def test_the_top_tier_is_not_asked_to_upgrade():
     message = seats.waiting_message("u1", running=2, tier="paid")
-    assert "Waiting for a free seat (2 running)." in message
+    assert "Waiting for a free seat (2 running)" in message
     assert "Upgrade" not in message
 
 
@@ -417,10 +586,76 @@ def test_occupancy_reports_what_the_owner_needs(db):
 
 
 def test_a_seat_without_a_universe_fails_loudly(db):
-    with pytest.raises(ValueError, match="universe_id"):
+    with pytest.raises(ValueError, match="account_id"):
         seats.acquire("  ", seats=3, reserve=1, db=db)
 
 
 def test_an_unknown_seat_class_fails_loudly(db):
     with pytest.raises(ValueError, match="seat class"):
         seats.acquire("u1", seat_class="vip", seats=3, reserve=1, db=db)
+
+
+def test_universes_share_their_owners_pool_but_not_another_accounts(db):
+    import sqlite3
+
+    from tinyassets.storage import db_path
+
+    with sqlite3.connect(db_path(db.parent)) as conn:
+        conn.execute("CREATE TABLE universe_acl (universe_id, actor_id, permission, granted_by)")
+        conn.execute("CREATE TABLE founder_home (founder_sub, universe_id)")
+        conn.execute("CREATE TABLE agent_bindings (created_by, universe_id, status)")
+        conn.executemany("INSERT INTO universe_acl VALUES (?, ?, 'admin', '')",
+                         [("village", "alice"), ("work", "alice"), ("home", "bob")])
+    alice = seats.account_for_universe("village", root=db.parent)
+    same = seats.account_for_universe("work", root=db.parent)
+    bob = seats.account_for_universe("home", root=db.parent)
+    assert alice == same == "alice"
+    assert isinstance(take(db, universe=alice), Seat)
+    assert isinstance(take(db, universe=same), Seat)
+    assert isinstance(take(db, universe=alice), Waiting)
+    assert isinstance(take(db, universe=bob), Seat)
+    assert seats.occupancy(bob, db=db, seats=3, now=1000)["running"] == 1
+
+
+def test_death_proof_stays_until_seats_are_reclaimed(db):
+    import subprocess
+    import sys
+
+    from tinyassets.process_liveness import DEAD, owner_state, remove_if_dead
+
+    child = subprocess.run([
+        sys.executable, "-c",
+        "import os,sys; from pathlib import Path; "
+        "from tinyassets import universe_seats as s; "
+        "s.acquire('alice',db=Path(sys.argv[1]),seats=3,reserve=1); os._exit(7)",
+        str(db.parent / seats.LEDGER_NAME),
+    ], check=False)
+    assert child.returncode == 7
+    import sqlite3
+
+    with sqlite3.connect(db.parent / seats.LEDGER_NAME) as conn:
+        holder = conn.execute("SELECT holder FROM universe_seats").fetchone()[0]
+    assert owner_state(db.parent, holder) == DEAD
+    assert not remove_if_dead(db.parent, holder,
+                              lambda token: seats.holder_is_named(db.parent, token))
+    seats.acquire("alice", db=db.parent / seats.LEDGER_NAME, seats=3, reserve=1)
+    assert remove_if_dead(db.parent, holder,
+                          lambda token: seats.holder_is_named(db.parent, token))
+
+
+def test_three_deep_transfer_is_exclusive_at_each_depth(db):
+    parent = take(db, seats_n=2)
+    child = take(db, seats_n=2, parent=parent.seat_id)
+    grandchild = seats.acquire(
+        "u1", db=db, seats=2, reserve=1, parent_seat_id=child.seat_id,
+        parent_depth=child.depth, now=1000,
+    )
+    assert isinstance(grandchild, Seat) and grandchild.reentrant
+    sibling = seats.acquire(
+        "u1", db=db, seats=2, reserve=1, parent_seat_id=child.seat_id,
+        parent_depth=child.depth, now=1000,
+    )
+    assert isinstance(sibling, Waiting)
+    for held in (grandchild, child, parent):
+        seats.release(held.seat_id, db=db)
+    assert seats.occupancy("u1", db=db, seats=2, now=1000)["running"] == 0

@@ -1364,11 +1364,17 @@ async def _handle_billing_status(request: Any) -> Any:
             # landed - reporting quotas here would advertise enforcement that does
             # not exist.
             plan = get_plan(_universe_dir(home))
+            from tinyassets.usage_policy import limits_for
+
+            limits = limits_for(plan["tier"])
             return {
                 "tier": plan["tier"],
                 "ends_at": plan["ends_at"],
                 "billing_enabled": billing_enabled(),
-                "enforced": [],
+                "enforced": ["seats"],
+                "seats": limits.seats,
+                "interactive_reserve": limits.interactive_reserve,
+                "storage_bytes": limits.storage_bytes,
             }
 
     return JSONResponse(

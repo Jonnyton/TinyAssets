@@ -495,63 +495,9 @@ def test_retries_that_never_reach_a_run_are_bounded(home: Path, monkeypatch) -> 
         at = _retry_at(home, wake.automation_id)
     # Each refused attempt is retried one step after its claim, and the last
     # one allowed retires the wake rather than leaving it pending.
-    assert reasons == ["run_rate_limited"] * MAX_ONCE_ATTEMPTS
+    assert reasons == ["settlement_unavailable"] * MAX_ONCE_ATTEMPTS
     spent = AutomationStore(home).get(wake.automation_id)
     assert spent.retired_at and spent.pause_reason == "gave_up"
-
-
-def test_wakes_are_limited_by_the_universes_usage_meter(
-    home: Path, monkeypatch
-) -> None:
-    """Plan item 6: no pending-count ceiling. Storing a wake is an engine edit
-    charged to the universe's admission window (here shrunk to 2)."""
-    import tinyassets.engine_mcp_server as ems
-
-    monkeypatch.setattr(ems, "_RUN_GRAPH_TOTAL_MAX", 2)
-    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
-    _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}, delay_seconds=3600")
-    with pytest.raises(CompilerError) as refused:
-        _run_as(home, OWNER, f"branch_def_id={PRIVATE!r}")
-    assert "usage_limited" in str(refused.value)
-    assert len(_wakes(home)) == 2
-
-
-def test_the_usage_meter_is_charged_atomically(
-    home: Path, monkeypatch
-) -> None:
-    import threading
-
-    import tinyassets.engine_mcp_server as ems
-
-    monkeypatch.setattr(ems, "_RUN_GRAPH_TOTAL_MAX", 3)
-    # An existing database, as in production: eight first-ever connections race
-    # the WAL switch itself, which is not the property under test.
-    AutomationStore(home)._connect(create=True).close()
-    start = threading.Barrier(8)
-    outcomes: list[str] = []
-
-    def one() -> None:
-        start.wait()
-        try:
-            with identity_context(Identity(user_id=OWNER, username=OWNER)):
-                register_automation(
-                    home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="x",
-                    branch_def_id=PRIVATE,
-                    not_before=datetime.now(timezone.utc).isoformat(),
-                )
-            outcomes.append("ok")
-        except AutomationUnavailable as exc:
-            outcomes.append(exc.reason)
-        except Exception as exc:  # noqa: BLE001 - surfaced by the assertion
-            outcomes.append(repr(exc))
-
-    threads = [threading.Thread(target=one) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    assert sorted(outcomes) == ["ok"] * 3 + ["usage_limited"] * 5
-    assert len(_wakes(home)) == 3
 
 
 # -- Owner surface and storage ---------------------------------------------------

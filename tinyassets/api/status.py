@@ -1740,6 +1740,23 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         resource_usage = for_authorized_status(_base_path(), uid)
         if resource_usage is not None:
             response["resource_usage"] = resource_usage
+            from tinyassets import universe_seats
+            from tinyassets.usage_policy import limits_for_account, upgrade_url
+
+            try:
+                account = universe_seats.account_for_universe(uid, root=_base_path())
+                if account == permissions.current_actor_id():
+                    seats = universe_seats.occupancy(
+                        account, db=Path(_base_path()) / universe_seats.LEDGER_NAME,
+                    )
+                    seats["upgrade_url"] = upgrade_url(
+                        limits_for_account(account, root=Path(_base_path())).name,
+                    )
+                    response["seats"] = seats
+
+            except (universe_seats.SeatLedgerUnusable, OSError, ValueError):
+                response["seats"] = {"availability": "unavailable"}
+
 
     # Whether this universe is working RIGHT NOW, whatever started the turn — a
     # typed message, an answered request, a queued line, another tab, another

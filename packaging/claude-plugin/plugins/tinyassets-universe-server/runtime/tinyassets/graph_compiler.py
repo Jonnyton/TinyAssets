@@ -368,11 +368,43 @@ def _get_shared_router() -> Any:
     return _SHARED_ROUTER
 
 
+def _run_agent_with_timeout(fn, *, timeout_s, node_id, universe_context, event_sink):
+    """Hold admission until the actual worker finishes, including after timeout."""
+    from tinyassets import universe_seats as seats
+
+    udir = getattr(universe_context, "universe_dir", None)
+    if udir is None:
+        return _run_with_timeout(fn, timeout_s=timeout_s, node_id=node_id)
+    account = seats.account_for_universe(Path(udir).name, root=Path(udir).parent)
+    db = Path(udir).parent / seats.LEDGER_NAME
+
+    def waiting(state):
+        if event_sink is not None:
+            event_sink(node_id=node_id, phase="waiting", kind="waiting_for_seat",
+                       detail=seats.waiting_message(account, running=state.running))
+
+    parent = seats._current_seat.get()
+    held = seats.acquire_blocking(
+        account, db=db, wait_s=None, on_waiting=waiting,
+        parent_seat_id=parent.seat_id if parent else None,
+        parent_depth=parent.depth if parent else 1,
+    )
+    try:
+        return _run_with_timeout(
+            fn, timeout_s=timeout_s, node_id=node_id,
+            on_done=lambda: seats.release(held.seat_id, db=db),
+        )
+    except BaseException:
+        # Once submitted, the future owns release, including a still-running timeout.
+        raise
+
+
 def _run_with_timeout(
     fn: Callable[[], Any],
     *,
     timeout_s: float,
     node_id: str,
+    on_done=None,
 ) -> Any:
     """Call ``fn()`` on a worker thread, raise NodeTimeoutError on overrun.
 
@@ -416,7 +448,14 @@ def _run_with_timeout(
             )
         return fn()
 
-    future = executor.submit(_guarded)
+    try:
+        future = executor.submit(_guarded)
+    except BaseException:
+        if on_done is not None:
+            on_done()
+        raise
+    if on_done is not None:
+        future.add_done_callback(lambda _future: on_done())
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError as exc:
@@ -1587,21 +1626,23 @@ def _build_prompt_template_node(
                                 universe_context=universe_context,
                                 response_observer=_observe_response,
                             )
-                        text_and_name = _run_with_timeout(
+                        text_and_name = _run_agent_with_timeout(
                             _policy_call,
                             timeout_s=timeout_s,
                             node_id=node.node_id,
+                            universe_context=universe_context, event_sink=event_sink,
                         )
                         response, provider_served, provider_meta = text_and_name
                     else:
                         # Router unavailable or empty — fall through to the
                         # run_branch-injected provider bridge.
-                        response = _run_with_timeout(
+                        response = _run_agent_with_timeout(
                             lambda: _bridge(
                                 prompt, "", _observe_response, _deadline_cfg(),
                             ),
                             timeout_s=timeout_s,
                             node_id=node.node_id,
+                            universe_context=universe_context, event_sink=event_sink,
                         )
                 except NodeTimeoutError:
                     raise
@@ -1613,12 +1654,13 @@ def _build_prompt_template_node(
                     raise _wrap_provider_failure(node.node_id, exc) from exc
             else:
                 try:
-                    response = _run_with_timeout(
+                    response = _run_agent_with_timeout(
                         lambda: _bridge(
                                 prompt, "", _observe_response, _deadline_cfg(),
                             ),
                         timeout_s=timeout_s,
                         node_id=node.node_id,
+                        universe_context=universe_context, event_sink=event_sink,
                     )
                 except NodeTimeoutError:
                     raise
@@ -3135,22 +3177,10 @@ def _charge_child_run(node: NodeDefinition, ctx: "BranchExecutionContext") -> An
         return None
     admission = ea.admit_detail(
         universe_id,
-        write_max=ea.RUN_WRITE_LIMIT,
-        total_max=ea.RUN_TOTAL_LIMIT,
-        window_s=ea.RUN_WINDOW_SECONDS,
         fail_closed=True,
-        day_max=ea.RUN_DAY_LIMIT,
     )
     if admission.ticket is None:
-        notice = ea.usage_notice(universe_id) if admission.refused_by != "ledger" else None
-        when = (
-            notice["message"] if notice is not None
-            else "it frees up as older runs age out."
-        )
-        raise CompilerError(
-            f"Node '{node.node_id}': sub-branch run refused by this universe's "
-            f"usage limit ({admission.refused_by}). {when}"
-        )
+        raise CompilerError("Sub-branch settlement ledger unavailable")
     return admission.ticket
 
 

@@ -535,10 +535,7 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
         if prior is None:
             _enforce_sender_rate_limit(conn, receiver, sender_id=principal)
             admission = engine_admissions.admit_detail(
-                receiver["universe_id"], write_max=engine_admissions.RUN_WRITE_LIMIT,
-                total_max=engine_admissions.RUN_TOTAL_LIMIT,
-                window_s=engine_admissions.RUN_WINDOW_SECONDS, fail_closed=True,
-                day_max=engine_admissions.RUN_DAY_LIMIT,
+                receiver["universe_id"],
             )
             if admission.ticket is None:
                 raise ValueError("receiver_resource_admission_refused")

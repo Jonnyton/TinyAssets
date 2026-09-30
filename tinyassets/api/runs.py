@@ -1320,11 +1320,7 @@ def enqueue_universe_branch_run(
         _engine_run_admit(universe_id=uid, want_ticket=True, fail_closed=True)
     )
     if ticket is None:
-        from tinyassets.engine_admissions import usage_notice
-
-        notice = usage_notice(uid) if refused_by != "ledger" else None
-        returns = f":until={notice['capacity_returns_at']}" if notice else ""
-        raise ValueError(f"run_usage_limited:{refused_by}{returns}")
+        raise ValueError("run settlement ledger unavailable")
 
     provider_call: Any = None
     try:

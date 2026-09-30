@@ -711,31 +711,14 @@ def test_registration_refuses_a_trigger_that_cannot_fire(
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
-def test_registration_is_limited_by_usage_not_by_a_count_of_rows(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """Plan item 6: no ceiling on how many automations a universe holds. Each
-    registration is an engine edit charged to the universe's admission
-    window, and that meter is what refuses (here shrunk to 3)."""
-    import tinyassets.engine_mcp_server as ems
-
+def test_registration_is_unlimited(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     _seed_serving_assignment(tmp_path)
     _seed_owner(tmp_path)
     _seed_branch(tmp_path)
-    monkeypatch.setattr(ems, "_RUN_GRAPH_TOTAL_MAX", 3)
-    for index in range(3):
-        register_automation(
-            tmp_path, **_registration_kwargs(name=f"automation {index}")
-        )
-
-    with pytest.raises(AutomationUnavailable) as caught:
-        register_automation(tmp_path, **_registration_kwargs(name="one more"))
-
-    assert caught.value.reason == "usage_limited"
-    assert len(AutomationStore(tmp_path).list(universe_id=UNIVERSE)) == 3
-    # Another universe's meter is its own.
-    assert ems._engine_run_admit(universe_id="universe_bob", kind="engine")
+    for index in range(12):
+        register_automation(tmp_path, **_registration_kwargs(name=f"automation {index}"))
+    assert len(AutomationStore(tmp_path).list(universe_id=UNIVERSE)) == 12
 
 
 def test_a_short_interval_is_a_cadence_not_a_refusal(
@@ -1824,75 +1807,6 @@ def test_a_success_resets_the_consecutive_failure_counter(
 # §7 -- engine admission and the cron cadence floor
 
 
-def test_an_automation_pays_the_same_engine_run_budget_as_a_foreground_run(
-    tmp_path: Path,
-    registered: Automation,
-    monkeypatch,
-) -> None:
-    """Pre-exhaust the real rolling cap; the automation must not launch, must
-    record why, and must NOT pause -- the budget refills."""
-    import tinyassets.engine_mcp_server as ems
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    seam = _SeamRecorder()
-    monkeypatch.setattr(automations_module, "_execute", seam)
-    for _ in range(ems._RUN_GRAPH_RATE_MAX):
-        assert ems._engine_run_admit(universe_id=UNIVERSE) is True
-
-    reason = run_due_automation(
-        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
-    )
-
-    assert reason == "run_rate_limited"
-    assert seam.calls == []
-    row = AutomationStore(tmp_path).get(registered.automation_id)
-    assert row is not None
-    assert row.desired_state == "active"  # refills; not a permanent condition
-    assert (
-        _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"]
-        == "run_rate_limited"
-    )
-
-
-def test_engine_edits_can_exhaust_total_without_pausing_scheduled_work(
-    tmp_path: Path, registered: Automation, monkeypatch,
-) -> None:
-    """No reserved run share: a full total refuses this period, not the schedule."""
-    from tinyassets import engine_admissions as adm
-    from tinyassets import engine_mcp_server as ems
-
-    stamp = adm.time.time()
-    monkeypatch.setattr(adm.time, "time", lambda: stamp)
-    seam = _SeamRecorder()
-    monkeypatch.setattr(automations_module, "_execute", seam)
-    # Fill the total with engine edits. Registering the automation was one
-    # already (plan item 6), so fill until the meter refuses.
-    for _ in range(adm.RUN_TOTAL_LIMIT):
-        if not ems._engine_run_admit(
-            universe_id=UNIVERSE, kind=adm.KIND_ENGINE, fail_closed=True,
-        ):
-            break
-    else:
-        raise AssertionError("the total never filled")
-
-    reason = run_due_automation(
-        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW + timedelta(minutes=10),
-    )
-    assert reason == "run_rate_limited" and seam.calls == []
-    store = AutomationStore(tmp_path)
-    row = store.get(registered.automation_id)
-    assert row is not None and row.desired_state == "active"
-    assert _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"] == reason
-
-    stamp += adm.RUN_WINDOW_SECONDS + 1
-    later = NOW + timedelta(minutes=80)
-    due = due_automations(tmp_path, universe_id=UNIVERSE, now=later)
-    assert len(due) == 1 and due[0][0].automation_id == registered.automation_id
-    assert run_due_automation(tmp_path, due[0][0], due[0][1], now=later) == "ok:ran:run_1"
-    assert len(seam.calls) == 1
-    assert store.get(registered.automation_id).desired_state == "active"
-
-
 def test_an_automation_binds_its_admission_to_the_run_it_starts(
     tmp_path: Path,
     registered: Automation,
@@ -1934,19 +1848,6 @@ def test_an_automation_binds_its_admission_to_the_run_it_starts(
     assert rows == [(UNIVERSE, "write", "run-auto-1")]
     # ...so a read-only period can settle off the write budget
     assert adm.reclassify_read("run-auto-1", db=tmp_path / adm.LEDGER_NAME) is True
-
-
-def test_one_universes_run_budget_is_not_spent_by_another_universe(
-    tmp_path: Path, monkeypatch
-) -> None:
-    import tinyassets.engine_mcp_server as ems
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    for _ in range(ems._RUN_GRAPH_RATE_MAX):
-        assert ems._engine_run_admit(universe_id="universe_alice") is True
-
-    assert ems._engine_run_admit(universe_id="universe_alice") is False
-    assert ems._engine_run_admit(universe_id="universe_bob") is True
 
 
 @pytest.mark.parametrize("expr", ["* * * * *", "*/2 * * * *", "0,3 * * * *"])
@@ -2489,3 +2390,38 @@ def test_the_real_run_path_admits_through_the_live_session_and_records_a_run(
     assert finished.last_due_at == "2026-08-29T12:10:00+00:00"
     assert finished.desired_state == "active"
     assert _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"] == reason
+
+
+def test_waiting_never_claims_an_attempt_or_records_failure(tmp_path, registered, monkeypatch):
+    import threading
+    import time
+
+    from tinyassets import universe_seats as seats
+
+    seam = _SeamRecorder()
+    monkeypatch.setattr(automations_module, "_execute", seam)
+    db = tmp_path / seats.LEDGER_NAME
+    blockers = [seats.acquire(OWNER, db=db) for _ in range(2)]
+    result = []
+    thread = threading.Thread(target=lambda: result.append(run_due_automation(
+        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW,
+    )), daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not seats.occupancy(OWNER, db=db)["waiting"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert seats.occupancy(OWNER, db=db)["waiting"] == 1
+        with sqlite3.connect(AutomationStore(tmp_path).db_path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM automation_attempts").fetchone()[0] == 0
+        assert not seam.calls
+        current = AutomationStore(tmp_path).get(registered.automation_id)
+        assert current.attempt_count == 0
+        assert current.consecutive_failures == 0
+    finally:
+        for held in blockers:
+            seats.release(held.seat_id, db=db)
+        thread.join(5)
+        seats.stop_refresher()
+    assert not thread.is_alive()
+    assert result == ["ok:ran:run_1"]

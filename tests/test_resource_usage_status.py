@@ -67,13 +67,7 @@ def test_observes_existing_scoped_meters_without_mutating(meters):
     before = snapshot(meters)
     result = usage.for_authorized_status(meters, UID, now=NOW)
     assert snapshot(meters) == before
-    activity = result["activity"]
-    assert activity["availability"] == "observed"
-    assert (activity["total"], activity["read_runs"], activity["write_runs"],
-            activity["engine_mutations"]) == (3, 1, 1, 1)
-    assert activity["limits"] == {"total": ea.RUN_TOTAL_LIMIT, "write_runs": ea.RUN_WRITE_LIMIT}
-    assert activity["engine_mutations"] == 1  # observed category, not a separate quota
-    assert activity["next_charge_expires_at"] == usage._utc(NOW - 30 + 3600)
+    assert "activity" not in result
     workspace = result["workspace"]
     assert workspace["availability"] == "observed"
     assert workspace["jobs_observed"] == 11
@@ -119,7 +113,7 @@ def test_cached_storage_does_not_bypass_current_admin_gate(meters, monkeypatch):
     assert calls == [1]
 
 
-@pytest.mark.parametrize("name", [DB_FILENAME, ea.LEDGER_NAME, f"{UID}/.runs.db"])
+@pytest.mark.parametrize("name", [DB_FILENAME, f"{UID}/.runs.db"])
 @pytest.mark.parametrize("damage", ["missing", "corrupt", "legacy"])
 def test_unavailable_data_is_not_created_repaired_or_reported_as_zero(meters, name, damage):
     path = meters / name
@@ -135,7 +129,7 @@ def test_unavailable_data_is_not_created_repaired_or_reported_as_zero(meters, na
     if name == DB_FILENAME:
         assert result is None
     else:
-        category = "activity" if name == ea.LEDGER_NAME else "workspace"
+        category = "workspace"
         assert result[category]["availability"] == "unavailable"
         assert "total" not in result[category]
         assert "jobs_observed" not in result[category]
@@ -146,7 +140,7 @@ def test_escaped_or_invalid_universe_has_no_usage(meters, uid):
     assert usage.for_authorized_status(meters, uid, now=NOW) is None
 
 
-@pytest.mark.parametrize("name", [DB_FILENAME, ea.LEDGER_NAME, f"{UID}/.runs.db"])
+@pytest.mark.parametrize("name", [DB_FILENAME, f"{UID}/.runs.db"])
 def test_symlinked_database_is_not_read(meters, name):
     path = meters / name
     target = path.with_name(path.name + ".target")
@@ -159,43 +153,12 @@ def test_symlinked_database_is_not_read(meters, name):
     if name == DB_FILENAME:
         assert result is None
     else:
-        category = "activity" if name == ea.LEDGER_NAME else "workspace"
+        category = "workspace"
         assert result[category]["availability"] == "unavailable"
 
 
-def test_quiescent_wal_is_read_without_mutating_records(meters):
-    path = meters / ea.LEDGER_NAME
-    conn = sqlite3.connect(path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.close()
-    before = path.read_bytes()
-    result = usage.for_authorized_status(meters, UID, now=NOW)
-    assert result["activity"]["total"] == 3
-    assert path.read_bytes() == before
 
 
-def test_production_connection_factories_leave_readable_quiescent_stores(tmp_path, monkeypatch):
-    from tinyassets import runs, storage
-
-    monkeypatch.setattr(permissions, "current_actor_id", lambda: "owner")
-    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
-    with storage._connect(tmp_path) as conn:
-        conn.execute("CREATE TABLE universe_acl (universe_id,actor_id,permission)")
-        conn.execute("INSERT INTO universe_acl VALUES (?,?,?)", (UID, "owner", "admin"))
-    with runs._connect(tmp_path / UID) as conn:
-        wp.ensure_schema(conn)
-    databases = (tmp_path / DB_FILENAME, tmp_path / UID / ".runs.db")
-    before = {db: db.read_bytes() for db in databases}
-    for db in databases:
-        assert before[db][18:20] == b"\x02\x02"
-        assert not db.with_name(db.name + "-wal").exists()
-        assert not db.with_name(db.name + "-shm").exists()
-    result = usage.for_authorized_status(tmp_path, UID, now=NOW)
-    assert result is not None
-    assert result["workspace"]["availability"] == "observed"
-    assert result["workspace"]["jobs_observed"] == 0
-    assert result["activity"]["availability"] == "unavailable"
-    assert {db: db.read_bytes() for db in databases} == before
 
 
 def test_reader_does_not_write_schema_or_records(meters):
@@ -233,18 +196,6 @@ def test_acl_change_committed_before_read_is_not_ignored(meters, monkeypatch):
             writer.close()
 
 
-def test_live_wal_snapshot_includes_uncheckpointed_committed_rows(meters):
-    conn = sqlite3.connect(meters / ea.LEDGER_NAME)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA wal_autocheckpoint=0")
-        conn.execute("INSERT INTO admissions (universe_id,ts,kind) VALUES (?,?,?)",
-                     (UID, NOW, ea.KIND_WRITE))
-        conn.commit()
-        result = usage.for_authorized_status(meters, UID, now=NOW)
-        assert result["activity"]["total"] == 4
-    finally:
-        conn.close()
 
 
 def test_canonical_status_exposes_owner_usage(founder_home):

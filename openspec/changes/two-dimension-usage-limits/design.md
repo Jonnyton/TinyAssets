@@ -422,3 +422,24 @@ enforce. Stated so it is a decision rather than an oversight.
 - **Extend the existing hourly ledger with a seat count** — a rolling-window
   counter cannot express occupancy. A row that ages out of a window is not a
   seat that was released.
+
+
+## 2026-09-30 account scope correction
+
+The founder supersedes every per-universe admission statement above: seats are
+pooled by the owning account across every universe. Universe creation is unlimited.
+The account tier comes from its billing home. Ownership resolution needs one
+canonical durable owner; ACL administration and provider credential ownership are
+not interchangeable with that identity. The implementation is being reconciled
+against this constraint before the account-scope concern can be resolved.
+
+Workers hold seats for chat, workflow execution, agent nodes and automation/wake
+execution. A consumer waits before claiming its attempt. A worker timeout leaves
+release attached to the worker's completion, not to the caller's timeout. Nested
+blocking execution uses exclusive depth transfer; parallel siblings pay separately.
+
+The public upgrade URL is built by usage_policy.upgrade_url from app_path:
+https://tinyassets.io/app?upgrade=1. The existing app plan loader routes that flag
+to startSubscribe after authentication and omits checkout on the paid tier.
+Death proof is process_liveness.owner_state(store_root, token); the boot cleanup
+must keep a token's proof while any account seat still names it.
