@@ -480,8 +480,15 @@ def test_build_branch_rejects_duplicate_node_ids(comp_env):
 
 
 def test_build_branch_coerces_unknown_state_type_and_reports(comp_env):
-    """Unknown state types get coerced to 'any' but the error list should
-    surface the coercion so users can correct it."""
+    """An unknown state type is coerced, REPORTED, and the build still lands.
+
+    CONTRACT CHANGED 2026-09-30: this asserted `status == "rejected"` until
+    then. Refusing a whole build over a type name the code had already resolved
+    is the defect class that cost a live free-account turn its first create
+    attempt (`"string"` → `str`, turn f3617ca3a91d4acab30eea8dbbeb2663 round 3).
+    The coercion is still surfaced — as `notices`, which do not reject — so
+    nothing is hidden from the author.
+    """
     us, _ = comp_env
     spec = {
         **RECIPE_SPEC,
@@ -493,9 +500,9 @@ def test_build_branch_coerces_unknown_state_type_and_reports(comp_env):
         ],
     }
     result = _call(us, "build_branch", spec_json=json.dumps(spec))
-    # Build is rejected because the staging error surfaces the coercion.
-    assert result["status"] == "rejected"
-    assert any("strang" in e for e in result["errors"])
+    assert result["status"] == "built", result
+    assert any("strang" in n for n in result["notices"]), result
+    assert not result.get("errors"), result
 
 
 # ─────────────────────────────────────────────────────────────────────────────

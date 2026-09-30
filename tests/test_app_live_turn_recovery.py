@@ -62,7 +62,14 @@ _FUNCS = (
     "offerSavedLine", "clearComposerState", "clearAccountScopedState", "clearThread",
 )
 _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
-                   "offerSavedConversationCheck")
+                   "offerSavedConversationCheck",
+                   # Collaborators `clearAccountScopedState` gained on
+                   # 2026-09-30: rail card nodes are now kept across a refresh
+                   # so a 15-second poll cannot delete what the user typed into
+                   # a card, which makes clearing them an account-change step.
+                   # Optional like their siblings, so these harnesses stay green
+                   # against a tree without the change.
+                   "clearRailCards", "clearTypedValues")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.

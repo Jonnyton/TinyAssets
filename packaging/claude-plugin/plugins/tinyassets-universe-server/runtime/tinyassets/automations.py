@@ -79,6 +79,8 @@ TRIGGER_ONCE = "once"
 #: stores a ``once`` wake for it each time its event is emitted, so the fired
 #: run takes the same pump, fence, admission and authority checks as any other.
 TRIGGER_EVENT = "event"
+#: An event subscription's ``last_reason`` after it fired: ``woke:<wake id>``.
+EVENT_WOKE_PREFIX = "woke:"
 
 #: The events the engine emits (``automation_events.EVENT_FILTER_KEYS``). A
 #: subscription to anything else would be stored and never fire, so it is
@@ -94,7 +96,9 @@ EVENT_TYPES = frozenset({EVENT_RUN_COMPLETED, EVENT_PENDING_REQUEST_ANSWERED})
 #: just has to be named.
 EVENT_FILTER_KEYS: dict[str, frozenset[str]] = {
     EVENT_RUN_COMPLETED: frozenset({"branch_def_id", "outcome", "run_id"}),
-    EVENT_PENDING_REQUEST_ANSWERED: frozenset({"request_id", "kind", "status"}),
+    EVENT_PENDING_REQUEST_ANSWERED: frozenset(
+        {"request_id", "kind", "status", "item_id"}
+    ),
 }
 EVENT_REQUIRED_FILTER_KEYS: dict[str, frozenset[str]] = {
     EVENT_RUN_COMPLETED: frozenset({"branch_def_id"}),
@@ -872,6 +876,35 @@ class AutomationStore:
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
+        finally:
+            conn.close()
+
+    def record_event_fire(
+        self, automation_id: str, *, reason: str, now: datetime,
+    ) -> None:
+        """Roll an event subscription's latest fire onto its own row.
+
+        A subscription never runs itself: each matching event stores a one-shot
+        wake, so without this its ``last_*`` stayed empty however often it fired
+        and its owner could not tell a live subscription from a dead one.
+        ``last_due_at`` is when it fired; ``last_reason`` is ``woke:<wake id>``
+        or why the wake was refused. The wake's own run stays on the wake's row.
+        No ``revision`` bump: this is the runtime's record, not an owner edit.
+        An older fire that lands late never replaces a newer one, and never
+        moves ``updated_at`` back (Codex refute 2026-09-30, P2).
+        """
+        stamp = _iso(now)
+        conn = self._connect(create=True)
+        if conn is None:  # pragma: no cover - create=True always connects
+            raise RuntimeError("automation store connection is unavailable")
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE automations SET last_due_at = ?, last_reason = ?, "
+                    "updated_at = MAX(updated_at, ?) "
+                    "WHERE automation_id = ? AND trigger_kind = ? AND last_due_at <= ?",
+                    (stamp, reason, stamp, automation_id, TRIGGER_EVENT, stamp),
+                )
         finally:
             conn.close()
 
@@ -2297,6 +2330,7 @@ __all__ = [
     "EVENT_RUN_COMPLETED",
     "EVENT_TYPES",
     "TRIGGER_EVENT",
+    "EVENT_WOKE_PREFIX",
     "TRIGGER_ONCE",
     "REFUSAL_KEY_PREFIX",
     "WAITING_FOR_PREVIOUS_RUN",

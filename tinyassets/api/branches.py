@@ -1748,14 +1748,47 @@ def _suggest_entry_point(branch: Any) -> str:
     return branch.graph_nodes[0].id
 
 
+#: Prefix on a staging string that is ADVISORY: the spec was accepted and this
+#: says what was adjusted. Stripped before the author sees it. A sentinel rather
+#: than a second return value because `_apply_*_spec` is a family of functions
+#: all returning `str`, and a one-off tuple in the middle of them is how the
+#: next caller forgets to look at it.
+_STATE_COERCION_NOTICE = "\x00notice\x00"
+
+#: JSON Schema's type names, which are what a model writes when it has been
+#: asked for a schema. These are EXACT synonyms, not guesses, so accepting them
+#: is silent: live 2026-09-30 (turn f3617ca3 round 3) a spec sent
+#: ``{"focus_note": "string"}`` and the build was REFUSED for it, with the
+#: reason reported as a coercion of a type it had already resolved correctly.
+_STATE_TYPE_SYNONYMS = {
+    "string": "str", "text": "str",
+    "integer": "int", "number": "float", "double": "float",
+    "boolean": "bool",
+    "array": "list", "object": "dict",
+    "null": "any", "none": "any",
+}
+
+
 def _closest_state_type(raw: str) -> str:
     lower = (raw or "").lower()
     if lower in _VALID_STATE_TYPES:
         return lower
-    for valid in _VALID_STATE_TYPES:
+    if lower in _STATE_TYPE_SYNONYMS:
+        return _STATE_TYPE_SYNONYMS[lower]
+    for valid in sorted(_VALID_STATE_TYPES):
         if valid.startswith(lower) or lower.startswith(valid):
             return valid
     return "any"
+
+
+def _state_type_is_exact(raw: str) -> bool:
+    """Was this type name understood outright, rather than guessed at?
+
+    An exact name or a known synonym is not worth telling the author about; a
+    guess (``"strang"`` -> ``str``) is.
+    """
+    lower = (raw or "").lower()
+    return lower in _VALID_STATE_TYPES or lower in _STATE_TYPE_SYNONYMS
 
 
 def _spec_offered_nodes(spec: Any) -> bool:
@@ -2123,9 +2156,50 @@ def _lookup_node_body(
     return {}, f"node '{node_id}' not found on the referenced branch."
 
 
-def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
+#: JSON's own words for a Python type, so an error names what the CALLER sent
+#: rather than a Python class. "got str" is actionable where "AttributeError" is
+#: not (live 2026-09-30, turn f3617ca3 round 3).
+_JSON_TYPE_NAMES = {
+    dict: "an object", list: "an array", str: "a string", bool: "a boolean",
+    int: "a number", float: "a number", type(None): "null",
+}
+
+
+def _json_type_name(value: Any) -> str:
+    return _JSON_TYPE_NAMES.get(type(value), "an unsupported value")
+
+
+#: How much caller text an error may quote back. Long enough to recognise the
+#: value, short enough that a 50kB field name is not the error message.
+_ECHO_MAX = 80
+
+
+def _echo(value: Any) -> str:
+    """Quote caller text back SAFELY: escaped, bounded, one line.
+
+    An error names the value the caller sent, which means caller-controlled
+    bytes land in a served tool result. Escaped because a raw control character
+    is unreadable there and moves a terminal cursor (the same reason
+    ``_payload_json_error`` escapes its excerpt), and bounded because the field
+    name is as unbounded as the payload. Found while testing whether the notice
+    sentinel could be forged: it cannot, but the caller's ``\\x00`` was being
+    echoed verbatim.
+    """
+    text = value if isinstance(value, str) else str(value)
+    clipped = text[:_ECHO_MAX]
+    escaped = repr(clipped)[1:-1]
+    return escaped + ("..." if len(text) > _ECHO_MAX else "")
+
+
+def _apply_node_spec(branch: Any, raw: Any) -> str:
     from tinyassets.branches import GraphNodeRef, NodeDefinition
 
+    if not isinstance(raw, dict):
+        return (
+            'node spec must be an object, e.g. {"node_id": "n1", '
+            '"prompt_template": "..."} '
+            f"(got {_json_type_name(raw)})"
+        )
     resolved, err = _resolve_node_spec(raw)
     if err:
         return err
@@ -2327,9 +2401,14 @@ def _edge_keys_phrase(keys: tuple[str, ...]) -> str:
     return " / ".join(f"'{key}'" for key in keys)
 
 
-def _apply_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
+def _apply_edge_spec(branch: Any, raw: Any) -> str:
     from tinyassets.branches import EdgeDefinition
 
+    if not isinstance(raw, dict):
+        return (
+            'edge spec must be an object, e.g. {"from": "n1", "to": "END"} '
+            f"(got {_json_type_name(raw)})"
+        )
     src = _edge_endpoint(raw, _EDGE_FROM_KEYS)
     dst = _edge_endpoint(raw, _EDGE_TO_KEYS)
     if not src or not dst:
@@ -2346,9 +2425,15 @@ def _apply_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
     return ""
 
 
-def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
+def _apply_conditional_edge_spec(branch: Any, raw: Any) -> str:
     from tinyassets.branches import ConditionalEdge
 
+    if not isinstance(raw, dict):
+        return (
+            'conditional edge spec must be an object, e.g. {"from": "route", '
+            '"conditions": {"yes": "n2", "no": "END"}} '
+            f"(got {_json_type_name(raw)})"
+        )
     src = _edge_endpoint(raw, _EDGE_FROM_KEYS)
     if not src:
         return (
@@ -2382,8 +2467,89 @@ def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
     return ""
 
 
-def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
-    fname = (raw.get("name") or raw.get("field_name") or "").strip()
+def _normalized_state_schema(raw: Any) -> tuple[list[Any], str]:
+    """Every reasonable way to write a state schema -> the canonical field list.
+
+    Live 2026-09-30, turn ``f3617ca3a91d4acab30eea8dbbeb2663`` round 3: a spec
+    sent ``"state_schema": {"focus_note": "string"}`` -- a MAPPING of name to
+    type, which is the obvious way to write it and the shape a JSON-schema
+    habit produces. Staging iterated it, got the KEY string ``"focus_note"``,
+    called ``.get("name")`` on a ``str``, and the served handler's backstop
+    turned that into ``branch build rejected (AttributeError).`` -- an exception
+    class name, which the model cannot act on.
+
+    Four accepted input shapes, all unambiguous:
+
+    * ``[{"name": ..., "type": ...}, ...]`` -- canonical, returned as-is.
+    * ``{"fields": [...]}`` -- the response shape; already tolerated by
+      ``_sanitize_served_branch_spec``, so staging must agree or the sanitizer
+      is validating a shape the builder rejects.
+    * ``{"focus_note": "string"}`` -- name -> type. A dict VALUE may also be
+      the field object itself (``{"focus_note": {"type": "str"}}``), in which
+      case the key supplies the name.
+    * ``["focus_note", ...]`` -- bare names; a name with no type is still a
+      name, and ``type`` already defaults.
+
+    Returns ``(entries, error)``. A non-empty ``error`` names ``state_schema``
+    and says what it needs -- never a class name.
+    """
+    if raw is None or raw == "" or raw == [] or raw == {}:
+        return [], ""
+    if isinstance(raw, dict):
+        fields = raw.get("fields")
+        if isinstance(fields, list):
+            return fields, ""
+        if "fields" in raw:
+            return [], (
+                "state_schema 'fields' must be a JSON array of field objects, "
+                'e.g. {"fields": [{"name": "focus_note", "type": "str"}]}'
+            )
+        entries: list[Any] = []
+        for name, value in raw.items():
+            key = str(name).strip()
+            if not key:
+                return [], "state_schema has a field with an empty name"
+            if isinstance(value, dict):
+                entries.append({**value, "name": value.get("name") or key})
+            elif isinstance(value, str):
+                entries.append({"name": key, "type": value})
+            else:
+                return [], (
+                    f"state_schema field '{key}' must map to a type name "
+                    'like "str", or to an object like {"type": "str"}'
+                )
+        return entries, ""
+    if isinstance(raw, list):
+        entries = []
+        for item in raw:
+            entries.append({"name": item.strip()} if isinstance(item, str) else item)
+        return entries, ""
+    return [], (
+        "state_schema must be a JSON array of field objects, or an object "
+        'mapping each field name to its type, e.g. {"focus_note": "str"}'
+    )
+
+
+def _apply_state_field_spec(branch: Any, raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return (
+            "state field spec must be an object with a 'name', e.g. "
+            '{"name": "focus_note", "type": "str"}'
+        )
+    # Defence in depth: the served path normalizes and type-checks these before
+    # they arrive, but `build_branch` is reachable from the browser flow too, and
+    # a non-string here used to reach `.strip()` and raise AttributeError.
+    raw_name = raw.get("name") or raw.get("field_name") or ""
+    if not isinstance(raw_name, str):
+        return (
+            f"state field 'name' must be a string (got {_json_type_name(raw_name)})"
+        )
+    raw_type = raw.get("type", raw.get("field_type", "str"))
+    if raw_type is not None and not isinstance(raw_type, str):
+        return (
+            f"state field 'type' must be a string (got {_json_type_name(raw_type)})"
+        )
+    fname = raw_name.strip()
     if not fname:
         return "state field spec missing 'name'"
     if any(f.get("name") == fname for f in branch.state_schema):
@@ -2411,10 +2577,15 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
         entry["default_value"] = default
         entry["default"] = default
     branch.state_schema.append(entry)
-    if ftype_raw.lower() not in _VALID_STATE_TYPES:
+    if not _state_type_is_exact(ftype_raw):
+        # A NOTICE, not an error: the field is already stored and the branch is
+        # valid. Returning this as an error refused the whole build over a type
+        # name that had been resolved correctly -- live 2026-09-30, turn
+        # f3617ca3 round 3, on `"string"`. The author still needs telling, so
+        # the caller separates the two channels (`_STATE_COERCION_NOTICE`).
         return (
-            f"state field '{fname}' type '{ftype_raw}' unknown; "
-            f"coerced to '{ftype}'."
+            f"{_STATE_COERCION_NOTICE}state field '{_echo(fname)}' type "
+            f"'{_echo(ftype_raw)}' unknown; coerced to '{ftype}'."
         )
     return ""
 
@@ -2763,7 +2934,15 @@ def _staged_branch_from_spec(
     spec: dict[str, Any],
     *,
     fork_version: dict[str, Any] | None = None,
-) -> tuple[Any, list[str]]:
+) -> tuple[Any, list[str], list[str]]:
+    """Stage a BranchDefinition from a spec.
+
+    Returns ``(branch, errors, notices)``. ``errors`` refuse the build;
+    ``notices`` are adjustments the author should know about but which do NOT
+    refuse it -- a type name resolved by guess, for instance. Splitting them is
+    the fix for a build refused because a value had been accepted (live
+    2026-09-30, turn ``f3617ca3a91d4acab30eea8dbbeb2663`` round 3).
+    """
     from tinyassets.branches import (
         BranchDefinition,
         normalize_branch_io_manifest,
@@ -2771,6 +2950,7 @@ def _staged_branch_from_spec(
     )
 
     errors: list[str] = []
+    notices: list[str] = []
     # Private unless the spec says "public" (founder 2026-09-26). An omitted
     # visibility is not a request to publish.
     raw_visibility = spec.get("visibility", "private")
@@ -2926,24 +3106,56 @@ def _staged_branch_from_spec(
             if not _choice_present("concurrency_budget"):
                 branch.concurrency_budget = parent_copy.concurrency_budget
 
-    for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
+    # Each container is checked to BE a list before it is iterated. Iterating a
+    # dict yields its keys, so a mapping where a list belonged used to reach the
+    # per-entry applier as a bare `str` and raise AttributeError inside it --
+    # which the served handler could only report as its class name (live
+    # 2026-09-30, turn f3617ca3 round 3). `label` is the key the caller actually
+    # typed, so the error points at their text and not at an internal name.
+    def _entries(value: Any, label: str) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        errors.append(
+            f"{label} must be a JSON array (got {_json_type_name(value)})"
+        )
+        return []
+
+    node_container = "node_defs" if spec.get("node_defs") is not None else "nodes"
+    for idx, raw in enumerate(
+        _entries(spec.get("node_defs") if spec.get("node_defs") is not None
+                 else spec.get("nodes"), node_container)
+    ):
         err = _apply_node_spec(branch, raw)
         if err:
             errors.append(f"node[{idx}]: {err}")
 
-    for idx, raw in enumerate(_spec_get("edges") or []):
+    for idx, raw in enumerate(_entries(_spec_get("edges"), "edges")):
         err = _apply_edge_spec(branch, raw)
         if err:
             errors.append(f"edge[{idx}]: {err}")
 
-    for idx, raw in enumerate(_spec_get("conditional_edges") or []):
+    for idx, raw in enumerate(
+        _entries(_spec_get("conditional_edges"), "conditional_edges")
+    ):
         err = _apply_conditional_edge_spec(branch, raw)
         if err:
             errors.append(f"conditional_edge[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("state_schema") or []):
+    state_entries, state_error = _normalized_state_schema(spec.get("state_schema"))
+    if state_error:
+        errors.append(state_error)
+    for idx, raw in enumerate(state_entries):
         err = _apply_state_field_spec(branch, raw)
-        if err:
+        if not err:
+            continue
+        if err.startswith(_STATE_COERCION_NOTICE):
+            # Advisory: say it, do not fail on it.
+            notices.append(
+                f"state_schema[{idx}]: {err[len(_STATE_COERCION_NOTICE):]}"
+            )
+        else:
             errors.append(f"state_schema[{idx}]: {err}")
 
     entry = (spec.get("entry_point") or "").strip()
@@ -2963,7 +3175,7 @@ def _staged_branch_from_spec(
         # silently replaced by a working one.
         branch.entry_point = _suggest_entry_point(branch)
 
-    return branch, errors
+    return branch, errors, notices
 
 
 def _build_branch_text(branch: Any, *, truncated: bool) -> str:
@@ -3081,7 +3293,7 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     if top_level_goal_id:
         spec = {**spec, "goal_id": top_level_goal_id}
 
-    branch, staging_errors = _staged_branch_from_spec(
+    branch, staging_errors, staging_notices = _staged_branch_from_spec(
         spec,
         fork_version=fork_version,
     )
@@ -3123,10 +3335,13 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
                 "Suggested fixes:",
                 *[f"- {s['proposed_fix']}" for s in suggestions],
             ]
+        if staging_notices:
+            text_lines += ["", "Also adjusted:", *[f"- {n}" for n in staging_notices]]
         return json.dumps({
             "text": "\n".join(text_lines),
             "status": "rejected",
             "errors": errors,
+            "notices": staging_notices,
             "suggestions": suggestions,
             "attempted_spec": spec,
         })
@@ -3203,6 +3418,10 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
         "skill_count": len(persisted.skills),
         "entry_point": persisted.entry_point,
         "validation_summary": "ok",
+        # What was adjusted on the way in. The build SUCCEEDED, so this is not a
+        # rejection -- but an author who wrote a type name we had to guess at
+        # should be told which one, and what it became.
+        "notices": staging_notices,
         "batch_receipt": _branch_authoring_batch_receipt(
             persisted,
             action="build_branch",
@@ -3211,6 +3430,11 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
         ),
     }
     payload["batch_receipt"]["idempotent_replay"] = idempotent_replay
+    if staging_notices:
+        payload["text"] = "\n".join([
+            text, "", "Adjusted on the way in:",
+            *[f"- {n}" for n in staging_notices],
+        ])
     if verbose:
         payload["branch"] = saved
     return json.dumps(payload, default=str)
@@ -3535,6 +3759,7 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     staging = BranchDefinition.from_dict(copy.deepcopy(source))
 
     per_op_errors: list[dict[str, Any]] = []
+    per_op_notices: list[dict[str, Any]] = []
     for idx, op in enumerate(changes):
         if not isinstance(op, dict):
             per_op_errors.append({
@@ -3543,6 +3768,18 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             })
             continue
         err = _apply_patch_op(staging, op)
+        # The SAME two channels as the build path. Codex refute, PR #4123: this
+        # caller was missed when `_apply_state_field_spec` gained the notice
+        # sentinel, so a patch that coerced a type both leaked the raw
+        # `\x00notice\x00` marker into the author's text AND was rejected for
+        # what the build path treats as advisory. One applicator, one contract:
+        # every caller of it has to read the prefix.
+        if err and err.startswith(_STATE_COERCION_NOTICE):
+            per_op_notices.append({
+                "op_index": idx, "op": op,
+                "notice": err[len(_STATE_COERCION_NOTICE):],
+            })
+            continue
         if err:
             if (
                 (op.get("op") or "").strip().lower() == "set_fork_from"
@@ -3584,10 +3821,15 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             text_lines += ["", "Suggested fixes:"]
             for s in suggestions:
                 text_lines.append(f"- {s['proposed_fix']}")
+        if per_op_notices:
+            text_lines += ["", "Also adjusted:"]
+            for pn in per_op_notices:
+                text_lines.append(f"- op[{pn['op_index']}]: {pn['notice']}")
         return json.dumps({
             "text": "\n".join(text_lines),
             "status": "rejected",
             "errors": per_op_errors,
+            "notices": per_op_notices,
             "validation_errors": validation_errors,
             "suggestions": suggestions,
         })
@@ -3686,6 +3928,8 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         "name_updated": name_updated,
         "new_name": persisted.name,
         "post_patch": post_patch,
+        # Same channel as the build path: what was adjusted, without rejecting.
+        "notices": per_op_notices,
         "batch_receipt": _branch_authoring_batch_receipt(
             persisted,
             action="patch_branch",
@@ -3693,6 +3937,11 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             request_id=kwargs.get("request_id", ""),
         ),
     }
+    if per_op_notices:
+        patch_payload["text"] = "\n".join([
+            patch_payload["text"], "", "Adjusted on the way in:",
+            *[f"- op[{pn['op_index']}]: {pn['notice']}" for pn in per_op_notices],
+        ])
     if verbose:
         patch_payload["branch"] = saved
     return json.dumps(patch_payload, default=str)

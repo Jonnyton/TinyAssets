@@ -1,0 +1,110 @@
+# owner-request-notifications (delta)
+
+## ADDED Requirements
+
+### Requirement: A device belongs to the signed-in user who registered it
+Device registration SHALL take the owning subject from the authenticated request and SHALL ignore any subject, universe or destination named in the payload. Registering a token that is already recorded for a different subject SHALL move it: every prior row for that token SHALL be removed before the new row is written. A listing of devices SHALL return only the caller's own devices and SHALL never return a token.
+
+#### Scenario: A payload cannot claim another subject
+- **WHEN** a signed-in user registers a device with another user's subject in the body
+- **THEN** the device is recorded against the authenticated caller and the supplied subject is ignored
+
+#### Scenario: A phone that switches accounts stops receiving the old account's notifications
+- **WHEN** a token registered by user A is registered again by user B
+- **THEN** A's row for that token is removed, and a later notification for A reaches no device holding that token
+
+#### Scenario: Tokens are not readable back
+- **WHEN** the owner lists their devices
+- **THEN** each entry carries an id, platform, label, enabled flag and last-seen time, and no token material
+
+### Requirement: A notification reaches only the request's own owner
+Dispatch SHALL resolve the destination set from the owning subject of the universe that holds the request, and SHALL accept no destination, subject or device from a caller, a payload or the request's own content. A dispatch whose resolved owner does not match the subject that raised the request SHALL send nothing and SHALL record the refusal.
+
+#### Scenario: Another user's devices are never a destination
+- **WHEN** a request is raised in user A's universe while user B has registered devices
+- **THEN** only A's devices are dispatched to, and B's devices receive nothing
+
+#### Scenario: Request content cannot select a destination
+- **WHEN** a request's title, body, fields or items name a device, token, endpoint or subject
+- **THEN** the resolved destination set is unchanged and the named value is never used
+
+#### Scenario: A disagreeing owner sends nothing
+- **WHEN** the subject that raised the request is not the admin owner of the universe holding it
+- **THEN** no notification is dispatched and the refusal is recorded
+
+### Requirement: The platform composes the notification's identity
+The notification title SHALL be derived by the server from the universe record, and agent-supplied text SHALL appear only in the body, with control characters removed and a length bound applied. No field of a request SHALL be able to place text in the identity position, and field values entered by the owner SHALL never appear in a payload.
+
+#### Scenario: An ask cannot impersonate the platform or another user
+- **WHEN** a request's kind or title is crafted to read as a platform or other-user notice
+- **THEN** the delivered title is still the universe's own server-derived name and the crafted text appears only as body content
+
+#### Scenario: Answered field values never leave in a payload
+- **WHEN** a request carries fields and items whose values the owner has filled in
+- **THEN** no dispatched payload contains any field value
+
+### Requirement: Notifications are owner-controlled
+Dispatch SHALL send nothing when the owner has turned notifications off or has no enabled device. The owner's setting SHALL be readable and changeable by that owner only. A dispatch that sends nothing SHALL NOT prevent the request from being raised, read or answered.
+
+#### Scenario: Notifications off means nothing is sent
+- **WHEN** the owner has turned notifications off and a request is raised
+- **THEN** no transport is invoked and the request is still pending in the rail
+
+#### Scenario: Another user cannot read or change this setting
+- **WHEN** a different signed-in user reads or writes the notification setting
+- **THEN** they act only on their own setting and this owner's is unchanged
+
+### Requirement: Only a genuinely new request notifies
+Dispatch SHALL be invoked only for a newly stored pending request. A request that was deduplicated against an existing pending row, a settled standing decision, or a storage refusal SHALL dispatch nothing.
+
+#### Scenario: A retried ask does not notify again
+- **WHEN** the universe raises the same ask twice and the second is deduplicated onto the existing pending row
+- **THEN** exactly one notification was dispatched for that request
+
+#### Scenario: A standing decision notifies nothing
+- **WHEN** an ask matches a suppression the owner already settled
+- **THEN** no request is stored and no transport is invoked
+
+### Requirement: Delivery is idempotent, redacted and fails closed
+Dispatch SHALL be idempotent on the request, item, device and kind, so a retry after a lost response does not deliver twice. Persisted delivery evidence SHALL contain no body, field value or token — only identifiers, a kind and a failure or success class. A transport error SHALL become a bounded class and SHALL NOT surface exception text, credential material or an unbounded retry instruction. A transport that reports the destination gone SHALL retire that device.
+
+#### Scenario: A retry does not notify twice
+- **WHEN** the same request is dispatched twice to the same device
+- **THEN** the transport is invoked once and the second attempt is reported as a replay
+
+#### Scenario: A transport exception carrying a secret leaks nothing
+- **WHEN** the transport raises an exception whose text contains credential material
+- **THEN** the recorded evidence holds only a fixed failure class and the caller receives no exception text
+
+#### Scenario: A gone device is retired
+- **WHEN** the transport reports the registration unknown or gone
+- **THEN** the device row is retired with a reason and is not dispatched to again
+
+### Requirement: No transport configured never costs the request
+When no transport is configured, dispatch SHALL report that plainly, SHALL log it, and SHALL neither fabricate a receipt nor fail the request that was raised.
+
+#### Scenario: Push unconfigured
+- **WHEN** a request is raised with no transport configured
+- **THEN** the request is stored and answerable, the dispatch reports no transport, and no receipt claims a delivery
+
+### Requirement: Answering on one device clears the others
+Resolving a request or one of its items SHALL dispatch a content-free clear to the owner's other enabled devices, carrying the request id and, for an item, its item id. The clear SHALL be best effort and SHALL never fail or delay the answer.
+
+#### Scenario: The other phone's notification goes away
+- **WHEN** the owner answers a request on one registered device
+- **THEN** a clear naming that request is dispatched to their other devices and not to the answering one
+
+#### Scenario: A clear that cannot be sent does not undo the answer
+- **WHEN** the transport fails while clearing
+- **THEN** the answer stands and the failure is recorded
+
+### Requirement: A notification is answerable from where it lands
+The dispatched data SHALL carry the request id, the universe id and the item ids, so a client can open directly at that request. Any action offered on the notification SHALL be answered through the signed-in user's own app session; no device-scoped credential SHALL be stored or accepted for answering.
+
+#### Scenario: Tapping opens the request
+- **WHEN** the owner taps a notification
+- **THEN** the app opens with that request expanded
+
+#### Scenario: No second custody of the owner's authority
+- **WHEN** a notification action is used
+- **THEN** the answer is submitted under the app's own authenticated session and no credential is read from or written to device-local storage

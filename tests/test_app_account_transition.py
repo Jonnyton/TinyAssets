@@ -32,7 +32,12 @@ _OPTIONAL = ("clearAccountScopedState", "clearThread", "clearComposerState",
              # runs the page's REAL `enterSignedOut`, so a collaborator it gained
              # has to be lifted here too. Optional, like its siblings, so this
              # file stays green against a tree without the fix.
-             "clearCredentialFields")
+             "clearCredentialFields",
+             # Added 2026-09-30: rail card nodes are now KEPT across a refresh
+             # so a 15-second poll cannot delete what the user typed into a
+             # card, which makes clearing them an account-change step rather
+             # than a side effect of the next rebuild.
+             "clearRailCards", "clearTypedValues")
 
 
 def _run_node(script: str):
@@ -141,7 +146,10 @@ function $(id){
   if(id==="thread-empty")return DOM.thread.children.indexOf(DOM.empty)>=0?DOM.empty:null;
   if(id==="btn-send")return DOM.send;
   if(id==="composer-input")return DOM.composer;
-  if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}};
+  // `children` because every element has some: the page now walks a node to
+  // clear the controls under it (clearRailCards), and an element without the
+  // property is not a DOM element at all.
+  if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}, children:[]};
   return DOM.other[id];
 }
 let activeTurn=null, turnStartedAt=0, liveInflight=null;

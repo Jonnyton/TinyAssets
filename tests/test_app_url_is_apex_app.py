@@ -222,3 +222,43 @@ def test_the_retirement_provers_actually_assert_the_retirement():
 def test_published_app_link_is_the_apex_url():
     site = (REPO_ROOT / "WebSite/site-react/lib/site.ts").read_text(encoding="utf-8")
     assert f'app: "{APP_URL}"' in site
+
+
+def test_every_server_side_app_path_source_agrees():
+    """Three modules independently name where the app is served. They must agree.
+
+    Each was introduced by a different lane, which is how they can drift:
+      * `onboarding.APP_PATH` mounts the routes,
+      * `usage_policy.app_path()` builds the upgrade link that goes out in an
+        owner's message — a wrong value here is a dead link in a notification,
+        not a 404 anyone testing the app would see,
+      * `pending_requests._FIRST_PARTY_PATHS` is the allowlist that decides
+        whether an agent's link to a platform page is real; the app missing from
+        it makes the app itself unlinkable.
+
+    Both of the latter two arrived on main carrying `/mcp/app` while this move
+    was in flight, so this is a live drift path, not a hypothetical one.
+    """
+    from tinyassets import usage_policy
+    from tinyassets.api.pending_requests import _FIRST_PARTY_PATHS
+    from tinyassets.onboarding import APP_PATH
+
+    assert APP_PATH == "/app"
+    assert usage_policy.app_path() == APP_PATH
+    assert APP_PATH in _FIRST_PARTY_PATHS
+    assert "/mcp/app" not in _FIRST_PARTY_PATHS
+
+
+def test_the_upgrade_link_points_at_the_live_app():
+    """The link a paid-tier message hands the owner has to open the real app.
+
+    It is the app's own path plus a query parameter (there is no GET upgrade
+    route), which makes it one more thing the edge route has to serve with its
+    query intact — the same property the `/app*` binding exists for.
+    """
+    from tinyassets import usage_policy
+
+    url = usage_policy.upgrade_url("free")
+    assert url is not None, "the free tier has something to sell"
+    assert url.startswith(f"{APP_URL}?"), url
+    assert "/mcp/app" not in url

@@ -70,11 +70,27 @@ class OutboundEndpoint:
     redirect_mode: str = "none"
 
     def as_dict(self) -> dict[str, object]:
+        # The reserved capability-URL pattern is DERIVED from the template, so it
+        # is never written out: the template is the one definition of that fact,
+        # and round-tripping the derived copy through the validator (which
+        # refuses a declared `secret` pattern) would make a stored endpoint
+        # unreadable the moment it was read back.
+        patterns = {
+            name: pat
+            for name, pat in self.param_patterns
+            if not (
+                name == _URL_SECRET_PLACEHOLDER_NAME
+                and (
+                    _URL_SECRET_TOKEN in self.path_template.split("/")
+                    or _URL_SECRET_REST_TOKEN in self.path_template.split("/")
+                )
+            )
+        }
         document = {
             "host": self.host,
             "path_template": self.path_template,
             "methods": list(self.methods),
-            "param_patterns": {name: pat for name, pat in self.param_patterns},
+            "param_patterns": patterns,
             "allowed_query": list(self.allowed_query),
             "query_patterns": {name: pat for name, pat in self.query_patterns},
             "required_query": list(self.required_query),
@@ -547,13 +563,48 @@ _MAX_PROXY_STARTUP_TIMEOUT_S = 120.0
 #: other value is refused at creation AND fails closed at dispatch (FIX 1).
 _KNOWN_CONNECTION_TYPES = frozenset({"", "http"})
 
+#: The capability-URL scheme: the credential is a PATH SEGMENT, not a header.
+#: A Slack/Discord/Zapier incoming webhook and this platform's own
+#: ``/mcp/hooks/<token>`` all carry their secret in the URL, which is the most
+#: common way an agent posts a message anywhere -- and the one place every other
+#: scheme had nothing to say. Live 2026-09-30 a universe handed a webhook link
+#: asked for a bearer token that does not exist, then hardcoded the secret into
+#: ``path_template`` (stored in the clear, projected to the owner's grant) and
+#: sent the pasted value as a useless ``Authorization`` header.
+_URL_SECRET_SCHEME = "url_secret"
+
 #: Auth schemes an ``http`` connection may declare. ``oauth1a`` (Twitter) signs
 #: with the four OAuth secrets carried in the bundle; the rest use one token.
 #: ``oauth2`` sends a Bearer access token the broker keeps current from the
 #: connection's refreshable token bundle (``connection_oauth.tokens``).
+#: ``url_secret`` sends NO auth header at all -- see ``_substitute_url_secret``.
 _SUPPORTED_HTTP_AUTH_SCHEMES = frozenset(
-    {"none", "bearer", "basic", "header", "oauth1a", "oauth2"}
+    {"none", "bearer", "basic", "header", "oauth1a", "oauth2", _URL_SECRET_SCHEME}
 )
+
+#: The reserved path placeholder a capability URL's secret fills. ``{secret}`` is
+#: exactly one segment (``/mcp/hooks/{secret}``, Discord's token); ``{secret+}``
+#: is the final tail of one or more (Slack's secret is ``T…/B…/token``, three
+#: segments). RESERVED: the name may not be used as an ordinary ``{param}``, and
+#: its value pattern is the platform's, never the caller's (see
+#: ``_validate_param_patterns``).
+_URL_SECRET_PLACEHOLDER_NAME = "secret"
+_URL_SECRET_TOKEN = "{secret}"
+_URL_SECRET_REST_TOKEN = "{secret+}"
+
+#: The grammar a stored capability secret must satisfy. This is
+#: ``_SSRF_ENDPOINT_LITERAL_RE``'s character set MINUS ``%`` (a capability
+#: secret is never percent-encoded -- encoding one would trip the existing
+#: double-encoding refusal) and minus the empty match. So ``/``, ``?``, ``#``,
+#: ``\``, control bytes and dot-segments are unrepresentable, which is what
+#: makes byte-verbatim substitution into the path safe. Minimum 8 because a
+#: capability secret shorter than that is not one; 512 is
+#: ``_SSRF_MAX_MATCH_SEGMENT``.
+_URL_SECRET_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@-]{8,512}$")
+#: The multi-segment form: up to 8 segments, each individually safe, and the
+#: joined tail bounded the way ``_path_matches_template`` bounds a rest tail.
+_URL_SECRET_MAX_TAIL_SEGMENTS = 8
+_URL_SECRET_MAX_TAIL_CHARS = 1024
 
 #: The ONLY credential_ref scheme an ``http`` connection may reference. Binding
 #: the credential's scheme to the connection type is what stops a confused-deputy
@@ -585,6 +636,153 @@ def _validate_connection_credential_scheme(
     if ctype != "http" and is_http_ref:
         raise SsrfValidationError(
             "a non-http connection must not use a vault://http/ credential_ref"
+        )
+
+
+def url_secret_token(endpoint: Any) -> str:
+    """``{secret}`` / ``{secret+}`` if this endpoint carries the reserved
+    placeholder, else ``""``.
+
+    The reserved name is recognized in BOTH spellings from the one place, so the
+    validator, the binding check and the substituter can never disagree about
+    what a capability endpoint looks like.
+    """
+    template = str(getattr(endpoint, "path_template", "") or "")
+    if _URL_SECRET_REST_TOKEN in template.split("/"):
+        return _URL_SECRET_REST_TOKEN
+    if _URL_SECRET_TOKEN in template.split("/"):
+        return _URL_SECRET_TOKEN
+    return ""
+
+
+def validate_url_secret_value(value: str, token: str) -> str:
+    """Return the stored capability secret, or raise. NEVER echoes the value.
+
+    The grammar (``_URL_SECRET_SEGMENT_RE``) is what makes byte-verbatim
+    substitution into a path safe: a value that satisfies it cannot carry a
+    separator, a dot-segment, a percent-encoding or a control byte, so it can
+    only ever occupy the segment(s) the template reserved for it. Checked at the
+    deposit door AND again in the broker child immediately before substitution —
+    a mutated or corrupted vault record must fail closed, not reach a socket.
+    """
+    text = value if isinstance(value, str) else ""
+    if token == _URL_SECRET_REST_TOKEN:
+        segments = text.split("/")
+        if not 1 <= len(segments) <= _URL_SECRET_MAX_TAIL_SEGMENTS:
+            raise SsrfValidationError(
+                "a capability url secret may span 1-"
+                f"{_URL_SECRET_MAX_TAIL_SEGMENTS} path segments"
+            )
+        if len(text) > _URL_SECRET_MAX_TAIL_CHARS:
+            raise SsrfValidationError("capability url secret is too long")
+    else:
+        segments = [text]
+    for segment in segments:
+        if not _URL_SECRET_SEGMENT_RE.match(segment):
+            raise SsrfValidationError(
+                "a capability url secret is 8-512 characters of an opaque path "
+                "segment (letters, digits and ._~-!$&'()*+,;=:@) — it may not "
+                "contain a slash, a percent-encoding or whitespace"
+            )
+    return text
+
+
+def validate_url_secret_binding(
+    auth_scheme: str,
+    endpoints: tuple[OutboundEndpoint, ...],
+    *,
+    access_mode: str | None = None,
+) -> None:
+    """Enforce ``url_secret`` <-> the reserved placeholder, BOTH directions.
+
+    Both directions leak. A ``url_secret`` connection with no ``{secret}``
+    anywhere has nowhere to put the vault segment, so it would put a
+    credential-free request on the wire under a name that says otherwise. A
+    ``{secret}`` template on a HEADER scheme is worse: the literal ``{secret}``
+    token goes out in the path *and* the real credential goes out in an
+    ``Authorization`` header the receiver never asked for.
+
+    EVERY endpoint must carry exactly one reserved placeholder, not "at least
+    one": a mixed connection has endpoints reachable without the secret, and the
+    owner's grant sentence could not say which.
+
+    Called at the deposit door (a user-facing refusal), at ``create_connection``
+    (the storage boundary every issuer passes), and at dispatch against the row
+    as RE-READ, which is what refuses a row mutated after a proxy opened.
+
+    ``access_mode`` is optional ONLY so a caller with no mode in hand can still
+    check the placeholder half; every call site in this repo passes it, and one
+    that cannot must not be inventing ``exact`` on the row's behalf.
+    """
+    scheme = (auth_scheme or "").strip().lower()
+    carriers = [endpoint for endpoint in endpoints if url_secret_token(endpoint)]
+    if scheme == _URL_SECRET_SCHEME:
+        if access_mode is not None and normalize_access_mode(access_mode) != ACCESS_EXACT:
+            # `full` admits on the HOST alone, so no template is consulted and
+            # there is no reserved position: the credential would go into every
+            # path on the host. Creation and `set_access_mode` refuse the
+            # combination; passing the mode here refuses a row that reached it
+            # some other way, at DISPATCH, against the row as re-read (astra
+            # round 1, FINDING 4).
+            raise SsrfValidationError(
+                f"a {_URL_SECRET_SCHEME} connection cannot be granted full access"
+            )
+        if not endpoints or len(carriers) != len(endpoints):
+            raise SsrfValidationError(
+                f"every endpoint of a {_URL_SECRET_SCHEME} connection must carry "
+                f"the reserved {_URL_SECRET_TOKEN} (or {_URL_SECRET_REST_TOKEN}) "
+                "path placeholder — that is where the vault secret goes"
+            )
+        # The reserved placeholder must be the ONLY placeholder on the endpoint.
+        #
+        # Every real capability URL is a FIXED path plus a secret -- Slack's
+        # `/services/{secret+}`, Discord's `/api/webhooks/{secret+}`, Zapier's
+        # `/hooks/catch/{secret+}`, this platform's `/mcp/hooks/{secret}`. So
+        # this costs nothing real, and it buys two things:
+        #
+        # 1. It removes the shape astra's round-1 FINDING 3 attacked. There can
+        #    be no `{tail+}` beside the secret for a reserved token to ride in,
+        #    so the positioned substituter and the stray-token invariant are
+        #    now defence in depth rather than the only line.
+        # 2. It makes the pasted-link parser CORRECT rather than approximately
+        #    correct. `extract_url_secret` splits the template on the reserved
+        #    token and matches the pasted path's prefix as a literal string --
+        #    which silently failed on `/hooks/{room}/{secret}`: the ask
+        #    validated, the owner pasted the RIGHT link, and the deposit refused
+        #    it. Telling an owner their correct answer is wrong is the failure
+        #    this whole change exists to stop.
+        stray = [
+            name
+            for endpoint in endpoints
+            for name in (
+                _placeholder_names(endpoint.path_template)
+                + [_rest_placeholder_name(endpoint.path_template) or ""]
+            )
+            if name and name != _URL_SECRET_PLACEHOLDER_NAME
+        ]
+        if stray:
+            raise SsrfValidationError(
+                f"a {_URL_SECRET_SCHEME} endpoint is a fixed path plus the "
+                f"secret, so {_URL_SECRET_TOKEN} must be its only placeholder "
+                "(got " + ", ".join(sorted(set(stray))) + "); use "
+                f"{_URL_SECRET_REST_TOKEN} if the secret itself spans several "
+                "segments, or deposit one connection per fixed path"
+            )
+        if any(endpoint.redirect_mode != "none" for endpoint in endpoints):
+            # Refused LOUDLY rather than left to fail silently. The redirect
+            # chain re-matches the allowlist, which cannot match a substituted
+            # path, so a redirect endpoint here would quietly behave as
+            # no-follow. It should also not be wanted: a 3xx off a capability
+            # URL hands the secret path to the next origin via Location/Referer.
+            raise SsrfValidationError(
+                f"a {_URL_SECRET_SCHEME} endpoint may not follow redirects"
+            )
+        return
+    if carriers:
+        raise SsrfValidationError(
+            f"the reserved {_URL_SECRET_TOKEN} path placeholder needs "
+            f'"auth_scheme": "{_URL_SECRET_SCHEME}"; a header scheme would send '
+            "the placeholder literally and the credential in a header"
         )
 
 
@@ -959,8 +1157,17 @@ class CredentialBlindBroker:
             and (resource.auth_scheme or "").strip().lower() == "oauth2"
         )
         # Every value to keep out of a response. For oauth2 that is the access
-        # AND refresh token, never the JSON bundle string as a whole.
+        # AND refresh token, never the JSON bundle string as a whole. For a
+        # capability URL it is the joined credential AND each of its path
+        # segments: the check matches substrings, so a destination echoing one
+        # segment of a multi-segment secret would otherwise pass (astra round 1,
+        # FINDING 2).
         secrets_held: tuple[str, ...] = (credential,)
+        if (
+            resource.connection_type == "http"
+            and (resource.auth_scheme or "").strip().lower() == _URL_SECRET_SCHEME
+        ):
+            secrets_held = url_secret_sensitive_values(credential)
         wire_credential = credential
         if oauth:
             bundle = self._oauth_bundle(resource, grant_id, verb, credential)
@@ -1609,6 +1816,12 @@ def _ssrf_auth_headers(
     scheme = (auth_scheme or "none").strip().lower()
     if scheme == "none":
         result: dict[str, str] = {}
+    elif scheme == _URL_SECRET_SCHEME:
+        # A capability URL authenticates by the path segment the driver
+        # substitutes; there is NO header. Sending one anyway is what the live
+        # 2026-09-30 failure did (a bearer header of a value the receiver never
+        # asked for), and it hands the credential to a second reader for nothing.
+        result = {}
     elif scheme == "bearer":
         result = {"Authorization": f"Bearer {bundle.get('token')}"}
     elif scheme == "basic":
@@ -1646,6 +1859,195 @@ class _CanonicalOutboundUrl:
     port: int
     path_qs: str
     is_ip_literal: bool
+
+
+#: A path segment at least this long is scanned for in a response ON ITS OWN,
+#: not only as part of the joined credential. The same threshold
+#: ``api/pending_requests._ENTROPY_RUN_RE`` uses for "an unbroken run this long
+#: is a credential, not prose", and it is a threshold rather than the grammar
+#: floor (8) for a reason given in ``url_secret_sensitive_values``.
+_URL_SECRET_SCANNED_SEGMENT_CHARS = 16
+
+
+def url_secret_sensitive_values(credential: str) -> tuple[str, ...]:
+    """Every string a response must be scanned for: the whole credential, and
+    each segment long enough to be a credential on its own.
+
+    A ``{secret+}`` credential is several path segments joined by ``/``. The
+    response scanners (``_declassify_response``, and the broker's echo check)
+    match SUBSTRINGS, so scanning only the joined form let a destination echo
+    ONE segment back — a body carrying just the token of a ``T…/B…/token``
+    secret — and that segment reached the caller, ``bounded_evidence``, and the
+    run's ``external_write_errors`` preview (gpt-6-astra refute round 1,
+    FINDING 2).
+
+    But scanning EVERY segment trades a leak for a denial of service. The
+    leading segments of a real multi-segment capability URL are typically PUBLIC
+    ids (a workspace id, a channel id, a webhook id), they are short, and a
+    legitimate response can contain one — an 8-character numeric id in a JSON
+    body would then read as an echo and fail a working connection. So the
+    joined credential is always scanned, and a segment is scanned individually
+    only when it is long enough to be the secret rather than the address:
+    a 24-character webhook token is, a 9-character workspace id is not.
+    """
+    text = credential if isinstance(credential, str) else ""
+    if not text:
+        return ()
+    values = [
+        text,
+        *(
+            part
+            for part in text.split("/")
+            if len(part) >= _URL_SECRET_SCANNED_SEGMENT_CHARS
+        ),
+    ]
+    return tuple(dict.fromkeys(values))
+
+
+def _reject_stray_reserved_tokens(text: str, *, what: str) -> None:
+    """Refuse a reserved capability-url token ANYWHERE in ``text``.
+
+    Whole-segment equality was not enough (gpt-6-astra refute round 2,
+    FINDING 2). Three spellings survived it: a token in the QUERY string
+    (``?q={secret}``, which the substituter appended unchanged), a
+    percent-encoded token in a permissive ``{tail+}`` (``%7Bsecret%7D`` — legal
+    bytes, so the canonical parse admits it), and one embedded in a larger
+    segment (``prefix{secret}``).
+
+    None of them substitutes a credential into the wrong slot — the positioned
+    substituter settled that — but the reserved token is a PLATFORM marker, and
+    a request carrying one outside its declared slot is malformed. Sending it
+    tells the receiver what shape this connection is, and it leaves an invariant
+    the design states ("nothing reserved survives") not actually holding. So:
+    substring, on the raw text and on its percent-decoded form.
+    """
+    candidates = (text, urllib.parse.unquote(text))
+    for candidate in candidates:
+        if _URL_SECRET_TOKEN in candidate or _URL_SECRET_REST_TOKEN in candidate:
+            raise SsrfValidationError(
+                "the reserved capability-url placeholder may appear only where "
+                f"the endpoint declares it (found in the {what})"
+            )
+
+
+def _positioned_url_secret_path(
+    path: str, endpoint: OutboundEndpoint, secret: str, token: str
+) -> str:
+    """The path with the vault segment in the position the TEMPLATE reserved.
+
+    Derived from the matched endpoint, never by searching the path (astra
+    FINDING 3). ``/hooks/{secret}/{tail+}`` with ``tail: ".*"`` admits the
+    concrete path ``/hooks/{secret}/echo/{secret+}``: a search would find
+    ``{secret+}`` in the caller-controlled tail and put the credential there,
+    at a path the owner granted for arbitrary content. Positioning by the
+    template puts it only where the template says, and the closing invariant
+    below — evaluated on the path with the reserved slot BLANKED — refuses any
+    reserved token left anywhere else, in any spelling.
+    """
+    template_segments = endpoint.path_template.split("/")
+    concrete = path.split("/")
+    if token == _URL_SECRET_REST_TOKEN:
+        # A rest placeholder is the FINAL template segment (enforced at
+        # authoring), and the allowlist full-matched the joined tail against the
+        # literal token — so the tail is exactly that one segment.
+        prefix = len(template_segments) - 1
+        if concrete[prefix:] != [token]:
+            raise SsrfValidationError(
+                "the capability-url placeholder is not where the endpoint declares it"
+            )
+        rebuilt = [*concrete[:prefix], secret]
+        remainder = [*concrete[:prefix], ""]
+    else:
+        try:
+            index = template_segments.index(token)
+        except ValueError:
+            raise SsrfValidationError(
+                "the matched endpoint declares no capability-url placeholder"
+            ) from None
+        if index >= len(concrete) or concrete[index] != token:
+            raise SsrfValidationError(
+                "the capability-url placeholder is not where the endpoint declares it"
+            )
+        rebuilt = [*concrete[:index], secret, *concrete[index + 1:]]
+        remainder = [*concrete[:index], "", *concrete[index + 1:]]
+    # The closing invariant: nothing reserved may survive substitution.
+    # Evaluated on the path WITH THE RESERVED SLOT BLANKED, so the one
+    # legitimate occurrence is excluded and every other spelling — encoded,
+    # embedded, or in a later segment — is caught (astra round 2, FINDING 2).
+    # Checked before the secret is joined in, so no refusal can carry it.
+    _reject_stray_reserved_tokens("/".join(remainder), what="request path")
+    return "/".join(rebuilt)
+
+
+def _substitute_url_secret(
+    canonical: _CanonicalOutboundUrl,
+    *,
+    auth_scheme: str,
+    bundle: ConnectionSecretBundle,
+    endpoint: OutboundEndpoint | None = None,
+    access_mode: str = ACCESS_EXACT,
+) -> _CanonicalOutboundUrl:
+    """Put the vault segment where the reserved placeholder is. AFTER the allowlist.
+
+    The ORDER is the design (design.md D2). The canonical parse and
+    ``_enforce_endpoint_allowlist`` have already run against the URL as the
+    CALLER supplied it, carrying the literal ``{secret}`` token — so the egress
+    boundary was decided with no secret material present, and no
+    ``SsrfValidationError`` raised by either of them can carry one. Only then is
+    the segment spliced in, and only into the path: the host is untouched, so the
+    DNS resolution and globally-routable-address check that run next are
+    unaffected.
+
+    Substitution is byte-verbatim, which is safe only because
+    ``validate_url_secret_value`` has already refused anything that could carry a
+    separator, a percent-encoding, a dot-segment or whitespace. It is re-checked
+    HERE and not merely trusted from the deposit: a mutated or corrupted vault
+    record must fail closed rather than reach a socket.
+
+    A placeholder-bearing URL under any OTHER scheme is refused rather than sent
+    literally — that request has no substituter, so it would put ``{secret}`` on
+    the wire while a header carried the real credential.
+    """
+    scheme = (auth_scheme or "none").strip().lower()
+    # The PATH only. A placeholder in the query string is never substituted: the
+    # secret of a capability URL lives in the path, the allowlist validated the
+    # query against `query_patterns`, and splicing a credential into a query
+    # would put it somewhere the owner's grant never described.
+    path, sep, query = canonical.path_qs.partition("?")
+    if scheme != _URL_SECRET_SCHEME:
+        # No slot exists on this scheme, so no occurrence anywhere is legitimate.
+        _reject_stray_reserved_tokens(canonical.path_qs, what="request")
+        return canonical
+    if normalize_access_mode(access_mode) != ACCESS_EXACT:
+        # A `full` connection is admitted on the HOST alone, so no template was
+        # consulted and there is no reserved position to substitute into: every
+        # path on the host would take the credential. Creation and
+        # `set_access_mode` both refuse the combination; this refuses a row that
+        # reached it another way, at the last moment before the wire
+        # (gpt-6-astra refute round 1, FINDING 4).
+        raise SsrfValidationError(
+            f"a {_URL_SECRET_SCHEME} connection cannot be granted full access"
+        )
+    if endpoint is None:
+        raise SsrfValidationError(
+            f"a {_URL_SECRET_SCHEME} request must be admitted by a declared endpoint"
+        )
+    token = url_secret_token(endpoint)
+    if not token:
+        raise SsrfValidationError(
+            "the matched endpoint declares no capability-url placeholder"
+        )
+    # The QUERY has no reserved slot: the secret of a capability URL is in the
+    # path. So no occurrence in it is legitimate, and it is refused rather than
+    # appended unchanged — which is what it was (astra round 2, FINDING 2).
+    _reject_stray_reserved_tokens(query, what="query string")
+    secret = validate_url_secret_value(bundle.get("token"), token)
+    return _CanonicalOutboundUrl(
+        hostname=canonical.hostname,
+        port=canonical.port,
+        path_qs=_positioned_url_secret_path(path, endpoint, secret, token) + sep + query,
+        is_ip_literal=canonical.is_ip_literal,
+    )
 
 
 def _canonical_request_url(canonical: _CanonicalOutboundUrl) -> str:
@@ -1820,26 +2222,56 @@ def _compile_declared_pattern(pattern: Any) -> str:
 def _validate_param_patterns(
     path_template: str, raw: Any
 ) -> tuple[tuple[str, str], ...]:
-    """Every ``{param}`` / ``{param+}`` MUST declare a value pattern; no strays (FIX 3)."""
+    """Every ``{param}`` / ``{param+}`` MUST declare a value pattern; no strays (FIX 3).
+
+    ``{secret}`` / ``{secret+}`` is the ONE exception, and the exception is the
+    whole security argument for capability URLs. Its pattern is the platform's:
+    the anchored LITERAL token. So a stored ``/mcp/hooks/{secret}`` endpoint
+    matches the concrete path ``/mcp/hooks/{secret}`` and nothing else — the
+    egress allowlist is evaluated with zero secret material in the URL, and a
+    node that puts its own value (or a real secret) in the secret's position is
+    refused by the allowlist rather than quietly sent. A caller-declared pattern
+    for the reserved name is REFUSED: a permissive one would re-admit exactly the
+    node-supplied segment this exists to exclude.
+    """
     placeholders = _placeholder_names(path_template)
     rest_name = _rest_placeholder_name(path_template)
     all_names = placeholders + ([rest_name] if rest_name else [])
     if len(set(all_names)) != len(all_names):
         raise SsrfValidationError("endpoint path_template has duplicate placeholders")
     placeholder_set = set(all_names)
+    reserved = placeholder_set & {_URL_SECRET_PLACEHOLDER_NAME}
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
         raise SsrfValidationError("endpoint param_patterns must be an object")
     declared = {str(name) for name in raw}
-    if declared != placeholder_set:
+    if declared & reserved:
+        raise SsrfValidationError(
+            f"the reserved {_URL_SECRET_TOKEN} placeholder takes no "
+            "param_patterns entry: its value comes from the vault, never from a "
+            "declared pattern"
+        )
+    if declared != placeholder_set - reserved:
         raise SsrfValidationError(
             "endpoint param_patterns must declare exactly the path placeholders"
         )
-    return tuple(
+    patterns = [
         (name, _compile_declared_pattern(raw[name]))
-        for name in sorted(placeholder_set)
-    )
+        for name in sorted(placeholder_set - reserved)
+    ]
+    if reserved:
+        # The literal token, escaped and anchored by `re.fullmatch` at match
+        # time. `{secret+}` is a rest placeholder, so the joined tail must equal
+        # the one literal segment `{secret+}` — a multi-segment tail is refused
+        # here and only appears after substitution.
+        token = (
+            _URL_SECRET_REST_TOKEN
+            if rest_name == _URL_SECRET_PLACEHOLDER_NAME
+            else _URL_SECRET_TOKEN
+        )
+        patterns.append((_URL_SECRET_PLACEHOLDER_NAME, re.escape(token)))
+    return tuple(sorted(patterns))
 
 
 def _validate_query_rules(
@@ -2041,8 +2473,16 @@ def _enforce_endpoint_allowlist(
     method: str,
     endpoints: tuple[OutboundEndpoint, ...],
     access_mode: str = ACCESS_EXACT,
-) -> None:
+) -> OutboundEndpoint | None:
     """Refuse any host/method/path/query not on the connection allowlist (design.md D3).
+
+    Returns the endpoint that ADMITTED the request (``None`` on a ``full``
+    connection, where the host match is the whole decision and no template was
+    consulted). The identity of the matching endpoint is what a capability-URL
+    substitution is positioned by: searching the path for the placeholder
+    instead let a caller-controlled ``{tail+}`` segment carry a reserved token
+    and receive the secret in a position the allowlist never reserved for it
+    (gpt-6-astra refute round 1, FINDING 3).
 
     This is the real egress boundary: an EMPTY allowlist permits nothing, and a
     URL whose host, method, path, OR query does not match a declared endpoint is
@@ -2064,7 +2504,7 @@ def _enforce_endpoint_allowlist(
     verb = (method or "").strip().upper()
     if normalize_access_mode(access_mode) == ACCESS_FULL:
         if any(endpoint.host == host for endpoint in endpoints):
-            return
+            return None
         raise SsrfValidationError("outbound host is not on the connection allowlist")
     raw_path, _, raw_query = canonical.path_qs.partition("?")
     if len(raw_query) > _SSRF_MAX_QUERY_LEN:
@@ -2094,7 +2534,7 @@ def _enforce_endpoint_allowlist(
             continue
         if not _query_permitted(query_items, endpoint):
             continue
-        return
+        return endpoint
     raise SsrfValidationError("outbound endpoint is not on the connection allowlist")
 
 
@@ -3161,10 +3601,24 @@ class _SsrfHardenedHttpDriver:
         # caller is exercising the raw transport (the driver's own adversarial
         # tests); every production call through _TrustedNetworkDriver passes a
         # non-empty allowlist, and an empty one refuses.
+        matched_endpoint: OutboundEndpoint | None = None
         if allowed_endpoints is not None:
-            _enforce_endpoint_allowlist(
+            matched_endpoint = _enforce_endpoint_allowlist(
                 canonical, verb, allowed_endpoints, access_mode
             )
+        # A capability URL's secret enters the path HERE and not one line
+        # earlier: everything above decided egress against the placeholder form
+        # (design.md D2), and everything below — DNS, the routable-address
+        # check, the socket — needs the real path. The host is unchanged, so the
+        # pin is unaffected. The POSITION comes from the endpoint that admitted
+        # the request, never from searching the path (astra round 1, FINDING 3).
+        canonical = _substitute_url_secret(
+            canonical,
+            auth_scheme=auth_scheme,
+            bundle=bundle,
+            endpoint=matched_endpoint,
+            access_mode=access_mode,
+        )
         request_headers = _validated_request_headers(headers)
         # oauth1a signs over the method + the exact request URL, so pass the
         # reconstructed URL (identical to the one _execute_pinned_https_request
@@ -3393,6 +3847,29 @@ def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSe
         raise SsrfValidationError(
             "credential encoding does not match the connection's auth scheme"
         )
+    if scheme == _URL_SECRET_SCHEME:
+        # An opaque path segment (or a `/`-joined run of them), carried under
+        # `token` like every other single-value scheme so `_substitute_url_secret`
+        # reads it the same way. Validated HERE as well as at the deposit door:
+        # this builder is the one choke point every dispatch passes through, so a
+        # corrupted or mutated record fails closed. The multi-segment grammar is
+        # used because the builder does not know which endpoint the call will
+        # address; `_substitute_url_secret` re-checks against that endpoint's
+        # actual token, which is the stricter one.
+        #
+        # EACH SEGMENT is a bundle member too, not only the joined form: the
+        # response scanners match substrings, so a destination echoing one
+        # segment of a Slack-shaped `T…/B…/token` back would otherwise pass both
+        # checks and land in the run record (astra round 1, FINDING 2).
+        whole = validate_url_secret_value(credential, _URL_SECRET_REST_TOKEN)
+        values = url_secret_sensitive_values(whole)
+        return ConnectionSecretBundle(
+            token=whole,
+            **{
+                f"url_secret_segment_{index}": part
+                for index, part in enumerate(values[1:])
+            },
+        )
     if scheme in ("bearer", "header", "oauth2"):
         return ConnectionSecretBundle(token=credential)
     if scheme == "basic":
@@ -3492,6 +3969,17 @@ class _TrustedNetworkDriver:
             raise SsrfValidationError("connection has no permitted endpoints")
         if not isinstance(request, dict):
             raise SsrfValidationError("outbound http request shape is not permitted")
+        # The capability-URL binding, re-checked against the row as the broker
+        # RE-READ it (`dispatch` reads the resource fresh on every call), not the
+        # one frozen when the proxy opened. That is the TOCTOU closure: a row
+        # mutated from `url_secret` to `bearer` would otherwise send the
+        # placeholder literally in the path AND the secret segment in an
+        # Authorization header. Refused before a bundle exists. The access mode
+        # rides along: a row mutated to `full` admits every path on the host,
+        # which is no place for a path-borne credential.
+        validate_url_secret_binding(
+            auth_scheme, allowed_endpoints, access_mode=access_mode
+        )
         bundle = _build_http_secret_bundle(auth_scheme, credential)
         return self._http(
             bundle=bundle,
@@ -3824,6 +4312,13 @@ class ConnectionLedger:
                 )
             if normalized_scheme not in _SUPPORTED_HTTP_AUTH_SCHEMES:
                 raise SsrfValidationError("auth scheme is not supported")
+            # The capability-URL binding at the STORAGE boundary, for the same
+            # reason `validate_git_scopes` lives here: every issuer assembles
+            # its own payload, and a rule that lives in one of them is a rule
+            # the next one forgets.
+            validate_url_secret_binding(
+                normalized_scheme, endpoints, access_mode=normalized_access
+            )
         # A git scope binds one repository on one host, so it may only ride on a
         # connection that names exactly one git host. Checked HERE, at the storage
         # boundary: every issuer assembles its own scope tuple, and a rule that
@@ -3949,11 +4444,19 @@ class ConnectionLedger:
         validate_git_scopes(
             new_scopes, hosts=[endpoint.host for endpoint in parsed], git_host=git_host
         )
-        sql = """
+        # The capability-URL binding as a PREDICATE, so an extension can never
+        # produce a row whose scheme and endpoints disagree: a set where EVERY
+        # endpoint carries the reserved placeholder may only land on a
+        # `url_secret` connection, and a set where any endpoint does not may
+        # only land on a connection that is not one. A prior read would be a
+        # TOCTOU against a concurrent remove-and-redeposit.
+        scheme_test = "=" if all(url_secret_token(ep) for ep in parsed) else "!="
+        sql = f"""
                 UPDATE outbound_connections
                 SET allowed_endpoints_json = ?, scopes_json = ?
                 WHERE connection_id = ? AND allowed_endpoints_json = ?
                   AND scopes_json = ? AND git_host = ?
+                  AND auth_scheme {scheme_test} ?
         """
         # The git host the scopes were validated against is part of the CAS:
         # a remove-and-reconnect under a different git_host with identical
@@ -3961,7 +4464,7 @@ class ConnectionLedger:
         params: list[Any] = [
             json.dumps([ep.as_dict() for ep in parsed]), json.dumps(list(new_scopes)),
             connection_id, expected_endpoints_json, expected_scopes_json,
-            normalize_git_host(git_host),
+            normalize_git_host(git_host), _URL_SECRET_SCHEME,
         ]
         if expected_access_mode is not None or expected_incarnation is not None:
             if not expected_access_mode or not expected_incarnation:
@@ -4029,6 +4532,13 @@ class ConnectionLedger:
             expected_endpoints_json,
             expected_scopes_json,
         ]
+        if wanted == ACCESS_FULL:
+            # A capability URL cannot be a full channel: `full` admits any path
+            # once the host matches, so the reserved placeholder would never be
+            # enforced. In the predicate rather than a prior read, so no
+            # concurrent deposit can slip between the check and the write.
+            sql += "           AND auth_scheme != ?\n"
+            params.append(_URL_SECRET_SCHEME)
         if expected_incarnation is not None:
             sql += "           AND incarnation = ?\n"
             params.append(expected_incarnation)
