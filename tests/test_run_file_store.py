@@ -72,7 +72,7 @@ def inventory(conn, *objects):
 
 def test_capacity_configuration_is_explicit_and_not_a_tier(monkeypatch):
     monkeypatch.delenv("TINYASSETS_RUN_FILE_CUSTODY_MAX_BYTES", raising=False)
-    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_MB", "999999")
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", "999999")
     with pytest.raises(files.FileCustodyRefused, match="not_configured"):
         files.capacity_limit()
     for value in ("0", "-1", "1.5", "NaN", "true", "9223372036854775808"):

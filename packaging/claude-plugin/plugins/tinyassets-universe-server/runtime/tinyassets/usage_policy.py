@@ -102,22 +102,18 @@ _PAID_COMPUTE_VAR = "TINYASSETS_PAID_COMPUTE_MINUTES"
 _DEFAULT_FREE_COMPUTE_MIN = 600.0
 _DEFAULT_PAID_COMPUTE_MIN = 12_000.0
 
-#: Storage: the universe's whole cloud footprint, one of the directive's two numbers.
+#: Storage: ONE pool per ACCOUNT, shared by all of its universes -- the directive's
+#: first number (founder, 2026-09-30: free 2 GiB, paid 20 GiB). This is the only
+#: storage quota; the flat 16 GiB workspace quota it replaces is deleted.
 #:
-#: These defaults predate the directive and are kept: 2,000 MB free / 20,000 MB paid
-#: is already "free users have less cloud storage space", and a number that has
-#: already been through review is worth more than a rounder one.
-#:
-#: What changes is that it is now MEASURED and ENFORCED
-#: (`tinyassets.universe_storage`) rather than declared. The old comment said
-#: per-universe attribution was wrong because ~99% of the footprint was our own
-#: duplicated provider runtime, which the user did not put there -- so the
-#: measurement excludes shared provider runtime and scratch-lease bytes, and counts
-#: only what the universe itself holds. That is what makes the number chargeable.
-_FREE_STORAGE_VAR = "TINYASSETS_FREE_STORAGE_MB"
-_PAID_STORAGE_VAR = "TINYASSETS_PAID_STORAGE_MB"
-_DEFAULT_FREE_STORAGE_MB = 2_000.0
-_DEFAULT_PAID_STORAGE_MB = 20_000.0
+#: Measured and enforced by `tinyassets.storage_accounting`, which excludes the
+#: platform's own bytes (provider runtime, checkout staging, live scratch) so the
+#: number is what the person actually stores. GiB because that is the unit the
+#: owner reads; the old `_MB` variables were set nowhere.
+_FREE_STORAGE_VAR = "TINYASSETS_FREE_STORAGE_GIB"
+_PAID_STORAGE_VAR = "TINYASSETS_PAID_STORAGE_GIB"
+_DEFAULT_FREE_STORAGE_GIB = 2.0
+_DEFAULT_PAID_STORAGE_GIB = 20.0
 
 #: Where an owner goes to buy more of either number.
 #:
@@ -285,15 +281,15 @@ def limits_for(tier: str) -> TierLimits:
         _PAID_COMPUTE_VAR if paid else _FREE_COMPUTE_VAR,
         _DEFAULT_PAID_COMPUTE_MIN if paid else _DEFAULT_FREE_COMPUTE_MIN,
     )
-    storage_mb = _positive_number(
+    storage_gib = _positive_number(
         _PAID_STORAGE_VAR if paid else _FREE_STORAGE_VAR,
-        _DEFAULT_PAID_STORAGE_MB if paid else _DEFAULT_FREE_STORAGE_MB,
+        _DEFAULT_PAID_STORAGE_GIB if paid else _DEFAULT_FREE_STORAGE_GIB,
     )
     return TierLimits(
         name=normalized,
         seats=seats,
         interactive_reserve=reserve,
-        storage_bytes=storage_mb * 1024.0 * 1024.0,
+        storage_bytes=storage_gib * 1024.0**3,
         effects=int(effects),
         compute_seconds=compute_min * 60.0,
         window_seconds=window_seconds(),
