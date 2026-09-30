@@ -166,7 +166,7 @@ def _assertion(private_key_pem: str, subject: str, endpoint: str) -> tuple[str, 
 def vapid_private_pem(env) -> str:
     """The configured VAPID private key as a PEM, or "".
 
-    The one reader of TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY. An env file holds one
+    The one parser of TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY. An env file holds one
     line per variable, so the PEM is written there with its newlines escaped as
     ``\\n``; both forms are accepted.
     """
