@@ -32,6 +32,16 @@ RESET = int(NOW.timestamp() + 43200) * 1000
      {"x-ratelimit-remaining-tokens-day": "0", "x-ratelimit-reset-tokens-day": "7200"}, 7200),
     ({"object": "error", "type": "rate_limited", "code": "1300",
       "message": "Daily token limit exceeded"}, {}, None),
+    # The reverse of the minute counterexample below (gpt-6-astra, round 2):
+    # the DAY is what ran out; the minute window is only a balance.
+    ({"error": {"message": "Daily token limit exceeded. Requests per minute remaining: 49."}},
+     {}, None),
+    # A shorter-window word inside an identifier is not a window.
+    ({"error": {"message": "Daily token limit exceeded for model supermin."}}, {}, None),
+    ({"error": {"message": "Daily request limit reached, 0 remaining."}}, {}, None),
+    ({"error": {"message": "Rate limit reached for model `m` in organization `o` on "
+                           "tokens per day (TPD): Limit 200000, Used 199999, Requested "
+                           "500. Please try again in 1m23s."}}, {}, None),
 ])
 def test_explicit_daily_shapes(body, headers, delay):
     signal = daily_quota_signal(429, headers, json.dumps(body), now=NOW)
