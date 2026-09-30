@@ -806,6 +806,7 @@ class AssignedQueueConsumer:
             OVERLAP_CANCEL_PREVIOUS,
             OVERLAP_SKIP,
             REFUSAL_KEY_PREFIX,
+            WAITING_FOR_PREVIOUS_RUN,
             AutomationStore,
             skip_overlapping,
         )
@@ -821,13 +822,13 @@ class AssignedQueueConsumer:
             logger.exception("attempt read failed automation=%s",
                              automation.automation_id)
             return
-        if policy == OVERLAP_SKIP:
-            skip_overlapping(
-                self.base_path, automation, due_at, now=now,
-                consumer_id=self.consumer_id,
-            )
+        # A one-shot wake under skip is not dropped: it waits like queue.
+        if policy == OVERLAP_SKIP and skip_overlapping(
+            self.base_path, automation, due_at, now=now,
+            consumer_id=self.consumer_id,
+        ) != WAITING_FOR_PREVIOUS_RUN:
             return
-        reason = "waiting_for_previous_run"
+        reason = WAITING_FOR_PREVIOUS_RUN
         if policy == OVERLAP_CANCEL_PREVIOUS:
             from tinyassets.runs import request_cancel
 

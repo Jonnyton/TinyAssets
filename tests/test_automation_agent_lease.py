@@ -30,6 +30,7 @@ from tests.test_automations import (
     UNIVERSE,
     _consumer_with_inline_executor,
     _FakeOutcome,
+    _refusal_rows,
     _seed_branch,
     _seed_owner,
 )
@@ -215,7 +216,6 @@ def test_a_running_agent_keeps_legacy_queue_work_out_of_its_universe(
 ) -> None:
     """Codex round 2 §3a still holds per agent: a legacy task owns its whole
     universe, so no agent may run beside it, and none may start beside one."""
-    from tests.test_automations import _refusal_rows
 
     store = AutomationStore(home)
     assert store.acquire_universe_lease(
@@ -262,7 +262,11 @@ def test_queue_waits_for_the_running_agent_then_runs(home: Path, monkeypatch) ->
         consumer.stop(timeout=10)
 
 
-def test_skip_drops_a_run_due_while_its_agent_runs(home: Path, monkeypatch) -> None:
+def test_skip_drops_a_cadence_run_but_a_one_shot_wake_waits(
+    home: Path, monkeypatch,
+) -> None:
+    """A cadence under skip spends the instant; a one-shot wake has only one
+    fire, so it waits for the agent and then runs -- never retired unseen."""
     _automate(home, WRITER, name="first")
     graph = _Blocking()
     monkeypatch.setattr(automations_module, "_execute", graph)
@@ -273,15 +277,21 @@ def test_skip_drops_a_run_due_while_its_agent_runs(home: Path, monkeypatch) -> N
         wake = _wake(home, WRITER, overlap="skip")
         cadence = _automate(home, WRITER, overlap="skip", name="cadence")
         assert consumer.poll_once() == 0
-        assert _attempt_statuses(home, wake.automation_id) == ["skipped"]
-        assert AutomationStore(home).get(wake.automation_id).pause_reason == (
-            "skipped_overlap"
-        )
-        assert AutomationStore(home).get(wake.automation_id).retired_at
-        # A cadence is not retired: this instant is spent, the next one is owed.
         assert _attempt_statuses(home, cadence.automation_id) == ["skipped"]
         assert AutomationStore(home).get(cadence.automation_id).retired_at == ""
+        # The wake is untouched and says why it is waiting, where the owner looks.
+        assert _attempt_statuses(home, wake.automation_id) == []
+        assert AutomationStore(home).get(wake.automation_id).retired_at == ""
+        assert _refusal_rows(home)[f"automation:{wake.automation_id}"] == (
+            "waiting_for_previous_run"
+        )
         assert len(graph.entered) == 1
+        graph.release.set()
+        deadline = time.monotonic() + 20
+        while wake.automation_id not in graph.entered and time.monotonic() < deadline:
+            consumer.poll_once()
+            time.sleep(0.05)
+        assert wake.automation_id in graph.entered
     finally:
         graph.release.set()
         consumer.stop(timeout=10)
@@ -407,9 +417,10 @@ def test_skip_applies_when_another_process_is_running_the_agent(
     home: Path, monkeypatch,
 ) -> None:
     """The overlap policy reads the SHARED lease, not only this process's map."""
+    cadence = _automate(home, WRITER, overlap="skip")
     wake = _wake(home, WRITER, overlap="skip")
     child = _holder_process(home, "worker_assigned_otherboot", die=False,
-                            universes=(automation_lease_key(wake),))
+                            universes=(automation_lease_key(cadence),))
     ran: list[str] = []
     monkeypatch.setattr(
         automations_module, "_execute",
@@ -424,7 +435,9 @@ def test_skip_applies_when_another_process_is_running_the_agent(
         child.stdin.flush()
         child.wait(timeout=30)
     assert ran == []
-    assert _attempt_statuses(home, wake.automation_id) == ["skipped"]
+    assert _attempt_statuses(home, cadence.automation_id) == ["skipped"]
+    assert _attempt_statuses(home, wake.automation_id) == []
+    assert AutomationStore(home).get(wake.automation_id).retired_at == ""
 
 
 # -- Folded from the gpt-6-astra refute round (2026-09-28) -----------------------
@@ -513,9 +526,9 @@ def test_skip_applies_even_when_every_slot_is_full(home: Path, monkeypatch) -> N
     try:
         assert consumer.poll_once() == 1
         graph.wait_for(1)
-        wake = _wake(home, WRITER, overlap="skip")
+        cadence = _automate(home, WRITER, overlap="skip", name="cadence")
         assert consumer.poll_once() == 0
-        assert _attempt_statuses(home, wake.automation_id) == ["skipped"]
+        assert _attempt_statuses(home, cadence.automation_id) == ["skipped"]
     finally:
         graph.release.set()
         consumer.stop(timeout=10)
@@ -556,3 +569,83 @@ def test_an_event_wake_keeps_its_subscriptions_overlap(home: Path) -> None:
     [wake] = [a for a in AutomationStore(home).list(universe_id=UNIVERSE)
               if a.trigger_kind == "once"]
     assert (wake.branch_def_id, wake.overlap) == (READER, "skip")
+
+
+class _SelfWakingRun:
+    """The `_execute` seam for a branch that re-wakes itself through its own
+    `run_completed` subscription. Like a real run, it emits the event at its
+    terminal transition -- while the consumer still holds the agent -- and then
+    waits until the test lets it finish."""
+
+    def __init__(self, base: Path) -> None:
+        self.base = base
+        self.entered: list[str] = []
+        self.emitted = threading.Event()
+        self.finish = threading.Event()
+        self._lock = threading.Lock()
+
+    def __call__(self, base_path, automation, provider_call, branch, inputs,
+                 on_run_started=None):
+        from tinyassets.automation_events import emit_run_completed
+
+        with self._lock:
+            run_id = f"run_loop_{len(self.entered)}"
+            self.entered.append(automation.automation_id)
+        if callable(on_run_started):
+            on_run_started(run_id)
+        emit_run_completed(
+            self.base, run_id=run_id, branch_def_id=automation.branch_def_id,
+            outcome="completed", actor=OWNER, queue_universe_id=UNIVERSE,
+            cause_principal=OWNER,
+        )
+        self.emitted.set()
+        assert self.finish.wait(20), "the test never finished the run"
+        self.finish.clear()
+        return _FakeOutcome(run_id=run_id, status="completed")
+
+
+def test_a_self_waking_loop_survives_the_wake_its_own_run_fires(
+    home: Path, monkeypatch,
+) -> None:
+    """Replays 2026-09-28 22:43:46 on the founder's universe: a `run_completed`
+    subscription (overlap skip) on its own branch. The run's completion stored
+    the next one-shot wake while that run still held the agent; the next poll
+    applied skip, and the wake retired as `skipped_overlap` -- the 24/7 loop
+    ended silently. The wake must wait for the agent and run, every time."""
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    with identity_context(Identity(user_id=OWNER, username=OWNER)):
+        register_automation(
+            home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="loop",
+            branch_def_id=WRITER, event_type="run_completed",
+            event_filter={"branch_def_id": WRITER}, overlap="skip",
+        )
+    _wake(home, WRITER, overlap="skip")
+    graph = _SelfWakingRun(home)
+    monkeypatch.setattr(automations_module, "_execute", graph)
+    consumer = _threaded_consumer(home)
+    try:
+        for turn in range(3):
+            deadline = time.monotonic() + 20
+            while len(graph.entered) <= turn and time.monotonic() < deadline:
+                consumer.poll_once()
+                time.sleep(0.02)
+            assert len(graph.entered) == turn + 1, f"the loop stopped after {turn} runs"
+            assert graph.emitted.wait(20)
+            graph.emitted.clear()
+            # The overlap window: the next wake is due, its predecessor still runs.
+            assert consumer.poll_once() == 0
+            wakes = [a for a in AutomationStore(home).list(universe_id=UNIVERSE)
+                     if a.trigger_kind == "once"]
+            assert not [a for a in wakes if a.pause_reason == "skipped_overlap"], wakes
+            waiting = [a for a in wakes if not a.retired_at]
+            assert len(waiting) == 1, wakes
+            assert _refusal_rows(home)[f"automation:{waiting[0].automation_id}"] == (
+                "waiting_for_previous_run"
+            )
+            graph.finish.set()
+        assert len(set(graph.entered)) == 3, "each run was a different wake"
+    finally:
+        graph.finish.set()
+        consumer.stop(timeout=10)
