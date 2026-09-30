@@ -111,6 +111,38 @@ def test_unclassified_schema_growth_fails_loudly(seeded: Path) -> None:
         inspect_reset_scope(seeded, principal=_SUBJECT_A)
 
 
+def test_the_retired_fleet_tables_do_not_block_a_scoped_reset(seeded: Path) -> None:
+    """Production still holds the fleet-era cloud-automation and background-
+    branch tables until a host-action drops them (plan C1, 2026-09-28). Created
+    here by their real stores; an unclassified one would block every reset."""
+    from tinyassets.scoped_reset import inspect_reset_scope
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+    )
+    from tinyassets.storage.cloud_automation_continuation import (
+        SQLiteCloudAutomationContinuationStore,
+    )
+    from tinyassets.storage.cloud_automation_control import (
+        CloudAutomationControlStore,
+    )
+
+    for store in (
+        CloudAutomationControlStore(seeded),
+        SQLiteCloudAutomationContinuationStore(seeded),
+    ):
+        with store.connection():
+            pass
+    with SQLiteBackgroundBranchAuthorityStore(seeded)._connection():
+        pass
+    with _connect(seeded) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert {"cloud_automation_controls", "background_branch_bindings"} <= tables
+
+    inspect_reset_scope(seeded, principal=_SUBJECT_A)
+
+
 @pytest.mark.parametrize(
     "growth",
     ["column", "generated_column", "trigger", "incoming_foreign_key"],

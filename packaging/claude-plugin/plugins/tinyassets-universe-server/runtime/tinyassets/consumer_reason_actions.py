@@ -10,6 +10,14 @@ does (#2550). These strings ARE the words the agent relays to the user.
 
 from __future__ import annotations
 
+#: The recorded disposition of a fleet-era cloud-automation control when its
+#: pump was retired (plan C1, 2026-09-28). Written by the consumer, carried on
+#: the legacy row the owner's automation list shows.
+RETIRED_FLEET_CONTROL_REASON = (
+    "retired_fleet_era: this automation ran on the retired cloud-automation "
+    "layer and has been stopped; recreate it with write_graph target=automation"
+)
+
 _STATIC: dict[str, str] = {
     "no_due_trigger": (
         "Nothing is due yet - the next slice is scheduled by this automation's "

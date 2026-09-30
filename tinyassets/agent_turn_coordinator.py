@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import AsyncExitStack
 from dataclasses import replace
 
@@ -103,6 +104,15 @@ class AgentTurnCoordinator:
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
         self.spent_attempts = []
+
+    def _remaining(self, turn_deadline):
+        """This turn's config with its absolute cap cut to what is left of the turn.
+
+        Never zero or negative: the profile would read that as "unset" and hand
+        back the full default cap, which is the bug this exists to prevent.
+        """
+        left = max(turn_deadline - time.monotonic(), 1.0)
+        return replace(self.config, absolute_cap_s=left)
 
     def _check_scope(self):
         owner = self.adapter.check(self.context, self.config)
@@ -353,6 +363,11 @@ class AgentTurnCoordinator:
             raise JournalUnavailable("agent turn cannot be replayed")
 
         timeout = self.config.stream_timeout_profile().absolute_cap_s
+        # Every round is told what is LEFT of the turn, not the whole cap again:
+        # a provider that cannot be cancelled mid-request (the HTTP broker) is
+        # then bounded by the turn's own end, not by a fresh cap from a late
+        # round (Codex, 2026-09-29).
+        turn_deadline = time.monotonic() + timeout
         async with asyncio.timeout(timeout):
             async with AsyncExitStack() as stack:
                 engine = None
@@ -369,16 +384,23 @@ class AgentTurnCoordinator:
                                 actor_id=actor_id, graph_id=graph_id,
                                 enabled_tools=granted_tools(self.config), timeout=timeout,
                             ))
-                        config = replace(self.config, agent_request=AgentInferenceRequest(
-                            tools=codec.tool_definitions(engine.tools), history=self._history(),
-                        ))
+                        config = replace(
+                            self._remaining(turn_deadline),
+                            agent_request=AgentInferenceRequest(
+                                tools=codec.tool_definitions(engine.tools),
+                                history=self._history(),
+                            ),
+                        )
                         prompt, system, observer = self.prompt, self.system, self._begin
                     else:
                         self.native_input = render_native_input(
                             self.prompt, self.system, self._history(),
                         )
                         prompt, system = self.native_input
-                        config = replace(self.config, agent_request=None, selected_model=None)
+                        config = replace(
+                            self._remaining(turn_deadline), agent_request=None,
+                            selected_model=None,
+                        )
                         observer = self._begin_native
                     try:
                         response = await self.adapter.infer(
@@ -648,11 +670,13 @@ class AgentTurnCoordinator:
         minimum context, so every model too small is skipped in one step rather
         than tried one by one; the failed model is excluded too.
 
-        Served chat only (``self.plan``): a workflow run's candidates come from
-        its adapter, whose launch carrier this path has no business re-arming.
+        A workflow agent node's candidates come from its adapter: the measured
+        need is handed to the adapter for this turn only, and the next model
+        launches through the adapter's own fresh authorization, exactly as the
+        capacity and refusal paths already move a workflow turn on.
         """
         if (
-            self.plan is None
+            not self._has_candidate_order()
             or not isinstance(exc, SelectedModelContextError)
             or self.turn.state not in {"ready", "held_transport"}
         ):
@@ -664,19 +688,28 @@ class AgentTurnCoordinator:
 
         failed = self.context.model_selection
         self.visited.add(failed)
-        self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
-        # Every interaction the order reads: a per-source policy REPLACES the
-        # plan's own for that source's models, and production plans carry one
-        # per source -- raising only the plan's left them admitting a model too
-        # small (Codex, 2026-09-28).
-        self.plan = replace(
-            self.plan,
-            interaction=_at_least(self.plan.interaction, needed),
-            source_policies=tuple(
-                replace(item, interaction=_at_least(item.interaction, needed))
-                for item in self.plan.source_policies
-            ),
-        )
+        if self.plan is None:
+            # The work adapter raises every interaction its order reads, for
+            # THIS turn. No Exhaustion: a work run's exhaustion is shared by all
+            # its nodes, and a model too small for this node's context is not
+            # exhausted for a later, smaller one (gpt-6-astra on #4093). The
+            # measured minimum already rules the failed model out here -- its
+            # window is exactly what the measurement exceeded.
+            self.adapter.require_context(needed)
+        else:
+            self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
+            # Every interaction the order reads: a per-source policy REPLACES the
+            # plan's own for that source's models, and production plans carry one
+            # per source -- raising only the plan's left them admitting a model too
+            # small (Codex, 2026-09-28).
+            self.plan = replace(
+                self.plan,
+                interaction=_at_least(self.plan.interaction, needed),
+                source_policies=tuple(
+                    replace(item, interaction=_at_least(item.interaction, needed))
+                    for item in self.plan.source_policies
+                ),
+            )
         candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
             self._leave_hot_source(None)
