@@ -1157,6 +1157,20 @@ def _default_launcher(command: Sequence[str], **kwargs: Any) -> Any:
     return subprocess.CompletedProcess(list(command), proc.returncode, stdout, stderr)
 
 
+#: Descriptors every git this process runs inherits: the workspace worker's
+#: staging in-use share (`workspace_worker._mark_staging_in_use`).
+_INHERITED_FDS: tuple[int, ...] = ()
+
+
+def inherit_descriptor(fd: int) -> None:
+    """Make every later git in this process inherit ``fd``."""
+    global _INHERITED_FDS
+    if not isinstance(fd, int) or isinstance(fd, bool) or fd < 0:
+        raise WorkspaceGitError("bad_argument", "inherit_descriptor needs a descriptor")
+    if fd not in _INHERITED_FDS:
+        _INHERITED_FDS = (*_INHERITED_FDS, fd)
+
+
 def run_git(
     argv: Sequence[str],
     *,
@@ -1224,10 +1238,12 @@ def run_git(
         "check": False,
         "shell": False,
     }
-    if pass_fds:
+    inherited = () if _IS_WINDOWS else _INHERITED_FDS
+    if pass_fds or inherited:
         # The descriptor must survive into the child, or /proc/self/fd/<n>
-        # in its cwd names nothing.
-        kwargs["pass_fds"] = tuple(pass_fds)
+        # in its cwd names nothing. `_INHERITED_FDS` is the staging in-use
+        # share: a git that outlives its worker keeps the tree marked in use.
+        kwargs["pass_fds"] = tuple(dict.fromkeys((*pass_fds, *inherited)))
     child_setup = preexec_fn if preexec_fn is not None else (
         None if _IS_WINDOWS else _disable_core_dumps
     )

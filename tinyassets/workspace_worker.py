@@ -604,6 +604,28 @@ def reconcile_push_intents(base_path: Any, **kwargs: Any) -> list[tuple[str, str
     return _reconcile(base_path, **kwargs)
 
 
+def _mark_staging_in_use(request: Any) -> None:
+    """Hold a share on the staging tree for this worker's whole life, and hand the
+    same descriptor to every git it runs.
+
+    The parent's liveness token proves only the PARENT alive; a worker -- or a
+    git in its own session -- can outlive a killed parent and still be writing
+    here. The kernel keeps a shared lock while any process holds a copy of the
+    descriptor, so the sweep can see them (gpt-6-astra, PR #4143 round 1).
+    Never released: the kernel does it when this process and its gits exit.
+    """
+    if not isinstance(request, dict) or not request.get("staging_dir"):
+        return
+    from tinyassets import workspace_git, workspace_staging
+
+    try:
+        fd = workspace_staging.hold_in_use(request["staging_dir"])
+    except OSError:
+        return  # no staging to protect (already removed): the op fails on its own
+    if fd is not None:
+        workspace_git.inherit_descriptor(fd)
+
+
 def run_workspace_worker(channel: Any) -> None:
     """Child entry point. Sanitize, answer ONE request, exit."""
     from tinyassets.storage.outbound_connections import _sanitize_child_environment
@@ -612,6 +634,7 @@ def run_workspace_worker(channel: Any) -> None:
     try:
         channel.send({"op": "ready"})
         request = channel.recv()
+        _mark_staging_in_use(request)
         channel.send(handle_request(request))
     except Exception as exc:  # noqa: BLE001 - a child that dies silently is worse
         try:

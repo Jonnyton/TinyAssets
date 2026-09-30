@@ -985,15 +985,13 @@ def _checkout(
         # is deleted BEFORE the capability is published, and the deletion is
         # CHECKED: a workspace published while staging survives is a workspace
         # published next to the material it was supposed to replace.
-        try:
-            shutil.rmtree(staging)
-            if staging.exists():
-                raise OSError(f"{staging} still exists after rmtree")
-        except OSError as exc:
+        from tinyassets import workspace_staging
+
+        if not workspace_staging.remove(staging) or os.path.lexists(staging):
             raise _Refused(
                 "workspace_checkout_failed",
-                f"staging could not be removed, so nothing was published: {exc}",
-            ) from None
+                "staging could not be removed, so nothing was published",
+            )
 
         provision_evidence = {}
         if packet.get("provision") is not None:
@@ -1696,8 +1694,6 @@ def _pool_detail(exc: Exception) -> str:
 
 
 def _git_path() -> str:
-    import shutil
-
     found = shutil.which("git")
     if not found:
         raise _Refused("workspace_checkout_failed", "git is not available on this host")
