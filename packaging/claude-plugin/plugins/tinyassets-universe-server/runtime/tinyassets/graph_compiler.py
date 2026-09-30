@@ -2832,8 +2832,7 @@ _CHILD_UNAVAILABLE = "invoke_branch child is not available"
 
 
 def _authorize_child_ref(
-    base: "Path", child_def_id: str, ctx: "BranchExecutionContext", *, parent_run_id: str = "",
-    require_authorship: bool = False,
+    base: "Path", child_def_id: str, ctx: "BranchExecutionContext", *, parent_run_id: str = ""
 ) -> "Any":
     """Authorize an AUTHOR-chosen child branch ref under DELEGATED authority.
 
@@ -2865,7 +2864,7 @@ def _authorize_child_ref(
     # error. Missing/blank/malformed visibility is NOT public -> fail closed (#6).
     visibility = str(raw.get("visibility") or "").strip().lower()
     author = str(raw.get("author") or "").strip()
-    is_public = visibility == "public" and not require_authorship
+    is_public = visibility == "public"
     if ctx.caller_provenance == "own":
         authorized = is_public or (bool(author) and author == ctx.actor)
         if (not authorized and author and author == ctx.owner_user_id
@@ -2902,6 +2901,36 @@ def _authorize_child_ref(
     except Exception:  # noqa: BLE001
         logger.debug("invoke_branch child deserialize failed", exc_info=True)
         raise CompilerError(_CHILD_UNAVAILABLE) from None
+
+
+def _unmarked_version_is_the_runs_own(
+    base: "Path", child: "Any", ctx: "BranchExecutionContext",
+) -> bool:
+    """May this run use an UNPUBLISHED version of ``child``?
+
+    Only when all three hold: the running definition is the run's own
+    (``caller_provenance == "own"``), it was written by the same author as the
+    child, and that author is the run's principal -- the run actor itself, or
+    an admin of the universe the run executes in (the ``_caller_provenance``
+    rule: an owner's automation runs as ``universe:<id>`` while the branch
+    author is the owner's user id). Fail closed on any lookup error.
+    """
+    author = str(getattr(child, "author", "") or "").strip()
+    if not author or ctx.caller_provenance != "own" or ctx.definition_author != author:
+        return False
+    if author == ctx.actor:
+        return True
+    # Otherwise the run must execute AS the universe (its owner's automation),
+    # not as some other person who merely runs there.
+    if not ctx.universe_id or ctx.actor != f"universe:{ctx.universe_id}":
+        return False
+    try:
+        from tinyassets.api.source_channel import universe_owner_actor
+
+        return bool(ctx.universe_id) and universe_owner_actor(base, ctx.universe_id, author)
+    except Exception:  # noqa: BLE001 - uniform refusal
+        logger.debug("unpublished version owner lookup failed", exc_info=True)
+        return False
 
 
 def _enforce_foreign_mapping_confidentiality(
@@ -3299,12 +3328,14 @@ def _build_invoke_branch_version_node(
         from tinyassets.branch_versions import branch_version_is_public
 
         if not branch_version_is_public(_base, child_branch_version_id):
-            # An unmarked snapshot is private even when its live branch is public.
-            # Reuse the delegated-author gate, including owner-bound run checks.
-            _authorize_child_ref(
-                _base, ver_def_id, _ctx, parent_run_id=parent_run_id,
-                require_authorship=True,
-            )
+            # An unmarked snapshot is private even when its live branch is public:
+            # only its author's own runs may use it. "Own" is the run-provenance
+            # rule, not an id comparison -- an owner's automation executes as
+            # ``universe:<id>`` while the branch author is the owner's user id.
+            # The parent definition must be the run's own AND by the same author,
+            # so a foreign or co-admin definition cannot reach this history.
+            if not _unmarked_version_is_the_runs_own(_base, child, _ctx):
+                raise CompilerError(_CHILD_UNAVAILABLE)
 
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         # Lazy module-attribute lookups so unittest.mock.patch on

@@ -515,6 +515,62 @@ def test_nested_invoke_cannot_run_unpublished_history(
     assert called == [vid]
 
 
+@pytest.mark.parametrize("actor,definition_author,permission,provenance,runs", [
+    ("universe:u", "alice", "admin", "own", True),      # the owner's automation
+    ("universe:u", "alice", "read", "own", False),      # author no longer owns it
+    ("carol", "alice", "admin", "own", False),          # someone else runs there
+    ("universe:u", "mallory", "admin", "own", False),   # another author's definition
+    ("universe:u", "alice", "admin", "public-foreign", False),  # foreign code
+])
+def test_an_owners_universe_run_uses_its_own_unpublished_version(
+    branch_authority_env, monkeypatch,  # noqa: F811 - imported fixture
+    actor, definition_author, permission, provenance, runs,
+):
+    """The mark gates other people, not the owner: an automation executes as
+    ``universe:<id>`` while the branch author is the owner's user id, so "own"
+    is the provenance rule (author administers the run's universe), and only
+    for a run that executes AS that universe, of that author's own definition."""
+    from types import SimpleNamespace
+
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.branches import NodeDefinition
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.graph_compiler import (
+        BranchExecutionContext,
+        CompilerError,
+        _build_invoke_branch_version_node,
+    )
+
+    base, _authenticate = branch_authority_env
+    grant_universe_access(base, universe_id="u", actor_id="alice", permission=permission,
+                          granted_by="alice")
+    branch = _seed_branch(base, branch_def_id="owned", author="alice", node_ids=("s",))
+    vid = publish_branch_version(base, branch, publisher="alice").branch_version_id
+    called = []
+
+    def launch(*args, **kwargs):
+        called.append(kwargs["branch_version_id"])
+        return SimpleNamespace(run_id="child-run")
+
+    monkeypatch.setattr("tinyassets.runs.execute_branch_version_async", launch)
+    node = NodeDefinition(node_id="invoke", display_name="Invoke",
+                          invoke_branch_version_spec={"branch_version_id": vid,
+                                                      "wait_mode": "async"})
+    invoke = _build_invoke_branch_version_node(
+        node, base_path=base, event_sink=None,
+        execution_context=BranchExecutionContext(
+            actor=actor, universe_id="u", caller_provenance=provenance,
+            definition_author=definition_author),
+    )
+    if runs:
+        invoke({})
+        assert called == [vid]
+    else:
+        with pytest.raises(CompilerError, match="not available"):
+            invoke({})
+        assert called == []
+
+
 def test_suggest_edit_filters_private_run_context(
     branch_authority_env, monkeypatch,  # noqa: F811 - imported fixture
 ):
