@@ -120,14 +120,22 @@ STATE_PAUSED = "paused"
 #: * ``queue`` (default): wait, and start when the running one ends. Instants a
 #:   cadence passes meanwhile collapse into that one owed run. This is the
 #:   behaviour every automation had under the per-universe lease.
-#: * ``skip``: drop this due run. A cadence moves on to its next instant; a
-#:   one-shot wake retires as ``skipped_overlap``.
+#: * ``skip``: drop this due run, and a cadence moves on to its next instant.
+#:   A one-shot wake has no next instant, so it is never dropped: it waits, as
+#:   under ``queue``, with ``waiting_for_previous_run`` on the owner's surface.
+#:   Live 2026-09-28: a ``run_completed`` subscription's wake fell due while the
+#:   run that fired it still held the agent, and retiring it ended the owner's
+#:   self-built loop with nothing to tell them.
 #: * ``cancel_previous``: ask the running one to cancel, then start once it
 #:   has stopped.
 OVERLAP_QUEUE = "queue"
 OVERLAP_SKIP = "skip"
 OVERLAP_CANCEL_PREVIOUS = "cancel_previous"
 OVERLAP_POLICIES = frozenset({OVERLAP_QUEUE, OVERLAP_SKIP, OVERLAP_CANCEL_PREVIOUS})
+
+#: The owner-visible reason a due run records while its agent is busy and it
+#: waits for the lease: every ``queue`` row, and a ``skip`` one-shot wake.
+WAITING_FOR_PREVIOUS_RUN = "waiting_for_previous_run"
 
 #: An agent's lease key is ``agent:<len(universe)>:<universe>:<branch>``. The
 #: length prefix makes it unambiguous whatever the ids contain, so no key and
@@ -1567,6 +1575,27 @@ def next_due_at(automation: Automation, now: datetime) -> str:
     return ""
 
 
+def owed_since(automation: Automation, due_at: str) -> str:
+    """When the run ``due_at`` stands for first became owed: the order an
+    agent's due rows are taken in, longest-owed first.
+
+    Not ``due_at`` itself. An interval collapses missed instants onto the
+    LATEST one, so its ``due_at`` moves forward every poll it is not served and
+    a steady stream of one-shot wakes would always look older (Codex refute
+    2026-09-29, P2). Its first unserved instant does not move. A cron row is
+    owed only inside its minute and forgets the last one, so it counts from
+    its last run: a minute it loses is gone, and a wake can wait (round 3).
+    """
+    anchor = _parse(automation.last_due_at) or _parse(automation.created_at)
+    if anchor is None:
+        return due_at
+    if automation.trigger_kind == TRIGGER_INTERVAL and automation.interval_seconds > 0:
+        return _iso(anchor + timedelta(seconds=automation.interval_seconds))
+    if automation.trigger_kind == TRIGGER_CRON:
+        return min(_iso(anchor), due_at)
+    return due_at
+
+
 def due_automations(
     base_path: str | Path,
     *,
@@ -1624,9 +1653,12 @@ def skip_overlapping(
     """Spend a due run whose agent is busy, under the ``skip`` policy.
 
     The instant is claimed and closed as skipped, so a cadence moves on to its
-    next instant rather than owing this one; a one-shot wake retires. Never
-    raises.
+    next instant rather than owing this one. A one-shot wake is left untouched
+    and :data:`WAITING_FOR_PREVIOUS_RUN` is returned: its one fire is all it
+    has, so it waits for the agent instead. Never raises.
     """
+    if automation.trigger_kind == TRIGGER_ONCE:
+        return WAITING_FOR_PREVIOUS_RUN
     base = Path(base_path)
     moment = _as_utc(now)
     store = AutomationStore(base)
@@ -1638,8 +1670,6 @@ def skip_overlapping(
             automation.automation_id, due_at, run_id="", status="skipped",
             reason=reason, now=moment, succeeded=None,
         )
-        if automation.trigger_kind == TRIGGER_ONCE:
-            store.retire_for_reason(automation.automation_id, reason=reason, now=moment)
     except Exception:  # noqa: BLE001 - one owner's row cannot stop the pump
         logger.exception("overlap skip failed automation=%s", automation.automation_id)
         return "skip_error"
@@ -2301,6 +2331,7 @@ __all__ = [
     "EVENT_WOKE_PREFIX",
     "TRIGGER_ONCE",
     "REFUSAL_KEY_PREFIX",
+    "WAITING_FOR_PREVIOUS_RUN",
     "Automation",
     "AutomationRunTimeout",
     "AutomationRunUnstopped",
@@ -2320,5 +2351,6 @@ __all__ = [
     "register_automation",
     "run_due_automation",
     "run_timeout_seconds",
+    "owed_since",
     "skip_overlapping",
 ]
