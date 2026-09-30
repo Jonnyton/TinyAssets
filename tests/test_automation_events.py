@@ -1183,3 +1183,37 @@ def test_a_registrant_whose_file_was_cleaned_up_locks_a_new_one(
     held = process_liveness.hold_liveness(tmp_path, "proc_racer")
     assert held.acquired and len(calls) == 2
     assert process_liveness.owner_state(tmp_path, "proc_racer") == process_liveness.ALIVE
+
+
+@pytest.mark.skipif(__import__("os").name != "posix",
+                    reason="Windows refuses to unlink a file another handle holds open")
+def test_cleanup_decides_and_deletes_under_the_files_lock(tmp_path: Path) -> None:
+    """Round 3: a registrant that locks the file while cleanup is deciding must
+    not end up holding a deleted file. Cleanup holds the lock from its decision
+    through the delete, so the registrant waits and then locks a live file."""
+    import threading
+
+    from tinyassets import process_liveness
+
+    token = "proc_fresh_registrant"
+    path = process_liveness.liveness_path(tmp_path, token)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()  # created, not yet locked: reads as dead
+    registered: list = []
+
+    def still_named(_token: str) -> bool:
+        # The registrant arrives while cleanup is deciding.
+        worker = threading.Thread(
+            target=lambda: registered.append(
+                process_liveness.hold_liveness(tmp_path, token)),
+        )
+        worker.start()
+        worker.join(0.3)
+        registered.append(worker)
+        return False
+
+    assert process_liveness.remove_if_dead(tmp_path, token, still_named)
+    registered[0].join(10)
+    held = registered[-1]
+    assert held.acquired
+    assert process_liveness.owner_state(tmp_path, token) == process_liveness.ALIVE

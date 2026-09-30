@@ -234,8 +234,8 @@ class AssignedQueueConsumer:
             DEAD,
             LIVENESS_DIR,
             hold_liveness,
-            liveness_path,
             owner_state,
+            remove_if_dead,
         )
         from tinyassets.runs import in_flight_owner_tokens
         from tinyassets.singleton_lock import _pid_path
@@ -264,24 +264,18 @@ class AssignedQueueConsumer:
             # Probe FIRST, then read who is still named: a dead process can add
             # no reference after its probe returned dead, so a snapshot taken
             # before the probe could miss a run it committed just before dying.
-            dead = [
-                stale.stem
-                for stale in (self.base_path / LIVENESS_DIR).glob("*.lock")
-                if stale.stem != self.consumer_id
-                and owner_state(self.base_path, stale.stem) == DEAD
-            ]
-            named = AutomationStore(self.base_path).lease_holders() if dead else set()
-            if dead:
-                named |= in_flight_owner_tokens(self.base_path)
-            for holder in dead:
-                if holder in named:
-                    continue
-                path = liveness_path(self.base_path, holder)
-                for leftover in (path, _pid_path(path)):
-                    try:
-                        leftover.unlink()
-                    except OSError:
-                        pass
+            store = AutomationStore(self.base_path)
+
+            def still_named(holder: str) -> bool:
+                return holder in store.lease_holders() or holder in (
+                    in_flight_owner_tokens(self.base_path)
+                )
+
+            for stale in (self.base_path / LIVENESS_DIR).glob("*.lock"):
+                if stale.stem != self.consumer_id and owner_state(
+                    self.base_path, stale.stem,
+                ) == DEAD:
+                    remove_if_dead(self.base_path, stale.stem, still_named)
         except (OSError, sqlite3.Error):
             logger.exception("consumer liveness sweep failed")
 

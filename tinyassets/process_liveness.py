@@ -21,6 +21,8 @@ import os
 import re
 import secrets
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -60,10 +62,13 @@ def hold_liveness(base_path: str | Path, token: str) -> Any:
     path = liveness_path(base_path, token)
     if path is None:
         raise ValueError(f"liveness token {token!r} is not a plain token")
-    for _attempt in range(5):
+    for _attempt in range(50):
         held = acquire_singleton_lock(path)
         if not held.acquired or held.fd is None:
-            return held
+            # Our own fresh token: only cleanup, deciding whether to remove the
+            # file, can hold it. It lets go in moments.
+            time.sleep(0.02)
+            continue
         try:
             same = os.path.samestat(os.fstat(held.fd), os.stat(path))
         except OSError:
@@ -97,6 +102,60 @@ def owner_state(base_path: str | Path, token: str) -> str:
         return DEAD
     finally:
         os.close(fd)
+
+
+def remove_if_dead(
+    base_path: str | Path, token: str, still_named: Callable[[str], bool],
+) -> bool:
+    """Delete ``token``'s file if its owner is dead and nothing names it.
+
+    The decision and the delete happen while THIS call holds the file's lock,
+    so no registrant can lock the same file in between: one that opened it
+    first finds, after its own lock, that the path no longer names its file
+    and locks a new one (``hold_liveness``). Deciding under a probe lock that
+    is released before the delete let a registrant lock the file, pass that
+    check, and then lose it (Codex refute 2026-09-30, round 3).
+    """
+    from tinyassets.singleton_lock import _lock_fd, _pid_path, _unlock_fd
+
+    path = liveness_path(base_path, token)
+    if path is None:
+        return False
+    try:
+        fd = os.open(str(path), os.O_RDWR)
+    except OSError:
+        return False
+    locked = False
+    try:
+        if not _lock_fd(fd):
+            return False  # alive
+        locked = True
+        if still_named(token):
+            return False
+        try:
+            path.unlink()
+        except OSError:
+            # Windows will not delete a file a handle holds open (ours). There a
+            # registrant that has the file open blocks the delete the same way,
+            # so releasing first and deleting after is equally safe.
+            _unlock_fd(fd)
+            locked = False
+            os.close(fd)
+            fd = -1
+            try:
+                path.unlink()
+            except OSError:
+                return False
+        try:
+            _pid_path(path).unlink()
+        except OSError:
+            pass
+        return True
+    finally:
+        if fd >= 0:
+            if locked:
+                _unlock_fd(fd)
+            os.close(fd)
 
 
 # -- This process's owner token -------------------------------------------------
