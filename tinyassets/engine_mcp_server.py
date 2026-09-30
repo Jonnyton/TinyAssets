@@ -493,6 +493,14 @@ def refusal_text(text: object) -> bool:
     return bool(document.get("error") or document.get("errors"))
 
 
+#: Handles whose result IS arbitrary content -- a file's bytes, a command's
+#: output -- rather than a JSON document this server wrote. A file that happens
+#: to contain ``{"errors": [...]}`` read successfully (gpt-6-astra repro on this
+#: change), so no shape of their text can be judged a refusal. Their own
+#: refusals are the ``error: ...`` text ``_universe_tool`` writes.
+_RAW_CONTENT_TOOLS = frozenset({"read", "write", "edit", "bash"})
+
+
 class RefusalsAreErrors(Middleware):
     """Mark every refused call ``isError: true``, with its text unchanged.
 
@@ -501,27 +509,38 @@ class RefusalsAreErrors(Middleware):
     model a non-error result reads as "that worked"; it retried with a new
     escaping each time instead of reading the refusal. Every served handler
     RETURNS its refusals (they must never raise out of the server), so the flag
-    is set here, once, for every handle -- a per-handler flag would have to be
-    remembered by the next ``return json.dumps({"error": ...})`` anyone writes.
+    is set here, once, for every JSON handle -- a per-handler flag would have to
+    be remembered by the next ``return json.dumps({"error": ...})`` anyone
+    writes. ``_RAW_CONTENT_TOOLS`` are the exception, and why.
 
     Raising ``ToolError`` is FastMCP's own route to an ``isError`` result; its
-    message is the refusal text verbatim, so the model reads exactly what it
-    read before, now marked as the failure it is. Registered OUTSIDE
-    ``BoundedResults`` so it judges the text the model will actually receive.
+    message is the refusal text, so the model reads what it read before, now
+    marked as the failure it is. Registered INSIDE ``BoundedResults`` so it
+    judges the handler's whole text -- outside, a truncation envelope hid an
+    oversized refusal (gpt-6-astra repro) -- and it applies the same ceiling
+    itself, because a raised refusal never passes back through that middleware.
     """
 
     async def on_call_tool(self, context, call_next):
         from fastmcp.exceptions import ToolError
 
+        from tinyassets.engine_result_bounds import bound_tool_text, resolve_ceiling
+
         result = await call_next(context)
+        tool = getattr(getattr(context, "message", None), "name", "") or ""
+        if tool in _RAW_CONTENT_TOOLS:
+            return result
         blocks = list(result.content or ())
-        if len(blocks) == 1 and refusal_text(getattr(blocks[0], "text", None)):
-            raise ToolError(blocks[0].text)
-        return result
+        text = getattr(blocks[0], "text", None) if len(blocks) == 1 else None
+        if not refusal_text(text):
+            return result
+        bounded = bound_tool_text(text, tool=tool, limit=resolve_ceiling())
+        raise ToolError(text if bounded is None else bounded)
 
 
-mcp.add_middleware(RefusalsAreErrors())
+# First added is OUTERMOST: the ceiling wraps the refusal flag.
 mcp.add_middleware(BoundedResults())
+mcp.add_middleware(RefusalsAreErrors())
 
 
 @mcp.tool

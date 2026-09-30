@@ -9,6 +9,7 @@ On 2026-09-30 a free account on OpenRouter `:free` models (about fifty requests 
 - A string that fails to parse also says to pass the object instead.
 - If branch create gets several nodes with no edges or conditional edges at all, and no entry point other than the first node, the nodes are chained in the order listed. A notice says so. If the author supplies any wiring, it is validated exactly as written.
 - Served `read_graph target=run` waits up to 10 s for a queued or running run to settle before it answers.
+- The daily-quota classifier no longer treats a message that names a shorter window ("per minute ... daily quota remaining") as a daily refusal. Before this fix such a message cooled the whole source and dropped a working sibling model.
 - The public connector (`https://tinyassets.io/mcp`) is unchanged: its handles, argument types and descriptions stay as they are.
 
 ## Capabilities
@@ -21,6 +22,6 @@ None.
 
 ## Impact
 
-`tinyassets/engine_mcp_server.py` (two argument types, one middleware, one run-read helper, handbook text) and `tinyassets/api/branches.py` (the chaining default in staging). The daily-cap stop that was also requested already landed in #4137, and this change only adds tests for it. No new handle, no new target, and no change to authority.
+`tinyassets/engine_mcp_server.py` (two argument types, one middleware, one run-read helper, handbook text) `tinyassets/api/branches.py` (the chaining default in staging), and `tinyassets/providers/daily_quota.py` with its shapes file (the shorter-window guard). The daily-cap stop that was also requested already landed in #4137. This change adds tests for it and the shorter-window guard. No new handle, no new target, and no change to authority.
 
 Owner: Claude Code. Branch: tool-friction. Delivery: one PR; after merge, a live free-account "make me a morning note" round count.

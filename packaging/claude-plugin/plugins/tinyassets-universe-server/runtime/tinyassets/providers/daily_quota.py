@@ -12,6 +12,11 @@ from tinyassets.providers.model_capacity import CapacitySignal
 DAILY_QUOTA = "provider_daily_quota"
 _SHAPES = json.loads(Path(__file__).with_name("daily_quota_shapes.json").read_text("utf-8"))
 _DAY = re.compile(_SHAPES["daily_fact_pattern"], re.I)
+#: A fact that ALSO names a shorter window is about that window: "Requests per
+#: minute exceeded. Daily quota remaining: 49" is a minute refusal, and reading
+#: it as daily would cool the whole source and drop a sibling model that works
+#: (gpt-6-astra repro, 2026-09-30).
+_SHORTER = re.compile(_SHAPES["shorter_window_pattern"], re.I)
 _DURATION = re.compile(r"(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?\Z")
 
 
@@ -64,7 +69,9 @@ def daily_quota_signal(status, headers, body, *, now=None, daily_request_headers
         error = {}
     # Scan only error facts, not an echoed request or an arbitrary nested document.
     facts = (fact for path in _SHAPES["fact_paths"] for fact in _path_values(error, path))
-    daily = any(isinstance(f, str) and _DAY.search(f) for f in facts)
+    daily = any(
+        isinstance(f, str) and _DAY.search(f) and not _SHORTER.search(f) for f in facts
+    )
     values = {}
     nested = next(_path_values(error, _SHAPES["nested_headers_path"]), None)
     for source in (nested, headers):

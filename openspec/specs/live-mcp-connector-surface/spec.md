@@ -1118,7 +1118,7 @@ The served engine `write_graph payload_json` and `run_graph inputs_json` argumen
 - **THEN** the branch builds exactly as before
 
 ### Requirement: Served refusals are errors
-Every served engine tool result that refuses the call SHALL be returned with `isError: true` and its refusal text unchanged. A refusal is a JSON object with a truthy `error` or `errors` and no `status`, or a `status` of `rejected`, `refused` or `error`. A result that describes something read or made, such as a failed run's record, SHALL NOT be flagged. A JSON parse failure SHALL name the decoder message, the line and column, and a bounded excerpt, and SHALL say that the object can be passed instead.
+Every served engine tool result that refuses the call SHALL be returned with `isError: true` and its refusal text unchanged. A refusal is a JSON object with a truthy `error` or `errors` and no `status`, or a `status` of `rejected`, `refused` or `error`. A result that describes something read or made, such as a failed run's record, SHALL NOT be flagged, and neither SHALL the result of a file or shell handle (`read`, `write`, `edit`, `bash`), whose text is arbitrary content. A refusal larger than the result ceiling SHALL still be flagged, and SHALL be bounded. A JSON parse failure SHALL name the decoder message, the line and column, and a bounded excerpt, and SHALL say that the object can be passed instead.
 
 #### Scenario: malformed payload text
 - **WHEN** `payload_json` text contains an unescaped newline inside a string
@@ -1127,6 +1127,10 @@ Every served engine tool result that refuses the call SHALL be returned with `is
 #### Scenario: reading a failed run
 - **WHEN** `read_graph target=run` reads a run whose status is `failed`
 - **THEN** the result has `isError: false`
+
+#### Scenario: reading a file that looks like a refusal
+- **WHEN** `read` returns a file whose content is `{"errors": [...]}`
+- **THEN** the result has `isError: false`, and the content is unchanged
 
 ### Requirement: An unwired node list runs in order
 When a branch create spec gives two or more nodes with no edges or conditional edges at all, and either no entry point or one equal to the first node, staging SHALL chain the nodes in the order listed and SHALL report this as a notice. Any edge, any conditional edge, or an entry point other than the first node SHALL be validated exactly as written.

@@ -52,6 +52,11 @@ def test_explicit_daily_shapes(body, headers, delay):
     {"object": "error", "message": "Rate limit exceeded", "type": "rate_limited",
      "param": None, "code": "1300", "raw_status_code": 429},
     {"error": {"details": [{"violations": 7}]}},
+    # A minute refusal that merely MENTIONS the day's budget (gpt-6-astra
+    # counterexample, 2026-09-30): read as daily, it cooled the whole source
+    # and dropped a sibling model that would have answered.
+    {"error": {"message": "Requests per minute exceeded. Daily quota remaining: 49. "
+                          "Retry in 20 seconds."}},
 ])
 def test_ambiguous_and_per_minute_shapes_are_not_daily(body):
     assert daily_quota_signal(429, {"retry-after": "120"}, json.dumps(body)) is None

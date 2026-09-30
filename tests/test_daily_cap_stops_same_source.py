@@ -1,4 +1,4 @@
-"""A source's DAILY cap ends that source for the turn -- and only that source.
+"""A source's DAILY cap ends that source for the turn, not the turn itself.
 
 LIVE EVIDENCE (prod, 2026-09-30 06:41Z and 16:36Z, free account
 ``u-01ky3zh1arr8qth8jee7zx63pq``): OpenRouter's account-wide free allowance
@@ -14,8 +14,14 @@ coordinator excludes by capacity identity. ``test_daily_source_pooling.py``
 drives it with a message-only 429. These tests drive the body OpenRouter
 actually sends -- message, ``metadata.headers`` with the epoch-ms reset, and
 the HTTP rate-limit headers -- through the real router, and pin both halves of
-the contract: no sibling on the exhausted source, and a DIFFERENT source still
-answers.
+the contract: no sibling on the exhausted source, and a source from a DIFFERENT
+provider still answers.
+
+What "different" means is the capacity identity in ``model_policy.order``,
+unchanged here: a second connection to the SAME provider with no verified
+account id is also excluded (``capacity_identity_unverified``), because two
+keys do not prove two accounts and OpenRouter's cap is per account. That is
+conservative on purpose; these tests do not claim otherwise.
 """
 
 from __future__ import annotations
@@ -134,7 +140,7 @@ def test_a_per_minute_429_on_the_same_source_still_tries_the_sibling(
 def test_a_different_source_still_answers_after_the_openrouter_daily_cap(
     pool, monkeypatch,
 ):
-    """The stop must not be too broad: it ends ONE source, never the turn."""
+    """The stop must not be too broad: another provider's source still answers."""
     _always_daily(pool.first_wire)
 
     record = parity._run(pool.base, monkeypatch, parity._branch(owner=parity.A_OWNER),

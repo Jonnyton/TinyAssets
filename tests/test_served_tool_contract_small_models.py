@@ -221,8 +221,50 @@ def test_every_served_handle_is_covered_by_one_middleware():
 
     kinds = [type(m).__name__ for m in s.mcp.middleware]
     assert "RefusalsAreErrors" in kinds
-    # Outside the ceiling: it judges the text the model actually receives.
-    assert kinds.index("RefusalsAreErrors") < kinds.index("BoundedResults")
+    # INSIDE the ceiling: it judges the handler's whole text, not an envelope.
+    assert kinds.index("RefusalsAreErrors") > kinds.index("BoundedResults")
+
+
+def test_an_oversized_refusal_is_still_an_error_and_still_bounded(monkeypatch, served):
+    """gpt-6-astra repro: outside the ceiling, a truncation envelope hid the refusal."""
+    from tinyassets import engine_result_bounds as bounds
+
+    monkeypatch.delenv(bounds.CEILING_ENV, raising=False)
+    monkeypatch.delenv(bounds.CONTEXT_TOKENS_ENV, raising=False)
+    result = _call(served, "read_graph", {"target": "x" * 200_000})
+    assert result.isError is True
+    assert len(_text(result).encode()) <= bounds.DEFAULT_CEILING_BYTES
+
+
+def test_a_file_that_contains_an_error_field_is_read_successfully(monkeypatch, served):
+    """gpt-6-astra repro: a successful read of `{"errors": [...]}` was flagged.
+
+    A file's bytes are the owner's content, not this server's refusal shape.
+    """
+    from tinyassets import universe_tools
+
+    content = '{"errors": ["historical sample"], "ok": true}'
+    monkeypatch.setattr(universe_tools, "read_file", lambda udir, **kw: content)
+    result = _call(served, "read", {"path": "notes/sample.json"})
+    assert result.isError is False
+    assert _text(result) == content
+
+
+def test_every_raw_content_handle_is_exempt():
+    """A new file/shell handle must join the exemption, or its reads misreport."""
+    import inspect
+
+    from tinyassets import engine_mcp_server as s
+
+    async def tools():
+        return await s.mcp.list_tools()
+
+    raw = {
+        tool.name for tool in asyncio.run(tools())
+        if "_universe_tool(" in inspect.getsource(tool.fn)
+    }
+    assert raw, "the universe file/shell handles were not found"
+    assert raw == set(s._RAW_CONTENT_TOOLS)
 
 
 def test_a_failed_run_read_is_not_an_error(monkeypatch, served):
