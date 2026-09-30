@@ -285,20 +285,6 @@ def test_a_restart_keeps_a_waiting_run_queued_and_it_then_completes(world, tmp_p
     assert bound == [waiter], "its turn bound fresh owner authority exactly once"
 
 
-def test_read_time_orphan_recovery_leaves_a_waiter_alone(world, tmp_path, monkeypatch):
-    root, universe, _, _ = world
-    _seed_holder(root, universe, tmp_path)
-    waiter = _admit(root, "waiter")
-    monkeypatch.setenv("TINYASSETS_ORPHANED_RUN_GRACE_SECONDS", "60")
-    with runs._connect(root) as conn:
-        conn.execute("UPDATE runs SET started_at=? WHERE run_id=?", (time.time() - 7200, waiter))
-        conn.execute("DELETE FROM run_events WHERE run_id=?", (waiter,))
-    runs._recover_orphaned_runs_on_read(root)
-    record = runs.get_run(root, waiter)
-    assert record["status"] == "queued"
-    assert record["workspace_wait"]["position"] == 1
-
-
 def test_cancelling_a_waiting_run_settles_it_and_leaves_the_holder_alone(world, tmp_path):
     root, universe, fake, _ = world
     _seed_holder(root, universe, tmp_path)

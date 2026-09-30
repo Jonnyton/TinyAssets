@@ -391,8 +391,8 @@ def _register_structured_tool(fn, *, title, tags, annotations, name=None):
         tags=tags,
         annotations=annotations,
         # OpenAI hosts historically read this compatibility mirror. The
-        # top-level extension field is added by _DeprecatedToolVisibility when
-        # tools/list crosses the protocol boundary.
+        # top-level extension field is added by _OAuthFunctionTool.to_mcp_tool
+        # when tools/list crosses the protocol boundary.
         meta={"securitySchemes": _oauth_security_schemes()},
         output_schema=None,
     )
@@ -631,10 +631,9 @@ def branch_design_guide() -> str:
 # read_graph / write_graph / run_graph / read_page / write_page, plus converse
 # and get_status, are the canonical user-facing tools. The first five are thin
 # shape/target routers over existing tinyassets.api.* handlers.
-# The legacy fat tools below stay registered + callable for one release but
-# are hidden from tools/list and logged as deprecated by the
-# _DeprecatedToolVisibility middleware (see _DEPRECATED_TOOL_NAMES), so
-# existing connectors can migrate; a follow-up change removes them.
+# The legacy fat tools below (universe, extensions, goals, gates, wiki) are
+# no longer registered (2026-09-30); they remain as in-process functions the
+# canonical routers call.
 # read_graph target=status uses the full (unredacted) status the live operator
 # surface already exposed.
 
@@ -3199,18 +3198,11 @@ _mcp_converse = _register_structured_tool(
 
 
 # ---------------------------------------------------------------------------
-# LEGACY FAT SURFACE — deprecated, hidden from tools/list, callable 1 release
+# LEGACY FAT SURFACE — no longer an MCP tool (removed 2026-09-30)
 # ---------------------------------------------------------------------------
-# These names are dropped from tools/list and logged on call by
-# _DeprecatedToolVisibility (PR-178). They remain dispatchable so existing
-# connectors keep working through the migration window.
-_DEPRECATED_TOOL_NAMES = frozenset({
-    "universe",
-    "extensions",
-    "goals",
-    "gates",
-    "wiki",
-})
+# These functions were hidden from tools/list but dispatchable for a migration
+# window long past; they are not registered now. The canonical handles call
+# them in-process.
 
 
 # Relay reshape (design note 2026-07-02 §13/§14): brain-content write actions on
@@ -3267,7 +3259,7 @@ def universe(
     """Inspect and steer a workflow's universe.
 
     Self-contained workspace for a multi-step tinyassets. New workflows
-    live in `extensions`; start with `action="inspect"`. See
+    are built with `write_graph target="branch"`; start with `action="inspect"`. See
     `control_station` for operating guidance and universe isolation.
 
     `control_daemon` is a text-command action: it always needs `text` set
@@ -3376,22 +3368,12 @@ def universe(
     )
 
 
-_mcp_universe = _register_structured_tool(
-    universe,
-    title="Universe Operations",
-    tags={
-        "universe", "daemon", "collaboration",
-        "tinyassets", "workflow-builder", "custom-ai", "agent-workflow",
-        "ai-builder", "universe-builder", "general-purpose",
-    },
-    annotations=ToolAnnotations(
-        title="Universe Operations",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+# NOT registered as an MCP tool (removed 2026-09-30, with `extensions`). The
+# deprecated fat tools were hidden from tools/list but still dispatchable, and
+# several of their actions read another user's private branch runs, versions
+# or bindings (astra refute of the version-read fix). The canonical handles
+# route what a client needs to gated handlers; this function stays only as
+# the in-process entry the canonical routers and the test suite call.
 
 
 # ---------------------------------------------------------------------------
@@ -3698,18 +3680,13 @@ def extensions(
     )
 
 
-_mcp_extensions = _register_structured_tool(
-    extensions,
-    title="Graph Extensions",
-    tags={"extensions", "nodes", "plugins", "customization"},
-    annotations=ToolAnnotations(
-        title="Graph Extensions",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+# NOT registered as an MCP tool (removed 2026-09-30). It was the last way to
+# reach every extensions action by name from the public connector, hidden from
+# tools/list but still dispatchable -- including version and node-history
+# readers that checked nothing, so any signed-in user could read another user's
+# private branch history (astra refute of #4107). The canonical handles route
+# the actions a client needs to their gated handlers. This function stays only
+# as the in-process entry the test suite drives those handlers through.
 
 
 # ---------------------------------------------------------------------------
@@ -3806,18 +3783,12 @@ def goals(
     )
 
 
-_mcp_goals = _register_structured_tool(
-    goals,
-    title="Goals",
-    tags={"goals", "discovery", "intent", "community"},
-    annotations=ToolAnnotations(
-        title="Goals",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+# NOT registered as an MCP tool (removed 2026-09-30, with `extensions`). The
+# deprecated fat tools were hidden from tools/list but still dispatchable, and
+# several of their actions read another user's private branch runs, versions
+# or bindings (astra refute of the version-read fix). The canonical handles
+# route what a client needs to gated handlers; this function stays only as
+# the in-process entry the canonical routers and the test suite call.
 
 
 # ---------------------------------------------------------------------------
@@ -3915,18 +3886,12 @@ def gates(
     )
 
 
-_mcp_gates = _register_structured_tool(
-    gates,
-    title="Outcome Gates",
-    tags={"gates", "outcomes", "impact", "leaderboard", "community"},
-    annotations=ToolAnnotations(
-        title="Outcome Gates",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+# NOT registered as an MCP tool (removed 2026-09-30, with `extensions`). The
+# deprecated fat tools were hidden from tools/list but still dispatchable, and
+# several of their actions read another user's private branch runs, versions
+# or bindings (astra refute of the version-read fix). The canonical handles
+# route what a client needs to gated handlers; this function stays only as
+# the in-process entry the canonical routers and the test suite call.
 
 
 # ---------------------------------------------------------------------------
@@ -3983,7 +3948,7 @@ def wiki(
 
     Persistent prose knowledge shared across sessions. It is not for
     workflow structure, node definitions, state, or run outputs. Use
-    `extensions` for "build / design / create a workflow"; use wiki
+    `write_graph target="branch"` for "build / design / create a workflow"; use wiki
     for "save this how-to / ref / note", "what is X", or filing user
     bugs, patch requests, feature requests, and design proposals.
 
@@ -4051,18 +4016,12 @@ def wiki(
     )
 
 
-_mcp_wiki = _register_structured_tool(
-    wiki,
-    title="Wiki Knowledge Base",
-    tags={"wiki", "knowledge", "drafts", "pages", "research"},
-    annotations=ToolAnnotations(
-        title="Wiki Knowledge Base",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+# NOT registered as an MCP tool (removed 2026-09-30, with `extensions`). The
+# deprecated fat tools were hidden from tools/list but still dispatchable, and
+# several of their actions read another user's private branch runs, versions
+# or bindings (astra refute of the version-read fix). The canonical handles
+# route what a client needs to gated handlers; this function stays only as
+# the in-process entry the canonical routers and the test suite call.
 
 
 # ---------------------------------------------------------------------------
@@ -4168,34 +4127,6 @@ class _WikiCanaryExecutionAuthority(Middleware):
             reset_wiki_canary_authority(previous)
 
 
-class _DeprecatedToolVisibility(Middleware):
-    """Drop deprecated legacy tools from tools/list; keep them callable + log."""
-
-    async def on_list_tools(self, context, call_next):
-        tools = await call_next(context)
-        return [t for t in tools if t.name not in _DEPRECATED_TOOL_NAMES]
-
-    async def on_call_tool(self, context, call_next):
-        name = getattr(context.message, "name", "")
-        if name in _DEPRECATED_TOOL_NAMES:
-            logger.warning(
-                "deprecated-tool-call name=%s — migrate to the advertised "
-                "canonical handles",
-                name,
-            )
-            # The fat tools mix read and write actions behind one `action`
-            # argument, so classifying per action would drift. They are hidden
-            # from tools/list, and unavailable without a bound principal --
-            # which over HTTP is every request, since the transport refuses
-            # the rest (no synthetic principal, 2026-09-02).
-            if write_gate_rejection(name) is not None:
-                raise ToolError(
-                    f"{name} is a deprecated tool and is not available "
-                    "without a signed-in connection. Use the advertised "
-                    "canonical handles instead, with this MCP server "
-                    "connected through OAuth."
-                )
-        return await call_next(context)
 
 
 class _ProviderRequestAuthority(Middleware):
@@ -4246,7 +4177,6 @@ class _ProviderRequestAuthority(Middleware):
 
 mcp.add_middleware(_WikiCanaryExecutionAuthority())
 mcp.add_middleware(_ProviderRequestAuthority())
-mcp.add_middleware(_DeprecatedToolVisibility())
 
 
 # ---------------------------------------------------------------------------
@@ -4810,9 +4740,12 @@ def main(
     # here, which is what lets an owner's run_completed loop survive a deploy.
     # The maintenance block above also calls it, but inside a try that an
     # earlier failure skips; this call is the one boot can rely on (once-only).
-    from tinyassets.api.runs import _ensure_runs_recovery
+    from tinyassets.api.runs import _ensure_runs_recovery, start_run_owner_watcher
 
     _ensure_runs_recovery()
+    # And keep recovering: an engine child that dies mid-run while this server
+    # lives is found within one tick, by proof that it died.
+    start_run_owner_watcher()
 
     # Enforceable visibility preflight (also fires in the HTTP app's lifespan;
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so

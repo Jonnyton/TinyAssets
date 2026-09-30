@@ -341,10 +341,10 @@ def _holder_is_alive(holder: str) -> bool:
         # lock would report "alive" only if we happen to have registered one.
         return True
     try:
-        from tinyassets.automations import holder_is_provably_alive
+        from tinyassets.process_liveness import ALIVE, owner_state
         from tinyassets.storage import data_dir
 
-        return bool(holder_is_provably_alive(data_dir(), holder))
+        return owner_state(data_dir(), holder) == ALIVE
     except Exception:
         return False
 

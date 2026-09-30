@@ -329,6 +329,23 @@ _EMPTY_LLM_RESPONSE_ACTION = (
 # execution is task #39 (Phase 3.5).
 
 
+def _branch_readable_by_caller(branch_def_id: str) -> bool:
+    """A run view is enriched from the CURRENT branch only when the caller may
+    read that branch. A readable run of a branch that is private to someone
+    else must not render the branch's name, nodes and edges as they are now
+    (astra refute 2026-09-30)."""
+    import sqlite3
+
+    from tinyassets.api.branches import resolve_branch_id_for_read
+
+    try:
+        return resolve_branch_id_for_read(branch_def_id, str(_base_path())) == branch_def_id
+    except (KeyError, sqlite3.OperationalError):
+        # No branch store, or no such branch: nothing readable to enrich from.
+        # Fail closed -- the run view still reports its own node statuses.
+        return False
+
+
 def _run_mermaid_from_events(
     branch_def_id: str,
     node_statuses: list[dict[str, Any]],
@@ -347,6 +364,8 @@ def _run_mermaid_from_events(
     from tinyassets.daemon_server import get_branch_definition
 
     try:
+        if not _branch_readable_by_caller(branch_def_id):
+            raise KeyError(branch_def_id)
         source_dict = get_branch_definition(
             _base_path(), branch_def_id=branch_def_id,
         )
@@ -448,6 +467,52 @@ def _ensure_runs_recovery() -> None:
         logger.exception("in-flight run recovery failed")
         return
     _RUNS_RECOVERY_DONE = True
+
+
+#: How often the recovery-lock holder looks for runs whose owner died, and
+#: redelivers terminal events still owed (run-owner-proof D3/D4).
+RUN_OWNER_WATCH_SECONDS = 15.0
+
+
+def recover_dead_owner_runs_now() -> int:
+    """One recovery pass, only in the process that holds the recovery lock.
+
+    Interrupts the runs whose owning process is provably dead, then redelivers
+    every terminal event still owed. Called by the watcher and right after the
+    engine supervisor respawns a dead child. Never raises.
+    """
+    if _RUNS_RECOVERY_LOCK is None:
+        return 0
+    try:
+        from tinyassets.runs import (
+            PROCESS_STARTED_AT,
+            deliver_terminal_events,
+            recover_in_flight_runs,
+        )
+
+        base = Path(_base_path())
+        count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
+        deliver_terminal_events(base)
+        return count
+    except Exception:
+        logger.exception("dead-owner run recovery failed")
+        return 0
+
+
+def start_run_owner_watcher() -> Any:
+    """Start the recovery watcher when this process holds the recovery lock."""
+    import threading
+
+    if _RUNS_RECOVERY_LOCK is None:
+        return None
+    stop = threading.Event()
+
+    def _watch() -> None:
+        while not stop.wait(RUN_OWNER_WATCH_SECONDS):
+            recover_dead_owner_runs_now()
+
+    threading.Thread(target=_watch, name="run-owner-watcher", daemon=True).start()
+    return stop
 
 
 _FAILURE_TAXONOMY: list[tuple[type, str, str]] = []
@@ -1414,6 +1479,8 @@ def _compose_run_snapshot(
     branch_name = ""
     declares_effects: bool | None = None
     try:
+        if not _branch_readable_by_caller(run_record["branch_def_id"]):
+            raise KeyError(run_record["branch_def_id"])
         source_dict = get_branch_definition(
             _base_path(), branch_def_id=run_record["branch_def_id"],
         )
@@ -2510,6 +2577,18 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
                 ),
             })
         recursion_limit_override = _rl_val
+
+    # Readability BEFORE the snapshot is loaded: every caller, not only the
+    # explicit run_graph path. A goal's canonical run reached this with any
+    # version id, and the preflight then returned the private snapshot's input
+    # names and field descriptions (astra refute 2026-09-30). Unreadable answers
+    # exactly as absent does.
+    from tinyassets.api.branches import _resolve_readable_version
+
+    if _resolve_readable_version(bvid, str(_base_path())) is None:
+        return json.dumps({
+            "error": f"branch_version_id {bvid!r} not found in branch_versions",
+        })
 
     try:
         from tinyassets.api.run_files import dispatch_file_branch

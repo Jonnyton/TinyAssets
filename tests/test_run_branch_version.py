@@ -346,8 +346,15 @@ class TestActionHandlesSnapshotDrift:
         from tinyassets.branch_versions import _connect as bv_connect
         from tinyassets.branch_versions import initialize_branch_versions_db
 
+        from tinyassets.api import branches as api_branches
+
         monkeypatch.setattr(eh, "_current_actor", lambda: "alice")
         monkeypatch.setattr(runs_mod, "_base_path", lambda: tmp_path)
+        # This planted version has no branch row; the test is about the drift
+        # response shape, not about who may read it (that gate has its own
+        # tests in test_branch_version_read_authority.py).
+        monkeypatch.setattr(api_branches, "_resolve_readable_version",
+                            lambda version_id, _base: (version_id, {}))
         initialize_runs_db(tmp_path)
 
         initialize_branch_versions_db(tmp_path)

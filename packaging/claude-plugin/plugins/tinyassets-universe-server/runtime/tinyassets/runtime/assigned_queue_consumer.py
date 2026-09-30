@@ -193,7 +193,7 @@ class AssignedQueueConsumer:
         # are terminal: re-acquiring our own lease must not admit new work
         # while a provider call we started is still running (Codex 2026-09-27).
         self._unstopped: dict[str, set[str]] = {}
-        # This process's liveness lock (see `hold_process_liveness`). Held for
+        # This process's liveness lock (see `process_liveness`). Held for
         # the process lifetime so a dead holder's leases can be reclaimed.
         self._liveness: Any = None
         self._recorded: dict[str, tuple[str, float]] = {}
@@ -225,17 +225,19 @@ class AssignedQueueConsumer:
             _STARTED_CONSUMERS.add(self)
 
     def _hold_liveness(self) -> None:
-        from tinyassets.automations import (
+        from tinyassets.automations import AutomationStore
+        from tinyassets.process_liveness import (
+            DEAD,
             LIVENESS_DIR,
-            AutomationStore,
-            hold_process_liveness,
-            holder_is_provably_dead,
-            holder_liveness_path,
+            hold_liveness,
+            owner_state,
+            remove_if_dead,
         )
+        from tinyassets.runs import in_flight_owner_tokens
         from tinyassets.singleton_lock import _pid_path
 
         try:
-            held = hold_process_liveness(self.base_path, self.consumer_id)
+            held = hold_liveness(self.base_path, self.consumer_id)
         except Exception:  # noqa: BLE001 - without it, leases fall back to TTL
             logger.exception("consumer liveness lock unavailable")
             held = None
@@ -251,21 +253,25 @@ class AssignedQueueConsumer:
                 except OSError:
                     pass
         # Every boot adds a file and a kill leaves it behind. A dead holder's
-        # file is removed only once NO lease names it: until then it is the
-        # proof another universe needs to reclaim that holder's lease.
+        # file is removed only once NO lease and NO in-flight run names it:
+        # until then it is the proof another process needs to reclaim that
+        # holder's lease or recover its run.
         try:
-            named = AutomationStore(self.base_path).lease_holders()
+            # Probe FIRST, then read who is still named: a dead process can add
+            # no reference after its probe returned dead, so a snapshot taken
+            # before the probe could miss a run it committed just before dying.
+            store = AutomationStore(self.base_path)
+
+            def still_named(holder: str) -> bool:
+                return holder in store.lease_holders() or holder in (
+                    in_flight_owner_tokens(self.base_path)
+                )
+
             for stale in (self.base_path / LIVENESS_DIR).glob("*.lock"):
-                holder = stale.stem
-                if holder == self.consumer_id or holder in named:
-                    continue
-                if holder_is_provably_dead(self.base_path, holder):
-                    path = holder_liveness_path(self.base_path, holder)
-                    for leftover in (path, _pid_path(path)):
-                        try:
-                            leftover.unlink()
-                        except OSError:
-                            pass
+                if stale.stem != self.consumer_id and owner_state(
+                    self.base_path, stale.stem,
+                ) == DEAD:
+                    remove_if_dead(self.base_path, stale.stem, still_named)
         except (OSError, sqlite3.Error):
             logger.exception("consumer liveness sweep failed")
 
@@ -634,7 +640,8 @@ class AssignedQueueConsumer:
 
     def _agent_running_elsewhere(self, key: str, now: datetime) -> bool:
         """Whether a LIVE lease on this agent is held by another process."""
-        from tinyassets.automations import AutomationStore, holder_is_provably_dead
+        from tinyassets.automations import AutomationStore
+        from tinyassets.process_liveness import DEAD, owner_state
 
         try:
             holder = AutomationStore(self.base_path).universe_lease_holder(key, now=now)
@@ -642,7 +649,7 @@ class AssignedQueueConsumer:
             logger.exception("agent lease read failed key=%s", key)
             return False
         return bool(holder) and holder != self.consumer_id and not (
-            holder_is_provably_dead(self.base_path, holder)
+            owner_state(self.base_path, holder) == DEAD
         )
 
     def _apply_overlap(
