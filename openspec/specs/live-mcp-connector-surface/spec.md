@@ -99,7 +99,8 @@ Every handle result SHALL be wrapped so the MCP response carries both a `structu
 ### Requirement: Cloudflare Worker Public Front Door
 
 `https://tinyassets.io/mcp` SHALL be the only public user-facing MCP URL. A
-Cloudflare Worker on the `tinyassets.io/mcp*` route SHALL proxy only canonical
+Cloudflare Worker on the `tinyassets.io/mcp*` and `tinyassets.io/app*` routes
+SHALL proxy only canonical
 `/mcp` and `/app` traffic to the Access-gated tunnel origin `mcp.tinyassets.io`, injecting
 the CF Access service-token headers (`CF-Access-Client-Id` /
 `CF-Access-Client-Secret`) from Worker environment secrets. The Worker SHALL
@@ -137,16 +138,29 @@ Access-gated origin and MUST NOT be presented as user-facing.
 ### Requirement: The Web App Is Served At The Apex `/app`
 
 `https://tinyassets.io/app` SHALL be the app's only public URL. The Cloudflare
-Worker SHALL bind `tinyassets.io/app` and `tinyassets.io/app/*` — an exact path
-plus a subtree, NOT a single `tinyassets.io/app*` suffix wildcard, because
-Cloudflare's `*` matches any character and would capture apex website assets
-whose path merely begins with `app` (`/apple-touch-icon.png`). Those SHALL keep
-reaching the website origin.
+Worker SHALL bind `tinyassets.io/app*` as a suffix wildcard. An exact
+`tinyassets.io/app` route (with or without a `tinyassets.io/app/*` companion) is
+NOT sufficient and SHALL NOT be used: a Cloudflare route is matched against the
+entire URL including the query string, so an exact route matches only a bare
+`/app` and the two URLs carrying the whole sign-in and billing flow —
+`/app?code=…&state=…` (the AuthKit return the page derives from its own
+location) and `/app?subscribed=1` (the Stripe return) — would match no route and
+be answered by the apex website origin.
+
+Because that wildcard matches any character rather than a path segment, it also
+captures apex website paths that merely begin with `app`
+(`/apple-touch-icon.png`, which the site serves). The Worker SHALL hand exactly
+those to the website origin unchanged, and SHALL NOT answer them itself. The
+pass-through SHALL be scoped to `app`-prefixed non-app paths only:
+`/mcp-directory*` SHALL keep terminating at the edge as an ordinary 404.
 
 `/mcp/app*` SHALL NOT be mounted, redirected, aliased, or answered with a
-compatibility response: the daemon SHALL serve no route under that prefix, so it
-returns the origin's ordinary 404. The connector endpoint `/mcp` itself is
-unchanged.
+compatibility response, and SHALL NOT receive a carve-out of any kind: the
+daemon serves no route under that prefix, so it is treated exactly like any
+other absent path inside the connector namespace — an anonymous request receives
+the connector's `401` challenge (the same as `/mcp/anything`) and an
+authenticated one a `404`. Neither serves the app, and no `Location` header is
+ever returned. The connector endpoint `/mcp` itself is unchanged.
 
 Because the app no longer lives inside the `/mcp/` prefix, the auth boundary
 SHALL name the app subtree explicitly: `/app` and `/app/token` SHALL be served
@@ -160,15 +174,22 @@ other `/app/*` path SHALL receive the bearer `401` challenge.
 - **WHEN** a request arrives at `tinyassets.io/app` or any `tinyassets.io/app/...` path
 - **THEN** the Worker proxies it to the tunnel origin preserving method, path, query, and body stream
 
+#### Scenario: The sign-in and billing returns reach the daemon
+
+- **WHEN** AuthKit returns the browser to `tinyassets.io/app?code=…&state=…`, or Stripe to `tinyassets.io/app?subscribed=1`
+- **THEN** the Worker proxies the request, query intact, and the response carries the daemon's `X-TinyAssets-Build`
+- **AND** the apex website origin never answers a query-bearing app URL
+
 #### Scenario: An apex asset whose name starts with "app" is not the app
 
 - **WHEN** a visitor requests `tinyassets.io/apple-touch-icon.png`
-- **THEN** the request reaches the website origin, not the Worker
+- **THEN** the Worker forwards it to the website origin with its URL unrewritten, never to the tunnel origin, and never answers it 404
 
 #### Scenario: The retired app path is absent, not redirected
 
 - **WHEN** a client requests `tinyassets.io/mcp/app` or any path beneath it
-- **THEN** no redirect, alias, or compatibility body is returned, and the response is an ordinary 404 from the app origin
+- **THEN** no redirect, alias, or compatibility body is returned, no `Location` header is sent, and no `X-TinyAssets-Build` header is sent
+- **AND** the status is the connector namespace's ordinary refusal for an absent path — `401` anonymously, `404` authenticated — and never `200`, `3xx`, or `5xx`
 
 #### Scenario: An app API route still requires the bearer
 

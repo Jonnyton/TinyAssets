@@ -19,8 +19,12 @@ from scripts.probe_app_surface import (
     APP_API_PATH,
     APP_BUILD_HEADER,
     RETIRED_APP_PATH,
+    RETIRED_OK_STATUSES,
     verify_app_surface,
 )
+
+CODE_QUERY = "?code=probe-not-a-real-code&state=probe"
+SUBSCRIBED_QUERY = "?subscribed=1"
 
 BASE = "https://tinyassets.io"
 
@@ -69,8 +73,11 @@ def _healthy():
     app = _Reply(200, {APP_BUILD_HEADER: "deadbeef"}, b"<title>TinyAssets</title>")
     return {
         "GET /app": app,
-        "GET /app?subscribed=1": _Reply(200, {APP_BUILD_HEADER: "deadbeef"}),
-        f"GET {RETIRED_APP_PATH}": _Reply(404, {}, b"Not Found"),
+        "GET /app" + CODE_QUERY: _Reply(200, {APP_BUILD_HEADER: "deadbeef"}),
+        "GET /app" + SUBSCRIBED_QUERY: _Reply(200, {APP_BUILD_HEADER: "deadbeef"}),
+        # Anonymously the retired path gets the connector namespace's 401, the
+        # same as any absent /mcp/* path. That is the real production shape.
+        f"GET {RETIRED_APP_PATH}": _Reply(401, {"WWW-Authenticate": "Bearer"}),
         f"GET {APEX_APP_PREFIXED_ASSET}": _Reply(200, {"Content-Type": "image/png"}),
         f"GET {APP_API_PATH}": _Reply(401, {"WWW-Authenticate": "Bearer"}),
     }
@@ -110,18 +117,40 @@ def test_a_200_from_the_wrong_origin_is_not_a_pass():
     assert any(APP_BUILD_HEADER in f and "other than" in f for f in failures)
 
 
-def test_a_dropped_query_string_is_caught():
+@pytest.mark.parametrize("query", [CODE_QUERY, SUBSCRIBED_QUERY])
+def test_a_query_bearing_app_url_that_404s_is_caught(query):
+    """The review finding: an EXACT `tinyassets.io/app` Cloudflare route matches
+    only the bare path, because a route is matched against the whole URL
+    including the query. Sign-in and billing both return with a query."""
     script = _healthy()
-    script["GET /app?subscribed=1"] = _Reply(404, {}, b"")
+    script["GET /app" + query] = _Reply(404, {}, b"")
     failures, _ = _run(script)
-    assert any("subscribed=1" in f for f in failures)
+    assert any("tinyassets.io/app*" in f for f in failures)
+
+
+@pytest.mark.parametrize("query", [CODE_QUERY, SUBSCRIBED_QUERY])
+def test_a_query_bearing_200_from_the_wrong_origin_is_caught(query):
+    """The probe's own earlier hole: the query check asserted status only, so a
+    website 200 satisfied the very check that exists to catch a website 200."""
+    script = _healthy()
+    script["GET /app" + query] = _Reply(200, {"Content-Type": "text/html"}, b"<h1>site</h1>")
+    failures, _ = _run(script)
+    assert any("the website origin answered the callback URL" in f for f in failures)
 
 
 def test_the_retired_path_still_serving_is_a_failure():
     script = _healthy()
     script[f"GET {RETIRED_APP_PATH}"] = _Reply(200, {APP_BUILD_HEADER: "x"})
     failures, _ = _run(script)
-    assert any("the move is not complete" in f for f in failures)
+    assert any("still serves the app" in f for f in failures)
+
+
+def test_a_retired_path_carrying_the_build_header_is_a_failure():
+    """Even on a refusal status: the header means the app is mounted there."""
+    script = _healthy()
+    script[f"GET {RETIRED_APP_PATH}"] = _Reply(404, {APP_BUILD_HEADER: "x"}, b"")
+    failures, _ = _run(script)
+    assert any("still being served from the retired path" in f for f in failures)
 
 
 @pytest.mark.parametrize("status", [301, 302, 307, 308])
@@ -131,6 +160,30 @@ def test_a_redirect_from_the_retired_path_is_a_failure(status):
     script[f"GET {RETIRED_APP_PATH}"] = _Reply(status, {"Location": "/app"}, b"")
     failures, _ = _run(script)
     assert any("back-compat" in f for f in failures)
+
+
+@pytest.mark.parametrize("status", [500, 502, 503])
+def test_a_sick_origin_on_the_retired_path_is_not_retirement(status):
+    """The probe's other earlier hole: it accepted any non-200, non-3xx, so a
+    503 outage read as a successful retirement."""
+    script = _healthy()
+    script[f"GET {RETIRED_APP_PATH}"] = _Reply(status, {}, b"")
+    failures, _ = _run(script)
+    assert any("the origin is sick, not retired" in f for f in failures)
+
+
+def test_the_accepted_retirement_statuses_are_exactly_the_refusals():
+    """401 is the real production shape — `/mcp/app` is inside the connector
+    namespace, which challenges everything under it, so anonymously it answers
+    exactly what `/mcp/anything` answers. 404 is what a bearer would see.
+    Carving the retired path out to force a 404 would be a special case FOR the
+    retired path, i.e. the back-compat this move removes."""
+    assert RETIRED_OK_STATUSES == frozenset({401, 404})
+    for status in sorted(RETIRED_OK_STATUSES):
+        script = _healthy()
+        script[f"GET {RETIRED_APP_PATH}"] = _Reply(status, {}, b"")
+        failures, _ = _run(script)
+        assert failures == [], (status, failures)
 
 
 def test_an_apex_asset_swallowed_by_a_wide_route_is_a_failure():

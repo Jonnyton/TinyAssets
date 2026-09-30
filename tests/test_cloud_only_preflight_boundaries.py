@@ -66,8 +66,7 @@ def test_actual_probe_closes_successful_response(monkeypatch, capsys):
 def _canonical_routes(scheme=""):
     return [
         {"pattern": scheme + "tinyassets.io/mcp*", "script": "expected"},
-        {"pattern": scheme + "tinyassets.io/app", "script": "expected"},
-        {"pattern": scheme + "tinyassets.io/app/*", "script": "expected"},
+        {"pattern": scheme + "tinyassets.io/app*", "script": "expected"},
     ]
 
 
@@ -81,17 +80,13 @@ def test_exact_canonical_worker_configuration(monkeypatch, scheme):
     ] == pf.PASS
 
 
-@pytest.mark.parametrize("dropped", [
-    "tinyassets.io/mcp*",
-    "tinyassets.io/app",
-    "tinyassets.io/app/*",
-])
+@pytest.mark.parametrize("dropped", ["tinyassets.io/mcp*", "tinyassets.io/app*"])
 def test_every_canonical_region_binding_is_required(monkeypatch, dropped):
-    """Drop any one of the three and the audit must refuse to pass.
+    """Drop either region's binding and the audit must refuse to pass.
 
     This is the regression the /app move could hide: the daemon can mount the
     routes and the tests can be green while the edge never sends `/app` to the
-    Worker, leaving the app dark behind the website origin's 404.
+    Worker, leaving the app dark behind the website origin.
     """
     routes = [r for r in _canonical_routes() if r["pattern"] != dropped]
     monkeypatch.setattr(pf, "_get_json", lambda *a: ({"success": True, "result": routes}, "ok"))
@@ -100,13 +95,37 @@ def test_every_canonical_region_binding_is_required(monkeypatch, dropped):
     ] != pf.PASS
 
 
+@pytest.mark.parametrize("region", ["/mcp", "/app"])
+def test_a_shell_only_binding_does_not_prove_the_region(monkeypatch, region):
+    """An exact route plus a subtree route is NOT equivalent to the wildcard.
+
+    gpt-6-astra, 2026-09-29: with `/mcp` -> expected, `/mcp/*` -> expected and
+    `/mcp*` -> other, every sampled path is bound correctly and the subtree is
+    covered, yet `/mcp?x=1` matches only the OTHER Worker — a Cloudflare route
+    matches the whole URL including the query. The previous version of this
+    check passed that inventory.
+    """
+    other = [r for r in _canonical_routes() if not r["pattern"].endswith(region + "*")]
+    routes = other + [
+        {"pattern": f"tinyassets.io{region}", "script": "expected"},
+        {"pattern": f"tinyassets.io{region}/*", "script": "expected"},
+        {"pattern": f"tinyassets.io{region}*", "script": "other"},
+    ]
+    monkeypatch.setattr(pf, "_get_json", lambda *a: ({"success": True, "result": routes}, "ok"))
+    verdict = pf.audit_public_worker_route("t", "z", "tinyassets.io", "expected")
+    assert verdict["verdict"] != pf.PASS
+    assert verdict["reason"] == "continuous_region_coverage_unproved"
+
+
 @pytest.mark.parametrize("override", [
     {"pattern": "tinyassets.io/app", "script": None},
     {"pattern": "tinyassets.io/app", "script": "other"},
     {"pattern": "tinyassets.io/app/me", "script": "other"},
     {"pattern": "tinyassets.io/app/deep*", "script": "other"},
+    {"pattern": "tinyassets.io/app/*", "script": "other"},
     {"pattern": "tinyassets.io/mcp/unlisted*", "script": "other"},
     {"pattern": "tinyassets.io/mcp/unlisted", "script": None},
+    {"pattern": "tinyassets.io/mcp/*", "script": "other"},
 ])
 def test_unexpected_subpath_cannot_hide_between_probe_urls(monkeypatch, override):
     monkeypatch.setattr(pf, "_get_json", lambda *a: (

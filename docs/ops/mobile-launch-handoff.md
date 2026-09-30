@@ -20,6 +20,16 @@ this one are history; where they disagree with this top section, this section wi
 > compiled into the shell — so installed `4 (1.0.3)` opens a dead path. **Build and
 > upload `5 (1.0.4)` before inviting any tester**, or the opt-in clock starts on a
 > build that cannot load. `mobile/android-release.json` already carries the bump.
+>
+> **Do not build the `5 (1.0.4)` bundle yet.** One native update should reach Play,
+> not two: the owner-notify lane is adding `@capacitor/push-notifications` + FCM
+> config under `mobile/`, and that has to be in the same bundle. Sequence:
+> 1. this URL change lands (web + server + the config bump) — done independently,
+> 2. owner-notify's native part lands,
+> 3. **then** one `Android release AAB` run builds and signs `5 (1.0.4)` with both.
+>
+> `versionCode` stays at **5** through both lanes — a second bump would split one
+> user-visible update into two. Whoever builds last owns step 3.
 
 As of the last record
 (2026-09-09), no tester had opted in, not even the founder. **Apple: iOS 1.0, build 3,

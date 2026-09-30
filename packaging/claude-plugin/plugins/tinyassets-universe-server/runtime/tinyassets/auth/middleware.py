@@ -564,8 +564,13 @@ def _auth_challenge_path(path: str) -> bool:
     ``/app`` is enumerated here explicitly. Without it every app API route
     (``/app/me``, ``/app/billing/checkout``, ``/app/account/delete``, …) would
     lose its bearer 401 and reach the handler with no identity — the middleware
-    is the boundary those routes rely on. ``/mcp/app*`` is no longer mounted and
-    no longer exempt, so it is swept into the ordinary ``/mcp/`` rule.
+    is the boundary those routes rely on.
+
+    ``/mcp/app*`` is no longer mounted and gets NO carve-out, so it is swept into
+    the ordinary ``/mcp/`` rule: anonymously it answers the connector's 401,
+    exactly like ``/mcp/anything``. Deliberate — an exception that made the
+    retired path answer a "clean" 404 would be a special case *for* the retired
+    path, which is the back-compat the move removes.
     """
     if path in _DISCOVERY_PATHS:
         return False

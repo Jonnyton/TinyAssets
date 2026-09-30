@@ -13,8 +13,10 @@ Design boundaries (mirrors the app-experience design note):
   directly with it. The token binds to the MCP resource via RFC 8707.
 - The app is served at the apex ``/app`` (founder directive 2026-09-30; it used
   to live at ``/mcp/app``, which is now simply absent — no redirect, no alias).
-  Reaching it publicly needs the Cloudflare Worker to bind ``tinyassets.io/app``
-  and ``tinyassets.io/app/*`` alongside ``/mcp*``; see
+  Reaching it publicly needs the Cloudflare Worker to bind
+  ``tinyassets.io/app*`` alongside ``/mcp*`` — the SUFFIX WILDCARD, because a
+  Cloudflare route matches the whole URL including the query, so an exact
+  ``/app`` route would miss ``/app?code=…`` and dark the sign-in. See
   ``deploy/cloudflare-worker/wrangler.toml``. Still the same ORIGIN as ``/mcp``,
   so nothing about the same-origin token/CORS story changes.
 - Dark-flagged: enabling is a pure env flip (``TINYASSETS_ONBOARDING_APP``); the
@@ -1703,12 +1705,13 @@ def onboarding_routes() -> list[Any]:
     Served at the apex ``/app`` (founder directive 2026-09-30, moved off
     ``/mcp/app``) — still SAME ORIGIN as ``/mcp``, so the page calls the
     connector and the token-exchange proxy with no CORS. The public edge binds
-    ``tinyassets.io/app`` + ``tinyassets.io/app/*`` to the same Worker that
-    proxies ``/mcp`` (``deploy/cloudflare-worker/wrangler.toml``); that binding
-    is what makes these routes reachable, and the move is not live without it.
+    ``tinyassets.io/app*`` to the same Worker that proxies ``/mcp``
+    (``deploy/cloudflare-worker/wrangler.toml``); that binding is what makes
+    these routes reachable, and the move is not live without it.
 
-    ``/mcp/app`` is GONE, not redirected: nothing here mounts it, so it answers
-    the daemon's ordinary 404.
+    ``/mcp/app`` is GONE, not redirected: nothing here mounts it, and it gets no
+    carve-out anywhere, so it behaves exactly like any other absent path inside
+    the connector namespace (``401`` anonymously, ``404`` with a bearer).
     """
     from starlette.routing import Route
 

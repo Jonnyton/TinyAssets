@@ -18,6 +18,7 @@ import asyncio
 import pytest
 
 from tinyassets.auth import middleware as mw
+from tinyassets.auth.provider import Identity
 
 
 class _RequireAuthProvider:
@@ -37,6 +38,23 @@ class _RequireAuthProvider:
 
     def challenge_unauthenticated(self):
         return True
+
+
+_SUBJECT = Identity(user_id="founder-1", username="founder-1", capabilities=["read", "write"])
+
+
+class _ResolvingProvider(_RequireAuthProvider):
+    """Resolves one bearer to a real subject, so a request reaches the router.
+
+    Needed to prove ABSENCE. The bearer 401 fires in EVERY auth mode (see
+    `AuthContextMiddleware`), so an anonymous request can never get past it on a
+    `/mcp/*` path — and a 401 emitted before routing looks identical whether or
+    not a handler sits behind the path. Only an authenticated request can tell
+    "nothing is mounted here" from "something is mounted and gated".
+    """
+
+    def resolve_token(self, token):
+        return _SUBJECT if token == "good-token" else None
 
 
 @pytest.fixture
@@ -92,6 +110,98 @@ def test_retired_app_path_challenges_through_the_middleware(require_auth_provide
     # /mcp/app is not the app any more and holds no exemption: it is an ordinary
     # /mcp/* path, so anonymously it gets the connector challenge.
     assert _drive("/mcp/app") == 401
+
+
+def test_the_retired_path_is_indistinguishable_from_any_absent_mcp_path(monkeypatch):
+    """Asserted through the REAL middleware stack, not by reading source.
+
+    The retirement claim is "nothing is mounted at /mcp/app, and it gets no
+    special handling". The observable form of that is: it answers *exactly* what
+    a path that was never there answers. Anything else — a redirect, a
+    distinguishable status, a body that mentions the app — would be a carve-out
+    for the retired path, i.e. the back-compat this move removes.
+
+    Driven with the app's own route table mounted underneath, so the assertion
+    is about the composed stack rather than a predicate.
+    """
+    from starlette.applications import Starlette
+
+    from tinyassets import onboarding
+
+    # The app is dark-flagged; with it OFF even `/app` is a 404, and "everything
+    # is 404" would prove nothing about the retired path.
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+
+    saved = mw._provider
+    mw.set_provider(_RequireAuthProvider())
+    try:
+        inner = Starlette(routes=list(onboarding.onboarding_routes()))
+        app = mw.AuthContextMiddleware(inner)
+
+        def observe(path: str, bearer: str | None = None) -> tuple[int, dict[str, str]]:
+            headers = (
+                [(b"authorization", b"Bearer " + bearer.encode())] if bearer else []
+            )
+            scope = {
+                "type": "http", "method": "GET", "path": path, "headers": headers,
+                "query_string": b"", "root_path": "", "scheme": "https",
+                "server": ("testserver", 443), "client": ("1.2.3.4", 1234),
+                "app": inner,
+            }
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            sent: list[dict] = []
+
+            async def send(message):
+                sent.append(message)
+
+            asyncio.run(app(scope, receive, send))
+            start = [m for m in sent if m["type"] == "http.response.start"][0]
+            headers = {
+                k.decode().lower(): v.decode() for k, v in start.get("headers", [])
+            }
+            return start["status"], headers
+
+        retired = ("/mcp/app", "/mcp/app/me", "/mcp/app/token",
+                   "/mcp/app/billing/webhook", "/mcp/app/account/delete")
+
+        # (a) In challenge mode the connector's 401 fires before routing, so the
+        #     retired path must be indistinguishable from a path never mounted.
+        control_status, control_headers = observe("/mcp/definitely-never-existed")
+        for path in retired:
+            status, headers = observe(path)
+            assert status == control_status, (path, status, control_status)
+            assert "location" not in headers, path
+            assert ("www-authenticate" in headers) == (
+                "www-authenticate" in control_headers
+            ), path
+
+        # (b) That alone would NOT catch a mounted alias — a 401 before routing
+        #     looks the same whether or not a handler sits behind it. So drive
+        #     the same paths AUTHENTICATED, which gets past the challenge into
+        #     the router, and require the router's own not-found.
+        mw.set_provider(_ResolvingProvider())
+        live_status, live_headers = observe("/app", "good-token")
+        assert live_status == 200, (
+            "sanity: the live app path must actually serve for this to mean anything"
+        )
+        assert "x-tinyassets-build" in live_headers, (
+            "sanity: the build header is the marker the retired path must lack, "
+            "so it has to be present on what IS served"
+        )
+        assert observe("/mcp/definitely-never-existed", "good-token")[0] == 404, (
+            "control must reach the router"
+        )
+        for path in retired:
+            status, headers = observe(path, "good-token")
+            assert status == 404, (path, status)
+            assert "location" not in headers, path
+            # The app stamps this on what it serves; the retired path must not.
+            assert "x-tinyassets-build" not in headers, path
+    finally:
+        mw._provider = saved
 
 
 def test_app_api_route_challenges_through_the_middleware(require_auth_provider):

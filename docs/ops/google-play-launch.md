@@ -109,9 +109,15 @@ name `1.0.4`, min SDK 24, target/compile SDK 36. Play has already consumed codes
 `https://tinyassets.io/mcp/app` to `https://tinyassets.io/app` on 2026-09-30 with no
 redirect left behind (founder directive: no back-compat). `server.url` is COMPILED
 INTO the shell, so every installed `4 (1.0.3)` WebView opens a path that no longer
-serves and shows the daemon's 404. Shipping this bundle IS the fix for installed
-users — there is no server-side remedy, which is why the version bump belongs to the
-same change as the move.
+serves. Shipping this bundle IS the fix for installed users — there is no
+server-side remedy, which is why the version bump belongs to the same change as
+the move.
+
+**The bump is checked in; the BUNDLE waits.** Code 5 must carry the push-notification
+native change (`@capacitor/push-notifications` + FCM config, owner-notify lane) as
+well, so testers get one update rather than two. Build the AAB only once both have
+landed on `main`, and do **not** bump again in between — see
+[`mobile-launch-handoff.md`](mobile-launch-handoff.md) for the ordering.
 
 Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
 seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's

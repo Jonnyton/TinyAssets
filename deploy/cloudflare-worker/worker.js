@@ -242,26 +242,74 @@ function shouldProxy(pathname) {
     //
     // `/mcp/app*` still matches the `/mcp/` family here, so it is still
     // PROXIED — and the daemon, which no longer mounts those routes, answers
-    // an ordinary 404. That is the intended retirement: the edge does not
-    // redirect or alias the old path, and the 404 comes from the app origin
-    // rather than the website origin, so it stays diagnosable.
+    // exactly what it answers for any other absent `/mcp/*` path. That is the
+    // intended retirement: the edge does not redirect or alias the old path,
+    // and the refusal comes from the app origin rather than the website
+    // origin, so it stays diagnosable.
     //
-    // `/appfoo` must NOT match: the `*` in the Cloudflare route is a bare
-    // suffix wildcard, so the binding delivers sibling prefixes here too.
+    // Note this decides on `URL.pathname`, which NEVER carries the query — so
+    // `/app?code=…` is `/app` here. That matters because the Cloudflare ROUTE
+    // matches the whole URL *including* the query, which is why the binding has
+    // to be `tinyassets.io/app*` and cannot be an exact `tinyassets.io/app`.
     if (pathname === '/mcp' || pathname.startsWith('/mcp/')) return true;
     if (pathname === '/app' || pathname.startsWith('/app/')) return true;
     return false;
+}
+
+/**
+ * Does this path belong to the WEBSITE, having only been dragged in here by the
+ * query-capable `/app*` binding?
+ *
+ * `tinyassets.io/app*` is required so the OAuth return `/app?code=…&state=…`
+ * and the Stripe return `/app?subscribed=1` reach the daemon at all — a
+ * Cloudflare route is matched against the entire URL including the query, so an
+ * exact `tinyassets.io/app` route matches ONLY a bare `/app`, and sign-in would
+ * land on the website origin.
+ *
+ * But a Cloudflare `*` matches any character, not a path segment, so that
+ * binding also captures apex assets whose path merely begins with "app" —
+ * `/apple-touch-icon.png` is one the site really serves. Those must keep
+ * reaching the website origin, so the Worker hands them back rather than
+ * answering 404 on the site's behalf.
+ *
+ * Deliberately narrow: only `/app`-prefixed non-app paths pass through.
+ * `/mcp-directory*` keeps terminating here as an ordinary 404, which is a spec
+ * requirement — the fallthrough ambiguity is what made the 2026-04-19 P0 hard
+ * to diagnose, and this does not reintroduce it for the MCP family.
+ */
+function belongsToWebsite(pathname) {
+    return pathname.startsWith('/app') && !shouldProxy(pathname);
+}
+
+//: Marks a website pass-through subrequest as ours. Cloudflare sends a Worker's
+//: same-route subrequest to the origin rather than re-invoking the script, so
+//: this should never be seen twice — it is a terminator, not a mechanism, so a
+//: platform change cannot turn the pass-through into an infinite loop.
+const PASSTHROUGH_MARKER = 'X-TA-Edge-Passthrough';
+
+async function passToWebsiteOrigin(request) {
+    if (request.headers.get(PASSTHROUGH_MARKER)) {
+        // Only reachable if the platform ever re-invoked us for our own
+        // subrequest. Fail closed and visibly rather than loop.
+        return new Response('Not Found', { status: 404 });
+    }
+    const marked = new Request(request);
+    marked.headers.set(PASSTHROUGH_MARKER, '1');
+    return fetch(marked);
 }
 
 export default {
     async fetch(request, env) {
         const url = new URL(request.url);
 
+        if (belongsToWebsite(url.pathname)) {
+            return passToWebsiteOrigin(request);
+        }
+
         if (!shouldProxy(url.pathname)) {
-            // Defensive — if the route somehow matched a non-/mcp path,
-            // return 404 rather than leaking a proxy to the tunnel for
-            // paths the tunnel isn't meant to serve. GoDaddy apex paths
-            // should never reach this Worker under correct routing.
+            // Retired `/mcp-directory*`, plus a defensive catch — if the route
+            // somehow matched some other path, return 404 rather than leaking a
+            // proxy to the tunnel for paths the tunnel isn't meant to serve.
             return new Response('Not Found', { status: 404 });
         }
 
@@ -272,6 +320,8 @@ export default {
 
 // Export internals for unit tests.
 export {
+    belongsToWebsite,
+    PASSTHROUGH_MARKER,
     proxyToTunnel,
     shouldProxy,
     TUNNEL_ORIGIN,
