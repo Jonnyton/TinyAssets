@@ -378,6 +378,35 @@ def test_an_unchanged_rail_is_not_touched_at_all_so_the_cursor_survives():
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_a_settled_rail_still_updates_its_heading():
+    """The early return skips DOM writes to the CARDS, not the bookkeeping.
+
+    The heading is a claim about the user's queue and is computed before the
+    return, so a rail whose cards happen to be unchanged still stops (or starts)
+    saying work is waiting.
+    """
+    optional = {"request_id": "sys_connect_llm", "kind": "LLM", "sticky": False,
+                "status": "optional", "title": "Connect another LLM",
+                "fields": [], "action": {"type": "connect", "use": "model",
+                                         "setup": {"shapes": ["api_key"]}}}
+    out = _run_rail(
+        [_ASK],
+        "railOpen=null;renderRail(railCache);"
+        "const asking=$('rail-head').textContent;"
+        # Now the ask is resolved and only the optional entry is left. No card
+        # is on screen either way, so the rail is settled -- the heading is not.
+        "renderRail(" + json.dumps([optional]) + ");"
+        "const result={asking,after:$('rail-head').textContent,"
+        "tabs:host.children.length};",
+    )
+    assert out["asking"] == "Waiting on you"
+    assert out["after"] == "Nothing waiting on you", (
+        "a settled rail kept claiming work was waiting"
+    )
+    assert out["tabs"] == 0
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
 def test_a_new_ask_arriving_beside_an_open_card_keeps_what_was_typed_in_it():
     """The rail's COMPOSITION changed, so it has to be rebuilt -- and the card
     the user is mid-reply in has to come through that rebuild intact.
