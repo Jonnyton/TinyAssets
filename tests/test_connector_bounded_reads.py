@@ -280,6 +280,34 @@ def test_a_custom_conversation_reply_is_never_truncated(monkeypatch):
     assert structured["reply"] == turn["reply"], "the universe's reply is the product"
 
 
+def test_the_request_rail_gets_the_whole_queue_however_large(monkeypatch):
+    """Live 2026-09-30: the founder's request rail disappeared after a deploy
+    while the free account's stayed. Same code, different data: seven pending
+    requests measured 34 KB, over the 24 KB ceiling, so `read_graph
+    target="pending_requests"` came back as a truncation marker with no
+    `pending` key and the app's rail never rendered. A queue is unusable when
+    partial, so it is exempt; how much an account holds must not decide what
+    its owner can see."""
+    queue = {
+        "universe_id": "u-heavy",
+        "pending": [
+            {"request_id": f"req_{i}", "kind": "API", "title": f"Request {i}",
+             "body": "b" * 6_000, "status": "pending"}
+            for i in range(7)
+        ],
+    }
+    import tinyassets.api.pending_requests as pending_requests
+
+    monkeypatch.setattr(pending_requests, "list_requests", lambda **kw: queue)
+
+    structured = _call("read_graph", {"target": "pending_requests"}).structured_content
+
+    assert "truncated" not in structured
+    assert [r["request_id"] for r in structured["pending"]] == [
+        f"req_{i}" for i in range(7)
+    ]
+
+
 def test_the_summary_points_at_a_bounded_continuation(catalogue):
     """P1 from cross-family review: the hint sent callers back to the megabyte.
 
@@ -330,6 +358,7 @@ def test_the_exempt_set_is_two_entries_for_two_reasons():
         ("read_graph", "model_options"),
         ("read_graph", "conversation"),
         ("read_graph", "conversation_turn"),
+        ("read_graph", "pending_requests"),
     }
     # Each entry earns its place by being unusable when partial, or by a stated
     # completeness requirement — never by being large, which is what the ceiling
@@ -338,6 +367,7 @@ def test_the_exempt_set_is_two_entries_for_two_reasons():
     assert ("read_graph", "model_options") in exempt     # the picker's spec
     assert ("read_graph", "conversation") in exempt      # message text + cursor
     assert ("read_graph", "conversation_turn") in exempt  # the universe's reply
+    assert ("read_graph", "pending_requests") in exempt  # the rail renders it whole
     # The bounded sibling is NOT exempt — if it were, the split bought nothing.
     assert ("read_graph", "model_options_summary") not in exempt
 
