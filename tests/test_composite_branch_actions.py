@@ -390,25 +390,44 @@ def test_build_branch_fork_from_inherits_parent_topology(comp_env):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_build_branch_rejects_missing_entry_point_with_suggestion(comp_env):
+def test_build_branch_infers_a_missing_entry_point_instead_of_rejecting(comp_env):
+    """CONTRACT CHANGED 2026-09-30: an absent entry_point is DERIVED, not refused.
+
+    This test asserted the rejection until then. The rejection was a round the
+    spec already determined the answer to — the head of the graph is the node
+    nothing points at — and live (turn ``c7d6279d4af74d798375d3f13780140e``,
+    round 18) it cost a free account one of its twenty-one rounds. The
+    suggestion machinery it used to exercise is still asserted, below, on a spec
+    that genuinely cannot be resolved.
+    """
     us, _ = comp_env
-    spec = dict(RECIPE_SPEC)
-    spec = {**spec, "entry_point": ""}
+    spec = {**RECIPE_SPEC, "entry_point": ""}
+    result = _call(us, "build_branch", spec_json=json.dumps(spec))
+    assert result["status"] == "built", result
+    got = _call(us, "get_branch", branch_def_id=result["branch_def_id"])
+    assert got["entry_point"] == "capture"
+
+
+def test_a_wrong_entry_point_is_still_rejected_with_a_concrete_suggestion(comp_env):
+    """The default fills an ABSENCE; a typo is still an error that names the fix."""
+    us, _ = comp_env
+    spec = {**RECIPE_SPEC, "entry_point": "captrue"}
     result = _call(us, "build_branch", spec_json=json.dumps(spec))
     assert result["status"] == "rejected"
     assert result["errors"]
     assert result["suggestions"]
-    # Suggestion should name a concrete fallback
+    # The suggestion names a concrete field to change, never "reshape the spec".
     fixes = " ".join(s["proposed_fix"] for s in result["suggestions"])
     assert "entry_point" in fixes or "capture" in fixes
+    assert "reshape the spec" not in fixes.lower()
     # attempted_spec echoed for the client
     assert result["attempted_spec"]["name"] == "Recipe tracker"
 
 
 def test_applying_suggestion_succeeds(comp_env):
     us, _ = comp_env
-    # First call: no entry_point → rejected with suggestion
-    bad = {**RECIPE_SPEC, "entry_point": ""}
+    # First call: a misspelled entry_point → rejected with a suggestion.
+    bad = {**RECIPE_SPEC, "entry_point": "captrue"}
     first = _call(us, "build_branch", spec_json=json.dumps(bad))
     assert first["status"] == "rejected"
     # Spec suggests capture (first node with no incoming non-START edge).
@@ -667,7 +686,8 @@ def test_patch_branch_writes_one_ledger_entry(comp_env):
 
 def test_rejected_build_does_not_ledger(comp_env):
     us, base = comp_env
-    bad = {**RECIPE_SPEC, "entry_point": ""}
+    # A misspelled entry_point, since an ABSENT one now builds (2026-09-30).
+    bad = {**RECIPE_SPEC, "entry_point": "captrue"}
     _call(us, "build_branch", spec_json=json.dumps(bad))
     ledger_path = Path(base) / "ledger.json"
     if ledger_path.exists():
