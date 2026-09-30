@@ -322,14 +322,16 @@ def test_automating_someone_elses_workflow_is_refused_with_an_actionable_reason(
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
-def test_an_open_compute_provider_cannot_carry_an_automation(
+def test_an_open_compute_provider_carries_an_automation(
     tmp_path: Path,
     env,
 ) -> None:
-    """`no_serving_assignment` covers two causes -- no ready assignment, and a
-    ready one on an open api_key_http provider that admission refuses anyway.
-    The sentence has to be true of both, or an owner who DID connect an api-key
-    provider reads it as false and has nowhere to go."""
+    """The owner's own api_key_http source is a serving source like any other.
+
+    Registration refused it until 2026-09-29, citing a foreground rule removed
+    on 2026-09-03, so a free account could not create any automation. The run
+    itself launching on that source is tests/test_open_provider_automations.py.
+    """
     _switch_assignment_provider(
         tmp_path,
         universe_id=UNIVERSE,
@@ -338,11 +340,20 @@ def test_an_open_compute_provider_cannot_carry_an_automation(
 
     result = _create()
 
-    assert result["error"] == "automation_unavailable"
-    assert result["reason"] == "no_serving_assignment"
-    assert "subscription" in result["detail"]
-    assert "API-key" in result["detail"]
-    assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
+    assert result["status"] == "automation_created", result
+    assert [row.automation_id for row in AutomationStore(tmp_path).list(
+        universe_id=UNIVERSE,
+    )] == [result["automation"]["automation_id"]]
+
+
+def test_no_serving_assignment_names_any_source_the_owner_can_connect() -> None:
+    """The one remaining cause is no ready assignment at all, and an owner with
+    only an API-key source must read a sentence that is true for them."""
+    from tinyassets.api.automations import _UNAVAILABLE_DETAIL
+
+    detail = _UNAVAILABLE_DETAIL["no_serving_assignment"]
+    assert "API-key" in detail and "subscription" in detail
+    assert "cannot run an automation" not in detail
 
 
 def test_the_failure_counter_is_visible_before_the_auto_pause(
