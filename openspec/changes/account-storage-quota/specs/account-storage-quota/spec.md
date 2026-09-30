@@ -23,8 +23,14 @@ the quota's size, and every feature SHALL work within the free quota.
 The transaction that creates a universe SHALL record its owning account. A
 universe's bytes SHALL be charged only to that account, whoever else holds a
 grant on it. An owner that no stored binding records SHALL NOT be inferred from
-correlated data. A universe without a recorded owner SHALL be reported as
-unattributed on host-only surfaces.
+correlated data. Pre-existing universes SHALL be backfilled only from the
+explicit founder home binding. A universe without a recorded owner SHALL be
+reported as unattributed on host-only surfaces, and its bytes SHALL be counted.
+Its writes SHALL NOT be refused until an owner is known.
+
+#### Scenario: Backfill uses the home binding only
+- **WHEN** a pre-existing universe has an admin grant but is nobody's founder home
+- **THEN** it stays unattributed, and its writes are counted and not refused
 
 #### Scenario: A shared universe charges its owner only
 - **WHEN** an owner grants a second user admin on their universe and that user writes a page to it

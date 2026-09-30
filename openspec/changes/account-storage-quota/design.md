@@ -46,15 +46,12 @@ something real). Those are the categories AGENTS.md says to specify first.
   Stripe checkout writes it today. `universe_server._universe_birth_refusal`
   already reads it that way. The seats-per-account lane must call these rather
   than define a second pair (memory `two-definitions-of-one-fact`).
-- **Backfill, from stored bindings only.** The first source is `founder_home`,
-  an explicit identity binding and not a correlation. The second is the
-  creation grant: a universe with exactly one admin row where
-  `actor_id = granted_by`, the row `_action_create_universe` writes. Anything
-  else stays unbound. Its bytes appear on a host-only "unattributed" line and
-  its writes aren't gated, since there is no account to refuse against. This is
-  open question Q2. The second source is a judgement call against memory
-  `never-infer-identity-from-adjacent-tables`, and the founder may prefer
-  `founder_home` only.
+- **Backfill from `founder_home` only** (founder decision, 2026-09-30).
+  `founder_home` is an explicit identity binding, not a correlation. Nothing is
+  inferred from `universe_acl` (memory `never-infer-identity-from-adjacent-tables`).
+  Every other pre-existing universe stays unbound until an owner is known. Its
+  bytes are counted on a host-only "unattributed" line and its writes are not
+  refused. The backfill reports how many production universes stay unattributed.
 
 ## D3. Every store, registered
 
@@ -282,19 +279,20 @@ appended:
   helper keeps reporting its own partial, bounded view without claiming quota
   authority.
 
-## Open questions (at the design point)
+## Decisions at the design point (founder, 2026-09-30)
 
-- **Q1. Numbers.** Free 2 GiB and paid 20 GiB, as proposed, or something else?
-  Task 1 measures the two test accounts first.
-- **Q2. Legacy owner backfill.** `founder_home` plus the sole self-granted admin
-  row, as proposed, or `founder_home` only, which leaves more universes
-  unattributed and ungated?
-- **Q3. Commons pages.** Charge the writer, as proposed, which needs a small
-  writer-attribution row per commons page because pages don't record authors
-  today? Or treat the commons as platform-held and uncharged, which leaves an
-  unbounded public write path?
-- **Q4. Delivering a file to a full receiver.** Proposed: refuse the delivery
-  against the **receiver's** quota. The sender sees "the recipient's storage is
-  full" and no numbers. The receiver sees the full refusal with its link.
-- **Q5. Overshoot during a run.** Is growth bounded by one run's writes (D6.6)
-  acceptable for the MVP, with kernel quotas deferred?
+- **Q1.** Free 2 GiB, paid 20 GiB, per account. Task 1.1's measurement stays: if
+  either test account is above 1 GiB, stop before enforcing and report.
+- **Q2.** Owners are backfilled from `founder_home` only. Unattributed universes
+  are counted and not refused, and their number is reported.
+- **Q3.** Commons pages are charged to the writer, through a small per-page
+  writer record written by the page write.
+- **Q4.** Delivery to a full receiver is refused against the receiver's quota.
+  The sender sees "recipient's storage is full", with no numbers.
+- **Q5.** Overshoot within one run, measured at its end, is accepted for the
+  MVP. Kernel quotas are deferred.
+
+**Build order.** PR 1 is the owner resolver alone (`universe_owner` written at
+creation, the `founder_home` backfill, `accounts.owner_of` / `tier_of`), because
+the seats-per-account lane consumes it. The enforcement slices follow, with
+project memory, the wiki and the UI library (3.2) first.
