@@ -1,0 +1,337 @@
+"""One storage pool per account: measured + pending, never refused on a stale number.
+
+account-storage-quota D4/D5/D8. These drive the real ledger and the real walk
+against a temp data root; the tier quota is shrunk through the real env override
+so a test writes kilobytes, not gibibytes.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from tinyassets import storage_accounting as sa
+from tinyassets import universe_owner as uo
+from tinyassets.daemon_server import grant_universe_ownership, initialize_author_server
+
+A = "workos|alice"
+B = "workos|bob"
+KIB = 1024
+
+
+@pytest.fixture
+def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    root = tmp_path / "data"
+    root.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
+    # 100 KiB free quota: the real override, in its real unit.
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(100 * KIB / 1024**3))
+    initialize_author_server(root)
+    return root
+
+
+def _universe(base: Path, uid: str, owner: str) -> Path:
+    grant_universe_ownership(base, universe_id=uid, owner_id=owner)
+    udir = base / uid
+    udir.mkdir(exist_ok=True)
+    return udir
+
+
+def _write(udir: Path, name: str, size: int) -> None:
+    (udir / name).write_bytes(b"x" * size)
+
+
+def _admit(base, uid, n, account=A):
+    return sa.reserve(base, account_id=account, scope_id=uid, store="universe_files", nbytes=n)
+
+
+class TestOnePoolPerAccount:
+    def test_bytes_in_two_universes_share_one_quota(self, base):
+        _write(_universe(base, "u-one", A), "a.bin", 60 * KIB)
+        _write(_universe(base, "u-two", A), "b.bin", 30 * KIB)
+
+        assert sa.usage(base, A).used_bytes == 0  # nothing measured yet
+        with pytest.raises(sa.StorageRefused) as refused:
+            _admit(base, "u-two", 20 * KIB)
+
+        record = refused.value.record
+        assert record["failure_class"] == sa.FAILURE_QUOTA
+        assert record["used_bytes"] == 90 * KIB
+        assert "across 2 universes" in record["error"]
+
+    def test_another_account_is_unaffected(self, base):
+        _write(_universe(base, "u-a", A), "a.bin", 95 * KIB)
+        _universe(base, "u-b", B)
+
+        res = _admit(base, "u-b", 50 * KIB, account=B)
+        sa.commit(res)
+
+    def test_platform_bytes_are_not_charged(self, base):
+        udir = _universe(base, "u-one", A)
+        for platform_dir in (".runtime", ".workspace-staging", "workspaces"):
+            (udir / platform_dir).mkdir()
+            _write(udir / platform_dir, "big.bin", 500 * KIB)
+        _write(udir, "mine.bin", 10 * KIB)
+
+        sa.commit(_admit(base, "u-one", 1 * KIB))
+
+        assert sa.usage(base, A).used_bytes == 10 * KIB + 1 * KIB
+
+    def test_a_hard_link_is_counted_once(self, base):
+        udir = _universe(base, "u-one", A)
+        _write(udir, "a.bin", 40 * KIB)
+        (udir / "b.bin").hardlink_to(udir / "a.bin")
+
+        sa.measure(base, "u-one", "universe_files")
+
+        assert sa.usage(base, A).used_bytes == 40 * KIB
+
+
+class TestPendingIsNeverLost:
+    def test_many_small_writes_cannot_slip_between_measurements(self, base):
+        _universe(base, "u-one", A)
+        admitted = 0
+        with pytest.raises(sa.StorageRefused):
+            for _ in range(200):
+                sa.commit(_admit(base, "u-one", 10 * KIB))  # never written to disk
+                admitted += 1
+
+        # 100 KiB quota, 10 KiB each: exactly 10 fit, whatever the measurements say.
+        assert admitted == 10
+
+    def test_a_write_committed_after_the_scan_started_stays_pending(self, base, monkeypatch):
+        udir = _universe(base, "u-one", A)
+        sa.commit(_admit(base, "u-one", 0))  # every store measured once, up front
+        real = sa.STORES["universe_files"].measure
+        landed = {}
+
+        def _scan_then_race(b, scope):
+            size = real(b, scope)  # the scan does not see the write below
+            if landed:
+                return size
+            res = _admit(base, "u-one", 30 * KIB)
+            _write(udir, "late.bin", 30 * KIB)
+            sa.commit(res)
+            landed["yes"] = True
+            return size
+
+        monkeypatch.setitem(
+            sa.STORES, "universe_files",
+            sa.Store("universe_files", sa.SCOPE_UNIVERSE, _scan_then_race),
+        )
+        sa.measure(base, "u-one", "universe_files")
+        monkeypatch.undo()
+
+        assert landed
+        assert sa.usage(base, A).used_bytes == 30 * KIB  # not 0: the write is not lost
+
+    def test_concurrent_writes_cannot_share_the_last_headroom(self, base, monkeypatch):
+        _universe(base, "u-one", A)
+        sa.commit(_admit(base, "u-one", 0))  # every store measured up front
+        real_usage = sa._usage_in
+
+        def _slow_decision(*args, **kwargs):
+            # Hold the read long enough that every thread's decision overlaps:
+            # only a serialized admission keeps them from all seeing headroom.
+            result = real_usage(*args, **kwargs)
+            time.sleep(0.2)
+            return result
+
+        monkeypatch.setattr(sa, "_usage_in", _slow_decision)
+        wins, refusals = [], []
+
+        barrier = threading.Barrier(6)
+
+        def _try():
+            barrier.wait()
+            try:
+                wins.append(_admit(base, "u-one", 60 * KIB))
+            except sa.StorageRefused as exc:
+                refusals.append(exc.record["failure_class"])
+
+        threads = [threading.Thread(target=_try) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(wins) == 1
+        # Every loser was decided on the winner's bytes -- not bounced off a
+        # lock as "unavailable", which is what an unserialized admission does.
+        assert refusals == [sa.FAILURE_QUOTA] * 5
+
+    def test_a_write_larger_than_its_reservation_fails_loudly(self, base):
+        _universe(base, "u-one", A)
+        res = _admit(base, "u-one", 1 * KIB)
+        with pytest.raises(ValueError):
+            sa.commit(res, 2 * KIB)
+
+    def test_a_released_reservation_frees_its_bytes(self, base):
+        _universe(base, "u-one", A)
+        sa.release(_admit(base, "u-one", 90 * KIB))
+
+        sa.commit(_admit(base, "u-one", 90 * KIB))
+
+
+class TestDeleteThenRetry:
+    def test_a_delete_frees_space_on_the_retry_without_touch(self, base):
+        udir = _universe(base, "u-one", A)
+        _write(udir, "big.bin", 90 * KIB)
+        with pytest.raises(sa.StorageRefused):
+            _admit(base, "u-one", 20 * KIB)
+
+        (udir / "big.bin").unlink()  # no touch() -- correctness must not need it
+        # Age the measurement past the freshness bound the refusal path uses.
+        conn = sa._connect(base)
+        try:
+            conn.execute("UPDATE measurements SET measured_at = measured_at - 3600")
+        finally:
+            conn.close()
+
+        sa.commit(_admit(base, "u-one", 20 * KIB))
+
+    def test_a_fresh_refusal_does_not_rescan(self, base, monkeypatch):
+        udir = _universe(base, "u-one", A)
+        _write(udir, "big.bin", 90 * KIB)
+        with pytest.raises(sa.StorageRefused):
+            _admit(base, "u-one", 20 * KIB)
+        calls = []
+        real = sa.measure
+        monkeypatch.setattr(sa, "measure", lambda *a, **k: calls.append(a) or real(*a, **k))
+
+        with pytest.raises(sa.StorageRefused):
+            _admit(base, "u-one", 20 * KIB)
+
+        assert calls == []  # measured seconds ago: fresh, no rescan
+
+    def test_touch_marks_dirty_and_the_refusal_path_rescans_it(self, base):
+        udir = _universe(base, "u-one", A)
+        _write(udir, "big.bin", 90 * KIB)
+        with pytest.raises(sa.StorageRefused):
+            _admit(base, "u-one", 20 * KIB)
+        (udir / "big.bin").unlink()
+        sa.touch(base, "u-one", "universe_files")
+
+        sa.commit(_admit(base, "u-one", 20 * KIB))
+
+
+class TestUnattributedAndUnmeasurable:
+    def test_an_unattributed_universe_is_never_refused(self, base):
+        udir = base / "u-legacy"
+        udir.mkdir()
+        _write(udir, "big.bin", 500 * KIB)
+
+        res = sa.reserve(
+            base, account_id=None, scope_id="u-legacy", store="universe_files", nbytes=500 * KIB,
+        )
+        sa.commit(res)
+        assert res.id is None
+
+    def test_an_unmeasurable_store_is_still_bounded_by_known_bytes(self, base, monkeypatch):
+        """A store that cannot be measured counts as 0, but every admitted write
+        is pending, so the allowance is bounded -- never unlimited."""
+        _universe(base, "u-one", A)
+
+        def _broken(_b, _s):
+            raise OSError("disk unreadable")
+
+        monkeypatch.setitem(
+            sa.STORES, "universe_files", sa.Store("universe_files", sa.SCOPE_UNIVERSE, _broken),
+        )
+        sa.commit(_admit(base, "u-one", 60 * KIB))
+        with pytest.raises(sa.StorageRefused) as refused:
+            _admit(base, "u-one", 60 * KIB)
+
+        assert refused.value.record["failure_class"] == sa.FAILURE_QUOTA
+
+    def test_known_measured_bytes_count_even_when_another_store_fails(self, base, monkeypatch):
+        """The bug this guards: one broken store must not make the others' bytes
+        vanish from the decision."""
+        _write(_universe(base, "u-one", A), "big.bin", 90 * KIB)
+
+        def _broken(_b, _s):
+            raise OSError("unreadable")
+
+        monkeypatch.setitem(
+            sa.STORES, "ui_library", sa.Store("ui_library", sa.SCOPE_ACCOUNT, _broken),
+        )
+        with pytest.raises(sa.StorageRefused):
+            _admit(base, "u-one", 20 * KIB)
+
+    def test_an_unopenable_ledger_is_the_hosts_problem_and_says_so(self, base, monkeypatch):
+        import sqlite3
+
+        _universe(base, "u-one", A)
+
+        def _locked(_b):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(sa, "_connect", _locked)
+        with pytest.raises(sa.StorageRefused) as refused:
+            _admit(base, "u-one", 1 * KIB)
+
+        assert refused.value.record["failure_class"] == sa.FAILURE_UNAVAILABLE
+        assert refused.value.record["actionable_by"] == "host"
+
+    def test_a_crashed_reservation_expires(self, base):
+        _universe(base, "u-one", A)
+        _admit(base, "u-one", 90 * KIB)  # never committed nor released
+        conn = sa._connect(base)
+        try:
+            conn.execute("UPDATE pending SET created_at = created_at - ?", (sa.RESERVED_TTL_S + 1,))
+        finally:
+            conn.close()
+
+        sa.measure(base, "u-one", "universe_files")
+
+        sa.commit(_admit(base, "u-one", 90 * KIB))
+
+
+class TestTheRefusal:
+    def test_free_refusal_carries_the_inline_upgrade_link(self, base):
+        _write(_universe(base, "u-one", A), "big.bin", 95 * KIB)
+        with pytest.raises(sa.StorageRefused) as refused:
+            _admit(base, "u-one", 20 * KIB)
+
+        message = refused.value.record["error"]
+        assert "[Upgrade](https://tinyassets.io/app?upgrade=1)" in message
+        assert refused.value.record["actionable_by"] == "user"
+        assert refused.value.record["largest"][0]["scope_id"] == "u-one"
+
+    def test_top_tier_refusal_has_no_link(self, base, monkeypatch):
+        _write(_universe(base, "u-one", A), "big.bin", 95 * KIB)
+        monkeypatch.setattr(uo, "tier_of", lambda *_a, **_k: "paid")
+        monkeypatch.setenv("TINYASSETS_PAID_STORAGE_GIB", str(100 * KIB / 1024**3))
+
+        with pytest.raises(sa.StorageRefused) as refused:
+            _admit(base, "u-one", 20 * KIB)
+
+        assert "Upgrade" not in refused.value.record["error"]
+
+    def test_a_scope_outside_the_account_is_a_bug_not_a_charge(self, base):
+        _universe(base, "u-a", A)
+        _universe(base, "u-b", B)
+
+        with pytest.raises(ValueError):
+            _admit(base, "u-b", 1 * KIB, account=A)
+
+
+def test_actor_resolution(base):
+    _universe(base, "u-one", A)
+
+    assert sa.account_for_actor(base, A) == A
+    assert sa.account_for_actor(base, "universe:u-one") == A
+    assert sa.account_for_actor(base, "universe:u-nobody") is None
+    assert sa.account_for_actor(base, "") is None
+
+
+def test_measurement_is_off_the_clock_of_the_admission(base):
+    """The admission transaction never walks the filesystem."""
+    _universe(base, "u-one", A)
+    sa.measure(base, "u-one", "universe_files")
+    started = time.monotonic()
+    sa.commit(_admit(base, "u-one", 1 * KIB))
+    assert time.monotonic() - started < 5

@@ -20,6 +20,16 @@ containerized deploys don't drift based on where the process was launched from.
 | `TINYASSETS_WIKI_PATH` | Canonical root for the cross-project knowledge wiki the `wiki` tool reads/writes. Resolved via `workflow.storage.wiki_path()`; inherits `data_dir()` platform handling when unset. | `$TINYASSETS_DATA_DIR/wiki` (platform default). |
 | `TINYASSETS_UPLOAD_WHITELIST` | Colon/semicolon-separated absolute-path prefixes allowed for `add_canon_from_path`. Unset = accept any absolute path. | Unset (permissive). |
 
+## Account storage quota
+
+One pool per account, shared by all of its universes (`tinyassets.storage_accounting`,
+`openspec/changes/account-storage-quota`).
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `TINYASSETS_FREE_STORAGE_GIB` | Storage quota, in GiB, for an account on the free tier. Positive number; an unusable value is announced and the default applies. | `2` |
+| `TINYASSETS_PAID_STORAGE_GIB` | The same, for the paid tier. | `20` |
+
 ## Run-file custody capacity
 
 | Var | Purpose | Default |
