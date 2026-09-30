@@ -2403,8 +2403,10 @@ def test_waiting_for_a_seat_claims_no_attempt_and_counts_as_no_failure(
 ):
     """Over the account's seat count an automation WAITS: no attempt is claimed,
     nothing counts toward `MAX_CONSECUTIVE_FAILURES`, the consumer thread is not
-    parked, and the queue position is kept from poll to poll. When a seat frees it
-    runs, holding that seat -- keyed on the OWNER's account via `universe_owner`."""
+    parked, and the queue position is kept from poll to poll -- all keyed on the
+    OWNER's account via `universe_owner`. When a seat frees it runs, and the gate's
+    seat is given back BEFORE the run is queued: a seat held by a run waiting for a
+    pool worker is the deadlock astra found (round 1)."""
     from tinyassets import universe_seats as seats
     from tinyassets.daemon_server import grant_universe_ownership
 
@@ -2446,7 +2448,10 @@ def test_waiting_for_a_seat_claims_no_attempt_and_counts_as_no_failure(
     assert run_due_automation(
         tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW,
     ) == "ok:ran:run_1"
-    assert held_during_run == [1], "the run holds its account's seat"
+    assert held_during_run == [0], (
+        "no seat may be held by a run still queued for a pool worker; the run's "
+        "agent calls take their own at the executor"
+    )
     occupancy = seats.occupancy(key, db=db)
     assert (occupancy["running"], occupancy["waiting"]) == (0, 0)
     seats.stop_refresher()

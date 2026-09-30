@@ -827,3 +827,72 @@ def test_status_shows_the_owner_their_waiting_chat_and_nobody_else(tmp_path):
     )
     for seat in held:
         seats.release(seat.seat_id, db=db)
+
+
+def test_every_operation_holds_the_write_lock_until_it_commits(db):
+    """The regression behind a depth-0 seat that never came back.
+
+    `_txn` used to run `executescript(_SCHEMA)` right after `BEGIN IMMEDIATE`, and
+    `executescript` COMMITS an open transaction first -- so the write lock was
+    dropped the moment it was taken. Two releases of a lent seat both read depth
+    2 and both decremented, leaving a row at depth 0 that held a seat forever;
+    two acquirers could both take the last seat. Here a second writer must be
+    shut out for the whole body of an operation."""
+    import sqlite3
+
+    seats.acquire("u1", seats=3, reserve=1, db=db)  # the store exists
+    with seats._txn(db) as conn:
+        conn.execute("SELECT COUNT(*) FROM account_seats").fetchone()
+        other = sqlite3.connect(str(db), timeout=0.1, isolation_level=None)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                other.execute("BEGIN IMMEDIATE")
+        finally:
+            other.close()
+
+
+def test_concurrent_releases_of_a_lent_seat_never_strand_it(db):
+    """A lent seat released by its borrower and its owner at the same moment ends
+    at zero rows -- never a stranded row -- across many rounds."""
+    for _round in range(40):
+        parent = seats.acquire("u1", seats=3, reserve=1, db=db)
+        child = seats.acquire("u1", seats=3, reserve=1, db=db, parent_seat_id=parent.seat_id)
+        assert child.reentrant
+        gate = threading.Barrier(2)
+
+        def give_back(seat_id):
+            gate.wait()
+            seats.release(seat_id, db=db)
+
+        workers = [threading.Thread(target=give_back, args=(parent.seat_id,)),
+                   threading.Thread(target=give_back, args=(child.seat_id,))]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(10)
+        assert seats.occupancy("u1", db=db)["running"] == 0
+
+
+def test_a_release_the_store_refuses_is_retried_not_dropped(db, monkeypatch):
+    """astra round 1, finding 1. This process is alive, so nothing reclaims its
+    seat: a release lost to a locked store would charge the account for finished
+    work until the process died. It is queued and retried until it lands."""
+    import sqlite3
+
+    held = seats.acquire("u1", seats=3, reserve=1, db=db)
+    real_txn = seats._txn
+    refusals = {"left": 1}
+
+    def locked_once(path):
+        if refusals["left"]:
+            refusals["left"] -= 1
+            raise sqlite3.OperationalError("database is locked")
+        return real_txn(path)
+
+    monkeypatch.setattr(seats, "_txn", locked_once)
+    assert seats.release(held.seat_id, db=db) is False
+    assert seats.occupancy("u1", db=db)["running"] == 1, "not released yet"
+    seats._retry_pending_releases()
+    assert seats.occupancy("u1", db=db)["running"] == 0, "the retry gave the seat back"
+    assert seats._pending_releases == []
+    seats.stop_refresher()

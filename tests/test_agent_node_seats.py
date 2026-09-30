@@ -231,3 +231,34 @@ def test_timed_out_worker_releases_only_when_it_finishes(ledger):
     finally:
         gate.set()
     assert _wait_until(lambda: _running(ledger) == 0, timeout=5)
+
+
+def test_a_blocking_agent_call_nested_in_another_reenters_its_seat(ledger):
+    """Nested transfer. The outer call holds the account's LAST background seat
+    and, inside its provider, blocks on an inner agent call. Without the transfer
+    the inner call waits for the seat its own blocked parent holds -- a deadlock
+    against itself. With it, the inner call runs on the parent's seat, and the
+    account never holds more than the one."""
+    db = seats.ledger_path(ledger)
+    other = seats.acquire(ALICE, db=db)  # one of the two background seats
+    seen = []
+
+    def inner(prompt, system, **kwargs):
+        seen.append(_running(ledger))
+        return "inner"
+
+    def outer(prompt, system, **kwargs):
+        return node(ledger, inner, uid="office")({})["reply"] + "+outer"
+
+    results = []
+    worker = threading.Thread(target=lambda: results.append(node(ledger, outer)({})),
+                              daemon=True)
+    worker.start()
+    worker.join(15)
+    try:
+        assert not worker.is_alive(), "the nested call deadlocked on its parent's seat"
+        assert results == [{"reply": "inner+outer"}]
+        assert seen == [2], "the inner call rode the outer seat; nothing new was taken"
+    finally:
+        seats.release(other.seat_id, db=db)
+    assert _wait_until(lambda: _running(ledger) == 0)

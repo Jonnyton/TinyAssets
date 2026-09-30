@@ -2206,39 +2206,45 @@ def run_due_automation(
     due_at: str,
     **kwargs: Any,
 ) -> str:
-    """Take the account's seat, then run one due automation.
+    """Wait for the account's seat BEFORE claiming, then run one due automation.
 
-    The seat comes FIRST, before any attempt is claimed, and without blocking:
-    over the seat count this returns `WAITING_FOR_SEAT` with the automation still
-    due, its queue position kept for the next poll (`universe_seats.try_acquire`).
-    So a wait never spends a wake's `MAX_ONCE_ATTEMPTS`, never counts toward
-    `MAX_CONSECUTIVE_FAILURES`, and never parks a consumer thread that another
-    account's automation is owed.
+    The seat check comes first, before any attempt is claimed, and without
+    blocking: over the seat count this returns `WAITING_FOR_SEAT` with the
+    automation still due and its queue position kept for the next poll
+    (`universe_seats.try_acquire`). So a wait never spends a wake's
+    `MAX_ONCE_ATTEMPTS`, never counts toward `MAX_CONSECUTIVE_FAILURES`, and never
+    parks a consumer thread while the account is full.
 
-    Holding the seat, the run's agent calls re-enter it: the run's worker copies
-    this context (`_execute`), and a blocking nested call borrows its parent's
-    seat by the exclusive depth transfer.
+    The seat it gets is given straight back, not held across the run: the run
+    goes to the shared run pool, and a seat held by a run still queued for a pool
+    worker, behind workers that are themselves waiting for that account's seats,
+    is a deadlock (gpt-6-astra refute, 2026-09-30, round 1). The run's agent
+    calls take their own seats at the executor (`graph_compiler`), and a run
+    that finds the account busy again simply waits there -- no run timeout ends
+    it (`run_timeout_seconds` is None), so a wait inside a claimed run is still
+    neither a failure nor a second attempt.
     """
     from tinyassets import universe_seats
 
     base = Path(base_path)
     moment = _as_utc(kwargs.get("now") or datetime.now(timezone.utc))
     key = universe_seats.account_key(automation.universe_id, root=base)
+    db = universe_seats.ledger_path(base)
     outcome = universe_seats.try_acquire(
         f"automation:{automation.automation_id}",
         key,
         kind=(universe_seats.KIND_WAKE if automation.trigger_kind == TRIGGER_ONCE
               else universe_seats.KIND_AUTOMATION),
         universe_id=automation.universe_id,
-        db=universe_seats.ledger_path(base),
+        db=db,
     )
     if isinstance(outcome, universe_seats.Waiting):
         _record_refusal(
             base, automation, WAITING_FOR_SEAT, moment, str(kwargs.get("consumer_id") or ""),
         )
         return WAITING_FOR_SEAT
-    with universe_seats.bound(outcome):
-        return _run_due_automation(base_path, automation, due_at, **kwargs)
+    universe_seats.release(outcome.seat_id, db=db)
+    return _run_due_automation(base_path, automation, due_at, **kwargs)
 
 
 def _run_due_automation(

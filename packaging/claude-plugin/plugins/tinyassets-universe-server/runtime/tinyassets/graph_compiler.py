@@ -430,10 +430,14 @@ def _run_agent_with_timeout(fn, *, timeout_s, node_id, universe_context, event_s
         parent=seats.current_seat(), wait_s=None, on_waiting=waiting,
         db=seats.ledger_path(root),
     )
-    return _run_with_timeout(
-        fn, timeout_s=timeout_s, node_id=node_id,
-        on_done=lambda: seats.release(held.seat_id, db=held.db),
-    )
+    # The call runs carrying its seat (the worker hop copies this context), so a
+    # blocking agent call nested inside it re-enters the seat instead of waiting
+    # for one its own blocked parent holds.
+    with seats.carrying(held):
+        return _run_with_timeout(
+            fn, timeout_s=timeout_s, node_id=node_id,
+            on_done=lambda: seats.release(held.seat_id, db=held.db),
+        )
 
 
 def _run_with_timeout(

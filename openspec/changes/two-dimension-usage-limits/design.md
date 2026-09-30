@@ -441,18 +441,26 @@ person, shared across all their universes; universe creation stays unlimited.
   `BranchExecutionContext`: a run compiles nodes without a `universe_context` (it
   rides inside the bound provider call), so the first draft's node site, keyed on
   `universe_context`, never took a seat in any real run. The automation and wake
-  worker take a seat with one non-blocking try per poll BEFORE claiming an
-  attempt (`try_acquire`, ticket kept per automation), and bind it so the run's
-  agent calls re-enter it. The first draft also held a seat around every
-  `_invoke_graph`, blocking a shared run-pool thread with no deadline; that is
-  removed -- it parked pool threads other accounts' runs were owed and added a
-  second seat per automation run.
+  worker make one non-blocking try per poll BEFORE claiming an attempt
+  (`try_acquire`, ticket kept per automation) and give the seat straight back:
+  holding it across the run deadlocked (astra round 1) -- the run waits for a
+  shared run-pool worker while the pool's workers wait for that account's
+  seats. The first draft also held a seat around every `_invoke_graph`, blocking
+  a pool thread with no deadline; removed for the same reason. A prompt node
+  carries its seat into its call (`carrying`), so a blocking agent call nested
+  inside re-enters it.
 - **Visible waiting.** A waiting node emits phase `waiting`, which the runs sink
   now records as a `waiting_for_seat` system event (it previously fell through
   to `ran`). A run cancelled while waiting stops waiting and abandons its ticket.
   A waiting chat is its waiter row, tagged with the universe; `get_status` shows
   the owning account `seats` with `chat_waiting`, and the app paints the one
   status line with the Upgrade link inside it.
+- **Atomicity.** `_txn` ran `executescript(_SCHEMA)` after `BEGIN IMMEDIATE`;
+  `executescript` commits first, so every reap, count and insert ran outside the
+  write lock (the WIP's bug too): two acquirers could take the last seat and two
+  releases of a lent seat left a depth-0 row holding a seat forever. Schema
+  statements now run one by one inside the transaction, on an autocommit
+  connection. A release the store refuses is retried by the refresher.
 - **Death.** Holder = `process_liveness.owner_token(ledger root)`. Reclaim on
   proven death, or on a lapsed lease with no proof of life; waiters of a dead
   process are dropped at once (a dead waiter ahead of the queue would otherwise

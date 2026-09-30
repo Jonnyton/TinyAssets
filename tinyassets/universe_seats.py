@@ -215,6 +215,15 @@ CREATE INDEX IF NOT EXISTS seat_waiters_account
 """
 
 
+def _schema_statements() -> list[str]:
+    """`_SCHEMA` as single statements, with its comments dropped."""
+    lines = [line for line in _SCHEMA.splitlines() if not line.lstrip().startswith("--")]
+    return [stmt.strip() for stmt in "\n".join(lines).split(";") if stmt.strip()]
+
+
+_SCHEMA_STATEMENTS = _schema_statements()
+
+
 def _connect(db: Path) -> sqlite3.Connection:
     try:
         db.parent.mkdir(parents=True, exist_ok=True)
@@ -224,7 +233,9 @@ def _connect(db: Path) -> sqlite3.Connection:
     if not _trusted(db):
         raise SeatLedgerUnusable(f"seat store is not inside its data dir: {db}")
     try:
-        conn = sqlite3.connect(str(db), timeout=30)
+        # Autocommit mode: `_txn` issues BEGIN IMMEDIATE / COMMIT itself, so the
+        # driver never opens or closes a transaction behind its back.
+        conn = sqlite3.connect(str(db), timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")
         return conn
@@ -234,17 +245,26 @@ def _connect(db: Path) -> sqlite3.Connection:
 
 @contextmanager
 def _txn(db: Path):
-    """One `BEGIN IMMEDIATE` per operation; the schema is created under the lock,
-    so two first touches cannot race it."""
+    """One `BEGIN IMMEDIATE` per operation, held until COMMIT.
+
+    The schema is created with single `execute` calls INSIDE the transaction.
+    `executescript` must never be used here: it COMMITS any open transaction
+    before it runs, which silently ended the write lock the moment it was taken
+    -- every reap, count and insert after it ran outside any transaction, so two
+    releases of a lent seat could both read depth 2 and leave a depth-0 row that
+    held a seat forever, and two acquirers could both take the last seat.
+    """
     conn = _connect(db)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        conn.executescript(_SCHEMA)
+        for statement in _SCHEMA_STATEMENTS:
+            conn.execute(statement)
         yield conn
-        conn.commit()
+        conn.execute("COMMIT")
     except BaseException:
         try:
-            conn.rollback()
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
         except sqlite3.Error:
             pass
         raise
@@ -454,16 +474,9 @@ def refresh(seat_id: str, *, db: Path | None = None, now: float | None = None) -
         return cur.rowcount == 1
 
 
-def release(seat_id: str, *, db: Path | None = None) -> bool:
-    """Give a seat back: decrement a lent seat's depth, delete it at the last one.
-
-    Only this process's own seat: the holder must match. Never raises -- it runs
-    from a `finally`, and a seat already reaped is exactly the unwinding case.
-    """
-    seat_id = (seat_id or "").strip()
-    if not seat_id:
-        return False
-    db = db or ledger_path()
+def _release_once(seat_id: str, db: Path) -> bool | None:
+    """One release attempt: True released (or its depth given back), False no
+    such seat of ours, None the store could not be written -- try again."""
     try:
         holder = _holder(db.parent)
         with _txn(db) as conn:
@@ -472,22 +485,39 @@ def release(seat_id: str, *, db: Path | None = None) -> bool:
                 (seat_id, holder),
             ).fetchone()
             if row is None:
-                released = False
-            elif int(row["depth"]) > 1:
+                return False
+            if int(row["depth"]) > 1:
                 conn.execute(
                     "UPDATE account_seats SET depth = depth - 1 WHERE seat_id = ?", (seat_id,)
                 )
-                return True
             else:
                 conn.execute("DELETE FROM account_seats WHERE seat_id = ?", (seat_id,))
-                released = True
+            return True
     except (SeatLedgerUnusable, sqlite3.Error, OSError, RuntimeError):
-        # The lease and the owner's death proof are the backstop.
-        _log.warning("seat %s could not be released; it is reclaimed on proven death", seat_id)
-        released = False
+        return None
+
+
+def release(seat_id: str, *, db: Path | None = None) -> bool:
+    """Give a seat back: decrement a lent seat's depth, delete it at the last one.
+
+    Only this process's own seat: the holder must match. Never raises -- it runs
+    from a `finally`. A release the store refuses (locked, briefly unwritable) is
+    NOT dropped: this process is alive, so nothing else would ever reclaim the
+    seat, and it would be charged to the account until the process died. It is
+    queued and retried by the refresher until it lands.
+    """
+    seat_id = (seat_id or "").strip()
+    if not seat_id:
+        return False
+    db = db or ledger_path()
+    outcome = _release_once(seat_id, db)
     with _held_lock:
         _held.pop(seat_id, None)
-    return released
+    if outcome is None:
+        _log.warning("seat %s could not be released yet; retrying until it is", seat_id)
+        _queue_retry(seat_id, db)
+        return False
+    return outcome
 
 
 def abandon(ticket: int | None, *, db: Path | None = None) -> bool:
@@ -614,8 +644,29 @@ _refresher: threading.Thread | None = None
 _refresher_stop = threading.Event()
 
 
+_pending_releases: list[tuple[str, Path]] = []
+#: How soon a refused release is tried again.
+_RETRY_SECONDS = 1.0
+
+
+def _retry_pending_releases() -> None:
+    """Try every queued release once; keep the ones the store still refuses."""
+    with _held_lock:
+        pending = list(_pending_releases)
+        _pending_releases.clear()
+    failed = [(seat_id, db) for seat_id, db in pending if _release_once(seat_id, db) is None]
+    if failed:
+        with _held_lock:
+            _pending_releases.extend(failed)
+
+
 def _refresh_loop() -> None:
-    while not _refresher_stop.wait(SEAT_REFRESH_SECONDS):
+    next_refresh = time.monotonic() + SEAT_REFRESH_SECONDS
+    while not _refresher_stop.wait(_RETRY_SECONDS):
+        _retry_pending_releases()
+        if time.monotonic() < next_refresh:
+            continue
+        next_refresh = time.monotonic() + SEAT_REFRESH_SECONDS
         with _held_lock:
             current = dict(_held)
         for seat_id, db in current.items():
@@ -627,20 +678,29 @@ def _refresh_loop() -> None:
                 _log.warning("seat refresh failed for %s", seat_id)
 
 
+def _ensure_refresher() -> None:
+    """Start the refresh thread if it is not running. Call with `_held_lock`."""
+    global _refresher
+    if _refresher is not None and _refresher.is_alive():
+        return
+    _refresher_stop.clear()
+    _refresher = threading.Thread(target=_refresh_loop, name="account-seat-refresh", daemon=True)
+    _refresher.start()
+
+
+def _queue_retry(seat_id: str, db: Path) -> None:
+    with _held_lock:
+        _pending_releases.append((seat_id, db))
+        _ensure_refresher()
+
+
 def _register(seat: Seat) -> None:
     """Keep an OWNED seat stamped. A lent seat is its parent's to stamp."""
-    global _refresher
     if seat.reentrant:
         return
     with _held_lock:
         _held[seat.seat_id] = seat.db or ledger_path()
-        if _refresher is not None and _refresher.is_alive():
-            return
-        _refresher_stop.clear()
-        _refresher = threading.Thread(
-            target=_refresh_loop, name="account-seat-refresh", daemon=True
-        )
-        _refresher.start()
+        _ensure_refresher()
 
 
 def stop_refresher() -> None:
@@ -654,6 +714,7 @@ def stop_refresher() -> None:
     with _held_lock:
         _refresher = None
         _held.clear()
+        _pending_releases.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -740,6 +801,19 @@ def _wait_for_seat(account_id, *, seat_class, kind, universe_id, run_id, ticket_
         if deadline is not None and now_m >= deadline:
             return outcome
         time.sleep(_POLL_SECONDS)
+
+
+@contextmanager
+def carrying(seat: Seat):
+    """Make ``seat`` the current one for the body WITHOUT releasing it after:
+    for a caller whose release is owned elsewhere (the agent node's future).
+    A blocking call nested inside re-enters it rather than waiting for a seat its
+    own blocked parent holds."""
+    token = _current_seat.set(seat)
+    try:
+        yield seat
+    finally:
+        _current_seat.reset(token)
 
 
 @contextmanager
@@ -837,6 +911,7 @@ __all__ = [
     "acquire",
     "acquire_blocking",
     "bound",
+    "carrying",
     "current_seat",
     "hold",
     "holder_is_named",

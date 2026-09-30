@@ -35,7 +35,8 @@ Seats SHALL be acquired where the model call happens, never where work is
 enqueued: the agent node's executor (`graph_compiler`), keyed on the RUN's own
 universe from its execution context; the chat turn (`converse`), as
 `interactive`; and the automation and wake worker (`run_due_automation`), as
-`background`, before it claims an attempt. A run started by `run_graph`, an
+`background`, as a non-blocking admission check before it claims an attempt.
+A run started by `run_graph`, an
 automation, a wake or an inbound event SHALL therefore hold a seat for each of
 its agent calls.
 
@@ -77,8 +78,11 @@ background waiter.
 The automation worker SHALL try for a seat once per poll, before claiming an
 attempt, and SHALL NOT block the consumer thread while waiting. A wait SHALL
 NOT consume `MAX_ONCE_ATTEMPTS`, SHALL NOT count toward
-`MAX_CONSECUTIVE_FAILURES`, and SHALL leave the automation due. The run it then
-starts SHALL hold that seat, and its agent calls SHALL re-enter it.
+`MAX_CONSECUTIVE_FAILURES`, and SHALL leave the automation due. The seat it
+gets SHALL be given back before its run is queued: a seat held by a run still
+waiting for a run-pool worker, behind workers waiting for that account's seats,
+is a deadlock. The run's agent calls SHALL take their own seats at the executor,
+and no run timeout SHALL turn a wait there into a failure.
 
 #### Scenario: A wake outlasts a busy account
 - **WHEN** a wake is due on more polls than it has attempts while its account's background seats are full
@@ -101,7 +105,10 @@ capability.
 A seat SHALL be released on success, failure, cancellation and timeout; a
 call still running after its node timed out SHALL keep its seat until it
 actually ends. Each seat SHALL name its holder by `process_liveness.owner_token`
-under the seat store's own root. A seat SHALL be reclaimed when its holder is
+under the seat store's own root. Every read-decide-write on the store SHALL run
+inside one write transaction held until it commits. A release the store refuses
+SHALL be retried until it lands, never dropped, because a live holder's seat is
+otherwise never reclaimed. A seat SHALL be reclaimed when its holder is
 proven dead (a crash, a deploy's SIGKILL), or when its lease has lapsed and its
 holder is not provably alive; a provably alive holder SHALL never be reclaimed.
 The liveness cleanup SHALL keep a dead token's proof while any seat or waiter

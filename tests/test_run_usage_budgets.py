@@ -49,13 +49,11 @@ def test_there_is_no_per_run_dispatch_or_byte_budget(monkeypatch):
     structural cap on what one run may be (founder, 2026-09-30). The universe's
     rolling-hour ledger is a separate lane and is untouched here.
     """
-    import inspect
 
     monkeypatch.setitem(effectors._EFFECTORS, SINK, _adapter(_OK))
     for gone in ("RUN_DISPATCHES_MAX", "RUN_BYTES_MAX", "RUN_RPC_CALLS_MAX"):
         assert not hasattr(effectors, gone), f"{gone} came back"
-    src = inspect.getsource(effectors._budget_refusal)
-    assert "split the work across runs" not in src
+    assert not hasattr(effectors, "_budget_refusal"), "no dispatch budget of any kind"
 
     chain = EffectChain(run_id="b1")
     for i in range(12):
