@@ -48,7 +48,7 @@ collide with the app-URL move (#4112). Slice 2 (3.x) depends on #4112.
       still deduplicate and standing decisions still match; and an item answer
       goes through `displayed_row_matches`, which it previously returned before
       reaching. Both were reproduced by `gpt-6-astra`.
-- [ ] 2.6 Delivery, simplified (separate PR, depends on this one). The
+- [x] 2.6 Delivery, simplified (separate PR, depends on this one). The
       per-device outstanding-alert latch is dropped: it is a rate limiter in
       disguise, and account limits are seats and storage only (founder,
       2026-09-30). Delivery is one notification per

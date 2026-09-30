@@ -686,14 +686,15 @@ def resolve_item(
         universe_dir, request_id=request_id, kind=kind,
         status="answered" if closed else "pending", item_id=item_id,
     )
-    from tinyassets.owner_notifications import clear_for_universe_dir
+    # Only a CLOSING item clears the notification. A notification names the
+    # REQUEST, so answering one item of fifty changes nothing a device is
+    # displaying, and pushing a silent clear per item made a 50-item note cost
+    # 51 wakeups per device (gpt-6-astra, 2026-09-29). Per-item state is what
+    # the rail shows when the app is opened.
+    if closed:
+        from tinyassets.owner_notifications import clear_for_universe_dir
 
-    # A closing item clears the whole notification; a mid-list one clears just
-    # that row, so the note stays up on the other device with the rest of it.
-    clear_for_universe_dir(
-        universe_dir, request_id=request_id,
-        item_id="" if closed else item_id,
-    )
+        clear_for_universe_dir(universe_dir, request_id=request_id)
     return {
         "item_id": item_id,
         "status": status,
