@@ -43,6 +43,7 @@ from tinyassets.automations import (
     EVENT_FILTER_KEYS,
     EVENT_PENDING_REQUEST_ANSWERED,
     EVENT_RUN_COMPLETED,
+    EVENT_WOKE_PREFIX,
     REFUSAL_KEY_PREFIX,
     STATE_ACTIVE,
     TRIGGER_EVENT,
@@ -170,10 +171,20 @@ def _emit(
                     now=now,
                 )
             except AutomationUnavailable as exc:
-                _record_refusal(base, sub, f"event_wake_refused:{exc.reason}")
+                reason = f"event_wake_refused:{exc.reason}"
+                _record_refusal(base, sub, reason)
+                _record_fire(base, sub, reason, now)
                 continue
+        _record_fire(base, sub, f"{EVENT_WOKE_PREFIX}{wake.automation_id}", now)
         stored.append(wake.automation_id)
     return stored
+
+
+def _record_fire(base: Path, sub: Automation, reason: str, now: datetime) -> None:
+    try:
+        AutomationStore(base).record_event_fire(sub.automation_id, reason=reason, now=now)
+    except Exception:  # noqa: BLE001 - an event must never fail its cause
+        logger.exception("event fire record failed sub=%s", sub.automation_id)
 
 
 def emit_run_completed(

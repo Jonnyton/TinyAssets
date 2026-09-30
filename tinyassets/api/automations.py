@@ -41,9 +41,11 @@ from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe
 from tinyassets.automations import (
+    EVENT_WOKE_PREFIX,
     REFUSAL_KEY_PREFIX,
     STATE_ACTIVE,
     STATE_PAUSED,
+    TRIGGER_EVENT,
     Automation,
     AutomationStore,
     AutomationUnavailable,
@@ -415,11 +417,11 @@ def _list(
     reasons = _recent_reasons(base, universe_id)
     bound = max(1, int(limit or 30))
     records = [
-        _projection(
+        _with_last_wake(base, row, _projection(
             row,
             actor=actor,
             recent_reason=reasons.get(f"{REFUSAL_KEY_PREFIX}{row.automation_id}", ""),
-        )
+        ))
         for row in rows[:bound]
     ]
     records.extend(_legacy_rows(base, universe_id))
@@ -429,6 +431,39 @@ def _list(
         "count": len(records),
         "include_retired": include_retired,
     }
+
+
+def _with_last_wake(
+    base: Path, automation: Automation, projected: dict[str, Any],
+) -> dict[str, Any]:
+    """An event subscription's latest wake and what its run did.
+
+    The subscription row records only that it fired (``woke:<id>``); the run
+    lives on the wake. Read here, never copied, and only a wake in the SAME
+    universe: the id comes from the runtime, but the lookup still checks.
+    """
+    if automation.trigger_kind != TRIGGER_EVENT:
+        return projected
+    wake_id = automation.last_reason.removeprefix(EVENT_WOKE_PREFIX)
+    if wake_id == automation.last_reason or not wake_id:
+        return projected
+    try:
+        wake = AutomationStore(base).get(wake_id)
+    except Exception:  # noqa: BLE001 - enrichment, never a precondition
+        logger.warning("last wake lookup failed for %r", wake_id, exc_info=True)
+        return projected
+    if wake is None or wake.universe_id != automation.universe_id:
+        return projected
+    projected["last_wake"] = {
+        "automation_id": wake.automation_id,
+        "not_before": wake.not_before,
+        "last_run_id": wake.last_run_id,
+        "last_reason": wake.last_reason,
+        "last_finished_at": wake.last_finished_at,
+        "pause_reason": wake.pause_reason,
+        "retired_at": wake.retired_at,
+    }
+    return projected
 
 
 def _controllable(
@@ -589,13 +624,13 @@ def automations(
             return _not_found()
         reasons = _recent_reasons(base, uid)
         return {
-            "automation": _projection(
+            "automation": _with_last_wake(base, automation, _projection(
                 automation,
                 actor=actor,
                 recent_reason=reasons.get(
                     f"{REFUSAL_KEY_PREFIX}{automation.automation_id}", ""
                 ),
-            )
+            ))
         }
     return _control(
         base,

@@ -79,6 +79,8 @@ TRIGGER_ONCE = "once"
 #: stores a ``once`` wake for it each time its event is emitted, so the fired
 #: run takes the same pump, fence, admission and authority checks as any other.
 TRIGGER_EVENT = "event"
+#: An event subscription's ``last_reason`` after it fired: ``woke:<wake id>``.
+EVENT_WOKE_PREFIX = "woke:"
 
 #: The events the engine emits (``automation_events.EVENT_FILTER_KEYS``). A
 #: subscription to anything else would be stored and never fire, so it is
@@ -864,6 +866,32 @@ class AutomationStore:
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
+        finally:
+            conn.close()
+
+    def record_event_fire(
+        self, automation_id: str, *, reason: str, now: datetime,
+    ) -> None:
+        """Roll an event subscription's latest fire onto its own row.
+
+        A subscription never runs itself: each matching event stores a one-shot
+        wake, so without this its ``last_*`` stayed empty however often it fired
+        and its owner could not tell a live subscription from a dead one.
+        ``last_due_at`` is when it fired; ``last_reason`` is ``woke:<wake id>``
+        or why the wake was refused. The wake's own run stays on the wake's row.
+        No ``revision`` bump: this is the runtime's record, not an owner edit.
+        """
+        stamp = _iso(now)
+        conn = self._connect(create=True)
+        if conn is None:  # pragma: no cover - create=True always connects
+            raise RuntimeError("automation store connection is unavailable")
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE automations SET last_due_at = ?, last_reason = ?, "
+                    "updated_at = ? WHERE automation_id = ? AND trigger_kind = ?",
+                    (stamp, reason, stamp, automation_id, TRIGGER_EVENT),
+                )
         finally:
             conn.close()
 
@@ -2267,6 +2295,7 @@ __all__ = [
     "EVENT_RUN_COMPLETED",
     "EVENT_TYPES",
     "TRIGGER_EVENT",
+    "EVENT_WOKE_PREFIX",
     "TRIGGER_ONCE",
     "REFUSAL_KEY_PREFIX",
     "Automation",

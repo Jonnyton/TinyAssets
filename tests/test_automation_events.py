@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -502,3 +503,87 @@ def test_the_connector_surface_creates_and_projects_a_subscription(home: Path) -
     assert out["automation"]["next_due_at"] == ""
     assert refused["reason"] == "event_filter_invalid"
     assert "branch_def_id (required)" in refused["detail"]
+
+
+# -- the owner sees when a subscription last fired and what it produced -------
+
+
+def _read(home: Path, action: str, **kw) -> dict:
+    from tinyassets.api.automations import automations
+
+    with identity_context(Identity(
+        user_id=OWNER, username=OWNER,
+        capabilities=["tinyassets.universe.write", "tinyassets.universe.admin"],
+    )):
+        return automations(action=action, universe_id=UNIVERSE, **kw)
+
+
+def test_the_owner_sees_when_a_subscription_fired_and_what_its_wake_ran(
+    home: Path, monkeypatch,
+) -> None:
+    """Live 2026-09-28: the founder's run_completed subscription fired nine
+    times and its row still read last_* = '' -- a live subscription looked
+    exactly like a dead one."""
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    _finish(home, actor=OWNER)
+    [wake] = _wakes(home)
+    monkeypatch.setattr(automations_module, "_execute", _Graph())
+    _poll(home)
+
+    row = AutomationStore(home).get(sub.automation_id)
+    assert row.last_reason == f"woke:{wake.automation_id}"
+    assert row.last_due_at, "when it last fired"
+    assert row.revision == sub.revision, "a runtime record, not an owner edit"
+    assert due_automations(home, universe_id=UNIVERSE, now=datetime.now(timezone.utc)) == []
+
+    for out in (
+        _read(home, "get", automation_id=sub.automation_id)["automation"],
+        next(a for a in _read(home, "list", payload="{}")["automations"]
+             if a["automation_id"] == sub.automation_id),
+    ):
+        assert out["last_reason"] == f"woke:{wake.automation_id}", out
+        assert out["next_due_at"] == ""
+        last = out["last_wake"]
+        assert last["automation_id"] == wake.automation_id
+        assert last["last_run_id"] == "graph_run_1"
+        assert last["last_finished_at"] and last["retired_at"], last
+
+
+def test_a_refused_wake_is_recorded_on_the_subscription_row(home: Path) -> None:
+    from tinyassets.daemon_server import grant_universe_access
+
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    grant_universe_access(home, universe_id=UNIVERSE, actor_id=OWNER,
+                          permission="write", granted_by=OWNER)
+    _finish(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
+    row = AutomationStore(home).get(sub.automation_id)
+    assert row.last_reason == "event_wake_refused:owner_not_admin"
+    assert row.last_due_at
+
+
+def test_a_last_wake_is_read_only_from_the_subscriptions_own_universe(
+    home: Path,
+) -> None:
+    """The projection follows the recorded id, and only inside the universe."""
+    _seed_owner(home, universe_id=BOB_UNIVERSE, owner=BOB)
+    _seed_branch(home, branch_def_id=BOB_BRANCH, author=BOB)
+    from tests.test_automations import _copy_assignment_to
+
+    _copy_assignment_to(home, universe_id=BOB_UNIVERSE, owner=BOB)
+    with _as(BOB):
+        bobs = register_automation(
+            home, universe_id=BOB_UNIVERSE, owner_principal_id=BOB, name="bob",
+            branch_def_id=BOB_BRANCH, not_before="2026-01-01T00:00:00Z",
+        )
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    AutomationStore(home).record_event_fire(
+        sub.automation_id, reason=f"woke:{bobs.automation_id}",
+        now=datetime.now(timezone.utc),
+    )
+    out = _read(home, "get", automation_id=sub.automation_id)["automation"]
+    assert "last_wake" not in out, out
+    # And the record only lands on an event subscription.
+    AutomationStore(home).record_event_fire(
+        bobs.automation_id, reason="woke:x", now=datetime.now(timezone.utc),
+    )
+    assert AutomationStore(home).get(bobs.automation_id).last_reason == ""
