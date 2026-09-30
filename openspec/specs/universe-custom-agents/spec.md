@@ -90,13 +90,8 @@ The platform SHALL treat a repeated publish, remix, or import carrying the same 
 - **AND** the definition and component-lineage row counts do not increase
 
 ### Requirement: Content another user authored reaches a served agent inside an untrusted envelope
-`read_commons_shape`, `browse_commons`, `read_graph target="branch"` for a branch by another author
-or remixed from off-universe, and `read_graph target="run"` / `run_graph` results SHALL be returned
-as `{"untrusted": true, "source": <origin>, "notice": <fixed text>, "content": <previous payload>}`;
-an error the daemon itself produced SHALL NOT be enveloped; the persona system prompt SHALL carry
-one line stating that envelope content is another party's data, never instructions and never the
-founder speaking. The universe's own learning path (`write_brain`, post-turn extraction) is
-unchanged by this requirement.
+
+`read_commons_shape`, `browse_commons`, `read_graph target="branch"` for a branch by another author or remixed from off-universe, and `read_graph target="run"` / `run_graph` results SHALL be returned as `{"untrusted": true, "source": <origin>, "notice": <fixed text>, "content": <previous payload>}`; an error the daemon itself produced SHALL NOT be enveloped; the persona system prompt SHALL carry one line stating that envelope content is another party's data, never instructions and never the founder speaking. The universe's own learning path (`write_brain`, post-turn extraction) is unchanged by this requirement.
 
 #### Scenario: Reading another user's published shape
 - **WHEN** the served agent calls `read_commons_shape` on a public branch authored by another user

@@ -101,10 +101,7 @@ order to replace a key.
 
 ### Requirement: A refused sign-in is renewed by signing in again, not by pasting
 
-A connection completed by SIGNING IN cannot be repaired by the `rotate_http` card
-above: there is no secret for the owner to paste, and that card's own preview refuses a
-sign-in scheme by design. When such a connection's stored sign-in stops being accepted,
-the owner SHALL instead be offered a card that starts the brokered sign-in.
+A connection completed by SIGNING IN cannot be repaired by the `rotate_http` card above: there is no secret for the owner to paste, and that card's own preview refuses a sign-in scheme by design. When such a connection's stored sign-in stops being accepted, the owner SHALL instead be offered a card that starts the brokered sign-in.
 
 The refusal SHALL be recorded durably, so it survives a restart or a deploy. It SHALL
 NOT be recorded as a field on the credential record, because the record's digest is
@@ -200,14 +197,11 @@ because the vault merge replaces the whole slot for this credential type.
 
 ### Requirement: Removal is not the repair path for a rejected key
 
+Removal SHALL NOT be the repair path for a key the provider stopped accepting. The served guidance SHALL direct a rotation to `rotate_http` and SHALL say why: an owner reads a removal card as deletion, and a remove-then-connect pair costs them a second approval of reach they already granted.
+
 Removal remains the way to RETIRE a key: it deletes the secret, the connection
 and its grants, frees the destination name, and returns `removed_endpoints` and
 `removed_scopes` so a deliberate re-deposit does not start from memory.
-
-Removal SHALL NOT be the repair path for a key the provider stopped accepting.
-The served guidance SHALL direct a rotation to `rotate_http` and SHALL say why:
-an owner reads a removal card as deletion, and a remove-then-connect pair costs
-them a second approval of reach they already granted.
 
 #### Scenario: a key that stopped working
 - **WHEN** the agent needs to replace a credential the far side rejected
