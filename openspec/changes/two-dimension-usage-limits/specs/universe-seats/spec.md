@@ -151,3 +151,19 @@ when a seat frees.
 #### Scenario: read_graph shows the queue
 - **WHEN** an owner reads a universe with seats held and work waiting
 - **THEN** the response reports the tier's seat count, how many are running, and how many are waiting
+
+### Requirement: Tier values are defined in exactly one place
+
+The seat count and the interactive reserve for each account tier SHALL be defined in a single module alongside the tier's storage quota, keyed by the tier strings the subscription store already owns, so no second definition of the same fact can drift from it. An unrecognized tier SHALL resolve to the lowest tier and log loudly; it SHALL NEVER resolve to "no limit". The free tier SHALL have fewer seats than a paid tier. The interactive reserve SHALL be clamped below the seat count inside the resolver, never at a call site, so it can never refuse every background run.
+
+#### Scenario: An unknown tier is the most restrictive, not unlimited
+- **WHEN** a universe's stored tier string is not recognized
+- **THEN** the free tier's seats apply and the mismatch is logged
+
+#### Scenario: A reserve can never consume every seat
+- **WHEN** the configured interactive reserve is greater than or equal to the tier's seat count
+- **THEN** background work still has at least one seat
+
+#### Scenario: Both test accounts work on free
+- **WHEN** a free universe runs a four-agent village and the owner chats while it runs
+- **THEN** every agent completes by queueing, the chat turn gets a seat, and nothing requires an upgrade

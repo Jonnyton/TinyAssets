@@ -1,7 +1,15 @@
 # Tasks: two-dimension-usage-limits
 
-Two PRs. PR 1 builds seats, storage and tiers; PR 2 deletes the old meters and
+Two PRs. PR 1 builds seats and the tier table; PR 2 deletes the old meters and
 rebases onto #4107 so its emit meter is deleted rather than merged around.
+
+**Storage is re-scoped out** (astra round 1, findings 10-16 and 18; see
+`REVIEW.md`). Finding 16 is a hard blocker: workspace creation reserves a fixed
+4 GiB, so a 2 GiB free quota refuses permanent workspaces on an EMPTY free
+universe -- the opposite of "neither of our users should need to upgrade". The
+accounting also spans four physical stores that sit beside universe directories
+rather than inside them. That is its own change with its own storage-shape
+review, not a task in a seats change. Tracked as `universe-storage-quota`.
 
 ## 1. PR 1 — seats, storage, tiers
 
@@ -16,16 +24,16 @@ rebases onto #4107 so its emit meter is deleted rather than merged around.
       nodes (`graph_compiler`), automation runs and `event`/`once` wakes
       (`automations.py`), with the blocking-nested seat inherited on the
       existing `provider_invocation` carrier. Overlap policy resolves first.
-- [ ] 1.4 `universe_storage.py`: measured + pending accounting excluding
-      scratch, the write gate, and the loud unmeasured path. Retire the 16 GiB
-      constant in `effectors/workspace.py` for the tier quota.
+- [ ] 1.4 Propose `universe-storage-quota` as its own change, carrying
+      `REVIEW.md`'s findings 10-16 and 18 as its starting constraints: the four
+      physical stores, the reserve/publish/reconcile lifecycle, and a free quota
+      that does not refuse a permanent workspace.
 - [ ] 1.5 Visible waiting state with the inline link: `converse` reply,
       `read_graph`, automation projection, `api/resource_usage.py`,
       `billing/status`, and `/mcp/app?upgrade=1` wired to `startSubscribe()`
       in `app.html` (native shell exempt).
 - [ ] 1.6 Tests: acquire/release on all four terminal paths, queue order,
       no-overtake, interactive reserve, stale reaping, re-entrant nesting,
-      storage refusal + reads-still-work + evasion-by-small-writes,
       free-tier 4-agent village completing by queueing, chat fairness under a
       background ping-pong, link resolves to the real route. Mutation-check
       each gate.
@@ -38,7 +46,9 @@ rebases onto #4107 so its emit meter is deleted rather than merged around.
 - [ ] 2.2 Delete the meters and every refusal that reads them:
       `RUN_WRITE_LIMIT`, `RUN_TOTAL_LIMIT`, `RUN_DAY_LIMIT`,
       `DISPATCHES_PER_HOUR`, `BYTES_PER_HOUR`, `BUDGET_WINDOW_S`,
-      `usage_notice`, `charge_dispatch`, `dispatch_window_usage`, the cap
+      `usage_notice`, `charge_dispatch`, `dispatch_window_usage`,
+      `workspace_pool`'s per-universe `bytes_per_hour` refusal (astra finding
+      18 -- a surviving hourly account meter the first scope missed), the cap
       parameters on `admit`, and `run_usage_limited` / `run_rate_limited` /
       `usage_limited` / `usage_limit_reached` at each caller (`api/runs.py`,
       `api/automations.py`, `api/deliveries.py`, `automations.py`,

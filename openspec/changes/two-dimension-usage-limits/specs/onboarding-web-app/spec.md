@@ -12,16 +12,14 @@ the canonical public origin, so there is exactly one string to verify. Inside
 the native Android shell the parameter SHALL be ignored for the same reason the
 plan control is hidden there: a digital subscription bought inside a
 Play-installed app must use Play Billing. The billing status route SHALL report
-the account's enforced limits — its seat count and its storage quota — rather
-than an empty list, and SHALL report the universe's accounted storage or an
-explicit unmeasured marker.
+the account's enforced seat count rather than an empty list.
 
 #### Scenario: The upgrade link opens the same flow as the header control
 - **WHEN** the app's served route is requested with the upgrade parameter
 - **THEN** the app starts the same checkout flow its own upgrade control starts, with no second route involved
 
 #### Scenario: One link string
-- **WHEN** a seat wait or a storage refusal renders an upgrade link
+- **WHEN** a seat wait renders an upgrade link
 - **THEN** both use the same builder, the same canonical origin and the same existing route
 
 #### Scenario: The native shell does not sell subscriptions
@@ -30,4 +28,4 @@ explicit unmeasured marker.
 
 #### Scenario: Billing status names what is enforced
 - **WHEN** a signed-in owner reads billing status
-- **THEN** it reports the tier, its seat count, its storage quota and the universe's accounted storage or an unmeasured marker
+- **THEN** it reports the tier and its seat count

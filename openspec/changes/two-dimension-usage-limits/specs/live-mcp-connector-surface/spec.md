@@ -6,19 +6,20 @@
 
 `read_graph` SHALL report, for the universe it reads, the tier's seat count,
 how many seats are running, how many callers are waiting, and the universe's
-accounted storage against its tier quota — or an explicit unmeasured marker
-where the footprint could not be measured. `converse` SHALL, when its turn
+and how many callers are waiting. `converse` SHALL, when its turn
 cannot obtain a seat within the bounded wait, reply with the waiting state
 naming the number of seats running and carrying the inline upgrade link, and
 SHALL keep the turn's queue position so its real reply arrives when a seat
 frees. Neither surface SHALL report a per-hour or per-day usage notice, a
 capacity-returns time, or a rate-limit reason, because none exists. A universe
-on the highest tier SHALL receive no upgrade link. The seat and storage figures
-SHALL be readable only by a caller already authorized to read that universe.
+on the highest tier SHALL receive no upgrade link. Seat figures SHALL be readable
+only by a caller already authorized to read that universe, and a waiter's queue
+position SHALL be reported as a universe-local position, never as the global
+ticket value, which would leak other universes' enqueue activity.
 
-#### Scenario: read_graph shows seats and storage
+#### Scenario: read_graph shows seats
 - **WHEN** an authorized owner reads a universe with seats held and work waiting
-- **THEN** the response reports seats running, seats total, waiters, and storage used against the quota
+- **THEN** the response reports seats running, seats total and waiters
 
 #### Scenario: A waiting turn answers instead of hanging
 - **WHEN** a chat turn cannot obtain a seat within the bounded wait
@@ -30,4 +31,4 @@ SHALL be readable only by a caller already authorized to read that universe.
 
 #### Scenario: Usage is private to the universe
 - **WHEN** an unauthenticated or unauthorized caller reads a universe
-- **THEN** no seat occupancy or storage figure is disclosed
+- **THEN** no seat occupancy figure is disclosed

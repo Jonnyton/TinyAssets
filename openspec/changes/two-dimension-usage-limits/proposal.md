@@ -141,10 +141,17 @@ cannot grow, and it cannot reach the interactive seat.
 ### New Capabilities
 
 - `universe-seats`: the per-universe concurrency layer — seat leases, the
-  priority queue, the interactive reserve, reaping, and the visible waiting
-  state with its upgrade link.
-- `universe-storage-quota`: the universe's cloud-footprint accounting and the
-  write refusal at the tier quota.
+  priority queue, the interactive reserve, reaping, the tier table, and the
+  visible waiting state with its upgrade link.
+
+**`universe-storage-quota` is re-scoped to its own change** (astra round 1,
+findings 10-16 and 18; `REVIEW.md`). Finding 16 is a hard blocker: workspace
+creation reserves a fixed 4 GiB, so a 2 GiB free quota refuses a permanent
+workspace on an EMPTY free universe — the opposite of the directive's own
+floor. The accounting also spans four physical stores that sit BESIDE universe
+directories rather than inside them, so a universe-directory scan cannot
+reconcile the bytes it is supposed to charge. Section 2 below is the target
+model and stays as the record of intent; it is not built here.
 
 ### Modified Capabilities
 
@@ -174,6 +181,6 @@ cannot grow, and it cannot reach the interactive seat.
   `api/runs.py`, `api/automations.py`, `api/deliveries.py`,
   `api/resource_usage.py`, `effectors/__init__.py`, `engine_mcp_server.py`,
   `universe_server.py`, `onboarding/__init__.py`, `onboarding/app.html`.
-- Split: **PR 1 = seats + queue + storage quota + tiers**; **PR 2 = meter
-  deletion**. PR 2 rebases onto #4107 so the `app_events` emit meter is
+- Split: **PR 1 = seats + queue + tier table**; **PR 2 = meter deletion**;
+  storage its own change after its own storage-shape review. PR 2 rebases onto #4107 so the `app_events` emit meter is
   deleted rather than merged around.
