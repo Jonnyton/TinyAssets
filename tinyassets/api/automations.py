@@ -79,15 +79,10 @@ _UNAVAILABLE_DETAIL = {
         "Automations run in your own home universe. Create this one there, or "
         "make this universe your home first."
     ),
-    # Two causes, one token: no ready assignment at all, or a ready one on an
-    # OPEN api_key_http provider, which foreground admission refuses outright.
-    # A sentence naming only the first would read as false to an owner who HAS
-    # connected an api-key compute provider and set it serving.
     "no_serving_assignment": (
-        "This universe is not serving on a subscription provider, so a run "
-        "would have nothing to run on. Connect your own Claude or Codex "
-        "subscription and set it serving -- an open API-key compute provider "
-        "cannot run an automation."
+        "This universe has no model serving it yet, so a run would have "
+        "nothing to run on. Connect a model -- a subscription or your own "
+        "API-key source -- and set it serving first."
     ),
     "branch_not_readable": (
         "That workflow is not readable from here. Check the branch_def_id "

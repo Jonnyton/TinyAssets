@@ -5,11 +5,10 @@
 # TODAY, so the number can only go down. Regenerate with:
 #     python scripts/check_channel_agnostic.py --update
 #
-# Total: 620 across 52 files.
+# Total: 605 across 48 files.
 
 tinyassets/account_deletion.py:stripe:3
 tinyassets/action_result_delivery.py:github:1
-tinyassets/api/automations.py:claude:1
 tinyassets/api/compute_connection.py:claude:1
 tinyassets/api/compute_connection.py:codex:2
 tinyassets/api/llm_deposit.py:claude:4

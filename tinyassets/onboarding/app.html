@@ -4205,6 +4205,22 @@
     clearComposerState();
     clearThread();
   }
+  // Every credential the owner typed and did NOT submit, cleared when the login
+  // ends. A RULE, not a list of ids: a `type="password"` input is by definition
+  // credential-bearing, so a setup field added later is covered without anyone
+  // remembering to come back here.
+  //
+  // Found by cross-family review of `notification-is-the-setup` (2026-09-26, P0).
+  // Each setup panel cleared its own field on SUBMIT, and the hosted panel's
+  // reset cleared its own input on sign-out — so a key pasted into "Other ways to
+  // connect" and never submitted stayed in the DOM, readable from the signed-out
+  // page by whoever used that browser next. Keeping a panel's shape across a
+  // refresh must never keep a credential across a sign-out.
+  function clearCredentialFields(){
+    const fields=document.querySelectorAll('input[type="password"]');
+    for(const field of fields) field.value="";
+  }
+
   function enterSignedOut(){ clearInterval(statusTimer); clearInterval(workingTimer); workingTimer=null;
     MCP.endLogin(); Voice.stop(false);
     // Pending attachments belong to the account that picked them. They are
@@ -4213,6 +4229,7 @@
     if(Uploads) Uploads.abort();
     clearAccountScopedState();
     if(typeof AppLayout!=="undefined") AppLayout.reset();
+    clearCredentialFields();
     if(typeof AppUI!=="undefined") AppUI.reset();
     HostedModelConnect.reset();
     modelChoiceForNextTurn=null;
