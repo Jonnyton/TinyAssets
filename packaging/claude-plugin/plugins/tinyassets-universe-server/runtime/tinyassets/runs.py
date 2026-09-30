@@ -5824,6 +5824,7 @@ def _execute_branch_core(
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
+    _provider_parent=None,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -5944,7 +5945,13 @@ def _execute_branch_core(
     # authenticated actor): a bare submit gives it the pool thread's empty
     # context, and a code node's RPC then resolves the daemon's env identity
     # (Codex round 3, P0).
-    future = executor.submit(contextvars.copy_context().run, _worker)
+    from tinyassets.provider_admission import independent_provider_work
+
+    # run_graph returns queued: it has not suspended its provider. Only a
+    # blocking compiler invoke may explicitly hand a slot to this worker.
+    with independent_provider_work(parent_slot=_provider_parent):
+        worker_context = contextvars.copy_context()
+    future = executor.submit(worker_context.run, _worker)
     _track_future(run_id, future)
 
     return RunOutcome(
@@ -6154,6 +6161,7 @@ def execute_branch_version_async(
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
+    _provider_parent=None,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -6199,6 +6207,7 @@ def execute_branch_version_async(
         branch_version_id=branch_version_id,
         owner_user_id=owner_user_id,
         _workspace_parent=_workspace_parent,
+        _provider_parent=_provider_parent,
         _enqueue_universe_id=_enqueue_universe_id,
         _invocation_depth=_invocation_depth,
     )
@@ -6416,7 +6425,11 @@ def resume_run(
         with _managed_execution_scope(base_path, run_id):
             return _resume_worker()
 
-    future = executor.submit(contextvars.copy_context().run, _owned_resume_worker)
+    from tinyassets.provider_admission import independent_provider_work
+
+    with independent_provider_work():
+        worker_context = contextvars.copy_context()
+    future = executor.submit(worker_context.run, _owned_resume_worker)
     _track_future(run_id, future)
 
     return RunOutcome(

@@ -1989,6 +1989,10 @@ def run_graph(
             read_graph target=run shows the actual current/terminal status.
         run_id: Required for operation=cancel; not accepted for operation=run.
     """
+    # Runs are queued, not synchronously awaited here. runs.py deliberately
+    # clears provider-slot inheritance at submission. An engine-MCP process
+    # therefore acquires normally; model-side polling can still exhaust the
+    # nested reserve (a cross-process suspension protocol remains necessary).
     normalized_operation = (operation or "run").strip().lower()
     if normalized_operation == "deliver_output":
         if any((branch_def_id, branch_version_id, run_name, recursion_limit_override, goal_id,

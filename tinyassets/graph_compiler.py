@@ -403,7 +403,16 @@ def _run_with_timeout(
     Neither touches work that has already begun: the check is before the
     first line of ``fn``, so a call past it settles untouched.
     """
-    executor = _get_timeout_executor()
+    from tinyassets.provider_admission import blocking_parent_slot
+
+    # A fixed worker pool can itself fill with blocked ancestors. A blocking
+    # provider child needs a worker independent of that pool, just as it needs
+    # its ancestor's slot rather than one behind that ancestor in the queue.
+    nested_executor = (
+        concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        if blocking_parent_slot() is not None else None
+    )
+    executor = nested_executor or _get_timeout_executor()
     deadline = time.monotonic() + timeout_s
 
     def _guarded() -> Any:
@@ -416,7 +425,12 @@ def _run_with_timeout(
             )
         return fn()
 
-    future = executor.submit(_guarded)
+    import contextvars
+
+    # Preserve the explicit blocking-invoke loan across the node worker hop.
+    future = executor.submit(contextvars.copy_context().run, _guarded)
+    if nested_executor is not None:
+        nested_executor.shutdown(wait=False)
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError as exc:
@@ -3036,16 +3050,21 @@ def _build_invoke_branch_node(
                     raise CompilerError(f"Node '{node.node_id}': {_STACK_EXHAUSTED}.")
                 ticket = _charge_child_run(node, _ctx)
                 try:
-                    outcome = execute_branch(
-                        _base, branch=child_branch, inputs=child_inputs,
-                        actor=actor_arg,
-                        owner_user_id=_ctx.owner_user_id or None,
-                        _workspace_parent=_workspace_invocation_parent(_ctx),
-                        _enqueue_universe_id=_ctx.universe_id,
-                        provider_call=provider_call,
-                        on_node_status=on_node_status,
-                        _invocation_depth=depth + 1,
-                    )
+                    from tinyassets.provider_admission import blocking_provider_child
+
+                    # Blocking invoke transfers ownership just like a parent seat;
+                    # the async branch below must acquire its own provider slot.
+                    with blocking_provider_child():
+                        outcome = execute_branch(
+                            _base, branch=child_branch, inputs=child_inputs,
+                            actor=actor_arg,
+                            owner_user_id=_ctx.owner_user_id or None,
+                            _workspace_parent=_workspace_invocation_parent(_ctx),
+                            _enqueue_universe_id=_ctx.universe_id,
+                            provider_call=provider_call,
+                            on_node_status=on_node_status,
+                            _invocation_depth=depth + 1,
+                        )
                 except RecursionError:
                     raise CompilerError(
                         f"Node '{node.node_id}': {_STACK_EXHAUSTED}."
@@ -3331,21 +3350,28 @@ def _build_invoke_branch_version_node(
                 # Async helper handles the snapshot-load + reconstruction +
                 # SnapshotSchemaDrift + KeyError contract per Task #65b.
                 ticket = _charge_child_run(node, _ctx)
-                outcome = execute_branch_version_async(
-                    _base,
-                    branch_version_id=child_branch_version_id,
-                    inputs=child_inputs,
-                    actor=actor_arg,
-                    owner_user_id=_ctx.owner_user_id or None,
-                    _workspace_parent=_workspace_invocation_parent(_ctx),
-                    _enqueue_universe_id=_ctx.universe_id,
-                    provider_call=provider_call,
-                    on_node_status=on_node_status,
-                    _invocation_depth=depth + 1,
+                from tinyassets.provider_admission import (
+                    blocking_parent_slot,
+                    blocking_provider_child,
                 )
-                _bind_child_ticket(ticket, str(outcome.run_id or ""))
-                # Block until the child terminates; harvest its output dict.
-                record = poll_child_run_status(_base, outcome.run_id)
+
+                with blocking_provider_child():
+                    outcome = execute_branch_version_async(
+                        _base,
+                        branch_version_id=child_branch_version_id,
+                        inputs=child_inputs,
+                        actor=actor_arg,
+                        owner_user_id=_ctx.owner_user_id or None,
+                        _workspace_parent=_workspace_invocation_parent(_ctx),
+                        _enqueue_universe_id=_ctx.universe_id,
+                        provider_call=provider_call,
+                        on_node_status=on_node_status,
+                        _invocation_depth=depth + 1,
+                        _provider_parent=blocking_parent_slot(),
+                    )
+                    _bind_child_ticket(ticket, str(outcome.run_id or ""))
+                    # Block until the child terminates; harvest its output dict.
+                    record = poll_child_run_status(_base, outcome.run_id)
                 child_status = record.get("status", "")
                 child_output = record.get("output") or {}
 
