@@ -111,17 +111,55 @@ class WorkCandidateData:
             ):
                 raise PermissionError("explicit work model order is not fully eligible")
         if not self.order:
-            raise PermissionError("no eligible work model remains")
+            # TYPED, not a bare PermissionError: `_admit`'s handler converts any
+            # other exception into held authority, and "your accepted sources
+            # produced no runnable model" is a different owner action from
+            # "connect a provider". The run taxonomy keys on this MESSAGE, which
+            # is why it is the class constant rather than a local literal.
+            raise WorkModelExhaustedError(WorkModelExhaustedError.MESSAGE)
         self._fitted = None
         self._exhaustion = ()
         self._lock = threading.RLock()
+
+    def _admitted_refs(self, pin):
+        """Every admitted model of this owner matching ``pin``, catalogue order.
+
+        `self.order` is the ADVISORY order, and for a subscription/local source
+        that is only its advertised default -- `order_models` deliberately keeps
+        a subscription's other ids "visible in the catalogue for explicit
+        selection" rather than ranking them. So a node naming an accepted native
+        id is never in the order, and treating the order as the whole world
+        refused that node outright once every run started capturing one.
+
+        The catalogue read here is the plan's ADMITTED catalogue: this owner's
+        accepted sources with the candidate-only (learned, not-yet-granted) rows
+        already removed, so a pin still cannot reach a model the owner's own
+        `ModelAccess` does not admit -- and `_authorize_attempt` and
+        `_validate_work_selection` revalidate the exact id afterwards regardless.
+        """
+        return tuple(
+            ref
+            for connection in self.catalog.connections
+            for ref in (
+                ModelRef(connection.connection_id, model.model_id)
+                for model in connection.models
+            )
+            if _matches(ref, pin)
+        )
 
     def _constrained(self, policy):
         if not policy:
             return self.order
         if policy.get("difficulty_override"):
             raise PermissionError("dynamic graph model overrides conflict with captured selection")
-        matching = tuple(ref for ref in self.order if _matches(ref, policy.get("preferred", {})))
+        pin = policy.get("preferred", {})
+        matching = tuple(ref for ref in self.order if _matches(ref, pin))
+        if not matching and self.automatic:
+            # The owner chose nothing, so the captured order ranks, it does not
+            # decide. A graph pin IS an explicit choice and `order_models`
+            # already serves one from the catalogue; honour it rather than
+            # refusing the node for not appearing in an advisory ranking.
+            matching = self._admitted_refs(pin)
         if not matching or (not self.automatic and matching[0] != self.order[0]):
             raise PermissionError("graph model constraint conflicts with captured primary")
         primary = matching[0]

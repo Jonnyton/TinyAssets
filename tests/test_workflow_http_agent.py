@@ -250,7 +250,16 @@ def test_prelaunch_failure_releases_reserved_budget(
         )]
     # An observer failure before durable inference intent is a known-unsent
     # attempt: existing compiler retries remain safe and each releases its cap.
-    assert len(rows) == (3 if phase == "observer" else 1)
+    #
+    # Two, not three, since every run now captures its owner's model order --
+    # this fixture's node pins one model, so the order has one candidate and the
+    # conservative account-scope exhaustion from the first validated capacity
+    # failure ends it. The third compiler retry is refused by the order itself
+    # rather than reserving again, which is the captured-order contract already
+    # in force for an owner with a saved preference
+    # (tests/test_direct_run_work_preferences.py) and the point of typing
+    # exhaustion at the boundary: a backoff that can only end at the same wall.
+    assert len(rows) == (2 if phase == "observer" else 1)
     assert all(row["state"] == "cancelled_before_launch" for row in rows)
     assert all(row["actual_total_tokens"] == row["actual_cost_microunits"] == 0 for row in rows)
 

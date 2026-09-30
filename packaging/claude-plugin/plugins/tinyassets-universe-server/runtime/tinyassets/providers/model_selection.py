@@ -235,6 +235,69 @@ def _selection_definition(base_path, owner_user_id, universe_id, provider, model
     return definition
 
 
+def _accepted_caps(contract, access):
+    """The owner's accepted price ceilings for this source's components."""
+    components = contract.price_components
+    caps = (
+        tuple((name, 0) for name in sorted(components))
+        if access.cost_caps is None
+        else access.cost_caps
+    )
+    if {name for name, _ in caps} != components:
+        raise PermissionError("selected executor cannot enforce the accepted price components")
+    return caps
+
+
+def _eligible_order(definition, snapshot, *, access, needs_tools):
+    """Automatic eligibility over an already-fetched snapshot: fresh capability
+    AND permitted pricing. An explicit preference cannot use the advisory
+    kernel's stale-list allowance.
+
+    Pure data -- no IO, no authority -- so it is safe to call inside the
+    reservation transaction. Shared with :func:`eligible_model_ids` so that
+    "may this model run" and "which model when none was named" cannot answer
+    differently; a second ordering is how a run came to pin a model its own
+    account could not run (see `eligible_model_ids`).
+    """
+    contract = snapshot.contract()
+    caps = _accepted_caps(contract, access)
+    if type(needs_tools) is not bool:
+        raise PermissionError("invalid required model capability")
+    order = order_models(
+        Catalog(definition.owner_user_id, definition.universe_id, (snapshot.models,)),
+        ModelPolicy(
+            generation=0,
+            mode="automatic",
+            fallbacks=(),
+            cost_caps=tuple(Charge(name, amount, True) for name, amount in caps),
+        ),
+        replace(contract.text_interaction, needs_tools=needs_tools),
+        owner_id=definition.owner_user_id,
+        universe_id=definition.universe_id,
+    )
+    return contract, caps, order
+
+
+def eligible_model_ids(definition, snapshot, *, access, needs_tools=False):
+    """This source's currently runnable models, best first.
+
+    What an omitted workflow model resolves to. It used to resolve to
+    ``snapshot.default_model_id or definition.model`` -- the source's DECLARED
+    default -- which is a claim about registration time, not about now. Live
+    2026-09-30 (universe ``u-01ky3zh1arr8qth8jee7zx63pq``): the declared
+    ``inclusionai/ling-3.0-flash-vl:free`` had left the account's 632-model
+    catalogue and OpenRouter's user-models protocol reports no default, so every
+    unpinned node pinned a model that no longer existed while the owner's chat
+    turn ran fine on the fresh order.
+    """
+    return tuple(
+        candidate.ref.model_id
+        for candidate in _eligible_order(
+            definition, snapshot, access=access, needs_tools=needs_tools,
+        )[2].candidates
+    )
+
+
 def _validate_snapshot(definition, snapshot, provider, model_id, access, *, needs_tools=False):
     from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
 
@@ -244,39 +307,15 @@ def _validate_snapshot(definition, snapshot, provider, model_id, access, *, need
         or snapshot.provider != provider
     ):
         raise PermissionError("discovery snapshot does not match selected provider")
-    contract = snapshot.contract()
     from tinyassets.providers.wire_dialects import same_dialect
 
-    if not same_dialect(definition.protocol, contract.inference_protocol):
+    if not same_dialect(definition.protocol, snapshot.contract().inference_protocol):
         raise PermissionError("discovery and inference protocols do not match")
-    components = contract.price_components
-    caps = (
-        tuple((name, 0) for name in sorted(components))
-        if access.cost_caps is None
-        else access.cost_caps
+    contract, caps, order = _eligible_order(
+        definition, snapshot, access=access, needs_tools=needs_tools,
     )
-    if {name for name, _ in caps} != components:
-        raise PermissionError("selected executor cannot enforce the accepted price components")
     contract.constrain_inference({"model": model_id, "messages": []}, caps)
     ref = ModelRef(provider, model_id)
-    # Automatic eligibility enforces fresh capability/privacy AND price evidence.
-    # An explicit preference cannot use the advisory kernel's stale-list allowance.
-    policy = ModelPolicy(
-        generation=0,
-        mode="automatic",
-        fallbacks=(),
-        cost_caps=tuple(Charge(name, amount, True) for name, amount in caps),
-    )
-    if type(needs_tools) is not bool:
-        raise PermissionError("invalid required model capability")
-    interaction = replace(contract.text_interaction, needs_tools=needs_tools)
-    order = order_models(
-        Catalog(owner_user_id, universe_id, (snapshot.models,)),
-        policy,
-        interaction,
-        owner_id=owner_user_id,
-        universe_id=universe_id,
-    )
     if ref not in {candidate.ref for candidate in order.candidates}:
         raise PermissionError("selected model lacks fresh capability or permitted pricing")
     assert_discovery_snapshot_current(snapshot)
