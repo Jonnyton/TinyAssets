@@ -27,6 +27,23 @@ public class NotificationReplyPlugin extends Plugin {
         text = reply;
     }
 
+    /**
+     * The page tells native whether notifications are on for the signed-in
+     * owner. Off (sign-out, account change) makes the message service drop
+     * anything that arrives, independent of how long FCM takes to delete the
+     * token.
+     */
+    @PluginMethod
+    public void setActive(PluginCall call) {
+        Boolean active = call.getBoolean("active");
+        if (active == null) {
+            call.reject("active must be true or false");
+            return;
+        }
+        TinyAssetsMessagingService.setActive(getContext(), active);
+        call.resolve();
+    }
+
     @PluginMethod
     public void consume(PluginCall call) {
         JSObject result = new JSObject();

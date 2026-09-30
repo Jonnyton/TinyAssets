@@ -11,14 +11,15 @@ from __future__ import annotations
 from tests.test_app_browser_notifications import functions, run_js
 
 NAMES = (
-    "notificationSession", "notificationAPI", "nativePush", "wireNativePush",
+    "notificationSession", "notificationAPI", "nativePush", "setNativeActive",
+    "wireNativePush",
     "nativeFcmToken", "registerNativeNotifications", "rebindNativeNotifications",
     "unregisterNativeNotifications",
 )
 
 # The page's own globals the functions close over, then a fake push plugin.
 PRELUDE = """
-const NATIVE=true, NATIVE_PUSH_FLAG="app.push.fcm";
+const NATIVE=true, NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner";
 let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
 const store={}, localStorage={getItem:k=>k in store?store[k]:null,
   setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}};
@@ -37,8 +38,10 @@ const plugin={
   unregister:async()=>calls.push('unregister'),
   removeAllDeliveredNotifications:async()=>calls.push('removeAll'),
 };
-let replyPlugin=null;
-const nativePlugin=name=>name==='PushNotifications'?plugin:(name==='NotificationReply'?replyPlugin:null);
+let replyPlugin={setActive:async({active})=>{calls.push('active:'+active);},
+  consume:async()=>{calls.push('consume');return {};}};
+const nativePlugin=name=>name==='PushNotifications'?plugin
+  :(name==='NotificationReply'?replyPlugin:null);
 const fetch=async(path,options)=>{posts.push({path,options,body:JSON.parse(options.body||'null')});
   return {ok:postOk,status:postOk?200:500,json:async()=>({device_id:'dev_1'})};};
 const out=()=>console.log(JSON.stringify({calls,posts,store}));
@@ -61,6 +64,9 @@ out();""")
     assert post["body"] == {"platform": "fcm", "token": "fcm-token-1",
                             "label": "This phone"}
     assert out["store"]["app.push.fcm"] == "1"
+    # The native message service is armed, for THIS owner only.
+    assert out["store"]["app.push.owner"] == "alice"
+    assert out["calls"][-1] == "active:true"
 
 
 def test_a_denied_permission_registers_nothing():
@@ -103,12 +109,15 @@ console.log(JSON.stringify({before,posts}));""")
 
 def test_sign_in_reposts_the_current_token_so_a_rotation_while_closed_is_not_lost():
     out = run("""
-localStorage.setItem('app.push.fcm','1'); FCM='token-after-rotation';
+localStorage.setItem('app.push.fcm','1'); localStorage.setItem('app.push.owner','alice');
+FCM='token-after-rotation';
 await rebindNativeNotifications();
 out();""")
 
     [post] = out["posts"]
     assert post["body"]["token"] == "token-after-rotation"
+    # Same owner: nothing of theirs is cleared, and display is never interrupted.
+    assert "removeAll" not in out["calls"] and "active:false" not in out["calls"]
 
 
 def test_sign_in_does_nothing_for_a_phone_that_never_opted_in():
@@ -136,7 +145,37 @@ localStorage.setItem('app.push.fcm','1');
 await unregisterNativeNotifications();
 out();""")
 
-    assert out["calls"] == ["unregister", "removeAll"]
+    # Display is switched off FIRST and synchronously: deleteToken may not have
+    # finished, and a late message must not reach the next person.
+    assert out["calls"][0] == "active:false"
+    assert out["calls"][-2:] == ["unregister", "removeAll"]
+    assert "app.push.fcm" not in out["store"]
+
+
+def test_a_registration_made_by_another_owner_is_disarmed_and_cleared_before_the_move():
+    out = run("""
+localStorage.setItem('app.push.fcm','1'); localStorage.setItem('app.push.owner','bob');
+await rebindNativeNotifications();
+out();""")
+
+    calls = out["calls"]
+    # Bob's notifications come off the screen, his parked reply is discarded, and
+    # display stays off until the token has moved to the new owner.
+    assert calls.index("active:false") < calls.index("removeAll") < calls.index("consume")
+    assert calls[-1] == "active:true"
+    assert out["posts"][0]["body"]["platform"] == "fcm"
+    assert out["store"]["app.push.owner"] == "alice"
+
+
+def test_a_failed_move_leaves_display_off_and_the_phone_unregistered():
+    out = run("""
+localStorage.setItem('app.push.fcm','1'); localStorage.setItem('app.push.owner','bob');
+postOk=false;
+await rebindNativeNotifications();
+out();""")
+
+    assert "active:true" not in out["calls"]
+    assert out["calls"][-1] == "removeAll" and "unregister" in out["calls"]
     assert "app.push.fcm" not in out["store"]
 
 
@@ -145,7 +184,7 @@ def test_signing_out_discards_a_reply_the_previous_owner_never_submitted():
 localStorage.setItem('app.push.fcm','1');
 pendingReply={request_id:'req_1',item_id:'',text:'alice private words',seen:0};
 let consumedNatively=0;
-replyPlugin={consume:async()=>{consumedNatively++;return {};}};
+replyPlugin={consume:async()=>{consumedNatively++;return {};},setActive:async()=>{}};
 await unregisterNativeNotifications();
 console.log(JSON.stringify({pending:pendingReply,consumedNatively,calls}));""")
 

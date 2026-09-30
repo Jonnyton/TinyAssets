@@ -54,12 +54,30 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
     private static final Pattern ID = Pattern.compile("[A-Za-z0-9_:.\\-]{1,120}");
     private static final String PREFS = "tinyassets_notifications";
     private static final String NONCE_KEY = "reply_nonce";
+    private static final String ACTIVE_KEY = "push_active";
 
     static String safeId(String value) {
         return value != null && ID.matcher(value).matches() ? value : null;
     }
 
     /** The per-install secret a Reply intent must carry. App-private storage. */
+    /**
+     * Whether the signed-in owner turned notifications on for this phone. The
+     * web layer flips it on register and off on sign-out, synchronously, so a
+     * message that arrives after sign-out -- even if FCM has not finished
+     * deleting the token -- is dropped rather than shown to whoever holds the
+     * handset now.
+     */
+    static boolean isActive(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(ACTIVE_KEY, false);
+    }
+
+    static void setActive(Context context, boolean active) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(ACTIVE_KEY, active).apply();
+    }
+
     static synchronized String replyNonce(Context context) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String nonce = prefs.getString(NONCE_KEY, null);
@@ -94,6 +112,7 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
             manager.cancel(requestId, NOTIFICATION_ID);
             return;
         }
+        if (!isActive(this)) return;
         String title = data.get("title");
         String body = data.get("body");
         if (title == null || body == null) return;
@@ -142,10 +161,15 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
         if (itemId != null) intent.putExtra(EXTRA_ITEM_ID, itemId);
         if (reply) intent.putExtra(EXTRA_NONCE, replyNonce(this));
         // A RemoteInput reply is written into the PendingIntent by the system,
-        // which requires it to be mutable; the plain tap stays immutable.
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT
-            | (reply && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-                ? PendingIntent.FLAG_MUTABLE : PendingIntent.FLAG_IMMUTABLE);
+        // so it must be MUTABLE: explicitly from Android 12, and by default
+        // before it (where FLAG_IMMUTABLE would stop the reply text arriving).
+        // The plain tap stays immutable.
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (!reply) {
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            flags |= PendingIntent.FLAG_MUTABLE;
+        }
         return PendingIntent.getActivity(this, (action + requestId).hashCode(), intent, flags);
     }
 

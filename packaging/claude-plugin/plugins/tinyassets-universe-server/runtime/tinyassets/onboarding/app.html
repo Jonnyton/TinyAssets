@@ -4063,7 +4063,9 @@
     if(me&&me.universe_id) setQueueScope(me.universe_id);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
-    if(NATIVE){ rebindNativeNotifications(); collectNotificationReply(); }
+    // In this order: a reply left by a previous owner is discarded by the rebind
+    // before this page can collect it.
+    if(NATIVE) rebindNativeNotifications().then(collectNotificationReply);
     // Not awaited: the owner's clock is for the NEXT schedule they create, so
     // it must not sit in front of the page they are waiting for.
     reportTimezone();
@@ -5980,9 +5982,18 @@
   // /app/devices under the signed-in session and the server files it under the
   // authenticated subject -- nothing in the body names an owner. The token is
   // write-only (no read returns it).
-  const NATIVE_PUSH_FLAG="app.push.fcm";
+  const NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner";
   let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
   function nativePush(){ return NATIVE ? nativePlugin("PushNotifications") : null; }
+  // Tells the native message service whether the signed-in owner wants
+  // notifications on this phone. It is checked on every arriving message, so
+  // turning it off at sign-out stops display at once, however long FCM takes to
+  // delete the token.
+  async function setNativeActive(active){
+    const R=NATIVE ? nativePlugin("NotificationReply") : null;
+    if(!R) return;
+    try{ await R.setActive({active}); }catch(_error){ /* an older shell has no gate */ }
+  }
   function wireNativePush(){
     const P=nativePush();
     if(!P || nativePushWired) return;
@@ -6026,6 +6037,8 @@
     if(!value) throw new Error("Couldn't get a notification address for this phone. Try again.");
     await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
     localStorage.setItem(NATIVE_PUSH_FLAG,"1");
+    localStorage.setItem(NATIVE_PUSH_OWNER,queueOwner||"");
+    await setNativeActive(true);
   }
   async function rebindNativeNotifications(){
     // The phone's token can change while the app is closed, and nothing is
@@ -6035,11 +6048,22 @@
     if(!P || localStorage.getItem(NATIVE_PUSH_FLAG)!=="1") return;
     const session=notificationSession();
     try{
+      if(localStorage.getItem(NATIVE_PUSH_OWNER)!==(queueOwner||"")){
+        // The registration was made by someone else (a sign-out that never
+        // finished): nothing of theirs stays on screen or armed to be answered
+        // as this owner until the token has moved.
+        await setNativeActive(false);
+        await P.removeAllDeliveredNotifications();
+        const R=nativePlugin("NotificationReply");
+        if(R) await R.consume();
+      }
       const permission=await P.checkPermissions();
       if(permission.receive!=="granted"){ localStorage.removeItem(NATIVE_PUSH_FLAG); return; }
       const value=await nativeFcmToken();
       if(!value) return;
       await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
+      localStorage.setItem(NATIVE_PUSH_OWNER,queueOwner||"");
+      await setNativeActive(true);
     }catch(_error){
       // If ownership cannot be moved, stop this phone receiving the old
       // owner's notifications. The owner can turn them on again in Account.
@@ -6049,6 +6073,8 @@
   async function unregisterNativeNotifications(){
     const P=nativePush(), R=nativePlugin("NotificationReply");
     localStorage.removeItem(NATIVE_PUSH_FLAG);
+    localStorage.removeItem(NATIVE_PUSH_OWNER);
+    await setNativeActive(false);
     // A reply the previous owner typed but this page never submitted belongs to
     // that owner: drop it natively and here, so the next sign-in never sees it.
     pendingReply=null;

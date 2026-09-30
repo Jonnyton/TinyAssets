@@ -294,8 +294,17 @@ def test_the_reply_intent_is_bound_to_a_secret_only_this_app_holds():
     assert "Context.MODE_PRIVATE" in service and "SecureRandom" in service
     assert "MessageDigest.isEqual" in injector
     assert injector.index("MessageDigest.isEqual") < injector.index("NotificationReplyPlugin.park")
-    # Only the reply carries a mutable PendingIntent; the tap stays immutable.
-    assert "FLAG_IMMUTABLE" in service and "FLAG_MUTABLE" in service
+    # Only the reply is mutable (RemoteInput writes into it): never IMMUTABLE on
+    # the reply at any API level, which is what silently dropped the text before
+    # Android 12; the plain tap stays immutable.
+    assert re.search(r"if \(!reply\) \{\s+flags \|= PendingIntent\.FLAG_IMMUTABLE;", service)
+    assert "else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)" in service
+    # Display is gated by the owner's switch, checked per arriving message and
+    # set synchronously by the page -- so a message after sign-out is dropped
+    # even if FCM has not finished deleting the token.
+    assert "if (!isActive(this)) return;" in service
+    assert "static void setActive(Context context, boolean active)" in service
+    assert "setActive(PluginCall call)" in _java("NotificationReplyPlugin.java")
     # The only things an intent carries are the two ids and the secret: the
     # notification has no credential to leak by construction.
     extras = re.findall(r"putExtra\((\w+)", service)
