@@ -32,6 +32,19 @@ RESET = int(NOW.timestamp() + 43200) * 1000
      {"x-ratelimit-remaining-tokens-day": "0", "x-ratelimit-reset-tokens-day": "7200"}, 7200),
     ({"object": "error", "type": "rate_limited", "code": "1300",
       "message": "Daily token limit exceeded"}, {}, None),
+    # The reverse of the minute counterexample below (gpt-6-astra, round 2):
+    # the DAY is what ran out; the minute window is only a balance.
+    ({"error": {"message": "Daily token limit exceeded. Requests per minute remaining: 49."}},
+     {}, None),
+    # A shorter-window word inside an identifier is not a window.
+    ({"error": {"message": "Daily token limit exceeded for model supermin."}}, {}, None),
+    ({"error": {"message": "Daily request limit reached, 0 remaining."}}, {}, None),
+    # No space after the full stop still ends the sentence (astra round 3).
+    ({"error": {"message": "Daily token limit exceeded.Requests per minute remaining: 49."}},
+     {}, None),
+    ({"error": {"message": "Rate limit reached for model `m` in organization `o` on "
+                           "tokens per day (TPD): Limit 200000, Used 199999, Requested "
+                           "500. Please try again in 1m23s."}}, {}, None),
 ])
 def test_explicit_daily_shapes(body, headers, delay):
     signal = daily_quota_signal(429, headers, json.dumps(body), now=NOW)
@@ -52,6 +65,16 @@ def test_explicit_daily_shapes(body, headers, delay):
     {"object": "error", "message": "Rate limit exceeded", "type": "rate_limited",
      "param": None, "code": "1300", "raw_status_code": 429},
     {"error": {"details": [{"violations": 7}]}},
+    # A minute refusal that merely MENTIONS the day's budget (gpt-6-astra
+    # counterexample, 2026-09-30): read as daily, it cooled the whole source
+    # and dropped a sibling model that would have answered.
+    {"error": {"message": "Requests per minute exceeded. Daily quota remaining: 49. "
+                          "Retry in 20 seconds."}},
+    # A long gap must not cut the qualifier off the balance (astra round 3).
+    {"error": {"message": "Requests per minute exceeded. Daily quota " + " " * 4096
+                          + "remaining: 49."}},
+    # A decimal is not a sentence end.
+    {"error": {"message": "Limit 1.5 per minute exceeded. Daily quota remaining: 3."}},
 ])
 def test_ambiguous_and_per_minute_shapes_are_not_daily(body):
     assert daily_quota_signal(429, {"retry-after": "120"}, json.dumps(body)) is None

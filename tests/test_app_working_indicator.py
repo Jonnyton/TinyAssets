@@ -59,6 +59,8 @@ _DECLS = (
     r"const TURN_WORKING_STATES=[^\n]*;", r"let serverTurn=[^\n]*;",
     r"const STATUS_IDLE_MS=[^\n]*;", r"let statusBeatMs=[^\n]*;",
     r"let serverStatusLine=[^\n]*;",
+    # The Stop control's state (sendTurn's cleanup reads it).
+    r"let interruptRequested=[^\n]*;", r"const STOP_REQUEST_MS=[^\n]*;",
     # The seat wait line (`universe_seats`).
     r"let seatWait=[^\n]*;", r"let seatLineShown=[^\n]*;",
 )
@@ -80,7 +82,9 @@ _FUNCS = (
 # tree without them must fail on what the screen shows, not on an extraction.
 _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued",
               "readServerTurn", "serverTurnLive", "workingSince", "workingElapsed",
-              "renderWorking", "pulseHeartbeat")
+              "renderWorking", "pulseHeartbeat",
+              "renderStop", "takeInterruptFlush", "flushAfterTurn",
+              "drainAfterStop", "takeBatch", "flushBatch")
 
 # A real tree. `insertBefore` and a detaching `remove` are the point: thread
 # order is what the ordering half of this bug is about.

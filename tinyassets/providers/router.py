@@ -253,6 +253,31 @@ def _rate_limit_cooldown_s(exc: BaseException) -> int:
     return _retry_after_cooldown_s(getattr(exc, "retry_after", None))
 
 
+def _live_interactive_turn():
+    """The owner's live chat turn this call runs under, if any (turn_interrupt)."""
+    from tinyassets.turn_interrupt import current
+
+    return current()
+
+
+def _stoppable_native_turn(operation, provider):
+    """The live chat turn whose Stop may cancel this dispatch, or ``None``.
+
+    Only a NATIVE agent on the ``converse`` operation: cancellation is what ends
+    its process family. An HTTP request cannot be aborted (its provider waits for
+    it even when cancelled), so it returns and its real usage settles, and the
+    turn stops at its next boundary (``tinyassets/turn_interrupt``). A Stop
+    already asked for cancels before anything is claimed or launched, so the
+    reservation is released and the carrier settles cancelled-before-launch
+    rather than indeterminate.
+    """
+    if operation != "converse":
+        return None
+    if getattr(provider, "agent_execution_kind", None) != "native_agent":
+        return None
+    return _live_interactive_turn()
+
+
 def _sync_call_timeout_s(cfg: ModelConfig) -> float:
     """Timeout for a sync-wrapper call: at least the stream absolute cap.
 
@@ -1145,6 +1170,9 @@ class ProviderRouter:
                         nested=_is_nested(universe_context),
                         parent_slot=blocking_parent_slot(),
                     ):
+                        live_turn = _stoppable_native_turn(operation, provider)
+                        if live_turn is not None and live_turn.requested():
+                            raise asyncio.CancelledError()  # Stop: nothing launched
                         before_launch = getattr(
                             served_authority, "before_provider_launch", None
                         ) if served_authority is not None else None
@@ -1177,9 +1205,13 @@ class ProviderRouter:
                         with provider_launch_scope(
                             universe_dir, credential_dir=cfg.credential_snapshot_dir,
                         ):
-                            resp = await provider.complete(
+                            dispatch = provider.complete(
                                 prompt, system, cfg, universe_dir=universe_dir,
                             )
+                            if live_turn is not None:
+                                resp = await live_turn.cancel_on_stop(dispatch)
+                            else:
+                                resp = await dispatch
                 except _ProviderBusy:
                     # Not a provider failure: nothing launched, so the reservation is
                     # released untouched, no cooldown is applied, and the actionable
@@ -1820,6 +1852,13 @@ class ProviderRouter:
         queued_at = time.monotonic()
         node_budget_s = _caller_deadline_budget_s(cfg)
         drain_deadline = queued_at + inner_timeout
+        # Read on the CALLER's thread and carried into the pool worker, which
+        # does not inherit context variables. Set only inside a served converse
+        # turn; the dispatch site alone decides what a stop may cancel (only a
+        # native ``converse`` dispatch), so nothing else is stoppable from here.
+        from tinyassets.turn_interrupt import TurnInterrupted, bound
+
+        live_turn = _live_interactive_turn()
 
         def _run() -> ProviderResponse:
             waited = time.monotonic() - queued_at
@@ -1843,16 +1882,23 @@ class ProviderRouter:
             )
             loop = asyncio.new_event_loop()
             try:
-                return loop.run_until_complete(
-                    asyncio.wait_for(
-                        self.call(
-                            role, prompt, system, run_cfg,
-                            operation=operation,
-                            universe_context=universe_context,
-                        ),
-                        timeout=run_timeout,
-                    )
-                )
+                with bound(live_turn):
+                    try:
+                        return loop.run_until_complete(
+                            asyncio.wait_for(
+                                self.call(
+                                    role, prompt, system, run_cfg,
+                                    operation=operation,
+                                    universe_context=universe_context,
+                                ),
+                                timeout=run_timeout,
+                            )
+                        )
+                    except asyncio.CancelledError:
+                        # Only the owner's Stop cancels from inside this loop.
+                        if live_turn is not None and live_turn.requested():
+                            raise TurnInterrupted("the owner stopped this turn") from None
+                        raise
             except asyncio.TimeoutError:
                 # wait_for already cancelled the coroutine (subprocess killed).
                 raise ProviderTimeoutError(

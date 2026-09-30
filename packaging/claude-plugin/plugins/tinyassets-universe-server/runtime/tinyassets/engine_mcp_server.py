@@ -43,6 +43,11 @@ from fastmcp.server.middleware import Middleware
 
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 
+#: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
+#: inputs_json``) accepts on the wire: the JSON TEXT, or the value itself
+#: (``_json_text`` turns either into the one text form handlers parse).
+JsonArgument = str | dict | list
+
 # The founder + universe this engine turn is bound to. Read once at startup; the
 # daemon writes them into the server subprocess env via _engine_mcp_flags.
 _ACTOR_ID = (os.environ.get("TINYASSETS_ENGINE_ACTOR_ID") or "").strip()
@@ -211,6 +216,48 @@ def _projected(payload: str, project) -> str:
     return json.dumps(project(document), default=str)
 
 
+#: How long ``read_graph target="run"`` holds a still-moving run before answering,
+#: and how often it looks again meanwhile. A prompt node typically settles
+#: inside this window, so the read the agent makes right after ``run_graph``
+#: returns the OUTCOME instead of ``running``.
+_RUN_READ_WAIT_S = 10.0
+_RUN_READ_POLL_S = 1.0
+_RUN_MOVING = frozenset({"queued", "running", "resumed"})
+
+
+def _read_run_settled(read, *, wait_s=None, poll_s=None, clock=None, sleep=None) -> str:
+    """Read one run, waiting a bounded time for it to leave queued/running.
+
+    Live 2026-09-30 (free account, turn at 05:16): three ``read_graph
+    target=run`` calls back to back, each answered ``running``, each a model
+    request out of a free allowance of about fifty a day. The wait costs the
+    turn a few seconds of wall clock and no request; polling costs a request
+    per look. Bounded, so a long run still answers ``running`` promptly, and
+    any payload that is not a moving run record (a refusal, a not-found, a
+    terminal run) returns on the first read unchanged.
+    """
+    import json
+    import time
+
+    wait_s = _RUN_READ_WAIT_S if wait_s is None else wait_s
+    poll_s = _RUN_READ_POLL_S if poll_s is None else poll_s
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
+    deadline = clock() + wait_s
+    while True:
+        payload = read()
+        try:
+            document = json.loads(payload)
+        except (TypeError, ValueError, RecursionError):
+            return payload
+        if not isinstance(document, dict) or document.get("status") not in _RUN_MOVING:
+            return payload
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return payload
+        sleep(min(poll_s, remaining))
+
+
 def _binding_error() -> str | None:
     """Hard fail-closed: require both pins AND their current serving authority.
 
@@ -294,7 +341,85 @@ class BoundedResults(Middleware):
         return result
 
 
+#: ``status`` values that mean the call was REFUSED. Any other status (a run
+#: record's ``failed``, a build's ``built``) describes the thing read or made,
+#: and its ``error`` field is data about that thing, not a failed call.
+_REFUSAL_STATUSES = frozenset({"rejected", "refused", "error"})
+
+
+def refusal_text(text: object) -> bool:
+    """Is this served tool text a refusal? The one predicate, used by the flag.
+
+    Every engine handler returns a JSON string, and every refusal it writes is an
+    object with a truthy top-level ``error`` (or ``errors``) -- the same test
+    ``_untrusted`` already applies to tell our own refusal from another party's
+    content -- or a ``status`` of ``rejected``. A read that SUCCEEDED in finding
+    a failed run (``status: failed`` plus that run's ``error``) is not one.
+    """
+    import json
+
+    if not isinstance(text, str) or not text.lstrip().startswith("{"):
+        return False
+    try:
+        document = json.loads(text)
+    except (ValueError, RecursionError):
+        return False
+    if not isinstance(document, dict):
+        return False
+    status = document.get("status")
+    if status is not None:
+        return isinstance(status, str) and status in _REFUSAL_STATUSES
+    return bool(document.get("error") or document.get("errors"))
+
+
+#: Handles whose result IS arbitrary content -- a file's bytes, a command's
+#: output -- rather than a JSON document this server wrote. A file that happens
+#: to contain ``{"errors": [...]}`` read successfully (gpt-6-astra repro on this
+#: change), so no shape of their text can be judged a refusal. Their own
+#: refusals are the ``error: ...`` text ``_universe_tool`` writes.
+_RAW_CONTENT_TOOLS = frozenset({"read", "write", "edit", "bash"})
+
+
+class RefusalsAreErrors(Middleware):
+    """Mark every refused call ``isError: true``, with its text unchanged.
+
+    Live 2026-09-30 (free account, turn ``c7d6279d``): write_graph answered six
+    malformed creates with ``{"error": ...}`` and ``isError: false``. To a small
+    model a non-error result reads as "that worked"; it retried with a new
+    escaping each time instead of reading the refusal. Every served handler
+    RETURNS its refusals (they must never raise out of the server), so the flag
+    is set here, once, for every JSON handle -- a per-handler flag would have to
+    be remembered by the next ``return json.dumps({"error": ...})`` anyone
+    writes. ``_RAW_CONTENT_TOOLS`` are the exception, and why.
+
+    Raising ``ToolError`` is FastMCP's own route to an ``isError`` result; its
+    message is the refusal text, so the model reads what it read before, now
+    marked as the failure it is. Registered INSIDE ``BoundedResults`` so it
+    judges the handler's whole text -- outside, a truncation envelope hid an
+    oversized refusal (gpt-6-astra repro) -- and it applies the same ceiling
+    itself, because a raised refusal never passes back through that middleware.
+    """
+
+    async def on_call_tool(self, context, call_next):
+        from fastmcp.exceptions import ToolError
+
+        from tinyassets.engine_result_bounds import bound_tool_text, resolve_ceiling
+
+        result = await call_next(context)
+        tool = getattr(getattr(context, "message", None), "name", "") or ""
+        if tool in _RAW_CONTENT_TOOLS:
+            return result
+        blocks = list(result.content or ())
+        text = getattr(blocks[0], "text", None) if len(blocks) == 1 else None
+        if not refusal_text(text):
+            return result
+        bounded = bound_tool_text(text, tool=tool, limit=resolve_ceiling())
+        raise ToolError(text if bounded is None else bounded)
+
+
+# First added is OUTERMOST: the ceiling wraps the refusal flag.
 mcp.add_middleware(BoundedResults())
+mcp.add_middleware(RefusalsAreErrors())
 
 
 @mcp.tool
@@ -541,7 +666,8 @@ def read_graph(
             if normalized == "run_output":
                 selectors.update(field_name=field_name, output_offset=output_offset,
                                  output_max_chars=output_max_chars)
-            return _untrusted(f"run:{rid}", _impl(**selectors))
+                return _untrusted(f"run:{rid}", _impl(**selectors))
+            return _untrusted(f"run:{rid}", _read_run_settled(lambda: _impl(**selectors)))
         if normalized == "status":
             # Host/deployment telemetry is most of this read's 32.6 KB and none
             # of it is this universe. query="full" returns every block.
@@ -584,7 +710,7 @@ def get_status() -> str:
 def run_graph(
     branch_def_id: str = "",
     run_name: str = "",
-    inputs_json: str = "",
+    inputs_json: JsonArgument = "",
     operation: str = "run",
     run_id: str = "",
     branch_version_id: str = "",
@@ -632,7 +758,7 @@ def run_graph(
         branch_version_id: Alternative immutable published version. Never combine
             with branch_def_id, cancellation or delivery.
         run_name: Optional display label for this run.
-        inputs_json: Optional JSON object of run inputs. A declared file or
+        inputs_json: Optional run inputs, as an object or its JSON text. A declared file or
             file_bundle input takes the app attachment references exactly as
             issued, unchanged (see FILE INPUTS above).
         operation: "run" (default) or "cancel". Cancel requests cooperative
@@ -646,6 +772,7 @@ def run_graph(
     err = _binding_error()
     if err is not None:
         return err
+    inputs_json = _json_text(inputs_json)
     normalized_operation = (operation or "run").strip().lower()
     if normalized_operation == "deliver_output":
         if any((branch_def_id, branch_version_id, run_name, run_id)):
@@ -875,6 +1002,40 @@ def _validate_served_effect_declaration(effects: object) -> None:
         )
 
 
+def _json_text(value: JsonArgument) -> str:
+    """The one internal form of a JSON argument: its text. Never a second parser.
+
+    Live 2026-09-30 (free account, turn ``c7d6279d``): six rounds of one message
+    died hand-escaping a ``prompt_template`` inside a JSON STRING -- a literal
+    newline, then a different escaping, then another. A model that can pass the
+    object itself has nothing to escape, so the served handles accept it and
+    serialize it here; every handler downstream keeps parsing exactly the text
+    it always parsed, so there is still one representation and one validator.
+
+    Also unwraps ONE level of double encoding -- ``"\\"{\\\\\\"name\\\\\\": ...}\\""``,
+    a string whose content is itself an object or array -- because that is the
+    other shape a small model sends after being told to "pass a JSON string".
+    Anything else passes through untouched, so a malformed text still reaches
+    the positioned parse error.
+    """
+    import json
+
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    stripped = value.strip()
+    if not stripped.startswith('"'):
+        return value
+    try:
+        inner = json.loads(stripped)
+    except (ValueError, RecursionError):
+        return value
+    if isinstance(inner, str) and inner.strip()[:1] in ("{", "["):
+        return inner
+    return value
+
+
 #: How much text either side of the decoder's position a parse error quotes.
 #: Small enough that a 200kB payload does not return 200kB of excerpt, wide
 #: enough that the offending character is visible in context.
@@ -947,7 +1108,8 @@ def _payload_json_error(raw: str | None, exc: BaseException | None = None) -> st
         f"column {exc.colno} (character {pos}).{caret} "
         f"near: ...{excerpt}... "
         "A newline, tab or emoji inside a JSON string must be escaped "
-        "(\\n, \\t, \\uXXXX); send the spec as one JSON object."
+        "(\\n, \\t, \\uXXXX). Simpler: pass payload_json as the JSON object "
+        "itself, not a string, and nothing needs escaping."
     )
 
 
@@ -1105,8 +1267,10 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
 # without running that file is how a worked example becomes a wrong one.
 _WRITE_GRAPH_BRANCHES_CHAPTER = """\
     **The smallest branch that builds.** ``target="branch"``,
-    ``operation="create"``, and ``payload_json`` is ONE JSON object. This is a
-    complete, working payload -- nothing below it is required:
+    ``operation="create"``, and ``payload_json`` is ONE JSON object. I pass the
+    object itself as the argument, not a string holding it: then no newline or
+    quote inside a ``prompt_template`` needs escaping. This is a complete,
+    working payload -- nothing below it is required:
 
         {"name": "Morning Focus",
          "node_defs": [{"node_id": "note",
@@ -1125,6 +1289,8 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
     * A node with **no outgoing edge ENDS the run**. A one-node branch needs no
       ``edges`` at all, and the last node of a chain needs no edge to ``"END"``.
       I add ``"END"`` only to exit a LOOP early.
+    * ``edges`` -- with none at all, several nodes run in the order listed
+      (``nodes`` is accepted for ``node_defs``).
     * ``visibility`` -- always private here; publishing is a browser step.
 
     **What has no default.** ``name``, and a ``node_id`` per node. A node takes
@@ -2505,7 +2671,7 @@ def write_graph(
     operation: str = "",
     name: str = "",
     description: str = "",
-    payload_json: str = "",
+    payload_json: JsonArgument = "",
     idempotency_key: str = "",
     branch_id: str = "",
     automation_id: str = "",
@@ -2686,7 +2852,7 @@ def write_graph(
             confirm in their app.
             Other accepted sources and spending ceilings must be preserved.
         payload_json: for create, a complete Branch spec (JSON object); for patch, a
-            JSON array of edit ops.
+            JSON array of edit ops. Pass the value itself, or its JSON text.
         branch_id: for patch, the id of YOUR branch to edit (required for patch);
             for webhook create, the branch each POST runs.
         automation_id: for automation pause/resume/delete, the trigger identifier.
@@ -2701,6 +2867,7 @@ def write_graph(
     err = _binding_error()
     if err is not None:
         return err
+    payload_json = _json_text(payload_json)
     # Each target delegates to its own confined adapter, never broad connector
     # write_graph. Raw connection secrets and person-only request answers stay out.
     t = (target or "").strip().lower()

@@ -897,15 +897,18 @@ def _learn_from_turn(
     skipped extraction costs the founder's next turn nothing.
     """
     from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+    from tinyassets.turn_interrupt import TurnInterrupted
 
     try:
         proposed = extract_learning(founder_message, reply, ctx)
         commit_learning(universe_dir, proposed, universe_id=universe_id, actor_id=actor_id)
         return True
-    except (AllProvidersExhaustedError, ProviderAuthorityHeldError) as exc:
+    except (AllProvidersExhaustedError, ProviderAuthorityHeldError, TurnInterrupted) as exc:
+        # A stop pressed after the reply exists ends only this extraction: the
+        # reply is still delivered and the lesson stays owed for the next turn.
         logger.info(
-            "converse: learning skipped for %s -- no capacity for a second call "
-            "this turn (%s: %s)", universe_id, type(exc).__name__, exc,
+            "converse: learning skipped for %s -- no second call this turn "
+            "(%s: %s)", universe_id, type(exc).__name__, exc,
         )
         return False
     except Exception:  # persistence must never break the conversation turn

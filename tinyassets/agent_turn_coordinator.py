@@ -33,6 +33,7 @@ from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
 from tinyassets.storage.agent_turn_records import load_result
+from tinyassets.turn_interrupt import TurnInterrupted
 
 _LOG = logging.getLogger(__name__)
 
@@ -84,8 +85,13 @@ class AgentTurnCoordinator:
     #: withheld to try a sibling on it; cooled when the turn leaves it.
     _hot_capacity = None
 
-    def __init__(self, *, adapter, router, prompt, system, universe_context, config):
+    def __init__(self, *, adapter, router, prompt, system, universe_context, config,
+                 interrupt=None):
         self.adapter = adapter
+        #: The owner's stop request for an interactive turn
+        #: (:class:`tinyassets.turn_interrupt.LiveTurn`), or ``None``. A workflow
+        #: or automation turn never has one, so nothing can stop it from here.
+        self.interrupt = interrupt
         self.router = router
         self.prompt = prompt
         self.system = system
@@ -326,12 +332,48 @@ class AgentTurnCoordinator:
         except Exception:  # noqa: BLE001 - bookkeeping never replaces the outcome
             _LOG.warning("could not release agent turn boot ownership")
 
+    def _interrupted(self):
+        return self.interrupt is not None and self.interrupt.requested()
+
+    def _completed_tools(self):
+        """Names of the tool calls this turn's ledger proves completed, in order."""
+        if self.turn is None:
+            return ()
+        return tuple(
+            tool.request.name
+            for previous in self.turn.rounds
+            for tool in previous.tools
+            if tool.state == "completed"
+        )
+
+    def _stop_before_tool(self, uid, call_ordinal, tool):
+        """Record a requested tool the owner's stop kept from running.
+
+        ``not_sent``, the state the journal proves for a call it recorded as
+        started and never dispatched -- the same two steps the startup
+        reconciliation takes for a planned call (``agent_turn_reconcile``). The
+        turn's frontier becomes ``held_tool_not_sent``: stopped, not working, and
+        honest that nothing after this point ran.
+        """
+        self._accept(self.journal.start_tool(
+            self.owner, uid, self.turn.turn_id, expected_generation=self.turn.generation,
+            ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
+        ))
+        self._accept(self.journal.finish_tool(
+            self.owner, uid, self.turn.turn_id, expected_generation=self.turn.generation,
+            ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
+            request=tool.request, failure="not_sent",
+        ))
+        raise TurnInterrupted("the owner stopped this turn before a tool call")
+
     async def run(self):
         try:
             return await self._run()
         except BaseException as exc:
             try:
                 exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
+                if isinstance(exc, TurnInterrupted):
+                    exc.completed_tools = self._completed_tools()
                 self._carry_spent_attempts(exc)
             except Exception:  # noqa: BLE001 - evidence never replaces the failure
                 _LOG.warning("agent turn effects evidence unavailable")
@@ -375,6 +417,10 @@ class AgentTurnCoordinator:
             async with AsyncExitStack() as stack:
                 engine = None
                 while True:
+                    # Between rounds: the owner's stop ends the turn here, with
+                    # every settled round and tool result kept as it is.
+                    if self.interrupt is not None:
+                        self.interrupt.check()
                     self.execution_kind = self.router.selected_agent_execution_kind(
                         self.context.model_selection,
                     )
@@ -406,10 +452,18 @@ class AgentTurnCoordinator:
                         )
                         observer = self._begin_native
                     try:
-                        response = await self.adapter.infer(
+                        inference = self.adapter.infer(
                             router=self.router, prompt=prompt, system=system, config=config,
                             context=self.context, observer=observer, kind=self.execution_kind,
                         )
+                        if self.interrupt is not None and self.execution_kind == "native_agent":
+                            # A native agent runs until it is done, and only
+                            # cancelling it ends its process family; see
+                            # tinyassets/turn_interrupt.py for why an HTTP round
+                            # is left to return instead.
+                            response = await self.interrupt.run(inference)
+                        else:
+                            response = await inference
                     except BaseException as exc:
                         # No engine tool can start before a validated inference
                         # is committed. Preserve failure, never restart this turn.
@@ -484,6 +538,8 @@ class AgentTurnCoordinator:
                             "agent response requires attention: " + self.turn.state,
                         )
                     for call_ordinal, tool in enumerate(self.turn.rounds[-1].tools, 1):
+                        if self._interrupted():
+                            self._stop_before_tool(uid, call_ordinal, tool)
                         self._check_scope()
                         self._accept(
                             self.journal.start_tool(
