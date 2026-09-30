@@ -970,3 +970,35 @@ the only one that was never a code problem.
 to be 201, and `x-access-level` to read `read-write`.
 
 ---
+
+## Firebase project for phone notifications (2026-09-30)
+
+**Why:** requests are getting device delivery
+(`openspec/changes/notify-owner-of-requests`), so a universe can reach its owner
+— the gap the founder's own "Morning focus note" branch stopped on. Android push
+goes through FCM, and FCM needs a Firebase project only the account owner can
+create. **Browser and desktop push need nothing from you** — web-push keys are
+self-issued — so the chain gets proven live on the browser first, and this row is
+what adds the phone.
+
+**The whole ask is three steps in one browser session:**
+
+1. `console.firebase.google.com` -> **Add project**. If the Play/Cloud project
+   behind `io.tinyassets.app` is already listed, choose **Add Firebase to an
+   existing Google Cloud project** rather than creating a second one.
+2. In that project -> **Add app -> Android**, package name exactly
+   `io.tinyassets.app` -> **Download `google-services.json`**.
+3. **Project settings -> Service accounts -> Generate new private key** -> keep
+   the JSON it downloads.
+
+Then hand both files over. `google-services.json` is build input: materialised
+from a secret at build time and never committed (this repo is public, and
+`mobile/android/` is gitignored anyway). The service-account JSON **is a
+credential** — vault only, never a committed file, never a workflow literal.
+
+**Offer:** an agent can drive steps 1-3 in your signed-in browser if you say so;
+the downloads land on your machine and you hand them over as above. Step 3 mints
+a private key, so it does not happen without your explicit go-ahead. Say which
+you prefer.
+
+---
