@@ -1,21 +1,80 @@
-# Mobile launch handoff — where this stands, 2026-09-09
+# Mobile launch handoff — where this stands, 2026-09-29
 
 Written so a new session can pick this up cold. The goal is unchanged: **users able
 to download the app from Google Play and the Apple App Store.**
 
 Runbooks stay where they are — `docs/ops/google-play-launch.md` and
 `docs/ops/app-store-launch.md` — and founder-only items stay in
-`docs/host-actions.md`. This file is the map between them.
+`docs/host-actions.md`. This file is the map between them. The dated sections below
+this one are history; where they disagree with this top section, this section wins.
 
 ---
 
 ## The one-line status
 
-**Google Play: installable today, but only by invited testers.** Public availability
-is at minimum 14 days away and needs 12 real people. **Apple: TinyAssets iOS 1.0,
-build 3, was submitted on 2026-09-09 and is Waiting for Review.** The United States
-is enabled within 148 non-EU storefronts; the privacy notice and Apple privacy
-practices are published; reviewer access is verified; release remains manual.
+**Google Play: build 4 (1.0.3) was approved on 2026-09-08 and is live on the closed
+(Alpha) track, but the 12-tester, 14-day clock has not started.** As of the last record
+(2026-09-09), no tester had opted in, not even the founder. **Apple: iOS 1.0, build 3,
+is Rejected / Unresolved Issues under Guideline 2.1, "Information Needed"** (2026-09-10).
+Because the account has little review history, Apple wants a physical-iPhone recording
+plus written answers. The answers are drafted; the recording is the founder's. Apple did
+not cite 4.2 or 3.1.1. Release is set to go out automatically once approved.
+
+Rechecked 2026-09-29 on `origin/main` `4ad5deb5`, after the move to the `TinyAssets`
+org. `ios-build` and `android-build` were green on 2026-09-27. The four
+`ANDROID_UPLOAD_*` repository secrets and the eight `app-store` environment secrets
+are present. `/mcp/app` serves the in-app **Delete my account** flow. The Upgrade (Stripe)
+button stays hidden in both native shells (`NATIVE` guard in `renderPlan`), so 3.1.1
+needs no in-app purchase.
+
+## What is left, in order
+
+Founder rows, step by step: `docs/host-actions.md` → "Store launch: four founder steps
+(2026-09-29)".
+
+**Apple**
+
+1. Founder turns on Sign in with Apple in WorkOS (see Guideline 4.8 below).
+   `python scripts/authkit_login_parity_probe.py` fails (exit 1) until Apple is
+   offered.
+2. Founder renews the App Review account's OpenRouter key, which expires
+   **2026-10-10**, and confirms that one reviewer turn gets a reply.
+3. Founder records the six-step physical-iPhone video.
+4. Agent attaches the video and written answers (`app-store-submission-packet.md`,
+   "Guideline 2.1 response packet") and resubmits build 3, only on the lead's explicit
+   go. No rebuild is needed: sign-in is the hosted AuthKit page.
+5. On approval the release goes out automatically (`AFTER_APPROVAL`). Verify the US
+   product page offers the install before calling the launch done.
+
+**Google Play**
+
+1. Founder opts in and recruits 15–18 testers, so that 12 stay opted in.
+2. 14 wall-clock days with at least 12 continuously opted in.
+3. Apply for production access (Play Console dashboard). Google reviews it separately.
+4. Promote build 4 (or a newer version code) to Production and roll out.
+
+If 12 testers cannot be found, the only rule-level alternative is an **organisation**
+Play developer account: the testing requirement applies only to personal accounts
+created after 2023-11-13. That route needs a D-U-N-S number, a new $25 account and an app
+transfer, so it is slower than 14 days unless recruiting stalls.
+
+## Store-rule risks, checked 2026-09-29
+
+Sources: Apple App Review Guidelines, last updated 2026-06-08; Play Help article 14151465.
+
+- **4.8 Login Services — open.** The AuthKit page offers Google, password and SSO, but
+  no Apple. An app offering Google sign-in must also offer an equivalent private login.
+  The "own sign-in only" exemption does not apply while Google is offered. The fix is
+  WorkOS and Apple portal configuration, which is a founder row.
+- **4.2 Minimum Functionality — watched, not acted on.** The shell loads the hosted
+  SPA. Apple did not cite 4.2 on the first review. Answer 2.1 first, and build native
+  value only if 4.2 is actually raised
+  (`docs/concerns/2026-09-03-ios-web-wrapper-app-review-risk.md`).
+- **3.1.1 / 3.1.3 In-App Purchase — satisfied.** No purchase UI is reachable in either
+  shell. External purchase links are now allowed in the US storefront, but we don't need
+  one.
+- **5.1.1(v) account deletion (Apple) and Play's account-deletion policy — satisfied**
+  in the app and at `https://tinyassets.io/account`.
 
 ---
 
@@ -70,7 +129,7 @@ closed test.
 That 14-day clock is wall-clock. It is the real long pole on Play, and nothing an
 agent does shortens it.
 
-### What the next session should actually do
+### What the next session should actually do (2026-09-03, superseded by the top section)
 
 - Install internal release `2 (1.0.1)` from Play; do not rebuild or re-upload it.
   Signed AAB SHA-256:
@@ -105,7 +164,7 @@ release into one `gh workflow run` — but nothing waits on it.
 
 ## Apple App Store
 
-**Current checkpoint (2026-09-09 02:32 PDT):** Apple accepted submission
+**Checkpoint history (2026-09-09 02:32 PDT; the current state is the top section):** Apple accepted submission
 `5c6e4844-2ca2-438c-8aec-a189efb0ebb2` for iOS 1.0 / build 1.0.0 (3).
 App Store Connect shows **Waiting for Review**. On approval, select **Release This
 Version** and verify that the United States product page offers the install.
