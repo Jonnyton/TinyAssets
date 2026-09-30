@@ -1544,6 +1544,22 @@ def next_due_at(automation: Automation, now: datetime) -> str:
     return ""
 
 
+def owed_since(automation: Automation, due_at: str) -> str:
+    """When the run ``due_at`` stands for first became owed: the order an
+    agent's due rows are taken in, longest-owed first.
+
+    Not ``due_at`` itself. An interval collapses missed instants onto the
+    LATEST one, so its ``due_at`` moves forward every poll it is not served and
+    a steady stream of one-shot wakes would always look older (Codex refute
+    2026-09-29, P2). Its first unserved instant does not move.
+    """
+    if automation.trigger_kind == TRIGGER_INTERVAL and automation.interval_seconds > 0:
+        anchor = _parse(automation.last_due_at) or _parse(automation.created_at)
+        if anchor is not None:
+            return _iso(anchor + timedelta(seconds=automation.interval_seconds))
+    return due_at
+
+
 def due_automations(
     base_path: str | Path,
     *,
@@ -2298,5 +2314,6 @@ __all__ = [
     "register_automation",
     "run_due_automation",
     "run_timeout_seconds",
+    "owed_since",
     "skip_overlapping",
 ]

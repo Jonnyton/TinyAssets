@@ -682,10 +682,11 @@ class AssignedQueueConsumer:
             automation_lease_key,
             due_automations,
             lease_key_universe,
+            owed_since,
         )
 
         # Scanned even with no free slot: a due row whose agent is running must
-        # still get its policy -- a `skip` retired, a `cancel_previous` sent --
+        # still get its policy -- a `skip` spent, a `cancel_previous` sent --
         # rather than wait for a slot and then run (Codex refute 2026-09-28, P2).
         capacity, busy = self._reap_finished()
         started: set[str] = set()
@@ -717,9 +718,9 @@ class AssignedQueueConsumer:
                 continue
             ready: list[tuple[str, tuple[Any, str]]] = []
             seen: set[str] = set()
-            # Longest-owed first, so an agent's one-shot wake is not starved by
-            # its own short cadence that is due again on every free poll.
-            for automation, due_at in sorted(due, key=lambda item: item[1]):
+            # Longest-owed first, so neither a waiting one-shot wake nor a
+            # cadence is starved by the agent's other rows.
+            for automation, due_at in sorted(due, key=lambda item: owed_since(*item)):
                 key = automation_lease_key(automation)
                 if key in busy or self._agent_running_elsewhere(key, now):
                     self._apply_overlap(key, automation, due_at, now, refusal_store)

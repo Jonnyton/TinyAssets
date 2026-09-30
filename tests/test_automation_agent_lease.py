@@ -651,22 +651,7 @@ def test_a_self_waking_loop_survives_the_wake_its_own_run_fires(
         consumer.stop(timeout=10)
 
 
-def test_an_agents_longest_owed_row_runs_first(home: Path, monkeypatch) -> None:
-    """A wake kept waiting is not starved by the agent's own short cadence,
-    which is due again on every free poll (refute P2): of one agent's due rows,
-    the one owed longest runs first, whatever order they were created in."""
-    cadence = register_automation(
-        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="fast",
-        branch_def_id=WRITER, interval_seconds=1, now=NOW,
-    )
-    # Registered after the cadence (so listed after it), and kept waiting since.
-    later = NOW + timedelta(minutes=1)
-    wake = register_automation(
-        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="wake",
-        branch_def_id=WRITER, not_before=later.isoformat(), overlap="skip", now=later,
-    )
-    listed = [a.automation_id for a in AutomationStore(home).list(universe_id=UNIVERSE)]
-    assert listed == [cadence.automation_id, wake.automation_id], "precondition"
+def _first_run(home: Path, monkeypatch) -> list[str]:
     ran: list[str] = []
     monkeypatch.setattr(
         automations_module, "_execute",
@@ -678,7 +663,57 @@ def test_an_agents_longest_owed_row_runs_first(home: Path, monkeypatch) -> None:
         consumer.poll_once()
     finally:
         consumer.stop()
-    assert ran[:1] == [wake.automation_id], (ran, cadence.automation_id)
+    return ran
+
+
+def _served_at(home: Path, automation: Automation, moment: datetime) -> None:
+    """The cadence last ran at ``moment`` (its fence advanced there)."""
+    with sqlite3.connect(AutomationStore(home).db_path) as conn:
+        conn.execute("UPDATE automations SET last_due_at = ? WHERE automation_id = ?",
+                     (moment.isoformat(), automation.automation_id))
+
+
+def test_a_waiting_wake_runs_before_a_cadence_served_since(
+    home: Path, monkeypatch,
+) -> None:
+    """A wake kept waiting is not starved by the agent's own short cadence,
+    which falls due again on every free poll (refute P2, round 1)."""
+    cadence = register_automation(
+        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="fast",
+        branch_def_id=WRITER, interval_seconds=1, now=NOW,
+    )
+    later = NOW + timedelta(minutes=1)
+    wake = register_automation(
+        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="wake",
+        branch_def_id=WRITER, not_before=later.isoformat(), overlap="skip", now=later,
+    )
+    _served_at(home, cadence, datetime.now(timezone.utc) - timedelta(seconds=2))
+    listed = [a.automation_id for a in AutomationStore(home).list(universe_id=UNIVERSE)]
+    assert listed == [cadence.automation_id, wake.automation_id], "precondition"
+    assert _first_run(home, monkeypatch) == [wake.automation_id]
+
+
+def test_a_cadence_is_not_starved_by_a_stream_of_fresh_wakes(
+    home: Path, monkeypatch,
+) -> None:
+    """An interval's due_at collapses onto its LATEST instant, so ordering by it
+    would let a self-waking chain's fresh wake win every free poll forever. It
+    is ordered by its first UNSERVED instant instead (refute P2, round 2)."""
+    cadence = register_automation(
+        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="fast",
+        branch_def_id=WRITER, interval_seconds=1, now=NOW,
+    )
+    fresh = datetime.now(timezone.utc) - timedelta(seconds=3)
+    _served_at(home, cadence, fresh - timedelta(seconds=10))
+    wake = register_automation(
+        home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="wake",
+        branch_def_id=WRITER, not_before=fresh.isoformat(), overlap="skip", now=fresh,
+    )
+    # Precondition: by due_at alone the fresh wake looks older than the cadence.
+    due = dict((a.automation_id, d) for a, d in automations_module.due_automations(
+        home, universe_id=UNIVERSE, now=datetime.now(timezone.utc)))
+    assert due[wake.automation_id] < due[cadence.automation_id], due
+    assert _first_run(home, monkeypatch) == [cadence.automation_id]
 
 
 def test_a_row_that_cannot_take_its_agent_says_so_on_the_row(
