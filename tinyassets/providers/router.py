@@ -40,6 +40,12 @@ from tinyassets.exceptions import (
     SelectedModelCapacityError,
     SelectedModelContextError,
 )
+
+# `_provider_slot` WAITS for a slot and never raises `_ProviderBusy` (founder,
+# 2026-09-30: over the concurrency line work waits). The handlers below stay
+# because `ProviderBusy` is still a live exception on the diagnostic path, and
+# because each handler releases a budget reservation for a launch that never
+# happened -- losing that is how a binding gets charged for a turn it never ran.
 from tinyassets.provider_admission import ProviderBusy as _ProviderBusy
 from tinyassets.provider_admission import provider_slot_async as _provider_slot
 from tinyassets.provider_work_authority import (

@@ -30,22 +30,18 @@ def _reset():
 
 def test_concurrency_never_exceeds_the_limit(monkeypatch):
     monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "3")
-    monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "10")
     live, peak, lock = [0], [0], threading.Lock()
     start = threading.Barrier(12)
 
     def worker():
         start.wait()
-        try:
-            with pa.provider_slot():
-                with lock:
-                    live[0] += 1
-                    peak[0] = max(peak[0], live[0])
-                time.sleep(0.05)
-                with lock:
-                    live[0] -= 1
-        except pa.ProviderBusy:
-            pass
+        with pa.provider_slot():
+            with lock:
+                live[0] += 1
+                peak[0] = max(peak[0], live[0])
+            time.sleep(0.05)
+            with lock:
+                live[0] -= 1
 
     ts = [threading.Thread(target=worker) for _ in range(12)]
     for t in ts:
@@ -55,23 +51,102 @@ def test_concurrency_never_exceeds_the_limit(monkeypatch):
     assert peak[0] <= 3, f"{peak[0]} concurrent provider calls with a limit of 3"
 
 
-def test_it_refuses_rather_than_hanging_when_saturated(monkeypatch):
-    """Hard Rule 8. A refusal a user can retry beats an OOM that takes everyone down."""
+def test_a_saturated_box_makes_the_next_turn_wait_not_fail(monkeypatch):
+    """Founder, 2026-09-30: over the concurrency line, work WAITS. Never refused.
+
+    The 20-second `TINYASSETS_PROVIDER_ADMISSION_WAIT_S` deadline used to turn a
+    busy moment into `ProviderBusy`, which the user had to retry by hand. The
+    memory bound itself stays -- it is a host-safety floor on a 2 GB box, not an
+    account limit -- but a caller that arrives with every slot taken queues.
+    """
     monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
-    monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "0.05")
+    assert not hasattr(pa, "_DEFAULT_WAIT_S"), "the wait deadline is gone"
+    assert not hasattr(pa, "_WAIT_VAR")
+
+    admitted = []
+    released = threading.Event()
+
+    def waiter():
+        with pa.provider_slot():
+            admitted.append(time.monotonic())
+
+    with pa.provider_slot():
+        w = threading.Thread(target=waiter)
+        w.start()
+        # Long past any old deadline: the waiter must still be queued, not failed.
+        time.sleep(0.3)
+        assert admitted == [], "the waiter was admitted while the only slot was held"
+        assert w.is_alive(), "the waiter failed instead of waiting"
+        assert pa.admission_snapshot()["waiting"] == 1, "the wait must be visible"
+        released.set()
+    w.join(timeout=10)
+    assert len(admitted) == 1, "the waiter never got the slot the holder released"
+    assert pa.admission_snapshot()["waiting"] == 0
+
+
+def test_a_blocked_caller_is_told_it_is_waiting(monkeypatch):
+    """A wait nobody can see is indistinguishable from a hang."""
+    monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
+    seen: list[int] = []
+
+    def waiter():
+        with pa.provider_slot(on_wait=seen.append):
+            pass
+
+    with pa.provider_slot():
+        w = threading.Thread(target=waiter)
+        w.start()
+        time.sleep(0.15)
+        assert seen == [1], f"on_wait did not fire exactly once: {seen}"
+    w.join(timeout=10)
+    # A caller that never queues is never told it is waiting.
+    seen.clear()
+    with pa.provider_slot(on_wait=seen.append):
+        pass
+    assert seen == []
+    snap = pa.admission_snapshot()
+    assert snap["wait_seconds"]["count"] >= 1, "waits are published, not just logged"
+
+
+def test_only_a_caller_that_declines_to_wait_is_refused(monkeypatch):
+    """`try_provider_slot` is the one form that still raises, for diagnostics.
+
+    The Codex auth probe uses it: a probe that queued behind real user turns
+    would be reporting on a box it was itself loading.
+    """
+    monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
     with pa.provider_slot():
         with pytest.raises(pa.ProviderBusy) as exc:
-            with pa.provider_slot():
+            with pa.try_provider_slot():
                 pass
-    assert "busy" in str(exc.value).lower()
-    assert "try again" in str(exc.value).lower(), "a refusal must say what to do next"
+    assert "does not wait" in str(exc.value)
+    # And it takes a free slot when there is one.
+    with pa.try_provider_slot():
+        pass
+
+
+def test_the_auth_probe_is_the_only_non_waiting_caller():
+    """Mutation guard: a user-facing path must not quietly adopt the refusing form."""
+    import pathlib as _pathlib
+
+    from tinyassets.providers import base as provider_base
+
+    src = _pathlib.Path(provider_base.__file__).read_text(encoding="utf-8")
+    assert "with try_provider_slot():" in src, "the probe must not queue"
+    for module_name in ("tinyassets.providers.router",):
+        import importlib
+
+        mod = importlib.import_module(module_name)
+        text = _pathlib.Path(mod.__file__).read_text(encoding="utf-8")
+        assert "try_provider_slot" not in text, (
+            f"{module_name} serves user turns; it must wait, not refuse"
+        )
 
 
 def test_a_slot_is_released_when_the_call_raises(monkeypatch):
     """A slot leaked on an error is permanent capacity loss — and errors happen
     precisely when the system is already under load."""
     monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
-    monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "0.05")
     with pytest.raises(ValueError):
         with pa.provider_slot():
             raise ValueError("provider blew up")
@@ -82,7 +157,6 @@ def test_a_slot_is_released_when_the_call_raises(monkeypatch):
 def test_a_waiter_is_admitted_when_a_slot_frees(monkeypatch):
     """Bounding must not mean refusing everyone under transient load."""
     monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
-    monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "5")
     admitted = []
 
     def waiter():
@@ -198,21 +272,22 @@ class TestTurnDurationInstrumentation:
         assert snap["sample_unit"] == "provider attempt, not user turn"
         assert "mean" in snap["attempt_seconds"], "Little's Law needs the mean"
 
-    def test_refusals_are_counted_separately_from_turns(self, monkeypatch):
+    def test_declined_waits_are_counted_separately_from_turns(self, monkeypatch):
+        """`refused_no_wait`, not `refused`: a user turn is never refused now, so a
+        count called "refused" would read as lost work when it is a deferred probe."""
         monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
-        monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "0.05")
         with pa.provider_slot():
             with pytest.raises(pa.ProviderBusy):
-                with pa.provider_slot():
+                with pa.try_provider_slot():
                     pass
         snap = pa.admission_snapshot()
-        assert snap["refused"] == 1
-        assert snap["admitted"] == 1, "a refusal must not count as a turn"
+        assert snap["refused_no_wait"] == 1
+        assert "refused" not in snap, "the old name would misreport waiting as refusing"
+        assert snap["admitted"] == 1, "a declined probe must not count as a turn"
 
     def test_peak_concurrency_is_observed_not_assumed(self, monkeypatch):
         """Whether the bound actually binds is a fact about production, not a setting."""
         monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "4")
-        monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "10")
         start = threading.Barrier(3)
 
         def worker():
@@ -255,11 +330,10 @@ class TestTheAsyncSlotDoesNotStallItsOwnLoop:
     one loop.
     """
 
-    def test_two_coroutines_on_one_loop_do_not_refuse_each_other(self, monkeypatch):
+    def test_two_coroutines_on_one_loop_do_not_starve_each_other(self, monkeypatch):
         import asyncio
 
         monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
-        monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "2")
 
         async def one():
             async with pa.provider_slot_async():
@@ -315,7 +389,12 @@ class TestTheBoundActuallyBindsInTheRouter:
             "before_provider_launch must happen INSIDE the slot, or a refusal charges "
             "a launch that never occurred"
         )
+        # The router's slot WAITS, so `_ProviderBusy` cannot arrive from it any
+        # more. The handlers stay because each releases a budget reservation for a
+        # launch that never happened -- losing that is how a binding gets charged
+        # for a turn it never ran. Assert they are still there and still re-raise.
         assert "except _ProviderBusy:" in src, "a busy refusal must propagate, not be classified"
+        assert "try_provider_slot" not in src, "user turns wait; they do not refuse"
 
 
 class TestTheLifecycleGapsCodexFound:
@@ -484,11 +563,13 @@ class TestTheBoundBindsBehaviourally:
         six AllProvidersExhaustedError and zero nested launches."""
         monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "2")
         monkeypatch.setenv("TINYASSETS_PROVIDER_NESTED_RESERVE", "1")
-        monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "0.05")
 
         with pa.provider_slot():  # one outer turn: outer limit is 2-1 = 1
+            # A second OUTER turn WAITS for the reserve it may not take; it is not
+            # refused. `try_provider_slot` makes that observable without hanging
+            # the test, and it sees the same effective limit.
             with pytest.raises(pa.ProviderBusy):
-                with pa.provider_slot():  # a second OUTER turn must be refused
+                with pa.try_provider_slot():
                     pass
             with pa.provider_slot(nested=True):  # its child may use the reserve
                 pass

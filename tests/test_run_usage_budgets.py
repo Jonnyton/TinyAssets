@@ -44,29 +44,40 @@ _OK = {"delivered": True, "verb": "GET", "request_bytes": 100, "response_bytes":
        "response": {"status": 200, "body": "{}"}}
 
 
-def test_the_per_run_dispatch_budget_names_itself_and_stops_the_chain(monkeypatch):
+def test_there_is_no_per_run_dispatch_or_byte_budget(monkeypatch):
+    """The per-run counts are gone; the chain still COUNTS what it did.
+
+    ``RUN_DISPATCHES_MAX`` (5000) and ``RUN_BYTES_MAX`` (256 MiB) refused a run
+    partway through and told the author to "split the work across runs" -- a
+    structural cap on what one run may be (founder, 2026-09-30). The universe's
+    rolling-hour ledger is a separate lane and is untouched here.
+    """
+    import inspect
+
     monkeypatch.setitem(effectors._EFFECTORS, SINK, _adapter(_OK))
-    monkeypatch.setattr(effectors, "RUN_DISPATCHES_MAX", 3)
+    for gone in ("RUN_DISPATCHES_MAX", "RUN_BYTES_MAX", "RUN_RPC_CALLS_MAX"):
+        assert not hasattr(effectors, gone), f"{gone} came back"
+    src = inspect.getsource(effectors._budget_refusal)
+    assert "split the work across runs" not in src
+
     chain = EffectChain(run_id="b1")
-    for i in range(3):
+    for i in range(12):
         dispatch_node_effects(chain, _node(f"n{i}"), {f"n{i}_packet": _packet()})
-    with pytest.raises(EffectFailedError) as exc:
-        dispatch_node_effects(chain, _node("n3"), {"n3_packet": _packet()})
-    assert exc.value.error_kind == "effect_budget_exhausted"
-    assert "budget 3" in exc.value.error and "3 effect dispatches" in exc.value.error
-    assert chain.dispatches == 3 and "n3" not in chain.evidence
-    assert chain.bytes_out == 3 * 1000
+    assert chain.dispatches == 12 and "n11" in chain.evidence
+    assert chain.bytes_out == 12 * 1000, "bytes are still observed, just not capped"
 
 
-def test_unknown_sizes_charge_the_per_call_caps(monkeypatch):
+def test_unknown_sizes_are_still_charged_at_the_per_call_bounds(monkeypatch):
+    """Per-CALL payload bounds stay: they validate one request, not an account."""
     unknown = {"delivered": True, "verb": "GET", "response": {"status": 200, "body": "{}"}}
     monkeypatch.setitem(effectors._EFFECTORS, SINK, _adapter(unknown))
     chain = EffectChain(run_id="b2")
     dispatch_node_effects(chain, _node("n0"), {"n0_packet": _packet()})
     assert chain.bytes_out == effectors._UNKNOWN_REQUEST_BYTES + effectors._UNKNOWN_RESPONSE_BYTES
-    monkeypatch.setattr(effectors, "RUN_BYTES_MAX", chain.bytes_out)
-    with pytest.raises(EffectFailedError, match="outbound bytes"):
-        dispatch_node_effects(chain, _node("n1"), {"n1_packet": _packet()})
+    # Past the old 256 MiB run ceiling, and nothing refuses.
+    for i in range(1, 22):
+        dispatch_node_effects(chain, _node(f"n{i}"), {f"n{i}_packet": _packet()})
+    assert chain.bytes_out > 256 * 1024 * 1024
 
 
 def test_the_hourly_ledger_charges_and_refuses(monkeypatch, tmp_path):

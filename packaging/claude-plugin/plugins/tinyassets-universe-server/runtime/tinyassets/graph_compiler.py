@@ -1284,10 +1284,16 @@ def _build_prompt_template_node(
         except ValueError as exc:
             raise CompilerError(f"Node '{node.node_id}': {exc}") from exc
         # An agent node is the converse turn, which runs until it finishes: its
-        # slot is that turn's own runaway backstop, not a node timeout.
-        from tinyassets.universe_intelligence import served_absolute_cap_s
+        # seat is that turn's bound, not a node timeout. The executor wants a
+        # number, so an unset universe cap becomes an unreachable one rather than
+        # a made-up hour (founder, 2026-09-30: a turn runs until it is finished).
+        from tinyassets.universe_intelligence import (
+            UNBOUNDED_TURN_SECONDS,
+            served_absolute_cap_s,
+        )
 
-        timeout_s = served_absolute_cap_s(getattr(universe_context, "config", None))
+        own_cap = served_absolute_cap_s(getattr(universe_context, "config", None))
+        timeout_s = UNBOUNDED_TURN_SECONDS if own_cap is None else own_cap
     strict_isolation = bool(getattr(node, "strict_input_isolation", True))
     declared_inputs = list(node.input_keys)
     # BUG-085 (Codex checker finding 1): state_schema fields carrying a
@@ -2607,37 +2613,30 @@ def _wrap_with_checkpoints(
     return _fn
 
 
-# Phase A item 5 / Task #76b — threadlocal global cap on child-run retries
-# within a single parent run. Each parent run executes on its own thread
-# from the executor pool; threadlocal naturally scopes per-run. Children
-# spawn into their own threads with independent counters; only the
-# parent's invoke nodes consume from this counter.
+# Child-run retries are the AUTHOR'S policy: `retry_budget` on the invoke spec,
+# and nothing overrides it. `TINYASSETS_MAX_CHILD_RETRIES_TOTAL` (default 5) used
+# to cap the total across a parent run, so a branch whose author asked for three
+# retries on each of four children silently got five in total and then behaved as
+# `propagate` -- the author's declared policy quietly replaced by a host env var
+# (founder, 2026-09-30: honour the author's retry policy).
+#
+# What bounds a retry storm instead: every child run charges the universe's
+# admission and holds a seat like any other run, and the parent waits on each
+# child in turn, so retries are serial work inside one seat rather than fan-out.
+#
+# `_retry_state` is kept for the per-run counter that the receipt reports; it
+# counts, and refuses nothing.
 _retry_state = threading.local()
 
 
-def _retry_budget_max() -> int:
-    """Read ``TINYASSETS_MAX_CHILD_RETRIES_TOTAL`` env (default 5)."""
-    raw = os.environ.get("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "").strip()
-    try:
-        return max(0, int(raw)) if raw else 5
-    except ValueError:
-        return 5
-
-
-def _retry_budget_remaining() -> bool:
-    """True iff the threadlocal retry counter has budget left."""
-    used = getattr(_retry_state, "used", 0)
-    return used < _retry_budget_max()
-
-
 def _retry_budget_consume() -> None:
-    """Increment the threadlocal retry counter by 1."""
+    """Increment the threadlocal retry counter by 1. Counts; never refuses."""
     _retry_state.used = getattr(_retry_state, "used", 0) + 1
 
 
 def _retry_budget_reset() -> None:
     """Reset the threadlocal counter — called by ``_invoke_graph`` at run
-    start so each parent run gets a fresh budget."""
+    start so each parent run's count starts at zero."""
     _retry_state.used = 0
 
 
@@ -3073,9 +3072,8 @@ def _build_invoke_branch_node(
                     retry_budget - (attempt - 1)
                     if on_child_fail == "retry" else 0
                 )
-                if on_child_fail == "retry" and retries_left > 0 and (
-                    _retry_budget_remaining()
-                ):
+                # The author's `retry_budget` is the whole decision.
+                if on_child_fail == "retry" and retries_left > 0:
                     _retry_budget_consume()
                     continue
                 updates, _failure = _dispatch_invoke_outcome(
@@ -3374,9 +3372,8 @@ def _build_invoke_branch_version_node(
                     retry_budget - (attempt - 1)
                     if on_child_fail == "retry" else 0
                 )
-                if on_child_fail == "retry" and retries_left > 0 and (
-                    _retry_budget_remaining()
-                ):
+                # The author's `retry_budget` is the whole decision.
+                if on_child_fail == "retry" and retries_left > 0:
                     _retry_budget_consume()
                     continue
                 updates, _failure = _dispatch_invoke_outcome(

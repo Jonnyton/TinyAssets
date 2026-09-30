@@ -1,13 +1,16 @@
-"""A universe is born from a signup or a subscription, and nothing else.
+"""A universe belongs to an authenticated person. That is the whole gate.
 
-Founder rule, 2026-08-28: no universe should exist that is not bound to a WorkOS user.
-Two legitimate births follow from it -- the free one a signup gets, and the extra ones a
-subscription pays for -- and every other path is refused.
+Founder rule, 2026-08-28: no universe should exist that is not bound to a WorkOS
+user. Founder directive, 2026-09-30: an account has exactly two limits -- the
+cloud bytes it occupies and the agent runs it may have at once -- so HOW MANY
+universes a person owns is not a condition of creating one. The subscription gate
+that used to live here is gone; a second universe costs storage, and storage is
+already metered.
 
-Enforced on the public surface rather than in `_action_create_universe`, which is a
-shared primitive that fixtures, migrations and internal seeding call with no
-authenticated subject. Gating it there refused 23 legitimate internal callers; that was
-the signal the rule is about PEOPLE and belongs where a person asks.
+Enforced on the public surface rather than in `_action_create_universe`, which is
+a shared primitive that fixtures, migrations and internal seeding call with no
+authenticated subject. Gating it there refused 23 legitimate internal callers;
+that was the signal the rule is about PEOPLE and belongs where a person asks.
 """
 
 from __future__ import annotations
@@ -47,35 +50,42 @@ def test_an_empty_actor_cannot_birth_a_universe(monkeypatch):
     assert us._universe_birth_refusal() is not None
 
 
-def test_a_signup_with_no_home_gets_one_free(monkeypatch):
+def test_a_signup_with_no_home_gets_one(monkeypatch):
     _actor(monkeypatch, "user_01SIGNUP")
     _home(monkeypatch, "")
     assert us._universe_birth_refusal() is None
 
 
-def test_a_second_universe_requires_a_subscription(monkeypatch):
-    _actor(monkeypatch, "user_01ALREADY")
-    _home(monkeypatch, "u-existing")
-    out = us._universe_birth_refusal()
-    assert out is not None
-    assert out["failure_class"] == "additional_universe_requires_subscription"
-    assert out["existing_universe_id"] == "u-existing"
-    assert "subscribe" in out["error"].lower(), "say how to proceed, not just no"
-
-
-def test_a_paid_subject_may_have_more_than_one(monkeypatch, tmp_path):
+def test_a_free_subject_may_create_a_second_universe(monkeypatch, tmp_path):
+    """The removed limit, asserted gone: free tier, one home already, still yes."""
     from tinyassets.storage.subscription_state import apply_tier_event
 
-    _actor(monkeypatch, "user_01PAID")
+    _actor(monkeypatch, "user_01ALREADY")
     _home(monkeypatch, "u-existing")
     udir = tmp_path / "u-existing"
     udir.mkdir(parents=True, exist_ok=True)
-    apply_tier_event(udir, tier="paid", event_created=1000.0)
+    apply_tier_event(udir, tier="free", event_created=1000.0)
     assert us._universe_birth_refusal() is None
 
 
-def test_an_unreadable_binding_fails_closed(monkeypatch):
-    """If we cannot tell whether they already have one, we do not create one."""
+def test_a_free_subject_may_create_a_tenth_universe(monkeypatch):
+    """No count anywhere: the gate never reads how many homes exist."""
+    _actor(monkeypatch, "user_01MANY")
+    _home(monkeypatch, "u-ninth")
+    assert us._universe_birth_refusal() is None
+
+
+def test_the_gate_names_no_tier_and_no_subscription(monkeypatch):
+    """Mutation guard: re-adding a tier read would have to re-add the import."""
+    import inspect
+
+    src = inspect.getsource(us._universe_birth_refusal)
+    for forbidden in ("get_tier", "TIER_PAID", "subscription", "get_founder_home"):
+        assert forbidden not in src, f"the birth gate must not consult {forbidden}"
+
+
+def test_a_broken_binding_store_no_longer_blocks_creation(monkeypatch):
+    """The gate does not read the binding store at all, so it cannot fail on it."""
     import tinyassets.daemon_server as ds
 
     _actor(monkeypatch, "user_01BROKEN")
@@ -84,25 +94,7 @@ def test_an_unreadable_binding_fails_closed(monkeypatch):
         raise OSError("binding store unavailable")
 
     monkeypatch.setattr(ds, "get_founder_home", _boom)
-    out = us._universe_birth_refusal()
-    assert out is not None
-    assert out["failure_class"] == "universe_binding_unreadable"
-
-
-def test_an_unreadable_tier_does_not_grant_the_extra_universe(monkeypatch):
-    """Fail-closed the other way too: unknown tier is not paid."""
-    from tinyassets.storage import subscription_state
-
-    _actor(monkeypatch, "user_01ODD")
-    _home(monkeypatch, "u-existing")
-
-    def _boom(*_a, **_kw):
-        raise OSError("tier unreadable")
-
-    monkeypatch.setattr(subscription_state, "get_tier", _boom)
-    out = us._universe_birth_refusal()
-    assert out is not None
-    assert out["failure_class"] == "additional_universe_requires_subscription"
+    assert us._universe_birth_refusal() is None
 
 
 def test_the_birth_route_consults_the_gate_before_creating():

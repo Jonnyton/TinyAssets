@@ -1537,6 +1537,11 @@ def test_a_run_that_ignores_cancellation_keeps_the_universe_leased(
 
     grace = 7.0
     monkeypatch.setenv("AUTOMATION_CANCEL_GRACE_SECONDS", str(int(grace)))
+    # A run has NO timeout by default -- it finishes when it is finished (founder,
+    # 2026-09-30) -- so the timeout path this exercises is only reachable when an
+    # OPERATOR sets one. Set it here; the behaviour under test is what happens
+    # when a worker then ignores the cancel, which is unchanged.
+    monkeypatch.setenv("AUTOMATION_RUN_TIMEOUT_SECONDS", "900")
     clock = {"now": 0.0}
     still_running: Future = Future()  # never resolved: the worker ignores cancel
     waits: list[tuple[str, float | None, float]] = []

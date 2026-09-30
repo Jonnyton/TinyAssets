@@ -4347,12 +4347,19 @@ def _initialize_prepared_run(
     )
 
 
-#: Default LangGraph recursion-limit ceiling, raised from LangGraph's
-#: stock 25 → 100 per the Tier-1 investigation Step 6 (BUG-019/021/022).
-#: Stock 25 is too tight for branches with 3+ gate iterations; BUG-020
-#: runs tripped the limit. Callers can override via the explicit
-#: `recursion_limit_override` arg on execute_branch / execute_branch_async.
-DEFAULT_RECURSION_LIMIT = 100
+#: LangGraph needs a recursion ceiling, so there is a number here; it is not a
+#: limit. 100 (raised from LangGraph's stock 25 during the Tier-1 investigation,
+#: BUG-019/021/022) refused a branch whose author wrote a longer loop, with
+#: "Branch loop may be too deep" -- a structural cap on what someone may build,
+#: and an account has exactly two limits, cloud bytes and concurrent agent seats
+#: (founder, 2026-09-30).
+#:
+#: One million is past any graph a person writes and far below Python's own
+#: limits on the structures LangGraph builds per step. What actually bounds an
+#: endless loop is the run's SEAT: it holds one for as long as it runs, and its
+#: owner can stop it. An author may still pass any positive
+#: `recursion_limit_override` -- including a smaller one, as their own guard.
+DEFAULT_RECURSION_LIMIT = 1_000_000
 
 
 def _family_status_writer(member):

@@ -1094,7 +1094,11 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         if isinstance(source_inputs, dict):
             inputs = {**source_inputs, **inputs}
 
-    # Parse + validate recursion_limit_override (10-1000).
+    # Parse `recursion_limit_override`. ANY positive integer: the 10-1000 range
+    # that used to be enforced here refused an author's own number for being
+    # large, which is a cap on what they may build (founder, 2026-09-30). Zero and
+    # negatives are still refused -- those are not a smaller ceiling, they are a
+    # graph that cannot step.
     _rl_raw = kwargs.get("recursion_limit_override", "")
     recursion_limit_override: int | None = None
     if _rl_raw:
@@ -1102,11 +1106,11 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             _rl_val = int(_rl_raw)
         except (TypeError, ValueError):
             return json.dumps({"error": "recursion_limit_override must be an integer."})
-        if not 10 <= _rl_val <= 1000:
+        if _rl_val < 1:
             return json.dumps({
                 "error": (
-                    f"recursion_limit_override {_rl_val} out of range. "
-                    "Valid range: 10-1000."
+                    f"recursion_limit_override {_rl_val} is not a number of steps. "
+                    "Use a positive integer; there is no upper bound."
                 ),
             })
         recursion_limit_override = _rl_val
@@ -2462,7 +2466,8 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
                 "error": f"inputs_json is not valid JSON: {exc}",
             })
 
-    # Parse + validate recursion_limit_override (10-1000) — same shape as run_branch.
+    # Parse `recursion_limit_override` — same shape as run_branch: any positive
+    # integer, no upper bound.
     _rl_raw = kwargs.get("recursion_limit_override", "")
     recursion_limit_override: int | None = None
     if _rl_raw:
@@ -2470,11 +2475,11 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             _rl_val = int(_rl_raw)
         except (TypeError, ValueError):
             return json.dumps({"error": "recursion_limit_override must be an integer."})
-        if not 10 <= _rl_val <= 1000:
+        if _rl_val < 1:
             return json.dumps({
                 "error": (
-                    f"recursion_limit_override {_rl_val} out of range. "
-                    "Valid range: 10-1000."
+                    f"recursion_limit_override {_rl_val} is not a number of steps. "
+                    "Use a positive integer; there is no upper bound."
                 ),
             })
         recursion_limit_override = _rl_val
