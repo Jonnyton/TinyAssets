@@ -34,9 +34,18 @@ Shape per design.md.
   the stray-token invariant and the segment-echo cases.
 - [x] 11. `python packaging/claude-plugin/build_plugin.py` (mirror parity green
   on every commit).
-- [ ] 12. Land, then: `deployed_sha.py --assert-contains`, the live 202 from the
-  founder's own `/mcp/hooks` receiver through the real effector, and sync +
-  archive this change.
+- [ ] 12. Land, then, in order:
+
+      python scripts/deployed_sha.py --assert-contains <sha>
+      docker exec tinyassets-daemon python \
+        /app/scripts/probes/capability_url_live_proof.py --universe <founder uid>
+
+  and then sync + archive this change. The probe is committed, self-cleaning,
+  and refuses to run without an explicit `--universe` the named principal
+  administers. Rehearsed 2026-09-30 against a throwaway data dir
+  (`PROOF_BASE=...`): 10 of its 12 checks pass there, and the two that do not
+  are exactly the two that need the token to exist in **production's** hook DB
+  — check 6 (the receiver's 202) and check 11 (the run it enqueued).
 
 ## Review
 
