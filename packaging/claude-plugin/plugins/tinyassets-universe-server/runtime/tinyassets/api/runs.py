@@ -1576,6 +1576,7 @@ def _action_list_runs(kwargs: dict[str, Any]) -> str:
         branch_def_id=kwargs.get("branch_def_id", ""),
         status=kwargs.get("status", ""),
         limit=int(kwargs.get("limit", 50) or 50),
+        universe_id=str(kwargs.get("universe_id") or "").strip(),
     )
     # Do not expose runs of a private universe the caller cannot read.
     rows = [r for r in rows if _run_matches_scope(r, kwargs) and _run_read_allowed(r)]

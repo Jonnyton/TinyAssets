@@ -154,7 +154,11 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     whoami: function () { return call("whoami", {}); },
     listAgents: function () { return call("list_agents", {}); },
     sendMessage: function (text, agent) { return call("send_message", {text: text, agent: agent || ""}); },
-    readConversation: function (limit) { return call("read_conversation", {limit: limit || 0}); }
+    readConversation: function (limit) { return call("read_conversation", {limit: limit || 0}); },
+    listAutomations: function () { return call("list_automations", {}); },
+    listRuns: function (options) { return call("list_runs", options || {}); },
+    readRun: function (runId) { return call("read_run", {run_id: runId}); },
+    readRunOutput: function (runId, field, offset) { return call("read_run_output", {run_id: runId, field: field, offset: offset || 0}); }
   });
 
   parentWindow.postMessage({ta_ui: PROTOCOL, type: "ready"}, "*");
