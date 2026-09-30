@@ -24,7 +24,9 @@ from tinyassets.storage import db_path
 
 AGENT_SCHEMA_VERSION = 1
 MAX_AGENT_JSON_BYTES = 256 * 1024
-MAX_COMPONENTS = 64
+#: Kept, unlike the component count: the stored lineage table carries it as a
+#: CHECK constraint, so lifting it is a rebuild of an attribution table, and a
+#: remix chain 50 generations deep is not a shape anyone has built.
 MAX_LINEAGE_DEPTH = 50
 
 _COMPONENT_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -308,8 +310,8 @@ def _normalize_tags(raw: Any) -> list[str]:
 def _normalize_components(raw: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(raw, dict) or not raw:
         raise AgentValidationError("components must be a non-empty JSON object")
-    if len(raw) > MAX_COMPONENTS:
-        raise AgentValidationError(f"components may contain at most {MAX_COMPONENTS} entries")
+    # No count of components: the definition is bounded by its canonical JSON
+    # bytes (MAX_AGENT_JSON_BYTES), not by how it is divided (plan item 6).
     components: dict[str, dict[str, Any]] = {}
     for raw_key, raw_component in raw.items():
         key = str(raw_key)
@@ -1533,7 +1535,6 @@ __all__ = [
     "AgentValidationError",
     "MAX_AGENT_JSON_BYTES",
     "MAX_APP_UI_LIBRARY_BYTES",
-    "MAX_COMPONENTS",
     "MAX_LINEAGE_DEPTH",
     "create_binding",
     "get_app_ui",

@@ -887,6 +887,20 @@ existing conversation read paths.
   with only the refused MODEL excluded; each accepted model is tried at most
   once per turn, until the owner's accepted list is exhausted
 
+#### Scenario: A model that needs minutes to answer gets them, and a slow answer says so
+
+- **WHEN** an HTTP inference request is sent through the credential broker
+- **THEN** it asks for the turn's remaining absolute cap as its reply budget, and
+  the broker grants up to `INFERENCE_MAX_SECONDS` only for a POST on a connection
+  that itself carries a `model_use` or `model_discovery` capability; every other
+  request keeps the ordinary 30s bounds, and address pinning, the endpoint
+  allowlist, redirects, size caps and the slow-drip deadline are unchanged
+- **AND** a request that does not finish inside its budget crosses the broker as
+  a typed deadline, the attempt is `provider_reply_timeout` with no source
+  cooldown, and the notice says the model took longer to answer than the
+  universe waits and that asking it to continue, in smaller steps, or choosing
+  a faster model usually works
+
 #### Scenario: A turn too large for the selected model moves to one that fits
 
 - **WHEN** our own pre-send measurement finds the served turn does not fit the
