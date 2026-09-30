@@ -384,12 +384,17 @@ def record_turn(
     return 0
 
 
-#: Per-session retention ceiling for the verbatim transcript at rest. Rendering
-#: is already bounded (DEFAULT_LIMIT turns / character budget); this bounds the
-#: store itself so a long-lived thread cannot grow without limit. Oldest turns
-#: beyond it are deleted on every exchange (Codex 2026-08-22 #3). User-driven
-#: deletion/export of the transcript is a separate, tracked follow-up.
-RETENTION_TURNS = 400
+#: NOTHING here deletes a turn. The transcript at rest is the user's own record,
+#: and a platform that silently drops its older half is not keeping it. The
+#: 400-turn retention ceiling that used to live here deleted the oldest turns on
+#: every exchange; it is gone (founder, 2026-09-30 -- an account's only limits are
+#: the cloud bytes it occupies and its concurrent agent seats, and stored turns
+#: are bytes, charged to tier storage like everything else).
+#:
+#: What a model is SENT is still bounded -- `DEFAULT_LIMIT` turns and a character
+#: budget at render time. Trimming context is a prompt-shaping decision; deleting
+#: history is a data-loss decision, and only the user makes that one (account
+#: deletion, or an explicit per-session delete).
 
 
 def record_exchange(
@@ -405,8 +410,8 @@ def record_exchange(
 
     Two independent ``record_turn`` calls can leave a founder-only half-turn
     when the second write fails (Codex 2026-08-22 #2); here both rows commit
-    together or not at all. Also applies ``RETENTION_TURNS``. Best-effort by
-    contract: returns False and logs on any failure, never raises.
+    together or not at all. Nothing is deleted. Best-effort by contract:
+    returns False and logs on any failure, never raises.
     """
     return _record_pair(universe_dir, session_id, founder_text, universe_text,
                         speaker="universe", ts=ts, execution=execution)
@@ -432,7 +437,7 @@ def _record_pair(
     universe_dir, session_id, founder_text, universe_text, *, speaker, ts=None,
     execution=None, failure=None,
 ) -> bool:
-    """The shared transaction, retry and retention boundary for terminal pairs."""
+    """The shared transaction and retry boundary for terminal pairs."""
     if not session_id or not isinstance(founder_text, str) or not founder_text.strip():
         return False
     if not isinstance(universe_text, str) or not universe_text.strip():
@@ -480,12 +485,6 @@ def _record_pair(
                         rows = [(*rows[0], ""), (*rows[1], failure_json)]
                     conn.executemany(
                         f"INSERT INTO conversation_turns ({columns}) VALUES ({placeholders})", rows,
-                    )
-                    conn.execute(
-                        "DELETE FROM conversation_turns WHERE session_id = ? AND turn_no <= "
-                        "(SELECT COALESCE(MAX(turn_no), 0) FROM conversation_turns "
-                        "WHERE session_id = ?) - ?",
-                        (session_id, session_id, RETENTION_TURNS),
                     )
                     conn.commit()
                     return True

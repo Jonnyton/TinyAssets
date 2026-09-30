@@ -24,11 +24,12 @@ a lock screen.
 Cost
 ----
 No meter and no rate limit (founder, 2026-09-30: account limits are cloud
-storage and concurrent agent-run seats). Volume is bounded by three things that
-already exist: a delivery is claimed once per
-``(request, item, device, kind)``; a deduplicated ask dispatches nothing, so
-only a genuinely new row notifies; and ``MAX_PENDING`` caps what an unanswered
-loop can pile up before delivery is involved at all.
+storage and concurrent agent-run seats). The bound is seats: an unanswered loop
+can only raise requests as fast as it can hold a seat to run in. Two existing
+facts shape the rest: a delivery is claimed once per
+``(request, item, device, kind)``, and a deduplicated ask dispatches nothing, so
+only a genuinely new row notifies. ``MAX_PENDING`` is no longer part of this
+bound -- it was removed with the other non-seat, non-storage limits.
 
 Failure
 -------
