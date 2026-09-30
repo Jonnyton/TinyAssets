@@ -257,24 +257,28 @@ def test_exempt_table_is_exact_paths_not_prefixes(path, challenged, monkeypatch)
     from tinyassets.auth import middleware as mw
 
     monkeypatch.setattr(mw, "_inbound_hooks_enabled", lambda: False)
-    monkeypatch.setattr(mw, "connect_deposit_routes_enabled", lambda: False)
     assert _auth_challenge_path(path) is challenged, path
 
 
-def test_hook_and_connect_routes_are_exempt_only_when_their_feature_is_on(monkeypatch):
+def test_hook_routes_are_exempt_only_when_their_feature_is_on(monkeypatch):
     from tinyassets.auth import middleware as mw
 
     monkeypatch.setattr(mw, "_inbound_hooks_enabled", lambda: False)
-    monkeypatch.setattr(mw, "connect_deposit_routes_enabled", lambda: False)
     assert _auth_challenge_path("/mcp/hooks/abc123") is True
-    assert _auth_challenge_path("/mcp/connect/deposit") is True
 
     monkeypatch.setattr(mw, "_inbound_hooks_enabled", lambda: True)
-    monkeypatch.setattr(mw, "connect_deposit_routes_enabled", lambda: True)
     assert _auth_challenge_path("/mcp/hooks/abc123") is False
     assert _auth_challenge_path("/mcp/hooks/abc123/deeper") is True   # one segment only
     assert _auth_challenge_path("/mcp/hooks/") is True
-    assert _auth_challenge_path("/mcp/connect/deposit") is False
+
+
+def test_the_retired_connect_deposit_paths_are_challenged(monkeypatch):
+    """The dark /mcp/connect browser form was deleted (2026-09-30): nothing
+    reached it and its flag was set in no deployment. Its paths are ordinary
+    /mcp paths now, so the bearer challenge covers them with no flag to flip."""
+    monkeypatch.setenv("TINYASSETS_CONNECT_DEPOSIT_ENABLED", "1")
+    for path in ("/mcp/connect", "/mcp/connect/login", "/mcp/connect/callback"):
+        assert _auth_challenge_path(path) is True, path
 
 
 def test_challenge_metadata_url_is_routed_in_production(monkeypatch):

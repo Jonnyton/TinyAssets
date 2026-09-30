@@ -486,34 +486,6 @@ def auth_middleware(token: str | None) -> Identity | None:
     return identity
 
 
-def connect_deposit_routes_enabled() -> bool:
-    """Whether the browser deposit flow (``/mcp/connect/*``) is enabled.
-
-    Dark by default: off unless ``TINYASSETS_CONNECT_DEPOSIT_ENABLED`` is truthy.
-    Gates BOTH the route registration (``register_connect_routes``) and the narrow
-    auth exemption below, so a default deployment gets neither the routes nor any
-    change to the MCP bearer challenge.
-    """
-    return os.environ.get(
-        "TINYASSETS_CONNECT_DEPOSIT_ENABLED", ""
-    ).strip().lower() in ("1", "true", "yes", "on")
-
-
-def _is_connect_deposit_path(path: str) -> bool:
-    """Exactly the browser deposit routes: ``/mcp/connect`` and ``/mcp/connect/*``.
-
-    Case-sensitive and traversal-safe so the exemption can NEVER cover a path that
-    normalizes to a target outside the connect subtree:
-    - Reject any ``..`` segment or empty segment (``//``): ``/mcp/connect/../tools``
-      normalizes to ``/mcp/tools`` and MUST stay challenged, not be exempted here.
-    - Case-sensitive: ``/MCP/connect`` / ``/mcp/Connect`` are not this route.
-    - A sibling like ``/mcp/connectxyz`` is not matched (anchored on the boundary).
-    """
-    if ".." in path or "//" in path:
-        return False
-    return path == "/mcp/connect" or path.startswith("/mcp/connect/")
-
-
 def _is_inbound_hook_path(path: str) -> bool:
     """Exactly ``/mcp/hooks/<one-segment-token>`` (non-empty, no deeper path).
 
@@ -582,16 +554,10 @@ def _auth_challenge_path(path: str) -> bool:
     # /mcp/app/billing/... route is exempt, so checkout and cancel stay identity-gated.
     if path == "/mcp/app/billing/webhook":
         return False
-    # Narrow, ordered exemption for the browser deposit flow: when enabled, its
-    # own signed-state / signed-session validation is the sole boundary for these
-    # routes, so they must not be swept into the MCP bearer 401. Scoped to exactly
-    # /mcp/connect(/*) — no other /mcp path is opened.
-    if connect_deposit_routes_enabled() and _is_connect_deposit_path(path):
-        return False
     # Inbound webhook receiver: /mcp/hooks/<token> is a public POST endpoint whose
     # UNGUESSABLE per-branch token is the sole boundary (the run is author-gated,
     # durably rate-limited, and revocable — webhook Codex findings #1/#3/#5). It
-    # carries no MCP bearer, so — like /mcp/app and /mcp/connect — it must not be
+    # carries no MCP bearer, so — like /mcp/app — it must not be
     # swept into the /mcp/* bearer 401. Only exempt when inbound is enabled (the
     # route only exists then) and only the exact /mcp/hooks/<one-segment-token>
     # shape — no deeper /mcp/hooks/... path is opened.
@@ -987,7 +953,7 @@ class AuthContextMiddleware:
                     _current_bearer_present.set(True)
                     canary_authorized = True
                 elif method != "POST" or path not in ("/mcp", "/mcp/"):
-                    # The endpoint itself, not the app, connect, hook or any
+                    # The endpoint itself, not the app, hook or any
                     # other /mcp/* route: those have their own authentication
                     # and the canary has no business there.
                     await _send_forbidden_403(
@@ -1046,7 +1012,7 @@ class AuthContextMiddleware:
                 if _auth_challenge_path(path):
                     # No bearer on the MCP endpoint -> 401 challenge, in EVERY auth
                     # mode: the client launches OAuth. The exempt paths (discovery,
-                    # the app shell and its token route, connect, hooks, and the
+                    # the app shell and its token route, hooks, and the
                     # billing webhook) bind their own principal.
                     await _send_auth_challenge_401(send, invalid_token=False)
                     return
