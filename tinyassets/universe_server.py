@@ -38,7 +38,6 @@ from typing import Annotated, Any, Literal
 
 import uvicorn
 from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 from fastmcp.tools.function_tool import FunctionTool
 from mcp.types import ToolAnnotations

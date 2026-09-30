@@ -341,12 +341,11 @@ class TestActionHandlesSnapshotDrift:
     ):
         """Plant a drifted snapshot, invoke the handler, confirm the JSON
         response carries failure_class + suggested_action from the class."""
+        from tinyassets.api import branches as api_branches
         from tinyassets.api import engine_helpers as eh
         from tinyassets.api import runs as runs_mod
         from tinyassets.branch_versions import _connect as bv_connect
         from tinyassets.branch_versions import initialize_branch_versions_db
-
-        from tinyassets.api import branches as api_branches
 
         monkeypatch.setattr(eh, "_current_actor", lambda: "alice")
         monkeypatch.setattr(runs_mod, "_base_path", lambda: tmp_path)
