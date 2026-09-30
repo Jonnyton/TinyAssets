@@ -517,6 +517,11 @@ function warmSession(){}
 function loadPlan(){ LOG.push(["loadPlan"]); }
 function loadHistory(){ LOG.push(["loadHistory",queueOwner,queueScope]); }
 function sessionExpired(){ LOG.push(["expired"]); }
+// Sign-in reports the browser's IANA zone so a cron automation can run in the
+// owner's clock rather than the container's (`automation-schedule-timezone`).
+// Stubbed like every other collaborator here; the real one POSTs and is
+// deliberately not awaited.
+function reportTimezone(){ LOG.push(["timezone"]); }
 """
 
 
@@ -548,6 +553,9 @@ def test_an_unpowered_first_session_lands_in_chat_with_the_request_first(html):
     assert out["engineConnected"] is False
     assert not any(entry[0] == "layout" for entry in log), \
         "an unpowered universe enabled the powered layout"
+    assert ["timezone"] in log, \
+        "sign-in did not report the browser's zone, so a schedule would run on " \
+        "the container's clock"
 
 
 def test_a_powered_session_lands_in_chat_without_opening_setup(html):
