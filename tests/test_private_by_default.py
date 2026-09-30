@@ -15,7 +15,7 @@ these results — creation writes an EXPLICIT declaration and the double defers 
 the real resolver on those — but a test whose subject is the visibility boundary
 must not be reading a stand-in.
 
-**The mutation check** (openspec/changes/private-by-default-universes):
+**The mutation check** (openspec/changes/archive/2026-09-30-private-by-default-universes):
 `TestAnotherUserIsRefused` goes red if `DEFAULT_CREATE_VISIBILITY` is reverted to
 `"public"`. That is the assertion the change exists to make, so it is named and
 kept narrow.
@@ -657,7 +657,7 @@ class TestMigration:
     The records it exists for are the ones live production held on 2026-09-02:
     maintenance buckets and IdP-migration backups declared `public` by the old
     backfill, never by a person
-    (observed live 2026-09-02; see openspec/changes/private-by-default-universes/).
+    (observed live 2026-09-02; see openspec/changes/archive/2026-09-30-private-by-default-universes/).
     """
 
     @staticmethod

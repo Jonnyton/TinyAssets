@@ -891,7 +891,15 @@ def _action_get_branch_version(kwargs: dict[str, Any]) -> str:
     if not version_id:
         return json.dumps({"error": "branch_version_id is required."})
 
+    from tinyassets.api.branches import _resolve_readable_version
+
     base_path = _base_path()
+    # A version is as readable as its branch, and no more. patch_branch mints a
+    # snapshot before and after every edit of a PRIVATE branch, so an ungated
+    # read handed any signed-in caller another user's prompts and edit history
+    # (astra refute 2026-09-30). Unreadable reads exactly like absent.
+    if _resolve_readable_version(version_id, str(base_path)) is None:
+        return json.dumps({"error": f"Version '{version_id}' not found."})
     version = get_branch_version(base_path, version_id)
     if version is None:
         return json.dumps({"error": f"Version '{version_id}' not found."})
@@ -906,7 +914,13 @@ def _action_list_branch_versions(kwargs: dict[str, Any]) -> str:
         return json.dumps({"error": "branch_def_id is required."})
     limit = int(kwargs.get("limit", 50) or 50)
 
+    from tinyassets.api.branches import resolve_branch_id_for_read
+
     base_path = _base_path()
+    # Same rule as a single version: the history of a branch the caller may not
+    # read does not exist for them.
+    if resolve_branch_id_for_read(bid, str(base_path)) != bid:
+        return json.dumps({"error": f"Branch '{bid}' not found."})
     versions = list_branch_versions(base_path, bid, limit=limit)
     return json.dumps({
         "branch_def_id": bid,

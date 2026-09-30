@@ -196,17 +196,8 @@ The provider runtime SHALL distinguish imported/registered providers, quota or c
 - **THEN** the provider is not invoked and its diagnostic records `skip_class=quota_or_cooldown` plus integer seconds remaining
 
 ### Requirement: A secondary call never writes shared source health
-A provider call the owner did not ask for -- the platform's own bookkeeping
-beside a served turn, marked `ModelConfig.secondary_call` and currently only
-post-reply learning extraction -- SHALL NOT write any shared routing health
-state: no `QuotaTracker` cooldown for any failure class, and no source reconnect
-mark. It SHALL still READ the cooldown gate, so it skips a source already
-cooling rather than spending a request on it, and it SHALL still report its own
-real failure class in `attempts`. Withholding a cooldown is restrictive by
-construction: it admits no model, widens no grant and raises no ceiling, so it
-can only ever make the router try an already-authorized source more. A
-successful secondary call may still record success, because a completed call is
-evidence about the credential whoever made it.
+
+A provider call the owner did not ask for -- the platform's own bookkeeping beside a served turn, marked `ModelConfig.secondary_call` and currently only post-reply learning extraction -- SHALL NOT write any shared routing health state: no `QuotaTracker` cooldown for any failure class, and no source reconnect mark. It SHALL still READ the cooldown gate, so it skips a source already cooling rather than spending a request on it, and it SHALL still report its own real failure class in `attempts`. Withholding a cooldown is restrictive by construction: it admits no model, widens no grant and raises no ceiling, so it can only ever make the router try an already-authorized source more. A successful secondary call may still record success, because a completed call is evidence about the credential whoever made it.
 
 #### Scenario: learning extraction is rate-limited after an answered turn
 - **WHEN** a served reply succeeds and the post-reply learning call on the same source takes a rate-limit refusal
@@ -709,11 +700,7 @@ interactive-deadline outcome, not as provider unavailability.
   that merely mentions compaction is one liveness reset and never opens a window
 ### Requirement: A provider CLI is spawned as an owned family and ended as one
 
-Every provider CLI subprocess the Claude and Codex adapters spawn — streamed and
-non-streamed paths, direct and shell-shim — SHALL be spawned through one
-owned-process helper and ended through it, so a deadline, a cancellation or a
-dropped handle ends the descendants that CLI started (the Windows `.cmd` shim's
-real CLI, the engine-MCP server) and not only the direct child.
+Every provider CLI subprocess the Claude and Codex adapters spawn — streamed and non-streamed paths, direct and shell-shim — SHALL be spawned through one owned-process helper and ended through it, so a deadline, a cancellation or a dropped handle ends the descendants that CLI started (the Windows `.cmd` shim's real CLI, the engine-MCP server) and not only the direct child.
 
 On POSIX, ownership SHALL be held by a **live in-group anchor**, never by a
 recorded numeric group id. The adapter spawns a fresh isolated interpreter
@@ -1007,21 +994,7 @@ authority, implement remote cancellation, or promise a total broker IPC deadline
 
 ### Requirement: A queued synchronous provider call is measured from submit, not from pickup
 
-The synchronous provider-call wrappers (`ProviderRouter.call_sync`,
-`ProviderRouter.call_with_policy_sync`) queue on a bounded thread pool of their
-own, one hop after the compiler's own bounded pool. Each SHALL anchor the
-caller's remaining budget at submit time rather than at worker pickup, so the
-wait in that second queue is deducted from the budget instead of silently
-re-granted. Only an EXPLICIT caller cap (`ModelConfig.absolute_cap_s`) counts as
-a handed-over deadline; the legacy integer `timeout` scalar SHALL NOT be read as
-one, and the default backstop is not a deadline. On reaching the worker, a call
-whose explicit budget has already elapsed SHALL be refused before any provider
-is launched; otherwise the elapsed wait SHALL be subtracted from the cap handed
-to the provider, on a new config object, never raising a call above the budget
-it arrived with. A wait below the scheduling-jitter threshold SHALL hand over
-the caller's own config unchanged. This check sits strictly ahead of the
-provider call: it SHALL NOT cancel, kill or replay work that is already past it,
-and the existing reader-drain margin is preserved (now measured from submit).
+The synchronous provider-call wrappers (`ProviderRouter.call_sync`, `ProviderRouter.call_with_policy_sync`) queue on a bounded thread pool of their own, one hop after the compiler's own bounded pool. Each SHALL anchor the caller's remaining budget at submit time rather than at worker pickup, so the wait in that second queue is deducted from the budget instead of silently re-granted. Only an EXPLICIT caller cap (`ModelConfig.absolute_cap_s`) counts as a handed-over deadline; the legacy integer `timeout` scalar SHALL NOT be read as one, and the default backstop is not a deadline. On reaching the worker, a call whose explicit budget has already elapsed SHALL be refused before any provider is launched; otherwise the elapsed wait SHALL be subtracted from the cap handed to the provider, on a new config object, never raising a call above the budget it arrived with. A wait below the scheduling-jitter threshold SHALL hand over the caller's own config unchanged. This check sits strictly ahead of the provider call: it SHALL NOT cancel, kill or replay work that is already past it, and the existing reader-drain margin is preserved (now measured from submit).
 
 #### Scenario: An expired queued call launches nothing
 

@@ -2,7 +2,7 @@
 operation=connect_llm).
 
 Requirement source:
-``openspec/changes/byo-llm-deposit-surface/specs/byo-llm-deposit-surface/spec.md``.
+``openspec/specs/byo-llm-deposit-surface/spec.md``.
 
 Covers: owner-scoped Claude/Codex deposit round-trip, re-deposit upsert with
 unrelated-credential preservation, the owner/admin (not write) gate, the

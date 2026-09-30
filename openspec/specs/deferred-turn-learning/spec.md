@@ -11,11 +11,7 @@ change deferred-learning-never-blocks-the-reply.
 ## Requirements
 ### Requirement: A turn that recorded its own lesson does not pay for a second pass
 
-When a founder turn has recorded what it was taught — settling its conversation's
-learned cursor — `converse` SHALL return the reply with no further model
-round-trip. When the cursor is NOT settled at turn end, the existing synchronous
-extraction SHALL still run, so no lesson is ever lost. No turn SHALL become slower
-than it was before this requirement.
+When a founder turn has recorded what it was taught — settling its conversation's learned cursor — `converse` SHALL return the reply with no further model round-trip. When the cursor is NOT settled at turn end, the existing synchronous extraction SHALL still run, so no lesson is ever lost. No turn SHALL become slower than it was before this requirement.
 
 #### Scenario: the settled turn returns immediately
 - **WHEN** a founder turn records its lesson in-turn and its cursor is settled at turn end
@@ -77,17 +73,12 @@ another message would lose the fact.
 
 ### Requirement: The deferred path, when it exists, re-derives its authority
 
+A cursor unsettled past its bound SHALL be settled by a deferred extraction that runs outside any founder request. Its authority SHALL be RE-DERIVED at that moment from durable ownership — owner, universe, serving binding and revision — under its own named operation, and SHALL NOT come from a request lease that outlived its request. A binding that has since been revoked, a changed home, or a deleted universe SHALL fail the deferred work closed.
+
 DEFERRED to its own change (lead, 2026-09-26): this change ships the in-turn
 recording plus the existing synchronous fallback, and stage 2 is designed against
 the cursor-settle rate this produces. The requirement is stated here because it is
 the constraint that change inherits, and because D1 is settled.
-
-A cursor unsettled past its bound SHALL be settled by a deferred extraction that
-runs outside any founder request. Its authority SHALL be RE-DERIVED at that moment
-from durable ownership — owner, universe, serving binding and revision — under its
-own named operation, and SHALL NOT come from a request lease that outlived its
-request. A binding that has since been revoked, a changed home, or a deleted
-universe SHALL fail the deferred work closed.
 
 #### Scenario: a revoked binding stops the deferred work
 - **WHEN** the deferred extraction reaches a universe whose serving binding was revoked, rebound, or whose home changed since the turn

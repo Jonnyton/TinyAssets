@@ -1036,3 +1036,10 @@ uncoupled.
 #### Scenario: the two surfaces are not silently coupled
 - **WHEN** the public and engine descriptions for a shared handle name are compared
 - **THEN** neither is derived from the other, so editing one cannot alter the other
+
+### Requirement: A subscription deposit is a connection operation, not a handle
+The connector SHALL accept a subscription deposit as `write_graph target=connection operation=connect_llm`, dispatched to the owner-scoped writer (`byo-llm-deposit-surface`), and SHALL NOT add an advertised handle for it. The pinned handle set asserted by the public canary is unchanged by it.
+
+#### Scenario: Deposit without a new handle
+- **WHEN** the canary asserts the advertised handles on a deployment that serves `connect_llm`
+- **THEN** the handle set is the canonical one, and `connect_llm` is reachable as an operation of `write_graph`
