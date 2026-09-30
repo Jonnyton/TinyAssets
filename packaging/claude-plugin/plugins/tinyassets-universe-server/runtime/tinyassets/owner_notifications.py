@@ -41,6 +41,7 @@ diagnosable without keeping a copy of what was said.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -61,6 +62,7 @@ from tinyassets.storage.owner_devices import (
     KIND_RAISED,
     delivery_targets,
     record_delivery,
+    release_alerts_for_request,
     reserve_delivery,
     retire_device,
 )
@@ -85,22 +87,61 @@ def _flat(value: Any, limit: int) -> str:
     return _CONTROL.sub(" ", str(value or "")).strip()[:limit]
 
 
-def _universe_title(base: Path, universe_id: str) -> str:
-    """The identity line: the universe's OWN name, read off its own record.
+def ask_key(request: dict[str, Any]) -> str:
+    """The identity of the ASK, for "notify once per distinct thing asked".
 
-    Falls back to the platform name rather than to anything the agent wrote --
-    an unreadable record must not promote agent text into the title, which is
-    the one position no ask is allowed to occupy. A name that is just the
-    universe id is not a name, so that falls back too.
+    A digest of the request's own ``dedupe_key`` -- the tuple of kind, title,
+    body, fields, action and items that the rail renders from. Not the
+    ``request_id``, which is allocated fresh for every row: an agent that
+    raised an ask, withdrew it and raised the identical ask again produced a
+    new delivery key each time, so 101 cycles delivered 101 pushes while never
+    holding more than one pending request (gpt-6-astra, 2026-09-29). Keyed on
+    the ask, that loop delivers once.
+
+    A row with no dedupe key (older than the column) falls back to its id, so
+    it notifies rather than being silently keyed together with every other
+    keyless row.
+    """
+    dedupe = str(request.get("dedupe_key") or "")
+    if not dedupe:
+        return "req:" + str(request.get("request_id") or "")
+    return "ask:" + hashlib.sha256(dedupe.encode("utf-8")).hexdigest()
+
+
+#: The title's fixed, server-owned tail. Every request notification carries it,
+#: so the identity line always says WHAT this is -- a universe asking its owner
+#: something -- and not merely who. Without it the unnamed-universe fallback
+#: rendered a bare "TinyAssets", and an ask with kind "TinyAssets" and a
+#: security-shaped title read as a platform notice (gpt-6-astra, 2026-09-29).
+#: No agent-supplied string can produce this suffix, because agent text only
+#: ever reaches the body.
+_SOURCE_SUFFIX = " asks"
+#: When the universe has no name of its own. Deliberately not the product name:
+#: "TinyAssets" in the identity position is exactly the impersonation the
+#: suffix exists to prevent.
+_UNNAMED = "Your universe"
+
+
+def _universe_title(base: Path, universe_id: str) -> str:
+    """The identity line: "<the universe's own name> asks".
+
+    Read off the universe's own record, never from the ask. An unreadable
+    record, a missing name, or a name that is merely the universe id all fall
+    back to a neutral phrase -- never to anything the agent wrote, because the
+    title is the one position no ask is allowed to occupy.
     """
     try:
         from tinyassets.daemon_server import get_universe
 
-        name = _flat(get_universe(base, universe_id=universe_id).get("display_name"),
-                     MAX_TITLE_CHARS)
+        name = _flat(
+            get_universe(base, universe_id=universe_id).get("display_name"),
+            MAX_TITLE_CHARS - len(_SOURCE_SUFFIX),
+        )
     except Exception:  # noqa: BLE001 - a name we cannot read is not a reason to leak one
         name = ""
-    return "TinyAssets" if not name or name == universe_id else name
+    if not name or name == universe_id:
+        name = _UNNAMED
+    return name + _SOURCE_SUFFIX
 
 
 def _compose(base: Path, universe_id: str, request: dict[str, Any]) -> Notification:
@@ -154,59 +195,77 @@ def _dispatch(
     base: Path,
     *,
     owner_user_id: str,
+    ask_key: str,
     request_id: str,
     notification: Notification,
     kind: str,
     item_id: str = "",
+    only_devices: list[str] | None = None,
     skip_device_id: str = "",
     transports: dict | None = None,
 ) -> dict[str, Any]:
-    """Send to each of the owner's live devices, once each. Never raises."""
+    """Send to each of the owner's live devices, once each. Never raises.
+
+    ``only_devices`` narrows to a known set -- used by the clear, which goes
+    only to devices that were actually holding the alert.
+    """
     available = resolve_transports() if transports is None else transports
     targets = [
         d for d in delivery_targets(base, owner_user_id=owner_user_id)
         if d["device_id"] != skip_device_id
+        and (only_devices is None or d["device_id"] in only_devices)
     ]
     outcomes: dict[str, str] = {}
     for device in targets:
+        device_id = device["device_id"]
         transport = available.get(device["platform"])
         if transport is None:
             # Truthful, and not a receipt: nothing was sent and nothing claims
             # it was. Logged at INFO because an unconfigured deployment is a
             # normal state, not an incident.
-            outcomes[device["device_id"]] = OUTCOME_NO_TRANSPORT
+            outcomes[device_id] = OUTCOME_NO_TRANSPORT
             logger.info(
                 "owner_notifications: no %s transport configured; request %s "
-                "not delivered to %s",
-                device["platform"], request_id, device["device_id"],
+                "not delivered to %s", device["platform"], request_id, device_id,
             )
             continue
-        if not reserve_delivery(
-            base, request_id=request_id, device_id=device["device_id"],
+        claim = reserve_delivery(
+            base, ask_key=ask_key, request_id=request_id, device_id=device_id,
             kind=kind, item_id=item_id, owner_user_id=owner_user_id,
-        ):
-            outcomes[device["device_id"]] = "replay"
+        )
+        if "token" not in claim:
+            outcomes[device_id] = claim["refused"]
             continue
+        # The token comes from the CLAIM, not from the snapshot above: a
+        # registration that moved this handset to another account between the
+        # two would otherwise still receive this owner's private title.
+        destination = {**device, "token": claim["token"]}
         try:
-            outcome = transport(device, notification)
+            outcome = transport(destination, notification)
         except TransportGone as exc:
             outcome = OUTCOME_GONE
             retire_device(
-                base, owner_user_id=owner_user_id, device_id=device["device_id"],
+                base, owner_user_id=owner_user_id, device_id=device_id,
                 reason=str(exc)[:80],
             )
         except TransportFailed as exc:
             outcome = exc.cls
-        except Exception:  # noqa: BLE001 - a transport must never break the caller
+        except Exception as exc:  # noqa: BLE001 - a transport must never break the caller
+            # The CLASS of exception and nothing else. A transport's exception
+            # text is a credential-leak channel, and exc_info=True put a bearer
+            # token from a raising transport into the log while the test that
+            # claimed "leaks nothing" only checked the ledger and the return
+            # value (gpt-6-astra, 2026-09-29).
             logger.warning(
-                "owner_notifications: transport raised outside its contract "
-                "for device %s", device["device_id"], exc_info=True,
+                "owner_notifications: %s transport raised %s outside its "
+                "contract for device %s",
+                device["platform"], type(exc).__name__, device_id,
             )
             outcome = OUTCOME_UNAVAILABLE
-        outcomes[device["device_id"]] = outcome
+        outcomes[device_id] = outcome
         record_delivery(
-            base, request_id=request_id, device_id=device["device_id"],
-            kind=kind, outcome=outcome, item_id=item_id,
+            base, ask_key=ask_key, device_id=device_id, kind=kind,
+            outcome=outcome, item_id=item_id,
         )
     return {
         "devices": len(targets),
@@ -247,7 +306,7 @@ def notify_request_raised(
         )
         return {"skipped": "actor_is_not_owner"}
     return _dispatch(
-        base, owner_user_id=owner, request_id=request_id,
+        base, owner_user_id=owner, ask_key=ask_key(request), request_id=request_id,
         notification=_compose(base, universe_id, request), kind=KIND_RAISED,
         transports=transports,
     )
@@ -259,7 +318,6 @@ def clear_request(
     universe_id: str,
     answered_by: str,
     request_id: str,
-    item_id: str = "",
     skip_device_id: str = "",
     transports: dict | None = None,
 ) -> dict[str, Any]:
@@ -269,23 +327,37 @@ def clear_request(
     local notification and nothing else. ``skip_device_id`` is the device they
     answered on, when the client says which; the app cancels its own locally,
     so pushing a clear back at it would be a second wake for one act.
+
+    Goes ONLY to devices that were holding this request's alert. A device that
+    never received one has nothing to take down, so it is not woken -- which is
+    also what keeps an itemised note from costing a push per item: the clear is
+    per REQUEST, because a notification is per request. Per-item state is what
+    the rail shows when the app opens.
     """
     base = Path(base_path)
     owner = _owner_of(base, universe_id)
     if not owner or owner != (answered_by or "").strip():
         return {"skipped": "actor_is_not_owner"}
+    # Releasing the latch is also what tells us where the alert actually is,
+    # and it re-arms those devices for the next request.
+    holding = release_alerts_for_request(
+        base, owner_user_id=owner, request_id=request_id,
+    )
+    if not holding:
+        return {"skipped": "no_alert_outstanding", "devices": 0, "sent": 0,
+                "outcomes": {}}
     notification = Notification(
         title="", body="", silent=True,
         data={
             "kind": "clear",
             "request_id": _flat(request_id, 64),
             "universe_id": _flat(universe_id, 64),
-            **({"item_id": _flat(item_id, 64)} if item_id else {}),
         },
     )
     return _dispatch(
-        base, owner_user_id=owner, request_id=request_id, notification=notification,
-        kind=KIND_CLEAR, item_id=item_id, skip_device_id=skip_device_id,
+        base, owner_user_id=owner, ask_key=f"clear:{request_id}",
+        request_id=request_id, notification=notification, kind=KIND_CLEAR,
+        only_devices=holding, skip_device_id=skip_device_id,
         transports=transports,
     )
 
@@ -294,7 +366,6 @@ def clear_for_universe_dir(
     universe_dir: str | Path,
     *,
     request_id: str,
-    item_id: str = "",
     transports: dict | None = None,
 ) -> dict[str, Any]:
     """The resolution seam: clear from wherever a request was just resolved.
@@ -306,6 +377,11 @@ def clear_for_universe_dir(
     A background resolver with no bound actor clears nothing, which is correct:
     nobody answered on a device.
 
+    There is no item variant. A notification is per REQUEST, so answering one
+    item of fifty changes nothing a device is displaying; pushing a clear per
+    item made a 50-item note cost 51 wakeups per device (gpt-6-astra,
+    2026-09-29). The rail shows per-item state when the app opens.
+
     Never raises. The answer is already written.
     """
     try:
@@ -315,7 +391,7 @@ def clear_for_universe_dir(
         return clear_request(
             udir.parent, universe_id=udir.name,
             answered_by=current_request_actor_id(),
-            request_id=request_id, item_id=item_id, transports=transports,
+            request_id=request_id, transports=transports,
         )
     except Exception:  # noqa: BLE001 - the answer stands
         logger.warning(
@@ -327,6 +403,7 @@ def clear_for_universe_dir(
 
 __all__ = [
     "MAX_BODY_CHARS",
+    "ask_key",
     "MAX_TITLE_CHARS",
     "clear_for_universe_dir",
     "clear_request",

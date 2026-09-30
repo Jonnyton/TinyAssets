@@ -38,16 +38,42 @@ collide with the app-URL move (#4112). Slice 2 (3.x) depends on #4112.
       dedupe-does-not-renotify, idempotent retry, gone-device retirement,
       `no_transport`, and the clear.
 - [x] 2.3 Mutation-check the owner gate, the token move, the secret-in-item
-      refusal, the item-resolves-once guard, the new-row-only dispatch gate and
-      the identity composition. **21 of 22 went red**; the only green was a
-      comment-only decoy. The first pass had one real green — removing the
-      store-layer "is this item on this request" check, because the API layer
-      refuses the same input first — so `resolve_item` is a public store
-      function and now has its own test at that layer.
-- [ ] 2.4 `gpt-6-astra` refute round on cross-user delivery, spoofing (can
-      anything make a notification look like it came from the platform or
-      another user?) and runaway notification cost. Fold the verdict in; max
-      three rounds.
+      refusal, the item-resolves-once guard, the new-row-only dispatch gate,
+      the identity composition, and every round-1 fix. **35 of 36 went red**;
+      the only green was a comment-only decoy. Informative greens along the
+      way, all now closed:
+      - the store-layer "is this item on this request" check (the API layer
+        refuses the same input first) — `resolve_item` is a public store
+        function and now has its own test at that layer;
+      - three round-2 guards were masked by a sibling guard, so no test could
+        tell them apart: the claim-time token (the ownership re-check already
+        refused the send), the ask-keyed delivery (the latch already stopped
+        the loop), and the clear-only-holders rule. Each now has a test that
+        isolates it — re-registration refreshes a row in place so a token can
+        change under a live device id; acknowledging between cycles releases
+        the latch so only the ask key is left; a device registered after the
+        alert holds nothing;
+      - three had no test at all: the moved handset's latch, owner-scoped
+        acknowledgement, and clears reaching devices that never got the alert.
+- [x] 2.4 `gpt-6-astra` refute round on cross-user delivery, spoofing and
+      runaway notification cost. **Round 1: REJECT**, six
+      `DISAGREE_EVIDENCE` findings, each reproduced. All six fixed, each with
+      the test that would have caught it:
+      1. a web subscription could alias past an ownership move (identity
+         hashed the whole document, not the endpoint the transport addresses);
+      2. dispatch sent to a snapshot, so a handset reassigned mid-dispatch got
+         the previous owner's title;
+      3. 101 ask/withdraw cycles = 101 pushes (delivery keyed on the request
+         id, which is fresh per row);
+      4. a 50-item note cost 51 pushes per device (a clear per item);
+      5. the unnamed-universe title fallback was the bare product name, so an
+         ask could read as a platform notice;
+      6. the "exception leaks nothing" test never checked the log, where
+         `exc_info=True` put a bearer token.
+      Plus a dedupe-key migration finding: appending an empty item list to
+      every key broke existing pending rows and standing decisions.
+      One residual filed, not fixed:
+      `docs/concerns/2026-09-29-a-run-answering-its-own-request-rearms-the-alert.md`.
 
 ## 3. Slice 2 — surfaces and the native release (depends on #4112)
 

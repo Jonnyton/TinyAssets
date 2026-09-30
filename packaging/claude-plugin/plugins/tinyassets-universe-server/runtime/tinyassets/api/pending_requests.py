@@ -1071,10 +1071,18 @@ def request_from_user(
     # note reuses its kind, title and body every day, so without the items
     # today's note would dedupe onto yesterday's pending row -- no new request,
     # and therefore no notification.
-    dedupe = json.dumps(
-        [kind, title, body, fields, action, items],
-        sort_keys=True, separators=(",", ":"),
-    )
+    #
+    # An ITEMLESS request keeps the original FIVE-element key. Appending an
+    # empty list to every key would have changed the identity of every request
+    # that already exists: live pending rows would stop deduplicating, and
+    # every standing "don't ask me this again" decision -- looked up by exact
+    # key in `create_request` -- would stop matching, so a settled question
+    # would be asked again and push (gpt-6-astra, 2026-09-29). Items only
+    # extend the identity of requests that have items.
+    identity = [kind, title, body, fields, action]
+    if items:
+        identity.append(items)
+    dedupe = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
         action=action, dedupe_key=dedupe, origin=origin, items=items,
@@ -2412,22 +2420,19 @@ def displayed_row_matches(row: dict[str, Any]) -> bool:
     owner's answers live under ``item_answers``) precisely so that answering
     one item does not make the row stop reproducing itself.
 
-    A row stored before items existed hashes five elements, so both shapes are
-    accepted when it has no items. Widening this to "try a few shapes" would
-    defeat the pin, which is why it is exactly the pre-items tuple and only
-    when the row is itemless.
+    An itemless request's key is the original five elements -- unchanged by
+    this change, so a row stored before items existed still reproduces itself
+    and every standing decision keyed on it still matches. Only a request that
+    HAS items carries the sixth.
     """
     stored = row.get("dedupe_key")
     if not stored:
         return True
-    head = [row["kind"], row["title"], row["body"], row["fields"], row["action"]]
-    items = row.get("items") or []
-    expected = json.dumps([*head, items], sort_keys=True, separators=(",", ":"))
-    if stored == expected:
-        return True
-    if items:
-        return False
-    return stored == json.dumps(head, sort_keys=True, separators=(",", ":"))
+    identity = [row["kind"], row["title"], row["body"], row["fields"], row["action"]]
+    if row.get("items"):
+        identity.append(row["items"])
+    expected = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return stored == expected
 
 
 def _assembled_secret(

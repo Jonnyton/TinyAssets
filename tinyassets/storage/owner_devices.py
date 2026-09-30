@@ -105,16 +105,44 @@ CREATE TABLE IF NOT EXISTS owner_notify_settings (
 -- `tinyassets/account_deletion.py`; a table with no column from that list is
 -- simply not found, and these rows would outlive the person they are about.
 -- That is why the column is named exactly `owner_user_id` and not `owner_sub`.
+--
+-- Keyed on `ask_key` -- a digest of the request's dedupe key -- and NOT on
+-- `request_id`. The request id is allocated fresh for every row, so an agent
+-- that raises an ask, withdraws it and raises the identical ask again got a
+-- new delivery key each time: 101 cycles, 101 pushes, never more than one
+-- pending request (gpt-6-astra, 2026-09-29). Keyed on the ASK, that loop
+-- delivers exactly once. `request_id` is retained for diagnosis only.
 CREATE TABLE IF NOT EXISTS request_notifications (
-    request_id    TEXT NOT NULL,
+    ask_key       TEXT NOT NULL,
     item_id       TEXT NOT NULL DEFAULT '',
     device_id     TEXT NOT NULL,
     owner_user_id TEXT NOT NULL DEFAULT '',
     kind          TEXT NOT NULL,
+    request_id    TEXT NOT NULL DEFAULT '',
     sent_at       REAL NOT NULL,
     outcome       TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (request_id, item_id, device_id, kind)
-);"""
+    PRIMARY KEY (ask_key, item_id, device_id, kind)
+);
+CREATE INDEX IF NOT EXISTS ix_request_notifications_request
+    ON request_notifications(request_id);
+-- ONE outstanding visible alert per device. A second one while the first is
+-- still unanswered is coalesced, not pushed: the device already says "your
+-- universe needs you", and saying it again adds nothing the person has not
+-- already been told. This is what bounds distinct asks -- an ask_key varies
+-- freely, so keying deliveries alone does not.
+--
+-- Released by the device acknowledging (the app saw it) or by the request
+-- being resolved. NOT by withdrawal: taking back your own ask is the agent's
+-- act, so it neither pushes nor re-arms.
+CREATE TABLE IF NOT EXISTS device_alert_latch (
+    device_id     TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    request_id    TEXT NOT NULL,
+    ask_key       TEXT NOT NULL,
+    raised_at     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_device_alert_latch_request
+    ON device_alert_latch(request_id);"""
 
 
 @contextmanager
@@ -136,19 +164,73 @@ def _token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _canonical_token(token: Any) -> str:
-    """The token as one canonical string, whatever shape the platform uses.
+#: Exactly the web-push subscription fields the transport uses. Anything else a
+#: browser attaches (``expirationTime``, vendor extras) is DROPPED rather than
+#: stored: see :func:`_canonical_token`.
+_WEB_SUBSCRIPTION_KEYS = ("p256dh", "auth")
 
-    Android hands over a registration token (a string). Web push hands over a
-    subscription object (endpoint + keys). Both become one canonical string so
-    the digest identifies the same handset across re-registrations regardless
-    of key order in the JSON.
+
+def _canonical_token(token: Any, platform: str) -> tuple[str, str]:
+    """``(stored token, destination identity)`` for one platform's token shape.
+
+    The two are different things, and conflating them was a cross-user hole
+    (gpt-6-astra, 2026-09-29). The **stored token** is what a transport needs
+    to send. The **destination identity** is what makes two registrations the
+    same handset -- and it has to be derived from exactly what the transport
+    actually addresses, or two documents that differ only in metadata hash
+    differently while pointing at the same phone. Then a handset that changed
+    accounts keeps a live row under each owner, and the previous owner's
+    private notifications still arrive.
+
+    Android: the registration token is an opaque string, and is both.
+
+    Web push: the transport addresses ``endpoint`` and encrypts to
+    ``keys.p256dh``/``keys.auth`` (:mod:`tinyassets.notify.webpush`), so the
+    identity is the **endpoint** and the stored document is narrowed to exactly
+    those three fields. A subscription carrying ``expirationTime``, extra keys,
+    rotated keys or different whitespace therefore cannot alias past the
+    ownership move.
+
+    Which branch runs is decided by the **platform**, never by the Python type
+    of the argument. Keyed on the type, a web subscription handed over as a
+    JSON *string* took the opaque path and its identity became the whole
+    string -- so whitespace alone still aliased. A client chooses the
+    serialisation; it must not choose the identity rule.
     """
+    if platform == PLATFORM_ANDROID:
+        if not isinstance(token, str):
+            raise ValueError("an android token must be a string")
+        text = token.strip()
+        return text, text
     if isinstance(token, str):
-        return token.strip()
-    if isinstance(token, dict):
-        return json.dumps(token, sort_keys=True, separators=(",", ":"))
-    raise ValueError("token must be a string or an object")
+        try:
+            token = json.loads(token)
+        except (json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError(
+                "a web push subscription must be an object, or JSON for one"
+            ) from exc
+    if not isinstance(token, dict):
+        raise ValueError("a web push subscription must be an object")
+    endpoint = str(token.get("endpoint") or "").strip()
+    if not endpoint.startswith("https://"):
+        raise ValueError("a web push subscription needs an https:// endpoint")
+    keys = token.get("keys")
+    if not isinstance(keys, dict):
+        raise ValueError("a web push subscription needs keys")
+    narrowed = {}
+    for name in _WEB_SUBSCRIPTION_KEYS:
+        value = str(keys.get(name) or "").strip()
+        if not value:
+            raise ValueError(f"a web push subscription needs keys.{name}")
+        narrowed[name] = value
+    stored = json.dumps(
+        {"endpoint": endpoint, "keys": narrowed},
+        sort_keys=True, separators=(",", ":"),
+    )
+    # The endpoint alone. NOT the narrowed document: re-subscribing in the same
+    # browser can rotate the keys while keeping the endpoint, and that is the
+    # same destination.
+    return stored, endpoint
 
 
 def register_device(
@@ -161,10 +243,18 @@ def register_device(
 ) -> dict[str, Any]:
     """Record a device for ``owner_user_id``. Raises ValueError on a bad argument.
 
-    ``owner_user_id`` is the caller's server-authenticated subject. Re-registering
-    the same token for the same subject refreshes it in place (the app calls
-    this on every launch); re-registering it for a DIFFERENT subject moves it,
-    removing every prior row for that token first.
+    ``owner_user_id`` is the caller's server-authenticated subject.
+
+    Re-registering the same destination for the **same** subject refreshes the
+    existing row in place, keeping its ``device_id`` -- the app calls this on
+    every launch, and minting a new id each time would churn ids and orphan
+    whatever alert the device is holding. The stored token is refreshed, so a
+    browser that re-subscribed with rotated keys on the same endpoint keeps its
+    identity and gains the new keys.
+
+    Re-registering it for a **different** subject replaces it: every prior row
+    for that destination is removed, along with its latch, before a new row is
+    written under the new owner.
     """
     sub = (owner_user_id or "").strip()
     if not sub:
@@ -172,29 +262,60 @@ def register_device(
     kind = (platform or "").strip().lower()
     if kind not in PLATFORMS:
         raise ValueError("platform must be one of " + ", ".join(sorted(PLATFORMS)))
-    canonical = _canonical_token(token)
-    if not canonical:
+    stored, identity = _canonical_token(token, kind)
+    if not stored:
         raise ValueError("token is required")
-    if len(canonical) > MAX_TOKEN_CHARS:
+    if len(stored) > MAX_TOKEN_CHARS:
         raise ValueError(f"token is longer than {MAX_TOKEN_CHARS} characters")
-    digest = _token_digest(canonical)
+    digest = _token_digest(identity)
     now = time.time()
     with _connect(base_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        # The move. A handset that changed accounts must stop receiving the
-        # previous subject's notifications, so this deletes by TOKEN across
-        # every subject -- not "where owner_user_id != ?", which would leave the
-        # caller's own stale duplicate behind.
-        conn.execute("DELETE FROM owner_devices WHERE token_sha256 = ?", (digest,))
+        # Every row for this DESTINATION, whoever owns it. Matching on the
+        # destination rather than the whole token document is the fix for two
+        # representations of one phone each keeping a live row; matching across
+        # owners rather than "where owner_user_id != ?" is the fix for the
+        # caller's own stale duplicate (gpt-6-astra, 2026-09-29).
+        existing = conn.execute(
+            "SELECT device_id, owner_user_id FROM owner_devices "
+            "WHERE token_sha256 = ?",
+            (digest,),
+        ).fetchall()
+        mine = [r[0] for r in existing if r[1] == sub]
+        theirs = [r[0] for r in existing if r[1] != sub]
+        if theirs or len(mine) > 1:
+            # Ownership moved, or an older duplicate exists: start clean.
+            conn.execute(
+                "DELETE FROM owner_devices WHERE token_sha256 = ?", (digest,),
+            )
+            for old in [*mine, *theirs]:
+                # A latch belongs to the device, so it goes with the row. Left
+                # behind it would silence the new owner's first notification.
+                conn.execute(
+                    "DELETE FROM device_alert_latch WHERE device_id = ?", (old,),
+                )
+            mine = []
+        if mine:
+            # The app relaunching. Same device, refreshed token.
+            device_id = mine[0]
+            conn.execute(
+                "UPDATE owner_devices SET token_json = ?, platform = ?, "
+                "last_seen_at = ?, enabled = 1, retired_at = NULL, "
+                "retired_reason = '', label = CASE WHEN ? != '' THEN ? ELSE label END "
+                "WHERE device_id = ?",
+                (stored, kind, now, (label or "").strip()[:MAX_LABEL_CHARS],
+                 (label or "").strip()[:MAX_LABEL_CHARS], device_id),
+            )
+            return {"device_id": device_id, "platform": kind, "replaced": 0}
         device_id = "dev_" + uuid.uuid4().hex[:24]
         conn.execute(
             "INSERT INTO owner_devices (device_id, owner_user_id, platform, "
             "token_sha256, token_json, label, enabled, created_at, last_seen_at) "
             "VALUES (?,?,?,?,?,?,1,?,?)",
-            (device_id, sub, kind, digest, canonical,
+            (device_id, sub, kind, digest, stored,
              (label or "").strip()[:MAX_LABEL_CHARS], now, now),
         )
-    return {"device_id": device_id, "platform": kind, "moved": True}
+    return {"device_id": device_id, "platform": kind, "replaced": len(theirs)}
 
 
 def retire_device(
@@ -298,63 +419,188 @@ def set_notifications_enabled(
 def reserve_delivery(
     base_path: str | Path,
     *,
+    ask_key: str,
     request_id: str,
     device_id: str,
     kind: str,
     owner_user_id: str,
     item_id: str = "",
-) -> bool:
-    """Claim "this exact notification, once". False when already claimed.
+) -> dict[str, Any]:
+    """Claim one notification and hand back the token to send it with.
+
+    Returns ``{"token": ...}`` when the caller may send, otherwise
+    ``{"refused": <reason>}`` -- ``moved`` (the device is no longer this
+    owner's, or is retired), ``latched`` (an alert is already outstanding on
+    it), or ``replay`` (this exact notification was already claimed).
+
+    **The token comes from here, not from an earlier read.** Dispatch used to
+    snapshot every destination and then send to the cached tokens, so a
+    registration that moved a handset to another account mid-dispatch still
+    received the previous owner's private title (gpt-6-astra, 2026-09-29).
+    Re-reading the row under ``BEGIN IMMEDIATE`` in the same transaction as the
+    claim means the token a transport is handed was owner-verified at claim
+    time. The residual is the interval between commit and the wire, which no
+    server-side check can close because the push is already in flight.
 
     The claim is written BEFORE the transport runs, so a crash mid-send leaves
     the notification unsent rather than sent twice -- the right way round for
     something that buzzes a phone. A send that then fails is recorded by
     :func:`record_delivery`, and the row stays, so a failure is not silently
     retried forever either.
-
-    ``owner_user_id`` is stamped so the row is reachable by account deletion;
-    it is never read to choose a destination.
     """
+    sub = (owner_user_id or "").strip()
+    with _connect(base_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT token_json FROM owner_devices WHERE device_id = ? "
+            "AND owner_user_id = ? AND enabled = 1 AND retired_at IS NULL",
+            (device_id, sub),
+        ).fetchone()
+        if row is None:
+            return {"refused": "moved"}
+        if kind == KIND_RAISED:
+            # One outstanding alert per device. A second while the first is
+            # unanswered is coalesced: the person has already been told their
+            # universe needs them, and telling them again says nothing new.
+            latched = conn.execute(
+                "INSERT OR IGNORE INTO device_alert_latch "
+                "(device_id, owner_user_id, request_id, ask_key, raised_at) "
+                "VALUES (?,?,?,?,?)",
+                (device_id, sub, request_id, ask_key, time.time()),
+            )
+            if latched.rowcount <= 0:
+                return {"refused": "latched"}
+        claimed = conn.execute(
+            "INSERT OR IGNORE INTO request_notifications "
+            "(ask_key, item_id, device_id, owner_user_id, kind, request_id, sent_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (ask_key, item_id or "", device_id, sub, kind, request_id, time.time()),
+        )
+        if claimed.rowcount <= 0:
+            return {"refused": "replay"}
+        return {"token": row[0]}
+
+
+def acknowledge_alert(
+    base_path: str | Path, *, owner_user_id: str, device_id: str,
+) -> bool:
+    """This device saw its notification: it may be told about the next thing.
+
+    Scoped to the owner, so naming another user's device does nothing. Called
+    by the owner's own app when it displays or opens a notification.
+    """
+    sub = (owner_user_id or "").strip()
+    if not sub or not device_id:
+        return False
     with _connect(base_path) as conn:
         cur = conn.execute(
-            "INSERT OR IGNORE INTO request_notifications "
-            "(request_id, item_id, device_id, owner_user_id, kind, sent_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (request_id, item_id or "", device_id, (owner_user_id or "").strip(),
-             kind, time.time()),
+            "DELETE FROM device_alert_latch WHERE device_id = ? "
+            "AND owner_user_id = ?",
+            (device_id, sub),
         )
         return cur.rowcount > 0
+
+
+def release_alerts_for_request(
+    base_path: str | Path, *, owner_user_id: str, request_id: str,
+) -> list[str]:
+    """A request was resolved: every device holding its alert may alert again.
+
+    Returns the device ids that were holding it, which is exactly the set with
+    a notification to clear -- a device that never received one has nothing to
+    take down, so the clear is not pushed at it.
+
+    Deliberately NOT called on withdrawal. Taking back your own ask is the
+    agent's act; re-arming on it turns the latch into a counter an agent can
+    reset (gpt-6-astra, 2026-09-29).
+    """
+    sub = (owner_user_id or "").strip()
+    if not sub or not request_id:
+        return []
+    with _connect(base_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        holding = [
+            r[0] for r in conn.execute(
+                "SELECT device_id FROM device_alert_latch WHERE request_id = ? "
+                "AND owner_user_id = ?",
+                (request_id, sub),
+            )
+        ]
+        conn.execute(
+            "DELETE FROM device_alert_latch WHERE request_id = ? "
+            "AND owner_user_id = ?",
+            (request_id, sub),
+        )
+    return holding
+
+
+def outstanding_alerts(
+    base_path: str | Path, *, owner_user_id: str,
+) -> list[dict[str, Any]]:
+    """Which of the owner's devices are holding an un-acknowledged alert."""
+    sub = (owner_user_id or "").strip()
+    if not sub:
+        return []
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT device_id, request_id, raised_at FROM device_alert_latch "
+            "WHERE owner_user_id = ? ORDER BY raised_at ASC",
+            (sub,),
+        ).fetchall()
+    return [
+        {"device_id": r[0], "request_id": r[1], "raised_at": r[2]} for r in rows
+    ]
 
 
 def record_delivery(
     base_path: str | Path,
     *,
-    request_id: str,
+    ask_key: str,
     device_id: str,
     kind: str,
     outcome: str,
     item_id: str = "",
 ) -> None:
-    """Attach the outcome CLASS to a claimed delivery. Never a body or a token."""
+    """Attach the outcome CLASS to a claimed delivery. Never a body or a token.
+
+    A delivery that failed also releases the latch it took: the person was
+    never actually told, so holding the "you already know" state against them
+    would silence the next request too.
+    """
     with _connect(base_path) as conn:
         conn.execute(
-            "UPDATE request_notifications SET outcome = ? WHERE request_id = ? "
+            "UPDATE request_notifications SET outcome = ? WHERE ask_key = ? "
             "AND item_id = ? AND device_id = ? AND kind = ?",
-            (str(outcome)[:40], request_id, item_id or "", device_id, kind),
+            (str(outcome)[:40], ask_key, item_id or "", device_id, kind),
         )
+        if kind == KIND_RAISED and outcome != "sent":
+            conn.execute(
+                "DELETE FROM device_alert_latch WHERE device_id = ? AND ask_key = ?",
+                (device_id, ask_key),
+            )
 
 
-def deliveries_for(base_path: str | Path, *, request_id: str) -> list[dict[str, Any]]:
-    """The delivery ledger for one request -- identifiers and classes only."""
+def deliveries_for(
+    base_path: str | Path, *, request_id: str = "", ask_key: str = "",
+) -> list[dict[str, Any]]:
+    """The delivery ledger -- identifiers and classes only, never content.
+
+    By ``request_id`` for "what happened for this row", or by ``ask_key`` for
+    "what happened for this ask", which is the one that survives a withdraw
+    and re-raise.
+    """
+    where, params = ("request_id = ?", (request_id,)) if request_id else (
+        "ask_key = ?", (ask_key,)
+    )
     with _connect(base_path) as conn:
         rows = conn.execute(
-            "SELECT device_id, item_id, kind, sent_at, outcome "
-            "FROM request_notifications WHERE request_id = ? ORDER BY sent_at ASC",
-            (request_id,),
+            "SELECT device_id, item_id, kind, sent_at, outcome, request_id "
+            f"FROM request_notifications WHERE {where} ORDER BY sent_at ASC",
+            params,
         ).fetchall()
     return [
         {"device_id": r[0], "item_id": r[1], "kind": r[2],
-         "sent_at": r[3], "outcome": r[4]}
+         "sent_at": r[3], "outcome": r[4], "request_id": r[5]}
         for r in rows
     ]
 
@@ -380,6 +626,9 @@ def purge_owner(base_path: str | Path, *, owner_user_id: str) -> int:
         conn.execute(
             "DELETE FROM request_notifications WHERE owner_user_id = ?", (sub,),
         )
+        conn.execute(
+            "DELETE FROM device_alert_latch WHERE owner_user_id = ?", (sub,),
+        )
     return int(removed or 0)
 
 
@@ -390,6 +639,9 @@ __all__ = [
     "PLATFORMS",
     "PLATFORM_ANDROID",
     "PLATFORM_WEB",
+    "acknowledge_alert",
+    "outstanding_alerts",
+    "release_alerts_for_request",
     "deliveries_for",
     "delivery_targets",
     "list_devices",

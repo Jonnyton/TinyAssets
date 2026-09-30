@@ -13,6 +13,14 @@ Device registration SHALL take the owning subject from the authenticated request
 - **WHEN** a token registered by user A is registered again by user B
 - **THEN** A's row for that token is removed, and a later notification for A reaches no device holding that token
 
+#### Scenario: An alternate representation of one destination cannot alias
+- **WHEN** the same destination is registered by a second user in a form that differs only in metadata the transport does not read, in key serialisation, or in rotated keys on the same endpoint
+- **THEN** it is still recognised as that one destination and the prior owner's row is removed
+
+#### Scenario: Relaunching keeps one device
+- **WHEN** the same owner registers the same destination again
+- **THEN** the existing device keeps its identifier and its stored token is refreshed, rather than a second device appearing
+
 #### Scenario: Tokens are not readable back
 - **WHEN** the owner lists their devices
 - **THEN** each entry carries an id, platform, label, enabled flag and last-seen time, and no token material
@@ -33,11 +41,45 @@ Dispatch SHALL resolve the destination set from the owning subject of the univer
 - **THEN** no notification is dispatched and the refusal is recorded
 
 ### Requirement: The platform composes the notification's identity
-The notification title SHALL be derived by the server from the universe record, and agent-supplied text SHALL appear only in the body, with control characters removed and a length bound applied. No field of a request SHALL be able to place text in the identity position, and field values entered by the owner SHALL never appear in a payload.
+The notification title SHALL be derived by the server from the universe record and SHALL carry a fixed, server-owned indication that a universe is asking its owner something. Agent-supplied text SHALL appear only in the body, with control characters removed and a length bound applied. No field of a request SHALL be able to place text in the identity position or reproduce the fixed indication, and field values entered by the owner SHALL never appear in a payload.
 
 #### Scenario: An ask cannot impersonate the platform or another user
 - **WHEN** a request's kind or title is crafted to read as a platform or other-user notice
-- **THEN** the delivered title is still the universe's own server-derived name and the crafted text appears only as body content
+- **THEN** the delivered title is still the universe's own server-derived name plus the fixed indication, and the crafted text appears only as body content
+
+#### Scenario: An unnamed universe does not borrow the platform's name
+- **WHEN** the universe has no display name of its own, or its record cannot be read
+- **THEN** the title is a neutral phrase carrying the same fixed indication, and never the platform's own name alone
+
+### Requirement: Delivery addresses a destination verified at claim time
+Dispatch SHALL obtain the destination it sends to from the same transaction that claims the notification and verifies current ownership, not from an earlier read. A device that ceased to be this owner's, or was retired, between the start of dispatch and its own claim SHALL NOT be sent to.
+
+#### Scenario: A handset reassigned mid-dispatch is not sent to
+- **WHEN** a destination is registered by a different user while an earlier device in the same dispatch is being sent to
+- **THEN** that destination receives nothing for this owner
+
+#### Scenario: A destination whose token changed is sent the current one
+- **WHEN** the stored token for a device is refreshed after dispatch began
+- **THEN** the transport is handed the refreshed token, not the one read before the loop
+
+### Requirement: One outstanding alert per device
+A visible notification SHALL be dispatched to a device only when that device is not already holding an unacknowledged one; a further request SHALL be coalesced rather than delivered. The hold SHALL be released by that device acknowledging, by the held request being resolved, or by the delivery failing. Withdrawal of a request SHALL neither deliver nor release. An acknowledgement SHALL be scoped to the acknowledging owner.
+
+#### Scenario: A repeated raise-and-withdraw loop delivers once
+- **WHEN** a universe raises an ask, withdraws it, and repeats that many times
+- **THEN** exactly one notification is delivered per device and no request remains pending
+
+#### Scenario: A different ask still waits behind an unanswered one
+- **WHEN** a second, distinct request is raised while the first is unacknowledged
+- **THEN** no second notification is delivered to that device
+
+#### Scenario: A failed delivery does not silence the next request
+- **WHEN** a delivery fails at the transport
+- **THEN** the hold is released and the next request is delivered
+
+#### Scenario: Another user cannot acknowledge this owner's device
+- **WHEN** a different signed-in user acknowledges a device id belonging to this owner
+- **THEN** nothing is released and this owner's device is still holding its alert
 
 #### Scenario: Answered field values never leave in a payload
 - **WHEN** a request carries fields and items whose values the owner has filled in
@@ -88,11 +130,19 @@ When no transport is configured, dispatch SHALL report that plainly, SHALL log i
 - **THEN** the request is stored and answerable, the dispatch reports no transport, and no receipt claims a delivery
 
 ### Requirement: Answering on one device clears the others
-Resolving a request or one of its items SHALL dispatch a content-free clear to the owner's other enabled devices, carrying the request id and, for an item, its item id. The clear SHALL be best effort and SHALL never fail or delay the answer.
+Resolving a request SHALL dispatch a content-free clear carrying its request id, and ONLY to devices that were holding that request's notification. Resolving one item of a request SHALL NOT dispatch a clear, because a notification names the request rather than an item. The clear SHALL be best effort and SHALL never fail or delay the answer.
 
 #### Scenario: The other phone's notification goes away
 - **WHEN** the owner answers a request on one registered device
-- **THEN** a clear naming that request is dispatched to their other devices and not to the answering one
+- **THEN** a clear naming that request is dispatched to their other devices that were holding it, and not to the answering one
+
+#### Scenario: A device that never received the notification is not woken
+- **WHEN** a request is resolved and one of the owner's devices never received its notification
+- **THEN** that device is not dispatched to
+
+#### Scenario: Working through an itemised request costs one clear
+- **WHEN** the owner answers every item of a request with many items
+- **THEN** one visible notification and one clear are dispatched per device, not one per item
 
 #### Scenario: A clear that cannot be sent does not undo the answer
 - **WHEN** the transport fails while clearing

@@ -452,6 +452,63 @@ def test_a_daily_note_is_not_deduped_onto_yesterdays(base, signed_in):
     assert len(list_pending(udir)) == 2
 
 
+def test_an_itemless_requests_identity_is_unchanged_by_items_existing(
+    base, signed_in,
+):
+    """Appending an empty list to every dedupe key changed the identity of
+    every request that already existed: live pending rows stopped
+    deduplicating and every standing "don't ask again" stopped matching, so a
+    settled question was asked again (gpt-6-astra, 2026-09-29). Items only
+    extend the identity of requests that HAVE items."""
+    import json as _json
+
+    from tinyassets.storage.pending_requests import get_request
+
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    raised = _ask(UID)
+    row = get_request(udir, raised["request_id"])
+
+    assert row["dedupe_key"] == _json.dumps(
+        [row["kind"], row["title"], row["body"], row["fields"], row["action"]],
+        sort_keys=True, separators=(",", ":"),
+    )
+    assert _json.loads(row["dedupe_key"]) == _json.loads(row["dedupe_key"])[:5]
+
+
+def test_a_settled_decision_still_matches_the_same_itemless_ask(base, signed_in):
+    """The end-to-end shape of the same finding: dismiss with "don't ask me
+    this again", then ask identically. It must be refused, not re-raised."""
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+    first = _ask(UID)
+    _answer(UID, request_id=first["request_id"], dismiss=True,
+            dont_ask_again=True, feedback="not interested")
+
+    again = _ask(UID)
+
+    assert again.get("status") == "settled"
+    assert again.get("decision") == "declined"
+    from tinyassets.storage.pending_requests import list_pending
+
+    assert list_pending(udir) == []
+
+
+def test_an_itemised_ask_is_a_different_identity_from_the_itemless_one(
+    base, signed_in,
+):
+    signed_in(OWNER)
+    udir = _home(base, UID, OWNER)
+
+    itemless = _ask(UID)
+    itemised = _ask(UID, items=_items("a"))
+
+    assert itemless["request_id"] != itemised["request_id"]
+    from tinyassets.storage.pending_requests import list_pending
+
+    assert len(list_pending(udir)) == 2
+
+
 def test_the_created_marker_never_reaches_the_agent(base, signed_in):
     signed_in(OWNER)
     _home(base, UID, OWNER)

@@ -21,6 +21,17 @@
 - **WHEN** an ask carries no top-level fields and at least one item that carries a field
 - **THEN** the ask is accepted, rather than refused for having no field
 
+### Requirement: Items do not change the identity of a request without them
+A request's deduplication identity SHALL include its items only when it has items, so a request with none keeps the identity it had before items existed. An existing pending request SHALL still deduplicate, and an existing standing decision SHALL still match.
+
+#### Scenario: A standing decision survives
+- **WHEN** an owner dismissed a request with "don't ask me this again", and the identical request with no items is asked afterwards
+- **THEN** the ask is refused as already settled and no new request is stored
+
+#### Scenario: An itemised ask is its own question
+- **WHEN** the same kind, title and body are asked once without items and once with them
+- **THEN** they are two distinct requests
+
 ### Requirement: An item never carries a credential
 The ask SHALL refuse a `secret` field inside any item, and SHALL refuse `items` on any request whose `action.type` is not `answer`. A secret value SHALL never be written to the request store or to an item answer.
 
