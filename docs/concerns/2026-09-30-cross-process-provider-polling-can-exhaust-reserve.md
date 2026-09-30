@@ -1,43 +1,40 @@
 ---
 severity: P1
-title: Cross-process provider polling can exhaust nested admission reserve
+title: Cross-process provider polling needs durable continuation
 filed: 2026-09-30
-summary: In-process blocking slot transfer does not cover a resident CLI polling a queued child through engine-MCP; a finite reserve cannot guarantee completion of that chain.
+summary: Provider admission still refuses after its production deadline when resident parents exhaust nested capacity; retire waiting parent processes and resume durable continuations before allowing indefinite admission.
 ---
 
-Remaining gap from PR #4136's nested-provider review. The former broad concern
-is replaced by this explicit process-boundary finding; the draft remains on hold.
-The separate account-limits concern is unchanged.
+Follow-up to PR #4136. Provider admission retains origin/main's configurable
+20-second wait deadline and retryable ProviderBusy refusal. A nested chain
+across processes can still exhaust the reserve and be refused after that
+deadline. This PR adds neither a new indefinite hang nor a new admission refusal
+policy. Same-process exclusive slot transfer remains implemented and tested.
 
-The limit-2 reproduction held an outer slot and an agent-child slot, then
-timed out waiting for the grandchild after a test-only 150 ms. Exclusive
-in-process ownership now lets the blocking grandchild use the child's slot.
-Router, compiler worker, sibling accounting, cancellation, and return paths
-have regression tests in `tests/test_provider_slot_transfer.py`.
+The router holds admission around provider.complete. The Claude provider spawns
+the CLI before reading its stream and tears it down only on stream exit.
+Engine-MCP run_graph queues a child and returns a receipt; a model may keep its
+parent CLI alive while polling the child. Background workers deliberately clear
+inherited ownership. Process-local transfer handles cannot cross this boundary,
+and a finite nested reserve gives headroom, not arbitrary-depth progress.
 
-That does **not** establish completion of the live CLI topology. The router
-holds admission for `provider.complete`; CLI tools cross engine-MCP/HTTP, and
-`universe_server.run_graph` queues work and returns. It does not synchronously
-suspend its caller. Background workers deliberately clear inherited slot
-ownership. A model can nevertheless keep its provider invocation alive while
-polling that child's status, and deeper children can exhaust the reserve.
+Evidence retained from the real-process probe: three Python child processes
+blocked on stdin, each retaining a 16 MiB allocation. With limit 2, two counted
+slots held two resident children and the grandchild could not enter. Returning
+only the waiting parent's counter admitted the third: **2 slots, 3 resident
+processes**. All children were reaped and the counter returned to zero. This
+proves counter-only suspension violates the resident-process bound; it is not
+an end-to-end live CLI regression or proof that cross-process waiting is fixed.
 
-The process-local handle is never serialized. The reserve is retained for
-children without a transferable parent; it buys first-layer headroom, not an
-arbitrary-depth progress guarantee. A blocked CLI also retains resident memory,
-so simply letting its subprocess child bypass admission would weaken the host
-memory floor.
+The lead selected durable continuation as a separate change: retire the waiting
+parent CLI/provider process, persist its continuation, and resume it through
+Claude/Codex session resume or an equivalent when its child finishes. Waiting
+must hold neither resident provider memory nor a provider slot. Only after that
+lifecycle is implemented and proven can provider admission wait forever.
+FIFO fairness or returning a counter while keeping the CLI resident is not a fix.
 
-Cross-family Claude review: DISAGREE_EVIDENCE on calling the live deadlock
-resolved; accepted. Its observation that current production child launches
-have no held same-process parent is also accepted: transfer supports that
-contract, but tests with an injected nested provider are not live CLI proof.
-The review agreed on exclusive ownership, return, process checks and thread
-propagation. Caller timeouts inside a loan intentionally drain the borrower
-before resuming the parent, so a wedged borrower can still prevent return.
-
-Handoff: design and prove a process-aware suspension/resumption protocol, or
-a durable continuation that retires the parent's provider before the child
-needs admission. Preserve WAIT and the resident-process memory ceiling; do
-not restore a refusal deadline or add a recursion cap. No deployment or
-live-user completion claim is justified by the in-process fix.
+The prior cross-family review's DISAGREE_EVIDENCE on calling live polling resolved
+remains accepted. Same-process ownership, exclusive lending, thread propagation,
+and return have regression coverage in tests/test_provider_slot_transfer.py.
+A wedged in-process borrower still delays its parent's unwind until it settles.
+No deployment or live-user completion is claimed here.

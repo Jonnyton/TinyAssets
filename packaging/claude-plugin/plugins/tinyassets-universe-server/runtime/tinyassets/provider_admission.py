@@ -23,29 +23,11 @@ would do, would silently multiply memory risk with no sign that they had. A boun
 stated purpose is the thing it protects can be reasoned about; one that protects by
 accident cannot.
 
-Behaviour at the limit is to **WAIT**, not to refuse (founder, 2026-09-30: over the
-concurrency line work waits and is never refused). The bound still exists — it is a
-memory floor on a shared box, not an account limit — but a caller that arrives with
-every slot taken queues for one and is told it is waiting.
-
-The queue is not unbounded, and it is worth being precise about why, because "wait
-forever" is the shape that turns a bound into a hang:
-
-* A **sync** waiter occupies its caller's thread. `converse` runs in Starlette's anyio
-  threadpool (capacity 40 here), so the depth of the sync queue is bounded by that pool,
-  which is the transport's own pre-existing bound. A waiter costs a thread; it does NOT
-  cost the ~189 MB subprocess the limit exists to stop. Forty parked threads are cheap
-  where forty subprocesses are an OOM.
-* An **async** waiter polls with `asyncio.sleep`, so it costs no thread at all and never
-  stalls the loop that holds the slots it is waiting on.
-* Waiting is **visible**: `on_wait` fires once when a caller actually queues, and
-  `get_status.provider_admission` publishes `waiting` plus the wait-time quantiles. A
-  wait nobody can see is indistinguishable from a hang, which is the real failure here.
-
-One caller still wants an immediate answer: the Codex auth probe, a diagnostic that
-should report "inconclusive" rather than queue behind real user turns. That is what
-:func:`try_provider_slot` is for, and it is the only thing that raises
-:class:`ProviderBusy`. A user turn never sees it.
+Admission keeps production's configurable wait deadline (20 seconds by default).
+A resident CLI polling a queued child can exhaust the nested reserve; indefinite
+admission would hang that chain. Durable continuation must retire the waiting
+parent process before this deadline can be removed. Same-process blocking work
+can transfer exclusive ownership, and queued waits remain visible.
 """
 
 from __future__ import annotations
@@ -96,19 +78,13 @@ _log = logging.getLogger(__name__)
 _LIMIT_VAR = "TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS"
 _DEFAULT_LIMIT = 6
 
-#: How often an async waiter re-tries. A sync waiter uses the condition variable and
-#: needs no poll. There is no wait DEADLINE: the 20-second one that used to live here
-#: (`TINYASSETS_PROVIDER_ADMISSION_WAIT_S`) turned a busy moment into a refusal the user
-#: had to retry by hand, which is the behaviour the founder's directive removes.
+_WAIT_VAR = "TINYASSETS_PROVIDER_ADMISSION_WAIT_S"
+_DEFAULT_WAIT_S = 20.0
 _POLL_SECONDS = 0.05
 
 
 class ProviderBusy(RuntimeError):
-    """Every provider slot is taken, and this caller asked NOT to wait.
-
-    Raised only by :func:`try_provider_slot`. The user-facing paths
-    (:func:`provider_slot`, :func:`provider_slot_async`) wait instead.
-    """
+    """Every provider slot is taken after the admission deadline or a no-wait probe."""
 
 
 def _positive_int(var: str, default: int) -> int:
@@ -293,33 +269,35 @@ def _try_acquire_now(*, nested: bool = False) -> tuple[bool, int]:
 
 
 def _acquire_waiting(*, nested: bool, on_wait, parent_slot=None) -> HeldProviderSlot:
-    """WAIT for a slot and take it. Blocking; returns exclusive ownership.
-
-    No deadline and no refusal. ``on_wait`` fires once, with the limit, the first
-    time this call actually has to queue -- a caller with a user in front of it
-    turns that into a visible waiting state.
-    """
+    """Wait up to the production deadline; return exclusive ownership."""
     global _waiting
     announced = False
     started = time.monotonic()
-    with _cv:
-        while True:
-            lease, limit = _take_lease_locked(nested, parent_slot)
-            if lease is not None:
-                if announced:
-                    _waiting -= 1
-                    _record_wait(time.monotonic() - started)
-                return lease
-            if not announced:
-                announced = True
-                _waiting += 1
-                _log.info("provider admission: all %d slots busy; waiting", limit)
-                if on_wait is not None:
-                    try:
-                        on_wait(limit)
-                    except Exception:  # noqa: BLE001 - telling someone must not fail the turn
-                        _log.warning("provider admission: on_wait raised", exc_info=True)
-            _cv.wait(1.0)
+    deadline = started + _positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)
+    try:
+        with _cv:
+            while True:
+                lease, limit = _take_lease_locked(nested, parent_slot)
+                if lease is not None:
+                    return lease
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _refuse(limit)
+                if not announced:
+                    announced = True
+                    _waiting += 1
+                    _log.info("provider admission: all %d slots busy; waiting", limit)
+                    if on_wait is not None:
+                        try:
+                            on_wait(limit)
+                        except Exception:  # noqa: BLE001
+                            _log.warning("provider admission: on_wait raised", exc_info=True)
+                _cv.wait(remaining)
+    finally:
+        if announced:
+            with _cv:
+                _waiting -= 1
+            _record_wait(time.monotonic() - started)
 
 
 def _release() -> None:
@@ -333,13 +311,13 @@ def _release() -> None:
 
 
 def _refuse(limit: int) -> ProviderBusy:
-    """Only for :func:`try_provider_slot` -- a caller that asked not to wait."""
     global _refused
     with _cv:
         _refused += 1
-    _log.info("provider admission: all %d slots busy; caller declined to wait", limit)
+    _log.warning("provider admission: all %d slots busy; refusing", limit)
     return ProviderBusy(
-        f"All {limit} provider slots are busy and this caller does not wait."
+        f"All {limit} provider slots are busy right now. Your universe is "
+        "working on other turns — try again in a moment."
     )
 
 
@@ -379,9 +357,7 @@ def admission_snapshot() -> dict:
     out = {
         "limit": _positive_int(_LIMIT_VAR, _DEFAULT_LIMIT),
         "admitted": admitted,
-        # Callers that declined to wait (the auth probe). A user turn waits, so
-        # this is NOT a count of refused work.
-        "refused_no_wait": refused,
+        "refused": refused,
         "live": live,
         "waiting": waiting,
         "peak_concurrent": peak,
@@ -424,7 +400,7 @@ def reset_for_tests() -> None:
 
 @contextmanager
 def provider_slot(*, nested: bool = False, on_wait=None, parent_slot=None):
-    """WAIT for one provider-subprocess slot, then hold it. Never refuses.
+    """Wait for one provider-subprocess slot, or raise ProviderBusy at the deadline.
 
     **Blocking.** Only for callers that are already on a worker thread. Async callers
     must use :func:`provider_slot_async`, or they stall their event loop — Codex
@@ -468,7 +444,7 @@ def try_provider_slot(*, nested: bool = False):
 
 @asynccontextmanager
 async def provider_slot_async(*, nested: bool = False, on_wait=None, parent_slot=None):
-    """Async-safe form: WAITS for a slot without blocking the event loop. Never refuses.
+    """Wait up to the admission deadline without blocking the event loop.
 
     The wait costs no thread, so other coroutines on the same loop — notably the ones
     already holding slots — keep running and can release. A blocking acquire here
@@ -483,12 +459,11 @@ async def provider_slot_async(*, nested: bool = False, on_wait=None, parent_slot
     # live=1` — a permanent leak I introduced while fixing the loop-blocking bug.
     #
     # A 50 ms poll costs nothing next to a provider call measured in seconds, and it is
-    # cancellation-safe by construction: nothing is in flight to abandon. Cancellation
-    # is also the only way out of this wait, which is what makes an unbounded wait
-    # acceptable here: the client disconnecting cancels the task.
+    # cancellation-safe by construction: nothing is in flight to abandon.
     global _waiting
     announced = False
     started_wait = time.monotonic()
+    deadline = started_wait + _positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)
     try:
         while True:
             with _cv:
@@ -505,6 +480,8 @@ async def provider_slot_async(*, nested: bool = False, on_wait=None, parent_slot
                         on_wait(limit)
                     except Exception:  # noqa: BLE001
                         _log.warning("provider admission: on_wait raised", exc_info=True)
+            if time.monotonic() >= deadline:
+                raise _refuse(limit)
             await asyncio.sleep(_POLL_SECONDS)
     finally:
         if announced:
