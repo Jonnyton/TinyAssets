@@ -97,13 +97,7 @@ submissions SHALL remain tied to their original login and SHALL NOT replay.
 
 ### Requirement: The provider's sign-in page names the connection
 
-An installed acquisition preset MAY carry `authorize_params`: fixed, non-secret
-query parameters the provider documents for its authorize page (for example a
-key label), so the user sees what they are connecting rather than a generic
-"An app". They are installed data, not code or caller input. They MUST NOT set or
-override the flow's own `callback_url`, `code_challenge` or
-`code_challenge_method`; a malformed map (a non-string, empty, oversized, non-ASCII key,
-non-printable value, or more than 8 entries) MUST make the preset invalid.
+An installed acquisition preset MAY carry `authorize_params`: fixed, non-secret query parameters the provider documents for its authorize page (for example a key label), so the user sees what they are connecting rather than a generic "An app". They are installed data, not code or caller input. They MUST NOT set or override the flow's own `callback_url`, `code_challenge` or `code_challenge_method`; a malformed map (a non-string, empty, oversized, non-ASCII key, non-printable value, or more than 8 entries) MUST make the preset invalid.
 
 #### Scenario: A labelled preset starts sign-in
 - **WHEN** an owner starts sign-in for a preset whose `authorize_params` names the key
