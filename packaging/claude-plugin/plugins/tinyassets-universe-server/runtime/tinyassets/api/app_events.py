@@ -20,7 +20,6 @@ _NOT_FOUND = {"error": "not_found", "resource": "universe"}
 
 
 def emit_event(*, universe_id: str = "", inputs_json: str = "") -> dict[str, Any]:
-    from tinyassets import engine_admissions as ea
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path, _request_universe
     from tinyassets.automation_events import emit_app_event, validated_app_event
@@ -50,24 +49,6 @@ def emit_event(*, universe_id: str = "", inputs_json: str = "") -> dict[str, Any
     if not uid or get_founder_home(base, principal) != uid:
         return dict(_NOT_FOUND)
 
-    # Charged BEFORE any wake is stored, so a loop in a UI spends its owner's
-    # usage and stops there. A wake pays run admission again when it fires.
-    admission = ea.admit_detail(
-        uid,
-        write_max=ea.RUN_WRITE_LIMIT,
-        total_max=ea.RUN_TOTAL_LIMIT,
-        window_s=ea.RUN_WINDOW_SECONDS,
-        fail_closed=True,
-        kind=ea.KIND_ENGINE,
-        day_max=ea.RUN_DAY_LIMIT,
-    )
-    if admission.ticket is None:
-        notice = ea.usage_notice(uid) if admission.refused_by != "ledger" else None
-        return {
-            "error": "usage_limit",
-            "limit": admission.refused_by,
-            "detail": notice["message"] if notice else "the usage meter refused this event",
-        }
     woke = emit_app_event(base, universe_id=uid, principal_id=principal, name=name, data=data)
     return {"emitted": True, "name": name, "woke": len(woke)}
 

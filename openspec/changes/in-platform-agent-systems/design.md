@@ -58,10 +58,8 @@ yes to exactly that. Each part below is placed so that it cannot break this.
   by someone else spends the installer's compute on the installer's agents,
   and never the author's. No path wakes a universe the emitter does not own,
   so no one can spend another user's compute.
-- **Cost:** each emit is charged to the same engine run admission a
-  `run_graph` run takes, BEFORE the wake is stored. A wake then pays run
-  admission again when it fires, as every wake does. A tight UI loop hits the
-  owner's own usage limit, not a structural cap.
+- **Compute:** wakes run on the owner's own compute, bounded by concurrent
+  seats. Account limits are storage and concurrent seats; there are no rate meters.
 - **Reply:** `{"emitted": true, "woke": <count>}`, never ids of anything, so a
   UI cannot probe which subscriptions exist beyond "some" versus "none".
 - **Bridge:** `tinyassets.emit(name, data)`. At most one in flight per frame,
@@ -88,7 +86,7 @@ The platform then:
 
 - builds the SNAPSHOT: the exact public payload, meaning every branch row as it
   is stored (every nested key, known to the model or not, apart from the
-  volatile `visibility`, `published`, `updated_at`, `version` and `stats`),
+  volatile `visibility`, `published` and `updated_at`),
   plus the exact definition payload. That definition holds the UI's seven
   portable fields, a branch-ref per workflow naming the version id its
   snapshot will mint, and an automation-spec per trigger. It runs the
@@ -114,14 +112,13 @@ tab.
    `snapshot_digest`, or the ask is refused with `request_pending: true` and
    "this changed after you were shown it; ask again". Every content check
    and the definition's validation run here, before anything is written.
-2. Mint each version from its row as it will be flipped. A version of a
-   private branch is unreadable, because readability follows the branch, so
-   this exposes nothing.
+2. Mint each version unmarked from its row as it will be flipped. Only its
+   author can read it, even if the branch later becomes public.
 3. The commit point: ONE `BEGIN IMMEDIATE` re-reads every branch row, refuses
    unless each still equals the snapshot, and flips them all public, or none.
-4. Publish the pre-validated definition (`publish_agent`, idempotency key
+4. Mark exactly the confirmed versions public, then publish the pre-validated definition (`publish_agent`, idempotency key
    derived from `request_id`). The only failure left here is storage, and it
-   flips the branches back, so nothing is left public.
+   unmarks those versions and flips the branches back, so nothing is left public.
 5. Resolve the request `answered`/`allowed` and return the definition id and
    version ids.
 

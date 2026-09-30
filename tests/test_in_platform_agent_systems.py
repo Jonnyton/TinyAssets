@@ -286,17 +286,6 @@ def test_a_malformed_event_stores_nothing(home: Path, payload) -> None:
     assert _wakes(home) == []
 
 
-def test_the_usage_meter_refuses_before_any_wake(home: Path, monkeypatch) -> None:
-    from tinyassets import engine_admissions as ea
-
-    _subscribe(home, "visit")
-    monkeypatch.setattr(ea, "admit_detail",
-                        lambda *a, **k: ea.Admission(ticket=None, refused_by="run_write"))
-    out = _emit("visit")
-    assert out["error"] == "usage_limit", out
-    assert _wakes(home) == []
-
-
 # ---------------------------------------------------------------------------
 # 3. Publishing is the owner's confirmation of exactly what they were shown
 # ---------------------------------------------------------------------------
