@@ -243,6 +243,12 @@ COPY --from=builder /build/pyproject.toml /app/pyproject.toml
 # are runtime state and live in TINYASSETS_DATA_DIR, not here.
 COPY data/world_rules.lp /app/data/world_rules.lp
 
+# Public model lists, one file per source kind. REVIEWED DATA the runtime reads, not
+# state: `public_model_lists.lists_directory()` resolves `models/` beside the package,
+# so without this COPY every source kind reads as unlisted and the feature silently
+# does nothing in production (Codex on #4028 — it never reached the image).
+COPY models/ /app/models/
+
 # Stdlib-only MCP canary — reused across Layer-1 (local), tier-3 GHA,
 # docker-build CI, cloud canary, and the compose.yml container-health
 # healthcheck. Single definition of "healthy MCP" across every probe
@@ -286,5 +292,7 @@ EXPOSE 8001
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker-entrypoint.sh"]
 
 # Default command — the FastMCP streamable-http server on 0.0.0.0:8001.
-# Matches `if __name__ == "__main__": main()` in tinyassets/universe_server.py.
-CMD ["python", "-m", "tinyassets.universe_server"]
+# Through a launcher whose import is empty: every broker/workspace child is a
+# multiprocessing spawn child, which re-imports __main__ by name first, and the
+# server as __main__ cost each child ~5 s (tinyassets/serve.py).
+CMD ["python", "-m", "tinyassets.serve"]

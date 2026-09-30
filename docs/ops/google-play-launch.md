@@ -559,7 +559,7 @@ Open, with what each actually waits on:
 - [x] Foreground-service declaration (§8a): the privacy-redacted real-phone video is
       published and frame-reviewed (27.11 seconds, 1080×2340, SHA-256
       `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`) at
-      `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`.
+      `https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`.
       Saved 2026-09-08 as **Data sync → Network processing → Other** with that link;
       App content now reports no declarations needing attention. It was submitted
       with the 15-change review batch on 2026-09-08.

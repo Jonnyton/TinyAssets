@@ -612,7 +612,7 @@ def terminalize_background_queue_authority(
 
 def _normalize_content_digest(value: str) -> str:
     """Both forms occur: branch_versions.content_hash is bare hex, but a task's
-    automation_subject_digest is `sha256:<hex>` (api/cloud_automations.py). Normalize
+    automation_subject_digest is `sha256:<hex>`. Normalize
     to the prefixed form so the authority compare doesn't fail every real version
     (Codex #2, PR #2516). Empty stays empty so a missing digest never matches."""
     text = (value or "").strip()
@@ -740,6 +740,7 @@ class _BackgroundAssignedProviderSession:
         self._base_path = base_path
         self._task = task
         self._universe_dir = base_path / task.universe_id
+        self._sign_ins_refreshed = False
         self._consumer_lease = consumer_lease
         self._provider_call = provider_call
         self._call_index = 0
@@ -825,11 +826,14 @@ class _BackgroundAssignedProviderSession:
             )
         with self._lock:
             from tinyassets.exceptions import ProviderAuthorityHeldError
-            from tinyassets.shared_self import prepare_shared_self_turn, shared_self_requested
+            from tinyassets.shared_self import agent_node, prepare_shared_self_turn
 
+            self._refresh_sign_ins()
             try:
-                agent_requested = shared_self_requested(
+                node = agent_node(
                     _branch_snapshot(self._base_path, self._task),
+                    getattr(config, "agent_node_id", ""), self._task.actor_id,
+                    node_key=getattr(config, "agent_node_key", ""),
                 )
             except Exception as exc:
                 # Preserve the existing typed hold when the earlier opt-in read
@@ -841,12 +845,13 @@ class _BackgroundAssignedProviderSession:
                 raise ProviderAuthorityHeldError(
                     "Assigned background provider authority is unavailable; retry after repair.",
                 ) from exc
-            if agent_requested:
+            if node is not None:
                 if role != "writer" or kwargs:
                     raise PermissionError("workflow agent cannot substitute execution context")
                 load_background_executor_identity(self._base_path, self._task, self._consumer_lease)
                 prompt, system, config = prepare_shared_self_turn(
                     self._base_path, self._task.universe_id, self._task.actor_id, prompt, config,
+                    node,
                 )
                 from tinyassets.workflow_agent import call_background_work_agent
 
@@ -895,6 +900,34 @@ class _BackgroundAssignedProviderSession:
                 )
                 self._call_index = invocation_index
                 return result, provider
+
+    def _refresh_sign_ins(self) -> None:
+        """Bring the owner's stored sign-ins current before the attempt pins them.
+
+        Once per session, at its first node call: the work receipt is the whole
+        ATTEMPT's, replayed by every later node and agent round, and a refresh
+        renews the accepted source, which moves the assignment that receipt
+        names. Refreshing at each node let a second node's renewal void the
+        first node's receipt (Codex refute-review on #4082, reproduced: two
+        spends, one call, task back to pending). The owner is the task's actor,
+        proven to be the background binding's authorizing principal; a task
+        that proves nothing refreshes nothing and is refused by the launch.
+        """
+        if self._sign_ins_refreshed:
+            return
+        self._sign_ins_refreshed = True
+        try:
+            load_background_executor_identity(self._base_path, self._task, self._consumer_lease)
+        except (BackgroundExecutorIdentityError, PermissionError):
+            return
+        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
+
+        refresh_deposited_subscriptions(
+            base_path=self._base_path,
+            universe_dir=self._universe_dir,
+            owner_user_id=self._task.actor_id,
+            universe_id=self._task.universe_id,
+        )
 
     @contextmanager
     def _authorize_attempt(self, *, role, prompt, system, policy):
@@ -1117,11 +1150,8 @@ class _BackgroundAssignedProviderSession:
         # back either. Codex refute-review P1 #3 reproduced both halves on the
         # foreground twin of this lane.
         #
-        # The refresh belongs where nothing is pinned yet, which is the served
-        # entry (`provider_assignment.authorize_served_provider_call_async`).
-        # Covering this lane means moving the seam ahead of the authority mint, and
-        # that is its own change:
-        # docs/concerns/2026-09-26-pr4032-refresh-launch-integration.md. A finished
+        # The refresh belongs where nothing is pinned yet: for this lane that is
+        # `_refresh_sign_ins`, once, at the attempt's first node call. A finished
         # sign-in still surfaces from the launch itself, now typed as a sign-in
         # failure rather than an outage
         # (providers/codex_provider._terminal_auth_failure).

@@ -55,15 +55,15 @@ respond can mask a no-op deploy.
 ### §1.1 Image-tag confirmation
 
 ```bash
-# Expected tag = ghcr.io/jonnyton/tinyassets-daemon:<short-SHA>
+# Expected tag = ghcr.io/tinyassets/tinyassets-daemon:<short-SHA>
 # where <short-SHA> matches `git rev-parse --short=12 origin/main`.
 EXPECTED_TAG=$(git rev-parse --short=12 origin/main)
-echo "Expected image tag: ghcr.io/jonnyton/tinyassets-daemon:${EXPECTED_TAG}"
+echo "Expected image tag: ghcr.io/tinyassets/tinyassets-daemon:${EXPECTED_TAG}"
 ```
 
 Then ask host to confirm via either:
 - DO dashboard → Droplet console → `docker ps --format '{{.Image}}'` → look
-  for `ghcr.io/jonnyton/tinyassets-daemon:${EXPECTED_TAG}`.
+  for `ghcr.io/tinyassets/tinyassets-daemon:${EXPECTED_TAG}`.
 - The deploy-prod GitHub Actions run summary — it prints "Target image" as
   the final-step output.
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import AsyncExitStack
 from dataclasses import replace
 
@@ -17,13 +18,14 @@ from tinyassets.exceptions import (
     AllProvidersExhaustedError,
     ProviderAuthorityHeldError,
     ProviderProtocolError,
+    SelectedModelContextError,
 )
 from tinyassets.providers import agent_chat_codec as codec
 from tinyassets.providers.agent_capacity_boundary import capacity_boundary
 from tinyassets.providers.agent_inference import AgentInferenceRequest
 from tinyassets.providers.agent_model_plan import AgentModelPlan
 from tinyassets.providers.native_agent_input import render_native_input
-from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+from tinyassets.served_tools import granted_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
@@ -32,8 +34,52 @@ from tinyassets.storage.agent_turn_records import load_result
 _LOG = logging.getLogger(__name__)
 
 
+def _at_least(interaction, tokens):
+    """The interaction with its minimum context raised to ``tokens``, never lowered."""
+    if interaction.min_context is not None and interaction.min_context >= tokens:
+        return interaction
+    return replace(interaction, min_context=tokens)
+
+
+def turn_effects(turn):
+    """What a turn's own ledger proves ran: ``(effects, stage, ref)``.
+
+    ``none`` only when no tool started and no native agent launched; ``some``
+    once any tool completed; ``unknown`` for anything in flight or indeterminate.
+    ``stage`` is ``tool`` only when the last recorded step was a tool that did
+    not complete. Read from the journal, never guessed.
+
+    A free function over a snapshot, not a method over the running coordinator:
+    the startup reconciliation answers the SAME question about a turn no process
+    is running any more, and a second implementation of it would be a second
+    definition of what the ledger proves.
+    """
+    if turn is None:
+        return "none", None, None
+    effects, stage = "none", None
+    for position, previous in enumerate(turn.rounds):
+        last = position == len(turn.rounds) - 1
+        if type(previous.candidate) is NativeInput:
+            if not (type(previous.reply) is NativeTerminal
+                    and previous.reply.status == "capacity_no_effects"):
+                effects = "some" if effects == "some" else "unknown"
+            continue
+        for tool in previous.tools:
+            if tool.state == "completed":
+                effects = "some"
+            elif tool.state in {"started", "unknown"} and effects == "none":
+                effects = "unknown"
+            if last and tool.state in {"started", "unknown", "not_sent"}:
+                stage = "tool"
+    return effects, stage, turn.turn_id
+
+
 class AgentTurnCoordinator:
     """One in-process turn; no crash resurrection or automatic effect replay."""
+
+    #: (failed selection, boundary) of a source whose cooldown the capacity path
+    #: withheld to try a sibling on it; cooled when the turn leaves it.
+    _hot_capacity = None
 
     def __init__(self, *, adapter, router, prompt, system, universe_context, config):
         self.adapter = adapter
@@ -58,6 +104,15 @@ class AgentTurnCoordinator:
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
         self.spent_attempts = []
+
+    def _remaining(self, turn_deadline):
+        """This turn's config with its absolute cap cut to what is left of the turn.
+
+        Never zero or negative: the profile would read that as "unset" and hand
+        back the full default cap, which is the bug this exists to prevent.
+        """
+        left = max(turn_deadline - time.monotonic(), 1.0)
+        return replace(self.config, absolute_cap_s=left)
 
     def _check_scope(self):
         owner = self.adapter.check(self.context, self.config)
@@ -167,32 +222,92 @@ class AgentTurnCoordinator:
             terminal=terminal,
         ))
 
-    def effects_evidence(self):
-        """What this turn's own ledger proves ran: ``(effects, stage, ref)``.
+    def _learn_verified_model(self, response):
+        """Record a model id that just answered, for every universe on this KIND.
 
-        ``none`` only when no tool started and no native agent launched;
-        ``some`` once any tool completed; ``unknown`` for anything in flight or
-        indeterminate. ``stage`` is ``tool`` only when the last recorded step
-        was a tool that did not complete. Read from the journal, never guessed.
+        Only reached from a committed success. It records the id on THIS OWNER's own
+        list and nowhere else -- there is no shared store any more, so nothing here can
+        reach another user. See ``tinyassets/storage/learned_models.py``; sharing is a
+        reviewed file per source kind (``models/``), merged by a person.
+
+        The id recorded is the one THIS UNIVERSE ASKED FOR and that then succeeded
+        -- its own ``model_selection.model_id`` -- and never a string the source
+        chose.
+
+        The first version preferred ``response.reported_model``, and Codex refuted
+        it on #4028: that field is source-controlled, so a source could publish
+        anything to every other user of its kind (it reproduced
+        ``owner-alice@example.com-private-9``), and ``codex_provider`` deliberately
+        reports the literal ``provider-default`` when it cannot resolve a model,
+        which would then have been published as a verified model id. What this
+        universe REQUESTED is the only id worth sharing: it is a name its owner
+        already held, it is exactly what another owner would need to grant, and a
+        source cannot inject it.
+
+        An empty requested id is the provider default -- a position, not a model --
+        so there is nothing to teach anyone and it is skipped.
+
+        Recording is not publishing, and here there is no publishing at all: a typed
+        id is PERSONAL forever (founder, 2026-09-26). That is what keeps a private
+        account-bearing selector on its own owner's list and nowhere else. Ids reach
+        everyone by a different route entirely -- a reviewed file in the repo.
         """
-        if self.turn is None:
-            return "none", None, None
-        effects, stage = "none", None
-        for position, previous in enumerate(self.turn.rounds):
-            last = position == len(self.turn.rounds) - 1
-            if type(previous.candidate) is NativeInput:
-                if not (type(previous.reply) is NativeTerminal
-                        and previous.reply.status == "capacity_no_effects"):
-                    effects = "some" if effects == "some" else "unknown"
-                continue
-            for tool in previous.tools:
-                if tool.state == "completed":
-                    effects = "some"
-                elif tool.state in {"started", "unknown"} and effects == "none":
-                    effects = "unknown"
-                if last and tool.state in {"started", "unknown", "not_sent"}:
-                    stage = "tool"
-        return effects, stage, self.turn.turn_id
+        from tinyassets.storage.learned_models import (
+            LEARNED_SOURCE_KIND,
+            record_verified_model,
+        )
+
+        selection = getattr(self.context, "model_selection", None)
+        model_id = (getattr(selection, "model_id", "") or "").strip()
+        if not model_id:
+            return
+        # The OWNER, not the universe: the founder's threshold counts distinct
+        # owners, so one person's two universes must not promote an id between
+        # them. `self.owner` is the capability principal this turn ran under, which
+        # is the same identity the journal scopes its rows by.
+        record_verified_model(
+            self.context.universe_dir.parent,
+            source_kind=LEARNED_SOURCE_KIND,
+            model_id=model_id,
+            owner_user_id=self.owner,
+        )
+
+    def _remember_refusal(self, failed, attempts):
+        """Keep a source's refusal of THIS model past this turn.
+
+        The next turn's order puts it last instead of spending a request to be
+        refused again (``storage.refused_models``; live 2026-09-28, the free
+        account's 403 and withdrawn 404 models were rediscovered every turn).
+        Recorded whether or not this turn finds another model: a refusal is a
+        fact about the owner's key either way. Best-effort, never the turn's
+        failure.
+        """
+        if failed is None or self.owner is None:
+            return
+        from tinyassets.storage.refused_models import record_refused_model
+
+        record_refused_model(
+            self.context.universe_dir.parent, owner_user_id=self.owner,
+            connection_id=failed.connection_id, model_id=failed.model_id,
+            failure_class="provider_refused",
+            detail=str(getattr(attempts[-1], "detail", "") or "") if attempts else "",
+        )
+
+    def _forget_refusal(self):
+        """The selected model just answered, so any standing refusal is stale."""
+        selection = getattr(self.context, "model_selection", None)
+        if selection is None or self.owner is None:
+            return
+        from tinyassets.storage.refused_models import clear_refused_model
+
+        clear_refused_model(
+            self.context.universe_dir.parent, owner_user_id=self.owner,
+            connection_id=selection.connection_id, model_id=selection.model_id,
+        )
+
+    def effects_evidence(self):
+        """This running turn's own ledger evidence; see :func:`turn_effects`."""
+        return turn_effects(self.turn)
 
     def _release_turn(self):
         """This boot has stopped executing the turn, whatever state it reached.
@@ -248,6 +363,11 @@ class AgentTurnCoordinator:
             raise JournalUnavailable("agent turn cannot be replayed")
 
         timeout = self.config.stream_timeout_profile().absolute_cap_s
+        # Every round is told what is LEFT of the turn, not the whole cap again:
+        # a provider that cannot be cancelled mid-request (the HTTP broker) is
+        # then bounded by the turn's own end, not by a fresh cap from a late
+        # round (Codex, 2026-09-29).
+        turn_deadline = time.monotonic() + timeout
         async with asyncio.timeout(timeout):
             async with AsyncExitStack() as stack:
                 engine = None
@@ -262,18 +382,25 @@ class AgentTurnCoordinator:
                             )
                             engine = await stack.enter_async_context(open_engine_tools(
                                 actor_id=actor_id, graph_id=graph_id,
-                                enabled_tools=SERVED_ENGINE_MCP_TOOLS, timeout=timeout,
+                                enabled_tools=granted_tools(self.config), timeout=timeout,
                             ))
-                        config = replace(self.config, agent_request=AgentInferenceRequest(
-                            tools=codec.tool_definitions(engine.tools), history=self._history(),
-                        ))
+                        config = replace(
+                            self._remaining(turn_deadline),
+                            agent_request=AgentInferenceRequest(
+                                tools=codec.tool_definitions(engine.tools),
+                                history=self._history(),
+                            ),
+                        )
                         prompt, system, observer = self.prompt, self.system, self._begin
                     else:
                         self.native_input = render_native_input(
                             self.prompt, self.system, self._history(),
                         )
                         prompt, system = self.native_input
-                        config = replace(self.config, agent_request=None, selected_model=None)
+                        config = replace(
+                            self._remaining(turn_deadline), agent_request=None,
+                            selected_model=None,
+                        )
                         observer = self._begin_native
                     try:
                         response = await self.adapter.infer(
@@ -296,7 +423,12 @@ class AgentTurnCoordinator:
                                     reply=None,
                                 )
                             )
-                        if self._next_after_capacity(exc) or self._next_after_signin(exc):
+                        if (
+                            self._next_after_capacity(exc)
+                            or self._next_after_signin(exc)
+                            or self._next_after_refusal(exc)
+                            or self._next_after_overflow(exc)
+                        ):
                             continue
                         raise
                     if self.execution_kind == "native_agent":
@@ -320,6 +452,12 @@ class AgentTurnCoordinator:
                             if self.turn.state == "native_started":
                                 self._finish_native_failure(exc)
                             raise
+                        # The call SUCCEEDED and the journal has committed it, so
+                        # this model id provably works on this kind of source.
+                        # Learn it for every universe with that kind. After the
+                        # commit and outside the try, so a catalog write can
+                        # neither be mistaken for a turn failure nor rewrite one.
+                        self._learn_verified_model(response)
                         return response
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")
@@ -334,6 +472,8 @@ class AgentTurnCoordinator:
                             cost_microusd=response.cost_microunits,
                         )
                     )
+                    # The model answered: whatever refused it before does not now.
+                    self._forget_refusal()
                     if self.turn.state == "completed":
                         return response
                     if self.turn.state != "tools_pending":
@@ -493,6 +633,101 @@ class AgentTurnCoordinator:
         narrowing -- and never when a native attempt may have committed a side
         effect, which is the state ``_next_after_capacity`` fences too.
         """
+        # The source is excluded for the REST OF THIS TURN by the same mechanism
+        # capacity uses -- an ``account``-scoped exclusion, because a finished
+        # sign-in is the whole connection's, never one model's. It is separately
+        # marked for reconnect by the router, so the owner's next turn does not
+        # start here either.
+        return self._advance_past(exc, "auth_invalid", "account")
+
+    def _next_after_refusal(self, exc):
+        """Advance to the owner's next model when the source refused THIS one.
+
+        HTTP 403/404/410 on an inference request (``provider_refused``): access
+        to this model was refused, or the source no longer serves it. Live
+        2026-09-28 on the free-only account: its first free model was rate
+        limited, the second had been withdrawn from the catalog, and the third
+        answered 403 -- and the turn died there with free models still in the
+        owner's order. Same fences as a finished sign-in (every attempt of the
+        round refused, none may have acted, only candidates already in the
+        owner's accepted order) with a MODEL-scoped exclusion: the refusal names
+        the model, and its siblings on the same connection stay eligible.
+
+        Bounded by the owner's list, not a count: each accepted model is tried
+        at most once per turn (``visited`` plus the exclusion), so a pool with
+        several dead models in a row is walked to the end, and a key refused for
+        every model costs one request per accepted model, once.
+        """
+        return self._advance_past(exc, "provider_refused", "model")
+
+    def _next_after_overflow(self, exc):
+        """Move to an accepted model whose window fits, when this one's does not.
+
+        Our own pre-send measurement (``SelectedModelContextError``), so nothing
+        was sent, spent or run, and no round was opened. Live 2026-09-26 a large
+        tool result overflowed a 262k-token model while the owner's order held a
+        1M-token free model. The order is re-asked with the measured size as its
+        minimum context, so every model too small is skipped in one step rather
+        than tried one by one; the failed model is excluded too.
+
+        A workflow agent node's candidates come from its adapter: the measured
+        need is handed to the adapter for this turn only, and the next model
+        launches through the adapter's own fresh authorization, exactly as the
+        capacity and refusal paths already move a workflow turn on.
+        """
+        if (
+            not self._has_candidate_order()
+            or not isinstance(exc, SelectedModelContextError)
+            or self.turn.state not in {"ready", "held_transport"}
+        ):
+            return False
+        needed = exc.required_tokens
+        if type(needed) is not int or needed < 1:
+            return False
+        from tinyassets.providers.model_policy import Exhaustion
+
+        failed = self.context.model_selection
+        self.visited.add(failed)
+        if self.plan is None:
+            # The work adapter raises every interaction its order reads, for
+            # THIS turn. No Exhaustion: a work run's exhaustion is shared by all
+            # its nodes, and a model too small for this node's context is not
+            # exhausted for a later, smaller one (gpt-6-astra on #4093). The
+            # measured minimum already rules the failed model out here -- its
+            # window is exactly what the measurement exceeded.
+            self.adapter.require_context(needed)
+        else:
+            self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
+            # Every interaction the order reads: a per-source policy REPLACES the
+            # plan's own for that source's models, and production plans carry one
+            # per source -- raising only the plan's left them admitting a model too
+            # small (Codex, 2026-09-28).
+            self.plan = replace(
+                self.plan,
+                interaction=_at_least(self.plan.interaction, needed),
+                source_policies=tuple(
+                    replace(item, interaction=_at_least(item.interaction, needed))
+                    for item in self.plan.source_policies
+                ),
+            )
+        candidate = self._next_candidate()
+        if candidate is None or candidate in self.visited:
+            self._leave_hot_source(None)
+            return False
+        self._leave_hot_source(candidate)
+        self.context = replace(self.context, model_selection=candidate)
+        self.retrying_capacity = self.turn.state != "ready"
+        return True
+
+    def _advance_past(self, exc, failure_class, scope):
+        """Exclude the failed selection at ``scope`` and take the next candidate.
+
+        Advances only when EVERY attempt of the round carried ``failure_class``
+        -- a round that also hit capacity is the capacity path's to reason about
+        -- and never when an attempt may have committed a side effect. Only
+        candidates already in the owner's accepted order are reachable
+        (``_next_candidate``), so this never widens authority.
+        """
         if (
             not self._has_candidate_order()
             or not isinstance(exc, AllProvidersExhaustedError)
@@ -500,7 +735,7 @@ class AgentTurnCoordinator:
         ):
             return False
         attempts = tuple(exc.attempts or ())
-        if not attempts or any(a.failure_class != "auth_invalid" for a in attempts):
+        if not attempts or any(a.failure_class != failure_class for a in attempts):
             return False
         if any(
             getattr(a, "side_effect_state", "none") not in ("", "none")
@@ -511,22 +746,38 @@ class AgentTurnCoordinator:
             return False
         failed = self.context.model_selection
         self.visited.add(failed)
-        # The source is excluded for the REST OF THIS TURN by the same mechanism
-        # capacity uses -- an ``account``-scoped exclusion, because a finished
-        # sign-in is the whole connection's, never one model's. It is separately
-        # marked for reconnect by the router, so the owner's next turn does not
-        # start here either.
+        if failure_class == "provider_refused":
+            self._remember_refusal(failed, attempts)
         from tinyassets.providers.model_policy import Exhaustion
 
-        self.exhaustion = self.exhaustion + (Exhaustion("account", failed),)
+        self.exhaustion = self.exhaustion + (Exhaustion(scope, failed),)
         candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
+            self._leave_hot_source(None)
             return False
+        self._leave_hot_source(candidate)
         if self.execution_kind == "engine_inference":
             self.spent_attempts += list(attempts)
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
+
+    def _leave_hot_source(self, candidate):
+        """Cool the source a capacity sibling retry left hot, once the turn leaves it.
+
+        The capacity path withholds a source's cooldown only while the next try
+        is a sibling on that same source. A refusal or sign-in step that then
+        moves to ANOTHER source would otherwise leave it hot: 429 -> sibling ->
+        403 -> another source, and the capped source is asked again next turn
+        (Codex, 2026-09-28). ``None`` means the turn is ending: leave it too.
+        """
+        hot = self._hot_capacity
+        if hot is None or (
+            candidate is not None and candidate.connection_id == hot[0].connection_id
+        ):
+            return
+        self._hot_capacity = None
+        self._cool_abandoned_source(*hot)
 
     def _next_after_capacity(self, exc):
         if (
@@ -569,6 +820,11 @@ class AgentTurnCoordinator:
             # Moving to another source: this one is done for the turn, so the
             # cooldown the router withheld for it now applies.
             self._cool_abandoned_source(failed, boundary)
+            self._leave_hot_source(candidate)
+        elif self._free_source_refusal(boundary, window=False):
+            # Staying on it for a sibling: its cooldown stays withheld until the
+            # turn leaves the source by any path.
+            self._hot_capacity = (failed, boundary)
         # Only engine-inference rounds. A native round's diagnostics are paired
         # positionally with its own ``native_evidence``, and carrying them onto
         # a later exception would leave the two lists mismatched, which

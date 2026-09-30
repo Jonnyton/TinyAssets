@@ -23,11 +23,11 @@ import tinyassets.automations as automations_module
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_background_budget_finalization_e2e import _seed_serving_assignment
 from tinyassets.automations import (
-    MAX_ACTIVE_PER_UNIVERSE,
     MAX_CONSECUTIVE_FAILURES,
     Automation,
     AutomationStore,
     AutomationUnavailable,
+    automation_lease_key,
     cancel_grace_seconds,
     cron_min_gap_seconds,
     due_automations,
@@ -692,7 +692,6 @@ def test_registration_refuses_a_branch_the_owner_cannot_read(
     [
         {"interval_seconds": 0, "cron_expr": ""},          # neither
         {"interval_seconds": 600, "cron_expr": "0 * * * *"},  # both
-        {"interval_seconds": 60, "cron_expr": ""},          # under the floor
         {"interval_seconds": -600, "cron_expr": ""},        # nonsense
         {"interval_seconds": 0, "cron_expr": "not a cron"},  # unparseable
         {"interval_seconds": 0, "cron_expr": "0 0 * *"},     # four fields
@@ -713,25 +712,46 @@ def test_registration_refuses_a_trigger_that_cannot_fire(
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
-def test_registration_refuses_past_the_per_universe_ceiling(
+def test_registration_is_limited_by_usage_not_by_a_count_of_rows(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Plan item 6: no ceiling on how many automations a universe holds. Each
+    registration is an engine edit charged to the universe's admission
+    window, and that meter is what refuses (here shrunk to 3)."""
+    import tinyassets.engine_mcp_server as ems
+
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     _seed_serving_assignment(tmp_path)
     _seed_owner(tmp_path)
     _seed_branch(tmp_path)
-    for index in range(MAX_ACTIVE_PER_UNIVERSE):
+    monkeypatch.setattr(ems, "_RUN_GRAPH_TOTAL_MAX", 3)
+    for index in range(3):
         register_automation(
             tmp_path, **_registration_kwargs(name=f"automation {index}")
         )
 
     with pytest.raises(AutomationUnavailable) as caught:
-        register_automation(tmp_path, **_registration_kwargs(name="one too many"))
+        register_automation(tmp_path, **_registration_kwargs(name="one more"))
 
-    assert caught.value.reason == "too_many_automations"
-    assert len(AutomationStore(tmp_path).list(universe_id=UNIVERSE)) == (
-        MAX_ACTIVE_PER_UNIVERSE
+    assert caught.value.reason == "usage_limited"
+    assert len(AutomationStore(tmp_path).list(universe_id=UNIVERSE)) == 3
+    # Another universe's meter is its own.
+    assert ems._engine_run_admit(universe_id="universe_bob", kind="engine")
+
+
+def test_a_short_interval_is_a_cadence_not_a_refusal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The 300s floor is gone: a 60s cadence registers, and what it may spend is
+    metered when each run fires."""
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_branch(tmp_path)
+    created = register_automation(
+        tmp_path, **_registration_kwargs(interval_seconds=60)
     )
+    assert created.interval_seconds == 60
 
 
 def test_a_cron_registration_is_stored_and_comes_due_on_its_minute(
@@ -1093,80 +1113,6 @@ def test_one_universes_scan_failure_does_not_stop_the_poll(
     assert refusals[f"universe:{UNIVERSE}:automations"].startswith(
         "automation_scan_error:RuntimeError"
     )
-
-
-def test_a_universe_running_an_automation_skips_the_legacy_pump_that_poll(
-    tmp_path: Path,
-    registered: Automation,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        "tinyassets.provider_serving_binding.list_serving_universes",
-        lambda _base: [UNIVERSE],
-    )
-    monkeypatch.setattr(
-        automations_module,
-        "run_due_automation",
-        lambda *_args, **_kwargs: "ok:ran:run_1",
-    )
-    # The legacy pump only runs behind a live audience and an empty pending list.
-    # Without this the assertion below would be green no matter what the code did.
-    monkeypatch.setattr(
-        AssignedQueueConsumer,
-        "_publish_heartbeat",
-        lambda self, universe_id: object(),
-    )
-    pumped: list[str] = []
-    monkeypatch.setattr(
-        AssignedQueueConsumer,
-        "_pump_automation",
-        lambda self, universe_id, audience: pumped.append(universe_id) or False,
-    )
-    consumer, _inline = _consumer_with_inline_executor(tmp_path)
-
-    try:
-        consumer.poll_once()
-    finally:
-        consumer.stop()
-
-    assert pumped == []
-
-
-def test_the_legacy_pump_still_runs_for_a_universe_with_no_due_automation(
-    tmp_path: Path,
-    registered: Automation,
-    monkeypatch,
-) -> None:
-    """The positive control for the test above: the skip is conditional, not a
-    blanket disable of the fleet-era pump task 3.3 has not deleted yet."""
-    monkeypatch.setattr(
-        "tinyassets.provider_serving_binding.list_serving_universes",
-        lambda _base: [UNIVERSE],
-    )
-    monkeypatch.setattr(
-        automations_module,
-        "due_automations",
-        lambda base, *, universe_id, now: [],
-    )
-    monkeypatch.setattr(
-        AssignedQueueConsumer,
-        "_publish_heartbeat",
-        lambda self, universe_id: object(),
-    )
-    pumped: list[str] = []
-    monkeypatch.setattr(
-        AssignedQueueConsumer,
-        "_pump_automation",
-        lambda self, universe_id, audience: pumped.append(universe_id) or False,
-    )
-    consumer, _inline = _consumer_with_inline_executor(tmp_path)
-
-    try:
-        consumer.poll_once()
-    finally:
-        consumer.stop()
-
-    assert pumped == [UNIVERSE]
 
 
 def test_a_dark_consumer_scans_no_automations_at_all(
@@ -1629,13 +1575,14 @@ def test_a_run_that_ignores_cancellation_keeps_the_universe_leased(
     # The universe is NOT handed back while a provider call may still be live,
     # and the row is still there carrying its full TTL rather than deleted.
     store = AutomationStore(tmp_path)
+    key = automation_lease_key(registered)
     assert store.universe_lease_holder(
-        UNIVERSE, now=datetime.now(timezone.utc)
+        key, now=datetime.now(timezone.utc)
     ) == consumer.consumer_id
     with sqlite3.connect(store.db_path) as conn:
         row = conn.execute(
             "SELECT holder, expires_at FROM universe_leases WHERE universe_id = ?",
-            (UNIVERSE,),
+            (key,),
         ).fetchone()
     assert row is not None, "the lease row was deleted, not retained"
     assert str(row[0]) == consumer.consumer_id
@@ -2130,10 +2077,15 @@ def test_engine_edits_can_exhaust_total_without_pausing_scheduled_work(
     monkeypatch.setattr(adm.time, "time", lambda: stamp)
     seam = _SeamRecorder()
     monkeypatch.setattr(automations_module, "_execute", seam)
+    # Fill the total with engine edits. Registering the automation was one
+    # already (plan item 6), so fill until the meter refuses.
     for _ in range(adm.RUN_TOTAL_LIMIT):
-        assert ems._engine_run_admit(
+        if not ems._engine_run_admit(
             universe_id=UNIVERSE, kind=adm.KIND_ENGINE, fail_closed=True,
-        ) is True
+        ):
+            break
+    else:
+        raise AssertionError("the total never filled")
 
     reason = run_due_automation(
         tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW + timedelta(minutes=10),
@@ -2186,8 +2138,11 @@ def test_an_automation_binds_its_admission_to_the_run_it_starts(
 
     assert reason == "ok:ran:run-auto-1" and started == ["run-auto-1"]
     conn = sqlite3.connect(str(tmp_path / adm.LEDGER_NAME))
-    rows = conn.execute("SELECT universe_id, kind, run_id FROM admissions").fetchall()
+    rows = conn.execute(
+        "SELECT universe_id, kind, run_id FROM admissions WHERE kind != 'engine'"
+    ).fetchall()
     conn.close()
+    # (The registration itself is an engine-kind row, plan item 6.)
     assert rows == [(UNIVERSE, "write", "run-auto-1")]
     # ...so a read-only period can settle off the write budget
     assert adm.reclassify_read("run-auto-1", db=tmp_path / adm.LEDGER_NAME) is True
@@ -2207,21 +2162,20 @@ def test_one_universes_run_budget_is_not_spent_by_another_universe(
 
 
 @pytest.mark.parametrize("expr", ["* * * * *", "*/2 * * * *", "0,3 * * * *"])
-def test_a_cron_cadence_below_the_floor_is_refused(
+def test_a_minute_cron_is_accepted_now_that_usage_bounds_it(
     tmp_path: Path, monkeypatch, expr: str
 ) -> None:
+    """Plan item 6: no cron gap floor. Each fire is charged as a run."""
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     _seed_serving_assignment(tmp_path)
     _seed_owner(tmp_path)
     _seed_branch(tmp_path)
 
-    with pytest.raises(AutomationUnavailable) as caught:
-        register_automation(
-            tmp_path, **_registration_kwargs(interval_seconds=0, cron_expr=expr)
-        )
+    created = register_automation(
+        tmp_path, **_registration_kwargs(interval_seconds=0, cron_expr=expr)
+    )
 
-    assert caught.value.reason == "trigger_invalid"
-    assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
+    assert created.cron_expr == expr
 
 
 @pytest.mark.parametrize("expr", ["0,5 * * * *", "*/5 * * * *"])
@@ -2625,9 +2579,6 @@ def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
         lambda _base: [UNIVERSE],
     )
     monkeypatch.setattr(
-        AssignedQueueConsumer, "_serving_runtime", lambda self, *a, **k: None
-    )
-    monkeypatch.setattr(
         automations_module,
         "run_due_automation",
         lambda *_args, **_kwargs: "ok:ran:run_1",
@@ -2663,12 +2614,11 @@ def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
     assert stamped <= datetime.now(timezone.utc) + timedelta(seconds=5)
     # No runtime means no audience and no invented executor identity...
     assert beat["runtime_instance_id"] == ""
-    # ...and the caller still says why it did no executor-bound work -- and
-    # says it honestly: this universe HAS a ready serving assignment, so the
-    # reason is the retired background executor, never "no serving provider
-    # selected" (which sent the founder's universe hunting for a selection
-    # surface that does not exist, app thread 2026-09-02).
-    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == "legacy_control_tasks_parked"
+    # ...and it says so honestly: this universe HAS a ready serving assignment,
+    # so it is never told "no serving provider selected" (which sent the
+    # founder's universe hunting for a selection surface that does not exist,
+    # app thread 2026-09-02). The `ok:` row is filtered out of status.
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == "ok:serving"
 
 
 def test_a_paused_universe_still_beats(
@@ -2685,9 +2635,6 @@ def test_a_paused_universe_still_beats(
     monkeypatch.setattr(
         "tinyassets.provider_serving_binding.list_serving_universes",
         lambda _base: [UNIVERSE],
-    )
-    monkeypatch.setattr(
-        AssignedQueueConsumer, "_serving_runtime", lambda self, *a, **k: None
     )
     (tmp_path / UNIVERSE / ".pause").write_text("owner paused", encoding="utf-8")
     consumer, _inline = _consumer_with_inline_executor(tmp_path)

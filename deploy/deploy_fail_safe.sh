@@ -165,6 +165,24 @@ UNIT_GROUP="${UNIT_GROUP:-root}"
 DAEMON_CONTAINER=tinyassets-daemon
 TUNNEL_CONTAINER=tinyassets-tunnel
 LOGS_CONTAINER=tinyassets-logs
+# The floor for `daemon.stop_grace_period`, asserted on the STAGED bundle. A
+# recreate stops the daemon first and waits this long for in-flight turns; with
+# the key absent the bound is docker's 10 seconds, which is what killed the
+# founder's turns. A bundle that loses the key must FAIL validation rather than
+# silently return to 10 (compose flags are inert in exactly this quiet way).
+#
+# 180, not the 300 first proposed: this run may drain TWICE (the forward converge
+# and, if the new image is unacceptable, the rollback converge), each followed by
+# a HEALTH_TIMEOUT wait, and `deploy-prod.yml` gives the whole job 900s. At 300
+# the worst case is 2*300 + 2*180 = 960 > 900, so a slow deploy would be
+# CANCELLED part-way rather than rolled back -- worse than the bug being fixed
+# (Codex on #4039, P1). 180 gives 720 with 180s left for pull, validation,
+# snapshot and canary, and stays under tinyassets-daemon.service's 200s
+# TimeoutStartSec so a recreate driven through the unit cannot outlive it.
+#
+# Kept in step with `deploy/compose.yml` and with
+# `universe_server.GRACEFUL_SHUTDOWN_S` by tests/test_deploy_drains_in_flight_turns.py.
+MIN_DAEMON_STOP_GRACE_S=180
 # Shared host-mutation lock (same path the watchdog uses); serializes all
 # image mutators so deploy/watchdog/autoheal cannot race.
 LOCK_FILE="${LOCK_FILE:-/var/lock/tinyassets-host-mutation.lock}"
@@ -312,9 +330,22 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up AND l
 # services whose image or config changed (the tunnel keeps running).
 restart_stack() {
   systemctl reset-failed "$UNIT" 2>/dev/null || true
+  # Time the converge. `up -d` recreates the daemon, which STOPS the old
+  # container first and waits up to its `stop_grace_period` for in-flight turns
+  # to finish, so this duration IS the drain -- the only measurement of whether
+  # 300s is the right bound or whether turns are still being cut off at it.
+  # Logged rather than gated: a deploy must not fail because a turn was long.
+  local started elapsed
+  started="$SECONDS"
   if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d daemon cloudflared logs; then
-    err "docker compose up -d failed"
+    elapsed=$((SECONDS - started))
+    err "docker compose up -d failed after ${elapsed}s"
     return 1
+  fi
+  elapsed=$((SECONDS - started))
+  log "converge took ${elapsed}s (includes draining in-flight turns, bounded by daemon.stop_grace_period)"
+  if [ "$elapsed" -ge "$MIN_DAEMON_STOP_GRACE_S" ]; then
+    log "note: the converge reached the ${MIN_DAEMON_STOP_GRACE_S}s grace bound; a turn was very likely cut off (see tinyassets/agent_turn_reconcile.py for what the founder is told)"
   fi
   systemctl start "$UNIT" 2>/dev/null || err "note: ${UNIT} did not start (stack converged directly; see journalctl -u ${UNIT})"
   return 0
@@ -560,6 +591,7 @@ validate_bundle() {
   # resolve the same, renders identically (Codex round 2, §2). argv[3] is the
   # uninterpolated render (env_file survives there).
   RUNTIME_DIR="$RUNTIME_DIR" EXPECT_IMAGE="$NEW_IMAGE" ENV_FILE="$ENV_FILE" \
+    MIN_DAEMON_STOP_GRACE_S="$MIN_DAEMON_STOP_GRACE_S" \
     python3 - "$cfg" "${BUNDLE_WORK}/compose.yml" "${cfg}.raw" <<'PY'
 import json
 import os
@@ -603,8 +635,8 @@ def indent_of(line):
     return len(line) - len(line.lstrip())
 
 
-def daemon_image_lines():
-    """`image:` lines of services.daemon, and nothing else.
+def daemon_block_lines():
+    """Every line of services.daemon, and nothing else.
 
     Anchored at a TOP-LEVEL `services:` key and its direct child `daemon:`: an
     earlier `x-anything:` extension mapping with its own indented `daemon:`
@@ -643,15 +675,77 @@ def daemon_image_lines():
         if indent_of(line) <= child_indent:
             break  # the next service, or the end of the mapping
         lines.append(line)
-    return [line for line in lines if re.match(r"^\s*image:\s*\S", line)]
+    return lines
 
 
-image_lines = daemon_image_lines()
+daemon_block = daemon_block_lines()
+image_lines = (
+    None if daemon_block is None
+    else [line for line in daemon_block if re.match(r"^\s*image:\s*\S", line)]
+)
+
+
+def daemon_direct_children(pattern):
+    """Lines matching `pattern` at the daemon mapping's OWN key indent.
+
+    `daemon_block_lines` returns every descendant, so a key nested under
+    `environment:` or `healthcheck:` would satisfy a check that only matched the
+    text. Codex reproduced exactly that against the first version of the
+    stop_grace_period check: moving it under `environment:` passed validation
+    while docker had no service stop grace at all. A service property must be a
+    DIRECT child to mean anything.
+    """
+    if not daemon_block:
+        return []
+    key_indent = indent_of(daemon_block[0])
+    return [
+        line for line in daemon_block
+        if indent_of(line) == key_indent and re.match(pattern, line.strip())
+    ]
 if image_lines is None:
     problems.append(
         "no top-level `services:` mapping with a `daemon:` child in the source file"
     )
     image_lines = []
+    daemon_block = []
+
+# The drain bound, read from the SOURCE rather than either render: compose
+# normalizes durations and this check must not depend on which form this
+# version emits. Absent means docker's 10-second default, which is what cut the
+# founder's turns off mid-flight -- a bundle that drops the key is refused.
+min_grace = int(os.environ["MIN_DAEMON_STOP_GRACE_S"])
+grace_lines = daemon_direct_children(r"^stop_grace_period:\s*\S")
+if len(grace_lines) != 1:
+    problems.append(
+        "daemon must declare exactly one direct `stop_grace_period:` (found %d); without it "
+        "a recreate SIGKILLs in-flight turns after docker's 10s default" % (len(grace_lines),)
+    )
+else:
+    grace_text = grace_lines[0].split(":", 1)[1].strip().strip("'\"")
+    # Compose accepts Go duration syntax, so `5m0s`, `300.0s` and `300000ms` are
+    # all the same bound the shipped `180s` expresses. The first version took
+    # `(\d+)(s|m)?` and refused every one of them, which is a foot-gun in a gate
+    # that blocks deploys INCLUDING a rollback: the next person to write the
+    # equivalent value gets a refused bundle (Codex on #4039). Parse the real
+    # grammar instead of narrowing what the file may say.
+    units = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001, "us": 1e-6, "ns": 1e-9}
+    parts = re.findall(r"(\d+(?:\.\d+)?)(h|ms|us|ns|m|s)", grace_text)
+    rebuilt = "".join(number + unit for number, unit in parts)
+    if not parts or rebuilt != grace_text:
+        # Refuse rather than guess. A bare `300` reaches here, and compose itself
+        # rejects it, so the `config` run above has already failed -- this arm is
+        # the belt, not the braces.
+        problems.append(
+            "daemon.stop_grace_period %r is not a duration this check can read; use a "
+            "form like 180s or 3m" % (grace_text,)
+        )
+    else:
+        seconds = sum(float(number) * units[unit] for number, unit in parts)
+        if seconds < min_grace:
+            problems.append(
+                "daemon.stop_grace_period is %gs; it must be at least %ds so an in-flight "
+                "turn is not SIGKILLed mid-drain" % (seconds, min_grace)
+            )
 if not image_lines:
     problems.append("no `image:` line found in the daemon block of the source file")
 elif "${TINYASSETS_IMAGE" not in image_lines[0]:

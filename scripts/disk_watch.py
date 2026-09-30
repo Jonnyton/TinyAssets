@@ -16,7 +16,7 @@ Exit codes
 Environment variables
 ---------------------
 GITHUB_TOKEN       fine-grained PAT or Actions GITHUB_TOKEN (issues: write)
-GITHUB_REPOSITORY  owner/repo  (default: Jonnyton/TinyAssets)
+GITHUB_REPOSITORY  owner/repo  (default: TinyAssets/TinyAssets)
 DISK_WARN_PCT      integer alert threshold, default 80
 DISK_WATCH_PATH    filesystem path to check, default /var/lib/docker
 DRY_RUN            set to 1/true to print plan without opening issues
@@ -44,7 +44,7 @@ GITHUB_API = "https://api.github.com"
 
 _DEFAULT_PATH = "/var/lib/docker"
 _DEFAULT_WARN_PCT = 80
-_DEFAULT_REPO = "Jonnyton/TinyAssets"
+_DEFAULT_REPO = "TinyAssets/TinyAssets"
 _DISK_PRESSURE_LABEL = "disk-pressure"
 
 

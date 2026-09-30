@@ -595,7 +595,7 @@ def test_response_candidate_report_detail_digest_and_envelope_bounds_fail_closed
     candidate.pop("error_code")
     candidate["candidate_json"] = {
         "schema_version": 1,
-        "name": "Too many components",
+        "name": "Many components",
         "description": "",
         "tags": [],
         "components": {
@@ -603,8 +603,9 @@ def test_response_candidate_report_detail_digest_and_envelope_bounds_fail_closed
             for index in range(65)
         },
     }
-    with pytest.raises(InterchangeValidationError, match="at most 64"):
-        validate_adapter_response(candidate, direction="import")
+    # No count of components (plan item 6): 65 small ones are one small
+    # definition. The byte bound below is what refuses an oversized one.
+    validate_adapter_response(candidate, direction="import")
 
     candidate["candidate_json"] = {
         "schema_version": 1,

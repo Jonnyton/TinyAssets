@@ -135,6 +135,9 @@ def _engine_run_admit(
         window_s=_RUN_GRAPH_RATE_WINDOW_S,
         fail_closed=fail_closed,
         kind=kind,
+        # Every run is also metered per day (plan item 6): the usage limit
+        # that replaced depth, count and cadence caps.
+        day_max=_adm.RUN_DAY_LIMIT,
     )
     # ``want_ticket``: the caller will start a RUN and needs the admission's
     # identity to bind it (Admission.ticket = ledger row id; ADMITTED_UNRECORDED
@@ -143,9 +146,21 @@ def _engine_run_admit(
     return admission if want_ticket else (admission.ticket is not None)
 
 
-def _engine_refusal(prefix: str, refused_by) -> str:
-    """The refusal every engine surface returns, naming the cap that refused."""
+def _engine_refusal(prefix: str, refused_by, universe_id: str = "") -> str:
+    """The refusal every engine surface returns, naming the cap that refused.
+
+    With ``universe_id``, a cap refusal also carries the owner-visible notice
+    (``engine_admissions.usage_notice``): which cap, and when capacity returns.
+    """
     import json as _json
+
+    if universe_id and refused_by in ("write", "total", "day"):
+        notice = engine_admissions.usage_notice(universe_id)
+        if notice is not None:
+            return _json.dumps({
+                "error": f"{prefix} refused: {notice['message']}",
+                "usage_notice": notice,
+            })
 
     if refused_by == "ledger":
         # Not a quota: the admission ledger is unusable or tampered and this
@@ -154,6 +169,14 @@ def _engine_refusal(prefix: str, refused_by) -> str:
             "error": (
                 f"{prefix} refused: the engine admission ledger is unavailable "
                 "or not trusted, so this write is not admitted; try again shortly."
+            ),
+        })
+    if refused_by == "day":
+        return _json.dumps({
+            "error": (
+                f"{prefix} refused: this universe has started "
+                f"{engine_admissions.RUN_DAY_LIMIT} runs in the last 24 hours, its daily "
+                "usage limit. Runs resume as the oldest ones age out."
             ),
         })
     if refused_by == "total":
@@ -272,6 +295,9 @@ _PINNED_READ_TARGETS = frozenset({
     "status", "graph", "branches", "branch", "runs", "run", "run_output",
     "compute", "connections", "automations", "automation", "conversation",
     "model_options", "agent_bindings", "agent_binding", "run_file", "run_file_limits",
+    # The founder's own UI library and choice (their row only, keyed by who
+    # they are): what the interfaces chapter reads before it edits a library.
+    "app_ui",
     # What you have asked your user for and what came back. Read-only and
     # carries no credential material — the answer to a credential ask goes to
     # the vault, never into this read.
@@ -721,16 +747,10 @@ def run_graph(
     for, rather than describing it: read your graph with ``read_graph
     target="graph"`` to find the branch, then run it here.
 
-    Confinement (slice 2, 2026-08-19; comment corrected 2026-08-23): the run
-    executes as the FOUNDER and is authorized by ``run_branch``'s branch
-    resolver, which admits a founder-owned OR a PUBLIC branch and refuses a
-    foreign PRIVATE one (it is NOT author-only). Safe execution of a public
-    foreign branch rests on the sanitized invoke_branch path (#2498: delegated
-    child-authority, fail-closed actor, mapping/await confidentiality), not on an
-    author gate. The run is pinned to YOUR universe (its effects and records land
-    under your universe, not another). Spend is bounded by the served-provider
-    budget reservation and the per-run recursion limit; an effect-only branch
-    spends no provider budget at all.
+    The run executes as the FOUNDER, pinned to YOUR universe (its effects and
+    records land there): your own branch or a PUBLIC one, never another user's
+    private branch. Spend is bounded by the provider budget reservation; an
+    effect-only branch spends none.
 
     Args:
         branch_def_id: The branch definition id to run (from ``read_graph
@@ -804,7 +824,7 @@ def run_graph(
     # OS sandbox already bounds WHAT a code node can touch; this bounds HOW OFTEN.
     ticket, refused_by = _admission_parts(_engine_run_admit(want_ticket=True))
     if ticket is None:
-        return _engine_refusal("run_graph", refused_by)
+        return _engine_refusal("run_graph", refused_by, universe_id=_GRAPH_ID)
 
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import run_graph as _impl
@@ -1529,6 +1549,13 @@ _WRITE_GRAPH_CODE_NODES_CHAPTER = """\
     untrusted and proves nothing about the bytes until the run reads them; no
     reference grants anything by itself.
 
+    AGENT NODES. A prompt node whose ``tools_allowed`` holds ``"agent"`` runs a
+    full turn as me for its step (my persona, brain and every served tool, pinned
+    to this universe) and writes its final answer to its output key; naming tools
+    beside it, e.g. ``["agent", "read_brain", "write_graph"]``, grants only those;
+    ``write_graph`` alone can build and schedule a node with any grant, so leave
+    it out when the narrowing must hold.
+
 """
 
 _WRITE_GRAPH_WORKSPACES_CHAPTER = """\
@@ -1607,6 +1634,77 @@ _WRITE_GRAPH_WORKSPACES_CHAPTER = """\
     to do.
 
 """
+
+_WRITE_GRAPH_INTERFACES_CHAPTER = """\
+    **Building the app experience the user looks at.** When someone asks me for an
+    interface -- a dashboard, a game, a floor plan of rooms they can click, any
+    screen at all -- I build it here. There is no catalog of layouts to pick from
+    and no platform feature to request: I write the HTML, CSS and JavaScript, and
+    the app renders it.
+
+    **Where it lives.** One private row per person and universe, holding their
+    UI library and which one they are using. Nothing is published by it, and
+    there is no setup step: the first save creates it. Read it first:
+
+        read_graph target="app_ui"   -> {"app_ui": {"ui_library": [...],
+                                          "ui_selection": ..., "revision": N}}
+
+    then send back the whole edited list with the revision I read (0 when there
+    is no row yet):
+
+        write_graph target="app_ui" operation="save" expected_revision=N
+          payload_json={"ui_library": [ <one or more UI components> ]}
+
+    A field I leave out keeps its stored value, so saving a library never
+    clears the choice. If someone else saved in between, the save is refused as
+    a conflict and nothing is overwritten; I read again and redo the edit.
+
+    **The UI component.** Exactly these seven fields, no others, or the app refuses
+    it and says which field it did not expect:
+
+        {"kind": "tinyassets.app-ui.v1", "version": 1,
+         "ui_id": "office-tower",              # lowercase letters, digits, dashes
+         "name": "Office tower",
+         "markup": "<div id=lobby>...</div>",  # body markup only, no <html>/<head>
+         "style": ".floor{display:grid}",
+         "script": "async function enter(room){...}"}
+
+    ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
+    does NOT run -- the only code that runs is ``script``. Bounds: markup 32768,
+    style 16384, script 32768 characters, the whole component under 49152 UTF-8
+    bytes. There is no limit on how many UIs a library holds -- only on its total
+    size, 4194304 bytes. Nothing I write is rewritten, reformatted or sanitized on
+    the way in or out.
+
+    **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
+    token, no reach into the surrounding page, and NO network of its own -- fetch,
+    WebSocket, form posts, remote images and WebRTC are all unavailable. Its only
+    capability is four calls on a ``tinyassets`` object, acting as whoever is
+    LOOKING at it, inside their own universe:
+
+        await tinyassets.whoami()                  -> {universe_id, universe_name}
+        await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
+        await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
+        await tinyassets.readConversation(limit)   -> {turns:[{speaker,text,at}]}
+
+    Anything else it calls is refused by name. ``sendMessage`` reaches the
+    universe's currently selected conversation; naming a different agent is refused
+    rather than quietly redirected, so a room-per-agent screen should call
+    ``listAgents()`` and act on ``selected`` instead of assuming.
+
+    **Switching to it.** The person uses "Switch UI" in the app, and their choice is
+    remembered. I can preselect one by saving
+    ``"ui_selection": {"version": 1, "state": "active", "ui_id": "<mine>"}`` to the
+    same row; ``{"version": 1, "state": "default"}`` means ordinary chat.
+
+    **Sharing one.** ``write_graph target="agent" operation="publish"`` with the UI
+    component under ``components`` publishes it for anyone to copy, and
+    ``operation="remix"`` copies someone else's. A copy always runs as the person
+    who installed it, in THEIR universe -- it can never reach back to whoever wrote
+    it. Publishing is a separate, deliberate act: a UI I only install stays private.
+
+"""
+
 
 _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     **Delivering between universes — how another user's universe sends something
@@ -1712,6 +1810,7 @@ _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
     "code_nodes": _WRITE_GRAPH_CODE_NODES_CHAPTER,
     "workspaces": _WRITE_GRAPH_WORKSPACES_CHAPTER,
     "delivering": _WRITE_GRAPH_DELIVERING_CHAPTER,
+    "interfaces": _WRITE_GRAPH_INTERFACES_CHAPTER,
 }
 
 #: Every served handle that keeps chapters outside its description.
@@ -2256,8 +2355,12 @@ def write_graph(
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds or cron_expr. It schedules your own workflow
-    using existing creation checks and the universe's current serving provider.
+    exactly one of interval_seconds or cron_expr. Runs never overlap per branch:
+    a short interval_seconds reruns as each run ends; runs count to usage
+    limits. overlap ``skip``/``cancel_previous`` drops the due run or stops
+    the running one. Or event_type ``run_completed`` (event_filter
+    ``{"branch_def_id"}``) or ``pending_request_answered`` wakes it with
+    ``inputs.event``.
     To control an existing trigger, first read ``read_graph target="automation"``
     (or ``target="automations"``), then pass its automation_id and current
     expected_revision. Pause stops future triggers; resume reactivates the existing
@@ -2267,7 +2370,10 @@ def write_graph(
     a generic pending-request answer does not grant tools or execute them.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
-      spec in ``payload_json`` (stored PRIVATE to your universe).
+      spec in ``payload_json`` (stored PRIVATE to your universe). A prompt node
+      with ``"agent"`` in ``tools_allowed`` runs a whole turn as you for its step;
+      tool names beside it narrow it to exactly those (granting both write_graph
+      and run_graph lets it build and run a wider node).
     - ``operation="patch"`` — edit one of YOUR OWN branches in place: pass its
       ``branch_id`` and a JSON array of edit ops in ``payload_json`` (add/remove
       edges + nodes, retune a node's prompt/source or its ``llm_policy`` model pin,
@@ -2296,7 +2402,7 @@ def write_graph(
     chapter has the two-node shape that does it correctly.
 
     THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is four chapters I read when I need one,
+    every round of every turn -- it is five chapters I read when I need one,
     exactly as I read a skill's SKILL.md when a request matches it:
 
     * ``connections`` -- raising a credential ask (``target="pending_request"``),
@@ -2305,15 +2411,15 @@ def write_graph(
       extending or taking back a key, and writing a file through an API that
       takes base64.
     * ``code_nodes`` -- a node that runs my own Python instead of a prompt: the
-      ``run(state, effects)`` contract, what ``effects`` exposes, and reading the
-      exact bytes of a file the user attached.
+      ``run(state, effects)`` contract, what ``effects`` exposes, reading the
+      exact bytes of a file the user attached, and agent nodes.
     * ``workspaces`` -- a directory my code nodes share across a run, the
       ``"sink": "workspace"`` packet every one of them carries, the two ways to
       get a workspace, and a repository checkout.
-    * ``delivering`` -- letting OTHER users' universes send straight into one of my
-      steps, and sending into theirs: opening a receiver to named or any
-      authenticated users, making it findable, finding other people's, connecting an
-      output, retry-safe sending, and reading who sent what (no webhook needed).
+    * ``delivering`` -- other users' universes sending into one of my steps, and
+      mine sending into theirs: receivers, connecting an output, who sent what.
+    * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
+      office plan, any interface they ask for: I write its HTML/CSS/JS myself.
 
     I read one with ``read_graph target="handbook"
     query="write_graph.<chapter>"``; ``read_graph target="handbook"`` with no
@@ -2511,12 +2617,33 @@ def write_graph(
             ))
         finally:
             _current_identity.reset(token)
+    if t == "app_ui":
+        # The founder's own UI library + choice, compare-and-set. The row is keyed
+        # by the bound founder identity, so there is no universe or person to name.
+        if (operation or "save").strip().lower() != "save":
+            return json.dumps({"error": "app_ui supports operation='save' only"})
+        ticket, refused = _admission_parts(
+            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
+        )
+        if ticket is None:
+            return _engine_refusal("app_ui", refused)
+        from tinyassets.api.app_ui import write_app_ui
+        from tinyassets.auth.middleware import _current_identity
+
+        token = _bind_founder_identity(("write",))
+        try:
+            return json.dumps(write_app_ui(
+                universe_id=_GRAPH_ID, payload=payload_json,
+                expected_revision=expected_revision,
+            ))
+        finally:
+            _current_identity.reset(token)
     if t != "branch":
         return json.dumps({
             "error": (
                 "write_graph on the served surface supports scoped setup and workflows: "
                 "target must be 'branch', 'automation', 'webhook', 'pending_request', "
-                "'model_preferences' or discovery-only 'connection' "
+                "'model_preferences', 'app_ui' or discovery-only 'connection' "
                 f"(got '{target or '(empty)'}'). "
                 "Credential deposit, broad connection changes, agent-binding "
                 "mutation and goals are not available here."

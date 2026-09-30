@@ -46,6 +46,16 @@ the loop and the facts a model would otherwise get wrong.
   shape, approach and single-user safety holes; ship the MVP live; test as a real
   user; *then* harden what live use shows matters. Never gate a first draft behind
   a hardening gauntlet — only live users reveal whether the shape is right.
+- **Private by default** (2026-09-26). *"nodes in users universes should be
+  private unless they make them other user accessible or visible or interactable in
+  some way"*, and *"universes and the nodes in them need to be default private and
+  we need to make sure that is set correctly for new users also"*. The platform
+  never declares an open level on an owner's behalf: every creation path writes
+  `private` — first-contact home materialization included, which is the new-user
+  path — the declaring migration writes `private`, and a Branch is born private
+  too. Exposure is a separate, explicit owner action, and a level the platform does
+  not enforce on every reader is not offered at all. As-built:
+  `openspec/specs/universe-visibility/spec.md`.
 - **The floor, and only the floor, blocks a deploy:** cross-user read or effect;
   auth or credential exposure; unrecoverable loss of user data; wrong money; an
   irreversible external act without consent; public connector down. Everything
@@ -95,10 +105,6 @@ These five rules govern what features, primitives, and architecture get built �
 3. **The community commons**: shared libraries of everything users publish, and nodes opened to cross-user interaction.
 
 Isolation makes this safe. The floor is cross-user only, and every provider process is OS-jailed to its owner's universe, so powerful primitives (shell and file work included) are safe inside a universe. The platform never trades a universe's power for a shared-host safety it can get from the jail.
-
-**Private by default.** In the founder's words, 2026-09-26: *"nodes in users universes should be private unless they make them other user accessible or visible or interactable in some way"*, and *"universes and the nodes in them need to be default private and we need to make sure that is set correctly for new users also"*.
-
-So: nothing in a universe is visible, accessible or interactable to other users unless its owner exposes it. The platform never declares an open level on an owner's behalf — **every** creation path writes `private` (including first-contact home materialization, which is the new-user path), the declaring migration writes `private`, and a Branch is born private too. Exposure is a separate, explicit owner action. A level the platform does not enforce on every reader is not offered at all. As-built: `openspec/specs/universe-visibility/spec.md`.
 
 Depth: lead memory `project_minimal_primitives_principle.md`.
 
@@ -964,6 +970,7 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 - **Multi-host is the destination.** Local-host is important, but end-state is a network of hosts contributing model capacity to shared projects.
 - **Epoch-2 transactional claiming is the approved single-authority target (host-approved 2026-07-29; cutover pending).** The target transactional control plane owns activation, claim, lease, fence, and recovery truth across cloud and host executor classes. Epoch 1 remains the live file-locked bridge until a fail-closed cutover closes legacy admission and drains or fences admitted work; afterward its machinery is compatibility-reconciliation-only and never dual-active for the same automation. This resolves the design choice identified in `docs/audits/2026-07-29-cloud-drain-current-main-prerequisites.md`; it does not claim the runtime migration is complete.
 - **Capabilities are primitives the user's agent composes, not platform operators (founder-approved 2026-08-30).** The user's agent builds whatever workflow it wants from a small set of powerful primitives — ground-up design, build, test, redesign — remixes what others built in the commons, and can build a graph automation it was handed a link to. When a live failure suggests "add an operator / a special case", the question is which *primitive* is missing that would let the agent solve it itself; that primitive ships, the operator does not. Measured cause: 2026-08-29/30, four deploys of `$ta.*` body-transform operators to change one line of a fetched file, because nothing deterministic could run between a fetch and a write. The shape that follows: **effects fire at node time in graph order** (a node's declared channel calls run the moment it returns, a refused or failed write fails the node, later nodes can read earlier responses), and a **sandboxed code node** (deterministic Python with the node's data and every ancestor's response, no credentials, no network — authorship, not host approval, decides whose code runs; the OS sandbox bounds what it touches). The `$ta.*` vocabulary is frozen. **No structural cap on graph size** — nodes, effect nodes, edges — anywhere, served or connector; a big graph is bounded by usage (admissions, budget, consent, the sandbox's limits), never by its shape (founder, 2026-08-30; change `no-graph-size-caps`). OpenSpec change `sandboxed-code-node` (archived 2026-08-30, live proof #2728); next primitive: the `workspace` (change `workspace-node`).
+- **An agent is a node (founder-approved 2026-09-27).** An agent's access is whatever context and tools its owner gives it, and the owner's own agents are "the same as itself" by default. A prompt node whose `tools_allowed` holds `agent` runs the same turn `converse` runs: the persona and brain, the shared agent loop, the engine tools pinned to the run's own universe and owner, and the owner's model preferences, with the node's `llm_policy` as a per-node override. It runs as one workflow step, foreground or background, until the turn finishes (the converse turn's own runaway backstop, not a node timeout), and writes its answer to graph state. A branch may hold any number of agent nodes beside ordinary steps. The run session resolves which node is calling from its admitted snapshot, and refuses a branch another user authored. The rest of `tools_allowed` is the owner's grant: the marker alone means everything the owner's chat has, and listed tool names narrow the node to exactly those on every provider surface. Each round is metered against the run's existing work receipt; no cap is added. A custom agent is a stored configuration of an agent node (instructions, grant, model, inputs and outputs), shared and remixed as a branch. That makes the `agent_runtime_*` second compiler, provider loop and grant model redundant; they are removed in a later lane. Change `agent-node-and-tool-grants`; code nodes reaching granted served tools through `invoke_mcp_action` is its second slice.
 - **The system must evolve itself.** Stagnation is the worst failure mode.
 - **Context is tools, not pre-assembly.** The writer should query through tools. Pre-assembly is transitional.
 - **Bad decisions are data.** When the daemon decides poorly, improve goals/tools/state/evals. Don't reflexively add rules.

@@ -172,7 +172,7 @@ export default function FinePrintPage() {
           <p className="note">
             Canonical surfaces: the site is <span className="ev">tinyassets.io</span>, the endpoint is{" "}
             <span className="ev">tinyassets.io/mcp</span>, the code is{" "}
-            <span className="ev">github.com/Jonnyton/TinyAssets</span>. Anything else is not us.
+            <span className="ev">github.com/TinyAssets/TinyAssets</span>. Anything else is not us.
             Terms, privacy and disclosures: <Link href="/legal/">legal</Link>.
           </p>
         </div>

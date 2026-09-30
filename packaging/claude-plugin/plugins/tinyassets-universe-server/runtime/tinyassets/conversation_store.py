@@ -260,6 +260,7 @@ def record_turn(
     *,
     ts: float | None = None,
     ext_id: str = "",
+    failure: object = None,
 ) -> int:
     """Append one turn; return its per-session ``turn_no`` (0 if not recorded).
 
@@ -268,11 +269,20 @@ def record_turn(
     malformed ``ts`` degrades to "now" rather than raising (a bad ts must never
     cost the turn). ``ext_id`` is a stable external identity (the Slack message
     ts) used for dedup; "" when unknown.
+
+    ``failure`` attaches the same platform-owned metadata ``record_failure``
+    stores, for the one case that has no founder half to pair with: a turn whose
+    server died, noticed at the next startup, where nothing ever persisted what
+    the founder typed. It is retained only for a ``platform`` row, which is what
+    ``read_turn_failure`` will read back, and degrades to text-only on a store
+    with no ``failure_json`` column -- the same degradation ``record_failure``
+    already documents.
     """
     if not isinstance(text, str) or not text.strip():
         return 0
     if not session_id:
         return 0
+    normalized_failure = normalize_turn_failure(failure) if speaker == "platform" else None
     # Setup can raise too (a custom ext_id with a raising __str__, a bad-type
     # universe_dir in _db_path), and this runs OUTSIDE the retry try below, so
     # guard it — record_turn's contract is NEVER to raise into the turn
@@ -313,11 +323,19 @@ def record_turn(
                         (session_id,),
                     ).fetchone()
                     turn_no = int(row[0])
+                    # Column names are fixed internal constants, never caller data.
+                    columns = "session_id, turn_no, speaker, content, ts, ext_id"
+                    placeholders = "?, ?, ?, ?, ?, ?"
+                    values = (session_id, turn_no, str(speaker or ""), text, when, ext_id)
+                    if normalized_failure is not None and (
+                        failure_column_sql(conn) == "failure_json"
+                    ):
+                        columns += ", failure_json"
+                        placeholders += ", ?"
+                        values += (json.dumps(normalized_failure),)
                     conn.execute(
-                        "INSERT INTO conversation_turns "
-                        "(session_id, turn_no, speaker, content, ts, ext_id) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (session_id, turn_no, str(speaker or ""), text, when, ext_id),
+                        f"INSERT INTO conversation_turns ({columns}) VALUES ({placeholders})",
+                        values,
                     )
                     conn.commit()
                     return turn_no

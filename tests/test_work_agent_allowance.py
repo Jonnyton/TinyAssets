@@ -48,9 +48,15 @@ def test_other_tools_and_mutable_inputs_cannot_request_agent_allowance():
 
 def test_invalid_agent_subject_does_not_gain_allowance():
     branch = snapshot(agent=True)
-    branch["node_defs"].append(snapshot()["node_defs"][0])
-    with pytest.raises(ValueError, match="requires_one_prompt_node"):
+    branch["node_defs"][0]["source_code"] = "def run(state): return {}"
+    with pytest.raises(ValueError, match="requires_prompt_node"):
         _work_invocation_allowance(branch, minimum=2, ceiling=20)
+
+
+def test_a_plain_prompt_node_beside_an_agent_node_shares_the_allowance():
+    branch = snapshot(agent=True)
+    branch["node_defs"].append(dict(snapshot()["node_defs"][0], node_id="plain"))
+    assert _work_invocation_allowance(branch, minimum=2, ceiling=20) == 20
 
 
 @pytest.mark.parametrize("agent", [False, True])

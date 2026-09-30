@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-REPO="${REPO:-Jonnyton/TinyAssets}"
+REPO="${REPO:-TinyAssets/TinyAssets}"
 BRANCH="${BRANCH:-main}"
 REQUIRED_STATUS_CONTEXTS="${REQUIRED_STATUS_CONTEXTS:-actionlint,Docker build smoke,Daemon request policy}"
 

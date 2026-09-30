@@ -50,7 +50,7 @@ Usage
     # Legacy GH-secret mode:
     python scripts/bootstrap_add_second_ssh_key.py \\
         --host ... --primary-key ... --gh-secret \\
-        --repo Jonnyton/TinyAssets
+        --repo TinyAssets/TinyAssets
 
 Environment (override CLI for CI use):
     DROPLET_HOST          Droplet IP/hostname.
@@ -77,7 +77,7 @@ import urllib.request
 from base64 import b64encode
 from pathlib import Path
 
-DEFAULT_REPO = "Jonnyton/TinyAssets"
+DEFAULT_REPO = "TinyAssets/TinyAssets"
 SECRET_NAME = "DO_SSH_KEY_BACKUP"
 AUTHORIZED_KEYS = "/root/.ssh/authorized_keys"
 DEFAULT_KEY_NAME = "tinyassets_deploy_backup_ed25519"

@@ -92,6 +92,28 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     # Scoped reset's content-free coordination state.
     "scoped_reset_leases": "preserve",
     "scoped_reset_operations": "preserve",
+    # One owner's own verified model ids. PRESERVED by a scoped reset and removed by
+    # ACCOUNT DELETION through its owner_user_id column (already a detected principal
+    # key, so it needs no entry in that map). Classified explicitly because the table
+    # is created lazily on a first verified turn, so the unclassified-table gate would
+    # otherwise fire in production rather than in CI.
+    "learned_model_evidence": "preserve",
+    # Retired fleet-era cloud-automation and background-branch stores (plan C1,
+    # 2026-09-28). Nothing creates or reads these rows any more, but production
+    # still holds them until a host-action drops the tables, and an unclassified
+    # table blocks every scoped reset. Preserved: they are inert history.
+    "cloud_automation_controls": "preserve",
+    "cloud_automation_slice_triggers": "preserve",
+    "cloud_automation_terminal_receipts": "preserve",
+    "cloud_automation_continuations": "preserve",
+    "cloud_execution_continuations": "preserve",
+    "background_branch_bindings": "preserve",
+    "background_branch_attempts": "preserve",
+    "background_branch_authority_owners": "preserve",
+    # Created alongside the background-branch store. Still read by the agent
+    # runtime until that retires (plan B2/B3); preserved like the fleet history,
+    # since a scoped reset never needed to rewrite it.
+    "automation_activations": "preserve",
 })
 
 FAULT_POINTS = (

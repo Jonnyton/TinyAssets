@@ -39,7 +39,7 @@ def test_byo_api_key_preserves_existing_github_credential(tmp_path, monkeypatch)
     write_credential_vault(udir, [{
         "credential_type": "vcs",
         "service": "github",
-        "destination": "Jonnyton/TinyAssets",
+        "destination": "TinyAssets/TinyAssets",
         "purpose": "write",
         "token": "ghs-existing",
     }])
@@ -50,7 +50,7 @@ def test_byo_api_key_preserves_existing_github_credential(tmp_path, monkeypatch)
     assert out["status"] == "engine_set"
     (kept,) = [r for r in load_credential_vault(udir)
                if r.get("credential_type") == "vcs"]
-    assert kept["destination"] == "Jonnyton/TinyAssets"
+    assert kept["destination"] == "TinyAssets/TinyAssets"
     assert kept["token"] == "ghs-existing"
 
 

@@ -82,7 +82,7 @@ release-gate check (`tests/test_android_release_pipeline.py`).
 `branch-janitor`.
 **Investigate → merge or delete:** `community-loop-watch` failed 21 of 23 runs
 tonight, and its signals overlap `uptime-canary` + `release-reconcile`.
-**Delete (one-shot, done):** `site-dns-cutover`.
+**Deleted (one-shot, done):** `site-dns-cutover` and its only caller's script `scripts/site_apex_cutover.py`; last run 2026-04-29.
 **Keep, manual (zero cost at rest):** `android-release`, `ios-release`,
 `app-store-review-account`, `apply-daemon-env`, `restart-daemon`,
 `diagnose-prod-startup`, `droplet-resize`, `dr-drill`, `emergency-dns`,
@@ -119,7 +119,9 @@ impact-selected run.
   impact-selected PR tests with an always-run safety set and a full-suite
   fallback for conftest, config or unknown files.
 - **M6** Fold `slow-tests` into the aggregate (a protection change),
-  delete `site-dns-cutover`, and resolve `community-loop-watch`.
+  delete `site-dns-cutover` (done), and resolve `community-loop-watch` (done:
+  it was correctly reporting stale P0 #2824, which could never auto-close;
+  #2824 closed and the cause filed as a concern).
 
 ## Evidence
 

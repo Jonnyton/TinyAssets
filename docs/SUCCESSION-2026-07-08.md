@@ -2,7 +2,7 @@
 
 **From:** Claude Fable 5 design session (founder working remotely; Fable access ends after this period)
 **To:** (1) the founder, for two admin actions; (2) Claude Opus / dev daemons, for all transport work
-**Verified:** this bundle was overlaid onto a fresh clone of `Jonnyton/tinyassets` and the full suite passed standalone (173 tests, `pytest tests/test_paid_market_core.py --noconftest`, no deps beyond stdlib + pytest).
+**Verified:** this bundle was overlaid onto a fresh clone of `TinyAssets/TinyAssets` and the full suite passed standalone (173 tests, `pytest tests/test_paid_market_core.py --noconftest`, no deps beyond stdlib + pytest).
 
 ---
 

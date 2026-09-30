@@ -53,7 +53,17 @@ REAL_COMPOSE = REPO / "deploy" / "compose.yml"
 
 RUNTIME = "/opt/tinyassets"
 ENV_FILE = "/etc/tinyassets/env"
-IMAGE = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64
+IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64
+
+
+def _script_int(name: str) -> int:
+    """One `NAME=<int>` assignment read out of the deploy script."""
+    match = re.search(rf"^{name}=(\d+)$", SCRIPT.read_text(encoding="utf-8"), re.M)
+    assert match, f"{name} is no longer a plain integer assignment in {SCRIPT.name}"
+    return int(match.group(1))
+
+
+MIN_STOP_GRACE_S = _script_int("MIN_DAEMON_STOP_GRACE_S")
 
 
 def _validator_source() -> str:
@@ -211,6 +221,11 @@ def _validate(
             "RUNTIME_DIR": RUNTIME,
             "EXPECT_IMAGE": IMAGE,
             "ENV_FILE": ENV_FILE,
+            # Read from the script, never a literal here: the validator reads it
+            # with `os.environ[...]` on purpose, so a shell that forgets to export
+            # it fails loudly, and a test that hard-coded the number would keep
+            # passing after the deploy script changed it.
+            "MIN_DAEMON_STOP_GRACE_S": str(MIN_STOP_GRACE_S),
             "SYSTEMROOT": "C:/Windows",  # cpython needs this on Windows
             "PATH": "",
         },
@@ -378,7 +393,7 @@ def test_a_literal_daemon_image_is_refused_from_the_source(tmp_path: Path):
     """The source scan still bites against the real rendering."""
     source = _source().replace(
         "image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable "
-        "ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}",
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}",
         f"image: {IMAGE}",
         1,
     )
@@ -449,3 +464,145 @@ def test_the_logs_sidecar_may_not_forward_to_its_own_listener(tmp_path: Path):
     result = _validate(tmp_path, config, _source())
     assert result.returncode == 1
     assert "expected 'journald'" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# the drain bound (2026-09-26)
+#
+# `stop_grace_period` decides whether a deploy lets the founder's turn finish.
+# With the key ABSENT the bound is docker's 10-second default, which is what cut
+# two live turns off mid-flight -- so losing it must refuse the bundle rather
+# than quietly returning to 10 seconds. Read from the SOURCE, not either render:
+# compose normalizes durations and this check must not depend on which form this
+# version emits.
+# ---------------------------------------------------------------------------
+
+
+def _without_grace(source: str) -> str:
+    stripped = re.sub(r"^\s*stop_grace_period:.*\n", "", source, count=1, flags=re.M)
+    assert stripped != source, "the shipped compose.yml no longer declares it here"
+    return stripped
+
+
+def test_losing_the_stop_grace_period_is_refused(tmp_path: Path):
+    result = _validate(tmp_path, _render(), _without_grace(_source()))
+    assert result.returncode == 1
+    assert "stop_grace_period" in result.stderr
+    assert "10s default" in result.stderr, (
+        "the refusal must say what absence MEANS, not just that a key is missing")
+
+
+@pytest.mark.parametrize("value", ["10s", "179s", "2m", "179000ms", "2m59s"])
+def test_a_grace_below_the_floor_is_refused(tmp_path: Path, value: str):
+    """Every form has to clear the floor, not just the one the file happens to use."""
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "must be at least" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "value", ["180s", "3m", "3m0s", "180.0s", "180000ms", "1h30m", "600s", "10m"],
+)
+def test_every_equivalent_duration_compose_accepts_is_accepted(tmp_path: Path, value: str):
+    """Go duration syntax, because that is what compose documents.
+
+    The first version took `(\\d+)(s|m)?` and refused `3m0s`, `180.0s` and
+    `180000ms` -- all the same bound as the shipped `180s`, all valid compose
+    (Codex on #4039, P2). A gate that blocks deploys, INCLUDING a rollback, must
+    not refuse the next maintainer for writing an equivalent value.
+
+    The oracle for WHICH forms compose accepts is
+    `docs/audits/2026-09-26-pr4039-compose-repro.py` -- it runs `docker compose
+    config` over each one. Re-run it before widening or narrowing this list; the
+    first version of this test asserted from a guess about compose and was wrong
+    about a bare integer (see the test below).
+    """
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("value", ["later", "-180s", "180 s", "3minutes"])
+def test_a_duration_this_check_cannot_read_is_refused_not_assumed(
+    tmp_path: Path, value: str,
+):
+    """Refuse rather than guess: a bound this check cannot READ is one it cannot
+    enforce, and silently accepting it is how the key came to mean 10 seconds.
+    """
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "not a duration this check can read" in result.stderr
+
+
+def test_a_bare_integer_is_refused_here_and_by_compose_itself(tmp_path: Path):
+    """`stop_grace_period: 180` is NOT valid compose -- it wants a duration.
+
+    The first version of this suite listed a bare integer as an accepted form,
+    which was simply wrong about compose (Codex checked v5.1.4). The real deploy
+    never reaches this arm: `docker compose config` fails first and
+    `validate_bundle` returns before the python runs. Asserted anyway, because a
+    check that would have ACCEPTED an invalid file is a check that is not reading
+    what it thinks it is.
+    """
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", r"\g<1>stop_grace_period: 180",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "not a duration this check can read" in result.stderr
+
+
+def test_a_grace_buried_under_another_mapping_does_not_count(tmp_path: Path):
+    """Codex reproduced exit 0 for this, which is the whole finding.
+
+    `daemon_block_lines` returns every DESCENDANT of the daemon service, so a
+    text-only match was satisfied by a key nested under `environment:` while
+    docker had no service stop grace at all. A service property has to be a
+    direct child to mean anything.
+    """
+    source = _without_grace(_source()).replace(
+        "    environment:",
+        "    environment:\n      stop_grace_period: 180s",
+        1,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1, (
+        "a stop_grace_period under `environment:` is an env var, not a stop grace")
+    assert "direct `stop_grace_period:`" in result.stderr
+
+
+def test_a_second_grace_declaration_is_refused(tmp_path: Path):
+    """Two keys in one mapping: YAML keeps the last, so a check reading the first
+    would enforce a bound the daemon does not have."""
+    source = re.sub(
+        r"^(\s*)(stop_grace_period:.*)$", r"\g<1>\g<2>\n\g<1>stop_grace_period: 10s",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "exactly one" in result.stderr
+
+
+def test_another_services_grace_does_not_satisfy_the_daemons(tmp_path: Path):
+    """The block walker is anchored on services.daemon; a sidecar's key must not
+    stand in for it."""
+    source = _without_grace(_source()).replace(
+        "    container_name: tinyassets-tunnel",
+        "    container_name: tinyassets-tunnel\n    stop_grace_period: 300s",
+        1,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "stop_grace_period" in result.stderr

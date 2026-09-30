@@ -30,12 +30,15 @@ from tinyassets.exceptions import (
     ProviderAuthorityHeldError,
     ProviderError,
     ProviderIdleTimeoutError,
+    ProviderModelRefusedError,
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
+    ProviderReplyTimeoutError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     SelectedModelCapacityError,
+    SelectedModelContextError,
 )
 from tinyassets.provider_admission import ProviderBusy as _ProviderBusy
 from tinyassets.provider_admission import provider_slot_async as _provider_slot
@@ -839,7 +842,10 @@ class ProviderRouter:
                         output_limit, cfg.selected_model.context_tokens - required_input,
                     )
                     if output_limit < 1:
-                        raise PermissionError("selected model cannot fit this inference context")
+                        raise SelectedModelContextError(
+                            "selected model cannot fit this inference context",
+                            required_tokens=required_input + 1,
+                        )
                 cfg = replace(cfg, max_tokens=output_limit)
             elif (
                 isinstance(cfg.max_tokens, bool)
@@ -868,7 +874,17 @@ class ProviderRouter:
                         output_limit, cfg.selected_model.context_tokens - required_input,
                     )
                     if output_limit < 1:
-                        raise PermissionError("selected model cannot fit this workflow context")
+                        # Our own measurement, before any launch: this call's
+                        # reservation charged nothing, so it must not hold the
+                        # run's aggregate budget the next model needs.
+                        settle_carrier(
+                            ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                            input_tokens=0, output_tokens=0, cost_microunits=0,
+                        )
+                        raise SelectedModelContextError(
+                            "selected model cannot fit this workflow context",
+                            required_tokens=required_input + 1,
+                        )
                 cfg = replace(cfg, max_tokens=output_limit)
             elif (
                 isinstance(cfg.max_tokens, bool)
@@ -898,7 +914,15 @@ class ProviderRouter:
                 cfg.max_tokens is None
                 or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
             ):
-                raise PermissionError("selected model cannot fit this inference context")
+                if invocation_carrier is not None:
+                    settle_carrier(
+                        ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                        input_tokens=0, output_tokens=0, cost_microunits=0,
+                    )
+                raise SelectedModelContextError(
+                    "selected model cannot fit this inference context",
+                    required_tokens=required_context + (cfg.max_tokens or 1),
+                )
 
         # Hard Rule 15: the owner's binding alone names the provider. There is
         # no host pin (``TINYASSETS_PIN_WRITER`` is retired: a host env var must
@@ -1354,6 +1378,18 @@ class ProviderRouter:
                     **_tool_wait_evidence(exc),
                 ))
                 continue
+            except ProviderModelRefusedError as exc:
+                # The source refused THIS model (403/404/410) before generating.
+                # That says nothing about the connection's health, and cooling it
+                # would skip the sibling models the turn coordinator may move to
+                # next -- the dead end of 2026-09-28. Nothing was generated, so no
+                # effect: the refusal is a whole-response HTTP status.
+                attempts.append(ProviderAttemptDiagnostic(
+                    provider=provider_name, status="failed", skip_class="provider_error",
+                    detail=redacted_failure_detail(str(exc)), failure_class=exc.failure_class,
+                    side_effect_state="none",
+                ))
+                continue
             except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
                 from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
 
@@ -1380,7 +1416,9 @@ class ProviderRouter:
                     **_tool_wait_evidence(exc),
                 ))
                 continue
-            except (ProviderIdleTimeoutError, InteractiveDeadlineError) as exc:
+            except (
+                ProviderIdleTimeoutError, InteractiveDeadlineError, ProviderReplyTimeoutError,
+            ) as exc:
                 # A transient attempt timeout is NOT proof the credential is
                 # down. Do NOT cool the sole served writer — the next turn stays
                 # eligible. The process was already killed by the provider.

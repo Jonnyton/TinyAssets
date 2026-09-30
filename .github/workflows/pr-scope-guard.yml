@@ -34,13 +34,35 @@ on:
   pull_request_target:
     # `labeled`/`unlabeled` matter: declaring an infra change must re-run the gate.
     types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
+  # The merge queue. `Diff scope declared` is a required check, and a queue waits
+  # for every required check on the merge-group commit, so this must report
+  # there. It reports a pass WITHOUT re-running the gate, deliberately:
+  #
+  #   1. GitHub admits a PR to the queue only after it "has passed all required
+  #      branch protection checks" (docs: Managing a merge queue). This gate,
+  #      at the PR's current head, is one of them.
+  #   2. Everything the gate reads -- the file list, the labels, the body and
+  #      the receipt comment -- belongs to the PR, and none of it changes when
+  #      the queue stacks the PR on a newer main. What does change is the code,
+  #      and `required-tests`, `slow-tests` and `invariants` re-test that on
+  #      the merge-group commit.
+  #   3. A merge_group run takes this workflow file from the merge-group
+  #      commit, which includes the PR's own edits, not from the trusted base.
+  #      Re-running the gate here would let a PR grade itself, so it would
+  #      add no trust. A PR that edits this file is caught at PR time instead,
+  #      because .github/workflows/ is a release-critical path.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
   pull-requests: read
 
 concurrency:
-  group: pr-scope-guard-${{ github.event.pull_request.number }}
+  # A merge_group event has no pull_request number. Without the head_ref
+  # fallback every queue entry would share one group and cancel the others,
+  # and a cancelled required check ejects the PR from the queue.
+  group: pr-scope-guard-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}
   cancel-in-progress: true
 
 jobs:
@@ -49,7 +71,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Steps are gated per event, not the job. The job name IS the required
+      # context, and a skipped job would report that context as passed.
+      - name: Merge queue -- already enforced on the pull request
+        if: github.event_name == 'merge_group'
+        env:
+          GROUP_REF: ${{ github.event.merge_group.head_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Merge group ${GROUP_REF}: every queued PR passed this gate at its head before GitHub admitted it."
+          echo "Diff scope declared: enforced at PR time; see the trigger comment in this file." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check out trusted policy
+        if: github.event_name == 'pull_request_target'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -61,6 +96,7 @@ jobs:
           filter: blob:none
 
       - name: Compute the PR's diff key
+        if: github.event_name == 'pull_request_target'
         id: diffkey
         env:
           PR: ${{ github.event.pull_request.number }}
@@ -84,6 +120,7 @@ jobs:
           echo "key=${KEY}" >> "$GITHUB_OUTPUT"
 
       - name: Require exact-head review for drain PRs
+        if: github.event_name == 'pull_request_target'
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
@@ -103,6 +140,7 @@ jobs:
       # The PR head is never executed with this workflow's token. The file list
       # below comes from the API.
       - name: Compare the PR diff against release-critical paths
+        if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -269,7 +307,14 @@ jobs:
           # part of what escaped and the regex still omitted it. router.py validates
           # carriers and classifies receipt settlement; storage/ persists and mints
           # receipts, claims and invocation reservations. Both now covered.
-          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|providers/router\.py$|storage/provider_work_authority\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$)'
+          # WIDENED 2026-09-28, because PR #4073 changed custody path validation
+          # in conversation_custody.py and nothing asked for a receipt. Any
+          # module whose NAME says authority or custody now matches, so the next
+          # one is covered when it is created, plus the named grant, principal,
+          # owner-binding, credential and consent modules. Measured against the
+          # 60 most recently merged PRs: 8 needed a receipt before, 9 after, and
+          # the one added is #4073 itself.
+          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|providers/router\.py$|storage/provider_work_authority\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$|([a-z_]+/)*[a-z_]*(authority|custody)[a-z_]*\.py$|providers/owner_binding\.py$|agent_runtime_(grants|principal)\.py$|principals\.py$|credential_refresh\.py$|connection_oauth/tokens\.py$|desktop/credentials\.py$|storage/effector_consents\.py$)'
           AUTHORITY_HITS="$(classify "$AUTHORITY_RE" "-i")" || exit 1
 
           # GROUNDED, not regex-only. A path match says WHERE an edit landed,

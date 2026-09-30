@@ -1,6 +1,6 @@
 # START HERE — Claude Code Kickoff (post-vacation, one session)
 
-**You are Claude Code, in a checkout of github.com/Jonnyton/tinyassets, with this bundle unzipped alongside.**
+**You are Claude Code, in a checkout of github.com/TinyAssets/TinyAssets, with this bundle unzipped alongside.**
 This bundle is the complete output of a 2026-07-08/09 design sprint with Claude Fable 5 (access since ended). Everything is decided; your job is landing and executing, not redesigning.
 
 ## Immediate sequence

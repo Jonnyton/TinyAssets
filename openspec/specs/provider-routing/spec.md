@@ -873,6 +873,42 @@ existing conversation read paths.
   the notice has already said
 - **AND** no vendor error envelope is parsed to obtain them
 
+#### Scenario: A source refusing the model is a refusal, and the turn moves on
+
+- **WHEN** an HTTP source answers a selected model's inference request with 403,
+  404 or 410
+- **THEN** the attempt is `failure_class=provider_refused` with `effects=none`,
+  its `detail` carries the source's own status and scrubbed body, the record is
+  `code=provider_refused`, `stage=model_request`, and the notice says the
+  provider refused to serve the model and to choose another model or check
+  its access settings with that provider, never that a reply was unreadable
+- **AND** the connection is not cooled, and when every attempt of the round was
+  such a refusal the turn moves to the next model in the owner's accepted order
+  with only the refused MODEL excluded; each accepted model is tried at most
+  once per turn, until the owner's accepted list is exhausted
+
+#### Scenario: A model that needs minutes to answer gets them, and a slow answer says so
+
+- **WHEN** an HTTP inference request is sent through the credential broker
+- **THEN** it asks for the turn's remaining absolute cap as its reply budget, and
+  the broker grants up to `INFERENCE_MAX_SECONDS` only for a POST on a connection
+  that itself carries a `model_use` or `model_discovery` capability; every other
+  request keeps the ordinary 30s bounds, and address pinning, the endpoint
+  allowlist, redirects, size caps and the slow-drip deadline are unchanged
+- **AND** a request that does not finish inside its budget crosses the broker as
+  a typed deadline, the attempt is `provider_reply_timeout` with no source
+  cooldown, and the notice says the model took longer to answer than the
+  universe waits and that asking it to continue, in smaller steps, or choosing
+  a faster model usually works
+
+#### Scenario: A turn too large for the selected model moves to one that fits
+
+- **WHEN** our own pre-send measurement finds the served turn does not fit the
+  selected model's published context window
+- **THEN** nothing is sent, and the turn re-asks the owner's accepted order with
+  the measured size as its minimum context, excluding the model that did not
+  fit; only when no accepted model fits is the record `context_window_exceeded`
+
 #### Scenario: A universe with no model connected is told to connect one
 
 - **WHEN** the router refuses the turn because no provider is connected
@@ -1039,3 +1075,18 @@ The runtime SHALL distinguish model-local capacity from proven shared account li
 #### Scenario: Ambiguous tool completion
 - **WHEN** an inference fails after a tool might have executed without a durable result
 - **THEN** fallback does not replay that action as a fresh turn
+
+### Requirement: A source's refusal of a model is remembered past the turn
+The system SHALL record a model that the owner's source refused during a served or workflow agent turn (the `provider_refused` class) as a time-limited mark scoped to that owner and connection, carrying the source's scrubbed reason, and a served turn's candidate order SHALL place an unexpired marked model after every unmarked one, except when the owner chose that model for this turn; a model that then answers SHALL lose its mark, and account deletion SHALL remove the owner's marks.
+
+#### Scenario: The next turn skips a recently refused model
+- **WHEN** a model was refused within the mark's lifetime and the owner's order has another accepted model
+- **THEN** the next served turn asks the other model first and does not ask the refused one unless the others fail
+
+#### Scenario: The owner chooses the refused model now
+- **WHEN** the owner selects the marked model for this turn
+- **THEN** it is asked first, and if it answers its mark is cleared
+
+#### Scenario: The mark expires
+- **WHEN** the mark's lifetime has passed
+- **THEN** the model is ordered as if it had never been refused

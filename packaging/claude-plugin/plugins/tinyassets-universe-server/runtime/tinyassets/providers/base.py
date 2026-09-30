@@ -91,6 +91,8 @@ FailureClass = Literal[
     "provider_idle_timeout",
     "interactive_deadline",
     "provider_protocol_error",
+    "provider_refused",
+    "provider_reply_timeout",
 ]
 
 # Idle-watchdog profile defaults (seconds) — a PROFILE, not one wall-clock.
@@ -271,6 +273,21 @@ class ModelConfig:
     """The universe graph_id the local engine MCP server PINS every handler call
     to. Empty disables the engine MCP wiring (fail-closed)."""
 
+    engine_tool_grant: tuple[str, ...] | None = None
+    """The served engine tools this turn may call. ``None`` = the whole served
+    set (``served_tools.SERVED_ENGINE_MCP_TOOLS``). Set from an agent node's own
+    ``tools_allowed`` grant, resolved from the admitted snapshot; every surface
+    (the HTTP loop and each native turn) reads it through ``served_tools.granted_tools``."""
+
+    agent_node_id: str = ""
+    """The graph compiler's name for the agent node making this call. It selects
+    which node, never whether: the run session resolves it against its own
+    admitted immutable snapshot and refuses an id that is not an agent node."""
+
+    agent_node_key: str = ""
+    """``shared_self.agent_node_key`` of the compiled node and its branch. The run
+    session refuses unless its admitted snapshot's node has the same key."""
+
     credential_snapshot_dir: Path | None = field(
         default=None,
         repr=False,
@@ -372,6 +389,13 @@ class ProviderResponse:
 
     Legacy ``model`` may contain a requested/default label. Such a label is not
     proof of the model that answered and must not be substituted here.
+    """
+
+    requested_model: str = ""
+    """The model id this call explicitly asked the source for; empty for its default.
+
+    A request, never answering evidence: a renderer may show it only labelled as
+    requested, beside an unknown ``reported_model`` -- never in its place.
     """
 
     provider_display: str = ""

@@ -21,7 +21,7 @@ The repository now has the immutable definition/interchange substrate, private b
 | Immutable runtime manifest/compiler/principal | `openspec/changes/archive/2026-08-26-activate-custom-agent-runtime-core/` | Dark runtime foundations landed; deployment/live proof remains open |
 | Cloud continuation/epoch-2 consumer | `docs/audits/2026-08-03-cloud-drain-epoch2-consumer.md` | Local shaped-load evidence landed; production activation/cutover remains open |
 | App ingress, custody, mapping, reply authority, outbound receipt | PRs #2246, #2260, #2268, #2274 and corresponding OpenSpec changes | Server-owned dark seams landed; real app effect/rendered conversation remains open |
-| Provider enrollment shape hardening | PR #2281, merged commit [`c5358941`](https://github.com/Jonnyton/TinyAssets/commit/c53589418427b34d9d4d83eefff42586f52cad40) | Landed on `main`; hosted gates green. The exact-head Claude security review recorded as **APPROVE** has **no durable artifact** — see note below |
+| Provider enrollment shape hardening | PR #2281, merged commit [`c5358941`](https://github.com/TinyAssets/TinyAssets/commit/c53589418427b34d9d4d83eefff42586f52cad40) | Landed on `main`; hosted gates green. The exact-head Claude security review recorded as **APPROVE** has **no durable artifact** — see note below |
 
 The #2281 repair specifically rejects malformed enrollment shapes instead of coercing them: strings cannot stand in for lists, `None` cannot stand in for required strings, booleans cannot stand in for integers, wildcard owners remain forbidden, ambiguous entries fail closed, and the packaged mirror is byte-identical.
 
@@ -51,7 +51,7 @@ The coordination contract (`activate-custom-agent-runtimes`, tasks 2.3 and 2.5) 
 
 The successor must reuse ordinary Branch/Run/evaluator/Gate owners, keep tests effect-free by default, freeze evaluation criteria, preserve prior versions, and prevent silent self-modification.
 
-**Admission is gated on six preconditions and none of them is met.** Task 2.3 reads: "After core plus `harden-branch-access-authority`, `harden-run-branch-access-authority`, `harden-branch-evaluation-access-authority`, `harden-branch-adjacent-access-authority`, and required Engine OS gates, admit `enable-custom-agent-workflow-iteration`". Verified 2026-08-04 against `origin/main` at [`c5358941`](https://github.com/Jonnyton/TinyAssets/commit/c53589418427b34d9d4d83eefff42586f52cad40):
+**Admission is gated on six preconditions and none of them is met.** Task 2.3 reads: "After core plus `harden-branch-access-authority`, `harden-run-branch-access-authority`, `harden-branch-evaluation-access-authority`, `harden-branch-adjacent-access-authority`, and required Engine OS gates, admit `enable-custom-agent-workflow-iteration`". Verified 2026-08-04 against `origin/main` at [`c5358941`](https://github.com/TinyAssets/TinyAssets/commit/c53589418427b34d9d4d83eefff42586f52cad40):
 
 | Precondition | State | Evidence |
 |---|---|---|

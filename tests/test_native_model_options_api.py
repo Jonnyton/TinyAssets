@@ -33,10 +33,25 @@ def test_native_public_picker_lists_default_and_discovered_model(picker, native)
     result = picker()
     assert result["kind"] == "advisory_model_options"
     assert result["choice_authority"] == "accepted_manifest"
+    # THIS source's own rows: the provider default plus what discovery enumerated.
+    # Filtered by basis rather than taking every row the picker offers, because a
+    # universe on this source kind also sees the reviewed public list
+    # (models/subscription.json), and those are candidates to grant with their own
+    # basis and their own reason. Their behaviour is asserted in
+    # tests/test_public_model_lists.py; this test is about discovery.
     choices = [row for row in result["options"]
-               if row["reference"]["provider_ref"] == "codex"]
+               if row["reference"]["provider_ref"] == "codex"
+               and row["availability_basis"] in ("executor_default", "executor_enumerated")]
     assert {row["reference"]["model_id"] for row in choices} == {"", "new-account-model"}
     assert all(row["in_candidate_catalog"] and not row["reasons"] for row in choices)
+    # The rows this filter EXCLUDED are checked too, or admitting one of them by
+    # mistake would pass this test (Codex on #4028). Every excluded row must have a
+    # permitted provenance, be unadmitted, carry a reason, and belong to this source.
+    excluded = [row for row in result["options"]
+                if row["reference"]["provider_ref"] == "codex" and row not in choices]
+    assert all(row["availability_basis"] in ("publicly_listed", "owner_verified_here")
+               and not row["in_candidate_catalog"] and row["reasons"]
+               for row in excluded), excluded
     source = next(row for row in result["sources"] if row["provider_ref"] == "codex")
     assert source["warnings"] == []
     assert source["observed_at"] <= source["completed_at"] < source["expires_at"]
@@ -53,11 +68,17 @@ def test_public_picker_refresh_discovers_new_account_model(picker, native, monke
         return integration.catalogue(ids)
 
     integration.install_discovery(native, monkeypatch, discover)
+    def enumerated(result):
+        return [row["reference"]["model_id"] for row in result["options"]
+                if row["availability_basis"] == "executor_enumerated"]
+
     before = picker()
     ids.append("future-model-not-in-any-release-table")
     after = picker()
+    # Asserted on the ENUMERATED rows, not on a position in the whole list: the public
+    # list contributes rows too, so "the last option" is no longer the new discovery.
     assert len(after["options"]) == len(before["options"]) + 1
-    assert after["options"][-1]["reference"]["model_id"] == ids[-1]
+    assert enumerated(after) == enumerated(before) + [ids[-1]]
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
@@ -70,8 +91,18 @@ def test_public_picker_unknown_metadata_keeps_default(picker, native, monkeypatc
 
     integration.install_discovery(native, monkeypatch, discover)
     result = picker()
-    assert [row["reference"]["model_id"] for row in result["options"]] == [""]
-    assert result["options"][0]["in_candidate_catalog"]
+    # Discovery failed, so this SOURCE contributes only its provider default. The
+    # reviewed public list still contributes its own rows -- separately sourced and
+    # separately marked -- so the assertion names the basis rather than the whole list.
+    own = [row for row in result["options"]
+           if row["availability_basis"] in ("executor_default", "executor_enumerated")]
+    assert [row["reference"]["model_id"] for row in own] == [""]
+    assert own[0]["in_candidate_catalog"]
+    # And nothing listed is admitted: a public list says an id exists, not that this
+    # universe may use it.
+    listed = [row for row in result["options"]
+              if row["availability_basis"] == "publicly_listed"]
+    assert all(not row["in_candidate_catalog"] and row["reasons"] for row in listed)
     assert native.provider.calls == 0
 
 

@@ -224,6 +224,14 @@ class _ForegroundRunProviderSession:
         # Retained so a SIBLING run inherits the SAME captured policy version
         # rather than re-reading the store mid-run. See `constructor_inputs`.
         self._model_preference_data = model_preference_data
+        # Once per session. A sibling (async sub-branch) session refreshes for
+        # itself: it may run before its parent has made any call, and a flag
+        # copied from the parent launched the child on a stale sign-in (Codex
+        # round 2 on #4082). A later session's refresh is a no-op while the
+        # document is fresh; a renewal that does land between sessions is the
+        # cross-run case in docs/concerns/2026-09-28-a-renewal-voids-other-
+        # running-receipts.md.
+        self._sign_ins_refreshed = False
 
     def _capture_choices(self) -> None:
         """Build this run's advisory order at ADMISSION, not construction.
@@ -664,7 +672,40 @@ class _ForegroundRunProviderSession:
             return
         with self._lock:
             if self._receipt is None:
+                self._refresh_sign_ins()
                 self._admit()
+
+    def _refresh_sign_ins(self) -> None:
+        """Bring the owner's stored sign-ins current before the receipt pins them.
+
+        The receipt `_admit` mints pins the assignment generation and credential
+        digest for the whole run, and a refresh renews the accepted source,
+        which moves both. So this runs once, before that mint, and never after
+        it. Only for a run `_admit` would accept on these grounds -- the
+        principal's own home, a Branch they authored, a run still running;
+        anything else is refused by `_admit` with its own words and refreshes
+        nothing on the way (Codex refute-review on #4082: another user's public
+        Branch refreshed the requester's sign-in and then failed).
+        """
+        if self._sign_ins_refreshed:
+            return
+        self._sign_ins_refreshed = True
+        try:
+            self._validate_founder_home()
+            author = str((self._branch_snapshot or {}).get("author") or "").strip()
+            if author != self._principal_id:
+                return
+            self._validate_run(allowed_statuses={"running"})
+        except PermissionError:
+            return
+        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
+
+        refresh_deposited_subscriptions(
+            base_path=self._base_path,
+            universe_dir=self._universe_dir,
+            owner_user_id=self._principal_id,
+            universe_id=self._universe_id,
+        )
 
     def _validate_receipt_parent(self, parent_binding: Any, assignment: Any) -> None:
         receipt = self._receipt
@@ -861,11 +902,8 @@ class _ForegroundRunProviderSession:
             # was swallowed into ProviderAuthorityHeldError at :985, which cannot
             # fall back either. Codex refute-review P1 #3 reproduced both halves.
             #
-            # The refresh belongs where nothing is pinned yet, which is the served
-            # entry (`provider_assignment.authorize_served_provider_call_async`).
-            # Covering this lane means moving the seam ahead of the receipt mint,
-            # and that is its own change: docs/concerns/
-            # 2026-09-26-pr4032-refresh-launch-integration.md.
+            # The refresh belongs where nothing is pinned yet: for this lane that
+            # is `_refresh_sign_ins`, run once before the receipt mint.
             with self._lock:
                 self._call_index += 1
                 invocation_index = self._call_index
@@ -1065,11 +1103,15 @@ class _ForegroundRunProviderSession:
                 return response, "mock"
 
         self._ensure_admitted()
-        from tinyassets.shared_self import prepare_shared_self_turn, shared_self_requested
+        from tinyassets.shared_self import agent_node, prepare_shared_self_turn
 
-        if shared_self_requested(self._branch_snapshot):
+        node = agent_node(
+            self._branch_snapshot, getattr(config, "agent_node_id", ""), self._principal_id,
+            node_key=getattr(config, "agent_node_key", ""),
+        )
+        if node is not None:
             prompt, system, config = prepare_shared_self_turn(
-                self._base_path, self._universe_id, self._principal_id, prompt, config,
+                self._base_path, self._universe_id, self._principal_id, prompt, config, node,
             )
             if config.engine_mcp_enabled:
                 from tinyassets.workflow_agent import call_foreground_work_agent

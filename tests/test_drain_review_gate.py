@@ -382,7 +382,7 @@ def test_required_scope_check_fails_closed_on_unreviewed_drain_head() -> None:
 # failing REQUIRED check holds a PR.
 # ---------------------------------------------------------------------------
 
-REPO = "Jonnyton/TinyAssets"
+REPO = "TinyAssets/TinyAssets"
 PR = 4242
 ARTIFACT_URL = f"https://github.com/{REPO}/pull/{PR}#issuecomment-5841421637"
 TRUSTED_COMMENTS = ((ARTIFACT_URL, "OWNER"),)
@@ -615,11 +615,11 @@ def test_a_verdict_may_live_in_a_comment_review_or_review_comment(
 def test_repo_casing_in_the_artifact_url_is_tolerated(tmp_path: Path) -> None:
     # GitHub resolves owner/repo case-insensitively; refusing a stamper who
     # typed a different casing would be a wall, not a gate.
-    url = f"https://github.com/jonnyton/tinyassets/pull/{PR}#issuecomment-5841421637"
+    url = f"https://github.com/tinyassets/tinyassets/pull/{PR}#issuecomment-5841421637"
     completed = _run_blocking(
         tmp_path,
         body=_receipt_body(url=url),
-        comments=((url.replace("jonnyton/tinyassets", REPO), "OWNER"),),
+        comments=((url.replace("tinyassets/tinyassets", REPO), "OWNER"),),
     )
 
     assert completed.returncode == 0
@@ -1216,6 +1216,52 @@ def test_authority_paths_still_demand_a_receipt() -> None:
         "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/auth/x.py",
     ):
         assert authority.match(path), f"{path} lost its receipt requirement"
+
+
+MIRROR = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
+
+
+@pytest.mark.parametrize("root", ["", MIRROR])
+@pytest.mark.parametrize(
+    "module",
+    [
+        # #4073 changed custody path validation here and no receipt was asked.
+        "conversation_custody.py",
+        "storage/conversation_custody.py",
+        # Any module named for authority, at any depth, including future ones.
+        "agent_invocation_authority.py",
+        "background_branch_authority_service.py",
+        "effectors/authority.py",
+        "storage/workspace_authority.py",
+        "providers/owner_binding.py",
+        "agent_runtime_grants.py",
+        "agent_runtime_principal.py",
+        "principals.py",
+        "credential_refresh.py",
+        "connection_oauth/tokens.py",
+        "desktop/credentials.py",
+        "storage/effector_consents.py",
+    ],
+)
+def test_custody_and_named_authority_modules_demand_a_receipt(root: str, module: str) -> None:
+    authority = re.compile(_workflow_regex("AUTHORITY_RE"), re.IGNORECASE)
+    path = f"{root}tinyassets/{module}"
+    assert authority.match(path), f"{path} must require a receipt"
+
+
+def test_authority_widening_stays_off_neighbours() -> None:
+    authority = re.compile(_workflow_regex("AUTHORITY_RE"), re.IGNORECASE)
+
+    for path in (
+        "tests/test_conversation_custody.py",
+        "docs/audits/snapshot/tinyassets/conversation_custody.py",
+        "tinyassets/identity.py",
+        "tinyassets/provider_admission.py",
+        "tinyassets/run_file_crossowner.py",
+        "tinyassets/connection_oauth/flow.py",
+        "tinyassets/conversation_custody.md",
+    ):
+        assert not authority.match(path), f"{path} must NOT require a receipt"
 
 
 def _extract(pattern: str) -> str:

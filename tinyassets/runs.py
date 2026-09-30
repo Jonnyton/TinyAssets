@@ -1393,6 +1393,11 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
             # every public projection; read only via
             # tinyassets.run_admission_envelope after an ownership gate.
             ("admission_envelope_json", "TEXT"),
+            # Who caused this run, recorded when it is created: the actor, or
+            # for a `universe:<id>` run the principal bound for it. An engine
+            # event about the run is stamped with this, never with whatever
+            # identity happens to be ambient when the run ends.
+            ("cause_principal", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in existing_runs:
                 _alter(col, ddl)
@@ -2048,6 +2053,10 @@ def _insert_run_in_transaction(
                 ("" if managed_root else None),
             ),
         )
+        conn.execute(
+            "UPDATE runs SET cause_principal = ? WHERE run_id = ?",
+            (_cause_principal(actor), run_id),
+        )
     except sqlite3.IntegrityError as exc:
         if branch_task_id and "runs.branch_task_id" in str(exc):
             raise BranchTaskRunReservationConflict(
@@ -2061,6 +2070,16 @@ def _insert_run_in_transaction(
         if not _workspace_authenticated or type(_workspace_fence) is not FamilyFence:
             raise FamilyRefused("child insertion requires held family fence and identity")
         assign_in_transaction(conn, _workspace_fence, run_id, parent=_workspace_parent)
+
+
+def _cause_principal(actor: str) -> str:
+    """The principal a new run acts for: its actor, or the one bound for a
+    universe's own run. '' when a universe run has nobody bound."""
+    if not actor.startswith("universe:"):
+        return actor
+    from tinyassets.api.permissions import current_request_actor_id
+
+    return current_request_actor_id()
 
 
 def _guard_status_write(function):
@@ -2264,6 +2283,7 @@ def update_run_status(
     params.append(run_id)
     workspace_terminal_base: Path | None = None
     owed = 0
+    completed_row: Any = None
     from tinyassets.workspace_family import status_transaction
 
     with status_transaction(base_path, run_id, status, expected=_workspace_member,
@@ -2275,6 +2295,17 @@ def update_run_status(
         )
         if prior is not None and cursor.rowcount != 1:
             raise RunExecutionAuthorityLost("Run status changed before its conditional write.")
+        if (
+            status in _TERMINAL_STATUSES
+            and prior is not None
+            and prior[0] not in _TERMINAL_STATUSES
+        ):
+            # The transition, not every terminal write: a later write that
+            # only re-persists output must not announce the run twice.
+            completed_row = conn.execute(
+                "SELECT branch_def_id, actor, queue_universe_id, cause_principal "
+                "FROM runs WHERE run_id = ?", (run_id,),
+            ).fetchone()
         if status in _TERMINAL_STATUSES:
             # A lease in this database is owed THROUGH the outbox in the same
             # transaction (workspace-node D0): never a direct delete.  A
@@ -2347,6 +2378,23 @@ def update_run_status(
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_terminal_base, local_owed=owed
         )
+    if completed_row is not None:
+        _emit_run_completed(base_path, run_id, status, completed_row)
+
+
+def _emit_run_completed(base_path: str | Path, run_id: str, status: str, row: Any) -> None:
+    """Wake the owner's ``run_completed`` subscriptions. Never raises."""
+    from tinyassets.automation_events import emit_run_completed
+
+    emit_run_completed(
+        base_path,
+        run_id=run_id,
+        branch_def_id=str(row["branch_def_id"] or ""),
+        outcome=str(status),
+        actor=str(row["actor"] or ""),
+        queue_universe_id=str(row["queue_universe_id"] or ""),
+        cause_principal=str(row["cause_principal"] or ""),
+    )
 
 
 def terminalize_unstarted_run(
@@ -5552,30 +5600,16 @@ def _max_workers() -> int:
 def _max_child_workers() -> int:
     """Pool size for sub-branch (depth>=1) invocations.
 
-    Phase A item 5 / Task #76c. Default ``MAX_INVOKE_BRANCH_DEPTH + 1`` so
-    the deepest legal chain plus one buffer slot can run without blocking.
-    Env override: ``TINYASSETS_CHILD_POOL_SIZE``.
+    Phase A item 5 / Task #76c. Default ``MAX_INVOKE_BRANCH_DEPTH + 1``.
+    Env override: ``TINYASSETS_CHILD_POOL_SIZE``. A blocking version invoke
+    may nest at most this deep (``graph_compiler``); nothing else is bounded
+    by it.
     """
     raw = os.environ.get("TINYASSETS_CHILD_POOL_SIZE", "")
     try:
         val = int(raw) if raw else MAX_INVOKE_BRANCH_DEPTH + 1
     except ValueError:
         val = MAX_INVOKE_BRANCH_DEPTH + 1
-    return max(1, val)
-
-
-def _runtime_max_invocation_depth() -> int:
-    """Runtime cap on sub-branch invocation depth.
-
-    Phase A item 5 / Task #76c. Defaults to ``MAX_INVOKE_BRANCH_DEPTH``
-    (5) but is host-tunable via ``TINYASSETS_INVOCATION_MAX_DEPTH`` for
-    power-user research workflows that need deeper chains.
-    """
-    raw = os.environ.get("TINYASSETS_INVOCATION_MAX_DEPTH", "")
-    try:
-        val = int(raw) if raw else MAX_INVOKE_BRANCH_DEPTH
-    except ValueError:
-        val = MAX_INVOKE_BRANCH_DEPTH
     return max(1, val)
 
 
@@ -6617,7 +6651,8 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
         conn.execute("BEGIN IMMEDIATE")
         prepared_exclusion = _prepared_run_recovery_exclusion(conn)
         candidates = conn.execute(
-            "SELECT run_id, status, queue_universe_id FROM runs WHERE status IN (?, ?) "
+            "SELECT run_id, status, queue_universe_id, branch_def_id, actor, "
+            "cause_principal FROM runs WHERE status IN (?, ?) "
             "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
             "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
             (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
@@ -6627,8 +6662,10 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
         waiting = _never_started_waiters(base_path, candidates)
         in_flight = [row["run_id"] for row in candidates if row["run_id"] not in waiting]
         count = 0
+        by_id = {row["run_id"]: row for row in candidates}
+        interrupted_rows: list[Any] = []
         for run_id in in_flight:
-            count += conn.execute(
+            moved = conn.execute(
                 "UPDATE runs SET status = ?, error = ?, finished_at = ? "
                 "WHERE run_id = ? AND status IN (?, ?)",
                 (
@@ -6639,6 +6676,9 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
                     RUN_STATUS_QUEUED, RUN_STATUS_RUNNING,
                 ),
             ).rowcount
+            count += moved
+            if moved:
+                interrupted_rows.append(by_id[run_id])
         for run_id in in_flight:
             # Same-database work is atomic with the rewrite.  A separate
             # universe WAL is finished after this transaction commits.
@@ -6650,6 +6690,9 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_base, local_owed=owed
         )
+    # A deploy killed these; an owner's graph that follows them can resume.
+    for row in interrupted_rows:
+        _emit_run_completed(base_path, row["run_id"], RUN_STATUS_INTERRUPTED, row)
     for universe_base in sorted(set(waiting.values())):
         _kick_workspace_waiters(universe_base)
     if waiting:
@@ -6782,7 +6825,7 @@ def query_runs(
 
     with _connect(base_path) as conn:
         rows = conn.execute(
-            f"SELECT run_id, branch_def_id, status, actor, "
+            f"SELECT run_id, branch_def_id, status, actor, queue_universe_id, "
             f"started_at, finished_at, output_json "
             f"FROM runs {where} "
             f"ORDER BY started_at DESC LIMIT ?",
@@ -6873,8 +6916,10 @@ def query_runs(
 # Sub-branch invocation helpers
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-#: Maximum nesting depth for invoke_branch nodes. A child run increments
-#: the depth counter; reaching this cap raises CompilerError at runtime.
+#: Sizes the shared sub-branch pool (``_max_child_workers`` is this + 1). It
+#: is no longer a depth cap (plan item 6): sub-branch runs are metered per
+#: universe instead. Only a BLOCKING version invoke, which waits on this pool
+#: while holding one of its threads, is bounded -- by the pool's size.
 MAX_INVOKE_BRANCH_DEPTH = 5
 
 _TERMINAL_STATUSES = frozenset({

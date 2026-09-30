@@ -49,7 +49,7 @@ row.
   python scripts/bootstrap_add_second_ssh_key.py \
       --host 161.35.237.133 \
       --primary-key ~/.ssh/workflow_deploy_ed25519 \
-      --repo Jonnyton/TinyAssets
+      --repo TinyAssets/TinyAssets
   ```
   Script is idempotent: skips if `DO_SSH_KEY_BACKUP` already seeded.
 - **Recovery if primary key lost:** use `DO_SSH_KEY_BACKUP` secret;

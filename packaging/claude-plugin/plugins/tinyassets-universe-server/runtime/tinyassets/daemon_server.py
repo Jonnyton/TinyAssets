@@ -747,6 +747,74 @@ def ensure_universe_registered(
     return get_universe(base_path, universe_id=universe_id)
 
 
+def register_universe_if_absent(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    universe_path: str | Path | None = None,
+) -> bool:
+    """Make sure a universe has a registry row, WITHOUT touching an existing one.
+
+    Returns ``True`` when this call inserted the row. Use this, not
+    :func:`ensure_universe_registered`, whenever you need the universe to exist and
+    have nothing to say about its NAME.
+
+    ``ensure_universe_registered`` is an UPSERT whose conflict clause is
+    ``display_name=excluded.display_name, metadata_json=excluded.metadata_json``,
+    and both of those parameters are optional. Calling it for an ALREADY-registered
+    universe without passing them therefore **destroys** them: the display name
+    becomes the raw ``universe_id`` and the registry metadata becomes ``{}``, and
+    the call reports success. It is the odd one out in this module —
+    :func:`ensure_universe_rules` and :func:`ensure_default_branch` both use
+    ``DO NOTHING`` and preserve what is already there.
+
+    That is not hypothetical, and it was not rare. The visibility backfill did it
+    for every discovered universe on every boot, so a universe its owner had named
+    lost that name at the next restart. The notes, work-target and hard-priority
+    helpers in this module did it on every call, three of them on READS — so
+    listing a universe's notes renamed it.
+
+    **A single atomic statement, deliberately.** An earlier cut checked for the row
+    and then called ``ensure_universe_registered`` when absent, which left a window:
+    between the check and the write another caller could register the universe WITH
+    a name, and this call's UPSERT would then erase it. Reproduced by the
+    cross-family review of PR #4045 (two threads, pause after the absence check) and
+    judged floor-class, because registry metadata has no other copy in this write
+    path. ``INSERT ... ON CONFLICT DO NOTHING`` has no such window: a row that
+    appears in the meantime simply wins.
+
+    Registration is all those callers need. Renaming has its own caller,
+    :func:`set_universe_display_name`, so "never touch an existing row" loses
+    nothing.
+
+    ``universe_path`` defaults to ``base_path / universe_id``. Pass it when you
+    already hold the real path rather than letting this re-derive one.
+    """
+    uid = str(universe_id or "").strip()
+    if not uid:
+        return False
+    initialize_author_server(base_path)
+    resolved = universe_path if universe_path is not None else Path(base_path) / uid
+    with _connect(base_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO universes (
+                universe_id, display_name, host_path, created_at, metadata_json
+            ) VALUES (?, ?, ?, ?, '{}')
+            ON CONFLICT(universe_id) DO NOTHING
+            """,
+            (uid, uid, str(Path(resolved).resolve()), _now()),
+        )
+        inserted = cursor.rowcount == 1
+    # Always, not only when inserted: these are the rows that make the registry row
+    # usable, `universe_rules` is what actually carries the FK onto `universes`, and
+    # both are `DO NOTHING` inserts that preserve anything already recorded. Running
+    # them unconditionally also repairs a universe whose row exists without them.
+    ensure_universe_rules(base_path, universe_id=uid)
+    ensure_default_branch(base_path, universe_id=uid)
+    return inserted
+
+
 def set_universe_display_name(
     base_path: str | Path,
     *,
@@ -1958,7 +2026,7 @@ def list_note_dicts(
 ) -> list[dict[str, Any]]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -1991,7 +2059,7 @@ def list_note_dicts(
 def add_note_dict(universe_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2111,7 +2179,7 @@ def delete_note_record(universe_path: str | Path, note_id: str) -> bool:
 def list_work_target_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2138,7 +2206,7 @@ def list_work_target_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
 def upsert_work_target_dict(universe_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2174,7 +2242,7 @@ def upsert_work_target_dict(universe_path: str | Path, payload: dict[str, Any]) 
 def replace_work_target_dicts(universe_path: str | Path, payloads: list[dict[str, Any]]) -> None:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2208,7 +2276,7 @@ def replace_work_target_dicts(universe_path: str | Path, payloads: list[dict[str
 def list_hard_priority_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2235,7 +2303,7 @@ def list_hard_priority_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
 def upsert_hard_priority_dict(universe_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2271,7 +2339,7 @@ def upsert_hard_priority_dict(universe_path: str | Path, payload: dict[str, Any]
 def replace_hard_priority_dicts(universe_path: str | Path, payloads: list[dict[str, Any]]) -> None:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -4830,29 +4898,6 @@ def get_founder_home(base_path: str | Path, founder_sub: str) -> str:
             (founder,),
         ).fetchone()
     return str(row[0]) if row and row[0] else ""
-
-
-def founder_subs_for_universe(base_path: str | Path, universe_id: str) -> tuple[str, ...]:
-    """Every founder sub whose bound home is ``universe_id`` — the inverse of
-    :func:`get_founder_home`.
-
-    Needed to recover who a pre-2.1 row belonged to. A legacy ``branch_schedules``
-    row carries only an ``owner_actor``, which may be a bare founder principal;
-    without this inverse only that founder could ever address the row, so a
-    delegated admin of the universe could not clean it up (Codex round 2,
-    finding 6). Returns them sorted, so callers are deterministic.
-    """
-    uid = (universe_id or "").strip()
-    if not uid:
-        return ()
-    initialize_author_server(base_path)
-    with _connect(base_path) as conn:
-        rows = conn.execute(
-            "SELECT founder_sub FROM founder_home WHERE universe_id = ? "
-            "ORDER BY founder_sub",
-            (uid,),
-        ).fetchall()
-    return tuple(str(row[0]) for row in rows if row[0])
 
 
 def founder_home_is_platform_generated(

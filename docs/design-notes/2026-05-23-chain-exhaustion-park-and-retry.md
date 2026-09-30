@@ -205,7 +205,7 @@ Unrelated worktrees (`wf-pr576-rebase`, `wf-pr578-rebase`, `wf-pr587-repair`, `w
 | 6 | Resume the paused M6 cutover smoke test | persona via chatgpt.com | ~30 min |
 | 7 | Out-of-band cleanup: remove the three stale `_PURPOSE.md` files for the already-merged CI sibling worktrees per §7 | filesystem cleanup | ~1 min |
 
-After step 6, the user-buildable Loop 2 fires end-to-end with real PR emission on Jonnyton/TinyAssets. The cheat loop retires for real. The architectural commitment "provider availability is a first-class concept" lands fully across both CI (already shipped via #728/#733/#752) and runtime (this design's implementation).
+After step 6, the user-buildable Loop 2 fires end-to-end with real PR emission on TinyAssets/TinyAssets. The cheat loop retires for real. The architectural commitment "provider availability is a first-class concept" lands fully across both CI (already shipped via #728/#733/#752) and runtime (this design's implementation).
 
 ## §9. References
 

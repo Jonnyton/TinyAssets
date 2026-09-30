@@ -396,24 +396,12 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
     "resume_run",
     "rollback_merge",
     "rollback_node",
-    "schedule_branch",
     "subscribe_branch",
     "escrow_lock",
     "escrow_release",
     "escrow_refund",
     "record_outcome",
     "record_remix",
-    # pause_schedule / unpause_schedule / unschedule_branch: same tier as the
-    # `schedule_branch` they undo. Authority is the owner-or-admin check the
-    # handlers already run (`_schedule_control_context` in
-    # tinyassets/api/runtime_ops.py, since #2690) -- the ADMIN scope gate sat
-    # in front of that check and was strictly coarser, so an owner who could
-    # register a schedule from their own app session could not stop it from
-    # the same session (docs/concerns/2026-08-30-owner-cannot-pause-or-delete-
-    # own-schedule-from-app.md).
-    "pause_schedule",
-    "unpause_schedule",
-    "unschedule_branch",
 })
 # cancel_run intentionally has no costly/admin override: _RUN_WRITE_ACTIONS
 # classifies it as an owner write. api.runs checks its universe ACL or legacy owner.
@@ -586,10 +574,7 @@ def build_action_scope_registry() -> dict[str, ActionScopeMetadata]:
         "attest_gate_event", "verify_gate_event", "dispute_gate_event",
         "retract_gate_event",
     })
-    extension_writes.update({
-        "schedule_branch", "unschedule_branch", "subscribe_branch",
-        "unsubscribe_branch", "pause_schedule", "unpause_schedule",
-    })
+    extension_writes.update({"subscribe_branch", "unsubscribe_branch"})
     extension_writes.update({"record_outcome", "record_remix"})
     extension_writes.update({
         "grant_effector_consent", "revoke_effector_consent",

@@ -268,7 +268,11 @@ def test_an_ACTIVE_webhook_bound_to_the_branch_is_named(universe_surface, tmp_pa
     assert _delete(us, bid)["status"] == "deleted"
 
 
-def test_an_ACTIVE_schedule_and_subscription_are_named(universe_surface, tmp_path):
+def test_an_ACTIVE_subscription_is_named_and_a_retired_schedule_is_not(
+    universe_surface, tmp_path,
+):
+    """Schedules are retired: a leftover row that was active is stamped retired
+    by the scheduler migration, so it no longer holds the branch."""
     from tinyassets import scheduler
 
     us, _actor = universe_surface
@@ -276,21 +280,23 @@ def test_an_ACTIVE_schedule_and_subscription_are_named(universe_surface, tmp_pat
     # The scheduler lays its tables down at daemon start; do the same here.
     with scheduler._connect(scheduler._runs_db(tmp_path)) as conn:
         conn.executescript(scheduler.SCHEDULER_SCHEMA)
-    sid = scheduler.register_schedule(
-        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", universe_id="u-1",
-        owner_principal_id="alice", interval_seconds=3600,
-    )
+        # A row the retired tick loop would once have fired.
+        conn.execute(
+            "INSERT INTO branch_schedules (schedule_id, branch_def_id, owner_actor, "
+            "universe_id, owner_principal_id, interval_seconds, active, created_at) "
+            "VALUES ('sched-old', ?, 'universe:u-1', 'u-1', 'alice', 3600, 1, 0)",
+            (bid,),
+        )
     sub = scheduler.register_subscription(
-        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", event_type="canon_change",
+        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", event_type="source:s1",
     )
 
     out = _delete(us, bid)
     assert out.get("error") == "branch_has_dependents", out
-    assert out["dependents"]["schedules"] == [sid]
+    assert out["dependents"]["schedules"] == []
     assert out["dependents"]["subscriptions"] == [sub]
 
     # Deactivation authority is the scheduler's own concern, not this test's.
-    assert scheduler.unregister_schedule(tmp_path, sid, requesting_actor="alice", admin=True) is True
     assert scheduler.unregister_subscription(tmp_path, sub, requesting_actor="alice", admin=True) is True
     assert _delete(us, bid)["status"] == "deleted"
 

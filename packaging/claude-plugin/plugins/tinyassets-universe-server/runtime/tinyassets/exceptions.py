@@ -68,6 +68,18 @@ class InteractiveDeadlineError(ProviderTimeoutError):
     failure_class = "interactive_deadline"
 
 
+class ProviderReplyTimeoutError(ProviderTimeoutError):
+    """The model did not finish answering inside the reply budget.
+
+    The request WAS sent and the model may have generated, so its usage is
+    unknown and nothing about the source's health follows from it: no cooldown.
+    Live 2026-09-29, turn b804819f: a free model writing an app ran past the
+    broker's old 30s total and the owner was told "we could not identify why".
+    """
+
+    failure_class = "provider_reply_timeout"
+
+
 class ProviderUnavailableError(ProviderError):
     """Provider returned a signal that it is temporarily unreachable
     (e.g. exit code 1 within <5 s, rate-limit header, auth failure).
@@ -93,6 +105,23 @@ class SelectedModelCapacityError(ProviderUnavailableError):
         self.signal = signal
         self.failure_class = signal.failure_class
         self.retry_after = signal.retry_after_s
+
+
+class SelectedModelContextError(PermissionError):
+    """OUR refusal: the request does not fit the selected model's published window.
+
+    Measured before anything is sent, so nothing ran and nothing was spent.
+    ``required_tokens`` is the smallest window that would have admitted the
+    request, which is what lets a turn move to an accepted model that fits
+    instead of dying (live 2026-09-26, a 1.27 MB tool result on a 262k model
+    while a 1M-token free model sat in the same owner's order).
+
+    A ``PermissionError`` because that is what every existing reader catches.
+    """
+
+    def __init__(self, message: str, *, required_tokens: int):
+        super().__init__(message)
+        self.required_tokens = required_tokens
 
 
 class ProviderRateLimitedError(ProviderUnavailableError):
@@ -130,6 +159,27 @@ class ProviderProtocolError(ProviderError):
     """
 
     failure_class = "provider_protocol_error"
+
+
+class ProviderModelRefusedError(ProviderUnavailableError):
+    """The source refused to serve THIS model before generating anything.
+
+    HTTP 403 (access refused) or 404/410 (no such model, or none it will serve
+    here) on an inference request. Live 2026-09-28, free-only universe: a free
+    model OpenRouter answered with 403 reached the owner as "the connected model
+    replied in a format this universe could not read" -- nothing had replied --
+    and the router cooled the whole connection, so the sibling free models the
+    owner had accepted were skipped too.
+
+    The message is the source's OWN scrubbed status and body, the only place it
+    explains which refusal this was. The scope is the model: the turn may move
+    to the next model the owner accepted; the connection is not cooled.
+
+    A :class:`ProviderUnavailableError` because, like a capacity refusal, it is
+    a confirmed pre-generation answer: the reservation is released, not charged.
+    """
+
+    failure_class = "provider_refused"
 
 
 class ProviderAuthorityHeldError(ProviderError):

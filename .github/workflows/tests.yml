@@ -25,6 +25,11 @@ on:
     # No `paths:` — see above. Drafts get `opened`/`synchronize` too, so the gate
     # gives signal before a PR is marked ready and becomes auto-merge eligible.
     types: [opened, reopened, synchronize, ready_for_review]
+  # The merge queue. `required-tests` and `slow-tests` are required checks, and
+  # a queue waits for every required check to report on the merge-group commit;
+  # without this trigger nothing reports and every queued PR times out.
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   # The post-merge tripwire's only reliable AUTOMATIC trigger on this repo.

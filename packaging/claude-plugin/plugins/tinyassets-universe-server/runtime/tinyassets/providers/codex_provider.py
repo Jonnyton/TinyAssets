@@ -40,7 +40,7 @@ from tinyassets.providers.owned_process import (
     no_window_kwargs,
 )
 from tinyassets.providers.provider_jail import JailMount, UniverseView
-from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, granted_tools
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +353,8 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     if route is None:
         return args
     proc_env[_ENGINE_MCP_BEARER_ENV] = route.secret
-    enabled = ",".join(f'"{t}"' for t in _ENGINE_MCP_ENABLED_TOOLS)
+    # An agent node's grant narrows the served set (served_tools.granted_tools).
+    enabled = ",".join(f'"{t}"' for t in granted_tools(config))
     # Dotted key merges the one server into the (otherwise-empty) map.
     # default_tools_approval_mode="approve": codex MCP tools default to `auto`,
     # which requires per-call approval; a non-interactive served `codex exec` has
@@ -1084,9 +1085,13 @@ class CodexProvider(BaseProvider):
             return ProviderResponse(
                 text=text,
                 provider=self.name,
-                # JSONL does not report the resolved model. Do not invent an exact
-                # model name or scrape unstructured stderr to fill this field.
+                # JSONL does not report the resolved model (checked against the
+                # CLI's `exec --json` stream at 0.153.3: thread.started carries only
+                # a thread id, turn.completed only usage). Do not invent an exact
+                # model name or scrape unstructured stderr to fill this field; the
+                # id passed to -m is carried as a REQUEST, never as reported.
                 model=model or "provider-default",
+                requested_model=model,
                 family=self.family,
                 latency_ms=elapsed_ms,
                 input_tokens=input_tokens,

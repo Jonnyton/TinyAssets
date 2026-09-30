@@ -58,6 +58,23 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
+      - name: Require the merge-attribution token
+        # Fail loudly (hard rule 8), never fall back to GITHUB_TOKEN. With the
+        # merge queue on, an auto-merge armed by GITHUB_TOKEN never enqueues:
+        # on 2026-09-27 #4059 and #4062 sat CLEAN, green and armed by
+        # github-actions, with an empty queue and no merge_group run, because
+        # the secret had been stored empty and the old `|| github.token`
+        # fallback hid it. Before the queue the same fallback produced merges
+        # that never deployed (ADR-004).
+        env:
+          TOKEN_PRESENT: ${{ secrets.MERGE_ATTRIBUTION_TOKEN != '' }}
+        shell: bash
+        run: |
+          if [ "$TOKEN_PRESENT" != "true" ]; then
+            echo "::error::MERGE_ATTRIBUTION_TOKEN is empty or unset. Enrollment needs a user-owned token (fine-grained PAT, resource owner TinyAssets, Contents + Pull requests read/write); GITHUB_TOKEN-armed auto-merge never enters the merge queue. Set it in Settings > Secrets > Actions."
+            exit 1
+          fi
+
       - name: Enable auto-merge
         env:
           # Merge attribution is what gates the whole deploy chain. A merge
@@ -69,16 +86,28 @@ jobs:
           # unattended, one hour apart, same workflow. See
           # docs/decisions/ADR-004-merge-attribution-and-the-deploy-gap.md.
           #
-          # `||` falls back when the secret is absent: an unset secret is the
-          # empty string, which is falsy, so this is a NO-OP until the
-          # credential exists and enrollment keeps behaving exactly as it
-          # does today. Pinned by tests/test_auto_enroll_merge_workflow.py.
-          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN || github.token }}
+          # No fallback: the step above refuses an empty secret, and after
+          # enrolling the step checks that a USER armed or queued the PR.
+          # Pinned by tests/test_auto_enroll_merge_workflow.py.
+          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
+
+          # Who armed, queued or merged this PR, as `<__typename>:<login>`.
+          # With the queue on, autoMergeRequest reads null once GitHub has
+          # queued the PR, so the queue entry's enqueuer is checked too.
+          who_enrolled() {
+            # The $owner/$name/$number GraphQL variables are for GitHub to
+            # bind, not the shell to expand, so the query stays single-quoted.
+            # shellcheck disable=SC2016
+            gh api graphql \
+              -F owner="${REPO%/*}" -F name="${REPO#*/}" -F number="$PR" \
+              -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state mergedBy{__typename login} autoMergeRequest{enabledBy{__typename login}} mergeQueueEntry{enqueuer{__typename login}}}}}' \
+              --jq '.data.repository.pullRequest | (.autoMergeRequest.enabledBy // .mergeQueueEntry.enqueuer // (if .state == "MERGED" then .mergedBy else null end)) | if . == null then "none" else "\(.__typename):\(.login)" end'
+          }
 
           PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
             --json autoMergeRequest,body,headRefName,headRefOid,baseRefOid)"
@@ -132,11 +161,18 @@ jobs:
             exit 0
           fi
 
-          # Idempotent: re-running on a later event is a no-op if already enrolled.
+          # Idempotent: re-running on a later event is a no-op if a USER
+          # already enrolled it. An enrollment by a bot (the old GITHUB_TOKEN
+          # fallback) never enqueues, so it is replaced, not kept.
           if [ "$STATE" = "yes" ]; then
-            echo "PR #${PR} is already enrolled for auto-merge."
-            echo "already enrolled" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            ENROLLER="$(who_enrolled)"
+            if [[ "$ENROLLER" == User:* ]]; then
+              echo "PR #${PR} is already enrolled for auto-merge by ${ENROLLER#User:}."
+              echo "already enrolled" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "PR #${PR} was enrolled by ${ENROLLER}; re-enrolling with the attribution token."
+            gh pr merge "$PR" --repo "$REPO" --disable-auto
           fi
 
           # `|| true`: enrolment can legitimately fail — e.g. the PR is already
@@ -145,6 +181,14 @@ jobs:
           if gh pr merge "$PR" --repo "$REPO" --auto --squash \
               --match-head-commit "$HEAD_OID" 2>err.txt; then
             echo "PR #${PR} enrolled for auto-merge (squash)."
+            # The token that ran this is the one GitHub attributes. A bot here
+            # means the PR will never enqueue, so say so where it is seen.
+            ENROLLER="$(who_enrolled)"
+            echo "enrolled by: ${ENROLLER}"
+            if [[ "$ENROLLER" != User:* ]]; then
+              echo "::error::PR #${PR} was enrolled by ${ENROLLER}, not a user. A merge queue does not enqueue a bot-armed auto-merge, and a bot-attributed merge raises no push. Check MERGE_ATTRIBUTION_TOKEN."
+              exit 1
+            fi
             {
               echo "### Auto-merge"
               echo ""

@@ -201,16 +201,27 @@ def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
     return None
 
 
-def _run_universe_id(record: dict[str, Any]) -> str:
-    """The universe a run is bound to, derived from its actor.
-
-    Branch runs are executed by a universe (actor ``universe:<uid>``), so the
-    actor carries the owning universe. A run with any other actor is not
-    universe-brain data.
-    """
+def _run_actor_universe_id(record: dict[str, Any]) -> str:
+    """The universe named by a run's ``universe:<uid>`` actor, else ``""``."""
     actor = str((record or {}).get("actor") or "")
     prefix = "universe:"
     return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
+
+
+def _run_universe_id(record: dict[str, Any]) -> str:
+    """The universe a run is bound to: its ``universe:<uid>`` actor, else its queue.
+
+    A background queue task records the OWNER as its actor and the universe in
+    ``queue_universe_id``. Reading only the actor classed those runs as
+    "not universe data" and let any signed-in caller list them and read their
+    output -- which, once an owner's run reads its own private universe as the
+    owner, is that private content (Codex round 2 on #4060, P1). The queue
+    binding is recorded by the run's own admission, never by a caller.
+    """
+    return (
+        _run_actor_universe_id(record)
+        or str((record or {}).get("queue_universe_id") or "").strip()
+    )
 
 
 def _run_is_unreachable_unowned(record: dict[str, Any]) -> bool:
@@ -1193,7 +1204,7 @@ def enqueue_universe_branch_run(
         _append_global_ledger,
         _resolve_branch_id,
     )
-    from tinyassets.api.permissions import branch_run_actor
+    from tinyassets.api.permissions import branch_run_actor, owner_run_identity
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
     from tinyassets.runs import execute_branch_async
@@ -1215,6 +1226,24 @@ def enqueue_universe_branch_run(
     if errors:
         raise ValueError(f"branch {bid} failed validation: {errors}")
 
+    # A triggered run is a run: it is metered against the universe's usage,
+    # per hour and per day, like run_graph and automations. This is what
+    # bounds a schedule or subscription, now that their count and cadence
+    # floors are gone (plan item 6). Fails closed: a trigger has no user
+    # waiting on it, and an unreadable meter must not admit unmetered work.
+    from tinyassets.engine_admissions import attach_run
+    from tinyassets.engine_mcp_server import _admission_parts, _engine_run_admit
+
+    ticket, refused_by = _admission_parts(
+        _engine_run_admit(universe_id=uid, want_ticket=True, fail_closed=True)
+    )
+    if ticket is None:
+        from tinyassets.engine_admissions import usage_notice
+
+        notice = usage_notice(uid) if refused_by != "ledger" else None
+        returns = f":until={notice['capacity_returns_at']}" if notice else ""
+        raise ValueError(f"run_usage_limited:{refused_by}{returns}")
+
     provider_call: Any = None
     try:
         from tinyassets.providers.call import call_provider
@@ -1225,16 +1254,21 @@ def enqueue_universe_branch_run(
     except ImportError:
         provider_call = None
 
-    outcome = execute_branch_async(
-        base_path,
-        branch=branch,
-        inputs=inputs,
-        run_name=run_name or "trigger",
-        actor=actor,
-        provider_call=provider_call,
-        _enqueue_universe_id=uid,
-        owner_user_id=principal_id,
-    )
+    # A schedule or Source event is the owner's own automation, fired from a
+    # thread no request bound. The run's worker copies THIS context, so bind the
+    # owner here or its reads of a private universe refuse their own owner.
+    with owner_run_identity(base_path, uid, principal_id):
+        outcome = execute_branch_async(
+            base_path,
+            branch=branch,
+            inputs=inputs,
+            run_name=run_name or "trigger",
+            actor=actor,
+            provider_call=provider_call,
+            _enqueue_universe_id=uid,
+            owner_user_id=principal_id,
+        )
+    attach_run(ticket, str(outcome.run_id or ""))
     try:
         _append_global_ledger(
             "run_branch",
@@ -1929,7 +1963,8 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
         )
         provider_call = _bind_run_provider_call(
             provider_call,
-            _run_universe_id(_resume_record or {}),
+            # Provider binding is unchanged by the read gate's queue fallback.
+            _run_actor_universe_id(_resume_record or {}),
         )
     except ImportError:
         provider_call = None
@@ -2121,7 +2156,9 @@ def _action_query_runs(kwargs: dict[str, Any]) -> str:
         limit=limit,
         # Exclude runs of a private universe the caller cannot read BEFORE
         # projection/aggregation, so select/aggregate can't leak private data.
-        row_filter=lambda r: _run_read_allowed({"actor": r["actor"]}),
+        row_filter=lambda r: _run_read_allowed(
+            {"actor": r["actor"], "queue_universe_id": r["queue_universe_id"]}
+        ),
     )
     return json.dumps(result, default=str)
 

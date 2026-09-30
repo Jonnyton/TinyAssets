@@ -69,6 +69,11 @@ class ConversationCustodyAuthorizationError(PermissionError):
         super().__init__(message)
         self.code = code
 
+    def __reduce__(self):
+        # A worker process's refusal must reach the parent as itself, not as
+        # a BrokenProcessPool that hides which authority check failed.
+        return type(self), (self.code, str(self))
+
 
 def _required_ref(value: object, name: str) -> str:
     if not isinstance(value, str) or _REF.fullmatch(value) is None:
@@ -687,7 +692,14 @@ def validate_private_universe_location(
     ):
         if not os.path.lexists(candidate):
             continue
-        metadata = _lstat_no_alias(candidate, expect_directory=False)
+        try:
+            metadata = _lstat_no_alias(candidate, expect_directory=False)
+        except ConversationCustodyAuthorizationError as exc:
+            # Another connection's last close removes the WAL sidecars. One
+            # that vanished after lexists is as absent as one never seen.
+            if candidate != database and isinstance(exc.__cause__, FileNotFoundError):
+                continue
+            raise
         if candidate == database:
             identity = StorageFileIdentity(metadata.st_dev, metadata.st_ino)
     if expected_primary_identity is not None and identity != expected_primary_identity:

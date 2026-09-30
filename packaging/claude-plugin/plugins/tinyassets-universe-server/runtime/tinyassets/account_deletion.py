@@ -105,6 +105,17 @@ PRINCIPAL_KEYS = (
 #: operational state, not this account's to delete.
 UNIVERSE_KEY = "universe_id"
 
+#: Tables carrying a universe column whose rows are nonetheless ONLY ever the
+#: owner's: deleted by the owner key alone, never by the universe sweep. A
+#: person's saved UI choice about someone else's universe is theirs, so deleting
+#: that universe's owner must not take it -- and sweeping by universe could,
+#: because a collaborator's save can commit between the foreign-row check and
+#: the delete (gpt-6-astra review, 2026-09-26). Left behind, the row names a
+#: universe that no longer exists and goes when its own owner is deleted.
+OWNER_ONLY_TABLES = MappingProxyType({
+    "universe_app_ui": "owner_user_id",
+})
+
 #: Universe-scoped tables that ALSO hold a person-keyed row worth removing
 #: everywhere: an access grant is this account's access, so deleting the account
 #: revokes it wherever it points. Removing it takes nothing from the universe
@@ -325,6 +336,10 @@ def deletion_plan(
         if table in INDIRECTLY_SCOPED_TABLES:
             continue  # deleted through its parent, by home only
         cols = _columns(conn, table)
+        owner_key = OWNER_ONLY_TABLES.get(table)
+        if owner_key and owner_key in cols:
+            plan[table] = [(owner_key, "principal")]
+            continue
         if UNIVERSE_KEY in cols:
             # Universe-scoped: this account owns only its own universe's rows.
             # Its rows in someone else's universe stay with that universe.

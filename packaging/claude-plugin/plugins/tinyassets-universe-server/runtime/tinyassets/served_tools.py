@@ -154,6 +154,37 @@ SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "bash",
 )
 
+#: ``tools_allowed`` entries that make a prompt node an agent node rather than
+#: naming a tool. ``universe_self`` is the original spelling (#3836).
+AGENT_NODE_MARKERS = frozenset({"agent", "universe_self"})
+
+
+def node_tool_grant(tools_allowed) -> tuple[str, ...] | None:
+    """An agent node's grant: ``None`` (everything served) or exactly its list.
+
+    The owner narrows by listing tools; a name that is not served refuses rather
+    than silently narrowing to less than the owner meant.
+    """
+    named = [t for t in (tools_allowed or []) if t not in AGENT_NODE_MARKERS]
+    unknown = sorted(set(named) - set(SERVED_ENGINE_MCP_TOOLS))
+    if unknown:
+        raise ValueError(
+            f"agent node grants tools that are not served: {unknown}; "
+            f"served tools are {list(SERVED_ENGINE_MCP_TOOLS)}"
+        )
+    if not named:
+        return None
+    return tuple(t for t in SERVED_ENGINE_MCP_TOOLS if t in named)
+
+
+def granted_tools(config) -> tuple[str, ...]:
+    """The served tools one turn may call, in canonical order."""
+    grant = getattr(config, "engine_tool_grant", None)
+    if grant is None:
+        return SERVED_ENGINE_MCP_TOOLS
+    return tuple(t for t in SERVED_ENGINE_MCP_TOOLS if t in grant)
+
+
 # Explicit reviewed authority boundary. A future connector write action must not
 # become agent-callable merely because it is added to the canonical adapter.
 SERVED_AUTOMATION_WRITE_OPERATIONS = frozenset({"create", "pause", "resume", "delete"})

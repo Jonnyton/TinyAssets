@@ -15,7 +15,7 @@ Two are fixed and deployed; the fifth is fixed-but-blocked.
   marker. Record this explicitly — the Guard is the layer that defeated three
   previous rollbacks.
 - Destination grant `pipes_grant_26eb1ab80dd8ecf0202a3b4f69a17081` stores its
-  destination **bare** as `jonnyton/tinyassets` (no `github.com/` prefix), cap
+  destination **bare** as `tinyassets/tinyassets` (no `github.com/` prefix), cap
   `one_pull_request` maximum 1.
 - Provider binding `pwb_fbddd0e8b76b837a266488a23403f0b3` is ACTIVE at
   **generation 5** (rebound 2026-08-04 against the post-#2286 image),
@@ -126,7 +126,7 @@ pins the closed direction and lets the open direction drift to zero.
    deployed.
 2. Create exactly one **stopped** automation via
    `write_graph target=automation operation=create`:
-   - `definition.repository` = `jonnyton/tinyassets`
+   - `definition.repository` = `tinyassets/tinyassets`
    - `definition.accepted_spec_ref` =
      `openspec/changes/archive/2026-08-26-activate-main-universe-spec-drain`
    - `definition.branch_version_id` = `745e637dd8fb@99cb5a8f`
