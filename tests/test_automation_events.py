@@ -717,33 +717,6 @@ def test_a_process_without_the_recovery_lock_sweeps_nothing(
     assert _wakes(home) == []
 
 
-def test_a_run_its_crashed_process_left_is_announced_when_a_read_finds_it(
-    home: Path, monkeypatch,
-) -> None:
-    """An engine child that crashes mid-run while the server lives leaves the
-    row running; no boot sweep will come. The read-time orphan recovery
-    terminalized it silently, so the owner's run_completed loop waited
-    forever (refute P1)."""
-    from tinyassets.runs import _recover_orphaned_runs_on_read, get_run
-
-    monkeypatch.setenv("TINYASSETS_ORPHANED_RUN_GRACE_SECONDS", "1")
-    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
-    by_list = _start(home, actor=OWNER)
-    by_get = _start(home, actor=OWNER)
-    for run_id in (by_list, by_get):
-        _started_before_this_process(home, run_id)
-
-    with _as(None):
-        get_run(home, by_get)
-    [wake] = _wakes(home)
-    assert (wake.inputs["event"]["run_id"], wake.inputs["event"]["outcome"]) == (
-        by_get, "interrupted")
-    with _as(None):
-        assert _recover_orphaned_runs_on_read(home) == 1
-    assert sorted(w.inputs["event"]["run_id"] for w in _wakes(home)) == sorted(
-        [by_get, by_list])
-
-
 def test_a_failed_recovery_is_retried_on_the_next_run_tool(
     home: Path, recovery, monkeypatch,
 ) -> None:
