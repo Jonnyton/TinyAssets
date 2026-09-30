@@ -22,4 +22,3 @@ def test_no_run_can_emit_an_app_event_so_a_self_loop_cannot_be_built(monkeypatch
     out = json.loads(engine.run_graph(operation="emit_event",
                                       inputs_json=json.dumps({"name": "x"})))
     assert "operation must be" in out.get("error", ""), out
-

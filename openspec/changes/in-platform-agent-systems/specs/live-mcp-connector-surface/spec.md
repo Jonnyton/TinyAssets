@@ -24,4 +24,3 @@
 - **GIVEN** the owner has an active `app_event` subscription filtered on the name `visit`
 - **WHEN** the owner's session emits `{"name": "visit", "data": {"who": "baker"}}`
 - **THEN** one wake of the subscribed branch is stored with `inputs.event.data` equal to the sent data
-
