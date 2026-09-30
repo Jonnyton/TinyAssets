@@ -268,6 +268,71 @@ def test_binding_refuses_a_mixed_connection() -> None:
         validate_url_secret_binding(_URL_SECRET_SCHEME, mixed)
 
 
+def test_binding_refuses_any_other_placeholder_beside_the_secret() -> None:
+    """A capability URL is a FIXED path plus a secret. Every real one is --
+    Slack, Discord, Zapier, and this platform's own.
+
+    Found by self-review after astra round 2, and it closes two things at once:
+
+    1. The shape astra's round-1 FINDING 3 attacked (`/hooks/{secret}/{tail+}`)
+       can no longer exist, so the positioned substituter and the stray-token
+       invariant become defence in depth rather than the only line.
+    2. A FALSE REFUSAL. With `/hooks/{room}/{secret}` the ask validated, the
+       owner pasted the RIGHT link, and the deposit refused it -- because
+       `extract_url_secret` matches the template's prefix as a literal string.
+       Telling an owner their correct answer is wrong is the failure this whole
+       change exists to stop.
+    """
+    for template in (
+        "/hooks/{room}/{secret}",
+        "/hooks/{secret}/{tail+}",
+        "/hooks/{secret}/{room}",
+    ):
+        endpoints = _parse_allowed_endpoints(
+            [
+                {
+                    "host": HOOK_HOST,
+                    "path_template": template,
+                    "methods": ["POST"],
+                    "param_patterns": {
+                        name: "[a-z]{1,20}" for name in ("room", "tail")
+                        if "{" + name in template or "{" + name + "+" in template
+                    },
+                }
+            ]
+        )
+        with pytest.raises(SsrfValidationError) as exc:
+            validate_url_secret_binding(_URL_SECRET_SCHEME, endpoints)
+        assert "only placeholder" in str(exc.value), template
+
+
+def test_the_deposit_refuses_that_shape_rather_than_the_owners_correct_link(
+    base: Path,
+) -> None:
+    """The user-visible half of the rule: the refusal names the TEMPLATE as the
+    thing to fix, at the ask/deposit, instead of rejecting the paste later."""
+    udir = _make_universe(base, "u-owner", admin="founder")
+    _login("founder")
+
+    result = _connect(
+        "u-owner",
+        secret=f"https://{HOOK_HOST}/hooks/general/{HOOK_SECRET}",
+        endpoints=[
+            {
+                "host": HOOK_HOST,
+                "path_template": "/hooks/{room}/{secret}",
+                "methods": ["POST"],
+                "param_patterns": {"room": "[a-z]{1,20}"},
+            }
+        ],
+    )
+
+    assert result["error"] == "connection_setup_invalid"
+    assert "only placeholder" in result["detail"]
+    assert HOOK_SECRET not in json.dumps(result)
+    assert not _http_records(udir)
+
+
 def test_binding_refuses_a_redirect_following_capability_endpoint() -> None:
     """A 3xx off a capability URL hands the secret path to the next origin, and
     the redirect chain's re-match cannot match a substituted path anyway — so
@@ -601,6 +666,12 @@ def test_substitution_is_positioned_by_the_template_not_by_a_search() -> None:
     closing invariant then refuses the request because something reserved
     survived. MUTATION CHECK: restore the search and this passes a secret into
     the tail.
+
+    NOTE: this endpoint shape can no longer be DEPOSITED --
+    `test_binding_refuses_any_other_placeholder_beside_the_secret` closed it at
+    the shape level after this test was written. The unit is kept because
+    positioning is the layer that must hold if the binding is ever relaxed for
+    a real service that needs a second placeholder.
     """
     endpoint = _parse_allowed_endpoints(
         [

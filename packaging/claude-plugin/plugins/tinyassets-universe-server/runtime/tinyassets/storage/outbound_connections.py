@@ -733,6 +733,41 @@ def validate_url_secret_binding(
                 f"the reserved {_URL_SECRET_TOKEN} (or {_URL_SECRET_REST_TOKEN}) "
                 "path placeholder — that is where the vault secret goes"
             )
+        # The reserved placeholder must be the ONLY placeholder on the endpoint.
+        #
+        # Every real capability URL is a FIXED path plus a secret -- Slack's
+        # `/services/{secret+}`, Discord's `/api/webhooks/{secret+}`, Zapier's
+        # `/hooks/catch/{secret+}`, this platform's `/mcp/hooks/{secret}`. So
+        # this costs nothing real, and it buys two things:
+        #
+        # 1. It removes the shape astra's round-1 FINDING 3 attacked. There can
+        #    be no `{tail+}` beside the secret for a reserved token to ride in,
+        #    so the positioned substituter and the stray-token invariant are
+        #    now defence in depth rather than the only line.
+        # 2. It makes the pasted-link parser CORRECT rather than approximately
+        #    correct. `extract_url_secret` splits the template on the reserved
+        #    token and matches the pasted path's prefix as a literal string --
+        #    which silently failed on `/hooks/{room}/{secret}`: the ask
+        #    validated, the owner pasted the RIGHT link, and the deposit refused
+        #    it. Telling an owner their correct answer is wrong is the failure
+        #    this whole change exists to stop.
+        stray = [
+            name
+            for endpoint in endpoints
+            for name in (
+                _placeholder_names(endpoint.path_template)
+                + [_rest_placeholder_name(endpoint.path_template) or ""]
+            )
+            if name and name != _URL_SECRET_PLACEHOLDER_NAME
+        ]
+        if stray:
+            raise SsrfValidationError(
+                f"a {_URL_SECRET_SCHEME} endpoint is a fixed path plus the "
+                f"secret, so {_URL_SECRET_TOKEN} must be its only placeholder "
+                "(got " + ", ".join(sorted(set(stray))) + "); use "
+                f"{_URL_SECRET_REST_TOKEN} if the secret itself spans several "
+                "segments, or deposit one connection per fixed path"
+            )
         if any(endpoint.redirect_mode != "none" for endpoint in endpoints):
             # Refused LOUDLY rather than left to fail silently. The redirect
             # chain re-matches the allowlist, which cannot match a substituted

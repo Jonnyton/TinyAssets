@@ -26,6 +26,18 @@ Reserved placeholder names: **`{secret}`** (exactly one segment) and
 **`{secret+}`** (the final tail, one or more segments — Slack's secret is
 `T…/B…/token`, three segments).
 
+**It must be the template's ONLY placeholder** (added by self-review after
+review round 2). A capability URL is a fixed path plus a secret, which is
+exactly what all four real shapes are — `/services/{secret+}`,
+`/api/webhooks/{secret+}`, `/hooks/catch/{secret+}`, `/mcp/hooks/{secret}` — so
+the restriction costs nothing real and buys two things. It removes the shape
+review round 1's FINDING 3 attacked, making the positioned substituter defence
+in depth rather than the only line. And it makes the pasted-link parser
+*correct* rather than approximately correct: `extract_url_secret` matches the
+template's prefix as a literal string, so `/hooks/{room}/{secret}` accepted the
+ask, took the owner's **right** link, and refused it. Telling an owner their
+correct answer is wrong is the failure this change exists to stop.
+
 `_validate_param_patterns` today demands that `param_patterns` declare
 **exactly** the template's placeholders. For the reserved name it instead:
 

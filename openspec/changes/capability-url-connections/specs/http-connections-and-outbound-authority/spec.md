@@ -15,8 +15,10 @@ platform SHALL declare it as the anchored literal token, so a stored
 `/mcp/hooks/{secret}` endpoint matches the concrete path `/mcp/hooks/{secret}`
 and nothing else.
 
-A `url_secret` connection SHALL NOT be `full`: a full connection admits any
-path on a matching host, so the placeholder would never be enforced.
+The reserved placeholder SHALL be the ONLY placeholder in a `url_secret`
+endpoint's template: a capability URL is a fixed path plus a secret. A
+`url_secret` connection SHALL NOT be `full`, because a full connection admits
+any path on a matching host, so the placeholder would never be enforced.
 
 #### Scenario: a webhook connection is deposited
 - **WHEN** an owner deposits `auth_scheme: "url_secret"` with one endpoint whose `path_template` is `/mcp/hooks/{secret}` and `methods: ["POST"]`
@@ -25,6 +27,10 @@ path on a matching host, so the placeholder would never be enforced.
 #### Scenario: a caller tries to pattern the reserved placeholder
 - **WHEN** an endpoint declares `param_patterns: {"secret": ".*"}`
 - **THEN** the endpoint is refused
+
+#### Scenario: another placeholder beside the secret
+- **WHEN** a `url_secret` endpoint declares `/hooks/{room}/{secret}` or `/hooks/{secret}/{tail+}`
+- **THEN** it is refused when authored, rather than accepting the ask and then rejecting the owner's correct link
 
 #### Scenario: full access on a capability URL
 - **WHEN** a `url_secret` deposit asks for `access: "full"`
