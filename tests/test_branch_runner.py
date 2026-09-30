@@ -1279,7 +1279,10 @@ def test_recover_in_flight_runs_marks_running_as_interrupted(tmp_path):
     rid2 = create_run(tmp_path, branch_def_id="b2", thread_id="",
                       inputs={}, actor="a")
     update_run_status(tmp_path, rid1, status=RUN_STATUS_RUNNING)
-    # rid2 stays queued
+    # rid2 stays queued; the process that owned both has died.
+    from tests.run_owner_helpers import mark_owner_dead
+
+    mark_owner_dead(tmp_path, rid1, rid2)
     count = recover_in_flight_runs(tmp_path)
     assert count == 2
 

@@ -71,13 +71,68 @@ def test_another_user_cannot_read_private_history_through_the_connector(
         assert SECRET not in seen, (arguments, seen)
 
 
-def test_the_connector_neither_lists_nor_dispatches_extensions() -> None:
+@pytest.mark.parametrize("tool,arguments", [
+    ("extensions", {"action": "list_branches"}),
+    ("universe", {"action": "inspect"}),
+    ("goals", {"action": "list"}),
+    ("gates", {"action": "list_claims"}),
+    ("wiki", {"action": "list"}),
+])
+def test_the_connector_dispatches_no_legacy_fat_tool(tool: str, arguments: dict) -> None:
+    """Hidden-but-dispatchable was the route: astra found private runs, versions
+    and bindings reachable through gates and goals as well as extensions. The
+    registry itself -- what a client can call, listed or not -- is the check."""
     from tinyassets import universe_server
 
-    names = {tool.name for tool in asyncio.run(universe_server.mcp.list_tools())}
-    assert "extensions" not in names
-    assert "extensions" not in universe_server._DEPRECATED_TOOL_NAMES
-    assert _via_connector("extensions", {"action": "list_branches"}).startswith("refused")
+    registered = {t.name for t in asyncio.run(universe_server.mcp.list_tools(run_middleware=False))}
+    assert tool not in registered
+    assert _via_connector(tool, arguments).startswith("refused")
+
+
+def test_a_canonical_cannot_name_or_run_a_private_version(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],  # noqa: F811
+) -> None:
+    """Astra refute, P1: Bob set a personal canonical to Alice's private
+    version and ran the goal; the preflight returned the private snapshot's
+    input names. The version is now checked where it is set AND where it runs."""
+    from tinyassets.api.market import _action_goal_set_canonical
+    from tinyassets.api.runs import _action_run_branch_version
+    from tinyassets.daemon_server import get_goal, save_goal
+
+    base, authenticate = branch_authority_env
+    version_id = _alices_private_branch(base)
+    goal = save_goal(base, goal={"goal_id": "open-goal", "name": "Open goal",
+                                 "description": "", "author": "carol", "visibility": "public"})
+    authenticate("bob")
+    refused = json.loads(_action_goal_set_canonical(
+        {"goal_id": goal["goal_id"], "scope": "bob", "branch_version_id": version_id}))
+    assert refused == {"status": "rejected", "error": f"Branch version '{version_id}' not found."}
+    assert version_id not in json.dumps(get_goal(base, goal_id=goal["goal_id"]))
+
+    run = json.loads(_action_run_branch_version({"branch_version_id": version_id}))
+    assert SECRET not in json.dumps(run)
+    assert run == {"error": f"branch_version_id {version_id!r} not found in branch_versions"}
+
+
+def test_a_run_view_does_not_render_an_unreadable_branch(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],  # noqa: F811
+) -> None:
+    """Astra refute, P1: a run a stranger can read re-loaded the CURRENT
+    private branch and drew its name, nodes and edges into the diagram."""
+    from tinyassets.api.runs import _compose_run_snapshot
+
+    base, authenticate = branch_authority_env
+    _alices_private_branch(base)
+    record = {"run_id": "r1", "branch_def_id": "alice-private", "status": "completed",
+              "actor": "alice", "last_node_id": "", "started_at": None, "finished_at": None,
+              "error": "", "output": {}}
+    authenticate("bob")
+    seen = json.dumps(_compose_run_snapshot(record, []), default=str)
+    assert "Step" not in seen and "alice-private\"]" not in seen, seen
+    assert "branch not found" in seen
+
+    authenticate("alice")
+    assert "Step" in json.dumps(_compose_run_snapshot(record, []), default=str)
 
 
 def _ext(action: str, **kwargs) -> dict:

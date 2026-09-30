@@ -92,11 +92,16 @@ def emit(
     universe_id: str,
     principal_id: str,
     payload: dict[str, Any],
-) -> list[str]:
+    event_id: str = "",
+    strict: bool = False,
+) -> list[str] | None:
     """Store a wake for each subscription this event matches; return their ids.
 
     ``principal_id`` is who caused the event, or '' for the universe's own
-    work, which wakes nothing. Never raises.
+    work, which wakes nothing. ``event_id`` identifies this occurrence, so a
+    second delivery of it stores no second wake. Never raises: a failure
+    returns None under ``strict`` (the caller keeps the event owed and
+    delivers it again), and ``[]`` otherwise.
     """
     try:
         return _emit(
@@ -105,10 +110,14 @@ def emit(
             universe_id=str(universe_id or "").strip(),
             principal_id=named_principal(principal_id),
             payload=dict(payload),
+            event_id=event_id,
         )
+    except EventDeliveryDeferred as deferred:
+        logger.info("automation event deferred type=%s: %s", event_type, deferred)
+        return None if strict else []
     except Exception:  # noqa: BLE001 - an event must never fail its cause
         logger.exception("automation event emit failed type=%s", event_type)
-        return []
+        return None if strict else []
 
 
 def _emit(
@@ -118,6 +127,7 @@ def _emit(
     universe_id: str,
     principal_id: str,
     payload: dict[str, Any],
+    event_id: str = "",
 ) -> list[str]:
     from tinyassets.api.permissions import owner_run_identity
     from tinyassets.daemon_server import get_founder_home
@@ -149,6 +159,7 @@ def _emit(
         return []
     now = datetime.now(timezone.utc)
     stored: list[str] = []
+    retry: list[str] = []
     for sub in subs:
         owner = sub.owner_principal_id
         # The branch is read as its owner: a private branch is refused to an
@@ -175,15 +186,55 @@ def _emit(
                         },
                     },
                     now=now,
+                    event_key=_event_key(sub, event_type, payload, event_id),
                 )
             except AutomationUnavailable as exc:
                 reason = f"event_wake_refused:{exc.reason}"
                 _record_refusal(base, sub, reason)
                 _record_fire(base, sub, reason, now)
+                if exc.reason in RETRYABLE_REFUSALS:
+                    retry.append(exc.reason)
                 continue
         _record_fire(base, sub, f"{EVENT_WOKE_PREFIX}{wake.automation_id}", now)
         stored.append(wake.automation_id)
+    if retry:
+        # Nothing about the event is wrong: the universe cannot take a wake
+        # RIGHT NOW. Failing keeps a durable event owed, so it is delivered
+        # again once the assignment or usage returns; the wakes this delivery
+        # did store are found by their event key next time.
+        raise EventDeliveryDeferred(",".join(sorted(set(retry))))
     return stored
+
+
+class EventDeliveryDeferred(RuntimeError):
+    """A matching subscription could not take its wake yet (see RETRYABLE_REFUSALS)."""
+
+
+#: Refusals that pass on their own -- a serving assignment comes back, a usage
+#: window refills, the consumer is switched on. A durable event refused for one
+#: of these stays owed. Every other refusal (the owner lost admin, the branch
+#: is gone) is final for this event and is recorded on the subscription.
+RETRYABLE_REFUSALS = frozenset({"no_serving_assignment", "usage_limited", "consumer_disabled"})
+
+
+def _event_key(
+    sub: Automation, event_type: str, payload: dict[str, Any], event_id: str,
+) -> str:
+    """One wake per subscription and event OCCURRENCE.
+
+    Terminal events are delivered at least once (the runs outbox), so a second
+    delivery must find the first wake rather than store another -- a second
+    wake is a second chain of an owner's loop (run-owner-proof D4). The
+    occurrence is ``event_id`` when the source names one (a run's terminal
+    transition, ``<run>#<seq>``: a resumed run ends again), else the whole
+    payload (two answers on one request differ by item and status).
+    """
+    import hashlib
+    import json as _json
+
+    ident = event_id or _json.dumps(payload, sort_keys=True, default=str)
+    digest = hashlib.sha256(ident.encode("utf-8")).hexdigest()[:32]
+    return f"{sub.automation_id}:{event_type}:{digest}"
 
 
 def _record_fire(base: Path, sub: Automation, reason: str, now: datetime) -> None:
@@ -202,8 +253,10 @@ def emit_run_completed(
     actor: str,
     queue_universe_id: str,
     cause_principal: str,
-) -> list[str]:
-    """A run reached a terminal status. Called once, on the transition."""
+    event_id: str = "",
+    strict: bool = False,
+) -> list[str] | None:
+    """A run reached a terminal status, delivered from the runs outbox."""
     if outcome == "cancelled":
         return []
     actor = str(actor or "").strip()
@@ -222,6 +275,8 @@ def emit_run_completed(
             "branch_def_id": str(branch_def_id or ""),
             "outcome": str(outcome or ""),
         },
+        event_id=event_id,
+        strict=strict,
     )
 
 

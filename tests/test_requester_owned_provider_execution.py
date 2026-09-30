@@ -464,20 +464,24 @@ def test_branch_version_and_resume_use_the_same_server_owned_run_session(
     monkeypatch.setattr(api_runs, "_universe_dir", lambda _uid: universe)
     monkeypatch.setattr(api_runs, "_request_universe", lambda uid="": uid or "user-u")
     if action == "version":
-        # The version lane resolves the snapshot itself now, to read what it
-        # declares. The snapshot stands in for the published BranchDefinition.
-        monkeypatch.setattr(
-            "tinyassets.runs._load_branch_version",
-            lambda _base, _bvid: SimpleNamespace(
-                version=1, validate=lambda: [],
-                to_dict=lambda: {"branch_def_id": "b1"},
-            ),
-        )
+        from tinyassets.api.permissions import current_request_actor_id
+        from tinyassets.branch_versions import publish_branch_version
+        from tinyassets.daemon_server import save_branch_definition
+
+        # The read gate needs a persisted version and its parent branch. Run
+        # the signed-in owner's private snapshot through the real read gate.
+        owner = current_request_actor_id()
+        assert owner
+        branch = _policy_branch()
+        branch.author = owner
+        branch.visibility = "private"
+        saved = save_branch_definition(tmp_path, branch_def=branch.to_dict())
+        version = publish_branch_version(tmp_path, saved, publisher=owner)
         monkeypatch.setattr(
             "tinyassets.runs.execute_branch_version_async", fake_execute,
         )
         payload = json.loads(api_runs._action_run_branch_version({
-            "branch_version_id": "b1@v1",
+            "branch_version_id": version.branch_version_id,
             "universe_id": "user-u",
         }))
     else:

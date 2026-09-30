@@ -267,6 +267,7 @@ _KNOWN_ROOT_RUN_TABLES = frozenset({
     "run_judgments",
     "run_lineage",
     "run_receipts",
+    "run_terminal_outbox",
     "runs",
     "scheduler_delivered_events",
     "teammate_messages",

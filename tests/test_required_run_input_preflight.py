@@ -353,6 +353,10 @@ def test_live_and_version_handlers_share_public_error_shape(monkeypatch, tmp_pat
     monkeypatch.setattr(api_runs, "_run_actor_for_kwargs", lambda _kwargs: "user:test")
     monkeypatch.setattr(api_runs, "_bind_run_provider_call", lambda call, _uid: call)
     monkeypatch.setattr(api_branches, "resolve_branch_id_for_read", lambda _s, _b: "branch")
+    # The version path's readability gate, stubbed like the live path's: this
+    # test is about the shared error shape, not about who may read the version.
+    monkeypatch.setattr(api_branches, "_resolve_readable_version",
+                        lambda version_id, _b: (version_id, {}))
     monkeypatch.setattr(daemon_server, "get_branch_definition", lambda *_a, **_k: branch.to_dict())
 
     def refuse(*_args, **_kwargs):
