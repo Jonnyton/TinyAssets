@@ -31,6 +31,14 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   -w /work ta-android-build:local bash /work/mobile/container/sign.sh
 ```
 
+### Phone notifications (Firebase)
+
+`build.sh` materialises `google-services.json` from `ANDROID_GOOGLE_SERVICES_JSON_B64`, else
+`ANDROID_GOOGLE_SERVICES_JSON_FILE`, else `/keys/google-services.json`. Run as above (no `/keys`
+mount) it logs `push DISABLED` and still builds; to build with push on, add
+`-v "$HOME/.tinyassets/android:/keys:ro"` to the build run, with the file saved there. Steps and
+secret names: `docs/host-actions.md`, "Firebase project for phone notifications".
+
 The signed bundle lands at `mobile/tinyassets-release.aab`, which `mobile/.gitignore`
 already covers, so it cannot be committed by accident.
 Upload it in Play Console → Test and release → the track you want → Create new

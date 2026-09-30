@@ -106,33 +106,33 @@ class _AccessToken:
 
 
 def _message(device: dict, notification: Notification) -> dict[str, Any]:
-    """The FCM v1 message. A silent clear carries data only, by construction.
+    """The FCM v1 message: DATA ONLY, for every kind.
 
-    Android's ``tag`` is what lets a clear cancel a specific notification and
-    what stops the same request stacking, so it is the request id -- derived
-    from ``data``, never supplied by a caller.
+    The Android app builds the notification itself (``TinyAssetsMessagingService``)
+    because the system tray cannot carry an inline Reply action, and a message
+    carrying a ``notification`` block is displayed by the system without ever
+    reaching the app's code. So the words travel as ``data.title`` /
+    ``data.body`` -- server-composed, exactly the strings the web transport
+    shows -- and a ``clear`` is the same shape with no words, which the app
+    turns into a cancel of the notification tagged with the request id.
+
+    ``priority`` is high for a visible notification (the owner is being asked
+    something) and normal for a silent clear. Everything here is derived from
+    ``notification``; nothing a caller supplies names a field.
     """
-    tag = notification.data.get("request_id", "")
-    message: dict[str, Any] = {
+    data = {str(k): str(v) for k, v in notification.data.items()}
+    # Whose message this is, from the device row the SERVER resolved -- never
+    # from the notification's own data, so content cannot claim another owner.
+    if device.get("recipient"):
+        data["recipient"] = str(device["recipient"])
+    if not notification.silent:
+        data["title"] = notification.title
+        data["body"] = notification.body
+    return {
         "token": device["token"],
-        "data": dict(notification.data),
-        "android": {
-            "priority": "high" if not notification.silent else "normal",
-            "notification": {"tag": tag} if tag else {},
-        },
+        "data": data,
+        "android": {"priority": "normal" if notification.silent else "high"},
     }
-    if notification.silent:
-        # No notification block at all: the app handles it and cancels the
-        # local one. A "clear" that itself buzzed the phone would be absurd.
-        message["android"]["notification"] = {
-            **message["android"]["notification"], "notification_priority": "PRIORITY_MIN",
-        }
-        return message
-    message["notification"] = {
-        "title": notification.title,
-        "body": notification.body,
-    }
-    return message
 
 
 def fcm_transport(env: dict[str, str]):

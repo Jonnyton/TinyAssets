@@ -480,8 +480,13 @@ person, shared across all their universes; universe creation stays unlimited.
   waits until the child ends, as the blocking definition invoke always has; a
   dead child still ends through run-owner proof.
 
-Known and not fixed here, both filed as concerns: the run pool
-(`TINYASSETS_RUN_MAX_CONCURRENT`, 4) is shared by all accounts, and a prompt
-node waiting for its account's seat waits inside a pool thread; and a timed-out
-borrower whose parent released first remembers a stale depth, so it cannot lend
-the seat on to a nested blocking call.
+- **No shared thread waits for a seat.** A prompt node waits for its seat on
+  its run's worker thread, so the run pools are now one pair PER ACCOUNT
+  (`runs._get_executor(pool_key=run_pool_key(...))`, keyed by the same
+  `account_key`); keyless work keeps the old pair. One account's waiting runs
+  fill only its own pool, and another account's run is never queued behind
+  them. The host-wide memory bound stays `provider_admission`, underneath.
+
+Known and not fixed here, filed as a concern: a timed-out borrower whose parent
+released first remembers a stale depth, so it cannot lend the seat on to a
+nested blocking call.

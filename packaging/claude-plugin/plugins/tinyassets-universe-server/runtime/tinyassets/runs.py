@@ -687,9 +687,9 @@ def _dispatch_waiting_run(base_path: str | Path, run_id: str) -> None:
                     enqueue_universe_id=universe_id,
                 )
 
-        future = _get_executor(invocation_depth=0).submit(
-            contextvars.Context().run, _worker,
-        )
+        future = _get_executor(
+            invocation_depth=0, pool_key=run_pool_key(base_path, universe_id),
+        ).submit(contextvars.Context().run, _worker)
         _track_future(run_id, future)
     except Exception as exc:  # noqa: BLE001 - a nomination must never fail its caller
         logger.exception("dispatch of waiting run %s failed", run_id)
@@ -5600,16 +5600,67 @@ def _max_child_workers() -> int:
     return max(1, val)
 
 
-def _get_executor(invocation_depth: int = 0) -> ThreadPoolExecutor:
-    """Two-pool executor lookup. Depth-0 → _parent_pool; depth>=1 → _child_pool.
+#: One pool pair PER ACCOUNT, beside the keyless pair above. A run whose agent
+#: node waits for its account's seat waits on a worker thread; if that thread
+#: belonged to a pool every account shares, one busy account's queued runs would
+#: hold the threads another account's run needs -- the one thing the platform
+#: may never do (memory `the-floor-is-cross-user-only`). So a run is executed by
+#: its own account's pool, and an account can only ever wait behind itself.
+#: The host-wide memory bound is `provider_admission`, underneath, not this.
+_account_pools: dict[tuple[str, str], ThreadPoolExecutor] = {}
+
+
+def run_pool_key(base_path: str | Path, universe_id: str | None) -> str:
+    """The account whose pool runs work for ``universe_id``; '' for none.
+
+    `universe_seats.account_key` -- the same owner resolver seats use, so the
+    pool an account's runs wait in is exactly the account whose seats they wait
+    for. A resolver failure isolates on the universe instead: that pool is still
+    nobody else's.
+    """
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ""
+    from tinyassets.universe_seats import account_key
+
+    try:
+        return account_key(uid, root=base_path)
+    except Exception:  # noqa: BLE001 - isolation must not depend on the resolver
+        logger.warning("run pool: owner of %s unresolved; isolating on the universe", uid,
+                       exc_info=True)
+        return f"unattributed:{uid}"
+
+
+def run_pool_key_for_run(base_path: str | Path, run_id: str) -> str:
+    row = get_run(base_path, run_id) or {}
+    return run_pool_key(base_path, row.get("queue_universe_id"))
+
+
+def _get_executor(invocation_depth: int = 0, *, pool_key: str = "") -> ThreadPoolExecutor:
+    """Two-pool executor lookup. Depth-0 → parent pool; depth>=1 → child pool.
 
     Phase A item 5 / Task #76c. Each pool is lazy-init under the shared
     ``_executor_lock``. Child pool is sized larger than parent pool by
     default so a deep sub-branch chain can't starve top-level runs.
+
+    ``pool_key`` names the ACCOUNT (`run_pool_key`): its runs get a pool pair of
+    their own, so their seat waits never occupy a thread another account's run
+    is owed. The empty key is the keyless pair, for work with no universe.
     """
     global _parent_pool, _child_pool
+    child = invocation_depth >= 1
     with _executor_lock:
-        if invocation_depth >= 1:
+        if pool_key:
+            slot = ("child" if child else "parent", pool_key)
+            pool = _account_pools.get(slot)
+            if pool is None:
+                pool = ThreadPoolExecutor(
+                    max_workers=_max_child_workers() if child else _max_workers(),
+                    thread_name_prefix=f"tinyassets-{slot[0]}-acct",
+                )
+                _account_pools[slot] = pool
+            return pool
+        if child:
             if _child_pool is None:
                 _child_pool = ThreadPoolExecutor(
                     max_workers=_max_child_workers(),
@@ -5625,10 +5676,9 @@ def _get_executor(invocation_depth: int = 0) -> ThreadPoolExecutor:
 
 
 def shutdown_executor(wait: bool = True) -> None:
-    """Shut down both executor pools. Used by tests and graceful shutdown.
+    """Shut down every executor pool. Used by tests and graceful shutdown.
 
-    Phase A item 5 / Task #76c — two-pool model means both pools must be
-    drained on shutdown.
+    Phase A item 5 / Task #76c — two-pool model, and one pair per account.
     """
     global _parent_pool, _child_pool
     with _executor_lock:
@@ -5638,6 +5688,10 @@ def shutdown_executor(wait: bool = True) -> None:
         if _child_pool is not None:
             _child_pool.shutdown(wait=wait)
             _child_pool = None
+        pools = list(_account_pools.values())
+        _account_pools.clear()
+    for pool in pools:
+        pool.shutdown(wait=wait)
     with _futures_lock:
         _futures.clear()
 
@@ -5876,7 +5930,10 @@ def _execute_branch_core(
         if waiting is not None:
             return waiting
 
-    executor = _get_executor(invocation_depth=_invocation_depth)
+    executor = _get_executor(
+        invocation_depth=_invocation_depth,
+        pool_key=run_pool_key(base_path, _enqueue_universe_id),
+    )
 
     def _worker() -> RunOutcome:
         return _invoke_prepared_branch(
@@ -6341,7 +6398,7 @@ def resume_run(
     ))
 
     # Background worker: re-invoke graph with None inputs to trigger resume.
-    executor = _get_executor()
+    executor = _get_executor(pool_key=run_pool_key_for_run(base_path, run_id))
 
     def _resume_worker() -> RunOutcome:
         outcome = _invoke_graph_resume(

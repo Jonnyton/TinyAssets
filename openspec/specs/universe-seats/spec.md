@@ -46,9 +46,16 @@ enqueued: the agent node's executor (`graph_compiler`), keyed on the RUN's own
 universe from its execution context; the chat turn (`converse`), as
 `interactive`; and the automation and wake worker (`run_due_automation`), as
 `background`, as a non-blocking admission check before it claims an attempt.
+No thread another account's work is owed SHALL ever wait for a seat: runs
+execute in a worker pool of their own account (keyed by the same owner
+resolver), so one account's waiting runs never queue another account's run.
 A run started by `run_graph`, an
 automation, a wake or an inbound event SHALL therefore hold a seat for each of
 its agent calls.
+
+#### Scenario: One account's waits never hold up another account
+- **WHEN** one account has far more runs waiting for its seats than the run pool has threads
+- **THEN** another account's run on the same host still starts and completes promptly
 
 #### Scenario: A real run holds a seat
 - **WHEN** a run started through `runs` executes an agent node for a universe

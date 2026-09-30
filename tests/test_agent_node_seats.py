@@ -379,3 +379,47 @@ def test_a_blocking_version_child_waiting_for_a_seat_does_not_fail_its_parent(
                for child_id in children for e in list_events(ledger, child_id)), (
         "the child must really have waited for a seat, or this proves nothing"
     )
+
+
+def test_one_accounts_seat_waits_never_hold_up_another_accounts_run(ledger, monkeypatch):
+    """The platform's one invariant: never affect another user.
+
+    Account A queues far more agent-node runs than the run pool has threads, and
+    every one of them waits for A's seats. Account B's run, on the same process
+    and the same pool configuration, must still complete promptly: A's waiting
+    runs sit in A's own pool, never in a thread B is owed."""
+    from tinyassets import runs
+    from tinyassets.daemon_server import grant_universe_ownership
+    from tinyassets.runs import get_run, wait_for
+
+    monkeypatch.setenv("TINYASSETS_RUN_MAX_CONCURRENT", "2")
+    runs.shutdown_executor(wait=False)
+    (ledger / "bobs").mkdir()
+    grant_universe_ownership(ledger, universe_id="bobs", owner_id="bob")
+    db = seats.ledger_path(ledger)
+    # Every one of A's seats is taken, so every A run's agent node waits.
+    held = [seats.acquire(ALICE, seat_class=seats.CLASS_INTERACTIVE, db=db) for _ in range(3)]
+    ok = lambda prompt, system="", **kwargs: "[ok]"  # noqa: E731
+    try:
+        a_runs = [_start_run(ledger, ok, uid="village" if i % 2 else "office")
+                  for i in range(8)]
+        assert _wait_until(lambda: seats.occupancy(ALICE, db=db)["waiting"] >= 2), (
+            "A's runs must really be parked on A's seats"
+        )
+        started = time.monotonic()
+        b_run = _start_run(ledger, ok, uid="bobs")
+        wait_for(b_run, timeout=30)
+        assert get_run(ledger, b_run)["status"] == "completed", (
+            "account B's run was held up by account A's seat waits"
+        )
+        assert time.monotonic() - started < 20
+        assert all(get_run(ledger, r)["status"] in ("queued", "running") for r in a_runs), (
+            "A's runs wait -- they are never refused"
+        )
+    finally:
+        for seat in held:
+            seats.release(seat.seat_id, db=db)
+    for run_id in a_runs:
+        wait_for(run_id, timeout=60)
+        assert get_run(ledger, run_id)["status"] == "completed"
+    runs.shutdown_executor(wait=False)

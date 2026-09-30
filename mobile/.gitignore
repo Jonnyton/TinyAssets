@@ -15,6 +15,10 @@ node_modules/
 # untracked noise in a public repo.
 /android.superseded.*/
 
+# Firebase client config: build input materialised from a secret by
+# scripts/materialize_google_services.py. The repo is public; never commit it.
+google-services.json
+
 # Build outputs
 *.apk
 *.aab
