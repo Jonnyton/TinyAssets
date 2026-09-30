@@ -228,6 +228,68 @@ def test_no_random_token_carrying_a_non_letter_escapes(name, alphabet, length):
     assert escaped == [], f"{name} at {length} chars escaped: {escaped[:3]}"
 
 
+# --------------------------------------------------------------------------- #
+# Cross-family review round, 2026-09-30 (`codex exec -m gpt-6-astra`, read-only,
+# asked only whether a real secret shape slips through). Six false negatives,
+# every one of which the pattern being replaced DID catch -- which is the bar:
+# nothing the old screen caught may now pass.
+# --------------------------------------------------------------------------- #
+
+REFUTED = [
+    # A TOTP base32 seed. Google's own published example key, and 16 characters
+    # -- under the 20-char bar this module first shipped with.
+    ("JBSWY3DPEHPK3PXP", "opaque_high_entropy"),
+    ('{"key":"JBSWY3DPEHPK3PXP"}', "opaque_high_entropy"),
+    (_shape("otpauth://totp/Example:alice?secret=", "JBSWY3DPEHPK3PXP",
+            "&issuer=Example"), "url_secret_parameter"),
+    # A 64-bit device key in hex. 16 characters, where _HEX_RE wanted an md5's 32.
+    ("9a7c2e4f8b1d6a03", "hex_key_material"),
+    # A 20-digit numeric secret: 66 bits, and pure digits were unconditionally
+    # "a written number".
+    ("72948361502874619350", "opaque_high_entropy"),
+    # `;` was a TOKEN boundary, so one 25-character secret arrived as two short
+    # ones, each under the length bar...
+    ("7Hq2Lp9XvB4nZm8K;dRtW3Ysa", "opaque_high_entropy"),
+    # ...and a URL was cut off before its own query string.
+    ("https://example.com/reset?token=1234;7Hq2Lp9XvB4nZm8K",
+     "url_secret_parameter"),
+    # A bare `?<token>` has no `=`, so the whole secret is a parameter NAME with
+    # an empty value, and only values were judged.
+    ("https://example.com/reset?7Hq2Lp9XvB4nZm8KdRtW3Ysa", "url_query_secret"),
+    # 24 characters of base64url whose only letters are "Qx": too few letters to
+    # measure, so the word test was SKIPPED and the run passed on the strength of
+    # a test that never ran. A configured webhook id is exactly this shape.
+    ("Qx2345_98762345_98374612", "opaque_high_entropy"),
+    ("https://ha.example/api/webhook/Qx2345_98762345_98374612", "url_path_secret"),
+    # 40 characters of uppercase gibberish with a slash -- an AWS-secret shape.
+    # It scored 0.50 on bigram plausibility, against a bar then set at 0.45.
+    ("FRMEDBKESYTOIHCSVWO/WFIRLPSEPKPBSOBEBGHF", "opaque_high_entropy"),
+]
+
+
+@pytest.mark.parametrize("text,shape", REFUTED)
+def test_nothing_the_old_pattern_caught_slips_through(text, shape):
+    assert credential_shape(text) == shape
+    assert re.compile(r"[A-Za-z0-9_\-]{16,}").search(text), (
+        "this vector no longer demonstrates a regression against the old pattern"
+    )
+
+
+def test_truncation_cannot_flip_the_verdict_permissively():
+    """Callers slice to 2000 chars BEFORE screening, so the screened value IS
+    the stored value -- there is no window where a secret survives a clean
+    verdict. Pinned because the order is what makes it true."""
+    from tinyassets.api import pending_requests
+
+    secret = _shape("Qx2345", "_98762345_98374612")
+    payload = "a " * 988 + secret + "X"
+    kept = payload.strip()[:pending_requests._MAX_ANSWER_CHARS]
+    assert secret in kept, "this payload no longer retains the secret after slicing"
+    assert credential_shape(kept) is not None, (
+        "the truncated value that would be STORED screens clean"
+    )
+
+
 def test_the_letters_only_gap_is_bounded_and_stays_bounded():
     """The documented limit, pinned so a regression widening it is visible.
 
@@ -238,11 +300,12 @@ def test_the_letters_only_gap_is_bounded_and_stays_bounded():
     that pushes it past the measured ceiling has broken something.
     """
     rng = random.Random("letters-only")
-    for length, ceiling in ((20, 0.10), (32, 0.05)):
-        tokens = ["".join(rng.choices(string.ascii_lowercase, k=length))
-                  for _ in range(600)]
-        rate = sum(1 for t in tokens if credential_shape(t) is None) / len(tokens)
-        assert rate <= ceiling, (
-            f"lowercase-only escapes at {length} chars rose to {rate:.1%}, "
-            f"over the {ceiling:.0%} measured on 2026-09-30"
-        )
+    for alphabet in (string.ascii_lowercase, string.ascii_uppercase):
+        for length, ceiling in ((16, 0.04), (20, 0.03), (32, 0.01)):
+            tokens = ["".join(rng.choices(alphabet, k=length))
+                      for _ in range(600)]
+            rate = sum(1 for t in tokens if credential_shape(t) is None) / len(tokens)
+            assert rate <= ceiling, (
+                f"single-case letter escapes at {length} chars rose to {rate:.1%}, "
+                f"over the {ceiling:.0%} measured on 2026-09-30"
+            )

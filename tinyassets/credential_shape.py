@@ -29,28 +29,42 @@ structure rather than by any word in the sentence:
 4. otherwise an opaque high-entropy run: long enough, not word-shaped, and with
    a per-character entropy no sentence reaches.
 
-Measured on 2026-09-30 against 37,334 real prose lines from this repo's docs and
-1,000-sample random sweeps per credential alphabet:
+**Nothing the old pattern caught may be let through.** It fired on any 16+
+character run of ``[A-Za-z0-9_-]``, so every length bar here is 16 rather than a
+rounder number: a cross-family review round on 2026-09-30 found a TOTP base32
+seed (``JBSWY3DPEHPK3PXP`` -- Google's own published example), a 64-bit key in 16
+hex characters, and a 20-digit numeric secret all sitting under a 20-character
+bar. The same round found ``,`` and ``;`` being treated as token boundaries,
+which split one long secret into two short ones and cut a URL off before its own
+query string, and a bare ``?<token>`` arriving as a parameter NAME with an empty
+value while only values were judged.
 
-===========================  ==========================================
-prose lines refused          2.8% (was 8.2% mid-build, and the old pattern
-                             refused every hyphenated compound word)
-base64url / base64 / hex /   0 escaped at every length tested
-base32 / base58 / alnum
-pure lowercase letters       5% at 20 chars, 2% at 32
-===========================  ==========================================
+Measured on 2026-09-30 against 36,705 real prose lines from this repo's docs and
+3,000-sample random sweeps per credential alphabet:
+
+============================  =========================================
+prose lines refused           4.6% (the old pattern refused every
+                              hyphenated compound word)
+base64url / base64 / hex /    0 escaped at 16, 24, 32 and 40 chars
+base32 / base58 / alnum /
+digits / mixed-case letters
+letters of ONE case only      1.6% at 16 chars, 1.1% at 20, 0.2% at 32
+============================  =========================================
 
 What it deliberately does NOT decide, both being shapes no structural test can
 separate from writing without semantics:
 
 * a hyphenated passphrase of real words (``correct-horse-battery-staple``);
-* a secret drawn only from lowercase letters -- the one alphabet above with a
-  measurable escape rate, and one no provider issues keys in.
+* a secret drawn only from letters of a single case -- the one alphabet above
+  with a measurable escape rate, and one no provider issues keys in: a random
+  40-character AWS-shaped base64 secret is letters-only about twice in ten
+  thousand. (The base32 residual is this same class; a 16-character base32 draw
+  is letters-only 3% of the time.)
 
 The old pattern "caught" both only as a side effect of catching every compound
 word, which is the bug. Conversely an opaque identifier that is not secret -- a
-git sha, a UUID, a ULID -- is still refused, because by shape it is key
-material; the refusal says to put it in words, which is answerable.
+git sha, a UUID, a ULID, a 16-digit number -- is still refused, because by shape
+it is key material; the refusal says to put it in words, which is answerable.
 
 Screening the shapes above is what was asked for (founder, 2026-09-30: "keep
 refusing real secrets: sk-…, long high-entropy tokens, URLs with secret
@@ -74,16 +88,25 @@ _VOWELS = frozenset("aeiouyAEIOUY")
 
 #: Below this an opaque run is too short to be a usable secret on its own, and
 #: short high-entropy strings are everywhere in prose (acronyms, ids, versions).
-_MIN_OPAQUE_CHARS = 20
+#: SIXTEEN, deliberately the same length the flat pattern this replaces used: a
+#: longer bar is a regression, and a 16-character run is exactly where real
+#: secrets live at the short end -- a TOTP base32 seed (``JBSWY3DPEHPK3PXP``,
+#: Google's own published example) and a 64-bit key in hex are both 16.
+_MIN_OPAQUE_CHARS = 16
 
 #: Inside a URL the bar is lower: a path segment or query value is a *slot*, so
 #: an opaque run there is positional evidence a bare word in a sentence is not.
 _MIN_URL_SEGMENT_CHARS = 12
 
-#: Shannon entropy per character. English prose sits near 2.0--2.4 bits/char at
-#: this length even counted as an isolated string; base64/hex/base58 key material
-#: sits well above 3. The bar is deliberately between them, not at either.
-_MIN_ENTROPY_BITS = 2.7
+#: Shannon entropy per character, the last gate a run that is already too long
+#: and not word-shaped has to clear. Low, and measured that way: at 2.7 it
+#: spared 22 distinct prose tokens in 37,334 lines -- 0.09 of a percentage point
+#: -- while letting 21% of random 16-digit and 8% of random 20-digit secrets
+#: through, because a short draw from a ten-symbol alphabet repeats itself. At
+#: 2.0 the prose figure is unchanged and those drop to 0.1% and 0%. What it is
+#: actually for is a DEGENERATE run -- ``XXXXXXXXXXXXXXXX``, a repeated block --
+#: which is a documentation placeholder, not key material.
+_MIN_ENTROPY_BITS = 2.0
 
 #: The longest alphabetic part still plausibly one word. Generous on purpose:
 #: ``antidisestablishmentarianism`` is 28 characters and ``pseudopseudohypo-
@@ -93,6 +116,12 @@ _MAX_WORD_CHARS = 60
 
 #: English tops out at five: ``stre-ngths-``, ``a-ngsts-``.
 _MAX_CONSONANT_RUN = 5
+
+#: The longest run of digits that is still a written number rather than a
+#: secret: a millisecond epoch is 13, a full date 8, an international phone
+#: number 15. Past that, digits alone carry the entropy of key material -- 20
+#: decimal digits is 66 bits.
+_MAX_DIGIT_RUN = 15
 
 #: Published credential prefixes. Matching one IS the finding -- the provider
 #: publishes the prefix so a leaked token is recognisable -- but a body must
@@ -127,8 +156,9 @@ _PEM_RE = re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----")
 #: An HTTP authorization header value pasted whole.
 _AUTH_HEADER_RE = re.compile(r"\b(?:Bearer|Basic|Token)\s+[A-Za-z0-9+/=_.\-]{12,}")
 
-#: Hex key material: an md5/sha/AES-key-shaped run.
-_HEX_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
+#: Hex key material. Sixteen, not thirty-two: a 64-bit device key ships as 16
+#: hex characters, and requiring an md5's worth let one through.
+_HEX_RE = re.compile(r"^[0-9a-fA-F]{16,}$")
 
 #: Classic base64 with its own alphabet: ``+``, ``/`` and padding do not occur
 #: inside a word, so the run itself is the finding once it is long enough.
@@ -176,7 +206,7 @@ dr br cr gl gn kn ps rh wr xi ax ex ox ix ux ny my by cy dy gy py sy ty vy
 #: carrying either has already been caught as a URL or an auth header, both
 #: parsed before this. Adding those two alone took the refusal rate on 37,334
 #: real prose lines from 4.8% to 2.8%.
-_SEPARATOR_RE = re.compile(r"[-_./\\|'’:@+]+")
+_SEPARATOR_RE = re.compile(r"[-_./\\|'’:@+,;]+")
 
 #: A short word carrying an index: ``v1``, ``sp800``, ``mvcc2``. Bounded tight,
 #: so ``51ABCDEFSECRET`` cannot claim to be one.
@@ -190,9 +220,13 @@ _MIN_CAMEL_SEGMENT_CHARS = 3
 #: this length the ratio is noise.
 _MIN_BIGRAM_CHARS = 12
 
-#: The share of adjacent pairs that must be common English bigrams. Real words
-#: land above 0.6; uniformly random letters average about 0.2.
-_MIN_BIGRAM_RATIO = 0.45
+#: The share of adjacent pairs that must be common English bigrams. Measured
+#: over every 20+ character run in this repo's prose, real writing does not go
+#: below 0.586 (``pseudopseudohypoparathyroidism``), while uniformly random
+#: letters average 0.29. 0.45 was tried and let 40 characters of uppercase
+#: gibberish through at 0.50 (cross-family review, 2026-09-30); it also left a
+#: 5% escape rate on random lowercase, which 0.55 cuts to 1%.
+_MIN_BIGRAM_RATIO = 0.55
 
 #: Punctuation that wraps a token in prose but never starts or ends a credential.
 _SHELL = "\"'`()[]{}<>,;:!?*‘’“”… \t\r\n"
@@ -200,9 +234,14 @@ _TRAILING_SHELL = _SHELL + "."
 
 #: Token boundaries. Whitespace is not enough: a markdown link glues two URLs
 #: into one "token" (``[name](https://host/name)``), and the glue -- ``](`` --
-#: then reads as an opaque path segment. None of these characters occurs inside
-#: a credential, or inside the part of a URL that can hold one.
-_TOKEN_SPLIT_RE = re.compile(r"[\s()\[\]{}<>\"'`,;‘’“”…]+")
+#: then reads as an opaque path segment.
+#:
+#: ``,`` and ``;`` are deliberately NOT boundaries, though they look like them.
+#: Splitting on them cut a long run into short ones that each ducked under the
+#: length bar (``7Hq2Lp9XvB4nZm8K;dRtW3Ysa``), and cut a URL off before its own
+#: query string (``?token=1234;<secret>``) -- both found by cross-family review,
+#: 2026-09-30. They are word SEPARATORS instead, so prose still reads as prose.
+_TOKEN_SPLIT_RE = re.compile(r"[\s()\[\]{}<>\"'`‘’“”…]+")
 
 
 def looks_like_credential(text: str) -> bool:
@@ -269,6 +308,11 @@ def _url_shape(token: str) -> str | None:
             return "url_secret_parameter"
         if _slot_shape(stripped) is not None:
             return "url_query_secret"
+        # The NAME is a slot as well. A bare ``?<token>`` has no ``=``, so the
+        # whole secret arrives as a parameter name with an empty value and
+        # judging values alone never saw it (cross-family review, 2026-09-30).
+        if _slot_shape(name.strip()) is not None:
+            return "url_query_secret"
     if _slot_shape(parts.fragment.strip()) is not None:
         return "url_fragment_secret"
     return None
@@ -297,7 +341,10 @@ def _opaque_shape(token: str, *, minimum: int) -> str | None:
     # ``…Igw-V3_`` became a 19-character core and went unjudged.
     if len(token) < minimum:
         return None
-    if _HEX_RE.match(core):
+    # `not core.isdigit()` because every digit is also a hex digit: without it a
+    # written number is "hex key material", which is both wrong and the wrong
+    # label to hand a reader. A pure-digit run is judged as a NUMBER below.
+    if _HEX_RE.match(core) and not core.isdigit():
         return "hex_key_material"
     # A base64 run is only evidence with a non-letter in it. Requiring one is
     # what keeps ``antidisestablishmentarianism`` -- 28 characters that match the
@@ -347,8 +394,18 @@ def _word_shaped(core: str) -> bool:
     if not all(_part_is_word(part) for part in parts):
         return False
     letters = "".join(c for c in core if c.isascii() and c.isalpha())
-    if len(letters) < _MIN_BIGRAM_CHARS:
+    if not letters:
+        # No letters at all: a number, a date, a timestamp range. Already judged
+        # part by part against _MAX_DIGIT_RUN, and there is no word claim to make.
         return True
+    if len(letters) < _MIN_BIGRAM_CHARS:
+        # Letters, but too few to measure -- so there is NO evidence this reads
+        # as words, only that its parts were individually permissible. A run
+        # that long, mixing a couple of letters into digits, is key material:
+        # ``Qx2345_98762345_98374612`` is 24 characters of base64url whose only
+        # letters are ``Qx``, and it passed on the strength of a skipped test
+        # (cross-family review, 2026-09-30).
+        return False
     return _bigram_ratio(letters) >= _MIN_BIGRAM_RATIO
 
 
@@ -365,9 +422,9 @@ def _part_is_word(part: str) -> bool:
         # is transport-safe by construction.
         return part.isalpha()
     if part.isdigit():
-        # A date, a version, a count. Numbers alone carry no secret: the
-        # concatenated letters of the run still have to be pronounceable.
-        return True
+        # A date, a version, a count, a phone number. Bounded, because past that
+        # length a digit run IS key material: 20 decimal digits is 66 bits.
+        return len(part) <= _MAX_DIGIT_RUN
     if part.isalpha():
         return _alpha_part_is_word(part)
     if _SHORT_SUFFIXED_RE.match(part):
