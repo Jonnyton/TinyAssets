@@ -753,6 +753,52 @@ class TestBranchDefinition:
         errors = b.validate()
         assert any("cycle without exit" in e for e in errors)
 
+    def test_a_loop_whose_only_exit_is_a_plain_edge_to_end_is_refused(self):
+        """A PLAIN edge to END does not leave a loop -- it runs alongside it.
+
+        Pre-existing false accept, found by Codex on PR #4108 and confirmed
+        against the installed langgraph: `a -> b`, `b -> a`, `b -> END` as three
+        plain edges raises `GraphRecursionError`, because an unconditional edge
+        set fires ALL of its targets. Only a conditional edge (a router, which
+        picks one) can leave a loop. See `_nodes_that_cannot_terminate`.
+        """
+        b = BranchDefinition(
+            name="plain-exit",
+            entry_point="a",
+            graph_nodes=[GraphNodeRef(id="a"), GraphNodeRef(id="b")],
+            edges=[
+                EdgeDefinition(from_node="a", to_node="b"),
+                EdgeDefinition(from_node="b", to_node="a"),
+                EdgeDefinition(from_node="b", to_node="END"),
+            ],
+            node_defs=[
+                NodeDefinition(node_id="a-def", display_name="A"),
+                NodeDefinition(node_id="b-def", display_name="B"),
+            ],
+        )
+        assert any("cycle without exit" in e for e in b.validate())
+
+    def test_a_self_loop_beside_a_terminating_node_is_refused(self):
+        """`a -> a` plus `a -> tail`: the tail terminating does not save `a`.
+
+        Codex refute, PR #4108: crediting implicit terminals through a reverse
+        walk admitted this. The oracle raises `InvalidUpdateError`.
+        """
+        b = BranchDefinition(
+            name="self-loop",
+            entry_point="a",
+            graph_nodes=[GraphNodeRef(id="a"), GraphNodeRef(id="tail")],
+            edges=[
+                EdgeDefinition(from_node="a", to_node="a"),
+                EdgeDefinition(from_node="a", to_node="tail"),
+            ],
+            node_defs=[
+                NodeDefinition(node_id="a-def", display_name="A"),
+                NodeDefinition(node_id="tail-def", display_name="Tail"),
+            ],
+        )
+        assert any("cycle without exit" in e for e in b.validate())
+
     def test_validate_cycle_with_exit_is_ok(self):
         """A cycle with a conditional exit to END should pass validation."""
         b = BranchDefinition(

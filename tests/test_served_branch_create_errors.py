@@ -411,6 +411,32 @@ def test_the_default_entry_point_is_the_node_nothing_points_at(served):
     assert stored["entry_point"] == "first"
 
 
+def test_an_explicit_start_edge_does_not_hide_the_head(served):
+    """Codex refute: `START -> first` made `first` look pointed-at.
+
+    With node order [second, first] every node then had an incoming edge, the
+    fallback returned `graph_nodes[0]` -- `second` -- and the runtime ran
+    `second` twice. START is where the run begins, not a predecessor.
+    """
+    out = _create(served, {
+        "name": "Explicit start",
+        "node_defs": [
+            {"node_id": "second", "prompt_template": "b"},
+            {"node_id": "first", "prompt_template": "a"},
+        ],
+        "edges": [
+            {"from": "START", "to": "first"},
+            {"from": "first", "to": "second"},
+        ],
+    })
+    assert _landed(out), out
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import get_branch_definition
+
+    stored = get_branch_definition(_base_path(), branch_def_id=out["branch_def_id"])
+    assert stored["entry_point"] == "first"
+
+
 def test_an_explicit_entry_point_is_never_overridden(served):
     out = _create(served, {
         "name": "Two step",
@@ -482,9 +508,34 @@ def test_a_real_cycle_with_no_exit_is_still_refused(served):
     assert "a" in joined and "b" in joined
 
 
-def test_a_cycle_that_can_reach_end_is_accepted(served):
+def test_a_loop_leaves_through_a_conditional_edge(served):
+    """The CORRECT way out of a loop: a router that can pick END."""
     out = _create(served, {
         "name": "Loop with exit",
+        "entry_point": "a",
+        "node_defs": [
+            {"node_id": "a", "prompt_template": "a"},
+            {"node_id": "b", "prompt_template": "b"},
+        ],
+        "edges": [{"from": "a", "to": "b"}],
+        "conditional_edges": [
+            {"from": "b", "conditions": {"done": "END", "retry": "a"}},
+        ],
+    })
+    assert _landed(out), out
+
+
+def test_a_second_plain_edge_to_end_does_not_leave_a_loop(served):
+    """A PRE-EXISTING false accept, found by Codex and confirmed by the oracle.
+
+    `a -> b`, `b -> a`, `b -> END` as three PLAIN edges was accepted before this
+    change. The installed langgraph raises `GraphRecursionError` on it: a plain
+    edge is unconditional, so `b -> a` and `b -> END` both fire and the loop
+    never ends. Refusing it at authoring time is strictly better than a
+    recursion error part-way through somebody's morning run.
+    """
+    out = _create(served, {
+        "name": "Loop with a plain END edge",
         "entry_point": "a",
         "node_defs": [
             {"node_id": "a", "prompt_template": "a"},
@@ -496,7 +547,51 @@ def test_a_cycle_that_can_reach_end_is_accepted(served):
             {"from": "b", "to": "END"},
         ],
     })
-    assert _landed(out), out
+    assert not _landed(out)
+    joined = " ".join(_errors(out))
+    assert "cycle" in joined.lower()
+    # And the error says what a plain edge does, so the fix is derivable.
+    assert "conditional edge" in joined and "always" in joined
+
+
+def test_a_self_loop_beside_a_terminating_node_is_refused(served):
+    """Codex refute: crediting implicit terminals admitted `a -> a` + `a -> tail`.
+
+    The oracle raises `InvalidUpdateError`: `a` fans out to itself and to
+    `tail` unconditionally, so it re-enters itself forever.
+    """
+    out = _create(served, {
+        "name": "Self loop",
+        "entry_point": "a",
+        "node_defs": [
+            {"node_id": "a", "prompt_template": "a"},
+            {"node_id": "tail", "prompt_template": "t"},
+        ],
+        "edges": [{"from": "a", "to": "a"}, {"from": "a", "to": "tail"}],
+    })
+    assert not _landed(out)
+    assert "cycle" in " ".join(_errors(out)).lower()
+
+
+def test_a_two_node_loop_beside_a_terminating_node_is_refused(served):
+    """Same class as the self-loop: `a <-> b` plus `a -> tail` (InvalidUpdateError)."""
+    out = _create(served, {
+        "name": "Loop plus tail",
+        "entry_point": "a",
+        "node_defs": [
+            {"node_id": "a", "prompt_template": "a"},
+            {"node_id": "b", "prompt_template": "b"},
+            {"node_id": "tail", "prompt_template": "t"},
+        ],
+        "edges": [
+            {"from": "a", "to": "b"},
+            {"from": "b", "to": "a"},
+            {"from": "a", "to": "tail"},
+        ],
+    })
+    assert not _landed(out)
+    joined = " ".join(_errors(out))
+    assert "a" in joined and "b" in joined
 
 
 def test_a_cycle_reached_from_a_terminal_free_node_is_still_refused(served):
@@ -523,6 +618,89 @@ def test_a_cycle_reached_from_a_terminal_free_node_is_still_refused(served):
     joined = " ".join(_errors(out))
     assert "cycle" in joined.lower()
     assert "b" in joined and "c" in joined
+
+
+# ---------------------------------------------------------------------------
+# Item 4, differentially: LangGraph itself is the oracle
+# ---------------------------------------------------------------------------
+
+#: (label, nodes, simple edges, conditional edges, does LangGraph terminate?)
+#:
+#: The answer column is MEASURED, not asserted from reading: each row is built
+#: as a real ``StateGraph`` and invoked. Both directions of this table were
+#: wrong at some point in one day -- the first two rows were refused by the
+#: original validator, and rows 3-5 were accepted by one or other version of
+#: the fix -- so the table is the executable spec for
+#: ``_nodes_that_cannot_terminate`` rather than a list of examples.
+_TERMINATION_TABLE = [
+    ("single node, no edges", ["n1"], [], {}, True),
+    ("chain, tail has no out-edge", ["a", "b"], [("a", "b")], {}, True),
+    ("self loop plus a tail", ["a", "t"], [("a", "a"), ("a", "t")], {}, False),
+    ("two-node loop plus a tail", ["a", "b", "t"],
+     [("a", "b"), ("b", "a"), ("a", "t")], {}, False),
+    ("loop with a PLAIN edge to END", ["a", "b"],
+     [("a", "b"), ("b", "a"), ("b", "END")], {}, False),
+    ("loop with a CONDITIONAL exit", ["a", "b"],
+     [("a", "b")], {"b": {"done": "END", "retry": "a"}}, True),
+    ("a -> b -> c -> b", ["a", "b", "c"],
+     [("a", "b"), ("b", "c"), ("c", "b")], {}, False),
+]
+
+
+def _langgraph_terminates(nodes, edges, conditional) -> bool:
+    """Build the shape for real and see whether `invoke` comes back."""
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+
+    state = TypedDict("S", {"x": str}, total=False)
+    graph = StateGraph(state)
+    for node in nodes:
+        graph.add_node(node, lambda s: {"x": "y"})
+    graph.add_edge(START, nodes[0])
+    for src, dst in edges:
+        graph.add_edge(src, END if dst == "END" else dst)
+    for src, mapping in conditional.items():
+        routes = {k: (END if v == "END" else v) for k, v in mapping.items()}
+        graph.add_conditional_edges(src, lambda s: next(iter(routes)), routes)
+    try:
+        compiled = graph.compile()
+        compiled.invoke({"x": ""}, {"recursion_limit": 12})
+    except Exception:  # noqa: BLE001 - any failure to finish is "does not terminate"
+        return False
+    return True
+
+
+@pytest.mark.parametrize("label,nodes,edges,conditional,terminates", _TERMINATION_TABLE)
+def test_langgraph_still_agrees_with_the_table(
+    label, nodes, edges, conditional, terminates,
+):
+    """The oracle column is re-measured, so an upgrade cannot silently rot it."""
+    assert _langgraph_terminates(nodes, edges, conditional) is terminates, label
+
+
+@pytest.mark.parametrize("label,nodes,edges,conditional,terminates", _TERMINATION_TABLE)
+def test_the_validator_agrees_with_langgraph(
+    served, label, nodes, edges, conditional, terminates,
+):
+    """DIFFERENTIAL: a shape builds here exactly when it runs there.
+
+    This is the assertion that would have caught both regressions in item 4 --
+    the original false refusal AND the false accepts the first fix introduced --
+    without anyone having to think of the specific graph.
+    """
+    spec = {
+        "name": f"oracle {label}",
+        "node_defs": [{"node_id": n, "prompt_template": n} for n in nodes],
+        "edges": [{"from": s, "to": d} for s, d in edges],
+    }
+    if conditional:
+        spec["conditional_edges"] = [
+            {"from": src, "conditions": mapping}
+            for src, mapping in conditional.items()
+        ]
+    out = _create(served, spec)
+    assert _landed(out) is terminates, (label, out.get("errors") or out)
 
 
 # ---------------------------------------------------------------------------

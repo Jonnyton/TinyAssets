@@ -1728,6 +1728,14 @@ def _suggest_entry_point(branch: Any) -> str:
         return ""
     incoming: set[str] = set()
     for e in branch.edges:
+        # An edge FROM START does not make its target "pointed at" -- START is
+        # where the run begins, so its target is the head, not a successor.
+        # Codex refute, PR #4108: with node order [second, first] and an
+        # explicit START -> first edge, `first` counted as having an incoming
+        # edge, every node did, and the fallback picked graph_nodes[0] --
+        # `second`, which the runtime then ran twice.
+        if e.from_node == "START":
+            continue
         if e.to_node and e.to_node != "START":
             incoming.add(e.to_node)
     for ce in getattr(branch, "conditional_edges", None) or ():
