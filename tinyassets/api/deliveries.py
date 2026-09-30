@@ -332,6 +332,12 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
         deliveries.transaction(base) as conn,
     ):
         link = dict(receiver_links._owned_link(conn, link_id, principal, universe_id))
+        # Same rule as in `_accept_output`, enforced on this path too because the
+        # byte copy runs ABOVE every acceptance fence: checking only there would
+        # copy a refused sender's files into the intake owner's custody first.
+        # One definition (`patch_intake.require_send_consent`), two paths -- the
+        # shape `_enforce_sender_rate_limit` already uses for the same reason.
+        _require_patch_intake_consent(universe_id, link["receiver_id"])
         _check_source(conn, source, link)
         receiver = dict(conn.execute(
             "SELECT * FROM graph_receivers WHERE receiver_id=?", (link["receiver_id"],),
@@ -444,6 +450,22 @@ def _revalidate_source_bindings(conn, source, transfer):
             raise run_file_crossowner.store.FileCustodyRefused("file_source_changed")
 
 
+def _require_patch_intake_consent(universe_id, receiver_id):
+    """Fence the platform-offered patch intake behind the owner's grant.
+
+    A thin adapter so the delivery path names one call and the rule itself has
+    one home (``tinyassets/patch_intake.py``). ``PatchIntakeConsentMissing`` is a
+    ``ValueError``, so the served action boundary already reports it as an
+    invalid delivery request with the reason, rather than as an outage.
+    """
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.patch_intake import require_send_consent
+
+    require_send_consent(
+        universe_dir=_universe_dir(universe_id), receiver_id=receiver_id
+    )
+
+
 def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outputs,
                    source=None, should_cancel=lambda: False):
     # Non-exact JSON fails before accepting or reserving a run. Without a trusted
@@ -463,6 +485,14 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
         deliveries.transaction(base) as conn,
     ):
         link = dict(receiver_links._owned_link(conn, link_id, principal, universe_id))
+        # The ONE receiver the platform itself put in front of this universe needs
+        # the owner's recorded yes before their words reach another user. Checked
+        # here rather than at connect time because this is where content actually
+        # crosses, so a grant taken back stops the next send even on a link that
+        # already exists. Every other receiver is one this universe found itself,
+        # where the receiving owner's exposure is the whole authority. Uniform for
+        # a replay too: a withdrawn consent must not be re-honoured by retrying.
+        _require_patch_intake_consent(universe_id, link["receiver_id"])
         if source is not None:
             _check_source(conn, source, link)
         branch = management._owned_branch(base, universe_id, link["branch_def_id"], principal)

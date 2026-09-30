@@ -508,6 +508,73 @@ def list_pending(universe_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
         return []
 
 
+def find_by_action_type(
+    universe_dir: Path, action_type: str, *, limit: int = 0
+) -> list[dict[str, Any]]:
+    """Every request of one ACTION TYPE, any status, newest first.
+
+    For deciding whether a platform-seeded ask is owed. ``dedupe_key`` cannot
+    answer that: it is a hash of the rendered text, so rewording a title makes
+    every past answer stop matching and a user who already declined gets asked
+    again on the next deploy. The action's type (and the identifier inside it) is
+    what the decision was actually about.
+
+    ``limit=0`` means NO limit, and it is the default. A capped history is not a
+    sound basis for "has this already been decided": with a cap of 50, fifty
+    newer asks of the same type hid an earlier refusal and the platform re-asked
+    it (gpt-6-astra refute round on PR #4121). The result set is bounded by the
+    number of distinct asks of one action type, which is small by construction,
+    not by how long the universe has existed.
+
+    ``LIKE`` is a cheap prefilter over the JSON column; the type is then compared
+    exactly against the parsed action, so a request whose BODY happens to quote
+    the type never matches. The prefilter reads ``action_json`` only, so nothing
+    a user or agent writes in a title or body can reach it.
+    """
+    if not action_type:
+        return []
+    sql = f"{_SELECT} WHERE action_json LIKE ? ORDER BY created_at DESC"
+    params: tuple[Any, ...] = (f'%"{action_type}"%',)
+    if limit:
+        sql += " LIMIT ?"
+        params += (max(1, int(limit)),)
+    try:
+        with _db(universe_dir) as conn:
+            rows = conn.execute(sql, params).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.warning("pending_requests: find_by_action_type failed", exc_info=True)
+        return []
+    found = [_project(row) for row in rows]
+    return [row for row in found if (row["action"] or {}).get("type") == action_type]
+
+
+def retire_platform_request(
+    universe_dir: Path, request_id: str, *, reason: str = ""
+) -> bool:
+    """The PLATFORM takes down an ask of its own that no longer applies.
+
+    The twin of ``withdraw_request``, which moves only ``origin='agent'`` rows so
+    the agent cannot clear an ask raised for it. This moves only
+    ``origin='platform'`` rows, for the mirror-image reason: when the thing the
+    platform was offering changes, the obsolete card has to go, and neither
+    ``answered`` nor ``dismissed`` is honest about it -- the owner decided
+    nothing. Writes no standing decision and emits no answered event, so nothing
+    downstream reads it as a reply.
+    """
+    try:
+        with _db(universe_dir) as conn:
+            cur = conn.execute(
+                "UPDATE pending_requests SET status = 'withdrawn', feedback = ?, "
+                "resolved_at = ? WHERE request_id = ? AND status = 'pending' "
+                "AND origin = ?",
+                (reason or None, time.time(), request_id, ORIGIN_PLATFORM),
+            )
+            return cur.rowcount > 0
+    except Exception:  # noqa: BLE001
+        logger.warning("pending_requests: retire_platform failed", exc_info=True)
+        return False
+
+
 def resolve_request(
     universe_dir: Path,
     request_id: str,
@@ -823,6 +890,7 @@ __all__ = [
     "MAX_ITEMS",
     "MAX_PENDING",
     "create_request",
+    "find_by_action_type",
     "get_request",
     "list_pending",
     "list_resolved",
@@ -831,6 +899,7 @@ __all__ = [
     "record_unmute",
     "resolve_item",
     "resolve_request",
+    "retire_platform_request",
     "unsuppress",
     "withdraw_request",
 ]

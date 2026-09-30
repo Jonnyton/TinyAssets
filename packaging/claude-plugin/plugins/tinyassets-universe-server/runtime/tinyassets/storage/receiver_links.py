@@ -394,6 +394,30 @@ def discover_receivers(base_path, *, principal_id, query="", limit=25):
     return {"receivers": [_receiver_view(row) for row in matched[:limit]]}
 
 
+def sender_is_permitted(base_path, *, receiver_id, sender_id) -> bool:
+    """Whether this principal could actually deliver here, right now.
+
+    The same ``_permitted_receiver`` question delivery asks, exposed so a caller
+    deciding whether a connection is worth offering does not have to reconstruct
+    it from a view. Reconstruction was wrong: the SENDER-facing
+    ``_receiver_view`` deliberately omits ``allowed_senders``, so
+    ``open_to_all or sender in allowed_senders`` reads False for a receiver that
+    names this sender explicitly -- refusing a sender who can in fact deliver.
+
+    Read-only and boolean by design: it discloses nothing about WHY, matching
+    the uniform ``receiver_or_link_not_found`` envelope. Never authority for an
+    acceptance -- that must call ``resolve_link_in_transaction`` in its own
+    transaction, as this module's header says.
+    """
+    _name(sender_id)
+    with transaction(base_path) as conn:
+        try:
+            _permitted_receiver(conn, receiver_id, sender_id)
+        except ReceiverAccessDenied:
+            return False
+    return True
+
+
 def revoke_receiver(base_path, *, receiver_id, owner_id, universe_id, expected_generation):
     _name(owner_id)
     with transaction(base_path) as conn:
