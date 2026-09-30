@@ -721,3 +721,120 @@ def test_last_wake_is_only_a_wake_this_subscription_stored(home: Path) -> None:
     )
     out = _read(home, "get", automation_id=sub.automation_id)["automation"]
     assert "last_wake" not in out, out
+
+
+# -- the recovery sweep interrupts only what a dead process left --------------
+
+
+@pytest.fixture
+def recovery(home: Path, monkeypatch):
+    """A fresh process's once-only recovery, pointed at `home`."""
+    import os
+
+    from tinyassets.api import runs as api_runs
+
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_DONE", False)
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_LOCK", None)
+    monkeypatch.setattr(api_runs, "_base_path", lambda: home)
+    yield api_runs
+    held = api_runs._RUNS_RECOVERY_LOCK
+    if held is not None and held.fd is not None:
+        os.close(held.fd)
+
+
+def _started_before_this_process(base: Path, run_id: str) -> None:
+    """The run was started by the process a deploy killed."""
+    from tinyassets.runs import PROCESS_STARTED_AT, runs_db_path
+
+    with sqlite3.connect(runs_db_path(base)) as conn:
+        conn.execute("UPDATE runs SET started_at = ? WHERE run_id = ?",
+                     (PROCESS_STARTED_AT - 60, run_id))
+
+
+def _status(base: Path, run_id: str) -> str:
+    from tinyassets.runs import get_run
+
+    return get_run(base, run_id)["status"]
+
+
+def test_recovery_interrupts_a_dead_processes_run_but_never_a_live_one(
+    home: Path, recovery,
+) -> None:
+    """Live 2026-09-30 03:19:22: the first run tool used in an engine MCP child
+    swept every queued/running row. It marked the founder's live background run
+    interrupted, announced that, and the loop's subscription stored a wake while
+    the run was still going; its real completion was then never announced."""
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    dead = _start(home, actor=OWNER)
+    _started_before_this_process(home, dead)
+    live = _start(home, actor=OWNER)
+
+    with _as(None):  # boot: no request is bound
+        recovery._ensure_runs_recovery()
+
+    assert _status(home, dead) == "interrupted"
+    assert _status(home, live) == RUN_STATUS_RUNNING
+    [wake] = _wakes(home)
+    assert (wake.inputs["event"]["run_id"], wake.inputs["event"]["outcome"]) == (
+        dead, "interrupted",
+    ), "a deploy-killed run is announced, so the owner's loop survives the deploy"
+
+    with _as("acct_stranger"):
+        update_run_status(home, live, status=RUN_STATUS_COMPLETED, finished_at=1.0)
+    announced = sorted((w.inputs["event"]["run_id"], w.inputs["event"]["outcome"])
+                       for w in _wakes(home))
+    assert announced == sorted([(dead, "interrupted"), (live, "completed")])
+
+
+def test_a_process_without_the_recovery_lock_sweeps_nothing(
+    home: Path, recovery,
+) -> None:
+    """The server holds the lock for its life; its engine children never sweep."""
+    import subprocess
+    import sys
+    import textwrap
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    dead = _start(home, actor=OWNER)
+    _started_before_this_process(home, dead)
+    holder = subprocess.Popen(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", textwrap.dedent(f"""
+            import sys
+            from pathlib import Path
+            from tinyassets.singleton_lock import acquire_singleton_lock
+            lock = acquire_singleton_lock(Path({str(home)!r}) / ".run_recovery.lock")
+            print("held" if lock.acquired else "refused", flush=True)
+            sys.stdin.readline()
+        """)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with _as(None):
+            recovery._ensure_runs_recovery()
+    finally:
+        holder.stdin.write("\n")
+        holder.stdin.flush()
+        holder.wait(timeout=30)
+    assert _status(home, dead) == RUN_STATUS_RUNNING
+    assert _wakes(home) == []
+
+
+def test_a_failed_recovery_is_retried_on_the_next_run_tool(
+    home: Path, recovery, monkeypatch,
+) -> None:
+    import tinyassets.runs as runs_module
+
+    calls: list[float | None] = []
+
+    def flaky(base, *, started_before=None):
+        calls.append(started_before)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return 0
+
+    monkeypatch.setattr(runs_module, "recover_in_flight_runs", flaky)
+    recovery._ensure_runs_recovery()
+    assert recovery._RUNS_RECOVERY_DONE is False
+    recovery._ensure_runs_recovery()
+    assert recovery._RUNS_RECOVERY_DONE is True and len(calls) == 2

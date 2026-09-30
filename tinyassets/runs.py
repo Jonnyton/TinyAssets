@@ -62,6 +62,11 @@ RUN_STATUS_COMPLETED = "completed"
 RUN_STATUS_FAILED = "failed"
 RUN_STATUS_CANCELLED = "cancelled"
 RUN_STATUS_INTERRUPTED = "interrupted"
+
+#: When this process could first have created a run: every run it creates
+#: starts after this. A recovery sweep uses it so a process never interrupts a
+#: run it is executing itself.
+PROCESS_STARTED_AT = time.time()
 RUN_STATUS_RESUMED = "resumed"
 
 NODE_STATUS_PENDING = "pending"
@@ -313,7 +318,6 @@ def _reset_workspace_reconciliation_after_fork() -> None:
 if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
     os.register_at_fork(after_in_child=_reset_workspace_reconciliation_after_fork)
 _WORKSPACE_SWEEP_INTERVAL_S = 30.0
-_WORKSPACE_PROCESS_STARTED_AT = time.time()
 #: Every workspace failure class the executor classifies (design D6): one
 #: actionable class per refusal, all the universe's to act on.
 WORKSPACE_FAILURE_KINDS: tuple[str, ...] = (
@@ -1337,6 +1341,11 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_base, local_owed=owed
         )
+    # Deliberately NOT announced: this is a guess from a missing local Future
+    # and elapsed time, not proof the owner died, and a run it wrongly ends can
+    # still finish and announce itself -- two wakes, two chains of an owner's
+    # loop (Codex refute 2026-09-30, P1). See
+    # docs/concerns/2026-09-30-run-liveness-has-no-owner-proof.md.
     if count:
         logger.info("Recovered %d orphaned in-flight runs on read", count)
     return count
@@ -6653,11 +6662,16 @@ def _invoke_graph_resume(
     )
 
 
-def recover_in_flight_runs(base_path: str | Path) -> int:
+def recover_in_flight_runs(
+    base_path: str | Path, *, started_before: float | None = None,
+) -> int:
     """Interrupt legacy unowned in-flight rows, not family/prepared executions.
 
     Called at TinyAssets Server startup to clean up runs that were in
     flight when the server died. Returns the number of rows updated.
+    ``started_before`` limits the sweep to rows started before that instant:
+    the boot sweep passes this process's start, so a run it began itself is
+    never taken for a dead one.
 
     v1 contract: ``interrupted`` is terminal. Callers rerun with the
     same ``inputs_json`` to continue; the MCP surface exposes this via
@@ -6677,8 +6691,10 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
             "SELECT run_id, status, queue_universe_id, branch_def_id, actor, "
             "cause_principal FROM runs WHERE status IN (?, ?) "
             "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
-            "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
-            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
+            "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion
+            + ("" if started_before is None else " AND started_at < ?"),
+            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING)
+            + (() if started_before is None else (float(started_before),)),
         ).fetchall()
         # A run still waiting for the workspace never executed a node: it keeps
         # its place instead of being interrupted, and is nominated below.
