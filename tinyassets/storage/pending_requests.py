@@ -299,6 +299,37 @@ def list_pending(universe_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
         return []
 
 
+def find_by_action_type(
+    universe_dir: Path, action_type: str, *, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Every request of one ACTION TYPE, any status, newest first.
+
+    For deciding whether a platform-seeded ask is owed. ``dedupe_key`` cannot
+    answer that: it is a hash of the rendered text, so rewording a title makes
+    every past answer stop matching and a user who already declined gets asked
+    again on the next deploy. The action's type (and the identifier inside it) is
+    what the decision was actually about.
+
+    ``LIKE`` is a cheap prefilter over the JSON column; the type is then compared
+    exactly against the parsed action, so a request whose BODY happens to quote
+    the type never matches.
+    """
+    if not action_type:
+        return []
+    try:
+        with _db(universe_dir) as conn:
+            rows = conn.execute(
+                f"{_SELECT} WHERE action_json LIKE ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (f'%"{action_type}"%', max(1, int(limit))),
+            ).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.warning("pending_requests: find_by_action_type failed", exc_info=True)
+        return []
+    found = [_project(row) for row in rows]
+    return [row for row in found if (row["action"] or {}).get("type") == action_type]
+
+
 def resolve_request(
     universe_dir: Path,
     request_id: str,
@@ -474,6 +505,7 @@ __all__ = [
     "FIELD_TYPES",
     "MAX_PENDING",
     "create_request",
+    "find_by_action_type",
     "get_request",
     "list_pending",
     "list_resolved",

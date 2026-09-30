@@ -60,6 +60,11 @@ import logging
 import re
 from typing import Any
 
+#: One definition, imported rather than repeated. ``tinyassets.patch_intake``
+#: pulls in nothing from ``tinyassets`` at import time, so this is the only
+#: module-level project import here and it cannot cycle.
+from tinyassets.patch_intake import ACTION_TYPE as PATCH_INTAKE_ACTION
+
 logger = logging.getLogger(__name__)
 
 _MAX_KIND_CHARS = 24
@@ -194,6 +199,8 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         return validate_action({**action, "type": kind})
     if kind == "grant_workspace_consent":
         return _validated_workspace_consent(action)
+    if kind == PATCH_INTAKE_ACTION:
+        return _validated_patch_intake(action)
     if kind == "extend_http":
         # Widening a grant the user already funded. No secret is involved: the
         # vault keeps the one they deposited, and answering this request IS the
@@ -283,8 +290,8 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     if kind != "connect_http":
         raise ValueError(
             "action type must be answer, connect, connect_http, extend_http, "
-            "rotate_http, remove_http, grant_workspace_consent or "
-            "bind_model_access"
+            "rotate_http, remove_http, grant_workspace_consent, "
+            f"{PATCH_INTAKE_ACTION} or bind_model_access"
         )
 
     destination = str(action.get("destination") or "").strip().lower()
@@ -349,6 +356,45 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         "access": "exact",
         **git_host,
     }
+
+
+def _validated_patch_intake(action: dict[str, Any]) -> dict[str, Any]:
+    """The platform's own "may I report gaps to <intake>?" ask.
+
+    It carries a receiver id and a display label and NOTHING else -- no
+    endpoints, no scheme, no secret -- because the connection it creates is one
+    grant naming one receiver. An extra key is refused rather than dropped: the
+    tab's promise is what gets granted, so a field nobody validated must not
+    ride along on the row the answer executes.
+
+    The receiver id is validated for SHAPE here. Whether it is the intake this
+    deployment offers is re-checked at answer time against the configuration,
+    because a stored row outlives the value it was created under.
+    """
+    from tinyassets.patch_intake import (
+        _MAX_LABEL_CHARS,
+        _RECEIVER_ID_RE,
+        DEFAULT_LABEL,
+    )
+
+    receiver_id = str(action.get("receiver_id") or "").strip()
+    if not _RECEIVER_ID_RE.match(receiver_id):
+        raise ValueError(
+            "receiver_id must be 8-128 characters of [A-Za-z0-9._:-] naming one "
+            "receiver"
+        )
+    label = str(action.get("label") or DEFAULT_LABEL).strip()
+    if not label or len(label) > _MAX_LABEL_CHARS or not label.isprintable():
+        raise ValueError(
+            f"label must be 1-{_MAX_LABEL_CHARS} printable characters on one line"
+        )
+    extra = sorted(set(action) - {"type", "receiver_id", "label"})
+    if extra:
+        raise ValueError(
+            f"a {PATCH_INTAKE_ACTION} ask carries a receiver_id and a label and "
+            "nothing else (got " + ", ".join(repr(name) for name in extra) + ")"
+        )
+    return {"type": PATCH_INTAKE_ACTION, "receiver_id": receiver_id, "label": label}
 
 
 def _validated_git_host(action: dict[str, Any]) -> dict[str, str]:
@@ -689,7 +735,8 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                 "'help' saying where to find it and a 'url' to that page) -- "
                 "not one unlabelled box for the owner to work out"
             )
-        if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent"):
+        if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent",
+                              PATCH_INTAKE_ACTION):
             # Nothing to type. For extend_http the key is already in the vault
             # and for remove_http it is on its way out; either way this is a
             # yes/no, and a paste box on a removal would be nonsense.
@@ -1330,6 +1377,19 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             f"{action.get('repo')} on {host} with the key you already "
             "gave. Nothing to paste; this is the yes."
         )
+    if action.get("type") == PATCH_INTAKE_ACTION:
+        label = str(action.get("label") or "").strip()
+        if not label:
+            return (
+                "This request does not say which intake it would connect to, so "
+                "it cannot be granted. Ask again."
+            )
+        return (
+            f"Let this universe send problem reports to {label} -- what it was "
+            "trying to do and what was missing. Only that one place, only what it "
+            "sends, and nothing else of yours. Nothing to paste; this is the yes, "
+            "and you can take it back."
+        )
     if action.get("type") == "connect" and "setup" in action:
         # The synthesized setup entry grants nothing itself; each shape it
         # completes raises (or answers) its own exact request.
@@ -1664,6 +1724,7 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     """
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path
+    from tinyassets.patch_intake import rail_view, seed_consent_request
     from tinyassets.storage.pending_requests import (
         list_pending,
         list_resolved,
@@ -1674,6 +1735,19 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     uid, udir, denied = _owner_gate(universe_id)
     if denied is not None:
         return denied
+    # The offered patch intake, and whether this universe holds its grant. On the
+    # rail because the agent polls the rail anyway: current, costs no per-round
+    # tool-description bytes, and specific enough that a universe never invents a
+    # credential ask for an address that needs no credential.
+    #
+    # Read BEFORE the listing and handed to the seeder, so one poll opens the
+    # consent store once: the entry the platform owes this universe is then in
+    # the very first rail read of a new account (the same reason the
+    # model-connect entry is synthesized here), and an existing user gets it on
+    # their next sign-in with no migration. Idempotent, and never raises.
+    intake = rail_view(udir)
+    if intake is not None:
+        seed_consent_request(uid, udir, view=intake)
     rows = list_pending(udir, limit=limit)
     # Prepended, not stored: derived from current serving authority, so it
     # cannot go stale, cannot be dismissed into a state where the universe is
@@ -1689,6 +1763,7 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
         "universe_id": uid,
         "pending": [{**r, "grant_sentence": _grant_sentence(r)} for r in rows],
         "count": len(rows),
+        **({"patch_intake": intake} if intake is not None else {}),
         "recently_answered": [
             {k: v for k, v in r.items() if k != "action"}
             for r in list_resolved(udir, limit=5)
@@ -1879,6 +1954,107 @@ def _grant_workspace_consent(
     }
 
 
+def _grant_patch_intake(
+    *,
+    uid: str,
+    udir: Any,
+    row: dict[str, Any],
+    action: dict[str, Any],
+    request_id: str,
+    answer: dict[str, Any],
+    feedback: str,
+) -> dict[str, Any]:
+    """Record the one send-only grant the owner just gave, and prove it can work.
+
+    Three things are checked before anything is written, and each one leaves the
+    request PENDING rather than consuming the owner's yes on a grant that would
+    do nothing (the shape ``_grant_workspace_consent`` established):
+
+    * the row still names the intake this deployment offers -- a stored ask
+      outlives the configuration it was created under, and a grant for a
+      retired address authorizes nothing;
+    * the intake is actually there and not revoked;
+    * it accepts THIS sender. An intake that is merely discoverable lets a
+      sender read its terms while delivery refuses, so granting against one
+      would hand the owner a connection that cannot send. Refused with the
+      reason instead.
+
+    The reachability read runs as the answering owner's own principal through
+    the ordinary receiver read, so it discloses exactly what any sender may see
+    and nothing about the intake owner's graph.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.patch_intake import (
+        _intake_or_none,
+        grant_send_consent,
+    )
+    from tinyassets.storage import receiver_links as receiver_store
+    from tinyassets.storage.pending_requests import resolve_request
+
+    intake = _intake_or_none("answering the seeded request")
+    receiver_id = str(action.get("receiver_id") or "")
+    if intake is None or intake["receiver_id"] != receiver_id:
+        return {
+            "error": "patch_intake_changed",
+            "detail": (
+                "this request names an intake this platform no longer offers, so "
+                "approving it would grant nothing; it will be re-offered with the "
+                "current one"
+            ),
+            "request_pending": True,
+        }
+    actor = permissions.current_actor_id().strip()
+    try:
+        receiver = receiver_store.inspect_receiver(
+            _base_path(), receiver_id=receiver_id, principal_id=actor,
+        )
+    except (receiver_store.ReceiverAccessDenied, ValueError):
+        return {
+            "error": "patch_intake_unreachable",
+            "detail": (
+                f"the {intake['label']} intake is not reachable from this "
+                "account right now, so there is nothing to connect to; the "
+                "request stays open and you can approve it once it is back"
+            ),
+            "request_pending": True,
+        }
+    if receiver.get("revoked") or not (
+        receiver.get("open_to_all")
+        or actor in (receiver.get("allowed_senders") or [])
+    ):
+        return {
+            "error": "patch_intake_closed",
+            "detail": (
+                f"the {intake['label']} intake is not accepting reports from "
+                "this account, so approving this would grant a connection that "
+                "cannot send; the request stays open"
+            ),
+            "request_pending": True,
+        }
+    grant = grant_send_consent(udir, receiver_id=receiver_id, granted_by=actor)
+    if not resolve_request(
+        udir, request_id, status="answered", answer=answer, feedback=feedback,
+        dont_ask_again=False, decision="allowed",
+    ):
+        return {"error": "request_resolution_unconfirmed", "request_pending": True}
+    return {
+        "status": "answered",
+        "decision": "allowed",
+        "request_id": request_id,
+        "universe_id": uid,
+        # The address and its contract, so the universe can wire its own step to
+        # it in the same turn instead of going looking for the id again.
+        "receiver_id": receiver_id,
+        "receiver_generation": receiver.get("generation"),
+        "contract": receiver.get("contract"),
+        "grant": {"sink": grant["sink"], "destination": grant["destination"]},
+        "receipt": _grant_sentence(row),
+        "secret_reused": True,
+        "suppressed": False,
+    }
+
+
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """The user's answer.
 
@@ -2057,6 +2233,21 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             return {"error": "request_resolution_unconfirmed", "request_pending": True}
         return {**result, "status": "answered", "request_id": request_id,
                 "receipt": _grant_sentence(row), "secret_reused": True, "suppressed": False}
+    if action.get("type") == PATCH_INTAKE_ACTION:
+        if row["fields"] or values:
+            return _bad(
+                "connecting the patch intake is a fieldless owner confirmation; "
+                "there is nothing to paste"
+            )
+        return _grant_patch_intake(
+            uid=_uid,
+            udir=udir,
+            row=row,
+            action=action,
+            request_id=request_id,
+            answer=answer,
+            feedback=feedback,
+        )
     if action.get("type") == "grant_workspace_consent":
         return _grant_workspace_consent(
             udir=udir,

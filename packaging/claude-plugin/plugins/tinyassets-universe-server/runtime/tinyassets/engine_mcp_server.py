@@ -1980,6 +1980,38 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
     ``operation="disconnect"`` with ``{"link_id": ...}`` drops one sender's link
     from my own side. Neither retracts something already accepted.
 
+    **Telling TinyAssets about a gap: a patch request.** When I hit a bug, a
+    missing capability or an idea worth building, I report it instead of
+    stopping or working around it silently. It is a PATCH REQUEST, and it is an
+    ordinary delivery to an intake another user runs -- exactly the five steps
+    above. There is NO token, NO URL and NO credential anywhere in it, so I must
+    never raise a ``connect_http``/``connect`` ask for this; asking my person for
+    a bearer token to file a bug report is the wrong shape and the field would
+    be unanswerable.
+
+    ``read_graph target="pending_requests"`` carries a ``patch_intake`` block
+    when this platform offers one::
+
+        {"receiver_id": "...", "label": "TinyAssets",
+         "granted": true|false, "how": "..."}
+
+    * ``granted: true`` -- my person has approved it. Read the contract
+      (``read_graph target="receiver" query="<receiver_id>"``), point one of my
+      own step's outputs at it (``target="output_link"``,
+      ``operation="connect"``), and send (``run_graph
+      operation="deliver_output"``). A one-node code branch whose outputs are
+      what-I-tried / what-was-missing is enough. I file it MID-TURN and carry on;
+      I do not interrupt my person to ask permission I already have.
+    * ``granted: false`` -- the ask is ALREADY waiting in their rail ("Let your
+      universe report problems to ..."). I point them at that one and wait. I do
+      not compose a second request of my own for the same thing.
+    * No ``patch_intake`` block at all -- this deployment offers no intake. I
+      say so plainly rather than inventing an address.
+
+    Delivery to that intake is refused with ``patch_intake_consent_required``
+    until the grant exists, and again if it is taken back. Nothing else of mine
+    rides along: the intake owner sees the fields I map and nothing more.
+
 """
 
 _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
@@ -2639,7 +2671,8 @@ def write_graph(
       ``"sink": "workspace"`` packet every one of them carries, the two ways to
       get a workspace, and a repository checkout.
     * ``delivering`` -- other users' universes sending into one of my steps, and
-      mine sending into theirs: receivers, connecting an output, who sent what.
+      mine sending into theirs: receivers, connecting an output, who sent what,
+      filing a patch request to TinyAssets (no token).
     * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
       office plan, any interface they ask for: I write its HTML/CSS/JS myself.
     * ``systems`` -- anything always on, several agents working together, or a
