@@ -1566,3 +1566,75 @@ def test_the_connections_chapter_teaches_the_capability_url_shape() -> None:
     assert URL_SECRET_FIELD_NAME in chapter
     # The failure mode, named, so the agent recognises the link when it sees one.
     assert "webhook" in chapter.lower()
+
+
+def test_the_chapters_own_example_actually_validates(base: Path) -> None:
+    """The served guidance is the ONLY thing the agent reads before composing a
+    card, so an example that does not validate is worse than no example.
+
+    This is the exact ask from the chapter, typed out from it -- not a
+    convenient paraphrase -- raised through the real door. Live 2026-09-30 the
+    universe's whole failure was following guidance that had nothing to say
+    about the link it had been handed; guidance that is merely present is not
+    the fix.
+    """
+    _make_universe(base, "u-owner", admin="founder")
+    _login("founder")
+
+    raised = _ask_request(
+        "u-owner",
+        action={
+            "type": "connect_http",
+            "destination": "bug-reports",
+            "auth_scheme": "url_secret",
+            "endpoints": [
+                {
+                    "host": "hooks.slack.com",
+                    "path_template": "/services/{secret+}",
+                    "methods": ["POST"],
+                }
+            ],
+        },
+        fields=[
+            {
+                "name": "capability_url",
+                "type": "secret",
+                "label": "Webhook URL",
+                "help": "the whole link they gave you, starting https://",
+            }
+        ],
+    )
+
+    assert raised.get("status") == "pending", raised
+    # And the packet shape the chapter teaches is the one the effector accepts.
+    from tinyassets.effectors.authenticated_external_call import (
+        _capability_url_shape_error,
+    )
+
+    assert (
+        _capability_url_shape_error(
+            "https://hooks.slack.com/services/{secret+}", _View(_URL_SECRET_SCHEME)
+        )
+        == ""
+    )
+
+
+def test_the_chapters_example_link_deposits_through_it(base: Path) -> None:
+    """...and a real Slack-shaped link pasted into that card yields the secret.
+
+    The chapter's endpoint is `/services/{secret+}` because Slack's secret is
+    three segments. If the multi-segment spelling did not round-trip, the
+    example would be teaching a shape that fails at the paste.
+    """
+    udir = _make_universe(base, "u-owner", admin="founder")
+    _login("founder")
+
+    result = _connect(
+        "u-owner",
+        secret=f"https://hooks.slack.com/services/{SLACK_SECRET}",
+        endpoints=_endpoints("hooks.slack.com", "/services/{secret+}"),
+    )
+
+    assert result["status"] == "provisioned", result
+    assert [r["token"] for r in _http_records(udir)] == [SLACK_SECRET]
+    assert SLACK_SECRET not in json.dumps(result)
