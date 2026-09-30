@@ -21,13 +21,17 @@ three input classes). Where a credential *ends* depends on how it *started*, so
 this splits the text into tokens and decides per token, with the decision made by
 structure rather than by any word in the sentence:
 
-1. a published credential prefix (``sk-``, ``ghp_``, ``xoxb-``, ``AKIA``…) --
-   providers publish these precisely so a token is recognisable;
-2. a JWT, a PEM private key block, or an HTTP auth header value;
-3. a URL, which is **parsed**: userinfo, or a path/query/fragment segment that is
+1. a JWT, a PEM private key block, or an HTTP auth header value;
+2. a URL, which is **parsed**: userinfo, or a path/query/fragment segment that is
    itself opaque, or a query parameter whose *name* says it is a secret;
+3. an encoding: hex or base64 key material, by alphabet and length;
 4. otherwise an opaque high-entropy run: long enough, not word-shaped, and with
    a per-character entropy no sentence reaches.
+
+**No provider is named anywhere in here.** A table of published prefixes
+(``ghp_``, ``xoxb-``, ``AKIA``…) was tried and deleted the same day: the
+substrate does not know about channels, and the table turned out to detect
+nothing the shape tests did not already catch on their own.
 
 **Nothing the old pattern caught may be let through.** It fired on any 16+
 character run of ``[A-Za-z0-9_-]``, so every length bar here is 16 rather than a
@@ -123,29 +127,17 @@ _MAX_CONSONANT_RUN = 5
 #: decimal digits is 66 bits.
 _MAX_DIGIT_RUN = 15
 
-#: Published credential prefixes. Matching one IS the finding -- the provider
-#: publishes the prefix so a leaked token is recognisable -- but a body must
-#: follow it, so the bare word ``sk-`` in a sentence is not a credential.
-_PREFIXES: tuple[str, ...] = (
-    "sk-", "sk_", "pk_live_", "pk_test_", "sk_live_", "sk_test_", "rk_live_",
-    "rk_test_", "whsec_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
-    "github_pat_", "glpat-", "gldt-", "glsoat-", "xoxb-", "xoxp-", "xoxa-",
-    "xoxs-", "xoxr-", "xoxe-", "xapp-", "hf_", "npm_", "dop_v1_", "doo_v1_",
-    "dor_v1_", "shpat_", "shpss_", "shpca_", "shppa_", "sq0atp-", "sq0csp-",
-    "lin_api_", "figd_", "figu_", "rpa_", "sgp_", "sl.", "ya29.", "gsk_",
-    "nvapi-", "r8_", "tvly-", "pplx-", "csk-", "AIza", "AKIA", "ASIA", "ABIA",
-    "ACCA", "SG.",
-)
-
-#: Prefixes whose match must respect case. AWS key ids and Google API keys are
-#: uppercase/CamelCase by specification; lowercasing them would let the English
-#: words ``akia``/``sg.`` (nonexistent, but the principle holds for a
-#: case-insensitive match on short prefixes) widen the net for nothing.
-_CASE_SENSITIVE_PREFIXES = frozenset({"AIza", "AKIA", "ASIA", "ABIA", "ACCA",
-                                      "SG."})
-
-#: The body a prefix must carry before the token counts as a credential.
-_MIN_PREFIX_BODY_CHARS = 8
+#: NO TABLE OF PROVIDER PREFIXES. A 54-entry one lived here for an afternoon --
+#: ``ghp_``, ``xoxb-``, ``github_pat_``, ``AKIA`` and the rest -- and
+#: ``check_channel_agnostic`` was right to refuse it: a channel is something a
+#: USER composes, and a substrate that names providers fails on the first API
+#: nobody enumerated. Deleting it cost nothing measurable, which is the argument.
+#: With ``_published_prefix`` stubbed out, all 26 real-secret vectors in
+#: ``tests/test_credential_shape.py`` were still refused -- every one of them by
+#: shape, and none of them only by its prefix. The table bought a prettier
+#: label, not a detection. (A prefix is low-entropy and public by design, so this
+#: is what one should expect: what makes ``ghp_16C7e42F…`` a secret is the part
+#: after the underscore, which is exactly what the shape tests read.)
 
 #: A JWT: three base64url segments, the first a base64url-encoded ``{"``.
 _JWT_RE = re.compile(r"^eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}$")
@@ -170,7 +162,7 @@ _SECRET_PARAM_NAMES = frozenset({
     "access_token", "api_key", "apikey", "auth", "auth_token", "client_secret",
     "credential", "id_token", "key", "password", "passwd", "pwd",
     "refresh_token", "secret", "sig", "signature", "sig_token", "token",
-    "x-amz-signature", "x-api-key",
+    "x-api-key",
 })
 
 #: The shortest query value that can be a secret worth refusing.
@@ -328,13 +320,10 @@ def _slot_shape(value: str) -> str | None:
 
 
 def _opaque_shape(token: str, *, minimum: int) -> str | None:
-    """Judge one run: published prefix, then encoding, then shape, then entropy."""
+    """Judge one run: encoding, then word shape, then entropy."""
     core = token.strip("._-")
     if not core:
         return None
-    prefixed = _published_prefix(core)
-    if prefixed is not None:
-        return prefixed
     # LENGTH ON THE RUN AS PASTED, shape on the trimmed core. Measuring the
     # trimmed core against the bar let a full-length token duck under it purely
     # because its last character was one of the trim set: a 20-character
@@ -358,17 +347,6 @@ def _opaque_shape(token: str, *, minimum: int) -> str | None:
     if _entropy_bits_per_char(core) < _MIN_ENTROPY_BITS:
         return None
     return "opaque_high_entropy"
-
-
-def _published_prefix(core: str) -> str | None:
-    """A published credential prefix carrying a body long enough to be a key."""
-    lowered = core.lower()
-    for prefix in _PREFIXES:
-        subject = core if prefix in _CASE_SENSITIVE_PREFIXES else lowered
-        needle = prefix if prefix in _CASE_SENSITIVE_PREFIXES else prefix.lower()
-        if subject.startswith(needle) and len(core) - len(prefix) >= _MIN_PREFIX_BODY_CHARS:
-            return "published_prefix"
-    return None
 
 
 def _word_shaped(core: str) -> bool:

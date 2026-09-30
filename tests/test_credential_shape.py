@@ -124,21 +124,21 @@ def _shape(*parts: str) -> str:
 
 
 SECRETS = [
-    (_shape("sk-ant-", "api03-abcdefghijklmnopqrstuvwxyz0123456789"), "published_prefix"),
+    (_shape("sk-ant-", "api03-abcdefghijklmnopqrstuvwxyz0123456789"), "opaque_high_entropy"),
     ("the key is " + _shape("sk-", "proj-9dKq3fZmRvT8yXaLpQwE2nBcHjUiOs"),
-     "published_prefix"),
-    (_shape("ghp", "_16C7e42F292c6912E7710c838347Ae178B4a"), "published_prefix"),
+     "opaque_high_entropy"),
+    (_shape("ghp", "_16C7e42F292c6912E7710c838347Ae178B4a"), "opaque_high_entropy"),
     (_shape("github_pat", "_11ABCDEFG0aBcDeFgHiJkL_mNoPqRsTuVwXyZ0123456789"),
-     "published_prefix"),
+     "opaque_high_entropy"),
     (_shape("xoxb", "-2345678901-2345678901234-AbCdEfGhIjKlMnOpQrStUvWx"),
-     "published_prefix"),
-    (_shape("sk_live", "_51H8ZqKLmNoPqRsTuVwXyZaBcDeFgHi"), "published_prefix"),
-    (_shape("glpat", "-AbCdEfGhIjKlMnOpQrSt"), "published_prefix"),
-    (_shape("hf", "_QwErTyUiOpAsDfGhJkLzXcVbNm123456"), "published_prefix"),
-    (_shape("whsec", "_8H3jKl9MnOpQrStUvWxYz012345"), "published_prefix"),
-    (_shape("AKIA", "IOSFODNN7EXAMPLE"), "published_prefix"),
-    (_shape("AIza", "SyD-abcdefghijklmnopqrstuvwxyz012345"), "published_prefix"),
-    (_shape("ya29.", "a0AfH6SMBx9Qp2LmVnRtZwKdHs4Fb7Yx"), "published_prefix"),
+     "opaque_high_entropy"),
+    (_shape("sk_live", "_51H8ZqKLmNoPqRsTuVwXyZaBcDeFgHi"), "opaque_high_entropy"),
+    (_shape("glpat", "-AbCdEfGhIjKlMnOpQrSt"), "opaque_high_entropy"),
+    (_shape("hf", "_QwErTyUiOpAsDfGhJkLzXcVbNm123456"), "opaque_high_entropy"),
+    (_shape("whsec", "_8H3jKl9MnOpQrStUvWxYz012345"), "opaque_high_entropy"),
+    (_shape("AKIA", "IOSFODNN7EXAMPLE"), "opaque_high_entropy"),
+    (_shape("AIza", "SyD-abcdefghijklmnopqrstuvwxyz012345"), "opaque_high_entropy"),
+    (_shape("ya29.", "a0AfH6SMBx9Qp2LmVnRtZwKdHs4Fb7Yx"), "opaque_high_entropy"),
     (_shape("eyJ", "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
             ".eyJzdWIiOiIxMjM0NTY3ODkwIn0",
             ".dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "jwt"),
@@ -184,7 +184,7 @@ def test_a_secret_hidden_inside_a_sentence_is_found():
     assert credential_shape(
         "sure, here it is: " + _shape("ghp", "_16C7e42F292c6912E7710c838347Ae178B4a")
         + " thanks"
-    ) == "published_prefix"
+    ) == "opaque_high_entropy"
 
 
 def test_a_bare_prefix_with_no_body_is_just_a_word():
