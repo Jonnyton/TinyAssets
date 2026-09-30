@@ -191,6 +191,29 @@ console.log(JSON.stringify({line:indicator().line, sent:converseCalls, beforeOld
 """
 
 
+_RETRY_ACROSS_ACCOUNTS = r"""
+globalThis.fetch=async(url,init)=>{
+  posts.push({url, body:JSON.parse(init.body)});
+  return {ok:false,status:401,json:async()=>({})};
+};
+globalThis.refreshAccessToken=async()=>{
+  // The page signs in as someone else while the renewal is in flight.
+  MCP._loginEpoch++; clearComposerState(); setQueueOwner("p-2");
+  return true;
+};
+const a=sendTurn("A");
+await settle();
+await interruptTurn(); await settle();
+console.log(JSON.stringify({posts:posts.length}));
+"""
+
+
+def test_a_stop_is_never_retried_under_another_accounts_credential(tmp_path, html):  # noqa: F811
+    """astra round 3: the 401 retry re-read authHeaders() after an account switch."""
+    out = _run_with_interrupt(tmp_path, html, {}, _RETRY_ACROSS_ACCOUNTS)
+    assert out["posts"] == 1, "the Stop was retried with the next account's credential"
+
+
 def test_a_stop_answer_for_another_account_is_never_painted(tmp_path, html):  # noqa: F811
     out = _run_with_interrupt(tmp_path, html, {}, _STOP_ACROSS_ACCOUNTS)
     assert "Could not stop" not in out["line"], (

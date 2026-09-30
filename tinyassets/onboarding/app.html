@@ -1779,8 +1779,8 @@
     // Fenced like every other answer: what this request may change belongs to
     // the turn, account and home it was pressed for.
     const mine=activeTurn, epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    const stillMine=()=>activeTurn===mine&&epoch===MCP._loginEpoch&&
-      owner===queueOwner&&scope===queueScope;
+    const sameAccount=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const stillMine=()=>activeTurn===mine&&sameAccount();
     interruptRequested=true; flushAfterInterrupt=true; renderStop();
     const waiting=sendQueue.length;
     setStatusLine("Stopping your universe's turn..."+(waiting
@@ -1792,7 +1792,13 @@
       body:JSON.stringify({universe_id:scope}),signal:abort?abort.signal:undefined});
     const request=(async()=>{
       let r=await post();
-      if(r.status===401 && await refreshAccessToken()) r=await post();
+      // A retry carries whatever credential is current THEN: never send it once
+      // the account or home has changed, or this Stop would be another
+      // account's (astra round 3).
+      if(r.status===401 && sameAccount() && await refreshAccessToken()){
+        if(!sameAccount()) return null;
+        r=await post();
+      }
       return r.ok?await r.json():null;
     })();
     // Bounded: a request that never answers must not hold the composer forever.
