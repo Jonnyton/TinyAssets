@@ -94,7 +94,9 @@ EVENT_TYPES = frozenset({EVENT_RUN_COMPLETED, EVENT_PENDING_REQUEST_ANSWERED})
 #: just has to be named.
 EVENT_FILTER_KEYS: dict[str, frozenset[str]] = {
     EVENT_RUN_COMPLETED: frozenset({"branch_def_id", "outcome", "run_id"}),
-    EVENT_PENDING_REQUEST_ANSWERED: frozenset({"request_id", "kind", "status"}),
+    EVENT_PENDING_REQUEST_ANSWERED: frozenset(
+        {"request_id", "kind", "status", "item_id"}
+    ),
 }
 EVENT_REQUIRED_FILTER_KEYS: dict[str, frozenset[str]] = {
     EVENT_RUN_COMPLETED: frozenset({"branch_def_id"}),

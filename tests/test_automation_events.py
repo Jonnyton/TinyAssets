@@ -418,6 +418,109 @@ def test_an_already_resolved_request_does_not_wake_twice(home: Path) -> None:
     assert len(_wakes(home)) == 1
 
 
+# -- pending_request_answered, one item at a time -----------------------------
+
+
+def _ask_with_items(base: Path, *item_ids: str) -> str:
+    """One request holding several answerable items, raised as the connector."""
+    from tinyassets.api.pending_requests import request_from_user
+
+    with _owner_request():
+        out = request_from_user(universe_id=UNIVERSE, payload=json.dumps({
+            "kind": "TODO", "title": "Today", "body": "A few things.",
+            "action": {"type": "answer"}, "fields": [],
+            "items": [
+                {"item_id": i, "title": f"Do {i}",
+                 "fields": [{"name": "note", "type": "text", "label": "Reply"}]}
+                for i in item_ids
+            ],
+        }))
+    assert out.get("request_id"), out
+    return out["request_id"]
+
+
+def test_an_item_answer_wakes_only_the_subscription_naming_that_item(
+    home: Path,
+) -> None:
+    from tinyassets.api.pending_requests import answer_request
+
+    follows_first = _subscribe(
+        home, "pending_request_answered", {"item_id": "first"},
+    )
+    follows_second = _subscribe(
+        home, "pending_request_answered", {"item_id": "second"},
+        branch_def_id=FOLLOWED,
+    )
+    request_id = _ask_with_items(home, "first", "second")
+
+    with _owner_request():
+        out = answer_request(universe_id=UNIVERSE, payload=json.dumps({
+            "request_id": request_id, "item_id": "first",
+            "values": {"note": "done"},
+        }))
+    assert out.get("status") == "answered", out
+    assert out["request_status"] == "pending"
+
+    [wake] = _wakes(home)
+    assert wake.branch_def_id == follows_first.branch_def_id
+    assert wake.inputs["event"]["item_id"] == "first"
+    # The request is still open, and the event says so, so a follower can tell
+    # "one task is done" from "the whole note is finished".
+    assert wake.inputs["event"]["status"] == "pending"
+    assert follows_second.automation_id != follows_first.automation_id
+
+
+def test_a_whole_request_answer_does_not_wake_an_item_subscription(
+    home: Path,
+) -> None:
+    """The pre-items payload is unchanged -- it carries no ``item_id`` at all --
+    so a filter naming one does not match every answer."""
+    from tinyassets.api.pending_requests import answer_request
+
+    _subscribe(home, "pending_request_answered", {"item_id": "first"})
+    request_id = _ask_with_items(home, "first", "second")
+
+    with _owner_request():
+        answer_request(universe_id=UNIVERSE, payload=json.dumps({
+            "request_id": request_id, "values": {},
+        }))
+
+    assert _wakes(home) == []
+
+
+def test_an_unfiltered_subscription_wakes_once_when_the_last_item_closes(
+    home: Path,
+) -> None:
+    """A closing item is ONE act: it must not wake an unfiltered follower twice
+    (once for the item, once for the request)."""
+    from tinyassets.api.pending_requests import answer_request
+
+    _subscribe(home, "pending_request_answered")
+    request_id = _ask_with_items(home, "only")
+
+    with _owner_request():
+        out = answer_request(universe_id=UNIVERSE, payload=json.dumps({
+            "request_id": request_id, "item_id": "only", "values": {"note": "x"},
+        }))
+    assert out["request_status"] == "answered"
+
+    [wake] = _wakes(home)
+    assert wake.inputs["event"]["item_id"] == "only"
+    assert wake.inputs["event"]["status"] == "answered"
+
+
+def test_an_item_answer_by_someone_else_wakes_nothing(home: Path) -> None:
+    from tinyassets.storage.pending_requests import resolve_item
+
+    _subscribe(home, "pending_request_answered")
+    request_id = _ask_with_items(home, "first")
+    with _as(BOB):
+        assert not resolve_item(
+            home / UNIVERSE, request_id, "first", status="answered",
+        ).get("error")
+    assert _wakes(home) == []
+
+
 # -- Registration ---------------------------------------------------------------
 
 
