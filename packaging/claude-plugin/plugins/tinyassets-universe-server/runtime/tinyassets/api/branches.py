@@ -898,7 +898,8 @@ def _branch_dependents(
                 for table in ("canonical_bindings", "goal_canonicals"):
                     if table in tables:
                         for row in conn.execute(
-                            f"SELECT goal_id FROM {table} WHERE branch_version_id IN ({placeholders})",
+                            f"SELECT goal_id FROM {table} "
+                            f"WHERE branch_version_id IN ({placeholders})",
                             params,
                         ):
                             goal_ids.add(str(row[0]))
@@ -909,7 +910,8 @@ def _branch_dependents(
                     columns = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
                     if "canonical_branch_version_id" in columns:
                         for row in conn.execute(
-                            f"SELECT goal_id FROM goals WHERE canonical_branch_version_id IN ({placeholders})",
+                            f"SELECT goal_id FROM goals "
+                            f"WHERE canonical_branch_version_id IN ({placeholders})",
                             params,
                         ):
                             goal_ids.add(str(row[0]))
@@ -1580,7 +1582,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     from tinyassets.daemon_server import list_branch_definitions
 
     my_versions = list_branch_versions(_base_path(), bid, limit=500)
-    my_version_ids = {v.branch_version_id for v in my_versions}
+    my_version_ids = {v.branch_version_id for v in my_versions
+                      if _resolve_readable_version(v.branch_version_id, str(_base_path()))}
     fork_descendants: list[dict[str, Any]] = []
     for b in list_branch_definitions(
         _base_path(),
@@ -1592,7 +1595,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
                 "branch_def_id": b["branch_def_id"],
                 "author": b.get("author", ""),
                 "published_versions_count": len(
-                    list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                    [v for v in list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                     if v.public]
                 ),
             })
 
@@ -4510,7 +4514,8 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
 
     # Find descendants: branches whose fork_from matches any version of this branch.
     versions = list_branch_versions(_base_path(), bid, limit=200)
-    version_ids = {v.branch_version_id for v in versions}
+    version_ids = {v.branch_version_id for v in versions
+                   if _resolve_readable_version(v.branch_version_id, str(_base_path()))}
     descendants: list[dict[str, Any]] = []
     all_branches = list_branch_definitions(
         _base_path(),
@@ -4525,7 +4530,8 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
                 "author": b.get("author", ""),
                 "fork_from_version": ff,
                 "published_versions_count": len(
-                    list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                    [v for v in list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                     if v.public]
                 ),
             })
 
@@ -4626,7 +4632,8 @@ rejected by the server; in an existing branch patch, pass `node_ref` /
 ## New-workflow authoring
 
 Create a Branch through `write_graph target="branch" operation="create"
-payload_json=...` with the complete spec below in `payload_json`. To remix, use operation `remix` and
+payload_json=...` with the complete spec below in `payload_json`.
+To remix, use operation `remix` and
 include a published `fork_from` version in the same spec. After validation,
 freeze it through operation `publish`; cloud automation binds only immutable
 published versions. Standalone node registration remains unavailable.

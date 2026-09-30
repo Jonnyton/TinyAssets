@@ -521,9 +521,14 @@ def _action_list_node_versions(kwargs: dict[str, Any]) -> str:
             "error": f"Node '{nid}' not found on branch '{bid}'.",
         })
 
+    # Edit audits have no publication mark: only the author may read them.
+    # A public branch exposes its current node, not previous private bodies.
+    from tinyassets.api.branches import _request_branch_actor
+
+    actor = _request_branch_actor()
     audits = list_node_edit_audits(
         _base_path(), branch_def_id=bid, node_id=nid, limit=200,
-    )
+    ) if actor and actor == source.get("author") else []
 
     current_version = int(branch.version or 1)
     versions: list[dict[str, Any]] = []

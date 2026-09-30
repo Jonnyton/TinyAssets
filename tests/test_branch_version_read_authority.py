@@ -201,3 +201,44 @@ def test_existing_rows_are_marked_by_how_they_were_minted(tmp_path: Path) -> Non
     initialize_branch_versions_db(tmp_path)
     assert [get_branch_version(tmp_path, v).public for v in ("b@1", "b@2", "b@3")] == [
         True, False, True]
+
+
+@pytest.mark.parametrize("action", ["fork_tree", "describe_branch"])
+def test_lineage_hides_unpublished_versions(
+    branch_authority_env, action,  # noqa: F811 - imported fixture
+):
+    from tinyassets.branch_versions import publish_branch_version
+
+    base, authenticate = branch_authority_env
+    branch = _seed_branch(base, branch_def_id="root", author="alice", node_ids=("s",))
+    private_version = publish_branch_version(base, branch, publisher="alice").branch_version_id
+    _seed_branch(base, branch_def_id="child", author="alice", fork_from=private_version)
+    authenticate("bob")
+    seen = _ext(action, branch_def_id="root")
+    assert "child" not in json.dumps(seen), seen
+    authenticate("alice")
+    assert "child" in json.dumps(_ext(action, branch_def_id="root"))
+
+
+def test_public_node_history_does_not_expose_private_edit_audits(
+    branch_authority_env,  # noqa: F811 - imported fixture
+):
+    from tinyassets.daemon_server import update_branch_definition
+    from tinyassets.runs import record_node_edit_audit
+
+    base, authenticate = branch_authority_env
+    branch = _seed_branch(base, branch_def_id="node-history", author="alice", node_ids=("s",))
+    current = branch["node_defs"][0]
+    record_node_edit_audit(
+        base, branch_def_id="node-history", version_before=1, version_after=2,
+        nodes_changed=["s"], node_before={**current, "prompt_template": SECRET},
+        node_after=current,
+    )
+    update_branch_definition(base, branch_def_id="node-history", updates={"version": 2})
+    authenticate("bob")
+    seen = _ext("list_node_versions", branch_def_id="node-history", node_id="s")
+    assert SECRET not in json.dumps(seen), seen
+    assert len(seen["versions"]) == 1
+    authenticate("alice")
+    assert SECRET in json.dumps(
+        _ext("list_node_versions", branch_def_id="node-history", node_id="s"))
