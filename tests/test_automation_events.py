@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -418,6 +419,109 @@ def test_an_already_resolved_request_does_not_wake_twice(home: Path) -> None:
     assert len(_wakes(home)) == 1
 
 
+# -- pending_request_answered, one item at a time -----------------------------
+
+
+def _ask_with_items(base: Path, *item_ids: str) -> str:
+    """One request holding several answerable items, raised as the connector."""
+    from tinyassets.api.pending_requests import request_from_user
+
+    with _owner_request():
+        out = request_from_user(universe_id=UNIVERSE, payload=json.dumps({
+            "kind": "TODO", "title": "Today", "body": "A few things.",
+            "action": {"type": "answer"}, "fields": [],
+            "items": [
+                {"item_id": i, "title": f"Do {i}",
+                 "fields": [{"name": "note", "type": "text", "label": "Reply"}]}
+                for i in item_ids
+            ],
+        }))
+    assert out.get("request_id"), out
+    return out["request_id"]
+
+
+def test_an_item_answer_wakes_only_the_subscription_naming_that_item(
+    home: Path,
+) -> None:
+    from tinyassets.api.pending_requests import answer_request
+
+    follows_first = _subscribe(
+        home, "pending_request_answered", {"item_id": "first"},
+    )
+    follows_second = _subscribe(
+        home, "pending_request_answered", {"item_id": "second"},
+        branch_def_id=FOLLOWED,
+    )
+    request_id = _ask_with_items(home, "first", "second")
+
+    with _owner_request():
+        out = answer_request(universe_id=UNIVERSE, payload=json.dumps({
+            "request_id": request_id, "item_id": "first",
+            "values": {"note": "done"},
+        }))
+    assert out.get("status") == "answered", out
+    assert out["request_status"] == "pending"
+
+    [wake] = _wakes(home)
+    assert wake.branch_def_id == follows_first.branch_def_id
+    assert wake.inputs["event"]["item_id"] == "first"
+    # The request is still open, and the event says so, so a follower can tell
+    # "one task is done" from "the whole note is finished".
+    assert wake.inputs["event"]["status"] == "pending"
+    assert follows_second.automation_id != follows_first.automation_id
+
+
+def test_a_whole_request_answer_does_not_wake_an_item_subscription(
+    home: Path,
+) -> None:
+    """The pre-items payload is unchanged -- it carries no ``item_id`` at all --
+    so a filter naming one does not match every answer."""
+    from tinyassets.api.pending_requests import answer_request
+
+    _subscribe(home, "pending_request_answered", {"item_id": "first"})
+    request_id = _ask_with_items(home, "first", "second")
+
+    with _owner_request():
+        answer_request(universe_id=UNIVERSE, payload=json.dumps({
+            "request_id": request_id, "values": {},
+        }))
+
+    assert _wakes(home) == []
+
+
+def test_an_unfiltered_subscription_wakes_once_when_the_last_item_closes(
+    home: Path,
+) -> None:
+    """A closing item is ONE act: it must not wake an unfiltered follower twice
+    (once for the item, once for the request)."""
+    from tinyassets.api.pending_requests import answer_request
+
+    _subscribe(home, "pending_request_answered")
+    request_id = _ask_with_items(home, "only")
+
+    with _owner_request():
+        out = answer_request(universe_id=UNIVERSE, payload=json.dumps({
+            "request_id": request_id, "item_id": "only", "values": {"note": "x"},
+        }))
+    assert out["request_status"] == "answered"
+
+    [wake] = _wakes(home)
+    assert wake.inputs["event"]["item_id"] == "only"
+    assert wake.inputs["event"]["status"] == "answered"
+
+
+def test_an_item_answer_by_someone_else_wakes_nothing(home: Path) -> None:
+    from tinyassets.storage.pending_requests import resolve_item
+
+    _subscribe(home, "pending_request_answered")
+    request_id = _ask_with_items(home, "first")
+    with _as(BOB):
+        assert not resolve_item(
+            home / UNIVERSE, request_id, "first", status="answered",
+        ).get("error")
+    assert _wakes(home) == []
+
+
 # -- Registration ---------------------------------------------------------------
 
 
@@ -502,3 +606,118 @@ def test_the_connector_surface_creates_and_projects_a_subscription(home: Path) -
     assert out["automation"]["next_due_at"] == ""
     assert refused["reason"] == "event_filter_invalid"
     assert "branch_def_id (required)" in refused["detail"]
+
+
+# -- the owner sees when a subscription last fired and what it produced -------
+
+
+def _read(home: Path, action: str, **kw) -> dict:
+    from tinyassets.api.automations import automations
+
+    with identity_context(Identity(
+        user_id=OWNER, username=OWNER,
+        capabilities=["tinyassets.universe.write", "tinyassets.universe.admin"],
+    )):
+        return automations(action=action, universe_id=UNIVERSE, **kw)
+
+
+def test_the_owner_sees_when_a_subscription_fired_and_what_its_wake_ran(
+    home: Path, monkeypatch,
+) -> None:
+    """Live 2026-09-28: the founder's run_completed subscription fired nine
+    times and its row still read last_* = '' -- a live subscription looked
+    exactly like a dead one."""
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    _finish(home, actor=OWNER)
+    [wake] = _wakes(home)
+    monkeypatch.setattr(automations_module, "_execute", _Graph())
+    _poll(home)
+
+    row = AutomationStore(home).get(sub.automation_id)
+    assert row.last_reason == f"woke:{wake.automation_id}"
+    assert row.last_due_at, "when it last fired"
+    assert row.revision == sub.revision, "a runtime record, not an owner edit"
+    assert due_automations(home, universe_id=UNIVERSE, now=datetime.now(timezone.utc)) == []
+
+    for out in (
+        _read(home, "get", automation_id=sub.automation_id)["automation"],
+        next(a for a in _read(home, "list", payload="{}")["automations"]
+             if a["automation_id"] == sub.automation_id),
+    ):
+        assert out["last_reason"] == f"woke:{wake.automation_id}", out
+        assert out["next_due_at"] == ""
+        last = out["last_wake"]
+        assert last["automation_id"] == wake.automation_id
+        assert last["last_run_id"] == "graph_run_1"
+        assert last["last_finished_at"] and last["retired_at"], last
+
+
+def test_a_refused_wake_is_recorded_on_the_subscription_row(home: Path) -> None:
+    from tinyassets.daemon_server import grant_universe_access
+
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    grant_universe_access(home, universe_id=UNIVERSE, actor_id=OWNER,
+                          permission="write", granted_by=OWNER)
+    _finish(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
+    row = AutomationStore(home).get(sub.automation_id)
+    assert row.last_reason == "event_wake_refused:owner_not_admin"
+    assert row.last_due_at
+
+
+def test_a_last_wake_is_read_only_from_the_subscriptions_own_universe(
+    home: Path,
+) -> None:
+    """The projection follows the recorded id, and only inside the universe."""
+    _seed_owner(home, universe_id=BOB_UNIVERSE, owner=BOB)
+    _seed_branch(home, branch_def_id=BOB_BRANCH, author=BOB)
+    from tests.test_automations import _copy_assignment_to
+
+    _copy_assignment_to(home, universe_id=BOB_UNIVERSE, owner=BOB)
+    with _as(BOB):
+        bobs = register_automation(
+            home, universe_id=BOB_UNIVERSE, owner_principal_id=BOB, name="bob",
+            branch_def_id=BOB_BRANCH, not_before="2026-01-01T00:00:00Z",
+        )
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    AutomationStore(home).record_event_fire(
+        sub.automation_id, reason=f"woke:{bobs.automation_id}",
+        now=datetime.now(timezone.utc),
+    )
+    out = _read(home, "get", automation_id=sub.automation_id)["automation"]
+    assert "last_wake" not in out, out
+    # And the record only lands on an event subscription.
+    AutomationStore(home).record_event_fire(
+        bobs.automation_id, reason="woke:x", now=datetime.now(timezone.utc),
+    )
+    assert AutomationStore(home).get(bobs.automation_id).last_reason == ""
+
+
+def test_a_late_older_fire_never_replaces_the_latest(home: Path) -> None:
+    """Two events race; the older one's record lands last (refute P2)."""
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    store = AutomationStore(home)
+    newer = datetime(2026, 9, 30, 12, 0, 5, tzinfo=timezone.utc)
+    store.record_event_fire(sub.automation_id, reason="woke:newer", now=newer)
+    store.record_event_fire(sub.automation_id, reason="event_wake_refused:x",
+                            now=newer.replace(second=1))
+    row = store.get(sub.automation_id)
+    assert (row.last_reason, row.last_due_at) == ("woke:newer", "2026-09-30T12:00:05+00:00")
+    assert row.updated_at >= "2026-09-30T12:00:05+00:00"
+
+
+def test_last_wake_is_only_a_wake_this_subscription_stored(home: Path) -> None:
+    """Same universe is not enough: another wake of the universe is not this
+    subscription's output (refute concern)."""
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    with _as(OWNER):
+        other = register_automation(
+            home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="manual",
+            branch_def_id=FOLLOWER, not_before="2026-01-01T00:00:00Z",
+            inputs={"event": {"subscription_id": "another_subscription"}},
+        )
+    AutomationStore(home).record_event_fire(
+        sub.automation_id, reason=f"woke:{other.automation_id}",
+        now=datetime.now(timezone.utc),
+    )
+    out = _read(home, "get", automation_id=sub.automation_id)["automation"]
+    assert "last_wake" not in out, out

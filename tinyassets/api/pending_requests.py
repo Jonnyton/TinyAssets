@@ -715,13 +715,22 @@ def _unusable_field_url(url: str) -> str:
     return ""
 
 
-def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
+def _validated_fields(
+    raw: Any, action: dict[str, Any], *, has_items: bool = False,
+) -> list[dict[str, Any]]:
     from tinyassets.storage.pending_requests import FIELD_TYPES
 
     fields = raw if isinstance(raw, list) else []
     if action["type"] == "bind_model_access":
         if raw not in (None, []):
             raise ValueError("model access is a fieldless owner confirmation")
+        return []
+    if not fields and has_items:
+        # The answerable parts ARE the items, each with its own fields, so an
+        # itemised note has nothing to type at the top level. Without this an
+        # ask with items and no top-level fields is refused outright ("a
+        # request needs at least one field"), which is every multi-item
+        # request (verified against the real handler, 2026-09-30).
         return []
     if not fields and _has_sign_in(action):
         # Signing in IS the answer; key fields, when present, are the fallback.
@@ -884,6 +893,107 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _notify_owner(uid: str, row: dict[str, Any]) -> None:
+    """Tell the owner's devices about a request that was just STORED.
+
+    Only a genuinely new pending row reaches here: a deduplicated ask returns
+    the existing row and a settled one returns a decision, and neither is a
+    new thing to be told about. The actor is the one ``_owner_gate`` already
+    verified, and dispatch re-checks it against the universe's admin owner
+    rather than trusting it.
+
+    Best effort by construction. Delivery is additive to a request that is
+    already durable and already in the rail, so nothing here may fail, delay
+    or alter the ask that caused it.
+    """
+    try:
+        from tinyassets.api import permissions
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.owner_notifications import notify_request_raised
+
+        notify_request_raised(
+            _base_path(), universe_id=uid,
+            raised_by=permissions.current_actor_id(), request=row,
+        )
+    except Exception:  # noqa: BLE001 - the ask is already stored; telling is a bonus
+        logger.warning(
+            "pending_requests: could not notify the owner of %s",
+            row.get("request_id"), exc_info=True,
+        )
+
+
+_ITEM_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+_MAX_ITEM_TITLE_CHARS = 120
+_MAX_ITEM_BODY_CHARS = 400
+
+
+def _validated_items(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
+    """The request's answerable items, or ValueError naming what is wrong.
+
+    One request that holds several things -- a note listing today's tasks --
+    instead of one tab per thing, which is what destroyed the grouping that
+    made it a note. Each item is answerable on its own.
+
+    ``item_id`` is the AGENT's, kept verbatim, because the universe has to
+    correlate an answer back to the thing it planned without re-reading the
+    request to learn what it just asked. It is a handle and never authority:
+    every read and write re-derives the principal, exactly as ``request_id``
+    does.
+
+    Items are only available on an ``answer`` action, and an item's fields go
+    through the same validator the request's own do -- which is what refuses a
+    ``secret`` field inside one. That is THE boundary from this module's
+    docstring, one level down: an item can never be the thing that deposits a
+    credential or widens a grant, so "compose them however you like" stays
+    safe at item granularity too.
+    """
+    from tinyassets.storage.pending_requests import MAX_ITEMS
+
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("items must be a list of objects")
+    if str(action.get("type") or "answer") != "answer":
+        raise ValueError(
+            "items are only available on an 'answer' request; an action that "
+            "deposits or changes a grant is one decision, not a checklist"
+        )
+    if len(raw) > MAX_ITEMS:
+        raise ValueError(f"a request may have at most {MAX_ITEMS} items")
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each item must be an object")
+        item_id = str(item.get("item_id") or "").strip()
+        if not _ITEM_ID_RE.fullmatch(item_id):
+            raise ValueError(
+                "each item needs an item_id of 1-64 lowercase letters, digits, "
+                "'_', '.' or '-', starting with a letter or digit -- you choose "
+                f"it and you read it back; got {item_id!r}"
+            )
+        if any(existing["item_id"] == item_id for existing in out):
+            # Duplicate ids would make one answer ambiguous, and the answer
+            # table's primary key would silently drop the second.
+            raise ValueError(f"item ids must be unique within a request: {item_id!r}")
+        title = str(item.get("title") or "").strip()[:_MAX_ITEM_TITLE_CHARS]
+        if not title:
+            raise ValueError(f"item {item_id!r} needs a title")
+        entry: dict[str, Any] = {"item_id": item_id, "title": title}
+        body = str(item.get("body") or "").strip()[:_MAX_ITEM_BODY_CHARS]
+        if body:
+            entry["body"] = body
+        if item.get("fields"):
+            try:
+                entry["fields"] = _validated_fields(item["fields"], {"type": "answer"})
+            except ValueError as exc:
+                raise ValueError(f"item {item_id!r}: {exc}") from exc
+        else:
+            # Nothing to type: an item the owner accepts, denies or replies to.
+            entry["fields"] = []
+        out.append(entry)
+    return out
+
+
 def request_from_user(
     *, universe_id: str = "", payload: Any = None, origin: str = "agent",
 ) -> dict[str, Any]:
@@ -932,7 +1042,13 @@ def request_from_user(
             return verdict
         action = {**action, **verdict}
     try:
-        fields = _validated_fields(document.get("fields"), action)
+        items = _validated_items(document.get("items"), action)
+    except ValueError as exc:
+        return _bad(str(exc))
+    try:
+        fields = _validated_fields(
+            document.get("fields"), action, has_items=bool(items),
+        )
     except ValueError as exc:
         return _refused(exc)
 
@@ -1010,12 +1126,18 @@ def request_from_user(
     # this?" about a harmless draft also silenced "Approve this?" about deleting
     # production data — the `answer` action normalizes to a bare {"type":"answer"},
     # so those two asks shared a key (Codex 2026-08-27, reproduced).
+    #
+    # ITEMS are in the key for the same reason, and it is load-bearing: a daily
+    # note reuses its kind, title and body every day, so without the items
+    # today's note would dedupe onto yesterday's pending row -- no new request,
+    # and therefore no notification.
     dedupe = json.dumps(
-        [kind, title, body, fields, action], sort_keys=True, separators=(",", ":")
+        [kind, title, body, fields, action, items],
+        sort_keys=True, separators=(",", ":"),
     )
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
-        action=action, dedupe_key=dedupe, origin=origin,
+        action=action, dedupe_key=dedupe, origin=origin, items=items,
     )
     if row is None:
         return {"error": "request_storage_unavailable"}
@@ -1037,6 +1159,13 @@ def request_from_user(
                 "decision rather than asking again."
             ),
         }
+    # `created` describes THIS call, not the request, so it is stripped before
+    # the agent sees the row -- and it is the one thing that separates "a
+    # request was raised" from "the one you raised before is still waiting".
+    # Only the first is something to put on the owner's phone.
+    created = row.pop("created", True)
+    if created:
+        _notify_owner(_uid, row)
     return {**row, "grant_sentence": _grant_sentence(row), **sign_in}
 
 
@@ -1939,6 +2068,89 @@ def _grant_workspace_consent(
     }
 
 
+def _answer_item(
+    *,
+    udir: Any,
+    row: dict[str, Any],
+    item_id: str,
+    document: dict[str, Any],
+) -> dict[str, Any]:
+    """The owner answered ONE item of a request.
+
+    Items only exist on an ``answer`` action, so there is no act to perform
+    here and nothing to re-validate against a stored credential policy: the
+    answer IS the data. That is why this branch runs before the action
+    dispatch rather than inside it.
+
+    ``dont_ask_again`` is refused: the standing decision hangs on the request's
+    dedupe key, which covers the whole tuple, so remembering "allowed" for one
+    item of a daily note would replay that item's answer to every future note.
+    """
+    from tinyassets.storage.pending_requests import resolve_item
+
+    if str((row.get("action") or {}).get("type") or "answer") != "answer":
+        return _bad("this request is one decision, not a checklist")
+    if not row.get("items"):
+        return {"error": "not_found", "resource": "request_item"}
+    if document.get("dont_ask_again") is True:
+        return _bad(
+            "'don't ask again' settles a whole request, not one of its items"
+        )
+    feedback = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
+    if feedback and looks_like_credential(feedback):
+        return _bad(
+            "that feedback looks like it contains a credential; it is stored "
+            "in the clear, so say it in words instead"
+        )
+    item = next(
+        (i for i in row["items"]
+         if isinstance(i, dict) and str(i.get("item_id") or "") == item_id),
+        None,
+    )
+    if item is None:
+        return {"error": "not_found", "resource": "request_item"}
+
+    dismissed = document.get("dismiss") is True
+    answer: dict[str, Any] | None = None
+    if not dismissed:
+        values = document.get("values")
+        if values is None:
+            values = {}
+        if not isinstance(values, dict):
+            return _bad("values must be an object of field name -> value")
+        declared = {str(f.get("name") or "") for f in (item.get("fields") or [])
+                    if isinstance(f, dict)}
+        unknown = sorted(set(map(str, values)) - declared)
+        if unknown:
+            # The item's own fields are the only thing it asked for. Accepting
+            # extras would store data the owner was never shown a box for.
+            return _bad(
+                f"item {item_id!r} does not ask for " + ", ".join(map(repr, unknown))
+            )
+        answer = {
+            name: str(values[name])[:_MAX_ANSWER_CHARS]
+            for name in sorted(values)
+        } or None
+
+    result = resolve_item(
+        udir, row["request_id"], item_id,
+        status="dismissed" if dismissed else "answered",
+        answer=answer, feedback=feedback,
+    )
+    if result.get("error"):
+        return result
+    # The clear rides `resolve_item`'s own emit seam, so it is not repeated
+    # here: one definition of when a notification comes off the other devices.
+    return {
+        "status": result["status"],
+        "request_id": row["request_id"],
+        "item_id": item_id,
+        "request_status": result["request_status"],
+        "remaining": result["remaining"],
+        "feedback": feedback,
+    }
+
+
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """The user's answer.
 
@@ -1974,6 +2186,12 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         return {"error": "not_found", "resource": "pending_request"}
     if row["status"] != "pending":
         return {"error": "already_resolved", "status": row["status"]}
+
+    item_id = str(document.get("item_id") or "").strip()
+    if item_id:
+        return _answer_item(
+            udir=udir, row=row, item_id=item_id, document=document,
+        )
 
     if document.get("dismiss") is True:
         fb = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
@@ -2247,15 +2465,29 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
 def displayed_row_matches(row: dict[str, Any]) -> bool:
     """Whether the stored row still reproduces what the owner was shown.
 
-    The dedupe key is a hash of exactly [kind, title, body, fields, action] --
-    the tuple the tab renders from -- so a row whose action was rewritten after
-    rendering no longer reproduces it and must not execute.
+    The dedupe key is a hash of exactly
+    [kind, title, body, fields, action, items] -- the tuple the tab renders
+    from -- so a row whose action was rewritten after rendering no longer
+    reproduces it and must not execute. ``items`` is projected VERBATIM (the
+    owner's answers live under ``item_answers``) precisely so that answering
+    one item does not make the row stop reproducing itself.
+
+    A row stored before items existed hashes five elements, so both shapes are
+    accepted when it has no items. Widening this to "try a few shapes" would
+    defeat the pin, which is why it is exactly the pre-items tuple and only
+    when the row is itemless.
     """
-    expected = json.dumps(
-        [row["kind"], row["title"], row["body"], row["fields"], row["action"]],
-        sort_keys=True, separators=(",", ":"),
-    )
-    return not row.get("dedupe_key") or row["dedupe_key"] == expected
+    stored = row.get("dedupe_key")
+    if not stored:
+        return True
+    head = [row["kind"], row["title"], row["body"], row["fields"], row["action"]]
+    items = row.get("items") or []
+    expected = json.dumps([*head, items], sort_keys=True, separators=(",", ":"))
+    if stored == expected:
+        return True
+    if items:
+        return False
+    return stored == json.dumps(head, sort_keys=True, separators=(",", ":"))
 
 
 def _assembled_secret(

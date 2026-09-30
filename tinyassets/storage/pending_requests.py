@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS pending_requests (
     body        TEXT NOT NULL,
     fields_json TEXT NOT NULL,
     action_json TEXT NOT NULL,
+    -- Optional answerable items: one request that holds several things, each
+    -- with its own stable id and its own fields. Empty for every request that
+    -- is a single question. See `request_item_answers`.
+    items_json  TEXT NOT NULL DEFAULT '[]',
     dedupe_key  TEXT NOT NULL,
     status      TEXT NOT NULL,
     answer_json TEXT,
@@ -81,6 +85,24 @@ CREATE TABLE IF NOT EXISTS request_suppressions (
     answer_json TEXT,
     created_at  REAL NOT NULL
 );
+-- One item's answer. A separate table rather than a mutation of `items_json`
+-- so that answering an item is an INSERT under a primary key: the same
+-- "one answer counts once" guarantee the whole-request path gets from its
+-- `status = 'pending'` guard, at item granularity.
+--
+-- An item with NO row here is not "unanswered" in storage -- it is DERIVED
+-- (see `_item_state`): pending while the request is pending, unanswered once
+-- the request closed. Storing it would mean writing a row to say nothing
+-- happened, and a whole-request answer would have to fabricate one per item.
+CREATE TABLE IF NOT EXISTS request_item_answers (
+    request_id  TEXT NOT NULL,
+    item_id     TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    answer_json TEXT,
+    feedback    TEXT,
+    resolved_at REAL NOT NULL,
+    PRIMARY KEY (request_id, item_id)
+);
 -- A lifted mute is recorded, not just applied: the agent runs as the user's
 -- own principal, so "who lifted this" cannot be decided at the gate.
 CREATE TABLE IF NOT EXISTS request_unmutes (
@@ -94,6 +116,13 @@ CREATE INDEX IF NOT EXISTS idx_pending_requests_status
 #: A pending request occupies a tab in the user's face. More than this means
 #: something is looping, and a rail of identical tabs is not a rail.
 MAX_PENDING = 50
+
+#: Answerable items on ONE request. Payload validation of a single ask, the same
+#: class as the API layer's `_MAX_FIELDS` -- a note of 200 tasks is not a note,
+#: and the notification for it has to fit. NOT an account limit: a universe may
+#: raise another request (founder 2026-09-30, account limits are storage and
+#: agent-run seats only).
+MAX_ITEMS = 50
 
 FIELD_TYPES = frozenset({"text", "secret", "choice"})
 
@@ -116,6 +145,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("request_suppressions", "decision", "TEXT NOT NULL DEFAULT 'declined'"),
     ("request_suppressions", "answer_json", "TEXT"),
     ("pending_requests", "origin", "TEXT NOT NULL DEFAULT 'agent'"),
+    ("pending_requests", "items_json", "TEXT NOT NULL DEFAULT '[]'"),
 )
 
 #: Who may raise a request. Only ``agent`` requests can be withdrawn by the
@@ -155,11 +185,20 @@ def create_request(
     action: dict[str, Any],
     dedupe_key: str,
     origin: str = ORIGIN_AGENT,
+    items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Record one pending request. Returns the row, or None on storage failure.
 
     Deduplicated on ``dedupe_key`` while pending, so an agent retrying the same
     ask does not open a second identical tab.
+
+    ``items`` are the request's answerable parts, already validated by the
+    caller (:func:`tinyassets.api.pending_requests._validated_items`). They are
+    stored verbatim so the ids the agent chose are the ids it reads back.
+
+    A returned row carries ``created``: ``True`` when this call inserted it,
+    ``False`` when it deduplicated onto a tab that was already up. The caller
+    strips it before answering -- it describes THIS call, not the request.
     """
     if origin not in ORIGINS:
         raise ValueError(f"unknown request origin {origin!r}")
@@ -210,7 +249,12 @@ def create_request(
                 (dedupe_key,),
             ).fetchone()
             if existing:
-                return get_request(universe_dir, existing[0])
+                # The SAME tab, already up. `created` tells the caller which of
+                # the two this is, because "a request was raised" and "the one
+                # you raised before is still waiting" are different events --
+                # only the first is something to notify the owner about.
+                same = get_request(universe_dir, existing[0])
+                return {**same, "created": False} if same else None
             pending = conn.execute(
                 "SELECT COUNT(*) FROM pending_requests WHERE status = 'pending'"
             ).fetchone()[0]
@@ -219,9 +263,9 @@ def create_request(
             row_id = "req_" + uuid.uuid4().hex[:24]
             conn.execute(
                 "INSERT INTO pending_requests (request_id, kind, title, body, "
-                "fields_json, action_json, dedupe_key, status, answer_json, "
-                "created_at, resolved_at, origin) "
-                "VALUES (?,?,?,?,?,?,?,'pending',NULL,?,NULL,?)",
+                "fields_json, action_json, items_json, dedupe_key, status, "
+                "answer_json, created_at, resolved_at, origin) "
+                "VALUES (?,?,?,?,?,?,?,?,'pending',NULL,?,NULL,?)",
                 (
                     row_id,
                     kind,
@@ -229,12 +273,14 @@ def create_request(
                     body,
                     json.dumps(fields),
                     json.dumps(action),
+                    json.dumps(list(items or [])),
                     dedupe_key,
                     time.time(),
                     origin,
                 ),
             )
-        return get_request(universe_dir, row_id)
+        fresh = get_request(universe_dir, row_id)
+        return {**fresh, "created": True} if fresh else None
     except Exception as exc:  # noqa: BLE001 - never break the turn that asked
         # Carry the REASON, do not just log it. On 2026-08-28 this returned a
         # bare None, the API turned it into the generic
@@ -248,7 +294,59 @@ def create_request(
         return {"error": "request_storage_unavailable", "detail": str(exc)}
 
 
-def _project(row: Any) -> dict[str, Any]:
+#: An item the owner has not acted on. ``pending`` while the request is still
+#: open, ``unanswered`` once it closed without this item being touched. Derived,
+#: never stored: a whole-request answer must not fabricate an item answer.
+ITEM_PENDING = "pending"
+ITEM_UNANSWERED = "unanswered"
+
+
+def _item_answers(conn: sqlite3.Connection, request_id: str) -> dict[str, dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT item_id, status, answer_json, feedback, resolved_at "
+        "FROM request_item_answers WHERE request_id = ?",
+        (request_id,),
+    ).fetchall()
+    return {
+        str(r[0]): {
+            "status": str(r[1]),
+            "answer": json.loads(r[2]) if r[2] else None,
+            "feedback": r[3],
+            "resolved_at": r[4],
+        }
+        for r in rows
+    }
+
+
+def _item_state(
+    items: list[dict[str, Any]],
+    answers: dict[str, dict[str, Any]],
+    request_status: str,
+) -> dict[str, dict[str, Any]]:
+    """Per item, what came back -- kept SEPARATE from what was asked.
+
+    ``items`` is projected verbatim because it is part of the tuple the dedupe
+    key hashes and ``displayed_row_matches`` re-derives; folding answers into
+    those objects would make the row stop reproducing what the owner was shown
+    the moment they answered one item, and the request would refuse to execute.
+    """
+    untouched = ITEM_PENDING if request_status == "pending" else ITEM_UNANSWERED
+    state = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("item_id") or "")
+        state[item_id] = answers.get(item_id) or {
+            "status": untouched, "answer": None, "feedback": None,
+            "resolved_at": None,
+        }
+    return state
+
+
+def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = json.loads(row[13] or "[]") if len(row) > 13 else []
+    if not isinstance(items, list):
+        items = []
     return {
         "request_id": row[0],
         "kind": row[1],
@@ -263,14 +361,29 @@ def _project(row: Any) -> dict[str, Any]:
         "feedback": row[10],
         "dedupe_key": row[11],
         "origin": row[12] or ORIGIN_AGENT,
+        "items": items,
+        "item_answers": _item_state(items, answers or {}, str(row[6])),
     }
 
 
 _SELECT = (
     "SELECT request_id, kind, title, body, fields_json, action_json, status, "
-    "answer_json, created_at, resolved_at, feedback, dedupe_key, origin "
-    "FROM pending_requests"
+    "answer_json, created_at, resolved_at, feedback, dedupe_key, origin, "
+    "items_json FROM pending_requests"
 )
+
+
+def _projected(conn: sqlite3.Connection, rows: list[Any]) -> list[dict[str, Any]]:
+    """Project rows, reading item answers only for rows that have items.
+
+    A request with no items -- which is almost all of them -- costs no extra
+    query, so adding items charges nothing to the rail's existing reads.
+    """
+    out = []
+    for row in rows:
+        has_items = bool(row[13] and row[13] not in ("[]", "null"))
+        out.append(_project(row, _item_answers(conn, str(row[0])) if has_items else None))
+    return out
 
 
 def get_request(universe_dir: Path, request_id: str) -> dict[str, Any] | None:
@@ -279,7 +392,7 @@ def get_request(universe_dir: Path, request_id: str) -> dict[str, Any] | None:
             row = conn.execute(
                 f"{_SELECT} WHERE request_id = ?", (request_id,)
             ).fetchone()
-        return _project(row) if row else None
+            return _projected(conn, [row])[0] if row else None
     except Exception:  # noqa: BLE001
         logger.warning("pending_requests: get failed", exc_info=True)
         return None
@@ -293,7 +406,7 @@ def list_pending(universe_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
                 f"{_SELECT} WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
                 (max(1, int(limit)),),
             ).fetchall()
-        return [_project(r) for r in rows]
+            return _projected(conn, rows)
     except Exception:  # noqa: BLE001
         logger.warning("pending_requests: list failed", exc_info=True)
         return []
@@ -318,13 +431,26 @@ def resolve_request(
         return False
     try:
         with _db(universe_dir) as conn:
+            # An itemised request reads back as ONE answer whichever way the
+            # owner worked through it, so whatever items they already answered
+            # ride into the closing answer. Items they never touched contribute
+            # nothing -- the projection derives `unanswered` for those, rather
+            # than this inventing a value for them.
+            stored = _item_answers(conn, request_id)
+            merged = dict(answer) if answer else {}
+            if stored:
+                merged["items"] = {
+                    item_id: {"status": state["status"], "answer": state["answer"],
+                              "feedback": state["feedback"]}
+                    for item_id, state in stored.items()
+                }
             cur = conn.execute(
                 "UPDATE pending_requests SET status = ?, answer_json = ?, "
                 "feedback = ?, resolved_at = ? "
                 "WHERE request_id = ? AND status = 'pending'",
                 (
                     status,
-                    json.dumps(answer) if answer else None,
+                    json.dumps(merged) if merged else None,
                     feedback or None,
                     time.time(),
                     request_id,
@@ -362,7 +488,122 @@ def resolve_request(
         universe_dir, request_id=request_id,
         kind=str(row[0]) if row else "", status=status,
     )
+    # And take it off the owner's OTHER devices. Same seam as the emit, for the
+    # same reason: every surface resolves through here, so one call covers them
+    # all and there is one definition of when a notification is cleared.
+    from tinyassets.owner_notifications import clear_for_universe_dir
+
+    clear_for_universe_dir(universe_dir, request_id=request_id)
     return True
+
+
+def resolve_item(
+    universe_dir: Path,
+    request_id: str,
+    item_id: str,
+    *,
+    status: str,
+    answer: dict[str, Any] | None = None,
+    feedback: str = "",
+) -> dict[str, Any]:
+    """Resolve ONE item of a pending request. One answer per item, ever.
+
+    The request stays ``pending`` unless this was its last unresolved item, in
+    which case it closes as ``answered`` in the same transaction -- so there is
+    no window where every item is answered and the tab is still up.
+
+    Returns ``{"item_id", "status", "request_status", "remaining"}``, or an
+    ``error`` envelope naming why nothing moved. A second answer for the same
+    item reports ``item_already_resolved`` and does NOT overwrite the first:
+    the PRIMARY KEY is the guarantee, not the check above it.
+    """
+    if status not in {"answered", "dismissed"}:
+        return {"error": "item_status_invalid", "detail": "answered or dismissed"}
+    closed = False
+    try:
+        with _db(universe_dir) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT status, items_json, kind FROM pending_requests "
+                "WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                return {"error": "not_found", "resource": "pending_request"}
+            if str(row[0]) != "pending":
+                return {"error": "already_resolved", "status": str(row[0])}
+            try:
+                items = json.loads(row[1] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                items = []
+            ids = [
+                str(i.get("item_id") or "") for i in items if isinstance(i, dict)
+            ]
+            if item_id not in ids:
+                # Uniform with the request-level miss: an id that is not on this
+                # request is simply not found, so probing ids learns nothing.
+                return {"error": "not_found", "resource": "request_item"}
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO request_item_answers "
+                "(request_id, item_id, status, answer_json, feedback, resolved_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    request_id, item_id, status,
+                    json.dumps(answer) if answer else None,
+                    feedback or None, time.time(),
+                ),
+            )
+            if cur.rowcount <= 0:
+                return {"error": "item_already_resolved", "item_id": item_id}
+            resolved = {
+                str(r[0]) for r in conn.execute(
+                    "SELECT item_id FROM request_item_answers WHERE request_id = ?",
+                    (request_id,),
+                )
+            }
+            remaining = [i for i in ids if i not in resolved]
+            if not remaining:
+                answers = _item_answers(conn, request_id)
+                conn.execute(
+                    "UPDATE pending_requests SET status = 'answered', "
+                    "answer_json = ?, resolved_at = ? "
+                    "WHERE request_id = ? AND status = 'pending'",
+                    (
+                        json.dumps({"items": {
+                            k: {"status": v["status"], "answer": v["answer"],
+                                "feedback": v["feedback"]}
+                            for k, v in answers.items()
+                        }}),
+                        time.time(), request_id,
+                    ),
+                )
+                closed = True
+            kind = str(row[2] or "")
+    except Exception as exc:  # noqa: BLE001 - report the reason, never break the turn
+        logger.warning("pending_requests: resolve_item failed", exc_info=True)
+        return {"error": "request_storage_unavailable", "detail": str(exc)}
+    # ONE emit, carrying the item. A closing item would otherwise wake an
+    # unfiltered subscription twice for a single act.
+    from tinyassets.automation_events import emit_pending_request_answered
+
+    emit_pending_request_answered(
+        universe_dir, request_id=request_id, kind=kind,
+        status="answered" if closed else "pending", item_id=item_id,
+    )
+    from tinyassets.owner_notifications import clear_for_universe_dir
+
+    # A closing item clears the whole notification; a mid-list one clears just
+    # that row, so the note stays up on the other device with the rest of it.
+    clear_for_universe_dir(
+        universe_dir, request_id=request_id,
+        item_id="" if closed else item_id,
+    )
+    return {
+        "item_id": item_id,
+        "status": status,
+        "request_status": "answered" if closed else "pending",
+        "remaining": len(remaining),
+    }
 
 
 def withdraw_request(
@@ -407,7 +648,7 @@ def list_resolved(universe_dir: Path, limit: int = 20) -> list[dict[str, Any]]:
                 "ORDER BY resolved_at DESC LIMIT ?",
                 (max(1, int(limit)),),
             ).fetchall()
-        return [_project(r) for r in rows]
+            return _projected(conn, rows)
     except Exception:  # noqa: BLE001
         logger.warning("pending_requests: list_resolved failed", exc_info=True)
         return []
@@ -472,6 +713,9 @@ def unsuppress(universe_dir: Path, dedupe_key: str) -> bool:
 
 __all__ = [
     "FIELD_TYPES",
+    "ITEM_PENDING",
+    "ITEM_UNANSWERED",
+    "MAX_ITEMS",
     "MAX_PENDING",
     "create_request",
     "get_request",
@@ -480,6 +724,7 @@ __all__ = [
     "list_suppressions",
     "list_unmutes",
     "record_unmute",
+    "resolve_item",
     "resolve_request",
     "unsuppress",
     "withdraw_request",
