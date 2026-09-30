@@ -1,7 +1,7 @@
 """BYO-LLM deposit browser form (byo-llm-deposit-browser-form).
 
 Requirement source:
-``openspec/changes/byo-llm-deposit-browser-form/specs/byo-llm-deposit-browser-form/spec.md``.
+``openspec/specs/byo-llm-deposit-browser-form/spec.md``.
 
 Covers: the narrow/ordered auth exemption for /mcp/connect(/*), cookieless signed
 state+session tokens (tamper/expiry/CSRF), the owner-only browser deposit reusing
