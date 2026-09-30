@@ -112,6 +112,10 @@ def list_files(*, universe_id: str = "", path: str = "") -> dict[str, Any]:
         except OSError:
             continue
         # A link is never followed and never listed: the reader would refuse it.
+        # A Windows junction lstat()s as a directory; its reparse tag says what
+        # it is (the same test universe_files applies on the read).
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+            continue
         if stat.S_ISREG(info.st_mode):
             entries.append({"name": name, "kind": "file", "size_bytes": info.st_size})
         elif stat.S_ISDIR(info.st_mode):

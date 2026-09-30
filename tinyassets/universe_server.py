@@ -1993,6 +1993,10 @@ def run_graph(
     with query=delivery_id to observe processing. operation=deliver_output does
     not accept file references; that refusal is scoped to delivery only.
 
+    operation=emit_event takes inputs_json {"name", "data"} under your own home
+    graph_id and wakes only YOUR automations subscribed to that name
+    (event_type app_event). Returns how many wakes it stored.
+
     File inputs: a file the user attached in the app is ALREADY a run-file
     reference, arriving inside their message as a delimited JSON attachment
     block of exact six-field references
@@ -2043,8 +2047,15 @@ def run_graph(
             return json.dumps({"error": "deliver_output cannot combine run/trigger selectors"})
         return _extensions_impl(action="deliver_output", universe_id=graph_id,
                                 inputs_json=inputs_json)
+    if normalized_operation == "emit_event":
+        if any((branch_def_id, branch_version_id, run_name, recursion_limit_override, goal_id,
+                webhook_op, source_op, token, source_id, run_id)):
+            return json.dumps({"error": "emit_event takes only graph_id and inputs_json"})
+        from tinyassets.api.app_events import emit_event
+
+        return json.dumps(emit_event(universe_id=graph_id, inputs_json=inputs_json))
     if normalized_operation not in {"run", "cancel"}:
-        return json.dumps({"error": "operation must be run or cancel."})
+        return json.dumps({"error": "operation must be run, cancel, deliver_output or emit_event."})
     if normalized_operation == "cancel":
         if any((branch_def_id, branch_version_id, inputs_json, run_name, recursion_limit_override,
                 goal_id, webhook_op, source_op, token, source_id)):
