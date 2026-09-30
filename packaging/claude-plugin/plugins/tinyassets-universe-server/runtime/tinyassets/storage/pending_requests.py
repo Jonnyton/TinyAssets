@@ -686,14 +686,15 @@ def resolve_item(
         universe_dir, request_id=request_id, kind=kind,
         status="answered" if closed else "pending", item_id=item_id,
     )
-    from tinyassets.owner_notifications import clear_for_universe_dir
+    # Only a CLOSING item clears the notification. A notification names the
+    # REQUEST, so answering one item of fifty changes nothing a device is
+    # displaying, and pushing a silent clear per item made a 50-item note cost
+    # 51 wakeups per device (gpt-6-astra, 2026-09-29). Per-item state is what
+    # the rail shows when the app is opened.
+    if closed:
+        from tinyassets.owner_notifications import clear_for_universe_dir
 
-    # A closing item clears the whole notification; a mid-list one clears just
-    # that row, so the note stays up on the other device with the rest of it.
-    clear_for_universe_dir(
-        universe_dir, request_id=request_id,
-        item_id="" if closed else item_id,
-    )
+        clear_for_universe_dir(universe_dir, request_id=request_id)
     return {
         "item_id": item_id,
         "status": status,
@@ -726,6 +727,14 @@ def withdraw_request(
         return {"error": "request_storage_unavailable", "detail": str(exc)}
     row = get_request(universe_dir, request_id)
     if moved and row is not None:
+        # A withdrawn ask's notification is STALE, so it comes down. Leaving it
+        # up meant the phone still showed a request that no longer existed, and
+        # tapping it opened nothing (gpt-6-astra, 2026-09-30). Withdrawal used
+        # to deliberately skip this, but that was to protect a per-device latch
+        # that no longer exists; there is no reason left not to clear.
+        from tinyassets.owner_notifications import clear_for_universe_dir
+
+        clear_for_universe_dir(universe_dir, request_id=request_id)
         return row
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
