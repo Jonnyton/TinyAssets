@@ -138,23 +138,68 @@ SEAT_WAIT_SECONDS = 20.0
 #: Poll cadence while blocking. Cheap next to an agent call measured in seconds.
 _POLL_SECONDS = 0.1
 
-#: This process's holder token. Identity for re-entrancy and for the refresher;
-#: liveness is the lease's job, not this token's. Regenerated after a fork so a
-#: child cannot refresh or re-enter its parent's seats.
+#: This process's holder token. Identity for re-entrancy and for the refresher,
+#: AND the key of the liveness lock that makes "this holder is still running" a
+#: fact rather than a guess. Regenerated after a fork so a child cannot refresh
+#: or re-enter its parent's seats.
+#:
+#: The shape is load-bearing: it must satisfy `automations._HOLDER_RE`
+#: (``^[A-Za-z0-9_-]{1,128}$``), so `_` and not `:`. The first draft used
+#: ``f"{pid}:{hex}"``, which the regex rejects -- `holder_liveness_path` then
+#: returned None, every probe answered "unknown", and `holder_is_provably_alive`
+#: could never be true. The liveness guard in `_reap` was dead code, and the test
+#: that was supposed to catch that had monkeypatched the predicate it was testing.
+#: A separator choice silently disabled a safety check.
 _BOOT = secrets.token_hex(8)
 
 
 def _holder() -> str:
-    return f"{os.getpid()}:{_BOOT}"
+    return f"seat{os.getpid()}_{_BOOT}"
 
 
 def _reset_holder_after_fork() -> None:
-    global _BOOT
+    global _BOOT, _liveness_handle
     _BOOT = secrets.token_hex(8)
+    # The parent's lock handle is not ours: the fd is inherited but the token it
+    # proves belongs to the parent. Drop it so the child registers its own.
+    _liveness_handle = None
 
 
 if hasattr(os, "register_at_fork"):  # POSIX only; a no-op elsewhere
     os.register_at_fork(after_in_child=_reset_holder_after_fork)
+
+#: The OS lock proving this process is alive. Held for the process lifetime --
+#: the kernel drops it however the process dies, SIGKILL from a deploy included,
+#: which is what lets another process distinguish "crashed" from "busy".
+_liveness_handle: object | None = None
+_liveness_root: Path | None = None
+
+
+def _register_liveness(root: Path) -> None:
+    """Take this process's liveness lock beside ``root``, once.
+
+    Lazy rather than at import: a module import must not create files, and a
+    reader that never acquires a seat has nothing to prove. Registered on the
+    acquisition path, which is the only path where it can matter.
+
+    Never raises into an acquisition. A process that cannot register is simply
+    not provably alive, so its expired seats get reclaimed on the lease -- the
+    previous behaviour, and a strictly safe direction to fail in.
+    """
+    global _liveness_handle, _liveness_root
+    if _liveness_handle is not None and _liveness_root == root:
+        return
+    try:
+        from tinyassets.automations import hold_process_liveness
+
+        _liveness_handle = hold_process_liveness(root, _holder())
+        _liveness_root = root
+    except Exception:
+        _log.warning(
+            "seat liveness lock unavailable; this process's seats will be "
+            "reclaimed on their lease rather than held while it runs",
+            exc_info=True,
+        )
 
 
 class SeatLedgerUnusable(RuntimeError):
@@ -296,7 +341,7 @@ def _txn(db: Path | None):
         conn.close()
 
 
-def _reap(conn: sqlite3.Connection, now: float) -> None:
+def _reap(conn: sqlite3.Connection, now: float, root: Path) -> None:
     """Reclaim expired seats and waiters whose holders are not provably alive.
 
     Called at the top of EVERY acquisition, not on a timer: after a deploy the
@@ -320,7 +365,7 @@ def _reap(conn: sqlite3.Connection, now: float) -> None:
         "SELECT seat_id, holder FROM universe_seats WHERE expires_at < ?", (now,)
     ).fetchall()
     for row in expired:
-        if _holder_is_alive(str(row["holder"])):
+        if _holder_is_alive(str(row["holder"]), root):
             continue
         conn.execute("DELETE FROM universe_seats WHERE seat_id = ?", (row["seat_id"],))
     # A waiter is a QUEUE POSITION, never work. Its expiry cannot lose work,
@@ -328,23 +373,28 @@ def _reap(conn: sqlite3.Connection, now: float) -> None:
     conn.execute("DELETE FROM seat_waiters WHERE expires_at < ?", (now,))
 
 
-def _holder_is_alive(holder: str) -> bool:
+def _holder_is_alive(holder: str, root: Path) -> bool:
     """Whether ``holder``'s process provably still exists.
 
     Delegates to the consumer-liveness proof `automations` already maintains: a
     file per holder, OS-locked for the process lifetime. Never a guess -- an
     unknown holder, a missing file or a probe error all answer False, so this can
     only ever DELAY reclamation of a seat whose owner is demonstrably running.
+
+    ``root`` is the SEAT STORE's own directory, not the global data dir. The proof
+    has to live beside the ledger it is vouching for: reading it from
+    `data_dir()` while reaping a ledger somewhere else consults the wrong
+    process's evidence, and would make every test with an explicit ``db`` silently
+    unable to see a live holder.
     """
     if holder == _holder():
-        # Our own seats. This process is obviously alive, and probing our own
-        # lock would report "alive" only if we happen to have registered one.
+        # Our own seats. This process is alive by construction, and this answer
+        # must not depend on whether the liveness lock registered.
         return True
     try:
         from tinyassets.automations import holder_is_provably_alive
-        from tinyassets.storage import data_dir
 
-        return bool(holder_is_provably_alive(data_dir(), holder))
+        return bool(holder_is_provably_alive(root, holder))
     except Exception:
         return False
 
@@ -535,8 +585,12 @@ def acquire(
     total = max(1, int(seats))
     held_back = min(max(0, int(reserve)), total - 1)
 
+    root = (db or ledger_path()).parent
+    # Before the transaction: the lock is a filesystem operation, and taking it
+    # inside `BEGIN IMMEDIATE` would hold the write lock across it.
+    _register_liveness(root)
     with _txn(db) as conn:
-        _reap(conn, moment)
+        _reap(conn, moment, root)
         if parent_seat_id and _reenter(
             conn, universe_id, parent_seat_id, moment, lease_s
         ):

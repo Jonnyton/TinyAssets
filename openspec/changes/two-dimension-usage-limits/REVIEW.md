@@ -131,6 +131,44 @@ home, not a sentence in a design that reads as if it were handled.
 This also weakens D8: "the cross-user floor is what seats enforce" is true for model
 concurrency and not for bandwidth, queues, CPU or disk. Stated as such.
 
+## Finding 1's fix was itself broken, and the test hid it
+
+Caught by the jail-fix lane (run-owner-proof), 2026-09-30, after the fix landed.
+
+The holder token was `f"{os.getpid()}:{_BOOT}"`. `automations._HOLDER_RE` is
+`^[A-Za-z0-9_-]{1,128}$`, so the **colon** meant `holder_liveness_path` returned
+`None`, every probe answered `"unknown"`, and `holder_is_provably_alive` could
+never return `True`. The liveness guard in `_reap` was dead code and reaping was
+timeout-only — finding 1 was not closed, only decorated.
+
+The test did not catch it because it monkeypatched `_holder_is_alive`, the
+predicate under test. That is the failure mode in memory
+`my-tests-lose-to-runtime-substitution` and `silent-failure-dispatch-and-tests`:
+a green test that never drives the real call.
+
+Fixed in place (option (a)) rather than left as a seam, because it was small:
+
+- the token is `seat<pid>_<hex>`, which the existing regex accepts;
+- `_register_liveness` takes the real OS lock on the acquisition path, lazily —
+  a module import must not create files;
+- the liveness proof is read from **the seat store's own directory**, not
+  `data_dir()`. The proof has to live beside the ledger it vouches for; reading it
+  from the global root would consult the wrong process's evidence and make every
+  test with an explicit `db` silently unable to see a live holder;
+- the test drives a real `hold_process_liveness` lock and then **closes the fd**
+  to prove the dead case, with no mock anywhere.
+
+Three mutations, three killed — including one that only fell after a second test
+was added. Removing `_register_liveness` initially left every test green, because
+they all took the lock themselves: the reap predicate was proven, but nothing
+proved a real seat-holder *publishes* the proof that keeps its seat.
+`test_taking_a_seat_registers_this_process_as_provably_alive` closes that, and it
+exists only because the mutation survived.
+
+When jail-fix lands `process_liveness.owner_token()` / `owner_state()`, this
+becomes a two-line swap at `_holder()` and `_holder_is_alive` — the seam the lead
+offered as option (b) exists anyway, it just is not load-bearing in the meantime.
+
 ## Rounds
 
 Round 1 of at most 3. Round 2 goes to the seats implementation once the call sites

@@ -274,28 +274,90 @@ def test_an_expired_seat_of_a_dead_holder_is_reaped(db):
     )["running"] == 1
 
 
-def test_a_live_holder_keeps_an_expired_seat(db, monkeypatch):
+def _reseat_to(db, holder: str) -> None:
+    """Rewrite the holder of every seat row, standing in for a seat taken by a
+    different process."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE universe_seats SET holder = ?", (holder,))
+    conn.commit()
+    conn.close()
+
+
+def test_the_holder_token_is_one_the_liveness_lock_can_verify():
+    """The bug that made the guard below dead code, pinned directly.
+
+    The first draft's holder was `f"{pid}:{hex}"`. `automations._HOLDER_RE` is
+    `^[A-Za-z0-9_-]{1,128}$`, so the colon meant `holder_liveness_path` returned
+    None, every probe answered "unknown", and `holder_is_provably_alive` could
+    never be true. A separator choice silently disabled a safety check, and the
+    test that should have caught it had monkeypatched the predicate.
+    """
+    from tinyassets.automations import _HOLDER_RE, holder_liveness_path
+
+    holder = seats._holder()
+    assert _HOLDER_RE.match(holder), f"{holder!r} cannot be proven alive or dead"
+    assert holder_liveness_path("/tmp", holder) is not None
+
+
+def test_taking_a_seat_registers_this_process_as_provably_alive(db):
+    """The other half of the guard, and the half a mocked probe hides.
+
+    `_reap` asking "is this holder alive?" is worthless unless a real seat-holder
+    has actually published the proof. Mutation-checking found this gap: removing
+    the `_register_liveness` call left every other test green, because they take
+    the lock themselves. So assert the ACQUISITION path publishes it -- otherwise
+    a seat held by another process is never provably alive and gets reclaimed
+    underneath a running provider call.
+    """
+    from tinyassets.automations import holder_is_provably_alive
+
+    seats._liveness_handle = None  # force a fresh registration for this root
+    got = take(db)
+    assert isinstance(got, Seat)
+    assert holder_is_provably_alive(db.parent, seats._holder()) is True, (
+        "a process holding a seat must publish the proof that keeps it"
+    )
+
+
+def test_a_live_holder_keeps_an_expired_seat(db):
     """astra round 1, finding 1. Unconditional reclamation admits a replacement
     while the original holder is still calling a provider: kill the refresher,
     leave the provider running, wait out the lease, and two agent calls execute on
-    one seat. `automations._lease_blocks` refuses this for the same reason."""
-    import sqlite3
+    one seat. `automations._lease_blocks` refuses this for the same reason.
 
-    held = take(db, seats_n=2, reserve=1, now=1000.0)
-    conn = sqlite3.connect(str(db))
-    conn.execute("UPDATE universe_seats SET holder = 'still-running:1'")
-    conn.commit()
-    conn.close()
-    monkeypatch.setattr(
-        seats, "_holder_is_alive", lambda holder: holder == "still-running:1"
+    Drives the REAL liveness probe against a REAL OS lock -- no monkeypatch of
+    `_holder_is_alive`, because mocking it is exactly how the broken holder token
+    stayed hidden.
+    """
+    from tinyassets.automations import hold_process_liveness
+
+    other = "seat_other_process_1"
+    lock = hold_process_liveness(db.parent, other)
+    assert getattr(lock, "acquired", True), "test could not take the liveness lock"
+
+    take(db, seats_n=2, reserve=1, now=1000.0)
+    _reseat_to(db, other)
+    expired = 1000.0 + seats.SEAT_LEASE_SECONDS + 1
+
+    blocked = take(db, seats_n=2, reserve=1, now=expired)
+    assert isinstance(blocked, Waiting), (
+        "an expired lease whose holder is PROVABLY ALIVE must not be reclaimed: "
+        "the holder may still be calling a provider"
     )
-    after = take(
-        db, seats_n=2, reserve=1, now=1000.0 + seats.SEAT_LEASE_SECONDS + 1
+
+    # Now the holder dies -- the kernel drops its lock -- and the seat is free.
+    # The ticket from the blocked attempt is re-presented, because that attempt
+    # took a queue position and the no-overtake rule would otherwise put this
+    # call behind it.
+    import os
+
+    os.close(lock.fd)
+    reclaimed = take(db, seats_n=2, reserve=1, ticket=blocked.ticket, now=expired)
+    assert isinstance(reclaimed, Seat), (
+        "once the holder is provably dead its seat must not strand capacity"
     )
-    assert isinstance(after, Waiting), (
-        "an expired lease whose holder is provably alive must not be reclaimed"
-    )
-    assert held.seat_id
 
 
 def test_refresh_keeps_a_long_running_seat_alive(db):
