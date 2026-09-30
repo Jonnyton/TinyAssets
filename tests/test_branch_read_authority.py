@@ -125,13 +125,14 @@ def _seed_branch(
     )
 
 
-def _publish(base: Path, branch: dict[str, Any], publisher: str) -> str:
+def _publish(base: Path, branch: dict[str, Any], publisher: str, *, public: bool = False) -> str:
     from tinyassets.branch_versions import publish_branch_version
 
     return publish_branch_version(
         base,
         branch,
         publisher=publisher,
+        public=public,
     ).branch_version_id
 
 
@@ -465,7 +466,7 @@ def test_descendant_projection_includes_public_and_owner_private_only(
         author="bob",
         node_ids=("root_node",),
     )
-    parent_version = _publish(base, parent, publisher="bob")
+    parent_version = _publish(base, parent, publisher="bob", public=True)
     _seed_branch(
         base,
         branch_def_id="public-descendant",
@@ -739,7 +740,8 @@ def test_authorized_public_and_owner_private_clone_preserves_source_nodes(
         visibility=source_visibility,
         node_author="original-node-author",
     )
-    version_id = _publish(base, parent, publisher=source_author)
+    # An explicit publish: a stranger reads only versions their owner published.
+    version_id = _publish(base, parent, publisher=source_author, public=True)
     authenticate("alice")
 
     built = _call(
@@ -851,7 +853,8 @@ def test_authorized_set_fork_from_accepts_public_and_owner_private_parent(
         visibility=source_visibility,
         node_ids=("parent_node",),
     )
-    version_id = _publish(base, parent, publisher=source_author)
+    # An explicit publish: a stranger reads only versions their owner published.
+    version_id = _publish(base, parent, publisher=source_author, public=True)
     authenticate("alice")
 
     patched = _call(

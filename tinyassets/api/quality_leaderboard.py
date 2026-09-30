@@ -737,7 +737,7 @@ def _latest_active_version_id(
     except Exception:
         return ""
     for v in versions:
-        if getattr(v, "status", "active") == "active":
+        if v.public and getattr(v, "status", "active") == "active":
             return v.branch_version_id or ""
     return ""
 

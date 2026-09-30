@@ -252,6 +252,8 @@ _KNOWN_ROOT_RUN_TABLES = frozenset({
     "branch_schedules",
     "branch_subscriptions",
     "branch_versions",
+    # One-time data-migration markers (name, time, counts): no subject data.
+    "branch_versions_migrations",
     "conformance_pack",
     "contribution_events",
     "conversation_run_admissions",

@@ -543,10 +543,10 @@ def _resolve_readable_branch(
         # the field existed must not be readable by everyone because the field is
         # absent. Fail closed (founder 2026-09-26); its author still reads it via
         # the author check below.
-        visibility = branch.get("visibility") or "private"
-        if visibility == "public" or (
-            actor is not None and branch.get("author", "") == actor
-        ):
+        from tinyassets.branch_versions import branch_readable_by
+
+        if branch_readable_by(actor, author=branch.get("author"),
+                              visibility=branch.get("visibility")):
             return selector, branch
         return None
 
@@ -564,8 +564,15 @@ def _resolve_readable_version(
     version_id: str,
     base_path: str,
 ) -> tuple[str, dict[str, Any]] | None:
-    """Resolve a version only when its persisted parent branch is readable."""
-    from tinyassets.branch_versions import get_branch_version
+    """Resolve a version only when the caller may read THAT version.
+
+    Its author reads every version of their branch, history included. Anyone
+    else needs both a readable branch AND the version's publication mark:
+    patch_branch snapshots every edit, so a public branch's versions are mostly
+    private edit history, and publishing a branch must expose only the version
+    its owner confirmed (founder 2026-09-30, astra round 3 on #4107).
+    """
+    from tinyassets.branch_versions import get_branch_version, version_readable_by
 
     version_id = (version_id or "").strip()
     if not version_id:
@@ -573,7 +580,16 @@ def _resolve_readable_version(
     version = get_branch_version(base_path, version_id)
     if version is None:
         return None
-    if _resolve_readable_branch(version.branch_def_id, base_path) is None:
+    readable = _resolve_readable_branch(version.branch_def_id, base_path)
+    # Exact id only: the resolver's NAME fallback would let an orphaned
+    # version borrow the author and visibility of an unrelated branch that
+    # happens to be named like its missing parent id.
+    if readable is None or readable[0] != version.branch_def_id:
+        return None
+    if not version_readable_by(
+        _request_branch_actor(), author=readable[1].get("author"),
+        visibility=readable[1].get("visibility"), public=version.public,
+    ):
         return None
     return version_id, version.to_dict()
 
@@ -760,7 +776,13 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         if scope == "published":
             from tinyassets.branch_versions import list_branch_versions
 
-            versions = list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1)
+            # Published = a version its owner published, newest first; an
+            # unmarked edit snapshot is history, not a published shape.
+            versions = [
+                v for v in list_branch_versions(
+                    _base_path(), r.get("branch_def_id", ""), limit=50)
+                if v.public
+            ]
             if not versions:
                 continue
             published_version_id = versions[0].branch_version_id
@@ -880,7 +902,8 @@ def _branch_dependents(
                 for table in ("canonical_bindings", "goal_canonicals"):
                     if table in tables:
                         for row in conn.execute(
-                            f"SELECT goal_id FROM {table} WHERE branch_version_id IN ({placeholders})",
+                            f"SELECT goal_id FROM {table} "
+                            f"WHERE branch_version_id IN ({placeholders})",
                             params,
                         ):
                             goal_ids.add(str(row[0]))
@@ -891,7 +914,8 @@ def _branch_dependents(
                     columns = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
                     if "canonical_branch_version_id" in columns:
                         for row in conn.execute(
-                            f"SELECT goal_id FROM goals WHERE canonical_branch_version_id IN ({placeholders})",
+                            f"SELECT goal_id FROM goals "
+                            f"WHERE canonical_branch_version_id IN ({placeholders})",
                             params,
                         ):
                             goal_ids.add(str(row[0]))
@@ -1562,7 +1586,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     from tinyassets.daemon_server import list_branch_definitions
 
     my_versions = list_branch_versions(_base_path(), bid, limit=500)
-    my_version_ids = {v.branch_version_id for v in my_versions}
+    my_version_ids = {v.branch_version_id for v in my_versions
+                      if _resolve_readable_version(v.branch_version_id, str(_base_path()))}
     fork_descendants: list[dict[str, Any]] = []
     for b in list_branch_definitions(
         _base_path(),
@@ -1574,7 +1599,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
                 "branch_def_id": b["branch_def_id"],
                 "author": b.get("author", ""),
                 "published_versions_count": len(
-                    list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                    [v for v in list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                     if v.public]
                 ),
             })
 
@@ -4513,7 +4539,8 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
 
     # Find descendants: branches whose fork_from matches any version of this branch.
     versions = list_branch_versions(_base_path(), bid, limit=200)
-    version_ids = {v.branch_version_id for v in versions}
+    version_ids = {v.branch_version_id for v in versions
+                   if _resolve_readable_version(v.branch_version_id, str(_base_path()))}
     descendants: list[dict[str, Any]] = []
     all_branches = list_branch_definitions(
         _base_path(),
@@ -4528,7 +4555,8 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
                 "author": b.get("author", ""),
                 "fork_from_version": ff,
                 "published_versions_count": len(
-                    list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                    [v for v in list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                     if v.public]
                 ),
             })
 
@@ -4629,7 +4657,8 @@ rejected by the server; in an existing branch patch, pass `node_ref` /
 ## New-workflow authoring
 
 Create a Branch through `write_graph target="branch" operation="create"
-payload_json=...` with the complete spec below in `payload_json`. To remix, use operation `remix` and
+payload_json=...` with the complete spec below in `payload_json`.
+To remix, use operation `remix` and
 include a published `fork_from` version in the same spec. After validation,
 freeze it through operation `publish`; cloud automation binds only immutable
 published versions. Standalone node registration remains unavailable.

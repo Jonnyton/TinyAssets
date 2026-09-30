@@ -697,6 +697,9 @@ def read_graph(
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings,
             agent_binding, app_ui (your own UI library and choice),
+            universe_files / universe_file (the owner's own universe folder:
+            query=<path under /u>; list a directory, or read a file in chunks
+            with file_offset/file_max_bytes),
             model_options (all owned model choices, including
             unavailable ones — the COMPLETE catalogue, which a large source makes
             very large; if you are reading this into a model's context use
@@ -935,6 +938,20 @@ def read_graph(
                 binding_id=agent_binding_id,
             )
         )
+    if normalized in {"universe_file", "universe_files"}:
+        # The OWNER's read of their universe folder (/u): the files their agents
+        # share. Admin-only, link-free, bounded; every refusal is not_found.
+        from tinyassets.api import universe_file_reads
+
+        if normalized == "universe_files":
+            return json.dumps(universe_file_reads.list_files(universe_id=graph_id, path=query))
+        return json.dumps(universe_file_reads.read_file(
+            universe_id=graph_id, path=query, offset=file_offset,
+            # This handle's file_max_bytes defaults to run_file's 512 KiB; a
+            # folder read pages at most MAX_READ_BYTES, so the default clamps.
+            count=min(file_max_bytes, universe_file_reads.MAX_READ_BYTES)
+            if isinstance(file_max_bytes, int) else file_max_bytes,
+        ))
     if normalized == "app_ui":
         # The caller's own UI library + choice; keyed by the authenticated caller.
         from tinyassets.api.app_ui import read_app_ui
@@ -1001,6 +1018,8 @@ def read_graph(
             "agent_bindings",
             "agent_binding",
             "app_ui",
+            "universe_file",
+            "universe_files",
             "receiver",
             "receivers",
             "output_links",
@@ -1965,6 +1984,10 @@ def run_graph(
     with query=delivery_id to observe processing. operation=deliver_output does
     not accept file references; that refusal is scoped to delivery only.
 
+    operation=emit_event takes inputs_json {"name", "data"} under your own home
+    graph_id and wakes only YOUR automations subscribed to that name
+    (event_type app_event). Returns how many wakes it stored.
+
     File inputs: a file the user attached in the app is ALREADY a run-file
     reference, arriving inside their message as a delimited JSON attachment
     block of exact six-field references
@@ -2019,8 +2042,15 @@ def run_graph(
             return json.dumps({"error": "deliver_output cannot combine run/trigger selectors"})
         return _extensions_impl(action="deliver_output", universe_id=graph_id,
                                 inputs_json=inputs_json)
+    if normalized_operation == "emit_event":
+        if any((branch_def_id, branch_version_id, run_name, recursion_limit_override, goal_id,
+                webhook_op, source_op, token, source_id, run_id)):
+            return json.dumps({"error": "emit_event takes only graph_id and inputs_json"})
+        from tinyassets.api.app_events import emit_event
+
+        return json.dumps(emit_event(universe_id=graph_id, inputs_json=inputs_json))
     if normalized_operation not in {"run", "cancel"}:
-        return json.dumps({"error": "operation must be run or cancel."})
+        return json.dumps({"error": "operation must be run, cancel, deliver_output or emit_event."})
     if normalized_operation == "cancel":
         if any((branch_def_id, branch_version_id, inputs_json, run_name, recursion_limit_override,
                 goal_id, webhook_op, source_op, token, source_id)):

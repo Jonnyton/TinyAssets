@@ -37,7 +37,7 @@
     // (Codex, 2026-09-26).
     MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
     MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
-    MAX_LIST_RUNS:50,MAX_OUTPUT_CHUNK:8192,MAX_ID:200,
+    MAX_LIST_RUNS:50,MAX_OUTPUT_CHUNK:8192,MAX_ID:200,MAX_PATH:1024,MAX_FILE_CHUNK:65536,
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
 
@@ -49,7 +49,7 @@
     // to the bundle that was on screen a moment ago cannot settle a promise in
     // the one that replaced it -- both bootstraps number requests from r1, so the
     // ids collide by construction (Codex, 2026-09-26).
-    frameGen:0,ready:false,sending:false,pending:0,
+    frameGen:0,ready:false,sending:false,emitting:false,pending:0,
 
     bytes(value){ return new TextEncoder().encode(String(value)).length; },
 
@@ -222,7 +222,7 @@
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
       this.frame=frame; this.active=entry; this.ready=false;
-      this.frameGen++; this.pending=0; this.sending=false;
+      this.frameGen++; this.pending=0; this.sending=false; this.emitting=false;
       this.listener=event=>this.receive(event);
       window.addEventListener("message",this.listener);
       host.replaceChildren(frame);
@@ -235,7 +235,7 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
-      this.frame=null; this.active=null; this.ready=false; this.sending=false; this.pending=0;
+      this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();
     },
@@ -247,7 +247,8 @@
       whoami:"whoami",list_agents:"listAgents",
       send_message:"sendMessage",read_conversation:"readConversation",
       list_automations:"listAutomations",list_runs:"listRuns",
-      read_run:"readRun",read_run_output:"readRunOutput"}),
+      read_run:"readRun",read_run_output:"readRunOutput",
+      list_files:"listFiles",read_file:"readFile",emit:"emit"}),
     receive(event){
       // Only THIS frame's window is heard. Another frame, a popup, or the page
       // itself cannot speak for the bundle, and the check is on the window
@@ -473,6 +474,64 @@
         text:doc.chunk,offset:Number.isInteger(doc.offset)?doc.offset:offset,
         total_chars:Number.isInteger(doc.total_chars)?doc.total_chars:null,
         next_offset:Number.isInteger(doc.next_offset)?doc.next_offset:null};
+    },
+
+    // ---- the shared folder and the wake -------------------------------------
+    // Agents coordinate through files in the universe folder, so a screen of
+    // them reads those files. Owner-only on the server (an admin grant on this
+    // home), pinned to this.home here, picked fields back.
+    filePath(value,required){
+      const path=typeof value==="string"?value.trim():"";
+      if(required&&!path) throw new Error("path is required");
+      if(path.length>this.MAX_PATH) throw new Error("path is too long");
+      return path;
+    },
+    async listFiles(args){
+      const path=this.filePath(args.path,false);
+      const doc=await MCP.callTool("read_graph",
+        {target:"universe_files",graph_id:this.home,query:path},{idempotent:true});
+      if(!doc||doc.error||!Array.isArray(doc.entries)) throw new Error("that folder is not available");
+      if(String(doc.universe_id||"")!==this.home)
+        throw new Error("that folder belongs to another universe; this UI's access ended");
+      const entries=[];
+      for(const e of doc.entries){
+        if(!e||typeof e.name!=="string") continue;
+        const kind=e.kind==="dir"?"dir":"file";
+        entries.push(kind==="dir"?{name:e.name,kind}:{name:e.name,kind,
+          size_bytes:Number.isInteger(e.size_bytes)?e.size_bytes:null});
+      }
+      return {path:String(doc.path||""),entries,truncated:!!doc.truncated};
+    },
+    async readFile(args){
+      const path=this.filePath(args.path,true);
+      const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
+      const doc=await MCP.callTool("read_graph",{target:"universe_file",graph_id:this.home,
+        query:path,file_offset:offset,file_max_bytes:this.MAX_FILE_CHUNK},{idempotent:true});
+      if(!doc||doc.error) throw new Error("that file is not available");
+      if(String(doc.universe_id||"")!==this.home)
+        throw new Error("that file belongs to another universe; this UI's access ended");
+      const text=doc.encoding==="text"&&typeof doc.text==="string";
+      return {path:String(doc.path||path),encoding:text?"text":"base64",
+        content:text?doc.text:String(doc.base64||""),size_bytes:Number.isInteger(doc.size_bytes)?doc.size_bytes:null,
+        offset:Number.isInteger(doc.offset)?doc.offset:offset,
+        next_offset:Number.isInteger(doc.next_offset)?doc.next_offset:null};
+    },
+    // Wakes the viewer's OWN agent subscribed to `name` (an app_event
+    // automation). It cannot run anything by id: what listens to a name is the
+    // owner's decision, made when the subscription was created.
+    async emit(args){
+      const name=typeof args.name==="string"?args.name.trim():"";
+      if(!name) throw new Error("name is required");
+      const data=args.data===undefined||args.data===null?{}:args.data;
+      if(typeof data!=="object"||Array.isArray(data)) throw new Error("data must be an object");
+      if(this.emitting) throw new Error("an event from this UI is already in flight");
+      this.emitting=true;
+      try{
+        const doc=await MCP.callTool("run_graph",{operation:"emit_event",graph_id:this.home,
+          inputs_json:JSON.stringify({name,data})});
+        if(!doc||doc.error) throw new Error((doc&&(doc.detail||doc.error))||"the event was not sent");
+        return {emitted:doc.emitted===true,woke:Number.isInteger(doc.woke)?doc.woke:0};
+      }finally{ this.emitting=false; }
     },
 
     // ---- switching: explicit, persisted through ONE write path -------------
