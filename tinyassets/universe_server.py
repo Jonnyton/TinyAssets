@@ -3229,7 +3229,6 @@ _mcp_converse = _register_structured_tool(
 # connectors keep working through the migration window.
 _DEPRECATED_TOOL_NAMES = frozenset({
     "universe",
-    "extensions",
     "goals",
     "gates",
     "wiki",
@@ -3290,7 +3289,7 @@ def universe(
     """Inspect and steer a workflow's universe.
 
     Self-contained workspace for a multi-step tinyassets. New workflows
-    live in `extensions`; start with `action="inspect"`. See
+    are built with `write_graph target="branch"`; start with `action="inspect"`. See
     `control_station` for operating guidance and universe isolation.
 
     `control_daemon` is a text-command action: it always needs `text` set
@@ -3721,18 +3720,13 @@ def extensions(
     )
 
 
-_mcp_extensions = _register_structured_tool(
-    extensions,
-    title="Graph Extensions",
-    tags={"extensions", "nodes", "plugins", "customization"},
-    annotations=ToolAnnotations(
-        title="Graph Extensions",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+# NOT registered as an MCP tool (removed 2026-09-30). It was the last way to
+# reach every extensions action by name from the public connector, hidden from
+# tools/list but still dispatchable -- including version and node-history
+# readers that checked nothing, so any signed-in user could read another user's
+# private branch history (astra refute of #4107). The canonical handles route
+# the actions a client needs to their gated handlers. This function stays only
+# as the in-process entry the test suite drives those handlers through.
 
 
 # ---------------------------------------------------------------------------
@@ -4006,7 +4000,7 @@ def wiki(
 
     Persistent prose knowledge shared across sessions. It is not for
     workflow structure, node definitions, state, or run outputs. Use
-    `extensions` for "build / design / create a workflow"; use wiki
+    `write_graph target="branch"` for "build / design / create a workflow"; use wiki
     for "save this how-to / ref / note", "what is X", or filing user
     bugs, patch requests, feature requests, and design proposals.
 
