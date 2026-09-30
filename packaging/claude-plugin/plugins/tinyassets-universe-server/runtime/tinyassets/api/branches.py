@@ -1717,12 +1717,23 @@ def _branch_authoring_batch_receipt(
 
 
 def _suggest_entry_point(branch: Any) -> str:
+    """The node nothing points at — the head of the graph — else the first one.
+
+    Also the DEFAULT applied when a spec omits ``entry_point`` entirely
+    (``_staged_branch_from_spec``), so a conditional edge's targets count as
+    incoming too: a router whose branches feed back would otherwise be picked
+    as the head over the node that actually starts the flow.
+    """
     if not branch.graph_nodes:
         return ""
     incoming: set[str] = set()
     for e in branch.edges:
         if e.to_node and e.to_node != "START":
             incoming.add(e.to_node)
+    for ce in getattr(branch, "conditional_edges", None) or ():
+        for target in (ce.conditions or {}).values():
+            if target and target != "START":
+                incoming.add(target)
     for gn in branch.graph_nodes:
         if gn.id not in incoming:
             return gn.id
@@ -1737,6 +1748,43 @@ def _closest_state_type(raw: str) -> str:
         if valid.startswith(lower) or lower.startswith(valid):
             return valid
     return "any"
+
+
+def _spec_offered_nodes(spec: Any) -> bool:
+    """Did the caller supply at least one node entry, in any accepted container?"""
+    if not isinstance(spec, dict):
+        return False
+    graph = spec.get("graph")
+    containers = [spec.get("node_defs"), spec.get("nodes")]
+    if isinstance(graph, dict):
+        containers += [graph.get("node_defs"), graph.get("nodes")]
+    return any(isinstance(c, list) and c for c in containers)
+
+
+def _without_cascades(
+    spec: Any, staging_errors: list[str], validation_errors: list[str],
+) -> list[str]:
+    """Drop validation errors that are artefacts of a node that failed staging.
+
+    A node whose spec is invalid is never appended to the branch, so `validate()`
+    then sees an EMPTY branch and reports "Branch must have at least one node."
+    beside the real error. Live 2026-09-30 round 13: the spec supplied a node and
+    was told it had none, and the model concluded its `node_defs` key was
+    unrecognized — round 17 went looking for a different container shape. Two
+    errors for one defect is worse than one, because the second is false.
+
+    Only the "no nodes" family is dropped, and only when the caller actually
+    offered nodes AND staging rejected one. An empty `node_defs: []` still gets
+    the honest answer (round 11 got it, and it was right).
+    """
+    if not staging_errors or not _spec_offered_nodes(spec):
+        return validation_errors
+    if not any(err.startswith("node[") for err in staging_errors):
+        return validation_errors
+    return [
+        err for err in validation_errors
+        if "at least one node" not in err.lower()
+    ]
 
 
 def _errors_to_suggestions(
@@ -1796,10 +1844,17 @@ def _errors_to_suggestions(
                 ),
             })
         elif "at least one node" in low:
+            # Names ONLY the container staging reads. The previous wording
+            # ("Add at least one node_def + graph_node entry") advertised a
+            # `graph_nodes` key that `_staged_branch_from_spec` has no reader
+            # for — it synthesizes the graph node from each node_def itself —
+            # and live 2026-09-30 round 17 followed it into that shape.
             suggestions.append({
                 "issue": err,
                 "proposed_fix": (
-                    "Add at least one node_def + graph_node entry."
+                    'Add one entry to node_defs, e.g. {"node_id": "n1", '
+                    '"prompt_template": "..."}. The graph node is derived from '
+                    "it; you do not pass graph_nodes."
                 ),
             })
         elif "branch name is required" in low:
@@ -1813,11 +1868,55 @@ def _errors_to_suggestions(
                 "proposed_fix": "Rename the duplicate id to a unique value.",
             })
         else:
-            suggestions.append({
-                "issue": err,
-                "proposed_fix": "Review this error and reshape the spec.",
-            })
+            suggestions.append({"issue": err, "proposed_fix": _concrete_fix(err)})
     return suggestions
+
+
+#: Spec keys a validation error can name, longest first so a match on
+#: ``display_name`` is never also reported as ``name``.
+_SPEC_FIELD_VOCABULARY = tuple(sorted((
+    "node_id", "display_name", "prompt_template", "source_code", "input_keys",
+    "output_keys", "tools_allowed", "strict_input_isolation", "timeout_seconds",
+    "model_hint", "reasoning_effort", "llm_policy", "effects", "workspace",
+    "phase", "entry_point", "state_schema", "node_defs", "conditional_edges",
+    "edges", "io_manifest", "description", "skills", "visibility", "name",
+    "concurrency_budget", "default_llm_policy", "checkpoints", "intent",
+), key=len, reverse=True))
+
+#: The top-level keys a create spec accepts. The last-resort fix names them,
+#: because a caller who cannot tell which key is at fault can at least tell
+#: which keys exist.
+_SPEC_TOP_LEVEL_KEYS = (
+    "name, description, node_defs, edges, conditional_edges, entry_point, "
+    "state_schema, io_manifest, skills"
+)
+
+
+def _concrete_fix(err: str) -> str:
+    """A fix naming the spec keys the error itself names.
+
+    Replaces "Review this error and reshape the spec." — which told the caller
+    nothing it did not already know, and was the ONLY guidance the live
+    2026-09-30 loop got for its round-13 rejection (turn
+    ``c7d6279d4af74d798375d3f13780140e``). Every validator error already names
+    the field or id at fault; this says which key in the SUBMITTED spec that is,
+    so the caller edits one key instead of reshaping the whole spec.
+    """
+    fields: list[str] = []
+    for field in _SPEC_FIELD_VOCABULARY:
+        if field in err and not any(field in seen for seen in fields):
+            fields.append(field)
+    if not fields:
+        return (
+            "Apply the change this error names. A create spec's keys are: "
+            f"{_SPEC_TOP_LEVEL_KEYS}."
+        )
+    named = ", ".join(sorted(fields))
+    where = ""
+    match = re.search(r"node '([^']+)'", err)
+    if match:
+        where = f" on node_defs entry '{match.group(1)}'"
+    return f"Change {named}{where}, as the error states: {err}"
 
 
 def _resolve_node_spec(
@@ -2025,9 +2124,17 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     raw = resolved  # resolved may be the same dict, or a merged copy
 
     nid = (raw.get("node_id") or "").strip()
-    display = (raw.get("display_name") or "").strip()
-    if not nid or not display:
-        return "node spec missing node_id or display_name"
+    # `display_name` is a LABEL, and a node that has an id already has a usable
+    # one. Live 2026-09-30: this pair was reported as one error, so a spec whose
+    # node_id was present read as "node_id missing" and the model kept resending
+    # the id it had already supplied. Defaulting removes the round entirely, and
+    # the remaining error names the ONE field that has no default.
+    display = (raw.get("display_name") or "").strip() or nid
+    if not nid:
+        return (
+            "node spec missing 'node_id' (a short id for this node, e.g. "
+            "\"n1\"). 'display_name' is optional and defaults to node_id"
+        )
 
     source_code = raw.get("source_code") or ""
     prompt_template = raw.get("prompt_template") or ""
@@ -2190,13 +2297,43 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     return ""
 
 
+#: Every spelling accepted for an edge's origin, in lookup order. ``source`` /
+#: ``target`` are LangGraph's own vocabulary (``add_edge`` in its docs and in
+#: every serialized graph it emits), so a model that knows LangGraph writes them
+#: — live 2026-09-30, round 20 of turn c7d6279d: a spec with
+#: ``{"source": "n1", "target": "END"}`` was told the edge was "missing 'from'
+#: or 'to'", which reads as a missing VALUE rather than a different key name.
+_EDGE_FROM_KEYS = ("from", "from_node", "source")
+_EDGE_TO_KEYS = ("to", "to_node", "target")
+
+
+def _edge_endpoint(raw: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _edge_keys_phrase(keys: tuple[str, ...]) -> str:
+    return " / ".join(f"'{key}'" for key in keys)
+
+
 def _apply_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
     from tinyassets.branches import EdgeDefinition
 
-    src = (raw.get("from") or raw.get("from_node") or "").strip()
-    dst = (raw.get("to") or raw.get("to_node") or "").strip()
+    src = _edge_endpoint(raw, _EDGE_FROM_KEYS)
+    dst = _edge_endpoint(raw, _EDGE_TO_KEYS)
     if not src or not dst:
-        return "edge spec missing 'from' or 'to'"
+        missing = []
+        if not src:
+            missing.append(f"an origin ({_edge_keys_phrase(_EDGE_FROM_KEYS)})")
+        if not dst:
+            missing.append(f"a destination ({_edge_keys_phrase(_EDGE_TO_KEYS)})")
+        return (
+            "edge spec needs " + " and ".join(missing)
+            + '; e.g. {"from": "n1", "to": "END"}'
+        )
     branch.edges.append(EdgeDefinition(from_node=src, to_node=dst))
     return ""
 
@@ -2204,9 +2341,12 @@ def _apply_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
 def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
     from tinyassets.branches import ConditionalEdge
 
-    src = (raw.get("from") or raw.get("from_node") or "").strip()
+    src = _edge_endpoint(raw, _EDGE_FROM_KEYS)
     if not src:
-        return "conditional edge spec missing 'from'"
+        return (
+            "conditional edge spec needs an origin "
+            f"({_edge_keys_phrase(_EDGE_FROM_KEYS)})"
+        )
     conditions_raw = raw.get("conditions")
     if not isinstance(conditions_raw, dict) or not conditions_raw:
         return (
@@ -2803,6 +2943,17 @@ def _staged_branch_from_spec(
         entry = (graph_blob.get("entry_point") or "").strip()
     if entry:
         branch.entry_point = entry
+    elif not branch.entry_point and branch.graph_nodes:
+        # DEFAULT, not a guess: the graph's head is derivable from the edges the
+        # caller already gave (the node nothing points at), and for a single node
+        # there is only one answer. Live 2026-09-30 round 18: a one-node spec was
+        # refused with "Entry point is required when branch has nodes" — a round
+        # spent restating a fact the spec fully determined.
+        #
+        # Only fills an ABSENCE. An explicit entry_point is honoured above even
+        # when it names no node, so a typo is still an error rather than being
+        # silently replaced by a working one.
+        branch.entry_point = _suggest_entry_point(branch)
 
     return branch, errors
 
@@ -2936,7 +3087,7 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             f"branch-create-v1\0{actor}\0{request_id}".encode("utf-8")
         ).hexdigest()[:12]
     validation_errors = branch.validate() + _branch_file_contract_errors(branch)
-    errors = staging_errors + validation_errors
+    errors = staging_errors + _without_cascades(spec, staging_errors, validation_errors)
 
     # Validate fork_from points to a real branch_version_id. This error
     # string is what the rejection path below joins verbatim into `text`,

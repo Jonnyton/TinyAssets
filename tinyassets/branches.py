@@ -717,8 +717,21 @@ def _nodes_that_cannot_reach(
 ) -> set[str]:
     """Return graph nodes that have no path to ``target``.
 
-    Used to detect cycles without an exit condition: if a node
-    cannot reach END, it is stuck in a cycle forever.
+    Used to detect cycles without an exit condition: if a node cannot reach
+    END, it is stuck in a cycle forever.
+
+    **A node with no outgoing edge TERMINATES.** It is not stuck: LangGraph
+    halts the run after it (verified against the installed langgraph — a
+    ``StateGraph`` with one node and only ``START -> node`` compiles and
+    ``invoke`` returns), so END is implicit there and such a node reaches it by
+    construction. Treating it as a cycle was a fiction of this function's own
+    reverse walk, and a costly one: live 2026-09-30, round 19 of turn
+    ``c7d6279d4af74d798375d3f13780140e`` was told "Nodes in cycle without exit
+    condition: n1" for a SINGLE node with no edges at all.
+
+    The narrowing is exactly "no outgoing edge", so a genuine closed loop is
+    still caught: in ``a -> b -> c -> b`` every one of the three has an outgoing
+    edge, none reaches END, and all three are returned.
     """
     # Build reverse adjacency
     reverse: dict[str, set[str]] = {}
@@ -726,8 +739,13 @@ def _nodes_that_cannot_reach(
         for dst in dsts:
             reverse.setdefault(dst, set()).add(src)
 
-    # BFS backward from target
+    # BFS backward from target, and from every implicit terminal: a graph node
+    # with no outgoing edge has an implicit edge to END.
     can_reach = _reachable_from(target, reverse)
+    for node in graph_nodes:
+        if adjacency.get(node):
+            continue
+        can_reach |= _reachable_from(node, reverse)
 
     # Nodes that cannot reach target
     return graph_nodes - can_reach

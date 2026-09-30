@@ -1007,6 +1007,62 @@ def _validate_served_effect_declaration(effects: object) -> None:
         )
 
 
+#: How much text either side of the decoder's position a parse error quotes.
+#: Small enough that a 200kB payload does not return 200kB of excerpt, wide
+#: enough that the offending character is visible in context.
+_PAYLOAD_JSON_EXCERPT_RADIUS = 60
+
+
+def _payload_json_error(raw: str | None, exc: BaseException | None = None) -> str:
+    """"payload_json must be valid JSON" plus WHERE, and the bytes there.
+
+    Live 2026-09-30 (turn ``c7d6279d4af74d798375d3f13780140e``): six of a free
+    account's twenty-one rounds died on the bare six-word version of this
+    sentence. The model's ``prompt_template`` carried a literal newline and an
+    emoji; with no position, no decoder message and no excerpt it could not tell
+    which, and rewrote the whole spec instead of the one character. The decoder
+    already knows all three -- withholding them is the defect.
+
+    The excerpt is ``repr``-escaped so a raw control character (the usual cause)
+    is READABLE in a tool result rather than moving the cursor, and it is sliced
+    around the reported position so payload size never reaches the agent.
+    ``exc`` is optional: called without one, the payload is re-parsed here, so a
+    caller that only has the string still gets a positioned answer.
+    """
+    import json
+
+    text = raw or ""
+    if exc is None:
+        try:
+            json.loads(text or "{}")
+        except (json.JSONDecodeError, RecursionError) as parsed:
+            exc = parsed
+        else:
+            return "payload_json must be valid JSON."
+    if not isinstance(exc, json.JSONDecodeError):
+        # RecursionError: no position exists -- nesting depth, not a bad byte.
+        return (
+            "payload_json must be valid JSON. It nests too deeply to parse; "
+            "flatten the structure."
+        )
+    start = max(0, exc.pos - _PAYLOAD_JSON_EXCERPT_RADIUS)
+    end = min(len(text), exc.pos + _PAYLOAD_JSON_EXCERPT_RADIUS)
+    excerpt = repr(text[start:end])[1:-1]
+    caret = "" if exc.pos >= len(text) else (
+        f" The character at that position is {text[exc.pos]!r}."
+    )
+    # `json`'s own message for a control character ends in " at", which would
+    # read "... at at line 1" once we append the position.
+    message = exc.msg.removesuffix(" at").rstrip()
+    return (
+        f"payload_json must be valid JSON. {message} at line {exc.lineno} "
+        f"column {exc.colno} (character {exc.pos}).{caret} "
+        f"near: ...{excerpt}... "
+        "A newline, tab or emoji inside a JSON string must be escaped "
+        "(\\n, \\t, \\uXXXX); send the spec as one JSON object."
+    )
+
+
 def _sanitize_served_branch_spec(spec: dict) -> None:
     """Strip everything a served (autonomous) create must not carry, IN PLACE.
 
@@ -1147,6 +1203,88 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
 # resident in the description -- see
 # openspec/specs/served-agent-tool-guidance/spec.md.
 # ------------------------------------------------------------------------
+# Every JSON object in this chapter is submitted to the REAL served create path
+# by tests/test_served_branch_create_errors.py and must land. Editing an example
+# without running that file is how a worked example becomes a wrong one.
+_WRITE_GRAPH_BRANCHES_CHAPTER = """\
+    **The smallest branch that builds.** ``target="branch"``,
+    ``operation="create"``, and ``payload_json`` is ONE JSON object. This is a
+    complete, working payload -- nothing below it is required:
+
+        {"name": "Morning Focus",
+         "node_defs": [{"node_id": "note",
+                        "prompt_template": "Write a short note on what to focus on today"}]}
+
+    That is the whole shape: a ``name``, and ``node_defs`` with one entry that
+    has a ``node_id`` and a ``prompt_template``. The reply carries the new
+    ``branch_def_id``; that id is what schedules it and what runs it.
+
+    **What has a default, so I never send it to satisfy the validator.**
+
+    * ``display_name`` -- defaults to ``node_id``. Send one only when the user
+      should see a different label.
+    * ``entry_point`` -- defaults to the node nothing points at (for one node,
+      that node). Send one only to start somewhere other than the head.
+    * A node with **no outgoing edge ENDS the run**. A one-node branch needs no
+      ``edges`` at all, and the last node of a chain needs no edge to ``"END"``.
+      I add ``"END"`` only to exit a LOOP early.
+    * ``visibility`` -- always private here; publishing is a browser step.
+
+    **What has no default.** ``name``, and a ``node_id`` per node. A node takes
+    EITHER ``prompt_template`` (a model writes the step) or ``source_code`` (my
+    own Python -- see the ``code_nodes`` chapter), never both.
+
+    **Two nodes, passing a value.** ``edges`` orders them; ``output_keys`` /
+    ``input_keys`` name what moves, and every key they name must be declared in
+    ``state_schema`` when a schema is present:
+
+        {"name": "Morning brief",
+         "state_schema": [{"name": "agenda", "type": "str"},
+                          {"name": "brief", "type": "str"}],
+         "node_defs": [{"node_id": "gather",
+                        "prompt_template": "List what is on today",
+                        "output_keys": ["agenda"]},
+                       {"node_id": "write_up",
+                        "prompt_template": "Turn the agenda into three bullets",
+                        "input_keys": ["agenda"],
+                        "output_keys": ["brief"]}],
+         "edges": [{"from": "gather", "to": "write_up"}]}
+
+    ``entry_point`` is ``gather`` without being said: ``write_up`` is pointed at,
+    ``gather`` is not. ``write_up`` has no outgoing edge, so the run ends there.
+
+    **Edge spellings.** An edge's origin is ``from``, ``from_node`` OR
+    ``source``; its destination is ``to``, ``to_node`` OR ``target``. All six are
+    accepted, so a LangGraph-shaped ``{"source": ..., "target": ...}`` is fine.
+    A conditional edge takes the same origin keys plus ``conditions``, a map of
+    outcome string to target node id (``"END"`` is a valid target).
+
+    **Running it every morning.** A branch is a stored SHAPE; nothing runs until
+    something triggers it. ``target="automation"``, ``operation="create"``,
+    ``payload_json`` with the ``branch_def_id`` from the build and exactly one of
+    ``cron_expr`` or ``interval_seconds``:
+
+        {"name": "Morning focus note", "branch_def_id": "<from the build reply>",
+         "cron_expr": "0 7 * * *"}
+
+    Cron is five fields, minute first, in the owner's schedule timezone. Runs of
+    one branch never overlap. ``read_graph target="automations"`` lists them with
+    the ``expected_revision`` that pause/resume/delete need.
+
+    **When a create is refused**, the reply carries ``errors`` (what is wrong)
+    and ``suggestions`` (which key to change), plus ``attempted_spec`` -- the
+    spec as it arrived, which is how I tell a dropped key from a rejected one. I
+    change the named key and resend; I do not reshape the payload.
+
+    **Workflow-wide choices**, as ``operation="patch"`` ops on an existing
+      branch. Workflow-wide choices use
+      ``{"op":"set_default_llm_policy","default_llm_policy":<policy object>}``
+      and ``{"op":"set_concurrency_budget","concurrency_budget":2}``.
+      Use explicit null to clear either choice; saved versions keep their choices.
+      These settings select among existing permissions and do not grant access.
+
+"""
+
 _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
     ANY HTTPS API with no service-specific code.** A node declaring
@@ -1827,7 +1965,12 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
     I already have. There is no server to deploy and nothing runs anywhere else.
     Asking the person for a hosting destination, a deploy target or a code-host
     token so the thing can run or be shared is the wrong shape; so is writing
-    a service under /u with deployment instructions. It's one mapping:
+    a service under /u with deployment instructions. It's one mapping.
+
+    The mapping below is what to build; the ``branches`` chapter is how to write
+    the ``operation="create"`` payload that builds it -- a working one-node and
+    two-node spec, which keys have defaults, and the automation that schedules
+    one. I read that first if I am not already sure of the field names.
 
     * **Each agent is an agent node**: a prompt node with ``"agent"`` in
       ``tools_allowed`` (chapter ``code_nodes``). Its prompt is that agent's role.
@@ -1861,6 +2004,7 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
 
 #: Chapter name -> text, in the order the resident index names them.
 _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
+    "branches": _WRITE_GRAPH_BRANCHES_CHAPTER,
     "connections": _WRITE_GRAPH_CONNECTIONS_CHAPTER,
     "code_nodes": _WRITE_GRAPH_CODE_NODES_CHAPTER,
     "workspaces": _WRITE_GRAPH_WORKSPACES_CHAPTER,
@@ -2433,11 +2577,8 @@ def write_graph(
     - ``operation="patch"`` — edit one of YOUR OWN branches in place: pass its
       ``branch_id`` and a JSON array of edit ops in ``payload_json`` (add/remove
       edges + nodes, retune a node's prompt/source or its ``llm_policy`` model pin,
-      rename, retag, add skills). Workflow-wide choices use
-      ``{"op":"set_default_llm_policy","default_llm_policy":<policy object>}``
-      and ``{"op":"set_concurrency_budget","concurrency_budget":2}``.
-      Use explicit null to clear either choice; saved versions keep their choices.
-      These settings select among existing permissions and do not grant access. The
+      rename, retag, add skills). The ``branches`` chapter has the
+      workflow-wide ops. The
       edit is transactional (all-or-nothing). Publishing to the commons, changing
       visibility to public, and forking a foreign shape are NOT available here (they
       stay in the browser flow); a patched source_code node re-enters UNAPPROVED.
@@ -2456,9 +2597,12 @@ def write_graph(
     two-node shape that does it correctly.
 
     THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is six chapters I read when I need one,
+    every round of every turn -- it is chapters I read when I need one,
     exactly as I read a skill's SKILL.md when a request matches it:
 
+    * ``branches`` -- the minimal branch that builds, field by field: a working
+      one-node and two-node ``operation="create"`` payload, which keys have
+      defaults, every accepted edge spelling, and scheduling it every morning.
     * ``connections`` -- raising a credential ask (``target="pending_request"``),
       naming each field the way the site names it, looking the service up before
       asking rather than from memory, path patterns so one ask covers the job,
@@ -2741,8 +2885,8 @@ def write_graph(
     try:
         try:
             payload = json.loads(payload_json or ("[]" if op == "patch" else "{}"))
-        except (json.JSONDecodeError, RecursionError):
-            return json.dumps({"error": "payload_json must be valid JSON."})
+        except (json.JSONDecodeError, RecursionError) as exc:
+            return json.dumps({"error": _payload_json_error(payload_json, exc)})
         if op == "delete":
             # DELETE an OWN private unpublished branch. delete_own_branch is
             # author-gated and refuses public/published shapes itself (the
