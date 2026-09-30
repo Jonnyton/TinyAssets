@@ -5839,15 +5839,11 @@ def _action_create_universe(
                 "a universe must belong to someone: refusing to create one with no "
                 "authenticated owner"
             )
-        from tinyassets.daemon_server import grant_universe_access
+        from tinyassets.daemon_server import grant_universe_ownership
 
-        grant_universe_access(
-            base,
-            universe_id=uid,
-            actor_id=founder,
-            permission="admin",
-            granted_by=founder,
-        )
+        # The admin grant and the storage/seat owner in ONE transaction: a
+        # universe is never granted but unowned (account-storage-quota D2).
+        grant_universe_ownership(base, universe_id=uid, owner_id=founder)
 
         udir.mkdir(parents=True, exist_ok=True)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
@@ -5966,10 +5962,10 @@ def _action_create_universe(
         # rollback cannot clean up, and it silently blocks the id.
         revoke_failed = ""
         try:
-            from tinyassets.daemon_server import revoke_universe_access
+            from tinyassets.daemon_server import revoke_universe_ownership
 
             if founder:
-                revoke_universe_access(base, universe_id=uid, actor_id=founder)
+                revoke_universe_ownership(base, universe_id=uid, owner_id=founder)
         except Exception as revoke_exc:  # noqa: BLE001 - the create already failed
             logger.exception("rollback: could not revoke the create grant for %s", uid)
             revoke_failed = str(revoke_exc)
