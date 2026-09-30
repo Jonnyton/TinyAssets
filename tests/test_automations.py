@@ -1870,25 +1870,6 @@ def test_registration_refuses_a_branch_the_owner_does_not_author(
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
-def test_registration_refuses_an_open_provider_assignment(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """Foreground admission rejects open providers outright, so a "ready"
-    api_key_http assignment would store a row that can never fire."""
-    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
-    _seed_serving_assignment(tmp_path)
-    _seed_owner(tmp_path)
-    _seed_branch(tmp_path)
-    _switch_assignment_provider(
-        tmp_path, universe_id=UNIVERSE, provider="api_key_http:def_openrouter"
-    )
-
-    with pytest.raises(AutomationUnavailable) as caught:
-        register_automation(tmp_path, **_registration_kwargs())
-
-    assert caught.value.reason == "no_serving_assignment"
-
-
 def test_an_admission_failure_pauses_instead_of_looping_every_period(
     tmp_path: Path,
     registered: Automation,

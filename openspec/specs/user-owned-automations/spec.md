@@ -49,10 +49,9 @@ forever. Each reason SHALL reach the owner as a sentence they can act on, not a 
 - **THEN** the daemon returns `automation_unavailable` with reason `branch_not_owned`
 
 #### Scenario: Serving on an open compute provider
-- **WHEN** the universe's assignment is ready but names an open `api_key_http` provider, which
-  foreground admission refuses outright
-- **THEN** the daemon returns `automation_unavailable` with reason `no_serving_assignment`, and
-  the owner-facing sentence names the subscription requirement rather than an absent assignment
+- **WHEN** the universe's ready assignment names the owner's own open `api_key_http` provider
+- **THEN** registration succeeds exactly as for a subscription source, and each due run launches
+  on that provider under the same owner identity and usage rules
 
 ### Requirement: One principal's failure is one recorded refusal
 When a due run cannot be authorized, the daemon SHALL record one refusal row for that automation
