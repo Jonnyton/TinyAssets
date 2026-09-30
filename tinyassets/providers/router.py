@@ -488,10 +488,11 @@ class ProviderRouter:
                 "keeps this source", provider_name, seconds,
             )
             return False
-        if daily_detail:
-            self._quota.cooldown(provider_name, seconds, daily_detail=daily_detail)
-        else:
-            self._quota.cooldown(provider_name, seconds)
+        # One write site (test_every_router_cooldown_write_goes_through_the_guard);
+        # the keyword is passed only when there is a daily detail, so ordinary
+        # cooldowns keep their original call shape.
+        extra = {"daily_detail": daily_detail} if daily_detail else {}
+        self._quota.cooldown(provider_name, seconds, **extra)
         return True
 
     # ------------------------------------------------------------------
