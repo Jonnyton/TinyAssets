@@ -85,6 +85,9 @@ class _Wire:
         #: Models this source answers 429 for, as OpenRouter does when a FREE
         #: model's own window is spent. Everything else answers normally.
         self.rate_limited: frozenset[str] = frozenset()
+        #: Models this source answers 5xx for. A gateway 5xx may follow upstream
+        #: generation, so it is NOT a proven side-effect-free refusal.
+        self.overloaded: frozenset[str] = frozenset()
 
     # -- discovery -------------------------------------------------------
     def read(self, **kwargs: Any) -> dict[str, Any]:
@@ -102,6 +105,8 @@ class _Wire:
             # A whole-response status, exactly as the live source sends it: a
             # header-less 429 with no body, before a single token is generated.
             return {"status": 429, "headers": {}, "body": ""}
+        if model in self.overloaded:
+            return {"status": 503, "headers": {}, "body": ""}
         return {
             "status": 200,
             "body": json.dumps({
@@ -453,6 +458,68 @@ def test_a_source_that_still_has_a_sibling_is_not_cooled_mid_node(
     router = call_module.get_provider_router()
     assert router is not None
     assert router._quota.cooldown_remaining(provider) == 0
+
+
+def test_a_5xx_does_not_replay_the_node_on_another_model(
+    tmp_path, monkeypatch, authenticate_request, wires,
+):
+    """A gateway 5xx is not proof that nothing was generated.
+
+    Codex refutation R3, 2026-09-30: an earlier head declared EVERY non-2xx
+    side-effect-free, and a 502/504 can come from a gateway after an upstream
+    model already began producing output. Only a 4xx admission refusal proves
+    zero generation, so a 5xx must hold the node rather than replay it.
+    """
+    authenticate_request(A_OWNER)
+    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
+    wires[A_OWNER].overloaded = frozenset({LIVE_MODELS[0]})
+
+    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
+
+    assert record["status"] == "failed"
+    assert wires[A_OWNER].sent_models == [LIVE_MODELS[0]], wires[A_OWNER].sent_models
+    assert LIVE_MODELS[1] not in wires[A_OWNER].sent_models
+
+
+def test_a_withheld_cooldown_is_settled_even_when_the_node_raises(
+    tmp_path, monkeypatch, authenticate_request, wires,
+):
+    """The debt does not depend on HOW the node ended.
+
+    Codex refutation R4, 2026-09-30: settlement ran only on the exhaustion
+    branch, so a node that raised between attempts -- a cancellation or an
+    authority change -- left the source hot forever. Driven by making the
+    SECOND authorization raise, after the first model's 429 withheld the
+    cooldown.
+    """
+    from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
+    from tinyassets.providers import call as call_module
+
+    authenticate_request(A_OWNER)
+    provider = _seed_universe(
+        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
+    )
+    wires[A_OWNER].rate_limited = frozenset({LIVE_MODELS[0]})
+    original = _ForegroundRunProviderSession._authorize_attempt
+    calls = []
+
+    def authorize(self, **kwargs):
+        calls.append(kwargs)
+        if len(calls) > 1:
+            raise PermissionError("synthetic authority change between attempts")
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(_ForegroundRunProviderSession, "_authorize_attempt", authorize)
+
+    record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
+
+    assert record["status"] == "failed"
+    assert len(calls) == 2, calls
+    router = call_module.get_provider_router()
+    assert router is not None
+    assert router._quota.cooldown_remaining(provider) > 0, (
+        "a node that raised between attempts left its source hot"
+    )
 
 
 def test_a_node_declaring_no_fallbacks_stays_on_its_pin_through_a_429(

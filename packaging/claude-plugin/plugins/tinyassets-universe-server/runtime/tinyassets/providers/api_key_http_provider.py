@@ -121,21 +121,26 @@ def _coerce_status(value: Any) -> int | None:
 
 
 def _pre_generation(error):
-    """Declare a whole-response refusal side-effect-free, as a FACT.
+    """Declare an ADMISSION refusal side-effect-free, as a FACT.
 
-    These raises all fire on a complete non-2xx HTTP envelope: the source
-    answered with a status and nothing else, so no token was generated and no
-    tool could have run. Saying so at the raise site is what lets
-    `capacity_boundary` certify the transition to the next model.
+    Only for the statuses with which a source refuses a request *before*
+    generating: 429 (its own rate limit) and the model-refusal statuses
+    (access refused, no such model). The source answered with a status and
+    nothing else, so no token was generated and no tool could have run, and
+    saying so at the raise site is what lets `capacity_boundary` certify the
+    transition to the next model.
+
+    **A 5xx is deliberately NOT included.** It can come from a gateway after an
+    upstream model already began producing output, so zero remote generation is
+    unproved and the honest value is "unknown" -- which holds the node rather
+    than replaying it elsewhere. Codex refutation R3, 2026-09-30: an earlier
+    head labelled every 5xx side-effect-free and could not rule out a 502/504
+    following generation.
 
     Said HERE rather than inferred at the router, because absence of the fact
     must keep meaning "unknown" for a streaming or native attempt, where a
-    failure genuinely can follow partial work. The router already spelled
-    `side_effect_state="none"` for the model-refusal statuses and read
-    `_side_effect_from` -- which only sees streaming telemetry -- for the
-    capacity ones, so the same shape of refusal carried the fact on one branch
-    and not the other. It travels on the existing `attempt_telemetry` channel
-    so there is one reader, not two.
+    failure genuinely can follow partial work. It travels on the existing
+    `attempt_telemetry` channel so there is one reader, not two.
     """
     error.attempt_telemetry = {"side_effect_state": "none"}
     return error
@@ -410,9 +415,12 @@ class ApiKeyHttpProvider(BaseProvider):
 
             capacity = contract.capacity_decoder(status, result.get("headers"))
             if capacity is not None:
-                raise _pre_generation(SelectedModelCapacityError(
+                error = SelectedModelCapacityError(
                     capacity, detail=self._capacity_detail(status, result)
-                ))
+                )
+                # Only a 4xx admission refusal proves nothing was generated; a
+                # 5xx may be a gateway answering after upstream output began.
+                raise _pre_generation(error) if status < 500 else error
         if status == 401:
             # Still refused after the broker's one refresh-and-retry (oauth2),
             # or a key the service no longer accepts: a sign-in problem.
@@ -422,9 +430,7 @@ class ApiKeyHttpProvider(BaseProvider):
                 ProviderRateLimitedError("compute provider rate limited (429)")
             )
         if 500 <= status < 600:
-            raise _pre_generation(
-                ProviderOverloadedError(f"compute provider error (HTTP {status})")
-            )
+            raise ProviderOverloadedError(f"compute provider error (HTTP {status})")
         if status in _MODEL_REFUSAL_STATUSES:
             # Access refused, or no such model to serve: nothing was generated,
             # so this is neither a reply we failed to read nor a sick source.

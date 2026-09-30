@@ -1225,15 +1225,23 @@ class _ForegroundRunProviderSession:
             return boundary.exhaustion, False
         return _replace(boundary.exhaustion, scope="model"), True
 
-    def _cool_abandoned_sources(self, boundaries):
-        """Cool every source this node left hot once its order has run out.
+    def _cool_abandoned_sources(self, boundaries, *, keeping=None):
+        """Cool every source this node leaves hot, however the node ended.
 
         The withheld cooldown bought exactly one thing: another model on the
-        same grant. When the order has no candidate left that purchase is over,
+        same grant. Once the node is done with a source that purchase is over,
         and a source at a DAILY cap -- which refuses every model -- would
         otherwise have every later run pay the full order again, forever. The
         conversation path settles the same debt in
         `AgentTurnCoordinator._cool_abandoned_source`.
+
+        ``keeping`` is the connection the node actually got its answer from, and
+        it is NOT cooled: a source that just served this node is evidently
+        working, and cooling it would penalise the very fallback that succeeded.
+        That mirrors `_leave_hot_source`, which cools a hot source only once the
+        turn moves off it. On a single-source account this is the ordinary
+        outcome -- 429 on one model, answered on the next -- so cooling there
+        would undo the fix.
 
         Never raises: a failing node must not be replaced by a cooling error.
         """
@@ -1244,12 +1252,12 @@ class _ForegroundRunProviderSession:
             return
         for boundary in boundaries:
             try:
+                connection = boundary.exhaustion.ref.connection_id
+                if connection == keeping:
+                    continue
                 if boundary.failure_class not in _TRANSIENT_CAPACITY:
                     continue
-                router.cool_source(
-                    boundary.exhaustion.ref.connection_id,
-                    retry_after_s=boundary.retry_after_s,
-                )
+                router.cool_source(connection, retry_after_s=boundary.retry_after_s)
             except Exception:  # noqa: BLE001 - hygiene, never the failure
                 logger.warning("could not cool a spent work source")
 
@@ -1263,67 +1271,79 @@ class _ForegroundRunProviderSession:
         boundaries = ()
         narrowings = 0
         last_capacity = None
+        served = None
         # This loop holds the owner's order, so it is entitled to the router's
-        # withheld cooldown -- and responsible for settling it below.
+        # withheld cooldown -- and responsible for settling it, on EVERY exit.
         config = (replace(config, owns_capacity_siblings=True)
                   if isinstance(config, ModelConfig) else config)
-        while True:
-            selected = self._work_candidates.next_candidate(policy)
-            # Exhaustion, NOT an unbound provider: the owner's own order ran out.
-            # Typed so `api/runs` can say so without matching this message. The
-            # boundaries this loop validated are the evidence and the last
-            # capacity failure stays the cause. Auth/unknown failures never get
-            # here: they raise the held class below on the attempt that saw them.
-            if selected is None:
-                self._cool_abandoned_sources(boundaries)
-                raise self._work_candidates.exhausted_error(boundaries) from last_capacity
-            effective = {**(policy or {}), "preferred": {
-                "provider": selected.connection_id, "model_id": selected.model_id,
-            }}
-            observed = []
-            outer = kwargs.get("response_observer")
+        try:
+            while True:
+                selected = self._work_candidates.next_candidate(policy)
+                # Exhaustion, NOT an unbound provider: the owner's own order ran
+                # out. Typed so `api/runs` can say so without matching this
+                # message. The boundaries this loop validated are the evidence
+                # and the last capacity failure stays the cause. Auth/unknown
+                # failures never get here: they raise the held class below on
+                # the attempt that saw them.
+                if selected is None:
+                    raise self._work_candidates.exhausted_error(boundaries) from last_capacity
+                effective = {**(policy or {}), "preferred": {
+                    "provider": selected.connection_id, "model_id": selected.model_id,
+                }}
+                observed = []
+                outer = kwargs.get("response_observer")
 
-            def observe(response):
-                observed.append(response)
-                if outer is not None:
-                    outer(response)
+                def observe(response):
+                    observed.append(response)
+                    if outer is not None:
+                        outer(response)
 
-            try:
-                attempts += 1
-                result = self._call_once(role, prompt, system, config, effective,
-                                         {**kwargs, "response_observer": observe})
-            except AllProvidersExhaustedError as exc:
-                router = get_provider_router()
-                kind = router.selected_agent_execution_kind(selected) if router else None
-                boundary = capacity_boundary(
-                    selected, exc.attempts, execution_kind=kind,
-                    native_evidence=(getattr(exc, "native_evidence", ())
-                                     if kind == "native_agent" else ()),
-                )
-                if boundary is None:
-                    raise _held_attempt_error(role, selected, exc) from exc
-                exhaustion, narrowed = self._narrowed_exhaustion(
-                    boundary, kind, narrowings, config,
-                )
-                narrowings += int(narrowed)
-                # The boundary is retained carrying the exhaustion actually
-                # RECORDED, not the one it proposed: `exhausted_error` matches
-                # evidence to exhaustion by value, so keeping the unnarrowed copy
-                # silently dropped the classified failure class and retry-after
-                # from the run's own error the moment a narrowing happened.
-                boundaries += (replace(boundary, exhaustion=exhaustion),)
-                last_capacity = exc
-                self._work_candidates.next_candidate(policy, (exhaustion,))
-                continue
-            if metadata_observer is not None:
-                metadata = {"attempts": attempts, "model": selected.model_id}
-                if len(observed) == 1:
-                    from tinyassets.providers.router import ProviderRouter
+                try:
+                    attempts += 1
+                    result = self._call_once(role, prompt, system, config, effective,
+                                             {**kwargs, "response_observer": observe})
+                except AllProvidersExhaustedError as exc:
+                    router = get_provider_router()
+                    kind = router.selected_agent_execution_kind(selected) if router else None
+                    boundary = capacity_boundary(
+                        selected, exc.attempts, execution_kind=kind,
+                        native_evidence=(getattr(exc, "native_evidence", ())
+                                         if kind == "native_agent" else ()),
+                    )
+                    if boundary is None:
+                        raise _held_attempt_error(role, selected, exc) from exc
+                    exhaustion, narrowed = self._narrowed_exhaustion(
+                        boundary, kind, narrowings, config,
+                    )
+                    narrowings += int(narrowed)
+                    # The boundary is retained carrying the exhaustion actually
+                    # RECORDED, not the one it proposed: `exhausted_error` matches
+                    # evidence to exhaustion by value, so keeping the unnarrowed
+                    # copy silently dropped the classified failure class and
+                    # retry-after from the run's own error the moment a narrowing
+                    # happened.
+                    boundaries += (replace(boundary, exhaustion=exhaustion),)
+                    last_capacity = exc
+                    self._work_candidates.next_candidate(policy, (exhaustion,))
+                    continue
+                served = selected.connection_id
+                if metadata_observer is not None:
+                    metadata = {"attempts": attempts, "model": selected.model_id}
+                    if len(observed) == 1:
+                        from tinyassets.providers.router import ProviderRouter
 
-                    metadata.update(ProviderRouter._call_meta(observed[0], attempts))
-                    metadata["model"] = selected.model_id
-                metadata_observer(metadata)
-            return result
+                        metadata.update(ProviderRouter._call_meta(observed[0], attempts))
+                        metadata["model"] = selected.model_id
+                    metadata_observer(metadata)
+                return result
+        finally:
+            # In a `finally`, because the debt does not depend on HOW the loop
+            # ends. Settling it only on exhaustion left the window unapplied
+            # whenever the node raised instead -- a cancellation or an authority
+            # change between attempts -- and whenever a later model SUCCEEDED,
+            # which is the ordinary outcome of the fix (Codex refutation R4,
+            # 2026-09-30, reproduced).
+            self._cool_abandoned_sources(boundaries, keeping=served)
 
     def _call_once(self, role, prompt, system, config, policy, kwargs):
         with self._authorize_attempt(
