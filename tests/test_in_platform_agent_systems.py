@@ -680,6 +680,48 @@ def test_a_bundle_that_fails_to_publish_leaves_nothing_public(home: Path, monkey
             assert "not found" in _bob_reads_version(version.branch_version_id)
 
 
+def test_a_failed_publish_does_not_withdraw_an_earlier_publication(
+    home: Path, monkeypatch,
+) -> None:
+    """Astra refute 2026-09-30 (round 2 on the publication-mark backfill): a
+    failed bundle cleared every version mark and made every branch private,
+    including a branch and version that were public BEFORE this request. It now
+    takes back only what this request did."""
+    import tinyassets.api.custom_agents as api_custom_agents
+    from tinyassets import branch_versions
+    from tinyassets.api.publish_requests import _flipped
+    from tinyassets.daemon_server import get_branch_definition, update_branch_definition
+
+    _library(home)
+    update_branch_definition(home, branch_def_id=SCOUT,
+                             updates={"visibility": "public", "published": True})
+    earlier = branch_versions.publish_branch_version(
+        home, _flipped(get_branch_definition(home, branch_def_id=SCOUT)),
+        publisher=OWNER, public=True).branch_version_id
+    ask = _ask_publish(home)
+    real_mint = branch_versions.publish_branch_version
+    minted: list[str] = []
+
+    def recording_mint(*args, **kwargs):
+        version = real_mint(*args, **kwargs)
+        minted.append(version.branch_version_id)
+        return version
+
+    monkeypatch.setattr(branch_versions, "publish_branch_version", recording_mint)
+    monkeypatch.setattr(api_custom_agents, "custom_agents",
+                        lambda **_kw: {"error": "agent_storage_unavailable"})
+    out = _answer(ask["request_id"])
+    assert out.get("error") == "publish_refused", out
+    assert earlier in minted, "the mint must dedupe onto the earlier publication"
+
+    assert _visibility(home, SCOUT) == "public", "an earlier publication stays"
+    assert json.loads(_bob_reads_version(earlier))["branch_version_id"] == earlier
+    assert _visibility(home, SCRIBE) == "private", "this request's own flip is undone"
+    for version_id in minted:
+        if version_id != earlier:
+            assert "not found" in _bob_reads_version(version_id), version_id
+
+
 def test_only_the_portable_ui_fields_are_published(home: Path) -> None:
     """Codex refute 2026-09-29 P1: a stored component carrying `inputs` rode
     into the public definition. Only the seven fields the app renders go."""

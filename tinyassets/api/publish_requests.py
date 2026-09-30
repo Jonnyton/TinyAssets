@@ -298,12 +298,17 @@ def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     return {**action, "snapshot_digest": snap["digest"], "shown": snap["shown"]}
 
 
-def _flip_if_unchanged(snap: dict[str, Any]) -> None:
+def _flip_if_unchanged(snap: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
     """The commit point. One write transaction re-reads every branch, refuses
-    unless each still equals the snapshot, and flips them all public."""
+    unless each still equals the snapshot, and flips them all public.
+
+    Returns each branch's raw (visibility, published) as it stood before the
+    flip, so a failed publish restores exactly that -- never withdrawing a
+    publication that predates this request."""
     from tinyassets.api.helpers import _base_path
     from tinyassets.daemon_server import _branch_def_from_row, _connect
 
+    prior: dict[str, tuple[Any, Any]] = {}
     with _connect(_base_path()) as conn:
         conn.execute("BEGIN IMMEDIATE")
         for bid, public_row in snap["branches"].items():
@@ -313,22 +318,25 @@ def _flip_if_unchanged(snap: dict[str, Any]) -> None:
             if row is None or _public_branch_row(_branch_def_from_row(row)) != public_row:
                 # Raising inside the transaction rolls every flip back.
                 raise ValueError(_CHANGED)
+            prior[bid] = (row["visibility"], row["published"])
             conn.execute(
                 "UPDATE branch_definitions SET visibility = 'public', published = 1 "
                 "WHERE branch_def_id = ?", (bid,),
             )
+    return prior
 
 
-def _unflip(snap: dict[str, Any]) -> None:
+def _unflip(prior: dict[str, tuple[Any, Any]]) -> None:
+    """Undo this request's flip only: each branch goes back to what it was."""
     from tinyassets.api.helpers import _base_path
     from tinyassets.daemon_server import _connect
 
     with _connect(_base_path()) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        for bid in snap["branches"]:
+        for bid, (visibility, published) in prior.items():
             conn.execute(
-                "UPDATE branch_definitions SET visibility = 'private', published = 0 "
-                "WHERE branch_def_id = ?", (bid,),
+                "UPDATE branch_definitions SET visibility = ?, published = ? "
+                "WHERE branch_def_id = ?", (visibility, published, bid),
             )
 
 
@@ -348,13 +356,19 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
     3. The commit point: one transaction re-checks every row against the
        snapshot and flips them all public, or flips none.
     4. Mark exactly those versions published -- never the branch's history --
-       then publish the pre-validated definition. A failure here un-marks them
-       and flips the branches back, so nothing is left public.
+       then publish the pre-validated definition. A failure here un-marks the
+       versions THIS request marked and restores each branch's prior
+       visibility, so nothing this request exposed is left public and nothing
+       published before it is withdrawn.
     """
     from tinyassets.api import permissions
     from tinyassets.api.custom_agents import custom_agents
     from tinyassets.api.helpers import _base_path
-    from tinyassets.branch_versions import mark_versions_public, publish_branch_version
+    from tinyassets.branch_versions import (
+        branch_version_is_public,
+        mark_versions_public,
+        publish_branch_version,
+    )
     from tinyassets.principals import named_principal
 
     actor = named_principal(permissions.current_actor_id())
@@ -372,9 +386,13 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
     if set(versions.values()) != expected:
         raise ValueError("a version did not mint as the snapshot named it; nothing was published")
 
-    _flip_if_unchanged(snap)
+    # A mint can dedupe onto a version published before this request; only the
+    # ones this request marks are this request's to take back.
+    newly_marked = [v for v in versions.values()
+                    if not branch_version_is_public(_base_path(), v)]
+    prior = _flip_if_unchanged(snap)
     try:
-        mark_versions_public(_base_path(), list(versions.values()))
+        mark_versions_public(_base_path(), newly_marked)
         result = custom_agents(
             action="publish_agent", payload=json.dumps(snap["definition"]),
             idempotency_key=f"publish-request:{request_id}",
@@ -384,8 +402,8 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
             detail = result.get("detail") or result.get("error")
             raise ValueError(f"the bundle was not published ({detail}); nothing was left public")
     except BaseException:
-        mark_versions_public(_base_path(), list(versions.values()), public=False)
-        _unflip(snap)
+        mark_versions_public(_base_path(), newly_marked, public=False)
+        _unflip(prior)
         raise
     return {"published": True, "agent_definition_id": agent["agent_definition_id"],
             "branch_versions": versions}
