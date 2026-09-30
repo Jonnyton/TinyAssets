@@ -1163,6 +1163,145 @@ def test_the_notice_sentinel_never_reaches_the_author(served):
     assert "notice\\u0000" not in blob and "\x00" not in blob, blob
 
 
+def test_a_caller_cannot_forge_a_notice_out_of_a_real_error(served):
+    """The obvious hole in a sentinel-prefix design: put the sentinel in a VALUE.
+
+    `_STATE_COERCION_NOTICE` is a `\\x00`-delimited PREFIX, and the classifier is
+    `err.startswith(...)`. Caller text is always interpolated AFTER literal
+    text, so it cannot reach position 0 -- this test is what holds that true if
+    anyone reorders those f-strings. A real error carrying the sentinel must
+    still be an error.
+    """
+    from tinyassets.api.branches import _STATE_COERCION_NOTICE
+
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    # A field with NO name is a genuine error. Its type carries the sentinel.
+    spec["state_schema"] = [{"type": _STATE_COERCION_NOTICE + "forged"}]
+    out = _create(served, spec)
+    assert not _landed(out), out
+    assert out.get("errors"), out
+    assert not any("forged" in n for n in out.get("notices") or []), out
+
+
+@pytest.mark.parametrize("field", ["name", "type"])
+def test_caller_text_is_escaped_before_it_is_quoted_back(served, field):
+    """An error names the value sent, so caller bytes reach a tool result.
+
+    Found while probing the sentinel: the classification was safe, but the
+    caller's raw `\\x00` was echoed verbatim into the message. Escaped now, for
+    the same reason `_payload_json_error` escapes its excerpt -- a raw control
+    character in a tool result is unreadable and moves a terminal cursor.
+    """
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = [{
+        "name": "focus_note", "type": "str",
+        field: "a\x00b\nc\tstrang",
+    }]
+    out = _create(served, spec)
+    # The MESSAGE channels only. `attempted_spec` is a deliberate verbatim echo
+    # of what arrived -- that is how a caller tells a dropped key from a
+    # rejected one -- so it carries the caller's bytes by design.
+    messages = json.dumps({
+        key: out.get(key)
+        for key in ("text", "error", "errors", "notices", "suggestions")
+    })
+    assert "\x00" not in messages and "\\u0000" not in messages, messages
+
+
+def test_no_caller_of_the_applicator_leaks_the_sentinel(served):
+    """EVERY caller of `_apply_state_field_spec` must read the notice prefix.
+
+    Codex refute, PR #4123: I changed the applicator's return contract and
+    updated ONE of its two callers. The patch path (`_apply_patch_op` ->
+    `add_state_field`) passed the raw string through, so a coerced type both
+    leaked `\\x00notice\\x00` into the author's text and REJECTED a patch the
+    build path accepts. Structural, not a second instance: the sentinel is
+    grepped out of the source, so a third caller fails this test.
+    """
+    import pathlib
+    import re
+
+    from tinyassets.api import branches as api
+
+    source = pathlib.Path(api.__file__).read_text(encoding="utf-8")
+    # Sites that RETURN the applicator's value to a caller of their own.
+    callers = re.findall(r"= _apply_state_field_spec\(|return _apply_state_field_spec\(", source)
+    assert len(callers) >= 2, callers
+    # And every place that consumes such a value tests the prefix.
+    assert source.count("startswith(_STATE_COERCION_NOTICE)") >= 2, (
+        "a caller of _apply_state_field_spec does not classify the notice prefix"
+    )
+
+
+def test_a_patched_coercion_is_a_notice_not_a_rejection(served):
+    """The patch path, driven for real: coerce a type, keep the patch."""
+    built = _create(served, {
+        "name": "Patch me",
+        "node_defs": [{"node_id": "n1", "prompt_template": "hello"}],
+    })
+    assert _landed(built), built
+    out = json.loads(served.write_graph(
+        target="branch", operation="patch", branch_id=built["branch_def_id"],
+        payload_json=json.dumps([
+            {"op": "add_state_field", "name": "focus", "type": "strang"},
+        ]),
+    ))
+    assert out.get("status") == "patched", out
+    assert any("strang" in n["notice"] for n in out.get("notices") or []), out
+    blob = json.dumps(out)
+    assert "\x00" not in blob and "\\u0000" not in blob, blob
+
+
+def test_a_patched_json_schema_synonym_is_silent(served):
+    built = _create(served, {
+        "name": "Patch me too",
+        "node_defs": [{"node_id": "n1", "prompt_template": "hello"}],
+    })
+    assert _landed(built), built
+    out = json.loads(served.write_graph(
+        target="branch", operation="patch", branch_id=built["branch_def_id"],
+        payload_json=json.dumps([
+            {"op": "add_state_field", "name": "focus", "type": "string"},
+        ]),
+    ))
+    assert out.get("status") == "patched", out
+    assert out.get("notices") == [], out
+
+
+@pytest.mark.parametrize("bad_field,value", [
+    ("reducer", {"bad": 1}),
+    ("name", {"bad": 1}),
+    ("description", ["not", "a", "string"]),
+])
+def test_a_mapping_state_schema_does_not_bypass_the_text_field_guard(
+    served, bad_field, value,
+):
+    """The shapes the SANITIZER knows must be the shapes the BUILDER knows.
+
+    Codex refute, PR #4123 (found mid-probe): `_sanitize_served_branch_spec`
+    validates that a state field's text metadata really is text -- a dict there
+    "persists malformed" -- but it looked for a LIST, so it skipped a mapping
+    entirely. Accepting the mapping in the builder without teaching the
+    sanitizer would have routed a hostile field around that guard. Asserted as
+    EQUIVALENCE: the mapping shape refuses exactly what the list shape refuses.
+    """
+    field = {"name": "focus", "type": "str", bad_field: value}
+    as_list = _create(served, {**TURN_F3617CA3_ROUND_3, "state_schema": [field]})
+    as_map = _create(served, {**TURN_F3617CA3_ROUND_3, "state_schema": {"focus": field}})
+    assert not _landed(as_list), as_list
+    assert not _landed(as_map), ("mapping bypassed the guard", as_map)
+    assert bad_field in json.dumps(as_map), as_map
+
+
+def test_quoted_caller_text_is_bounded(served):
+    """A 50kB type name must not become the error message."""
+    spec = dict(TURN_F3617CA3_ROUND_3)
+    spec["state_schema"] = [{"name": "focus_note", "type": "z" * 50_000}]
+    out = _create(served, spec)
+    blob = json.dumps(out)
+    assert len(blob) < 8_000, len(blob)
+
+
 @pytest.mark.parametrize("schema", [
     42,
     "focus_note",

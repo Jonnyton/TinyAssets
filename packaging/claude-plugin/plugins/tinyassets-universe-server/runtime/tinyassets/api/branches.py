@@ -2169,6 +2169,28 @@ def _json_type_name(value: Any) -> str:
     return _JSON_TYPE_NAMES.get(type(value), "an unsupported value")
 
 
+#: How much caller text an error may quote back. Long enough to recognise the
+#: value, short enough that a 50kB field name is not the error message.
+_ECHO_MAX = 80
+
+
+def _echo(value: Any) -> str:
+    """Quote caller text back SAFELY: escaped, bounded, one line.
+
+    An error names the value the caller sent, which means caller-controlled
+    bytes land in a served tool result. Escaped because a raw control character
+    is unreadable there and moves a terminal cursor (the same reason
+    ``_payload_json_error`` escapes its excerpt), and bounded because the field
+    name is as unbounded as the payload. Found while testing whether the notice
+    sentinel could be forged: it cannot, but the caller's ``\\x00`` was being
+    echoed verbatim.
+    """
+    text = value if isinstance(value, str) else str(value)
+    clipped = text[:_ECHO_MAX]
+    escaped = repr(clipped)[1:-1]
+    return escaped + ("..." if len(text) > _ECHO_MAX else "")
+
+
 def _apply_node_spec(branch: Any, raw: Any) -> str:
     from tinyassets.branches import GraphNodeRef, NodeDefinition
 
@@ -2514,7 +2536,20 @@ def _apply_state_field_spec(branch: Any, raw: Any) -> str:
             "state field spec must be an object with a 'name', e.g. "
             '{"name": "focus_note", "type": "str"}'
         )
-    fname = (raw.get("name") or raw.get("field_name") or "").strip()
+    # Defence in depth: the served path normalizes and type-checks these before
+    # they arrive, but `build_branch` is reachable from the browser flow too, and
+    # a non-string here used to reach `.strip()` and raise AttributeError.
+    raw_name = raw.get("name") or raw.get("field_name") or ""
+    if not isinstance(raw_name, str):
+        return (
+            f"state field 'name' must be a string (got {_json_type_name(raw_name)})"
+        )
+    raw_type = raw.get("type", raw.get("field_type", "str"))
+    if raw_type is not None and not isinstance(raw_type, str):
+        return (
+            f"state field 'type' must be a string (got {_json_type_name(raw_type)})"
+        )
+    fname = raw_name.strip()
     if not fname:
         return "state field spec missing 'name'"
     if any(f.get("name") == fname for f in branch.state_schema):
@@ -2549,8 +2584,8 @@ def _apply_state_field_spec(branch: Any, raw: Any) -> str:
         # f3617ca3 round 3, on `"string"`. The author still needs telling, so
         # the caller separates the two channels (`_STATE_COERCION_NOTICE`).
         return (
-            f"{_STATE_COERCION_NOTICE}state field '{fname}' type "
-            f"'{ftype_raw}' unknown; coerced to '{ftype}'."
+            f"{_STATE_COERCION_NOTICE}state field '{_echo(fname)}' type "
+            f"'{_echo(ftype_raw)}' unknown; coerced to '{ftype}'."
         )
     return ""
 
@@ -3724,6 +3759,7 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     staging = BranchDefinition.from_dict(copy.deepcopy(source))
 
     per_op_errors: list[dict[str, Any]] = []
+    per_op_notices: list[dict[str, Any]] = []
     for idx, op in enumerate(changes):
         if not isinstance(op, dict):
             per_op_errors.append({
@@ -3732,6 +3768,18 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             })
             continue
         err = _apply_patch_op(staging, op)
+        # The SAME two channels as the build path. Codex refute, PR #4123: this
+        # caller was missed when `_apply_state_field_spec` gained the notice
+        # sentinel, so a patch that coerced a type both leaked the raw
+        # `\x00notice\x00` marker into the author's text AND was rejected for
+        # what the build path treats as advisory. One applicator, one contract:
+        # every caller of it has to read the prefix.
+        if err and err.startswith(_STATE_COERCION_NOTICE):
+            per_op_notices.append({
+                "op_index": idx, "op": op,
+                "notice": err[len(_STATE_COERCION_NOTICE):],
+            })
+            continue
         if err:
             if (
                 (op.get("op") or "").strip().lower() == "set_fork_from"
@@ -3773,10 +3821,15 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             text_lines += ["", "Suggested fixes:"]
             for s in suggestions:
                 text_lines.append(f"- {s['proposed_fix']}")
+        if per_op_notices:
+            text_lines += ["", "Also adjusted:"]
+            for pn in per_op_notices:
+                text_lines.append(f"- op[{pn['op_index']}]: {pn['notice']}")
         return json.dumps({
             "text": "\n".join(text_lines),
             "status": "rejected",
             "errors": per_op_errors,
+            "notices": per_op_notices,
             "validation_errors": validation_errors,
             "suggestions": suggestions,
         })
@@ -3875,6 +3928,8 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         "name_updated": name_updated,
         "new_name": persisted.name,
         "post_patch": post_patch,
+        # Same channel as the build path: what was adjusted, without rejecting.
+        "notices": per_op_notices,
         "batch_receipt": _branch_authoring_batch_receipt(
             persisted,
             action="patch_branch",
@@ -3882,6 +3937,11 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             request_id=kwargs.get("request_id", ""),
         ),
     }
+    if per_op_notices:
+        patch_payload["text"] = "\n".join([
+            patch_payload["text"], "", "Adjusted on the way in:",
+            *[f"- op[{pn['op_index']}]: {pn['notice']}" for pn in per_op_notices],
+        ])
     if verbose:
         patch_payload["branch"] = saved
     return json.dumps(patch_payload, default=str)
