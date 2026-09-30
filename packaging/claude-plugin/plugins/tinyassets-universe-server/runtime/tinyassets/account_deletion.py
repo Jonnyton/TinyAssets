@@ -196,6 +196,13 @@ REDACTED_TABLES = frozenset({"action_records"})
 #: be deleted.
 ATTRIBUTION_COLUMNS = MappingProxyType({
     "canonical_bindings": ("bound_by_actor_id",),
+    # A universe the person owned that SURVIVES them (not the home, which the
+    # universe sweep deletes with its owner row) keeps an owner -- the opaque
+    # fingerprint -- rather than none. With none it would become unattributed,
+    # which is never refused: a collaborator could fill it without bound
+    # (gpt-6-astra, PR #4139). The fingerprint has no home, so it is charged at
+    # the free tier, and it names nobody.
+    "universe_owner": ("owner_id",),
 })
 
 #: Money the person is a party to. Refuse the deletion rather than discard it:
@@ -477,10 +484,16 @@ def deletion_blockers(
             if key not in cols or (table, key) in _FOREIGN_ROWS_EXPECTED:
                 continue
             try:
+                # A redacted `deleted:<fingerprint>` names nobody -- it is what an
+                # EARLIER deletion left in place of a person -- so it is not
+                # another person's row. Counting it would block this person's
+                # deletion forever, since nobody is left to resolve it
+                # (gpt-6-astra round 2, PR #4139: A owned B's home, A deleted).
                 foreign = _count(
                     conn,
                     f'SELECT COUNT(*) FROM "{table}" '
-                    f'WHERE universe_id = ? AND "{key}" NOT IN (?, \'system\', \'\')',
+                    f'WHERE universe_id = ? AND "{key}" NOT IN (?, \'system\', \'\') '
+                    f'AND "{key}" NOT LIKE \'deleted:%\'',
                     (home, principal),
                 )
             except sqlite3.OperationalError:
