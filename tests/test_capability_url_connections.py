@@ -1,7 +1,8 @@
 """Capability-URL connections — the secret is a path segment, held in the vault.
 
-Requirement source:
-``openspec/changes/capability-url-connections/specs/http-connections-and-outbound-authority/spec.md``.
+Requirement source: ``openspec/specs/http-connections-and-outbound-authority/spec.md``
+(as-built). The change that introduced it is archived at
+``openspec/changes/archive/2026-09-30-capability-url-connections/``.
 
 THE live failure, 2026-09-30 (free account universe
 ``u-01ky3zh1arr8qth8jee7zx63pq``, turn ``d75a6cb6447e4434b8b0d6aecf706475``): a

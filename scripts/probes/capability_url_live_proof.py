@@ -33,6 +33,12 @@ Safety:
 * ``finally``-cleanup removes the connection, the consent, the hook and the
   branch. ``--cleanup`` re-runs just that.
 
+The 202 means the receiver ENQUEUED a run, and cleanup then deletes the branch
+under it -- so the owner sees one failed run named "Capability URL live proof".
+That is deliberate: the 202 is returned at enqueue, so the proof does not need
+the run to execute, and a failed run clearly named for the probe is cheaper and
+tidier than leaving a live branch and a real inference behind.
+
 Findings baked in from the first run (2026-09-30):
 
 * The packet carries a ``User-Agent``. The driver sends none, and
@@ -49,6 +55,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -178,7 +185,7 @@ def main(universe_id: str, hook_host: str) -> int:
         _ids,
         connect_http,
     )
-    from tinyassets.daemon_server import _connect, create_branch_definition_once
+    from tinyassets.daemon_server import create_branch_definition_once
     from tinyassets.effectors.authenticated_external_call import (
         run_authenticated_external_call_effector,
     )
@@ -198,6 +205,13 @@ def main(universe_id: str, hook_host: str) -> int:
     if FAILURES:
         return 1
 
+    # It must VALIDATE, or the receiver answers its uniform 404 for an
+    # un-runnable branch and check 6 cannot tell that from a rejected token.
+    # The first production run of this probe failed exactly there
+    # (`branch capurlproof01 failed validation: ['Branch must have at least one
+    # node.', "Entry point 'noop' is not a defined node."]`) because the insert
+    # helper reads `graph_nodes` / `edges` / `node_defs`, NOT the `*_json`
+    # column names. `display_name` is required on a node def.
     branch, created = create_branch_definition_once(
         BASE,
         branch_def={
@@ -206,10 +220,24 @@ def main(universe_id: str, hook_host: str) -> int:
             "description": "Receiver for the capability-URL live proof. Safe to delete.",
             "author": actor,
             "entry_point": "noop",
-            "graph_json": json.dumps({"nodes": ["noop"], "edges": []}),
-            "node_defs_json": json.dumps(
-                [{"node_id": "noop", "prompt": "Do nothing.", "output_keys": ["noop"]}]
-            ),
+            "graph_nodes": [{"id": "noop", "node_def_id": "noop", "position": 0}],
+            "edges": [{"from": "START", "to": "noop"}, {"from": "noop", "to": "END"}],
+            # A CODE node, not a prompt node: the enqueued run costs the owner
+            # no inference at all (`provider_used` and `token_count` both stay
+            # NULL, confirmed live). The sandbox needs a CALLABLE, not a bare
+            # assignment -- two production runs taught this the long way, first
+            # `prompt` instead of `prompt_template` (node validation), then a
+            # bare `result = ...` ("No callable function found in node source
+            # code"). A failed run named for this probe reads like the FEATURE
+            # failed, which is the opposite of what a proof should leave behind.
+            "node_defs": [
+                {
+                    "node_id": "noop",
+                    "display_name": "noop",
+                    "source_code": "def run(state):\n    return {'noop': 'ok'}\n",
+                    "output_keys": ["noop"],
+                }
+            ],
         },
     )
     print(f"branch {branch['branch_def_id']} ({'created' if created else 'reused'})")
@@ -342,21 +370,31 @@ def main(universe_id: str, hook_host: str) -> int:
             token not in json.dumps(refused),
         )
 
-        # What the 202 enqueued: that branch, as that universe. The receiver
-        # really accepted this token, and it bound the run to its own owner.
+        # What the 202 enqueued: that branch, as that universe, under the
+        # receiver's own run name. The first production run read
+        # `branch_tasks_v2` and found nothing -- an inbound trigger lands in the
+        # SHARED runs db as a `runs` row keyed by `queue_universe_id`, which is
+        # where `enqueue_universe_branch_run` writes it.
         time.sleep(3)
-        with _connect(BASE) as conn:
+        runs = sqlite3.connect(f"{BASE}/.runs.db")
+        runs.row_factory = sqlite3.Row
+        try:
             rows = [
-                tuple(r)
-                for r in conn.execute(
-                    "SELECT universe_id, branch_def_id, trigger_source FROM "
-                    "branch_tasks_v2 WHERE branch_def_id = ? ORDER BY rowid DESC LIMIT 3",
+                dict(r)
+                for r in runs.execute(
+                    "SELECT run_id, run_name, actor, queue_universe_id FROM runs "
+                    "WHERE branch_def_id = ? ORDER BY rowid DESC LIMIT 3",
                     (BRANCH_ID,),
                 )
             ]
+        finally:
+            runs.close()
         check(
             "11. the receiver enqueued a run of THAT branch as THAT universe",
-            bool(rows) and rows[0][0] == universe_id and rows[0][1] == BRANCH_ID,
+            bool(rows)
+            and rows[0]["queue_universe_id"] == universe_id
+            and rows[0]["actor"] == f"universe:{universe_id}"
+            and rows[0]["run_name"] == "webhook",
             f"rows={rows}",
         )
     finally:
