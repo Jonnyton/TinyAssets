@@ -2127,6 +2127,12 @@ def _execute(
             inputs=inputs,
             run_name=f"automation:{automation.automation_id[:8]}",
             actor=f"universe:{automation.universe_id}",
+            # The persisted owner, as every other universe:<id> run records it
+            # (direct input, conversation turns, deliveries). Without it the
+            # run's own children -- the owner's private branch, or an
+            # unpublished pinned version -- had no owner to be authorized
+            # against, and a co-admin's definition could not be told apart.
+            owner_user_id=automation.owner_principal_id,
             provider_call=provider_call,
             on_node_status=_authority_guard(base_path, automation),
             _enqueue_universe_id=automation.universe_id,

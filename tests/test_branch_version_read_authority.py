@@ -515,21 +515,25 @@ def test_nested_invoke_cannot_run_unpublished_history(
     assert called == [vid]
 
 
-@pytest.mark.parametrize("actor,definition_author,permission,provenance,runs", [
-    ("universe:u", "alice", "admin", "own", True),      # the owner's automation
-    ("universe:u", "alice", "read", "own", False),      # author no longer owns it
-    ("carol", "alice", "admin", "own", False),          # someone else runs there
-    ("universe:u", "mallory", "admin", "own", False),   # another author's definition
-    ("universe:u", "alice", "admin", "public-foreign", False),  # foreign code
+@pytest.mark.parametrize("owner,definition_author,permission,provenance,runs", [
+    ("alice", "alice", "admin", "own", True),     # the owner's automation, own history
+    ("alice", "alice", "read", "own", False),     # author no longer owns the universe
+    # astra refute 2026-09-30: Bob's automation in a universe Alice co-administers
+    # runs Alice's public definition, which pins Alice's unpublished version. The
+    # run is Bob's, not Alice's, so her history stays hers.
+    ("bob", "alice", "admin", "own", False),
+    # And the reverse: a co-admin's definition inside Alice's run does not get to
+    # choose to pin Alice's unpublished history.
+    ("alice", "bob", "admin", "own", False),
+    ("alice", "alice", "admin", "public-foreign", False),  # foreign code
 ])
 def test_an_owners_universe_run_uses_its_own_unpublished_version(
     branch_authority_env, monkeypatch,  # noqa: F811 - imported fixture
-    actor, definition_author, permission, provenance, runs,
+    owner, definition_author, permission, provenance, runs,
 ):
-    """The mark gates other people, not the owner: an automation executes as
-    ``universe:<id>`` while the branch author is the owner's user id, so "own"
-    is the provenance rule (author administers the run's universe), and only
-    for a run that executes AS that universe, of that author's own definition."""
+    """The mark gates other people, not the owner. An automation executes as
+    ``universe:<id>`` and records its owner on the run row; an unpublished
+    version is usable only when the run's persisted owner is its author."""
     from types import SimpleNamespace
 
     from tinyassets.branch_versions import publish_branch_version
@@ -540,12 +544,19 @@ def test_an_owners_universe_run_uses_its_own_unpublished_version(
         CompilerError,
         _build_invoke_branch_version_node,
     )
+    from tinyassets.runs import _connect, initialize_runs_db
 
     base, _authenticate = branch_authority_env
     grant_universe_access(base, universe_id="u", actor_id="alice", permission=permission,
                           granted_by="alice")
     branch = _seed_branch(base, branch_def_id="owned", author="alice", node_ids=("s",))
     vid = publish_branch_version(base, branch, publisher="alice").branch_version_id
+    initialize_runs_db(base)
+    with _connect(base) as conn:
+        conn.execute(
+            "INSERT INTO runs (run_id, branch_def_id, thread_id, status, actor, owner_user_id,"
+            " started_at, queue_universe_id) VALUES ('parent', 'p', 't', 'running',"
+            " 'universe:u', ?, 0, 'u')", (owner,))
     called = []
 
     def launch(*args, **kwargs):
@@ -557,10 +568,10 @@ def test_an_owners_universe_run_uses_its_own_unpublished_version(
                           invoke_branch_version_spec={"branch_version_id": vid,
                                                       "wait_mode": "async"})
     invoke = _build_invoke_branch_version_node(
-        node, base_path=base, event_sink=None,
+        node, base_path=base, event_sink=None, parent_run_id="parent",
         execution_context=BranchExecutionContext(
-            actor=actor, universe_id="u", caller_provenance=provenance,
-            definition_author=definition_author),
+            actor="universe:u", universe_id="u", caller_provenance=provenance,
+            owner_user_id=owner, definition_author=definition_author),
     )
     if runs:
         invoke({})
