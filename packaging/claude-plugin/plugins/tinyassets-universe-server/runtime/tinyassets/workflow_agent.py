@@ -35,6 +35,9 @@ class WorkAgentAdapter:
         self.candidates = getattr(session, "_work_candidates", None)
         self.has_candidate_order = self.candidates is not None
         self._staged_next = None
+        # This turn's measured context need, once a model's window proved too
+        # small (the coordinator's overflow path). Per turn, never the run's.
+        self.min_context = None
         selected = self.carrier.selected_model
         native = self.carrier.native_selection
         model = selected.model_id if selected is not None else (
@@ -66,8 +69,16 @@ class WorkAgentAdapter:
         if (self.candidates is None or owner != self.receipt.principal_id
                 or universe != self.receipt.universe_id):
             raise ProviderAuthorityHeldError("workflow candidate scope changed")
-        self._staged_next = self.candidates.next_candidate(self.source_policy, exhaustion)
+        self._staged_next = self.candidates.next_candidate(
+            self.source_policy, exhaustion, min_context=self.min_context,
+        )
         return self._staged_next
+
+    def require_context(self, tokens):
+        """Only models whose window holds ``tokens`` may take this turn from here."""
+        if type(tokens) is not int or tokens < 1:
+            raise ValueError("invalid context requirement")
+        self.min_context = tokens if self.min_context is None else max(self.min_context, tokens)
 
     def engine_identity(self, context, config):
         if context.model_selection != self.selection and self._staged_next is not None:
@@ -92,7 +103,9 @@ class WorkAgentAdapter:
             if self._staged_next is None or self.initial_pending:
                 raise ProviderAuthorityHeldError("workflow candidate was not staged")
             self._identity(context, config, self._staged_next)
-            if self.candidates.next_candidate(self.source_policy) != self._staged_next:
+            if self.candidates.next_candidate(
+                self.source_policy, min_context=self.min_context,
+            ) != self._staged_next:
                 raise ProviderAuthorityHeldError("workflow candidate was exhausted")
         else:
             self.check(context, config)

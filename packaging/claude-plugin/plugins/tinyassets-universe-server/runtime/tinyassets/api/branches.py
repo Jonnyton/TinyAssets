@@ -4258,9 +4258,10 @@ whole file bytes. Only nodes declaring that incoming field in `input_keys` can
 use `read_run_file(file_id=..., offset=..., count=...)` for bounded exact reads;
 downstream nodes need explicit forwarded input data, not merely the same state.
 
-To edit the contract, use existing `write_graph target="branch" operation="patch"`
-with `changes_json=[{"op":"set_io_manifest","io_manifest":{...}}]`; served agents
-put that same ordered op list in `payload_json`. This replaces the complete
+To edit the contract, use existing
+`write_graph target="branch" operation="patch" branch_id=... changes_json=[...]`
+with the op `{"op":"set_io_manifest","io_manifest":{...}}`; served agents put
+that same ordered op list in `payload_json`. This replaces the complete
 manifest. Explicit null clears it; a missing member rejects. Matching state-field
 changes can be in the same atomic patch. Existing published versions/admitted
 runs keep their old contract; publish again to create a new immutable version.

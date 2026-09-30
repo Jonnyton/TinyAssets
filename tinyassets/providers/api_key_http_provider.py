@@ -41,9 +41,11 @@ from typing import Any
 
 from tinyassets.exceptions import (
     ProviderAuthenticationError,
+    ProviderModelRefusedError,
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
+    ProviderReplyTimeoutError,
     ProviderUnavailableError,
 )
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
@@ -52,6 +54,19 @@ from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError
 from tinyassets.providers.wire_dialects import same_dialect
 
 _LOG = logging.getLogger(__name__)
+
+#: HTTP's own words for "not this model, not for you": forbidden, not found,
+#: gone. Standard status semantics, not a vendor's error envelope.
+_MODEL_REFUSAL_STATUSES = frozenset({403, 404, 410})
+
+
+def _reply_budget_s(config: Any) -> float | None:
+    """The turn's remaining absolute cap, as the budget to ask the broker for."""
+    profile = getattr(config, "stream_timeout_profile", None)
+    if not callable(profile):
+        return None
+    cap = profile().absolute_cap_s
+    return float(cap) if type(cap) in (int, float) and cap > 0 else None
 
 
 def _single_host(view: Any) -> str:
@@ -229,6 +244,7 @@ class ApiKeyHttpProvider(BaseProvider):
             ConnectionAuthorizationError,
             ConnectionLedger,
             GrantResolutionError,
+            OutboundDeadlineExceeded,
         )
 
         universe_dir = Path(universe_dir)
@@ -296,6 +312,12 @@ class ApiKeyHttpProvider(BaseProvider):
         from tinyassets.providers.protocol_encoders import static_headers_for
 
         wire_request: dict[str, Any] = {"url": f"https://{host}{path}", "body": body}
+        # Ask for as long as the turn itself may still run. The broker grants it
+        # only because this connection is a model source, and never beyond its
+        # own ceiling; a model writing a whole app needs minutes, not 30s.
+        reply_budget = _reply_budget_s(config)
+        if reply_budget is not None:
+            wire_request["reply_budget_s"] = reply_budget
         static_headers = static_headers_for(self._definition.protocol)
         if static_headers:
             wire_request["headers"] = static_headers
@@ -323,6 +345,11 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderUnavailableError(
                 f"compute grant resolution failed: {exc}"
             ) from exc
+        except OutboundDeadlineExceeded:
+            raise ProviderReplyTimeoutError(
+                "the model did not finish answering within its reply budget"
+                + (f" ({int(reply_budget)}s)" if reply_budget is not None else "")
+            ) from None
         except ConnectionAuthorizationError as exc:
             # A refresh that failed is a connection/auth failure (the class
             # maps to the connection stage), with the token endpoint's words.
@@ -363,8 +390,15 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderRateLimitedError("compute provider rate limited (429)")
         if 500 <= status < 600:
             raise ProviderOverloadedError(f"compute provider error (HTTP {status})")
+        if status in _MODEL_REFUSAL_STATUSES:
+            # Access refused, or no such model to serve: nothing was generated,
+            # so this is neither a reply we failed to read nor a sick source.
+            raise ProviderModelRefusedError(self._capacity_detail(status, result))
         if not (200 <= status < 300):
-            raise ProviderProtocolError(f"compute provider returned HTTP {status}")
+            raise ProviderProtocolError(
+                self._capacity_detail(status, result)
+                or f"compute provider returned HTTP {status}"
+            )
 
         body_str = result.get("body")
         if not isinstance(body_str, str) or not body_str:

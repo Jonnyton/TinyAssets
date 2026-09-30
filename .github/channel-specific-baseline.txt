@@ -10,8 +10,6 @@
 tinyassets/account_deletion.py:stripe:3
 tinyassets/action_result_delivery.py:github:1
 tinyassets/api/automations.py:claude:1
-tinyassets/api/cloud_automations.py:claude:2
-tinyassets/api/cloud_automations.py:codex:1
 tinyassets/api/compute_connection.py:claude:1
 tinyassets/api/compute_connection.py:codex:2
 tinyassets/api/llm_deposit.py:claude:4
@@ -78,8 +76,6 @@ tinyassets/provider_assignment.py:codex:2
 tinyassets/provider_assignment.py:slack:1
 tinyassets/provider_serving_binding.py:claude:7
 tinyassets/provider_serving_binding.py:codex:2
-tinyassets/provider_work_enrollment.py:claude:1
-tinyassets/provider_work_enrollment.py:codex:1
 tinyassets/providers/base.py:anthropic:3
 tinyassets/providers/base.py:claude:26
 tinyassets/providers/base.py:codex:53
@@ -117,8 +113,6 @@ tinyassets/providers/router.py:gemini:3
 tinyassets/providers/router.py:grok:2
 tinyassets/providers/router.py:groq:3
 tinyassets/providers/router.py:ollama:4
-tinyassets/runtime/assigned_queue_consumer.py:claude:5
-tinyassets/runtime/assigned_queue_consumer.py:codex:4
 tinyassets/storage/outbound_connections.py:codex:1
 tinyassets/storage/webhook_hooks.py:codex:1
 tinyassets/universe_bundle.py:github:2

@@ -345,6 +345,18 @@ def _reconnect_sources(base, owner, uid, chains):
     )
 
 
+def _refused_models(base, owner, chains):
+    """This owner's recently refused models on the sources in this plan."""
+    from tinyassets.storage.refused_models import active_refused_models
+
+    providers = {provider for provider, _chain in chains}
+    return tuple(
+        ModelRef(mark.connection_id, mark.model_id)
+        for mark in active_refused_models(base, owner_user_id=owner)
+        if mark.connection_id in providers
+    )
+
+
 def prepare_owned_model_plan(
     *, base, universe, owner, agent, current=None, config=None, allow_empty=False,
     preference_snapshot=None,
@@ -521,6 +533,7 @@ def prepare_owned_model_plan(
         Catalog(owner, universe.name, tuple(admitted)), policy, interaction, source,
         tuple(source_policies),
         _reconnect_sources(base, owner, universe.name, chains),
+        _refused_models(base, owner, chains),
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         # Name what is held and why: "no model connected" was wrong for an owner

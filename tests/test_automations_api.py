@@ -293,9 +293,9 @@ def test_malformed_create_payloads_are_named(
 def test_both_triggers_or_neither_is_refused(tmp_path: Path, env) -> None:
     both = _create(interval_seconds=3600, cron_expr="0 7 * * *")
     neither = _create(interval_seconds=0, cron_expr="")
-    too_fast = _create(interval_seconds=60)
+    negative = _create(interval_seconds=-60)
 
-    for result in (both, neither, too_fast):
+    for result in (both, neither, negative):
         assert result["error"] == "automation_unavailable"
         assert result["reason"] == "trigger_invalid"
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
@@ -656,7 +656,7 @@ def test_an_unreadable_refusal_ledger_does_not_break_the_list(
 
 
 def test_legacy_control_rows_are_listed_and_flagged(tmp_path: Path, env) -> None:
-    from tests.test_cloud_automation_api import _definition
+    from tests.cloud_automation_fixtures import _definition
     from tinyassets.storage.cloud_automation_control import (
         CloudAutomationControlStore,
     )
@@ -678,6 +678,11 @@ def test_legacy_control_rows_are_listed_and_flagged(tmp_path: Path, env) -> None
     # The fleet-era row's own desired_state, reported as-is: it is a record of
     # what the old layer was told, not a claim that anything will run.
     assert legacy["desired_state"] == "active"
+    # The disposition the consumer records when it stops these (plan C1) is on
+    # the row itself, so it outlives the refusal ledger's freshness window.
+    from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
+
+    assert legacy["detail"] == RETIRED_FLEET_CONTROL_REASON
     assert listed["count"] == 2
 
 

@@ -50,6 +50,7 @@ from tinyassets.automations import (
     next_due_at,
     register_automation,
 )
+from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
 
 logger = logging.getLogger("universe_server.automations")
 
@@ -97,9 +98,8 @@ _UNAVAILABLE_DETAIL = {
         "your own branch first, then automate the remix."
     ),
     "trigger_invalid": (
-        "Give exactly one trigger: interval_seconds of at least 300, a "
-        "cron_expr that never fires more often than every 300 seconds, or an "
-        "event_type -- not two, and not none."
+        "Give exactly one trigger: a positive interval_seconds, a valid "
+        "cron_expr, or an event_type -- not two, and not none."
     ),
     "event_type_unknown": (
         "That event is not one the engine emits, so the automation would never "
@@ -114,9 +114,9 @@ _UNAVAILABLE_DETAIL = {
         "overlap must be queue (wait for the running one, the default), skip "
         "(drop this run) or cancel_previous (stop the running one first)."
     ),
-    "too_many_automations": (
-        "This universe is already at its automation limit. Delete one before "
-        "creating another."
+    "usage_limited": (
+        "This universe has reached its usage limit for engine edits in the "
+        "last hour, so nothing was stored. It frees up as older edits age out."
     ),
     "not_owner_or_admin": (
         "This automation belongs to someone else. Only its owner or an admin "
@@ -242,7 +242,23 @@ def _projection(
     }
     if recent_reason:
         projected["recent_reason"] = recent_reason
+    # A run the meter refused is never a silent drop: say which cap, and when
+    # capacity returns (plan item 6). Read live from the same ledger.
+    if "run_rate_limited" in (recent_reason, automation.last_reason):
+        notice = _usage_notice(automation.universe_id)
+        if notice is not None:
+            projected["usage_notice"] = notice
     return projected
+
+
+def _usage_notice(universe_id: str) -> dict[str, Any] | None:
+    try:
+        from tinyassets.engine_admissions import usage_notice
+
+        return usage_notice(universe_id)
+    except Exception:  # noqa: BLE001 - an enrichment, never a precondition
+        logger.warning("usage notice unavailable for %r", universe_id, exc_info=True)
+        return None
 
 
 def _recent_reasons(base: Path, universe_id: str) -> dict[str, str]:
@@ -305,6 +321,9 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
             "automation_id": control.automation_id,
             "legacy": True,
             "status": "retired_fleet_era",
+            # The consumer stopped it with this reason (plan C1). Carried on
+            # the row so it outlives the refusal ledger's freshness window.
+            "detail": RETIRED_FLEET_CONTROL_REASON,
             "desired_state": getattr(
                 control.desired_state, "value", control.desired_state
             ),
