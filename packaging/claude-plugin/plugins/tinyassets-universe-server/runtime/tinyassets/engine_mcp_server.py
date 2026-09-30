@@ -1125,20 +1125,29 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
         if f in spec and not isinstance(spec[f], str):
             raise ValueError(f"'{f}' must be a string")
     # state_schema entries carry text-metadata fields (name/description/reducer) that
-    # reach text columns; a dict/list there persists malformed (Codex #4). Tolerant of
-    # both shapes (a `{"fields": [...]}` object or a bare list); default_value/field_name
-    # and any unrecognized shape are left untouched so opaque workflow data survives.
-    state_schema = spec.get("state_schema")
-    if isinstance(state_schema, dict):
-        state_entries = state_schema.get("fields")
-    elif isinstance(state_schema, list):
-        state_entries = state_schema
-    else:
-        state_entries = None
-    if isinstance(state_entries, list):
+    # reach text columns; a dict/list there persists malformed (Codex #4).
+    #
+    # NORMALIZED FIRST, with the BUILDER's own helper, and written back in
+    # place. The shapes the sanitizer accepts and the shapes the builder accepts
+    # have to be one list, or the widest of them is an unguarded path: this
+    # block used to look only for a LIST, so when the builder learned the
+    # ``{"focus_note": "str"}`` mapping (turn f3617ca3) a field could arrive as
+    # a mapping value and skip the check entirely -- a `reducer` dict straight
+    # into a text column, and a dict `name` crashing the applicator (Codex
+    # refute, PR #4123). Normalizing here means there is one definition and the
+    # builder downstream only ever sees the canonical list.
+    if "state_schema" in spec:
+        from tinyassets.api.branches import _normalized_state_schema
+
+        state_entries, state_error = _normalized_state_schema(spec["state_schema"])
+        if state_error:
+            raise ValueError(state_error)
+        spec["state_schema"] = state_entries
         for sf in state_entries:
             if not isinstance(sf, dict):
-                continue
+                raise ValueError(
+                    "each state_schema entry must be a field object or a name"
+                )
             for f in _SERVED_STATE_FIELD_TEXT:
                 if f in sf and not isinstance(sf[f], str):
                     raise ValueError(f"state field '{f}' must be a string")
@@ -1256,7 +1265,12 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
 
     **Two nodes, passing a value.** ``edges`` orders them; ``output_keys`` /
     ``input_keys`` name what moves, and every key they name must be declared in
-    ``state_schema`` when a schema is present:
+    ``state_schema`` when a schema is present. ``state_schema`` takes either the
+    list of field objects below or a plain mapping of name to type
+    (``{"agenda": "str", "brief": "str"}``), and JSON Schema's type words
+    (``string``, ``integer``, ``number``, ``boolean``, ``array``, ``object``)
+    are accepted for the Python ones. A type I get wrong is corrected and
+    reported back under ``notices`` rather than refusing the build:
 
         {"name": "Morning brief",
          "state_schema": [{"name": "agenda", "type": "str"},
