@@ -50,6 +50,12 @@ unjailed fallback.
   the host itself can reach
 - **THEN** the connection fails and the jail has only a loopback interface
 
+#### Scenario: the jail starts while the daemon holds a database open
+- **WHEN** a root entry that existed when the jail's view was built (a SQLite
+  `-shm`/`-wal` sidecar) is gone by the time the jail launches
+- **THEN** the call runs, the agent reads and writes its own files, and no
+  hidden root entry is visible
+
 #### Scenario: the platform-owned dir is masked
 - **WHEN** the agent reads `.runtime/` or writes into it
 - **THEN** it sees no credential or route bearer, and nothing it wrote exists
