@@ -20,11 +20,14 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 def test_branch_staging_preserves_explicit_private_visibility() -> None:
     from tinyassets.api.branches import _staged_branch_from_spec
 
-    branch, errors = _staged_branch_from_spec(
+    branch, errors, notices = _staged_branch_from_spec(
         {"name": "Private repository loop", "visibility": "private"}
     )
 
     assert errors == []
+    # `notices` (2026-09-30) carries adjustments that do NOT refuse the build,
+    # so a clean spec must produce none of either.
+    assert notices == []
     assert branch.visibility == "private"
 
 
