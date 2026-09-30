@@ -50,6 +50,8 @@ _DECLS = (
     # Introduced by the fix. Optional so the test is RED on assertions, not on
     # a missing declaration, against a tree that does not have it yet.
     r"let liveInflight=[^\n]*;",
+    # The Stop control's state (a turn's cleanup reads it).
+    r"let interruptRequested=[^\n]*;",
 )
 _FUNCS = (
     "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
@@ -69,7 +71,11 @@ _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
                    # a card, which makes clearing them an account-change step.
                    # Optional like their siblings, so these harnesses stay green
                    # against a tree without the change.
-                   "clearRailCards", "clearTypedValues")
+                   "clearRailCards", "clearTypedValues",
+                   # The Stop control: a turn's cleanup asks whether the queue
+                   # goes out as one batch.
+                   "takeInterruptFlush", "flushAfterTurn", "drainAfterStop",
+                   "takeBatch", "flushBatch")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.

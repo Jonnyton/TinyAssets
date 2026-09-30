@@ -362,7 +362,9 @@ class TestTheBoundActuallyBindsInTheRouter:
         from tinyassets.providers import router
 
         src = pathlib.Path(router.__file__).read_text(encoding="utf-8")
-        dispatches = src.count("resp = await provider.complete(")
+        # Every call site of a provider's `complete`, however its awaitable is
+        # then awaited (directly, or through the owner's Stop for a chat turn).
+        dispatches = src.count("provider.complete(")
         guarded = src.count("async with _provider_slot(")
         assert dispatches > 0
         assert guarded == dispatches, (
