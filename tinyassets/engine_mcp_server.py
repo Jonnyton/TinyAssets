@@ -2088,7 +2088,8 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.whoami()                  -> {universe_id, universe_name}
         await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
         await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
-        await tinyassets.readConversation(limit)   -> {turns:[{speaker,text,at}]}
+        await tinyassets.readConversation(limit, before) -> {turns:[{speaker,text,at}],
+                  has_more, next_before}   # pass next_before as `before` for older
         await tinyassets.listAutomations()         -> {automations:[{automation_id,name,
                   branch_id,trigger,state,last_run_id,last_result,next_due_at,...}]}
         await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,

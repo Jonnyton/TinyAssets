@@ -126,3 +126,62 @@ def test_a_rail_that_loads_clears_the_failure_line():
     out = _rail({"pending": [{"request_id": "r1"}], "count": 1})
     assert out["rendered"] == [{"request_id": "r1"}]
     assert out["errorHidden"] is True and out["error"] == ""
+
+
+def _method_source(html: str, head: str) -> str:
+    start = html.index(head)
+    i = html.index("{", start + len(head) - 1)
+    depth = 0
+    for j in range(i, len(html)):
+        if html[j] == "{":
+            depth += 1
+        elif html[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start:j + 1]
+    raise AssertionError(head)
+
+
+_BUNDLE = r"""
+const AppLayout={PAGE:100};
+const calls=[];
+const ROWS=Array.from({length:437},(_,i)=>({agent_binding_id:"b"+i}));
+const Owner={read:async(a)=>{ calls.push(a.limit);
+  return {bindings:ROWS.slice(0,a.limit)}; }};
+const ui={ __READ_WHOLE__ };
+(async()=>{
+  const doc=await ui.readWhole({target:"agent_bindings",graph_id:"h"},"bindings");
+  console.log(JSON.stringify({rows:doc.bindings.length, calls}));
+})().catch(e=>{console.error(e);process.exitCode=1;});
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_a_custom_ui_reads_a_whole_list_not_a_first_page():
+    """Codex round 1: a bundle's agents and automations stopped at 100, and the
+    101st agent read as "no agent of yours"."""
+    html = _html()
+    method = _method_source(html, "async readWhole(args,key){")
+    program = _BUNDLE.replace("__READ_WHOLE__", method)
+    with tempfile.TemporaryDirectory() as scratch:
+        script = os.path.join(scratch, "bundle.cjs")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        run = subprocess.run([_NODE, script], capture_output=True, text=True,
+                             encoding="utf-8", timeout=60, check=False)
+    assert run.returncode == 0, run.stderr
+    out = json.loads(run.stdout)
+    assert out["rows"] == 437
+    assert out["calls"] == [100, 400, 1600]
+    for reader in ("async listAgents(){", "async listAutomations(){"):
+        body = _method_source(html, reader)
+        assert "this.readWhole(" in body and "limit:" not in body, reader
+
+
+def test_a_custom_ui_conversation_read_is_paged_and_fails_loudly():
+    html = _html()
+    body = _method_source(html, "async readConversation(args){")
+    assert "call.conversation_before=args.before" in body
+    assert "conversation_limit:limit" in body
+    assert "has_more:more" in body and "next_before:" in body
+    assert 'throw new Error("your conversation could not be read")' in body

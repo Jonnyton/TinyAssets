@@ -333,3 +333,23 @@ def test_a_heavy_ui_library_reaches_the_app_whole(door):
         bounded = us._structured_return(raw, tool="read_graph",
                                         arguments={"target": "app_ui"}).structured_content
     assert bounded["truncated"] is True, "the model door still bounds it, visibly"
+
+
+def test_the_connector_follows_its_own_history_cursor_in_model_sized_pages(door):
+    """Codex round 1: the connector returned next_before but could not take it."""
+    from tinyassets import universe_server as us
+    from tinyassets.conversation_store import record_turn
+
+    _, base = door
+    for i in range(45):
+        record_turn(base / HOME_A, f"principal:{A}", "founder", f"line {i}", ts=2_000.0 + i)
+    with _as(A):
+        first = json.loads(us.get_status(include_conversation=True,
+                                         conversation_limit=10_000))["recent_conversation"]
+        assert len(first["turns"]) == 30, "the model door's page is bounded"
+        assert first["has_more"] is True
+        second = json.loads(us.get_status(
+            include_conversation=True, conversation_before=first["next_before"],
+        ))["recent_conversation"]
+    assert [t["text"] for t in second["turns"]] == [f"line {i}" for i in range(15)]
+    assert second["has_more"] is False

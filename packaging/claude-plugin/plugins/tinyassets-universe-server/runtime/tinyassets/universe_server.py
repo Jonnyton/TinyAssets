@@ -3881,7 +3881,12 @@ def wiki(
 # ---------------------------------------------------------------------------
 
 
-def get_status(universe_id: str = "", include_conversation: bool = False) -> str:
+def get_status(
+    universe_id: str = "",
+    include_conversation: bool = False,
+    conversation_before: int | None = None,
+    conversation_limit: int = 30,
+) -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
     Chatbots call this whenever they need ground-truth daemon facts.
@@ -3907,11 +3912,26 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
             the caller is this universe's founder, the response carries a fenced,
             read-only ``recent_conversation`` peek at the shared cross-surface
             conversation thread (web/desktop/phone/connector). Off by default so
-            the raw transcript never rides into routine status reads.
+            the raw transcript never rides into routine status reads. The peek
+            is one page of the thread: ``has_more`` says whether older turns
+            exist, and ``next_before`` is the cursor that reads them.
+        conversation_before: The ``next_before`` a previous peek returned; the
+            page then holds the turns just before it. Omit for the newest page.
+        conversation_limit: Turns per page, 1 to 30 (default 30).
     """
+    # The model door's projection: a page a model's context can hold. get_status
+    # is outside the single-result ceiling, so the page size is the bound here.
+    # The owner's app pages the same thread through the owner door, unclamped.
+    page = max(1, min(int(conversation_limit), _MODEL_DOOR_CONVERSATION_PAGE))
     return _get_status_impl(
-        universe_id=universe_id, include_conversation=include_conversation
+        universe_id=universe_id, include_conversation=include_conversation,
+        conversation_before=conversation_before, conversation_limit=page,
     )
+
+
+#: Most turns one connector status peek returns. Bounds a model's context, not an
+#: owner's history: the cursor reaches every turn.
+_MODEL_DOOR_CONVERSATION_PAGE = 30
 
 
 _mcp_get_status = _register_structured_tool(

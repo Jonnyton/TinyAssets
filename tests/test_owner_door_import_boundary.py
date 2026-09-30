@@ -49,17 +49,42 @@ _MODEL_DOOR = frozenset({
 })
 
 
-def _imports(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def _package_of(path: Path) -> list[str]:
+    parts = list(path.relative_to(_ROOT).with_suffix("").parts)
+    return parts[:-1]  # a module's package; for __init__ that is the package itself
+
+
+def _imports(path: Path, source: str | None = None) -> set[str]:
+    """Every module this file names in an import, relative imports RESOLVED
+    (``from ..engine_result_bounds import x`` names the absolute module)."""
+    text = path.read_text(encoding="utf-8") if source is None else source
+    tree = ast.parse(text, filename=str(path))
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            found.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                package = _package_of(path)
+                base = package[: len(package) - (node.level - 1)]
+                module = ".".join(base + ([node.module] if node.module else []))
+            else:
+                module = node.module or ""
+            if not module:
+                continue
+            found.add(module)
             # `from tinyassets import universe_server` names the module too.
-            found.update(f"{node.module}.{alias.name}" for alias in node.names)
+            found.update(f"{module}.{alias.name}" for alias in node.names)
     return found
+
+
+def test_the_import_walk_resolves_relative_imports():
+    """A relative import must not slip past the boundary (Codex, round 1)."""
+    probe = _PKG / "owner_door" / "routes.py"
+    names = _imports(probe, "from ..engine_result_bounds import bound_tool_text\n"
+                            "from . import routes\n")
+    assert "tinyassets.engine_result_bounds" in names
+    assert "tinyassets.owner_door.routes" in names
 
 
 def _rel(path: Path) -> str:
