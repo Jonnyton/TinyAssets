@@ -350,6 +350,23 @@ def test_legacy_empty_visibility_is_private_here_too(store, visibility):
             cr.authorize_source(scope, version.branch_version_id, version.content_hash)
 
 
+def test_initialize_migrates_the_mark_before_any_source_read(store):
+    """A runs DB from before the publication mark: deployment initialize adds
+    the column and backfills, so the first admission neither crashes on the
+    missing column nor loses a source the old rule exposed."""
+    from tinyassets.storage import conversation_run_admissions as cr
+
+    version = source_version(store)
+    with sqlite3.connect(runs_db_path(store)) as conn:
+        conn.execute("DROP TABLE branch_versions_migrations")
+        conn.execute("ALTER TABLE branch_versions DROP COLUMN public")
+    cr.initialize(store)
+    with cr.authorized_scope(store, owner=OWNER, universe=HOME) as scope:
+        source = cr.authorize_source(scope, version.branch_version_id, version.content_hash)
+        with cr.runs_transaction(scope) as conn:
+            assert cr.load_source_in_transaction(conn, scope, source)["author"] == "creator"
+
+
 def test_unmarked_version_of_a_public_branch_is_not_a_foreign_source(store):
     """A public branch's unpublished history is its author's alone, here too."""
     from tinyassets.storage import conversation_run_admissions as cr

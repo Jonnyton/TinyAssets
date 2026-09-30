@@ -581,7 +581,10 @@ def _resolve_readable_version(
     if version is None:
         return None
     readable = _resolve_readable_branch(version.branch_def_id, base_path)
-    if readable is None:
+    # Exact id only: the resolver's NAME fallback would let an orphaned
+    # version borrow the author and visibility of an unrelated branch that
+    # happens to be named like its missing parent id.
+    if readable is None or readable[0] != version.branch_def_id:
         return None
     if not version_readable_by(
         _request_branch_actor(), author=readable[1].get("author"),

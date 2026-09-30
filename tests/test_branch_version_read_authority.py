@@ -290,6 +290,48 @@ def test_backfill_runs_once_and_later_history_stays_unmarked(
     assert _marks(base)[later] is True
 
 
+def test_blank_visibility_is_private_to_every_reader(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],  # noqa: F811
+) -> None:
+    """Private by default reaches the readers: the row mapper used to turn a
+    blank visibility into "public" before any gate saw it."""
+    from tinyassets.api.branches import resolve_branch_id_for_read
+    from tinyassets.daemon_server import _connect as author_connect
+    from tinyassets.daemon_server import get_branch_definition
+
+    base, authenticate = branch_authority_env
+    _seed_branch(base, branch_def_id="legacy", author="alice", node_ids=("s",))
+    with author_connect(base) as conn:
+        conn.execute("UPDATE branch_definitions SET visibility = '' "
+                     "WHERE branch_def_id = 'legacy'")
+    assert get_branch_definition(base, branch_def_id="legacy")["visibility"] == "private"
+    authenticate("bob")
+    assert resolve_branch_id_for_read("legacy", str(base)) is None
+    authenticate("alice")
+    assert resolve_branch_id_for_read("legacy", str(base)) == "legacy"
+
+
+def test_orphan_version_cannot_borrow_a_namesakes_authority(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],  # noqa: F811
+) -> None:
+    """A version whose parent row is gone resolves by EXACT id only. The branch
+    resolver's name fallback must not let Carol, who owns a public branch named
+    like the missing id, read it as its 'author'."""
+    from tinyassets.branch_versions import mark_versions_public
+
+    base, authenticate = branch_authority_env
+    _legacy_versions(base, (("gone@1", "gone", ""),))
+    _seed_branch(base, branch_def_id="carols", author="carol", name="gone", node_ids=("s",))
+    for reader in ("carol", "bob"):
+        authenticate(reader)
+        assert _ext("get_branch_version", branch_version_id="gone@1") == {
+            "error": "Version 'gone@1' not found."}, reader
+    mark_versions_public(base, ["gone@1"])
+    authenticate("bob")
+    assert _ext("get_branch_version", branch_version_id="gone@1") == {
+        "error": "Version 'gone@1' not found."}
+
+
 def test_backfill_waits_while_the_branch_store_is_unreadable(tmp_path: Path) -> None:
     """Versions whose branches cannot be looked up are not guessed about: no
     mark, no marker, and the next open with the store present decides."""

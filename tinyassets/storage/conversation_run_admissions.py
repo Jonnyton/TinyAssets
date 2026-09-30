@@ -91,7 +91,12 @@ def _key(value):
 
 def initialize(base):
     """Deployment/schema setup, never called from the admission transaction."""
+    from tinyassets.branch_versions import initialize_branch_versions_db
+
     initialize_runs_db(base)
+    # Source authorization reads branch_versions.public; migrate that table
+    # (column + one-time publication-mark backfill) before any admission.
+    initialize_branch_versions_db(base)
     with sqlite3.connect(runs_db_path(base), timeout=5) as conn:
         conn.executescript(_SCHEMA)
 
