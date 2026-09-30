@@ -195,17 +195,11 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
         if "public" not in existing_cols:
             # The publication mark (in-platform-agent-systems, founder
             # 2026-09-30): a version is readable by anyone but its author
-            # only when its owner published THAT version. patch_branch mints
-            # a snapshot before and after every edit, so a branch's versions
-            # are mostly private edit history. Existing rows: an explicit
-            # publish is marked, patch_branch's own snapshots are not -- the
-            # one minter whose notes say so.
+            # only when its owner published THAT version. Existing rows start
+            # unmarked; _backfill_publication_marks below marks exactly the
+            # ones the previous read rule already exposed, once.
             conn.execute(
                 "ALTER TABLE branch_versions ADD COLUMN public INTEGER NOT NULL DEFAULT 0"
-            )
-            conn.execute(
-                "UPDATE branch_versions SET public = 1 "
-                "WHERE notes NOT LIKE 'patch_branch %'"
             )
         # Step 3: indexes — including the new idx_bv_status / idx_bv_published_at
         # which reference columns the ALTER step just added on migrated DBs.
@@ -225,6 +219,97 @@ def initialize_branch_versions_db(base_path: str | Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_bv_published_at "
             "ON branch_versions(published_at)"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS branch_versions_migrations ("
+            " name TEXT PRIMARY KEY, applied_at TEXT NOT NULL, detail TEXT NOT NULL)"
+        )
+        conn.commit()
+        _backfill_publication_marks(conn, base_path)
+
+
+#: One-time data migration marker (a row in ``branch_versions_migrations``).
+PUBLICATION_MARK_BACKFILL = "2026-09-30-publication-mark-backfill"
+
+
+def _public_branch_ids(base_path: str | Path) -> set[str] | None:
+    """Branches the PREVIOUS read rule exposed to every caller, or None when the
+    branch-definition store cannot be read yet.
+
+    That rule (``_resolve_readable_branch`` before the publication mark) let a
+    non-author read a version exactly when its branch row exists and
+    ``(visibility or "private") == "public"``: a missing row, a NULL or empty
+    visibility, and every other value were unreadable. Opened read-only, so
+    the runs-side migration never creates the branch store.
+    """
+    from tinyassets.storage import db_path
+
+    path = db_path(base_path)
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "branch_definitions" not in tables:
+            return None
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(branch_definitions)")}
+        if "visibility" not in columns:
+            return set()
+        return {str(r[0]) for r in conn.execute(
+            "SELECT branch_def_id FROM branch_definitions WHERE visibility = 'public'")}
+    finally:
+        conn.close()
+
+
+def _backfill_publication_marks(conn: sqlite3.Connection, base_path: str | Path) -> None:
+    """Mark, once, every version the previous read rule already made public.
+
+    Before the publication mark, anyone could read any version of a branch
+    whose CURRENT visibility is public (its history included), and no
+    version of any other branch. Exactly those versions get the mark, so a
+    public shape that was readable stays readable; nothing the old rule hid
+    becomes visible. After the marker row lands, the mark is the only rule
+    and this never runs again -- versions minted later are marked only by an
+    explicit publish.
+    """
+    if conn.execute(
+        "SELECT 1 FROM branch_versions_migrations WHERE name = ?",
+        (PUBLICATION_MARK_BACKFILL,),
+    ).fetchone():
+        return
+    public_ids = _public_branch_ids(base_path)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute(
+            "SELECT 1 FROM branch_versions_migrations WHERE name = ?",
+            (PUBLICATION_MARK_BACKFILL,),
+        ).fetchone():
+            conn.rollback()
+            return
+        if public_ids is None:
+            if conn.execute("SELECT 1 FROM branch_versions LIMIT 1").fetchone():
+                # Versions exist but their branches cannot be read: deciding
+                # now would guess. Leave the marker unset; the next open retries.
+                conn.rollback()
+                return
+            public_ids = set()
+        marked = 0
+        for branch_def_id in sorted(public_ids):
+            marked += conn.execute(
+                "UPDATE branch_versions SET public = 1 "
+                "WHERE branch_def_id = ? AND public = 0",
+                (branch_def_id,),
+            ).rowcount
+        conn.execute(
+            "INSERT INTO branch_versions_migrations (name, applied_at, detail) "
+            "VALUES (?, ?, ?)",
+            (PUBLICATION_MARK_BACKFILL, datetime.now(timezone.utc).isoformat(),
+             json.dumps({"public_branches": len(public_ids), "versions_marked": marked})),
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:

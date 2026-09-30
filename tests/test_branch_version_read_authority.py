@@ -180,27 +180,133 @@ def test_publishing_an_identical_snapshot_marks_the_existing_row(
     assert get_branch_version(base, first.branch_version_id).public is True
 
 
-def test_existing_rows_are_marked_by_how_they_were_minted(tmp_path: Path) -> None:
-    """The migration: an explicit publish is marked, patch_branch's own edit
-    snapshots are not."""
-    from tinyassets.branch_versions import (
-        _connect,
-        get_branch_version,
-        initialize_branch_versions_db,
-    )
+def _legacy_versions(base: Path, rows: tuple[tuple[str, str, str], ...]) -> None:
+    """A runs DB as the previous release left it: no publication mark column,
+    no migration marker, and these (version_id, branch_def_id, notes) rows."""
+    from tinyassets.branch_versions import _connect, initialize_branch_versions_db
 
-    initialize_branch_versions_db(tmp_path)
-    with _connect(tmp_path) as conn:
+    initialize_branch_versions_db(base)
+    with _connect(base) as conn:
+        conn.execute("DROP TABLE branch_versions_migrations")
         conn.execute("ALTER TABLE branch_versions DROP COLUMN public")
-        for vid, notes in (("b@1", ""), ("b@2", "patch_branch pre-patch snapshot"),
-                           ("b@3", "v2 of the shape")):
+        for vid, bid, notes in rows:
             conn.execute(
                 "INSERT INTO branch_versions (branch_version_id, branch_def_id, content_hash, "
-                "snapshot_json, notes, publisher, published_at) VALUES (?, 'b', ?, '{}', ?, "
-                "'alice', '2026-01-01')", (vid, vid, notes))
+                "snapshot_json, notes, publisher, published_at) VALUES (?, ?, ?, '{}', ?, "
+                "'alice', '2026-01-01')", (vid, bid, vid, notes))
+
+
+def _marks(base: Path) -> dict[str, bool]:
+    from tinyassets.branch_versions import _connect
+
+    with _connect(base) as conn:
+        return {r[0]: bool(r[1]) for r in conn.execute(
+            "SELECT branch_version_id, public FROM branch_versions")}
+
+
+#: The old read rule: a non-author read a version exactly when its branch's
+#: CURRENT visibility was "public" -- its history included. Everything else hid.
+_LEGACY_ROWS = (
+    ("open@1", "open", ""),                                  # explicit publish, public branch
+    ("open@2", "open", "patch_branch post-patch snapshot"),  # history the old rule exposed
+    ("closed@1", "closed", "v1 of the shape"),               # explicit publish, private branch
+    ("closed@2", "closed", "patch_branch pre-patch snapshot"),
+    ("legacy@1", "legacy", ""),                              # blank visibility read as private
+    ("gone@1", "gone", ""),                                  # branch row no longer exists
+)
+
+
+def _seed_legacy_world(base: Path) -> None:
+    from tinyassets.daemon_server import _connect as author_connect
+
+    _seed_branch(base, branch_def_id="open", author="alice", node_ids=("s",))
+    _seed_branch(base, branch_def_id="closed", author="alice", visibility="private",
+                 node_ids=("s",))
+    _seed_branch(base, branch_def_id="legacy", author="alice", node_ids=("s",))
+    with author_connect(base) as conn:
+        conn.execute("UPDATE branch_definitions SET visibility = '' "
+                     "WHERE branch_def_id = 'legacy'")
+    _legacy_versions(base, _LEGACY_ROWS)
+
+
+def test_backfill_marks_exactly_what_the_old_read_rule_exposed(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],  # noqa: F811
+) -> None:
+    """The one-time backfill: every version of a public branch was readable
+    before the mark and stays readable. A private branch's versions -- even an
+    explicit publish -- a blank-visibility branch's, and an orphan's stay
+    unmarked. After it, the mark alone decides what a stranger reads."""
+    from tinyassets.branch_versions import initialize_branch_versions_db
+
+    base, authenticate = branch_authority_env
+    _seed_legacy_world(base)
+    initialize_branch_versions_db(base)
+    assert _marks(base) == {
+        "open@1": True, "open@2": True,
+        "closed@1": False, "closed@2": False, "legacy@1": False, "gone@1": False,
+    }
+
+    authenticate("bob")
+    assert _ext("get_branch_version", branch_version_id="open@1")[
+        "branch_version_id"] == "open@1"
+    assert _ext("get_branch_version", branch_version_id="closed@1") == {
+        "error": "Version 'closed@1' not found."}
+
+
+def test_backfill_runs_once_and_later_history_stays_unmarked(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],  # noqa: F811
+) -> None:
+    """Idempotent and gated: a second open changes nothing, and history minted
+    on a public branch AFTER the migration is not swept in by a re-run -- the
+    marker row, not the data, is what stops it."""
+    from tinyassets.branch_versions import (
+        PUBLICATION_MARK_BACKFILL,
+        _connect,
+        initialize_branch_versions_db,
+        publish_branch_version,
+    )
+
+    base, _authenticate = branch_authority_env
+    _seed_legacy_world(base)
+    initialize_branch_versions_db(base)
+    first = _marks(base)
+    initialize_branch_versions_db(base)
+    assert _marks(base) == first
+
+    branch = _seed_branch(base, branch_def_id="open", author="alice", node_ids=("later",))
+    later = publish_branch_version(base, branch, publisher="alice",
+                                   notes="patch_branch post-patch snapshot").branch_version_id
+    initialize_branch_versions_db(base)
+    assert _marks(base)[later] is False
+    with _connect(base) as conn:
+        rows = conn.execute("SELECT name, detail FROM branch_versions_migrations").fetchall()
+    assert [(r[0], json.loads(r[1])) for r in rows] == [
+        (PUBLICATION_MARK_BACKFILL, {"public_branches": 1, "versions_marked": 2})]
+
+    # Delete the marker and the same data WOULD be swept: the marker is the gate.
+    with _connect(base) as conn:
+        conn.execute("DELETE FROM branch_versions_migrations")
+    initialize_branch_versions_db(base)
+    assert _marks(base)[later] is True
+
+
+def test_backfill_waits_while_the_branch_store_is_unreadable(tmp_path: Path) -> None:
+    """Versions whose branches cannot be looked up are not guessed about: no
+    mark, no marker, and the next open with the store present decides."""
+    from tinyassets.branch_versions import initialize_branch_versions_db
+    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage import db_path
+
+    _legacy_versions(tmp_path, (("open@1", "open", ""),))
+    assert not db_path(tmp_path).exists()
     initialize_branch_versions_db(tmp_path)
-    assert [get_branch_version(tmp_path, v).public for v in ("b@1", "b@2", "b@3")] == [
-        True, False, True]
+    assert _marks(tmp_path) == {"open@1": False}
+    assert not db_path(tmp_path).exists(), "the runs migration never creates the branch store"
+
+    initialize_author_server(tmp_path)
+    _seed_branch(tmp_path, branch_def_id="open", author="alice", node_ids=("s",))
+    initialize_branch_versions_db(tmp_path)
+    assert _marks(tmp_path) == {"open@1": True}
 
 
 @pytest.mark.parametrize("action", ["fork_tree", "describe_branch"])
