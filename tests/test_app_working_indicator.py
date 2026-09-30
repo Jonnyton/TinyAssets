@@ -81,7 +81,7 @@ _FUNCS = (
 _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued",
               "readServerTurn", "serverTurnLive", "workingSince", "workingElapsed",
               "renderWorking", "pulseHeartbeat",
-              "renderStop", "takeInterruptFlush", "takeBatch", "flushBatch")
+              "renderStop", "takeInterruptFlush", "flushAfterTurn", "takeBatch", "flushBatch")
 
 # A real tree. `insertBefore` and a detaching `remove` are the point: thread
 # order is what the ordering half of this bug is about.

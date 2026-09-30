@@ -74,7 +74,7 @@ _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
                    "clearRailCards", "clearTypedValues",
                    # The Stop control: a turn's cleanup asks whether the queue
                    # goes out as one batch.
-                   "takeInterruptFlush", "takeBatch", "flushBatch")
+                   "takeInterruptFlush", "flushAfterTurn", "takeBatch", "flushBatch")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.

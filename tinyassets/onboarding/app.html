@@ -1743,12 +1743,12 @@
   // running finishes and is recorded), the in-flight reply comes back marked
   // "Interrupted", and THEN everything queued behind it goes out as ONE message,
   // in the order it was typed. Nothing queued: the turn just stops.
-  let interruptRequested=false, flushAfterInterrupt=false;
+  let interruptRequested=false, flushAfterInterrupt=false, interruptPending=null;
   function renderStop(){
     const stop=$("btn-stop"), send=$("btn-send");
     if(!stop||!send) return;
     const working=workingSince()>0;
-    if(!working && !turnStartedAt) interruptRequested=false;
+    if(!working && !turnStartedAt && !interruptPending) interruptRequested=false;
     stop.hidden=!working; send.hidden=working;
     stop.disabled=interruptRequested;
     stop.textContent=interruptRequested?"Stopping\u2026":"Stop";
@@ -1758,8 +1758,23 @@
     const batch=flushAfterInterrupt; flushAfterInterrupt=false; interruptRequested=false;
     return batch;
   }
+  // A turn's cleanup hands the composer to what is queued. While a Stop request
+  // is still on the wire it WAITS for it (astra round 1): sending the next turn
+  // first would let that request land on the new turn, and its late answer
+  // would rewrite state that now belongs to the new one.
+  function flushAfterTurn(){
+    const batch=takeInterruptFlush();
+    const pending=interruptPending;
+    if(!pending) return flushSendQueue(batch);
+    pending.then(()=>flushSendQueue(batch),()=>flushSendQueue(batch));
+  }
   async function interruptTurn(){
     if(interruptRequested || !workingSince()) return;
+    // Fenced like every other answer: what this request may change belongs to
+    // the turn, account and home it was pressed for.
+    const mine=activeTurn, epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    const stillMine=()=>activeTurn===mine&&epoch===MCP._loginEpoch&&
+      owner===queueOwner&&scope===queueScope;
     interruptRequested=true; flushAfterInterrupt=true; renderStop();
     const waiting=sendQueue.length;
     setStatusLine("Stopping your universe's turn..."+(waiting
@@ -1767,13 +1782,19 @@
       : ""));
     const post=()=>fetch("/app/turn/interrupt",{method:"POST",credentials:"same-origin",
       headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-      body:JSON.stringify({universe_id:queueScope})});
-    let doc=null;
-    try{
+      body:JSON.stringify({universe_id:scope})});
+    const request=(async()=>{
       let r=await post();
       if(r.status===401 && await refreshAccessToken()) r=await post();
-      doc=r.ok?await r.json():null;
-    }catch(_e){ doc=null; }
+      return r.ok?await r.json():null;
+    })();
+    const settled=request.catch(()=>null);
+    interruptPending=settled;
+    const doc=await settled;
+    if(interruptPending===settled) interruptPending=null;
+    // The turn it was pressed for already ended (its cleanup consumed the
+    // flags), or the page moved to another account or home: nothing to change.
+    if(!stillMine()){ renderStop(); return; }
     if(!doc || typeof doc.interrupted!=="number"){
       interruptRequested=false; flushAfterInterrupt=false; renderStop();
       setStatusLine("Could not stop the turn. It is still running; try Stop again.");
@@ -1793,6 +1814,7 @@
     }else if(!turnStartedAt){
       // A turn another window started ends on the server's word; stop painting
       // it now rather than until the next beat.
+      interruptRequested=false; flushAfterInterrupt=false;
       serverTurn=null; renderWorking();
     }
     renderStop();
@@ -3731,7 +3753,7 @@
         // explicitly refused to make. The lines stay queued, on disk, until
         // the user explicitly resumes them, even after another manual send.
         if(unconfirmed){ takeInterruptFlush(); noteHeldQueue(); }
-        else flushSendQueue(takeInterruptFlush());
+        else flushAfterTurn();
         Voice.conversationSettled(delivered,{message,ts:sentAt,
           consumerRequest:opts.consumerRequest||null,owner:sentOwner,scope:sentScope});
       }
@@ -3829,7 +3851,7 @@
       // that are on screen now; a turn that outlived its own is not theirs.
       if(stillHere()&&mine){
         if(unconfirmed){ takeInterruptFlush(); noteHeldQueue(); }
-        else flushSendQueue(takeInterruptFlush());
+        else flushAfterTurn();
         Voice.conversationSettled(delivered,{message,ts:voiceSentAt,
           consumerRequest:opts.consumerRequest||null,owner:sentOwner,scope:sentScope});
       }
@@ -4363,6 +4385,8 @@
     if(input){ input.value=""; if(input.style) input.style.height="auto"; }
     const send=$("btn-send"); if(send) send.disabled=false;
     activeTurn=null; turnStartedAt=0; liveInflight=null;
+    // A Stop pressed for the previous account's turn is not this account's.
+    interruptRequested=false; flushAfterInterrupt=false;
     // The working indicator is this screen's state as much as the composer is:
     // the previous account's turn must not be reported to whoever signs in next.
     serverTurn=null; serverStatusLine=false;

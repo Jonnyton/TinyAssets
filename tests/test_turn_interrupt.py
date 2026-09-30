@@ -247,43 +247,92 @@ def test_stop_kills_a_native_cli_turn_and_releases_it(tmp_path, probe):
 # ---------------------------------------------------------------------------
 
 
-def _slow_router(seconds: float):
-    from tinyassets.providers.router import ProviderRouter
+def _slow_provider(kind: str, seconds: float):
+    """A provider of one execution kind, dispatched by the REAL router."""
+    from tinyassets.providers.base import BaseProvider, ProviderResponse
 
-    router = ProviderRouter({})
     state = SimpleNamespace(cancelled=False, finished=False)
 
-    async def call(role, prompt, system, config=None, **kwargs):
-        try:
-            await asyncio.sleep(seconds)
-        except asyncio.CancelledError:
-            state.cancelled = True
-            raise
-        state.finished = True
-        return SimpleNamespace(text="done")
+    class Slow(BaseProvider):
+        name = "claude-code" if kind == "native_agent" else "http-source"
+        family = "anthropic"
+        agent_execution_kind = kind
 
-    router.call = call
-    return router, state
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            try:
+                await asyncio.sleep(seconds)
+            except asyncio.CancelledError:
+                state.cancelled = True
+                raise
+            state.finished = True
+            return ProviderResponse(text="done", provider=self.name, model="m",
+                                    family="anthropic", latency_ms=1.0,
+                                    input_tokens=1, output_tokens=1, cost_microunits=5)
+
+    return Slow(), state
 
 
-def test_an_unplanned_served_call_is_cancelled_by_the_stop():
-    router, state = _slow_router(30.0)
+def _call_sync(provider, operation):
+    """``router.call_sync`` bound to one owner, as the unplanned served path is."""
+    from unittest.mock import patch
+
+    from tests.support.owner_bound import owner_carrier
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.router import ProviderRouter
+
+    router = ProviderRouter(providers={provider.name: provider})
+    carrier = owner_carrier(provider.name, operation=operation)
+    context = UniverseContext(universe_dir=Path("u-owner-bound"), provider_invocation=carrier)
+    with patch("tinyassets.providers.router._provider_invocation_carrier",
+               return_value=carrier):
+        return router.call_sync("writer", "p", "s", ModelConfig(absolute_cap_s=60.0),
+                                operation=operation, universe_context=context)
+
+
+def test_an_unplanned_native_served_call_is_cancelled_by_the_stop():
+    provider, state = _slow_provider("native_agent", 30.0)
     with interactive_turn("owner", "u-1") as live:
         threading.Timer(0.3, live.request).start()
         started = time.monotonic()
         with pytest.raises(TurnInterrupted):
-            router.call_sync("writer", "p", "s", ModelConfig(absolute_cap_s=60.0),
-                             operation="converse")
+            _call_sync(provider, "converse")
     assert time.monotonic() - started < 10 and state.cancelled and not state.finished
+
+
+def test_an_http_call_is_never_cancelled_so_its_usage_settles():
+    """astra round 1: cancelling an HTTP call lost its response and its real spend.
+
+    The HTTP provider waits for its request even when cancelled, so a stop there
+    buys no time; the call returns and the turn stops at its next boundary.
+    """
+    provider, state = _slow_provider("engine_inference", 0.6)
+    with interactive_turn("owner", "u-1") as live:
+        threading.Timer(0.1, live.request).start()
+        assert _call_sync(provider, "converse").text == "done"
+        assert live.requested()
+    assert state.finished and not state.cancelled
+
+
+def test_another_operation_inside_the_chat_turns_own_loop_is_not_stopped():
+    """The dispatch site gates on the operation itself, not only on call_sync."""
+    from tests.support.owner_bound import owner_bound_call
+    from tinyassets.providers.router import ProviderRouter
+
+    provider, state = _slow_provider("native_agent", 0.2)
+    router = ProviderRouter(providers={provider.name: provider})
+    with interactive_turn("owner", "u-1") as live:
+        live.request()
+        # asyncio.run copies this context, so the live turn IS visible here.
+        response = asyncio.run(owner_bound_call(router, provider.name))
+    assert response.text == "done" and state.finished and not state.cancelled
 
 
 def test_a_call_that_is_not_the_chat_turn_is_never_stopped():
     """A stop already requested reaches only ``converse``: never an automation's call."""
-    router, state = _slow_router(0.2)
+    provider, state = _slow_provider("native_agent", 0.2)
     with interactive_turn("owner", "u-1") as live:
         live.request()
-        assert router.call_sync("writer", "p", "s", ModelConfig(absolute_cap_s=60.0),
-                                operation="background_run").text == "done"
+        assert _call_sync(provider, "run_graph").text == "done"
     assert state.finished and not state.cancelled
 
 

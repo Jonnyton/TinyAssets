@@ -86,3 +86,100 @@ def test_stop_is_wired_to_the_button_and_to_escape(html):  # noqa: F811
     # The phone layout gives Stop the send button's cell, so it is always a
     # visible tap target there too.
     assert ".composer .btn--stop{grid-column:4;grid-row:2}" in html
+
+
+_LATE_STOP = r"""
+setQueueOwner("p-1"); setQueueScope("u-1");
+const posts=[];
+globalThis.authHeaders=()=>({});
+globalThis.refreshAccessToken=async()=>false;
+globalThis.fetch=(url,init)=>new Promise(resolve=>posts.push({resolve}));
+const a=sendTurn("A");
+await settle();
+sendTurn("B"); sendTurn("C");
+const stopA=interruptTurn();               // A's Stop request is still on the wire...
+await settle();
+gates[0].resolve({error:"Interrupted — you stopped this turn.", interrupted:true,
+  turn_failure:{version:1,kind:"turn_failed",code:"interrupted",effects:"none"},
+  failure_notice:"Interrupted — you stopped this turn.", history_saved:true});
+await a; await settle();
+const whilePending=converseCalls.slice();  // ...so nothing queued may start yet.
+posts[0].resolve({ok:false,status:500,json:async()=>({})});   // late failure for A
+await stopA; await settle();
+const afterLate=converseCalls.slice(), lateLine=indicator().line;
+sendTurn("D"); sendTurn("E");
+const stopB=interruptTurn();
+await settle();
+posts[1].resolve({ok:true,status:200,json:async()=>({interrupted:1,universe_id:"u-1"})});
+await stopB; await settle();
+gates[1].resolve({reply:"B and C answered."});
+await settle(); await settle();
+console.log(JSON.stringify({whilePending, afterLate, lateLine, sent:converseCalls}));
+"""
+
+
+def test_a_late_stop_answer_never_leaks_into_the_next_turn(tmp_path, html):  # noqa: F811
+    """astra round 1: A's late Stop response erased B's batching state."""
+    import tests.test_app_working_indicator as harness
+
+    original = harness._program
+
+    def with_interrupt(html_, scenario_, body):
+        program = original(html_, scenario_, body)
+        head, sep, tail = program.partition("\n(async()=>{\n")
+        return head + "\n" + _js_function(html_, "interruptTurn") + sep + tail
+
+    harness._program = with_interrupt
+    try:
+        out = _run(tmp_path, html, {}, _LATE_STOP)
+    finally:
+        harness._program = original
+    assert out["whilePending"] == ["A"], (
+        "the queue went out while A's Stop request was still on the wire")
+    assert out["afterLate"] == ["A", "B\n\nC"]
+    # A's answer arrived after A ended: it describes nothing on screen now.
+    # (Transient here -- B's send repaints the line; the account case below is
+    # where an unfenced answer would stay on screen.)
+    assert "Could not stop" not in out["lateLine"], out["lateLine"]
+    assert out["sent"] == ["A", "B\n\nC", "D\n\nE"], out["sent"]
+
+
+_STOP_ACROSS_ACCOUNTS = r"""
+setQueueOwner("p-1"); setQueueScope("u-1");
+const posts=[];
+globalThis.authHeaders=()=>({});
+globalThis.refreshAccessToken=async()=>false;
+globalThis.fetch=(url,init)=>new Promise(resolve=>posts.push({resolve}));
+const a=sendTurn("A private line");
+await settle();
+sendTurn("B"); sendTurn("C");
+const stopA=interruptTurn();
+await settle();
+// The account changes while that Stop request is still on the wire.
+MCP._loginEpoch++; clearComposerState(); setQueueOwner("p-2");
+posts[0].resolve({ok:false,status:500,json:async()=>({})});
+await stopA; await settle();
+const line=indicator().line;
+console.log(JSON.stringify({line,
+  flags:{interruptRequested, flushAfterInterrupt}}));
+"""
+
+
+def test_a_stop_answer_for_another_account_is_never_painted(tmp_path, html):  # noqa: F811
+    import tests.test_app_working_indicator as harness
+
+    original = harness._program
+
+    def with_interrupt(html_, scenario_, body):
+        program = original(html_, scenario_, body)
+        head, sep, tail = program.partition("\n(async()=>{\n")
+        return head + "\n" + _js_function(html_, "interruptTurn") + sep + tail
+
+    harness._program = with_interrupt
+    try:
+        out = _run(tmp_path, html, {}, _STOP_ACROSS_ACCOUNTS)
+    finally:
+        harness._program = original
+    assert "Could not stop" not in out["line"], (
+        "the previous account's Stop answer was painted on the next account's screen")
+    assert out["flags"] == {"interruptRequested": False, "flushAfterInterrupt": False}

@@ -99,6 +99,27 @@ class LiveTurn:
         same instant keeps its result: the stop then takes effect at the next
         boundary instead of discarding an answer that exists.
         """
+        try:
+            return await self.cancel_on_stop(awaitable)
+        except asyncio.CancelledError:
+            if not self.requested():
+                raise
+        except BaseException as exc:
+            if not self.requested():
+                raise
+            raise TurnInterrupted("the owner stopped this turn") from exc
+        raise TurnInterrupted("the owner stopped this turn")
+
+    async def cancel_on_stop(self, awaitable):
+        """:meth:`run` for code BELOW the turn's owner: a stop surfaces as plain
+        cancellation.
+
+        The router awaits a native provider through this. Its reservation and
+        carrier handling already treat ``CancelledError`` as "cancelled" and its
+        failure classifiers deliberately do not catch it, so a stop is never
+        recorded as a provider failure, cooled, or answered by trying another
+        source. The turn's owner converts it to :class:`TurnInterrupted`.
+        """
         task = asyncio.ensure_future(awaitable)
         if self.requested():
             task.cancel()
@@ -114,16 +135,7 @@ class LiveTurn:
             await asyncio.wait({task, watcher}, return_when=asyncio.FIRST_COMPLETED)
             if not task.done():
                 task.cancel()
-            try:
-                return await task
-            except asyncio.CancelledError:
-                if not self.requested():
-                    raise
-            except BaseException as exc:
-                if not self.requested():
-                    raise
-                raise TurnInterrupted("the owner stopped this turn") from exc
-            raise TurnInterrupted("the owner stopped this turn")
+            return await task
         finally:
             watcher.cancel()
             with self._lock:
@@ -175,6 +187,16 @@ def interactive_turn(actor_id: str, universe_id: str):
 def current() -> LiveTurn | None:
     """The live turn this code runs under, or ``None`` outside a served turn."""
     return _CURRENT.get()
+
+
+@contextmanager
+def bound(live: LiveTurn | None):
+    """Carry a live turn into a worker thread, which does not inherit context."""
+    token = _CURRENT.set(live)
+    try:
+        yield live
+    finally:
+        _CURRENT.reset(token)
 
 
 def request_interrupt(actor_id: str, universe_id: str) -> int:

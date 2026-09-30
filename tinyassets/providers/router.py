@@ -253,6 +253,13 @@ def _rate_limit_cooldown_s(exc: BaseException) -> int:
     return _retry_after_cooldown_s(getattr(exc, "retry_after", None))
 
 
+def _live_interactive_turn():
+    """The owner's live chat turn this call runs under, if any (turn_interrupt)."""
+    from tinyassets.turn_interrupt import current
+
+    return current()
+
+
 def _sync_call_timeout_s(cfg: ModelConfig) -> float:
     """Timeout for a sync-wrapper call: at least the stream absolute cap.
 
@@ -1177,9 +1184,23 @@ class ProviderRouter:
                         with provider_launch_scope(
                             universe_dir, credential_dir=cfg.credential_snapshot_dir,
                         ):
-                            resp = await provider.complete(
+                            dispatch = provider.complete(
                                 prompt, system, cfg, universe_dir=universe_dir,
                             )
+                            # The owner's Stop on a chat turn ends a NATIVE agent
+                            # at once: cancellation is what kills its process
+                            # family. An HTTP request cannot be aborted (its
+                            # provider waits for it even when cancelled), so it
+                            # returns and its real usage settles; the turn then
+                            # stops at its next boundary (tinyassets/turn_interrupt).
+                            live_turn = (
+                                _live_interactive_turn() if operation == "converse" else None
+                            )
+                            if (live_turn is not None and getattr(
+                                    provider, "agent_execution_kind", None) == "native_agent"):
+                                resp = await live_turn.cancel_on_stop(dispatch)
+                            else:
+                                resp = await dispatch
                 except _ProviderBusy:
                     # Not a provider failure: nothing launched, so the reservation is
                     # released untouched, no cooldown is applied, and the actionable
@@ -1820,12 +1841,13 @@ class ProviderRouter:
         queued_at = time.monotonic()
         node_budget_s = _caller_deadline_budget_s(cfg)
         drain_deadline = queued_at + inner_timeout
-        # Read on the CALLER's thread: the pool worker below does not inherit
-        # context variables. Set only inside a served converse turn, so an
-        # automation or node call is never stoppable from here.
-        from tinyassets.turn_interrupt import current as _live_interactive_turn
+        # Read on the CALLER's thread and carried into the pool worker, which
+        # does not inherit context variables. Set only inside a served converse
+        # turn; the dispatch site alone decides what a stop may cancel (only a
+        # native ``converse`` dispatch), so nothing else is stoppable from here.
+        from tinyassets.turn_interrupt import TurnInterrupted, bound
 
-        live_turn = _live_interactive_turn() if operation == "converse" else None
+        live_turn = _live_interactive_turn()
 
         def _run() -> ProviderResponse:
             waited = time.monotonic() - queued_at
@@ -1849,19 +1871,23 @@ class ProviderRouter:
             )
             loop = asyncio.new_event_loop()
             try:
-                bounded = asyncio.wait_for(
-                    self.call(
-                        role, prompt, system, run_cfg,
-                        operation=operation,
-                        universe_context=universe_context,
-                    ),
-                    timeout=run_timeout,
-                )
-                # The owner's stop cancels the call, which is what ends a CLI
-                # process family; see tinyassets/turn_interrupt.py.
-                return loop.run_until_complete(
-                    bounded if live_turn is None else live_turn.run(bounded)
-                )
+                with bound(live_turn):
+                    try:
+                        return loop.run_until_complete(
+                            asyncio.wait_for(
+                                self.call(
+                                    role, prompt, system, run_cfg,
+                                    operation=operation,
+                                    universe_context=universe_context,
+                                ),
+                                timeout=run_timeout,
+                            )
+                        )
+                    except asyncio.CancelledError:
+                        # Only the owner's Stop cancels from inside this loop.
+                        if live_turn is not None and live_turn.requested():
+                            raise TurnInterrupted("the owner stopped this turn") from None
+                        raise
             except asyncio.TimeoutError:
                 # wait_for already cancelled the coroutine (subprocess killed).
                 raise ProviderTimeoutError(
