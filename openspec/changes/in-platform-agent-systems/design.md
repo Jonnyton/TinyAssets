@@ -41,6 +41,13 @@ yes to exactly that. Each part below is placed so that it cannot break this.
   cross-user is already there: a principal's event wakes only subscriptions
   that principal owns, in their own current home, and only when `graph_id` is
   that home.
+- **Whose compute:** a wake runs in the universe of the principal who emitted
+  it, on that universe's own serving provider. The bridge always emits as the
+  VIEWER into the viewer's own home, so a UI spends only the compute of the
+  person looking at it, who is that universe's owner. An author's UI installed
+  by someone else spends the installer's compute on the installer's agents,
+  and never the author's. No path wakes a universe the emitter does not own,
+  so no one can spend another user's compute.
 - **Cost:** each emit is charged to the same engine run admission a
   `run_graph` run takes, BEFORE the wake is stored. A wake then pays run
   admission again when it fires, as every wake does. A tight UI loop hits the

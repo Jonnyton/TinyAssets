@@ -18,7 +18,7 @@
 - **THEN** the answer is `not_found` and nothing outside the folder is read
 
 ### Requirement: run_graph emits an app event to the caller's own subscriptions
-`run_graph operation="emit_event"` SHALL take `inputs_json {"name", "data"}` and emit an `app_event` stamped with the verified request principal, for the universe named by `graph_id`. `name` must match `[a-z0-9][a-z0-9_.-]{0,63}`, and `data` must be a JSON object of at most 8192 canonical bytes. The emit SHALL be charged to the caller's engine run admission before any wake is stored. It SHALL reply only with whether it was emitted and how many wakes it stored.
+`run_graph operation="emit_event"` SHALL take `inputs_json {"name", "data"}` and emit an `app_event` stamped with the verified request principal, for the universe named by `graph_id`. `name` must match `[a-z0-9][a-z0-9_.-]{0,63}`, and `data` must be a JSON object of at most 8192 canonical bytes. A wake SHALL run in the emitter's own home, on that universe's own compute. An emit SHALL never spend another user's compute, and a UI installed from someone else SHALL spend only its viewer's compute. The emit SHALL be charged to the caller's engine run admission before any wake is stored. It SHALL reply only with whether it was emitted and how many wakes it stored.
 
 #### Scenario: A UI click wakes the owner's agent
 - **GIVEN** the owner has an active `app_event` subscription filtered on the name `visit`
