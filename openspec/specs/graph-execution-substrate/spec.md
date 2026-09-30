@@ -1028,9 +1028,9 @@ Branch definitions SHALL persist an optional branch-level default model policy a
 
 ### Requirement: Execution-choice validation matches the execution contract
 
-This composes with the as-built "Branch validation is the compile gate" (`openspec/specs/graph-execution-substrate/spec.md:51`) and does not replace it: the same `validate()` return path carries these non-topology field errors, so build, patch and compile inherit one check.
-
 An authored concurrency budget SHALL be accepted only as a positive integer, with booleans refused rather than coerced, matching the contract already enforced on the per-run override; values that the compiler would silently reinterpret or crash on MUST be refused at authoring time with an actionable message. Validation MUST NOT impose a structural ceiling on the budget. An authored default model policy SHALL be validated by the same policy-shape check used for node-level policies, preserving its forward-compatible treatment of unknown keys: an unknown key inside a policy is stored, not refused. Fields the check already knows to be invalid SHALL produce an explicit error rather than a stored value. Beyond that, the requirement is observability, not detection: a receipt that applies an execution choice MUST report the choices actually stored, so an author can read back what is in effect and see when a submitted field produced no stored value. It is NOT required to identify an unrecognized key inside a forward-compatible policy.
+
+This composes with the as-built "Branch validation is the compile gate" (`openspec/specs/graph-execution-substrate/spec.md:51`) and does not replace it: the same `validate()` return path carries these non-topology field errors, so build, patch and compile inherit one check.
 
 #### Scenario: A meaningless budget is refused at authoring time
 
@@ -1452,9 +1452,7 @@ provider never started or that its subprocess stopped at that exact instant.
 
 ### Requirement: A rejected credential is its own failure class
 
-A run whose effect was DELIVERED and answered with a status meaning the presented
-credential is no longer accepted SHALL carry failure class
-`credential_rejected`, with `actionable_by: "user"`.
+A run whose effect was DELIVERED and answered with a status meaning the presented credential is no longer accepted SHALL carry failure class `credential_rejected`, with `actionable_by: "user"`.
 
 The trigger SHALL be a delivered HTTP 401 unconditionally, and a delivered HTTP
 403 only where the response body unambiguously says the credential itself is

@@ -164,9 +164,11 @@ identity, used only for the named purpose, and not used for tracking.
   document formats, rejects binary/oversized files, reads selected content client-side,
   and embeds it verbatim in the user's message.
 - **Provider connection material is deposited intentionally and retained in a vault.**
-  `tinyassets/connect_deposit.py` presents a password input and states the credential
-  is written to the private vault, never logged or echoed. `tinyassets/credential_vault.py`
-  validates and atomically persists those records.
+  `tinyassets/onboarding/app.html` collects a provider credential only in the labelled
+  secret field of a connect card the owner chooses to answer, or through the OpenAI device
+  sign-in (`tinyassets/onboarding/openai_device.py`). `tinyassets/api/pending_requests.py`
+  deposits it to the private vault and never records a secret field's value in the clear;
+  `tinyassets/credential_vault.py` validates and atomically persists those records.
 - **No native analytics, advertising, or purchase SDK is present.**
   `mobile/package.json` contains only Capacitor core/platform/app/browser/splash/status
   dependencies. The native shell has no analytics, advertising, StoreKit, payment, or

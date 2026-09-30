@@ -62,8 +62,17 @@ TAIL_ANCHOR = "A branch is a stored graph SHAPE"
 #: asked for an always-on team of agents with its own screen, the universe built
 #: an external service and asked for hosting, because nothing mapped that request
 #: onto agent nodes, automations, files and an app UI.
+#:
+#: `branches` (2026-09-30) is FIRST, because it is the chapter for the call every
+#: other chapter presupposes -- including `systems`, which points at it for the
+#: concrete create syntax. It exists because a free account's naive first ask
+#: ("something that runs every morning") spent 16 of 21 rounds failing
+#: `operation="create"`, and `read_graph target="handbook" query="write_graph.branch"`
+#: answered "no chapter 'branch'" -- there was no worked example anywhere the
+#: model could reach.
 CHAPTER_ORDER = (
-    "connections", "code_nodes", "workspaces", "delivering", "interfaces", "systems",
+    "branches", "connections", "code_nodes", "workspaces", "delivering",
+    "interfaces", "systems",
 )
 
 #: The passage a LATER change deliberately DELETED, verbatim.
