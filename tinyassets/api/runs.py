@@ -431,7 +431,10 @@ def _ensure_runs_recovery() -> None:
 
         base = Path(_base_path())
         base.mkdir(parents=True, exist_ok=True)
-        lock = acquire_singleton_lock(base / _RUNS_RECOVERY_LOCK_NAME)
+        # Held already when an earlier attempt took it and then failed.
+        lock = _RUNS_RECOVERY_LOCK or acquire_singleton_lock(
+            base / _RUNS_RECOVERY_LOCK_NAME
+        )
         if not lock.acquired:
             logger.info(
                 "in-flight run recovery: another live process (pid %s) owns it",
@@ -441,7 +444,9 @@ def _ensure_runs_recovery() -> None:
             _RUNS_RECOVERY_LOCK = lock
             recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
     except Exception:
+        # Not marked done: the next run tool tries again.
         logger.exception("in-flight run recovery failed")
+        return
     _RUNS_RECOVERY_DONE = True
 
 

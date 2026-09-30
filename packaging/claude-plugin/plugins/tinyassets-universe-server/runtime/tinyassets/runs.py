@@ -1304,6 +1304,7 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
     count = 0
     now = _now()
     releases: list[tuple[str, Path | None, int]] = []
+    announced: list[Any] = []
     with _connect(base_path) as conn:
         rows = conn.execute(
             """
@@ -1330,10 +1331,18 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
                 releases.append(
                     (run_id, _workspace_terminal_base(conn, base_path, run_id), owed)
                 )
+                announced.append(conn.execute(
+                    "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+                ).fetchone())
     for run_id, workspace_base, owed in releases:
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_base, local_owed=owed
         )
+    # A terminal transition is announced whichever path found it, or an owner's
+    # run_completed loop waits forever on a run a crashed process left behind.
+    for moved in announced:
+        if moved is not None:
+            _emit_run_completed(base_path, moved["run_id"], RUN_STATUS_INTERRUPTED, moved)
     if count:
         logger.info("Recovered %d orphaned in-flight runs on read", count)
     return count
@@ -2563,6 +2572,7 @@ def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
     initialize_runs_db(base_path)
     workspace_terminal_base: Path | None = None
     terminal_owed = 0
+    orphan_announce: Any = None
     with _connect(base_path) as conn:
         row = conn.execute(
             "SELECT * FROM runs WHERE run_id = ?", (run_id,)
@@ -2586,6 +2596,7 @@ def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
             ).fetchone()
             if row is None:
                 return None
+            orphan_announce = row
         result = _row_to_run(row)
         # Surface concurrency stats from the last concurrency_stats system event.
         stats_row = conn.execute(
@@ -2603,6 +2614,8 @@ def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
             workspace_terminal_base,
             local_owed=terminal_owed,
         )
+    if orphan_announce is not None:
+        _emit_run_completed(base_path, run_id, RUN_STATUS_INTERRUPTED, orphan_announce)
     if stats_row:
         try:
             result["concurrency"] = json.loads(stats_row["detail_json"] or "{}")

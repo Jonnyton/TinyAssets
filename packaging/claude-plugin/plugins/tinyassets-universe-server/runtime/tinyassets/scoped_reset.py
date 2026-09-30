@@ -234,6 +234,9 @@ _KNOWN_ROOT_DATABASES = frozenset({
 _KNOWN_ROOT_NON_DATABASE_FILES = frozenset({
     ".active_universe",
     ".node_registry.json",
+    # The live server's in-flight run recovery lock and its pid sidecar.
+    ".run_recovery.lock",
+    ".run_recovery.lock.pid",
     ".scoped-reset.barrier",
     "ledger.json",
 })
