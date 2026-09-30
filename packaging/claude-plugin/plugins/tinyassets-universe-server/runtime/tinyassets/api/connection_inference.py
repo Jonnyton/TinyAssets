@@ -117,8 +117,14 @@ _SECRET_BEARING_KEYS = frozenset(
 )
 
 _ALLOWED_SHAPE_KEYS = frozenset({"label", "prefix", "length"})
-#: Mirrors the deposit door in ``api/http_connection.py``; a proposal must
-#: never suggest a scheme the deposit would then refuse.
+#: A SUBSET of the deposit door's set in ``api/http_connection.py``: a proposal
+#: must never suggest a scheme the deposit would then refuse, and it must also
+#: not suggest one it cannot describe. ``url_secret`` is deliberately absent —
+#: it requires a ``{secret}`` placeholder in the template, and this prompt is
+#: told (correctly, for every other scheme) to emit "no placeholders". A pasted
+#: capability URL is answered by a ``url_secret`` ASK, where the agent authors
+#: the template itself; inferring one from a credential shape would produce a
+#: proposal the deposit rejects.
 _DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "header", "oauth1a"})
 
 _SYSTEM = """\
