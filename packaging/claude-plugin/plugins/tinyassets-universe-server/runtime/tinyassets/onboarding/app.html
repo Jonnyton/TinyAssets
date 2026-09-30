@@ -7212,7 +7212,23 @@
     try{
       const r = await MCP.listRequests();
       if(r && Array.isArray(r.pending)) renderRail(r.pending);
-    }catch(_e){ /* a rail that fails to load must never break the chat */ }
+      else railUnavailable();
+    }catch(err){
+      // A rail that fails to load must never break the chat -- but it must not
+      // vanish either. Live 2026-09-30 an oversized reply came back without a
+      // `pending` list and the whole column silently disappeared for one account.
+      if(err && err.authRequired) return;
+      railUnavailable();
+    }
+  }
+
+  function railUnavailable(){
+    const rail = $("request-rail"), head = $("rail-head");
+    if(!rail) return;
+    rail.hidden = false;
+    // Keep whatever cards are already showing; only the heading changes, so a
+    // passing failure never erases a request the user was reading.
+    if(head) head.textContent = "Couldn't load your requests — retrying";
   }
 
   // Restore the conversation on load. Without this the thread only ever showed

@@ -226,6 +226,13 @@ def _connector_ceiling_exempt():
         # already by the parameter the caller passed.
         ("read_graph", "conversation"),
         ("read_graph", "conversation_turn"),
+        # The owner's own queue, which the app's request rail renders whole.
+        # Unusable when partial: the marker carries no ``pending`` list, so the
+        # rail had nothing to draw and stayed hidden -- live 2026-09-30, the
+        # founder's seven requests measured 34 KB and the column vanished for
+        # that account while a lighter account kept it. Size must never decide
+        # what an account sees.
+        ("read_graph", "pending_requests"),
     }
 
 
