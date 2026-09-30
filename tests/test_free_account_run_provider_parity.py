@@ -245,6 +245,7 @@ def _seed_universe(
 
 def _branch(
     *, owner: str, branch_def_id: str = "branch_morning_focus", agent_node: bool = False,
+    visibility: str = "private",
 ) -> BranchDefinition:
     """The live branch shape: one prompt node with NO llm_policy pin."""
     node = NodeDefinition(
@@ -259,7 +260,7 @@ def _branch(
         branch_def_id=branch_def_id,
         name="Morning Focus Note",
         author=owner,
-        visibility="private",
+        visibility=visibility,
         graph_nodes=[GraphNodeRef(id=node.node_id, node_def_id=node.node_id)],
         edges=[
             EdgeDefinition(from_node="START", to_node=node.node_id),
@@ -557,6 +558,92 @@ def test_universe_b_run_never_reaches_universe_as_provider(
             )
         }
     assert universes == {B_HOME}
+
+
+def test_a_model_pin_admits_siblings_unless_the_node_declares_no_fallbacks(
+    tmp_path, monkeypatch, authenticate_request, wires,
+):
+    """How strictly a model pin binds is AUTHOR-declared, not platform policy.
+
+    The Codex refutation of this change (C5, 2026-09-29) showed a node pinned to
+    one model completing on a sibling after a model-local capacity refusal, and
+    it is right that the change widened who sees that: before, a run with no
+    saved preference built no order and could only re-attempt the same model.
+
+    It is the captured-order contract, not an accident -- it is already what
+    every owner with a saved preference gets -- and it is the behaviour uptime
+    wants: a sibling from the SAME source, re-validated against the SAME
+    accepted ceilings, after a validated capacity refusal. An author who means
+    "only this model" says so with `fallback_chain: []`, and that is honoured.
+    Both halves are pinned here so the default is a decision rather than a
+    side effect.
+    """
+    from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+    from tinyassets.providers.model_policy import Exhaustion, ModelRef
+    from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+    from tinyassets.providers.work_candidate_data import WorkCandidateData
+
+    authenticate_request(A_OWNER)
+    provider = _seed_universe(
+        tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a",
+    )
+    prepared = prepare_owned_model_plan(
+        base=tmp_path, universe=tmp_path / A_HOME, owner=A_OWNER,
+        agent=resolve_serving_agent_binding(
+            tmp_path, universe_id=A_HOME, owner_user_id=A_OWNER,
+        ),
+    )
+    pinned, sibling = (ModelRef(provider, model) for model in LIVE_MODELS)
+    snapshot = _branch(owner=A_OWNER).to_dict()
+
+    open_pin = {"preferred": {"model": LIVE_MODELS[0]}}
+    order = WorkCandidateData(prepared.plan)
+    snapshot["node_defs"][0]["llm_policy"] = open_pin
+    order.fit(snapshot, ceiling=10_000, retry_multiplier=1)
+    assert order.next_candidate(open_pin) == pinned
+    assert order.next_candidate(
+        open_pin, (Exhaustion("model", pinned),),
+    ) == sibling, "a pin with no declared fallbacks may use the owner's own order"
+
+    closed_pin = {"preferred": {"model": LIVE_MODELS[0]}, "fallback_chain": []}
+    order = WorkCandidateData(prepared.plan)
+    snapshot["node_defs"][0]["llm_policy"] = closed_pin
+    order.fit(snapshot, ceiling=10_000, retry_multiplier=1)
+    assert order.next_candidate(closed_pin) == pinned
+    assert order.next_candidate(
+        closed_pin, (Exhaustion("model", pinned),),
+    ) is None, "fallback_chain: [] means only this model, and it must stay that way"
+
+
+def test_a_foreign_authored_branch_makes_no_discovery_request_at_all(
+    tmp_path, monkeypatch, authenticate_request, wires,
+):
+    """A refused run must not spend the requester's own source to find out.
+
+    Capturing the model order is credential-bearing outbound IO on the owner's
+    own grant. It sat above `_admit`'s Branch-author check, so running another
+    user's PUBLIC Branch made one catalogue request before the refusal -- the
+    same shape as the sign-in refresh removed from this lane on #4082. Found by
+    the Codex refutation of this change (C2, 2026-09-29).
+    """
+    from tinyassets.daemon_server import save_branch_definition
+
+    authenticate_request(A_OWNER)
+    _seed_universe(tmp_path, monkeypatch, wires, owner=A_OWNER, universe=A_HOME, suffix="a")
+    # PUBLIC, because that is the only foreign Branch a requester can start --
+    # and exactly the shape the refutation reproduced.
+    foreign = _branch(
+        owner="acct_someone_else", branch_def_id="branch_foreign", visibility="public",
+    )
+    save_branch_definition(tmp_path, branch_def=foreign.to_dict())
+    reads_before = len(wires[A_OWNER].reads)
+
+    record = _run(tmp_path, monkeypatch, foreign, A_HOME)
+
+    assert record["status"] == "failed"
+    assert "author is not the principal" in record["error"], record["error"]
+    assert len(wires[A_OWNER].reads) == reads_before, "a refused run read the catalogue"
+    assert wires[A_OWNER].requests == []
 
 
 def test_universe_a_pin_is_refused_inside_universe_b(

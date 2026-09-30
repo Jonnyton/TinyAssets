@@ -417,7 +417,6 @@ class _ForegroundRunProviderSession:
             )
         try:
             self._validate_founder_home()
-            self._capture_choices()
             snapshot = self._branch_snapshot
             branch_author = str(snapshot.get("author") or "").strip()
             if branch_author != self._principal_id:
@@ -436,6 +435,16 @@ class _ForegroundRunProviderSession:
             if not nodes:
                 raise PermissionError("foreground provider attempt has no prompt node")
             self._validate_run(allowed_statuses={"running"})
+            # AFTER every refusal this lane can decide from stored state, and
+            # before `_admit_manifest` fits the order. Capturing the order is
+            # credential-bearing outbound IO (a catalogue read on the owner's own
+            # grant), so it must not happen for a run `_admit` was going to
+            # refuse anyway. It sat above the author check, and running another
+            # user's PUBLIC Branch therefore made one discovery request on the
+            # requester's source before the refusal -- the same shape as the
+            # sign-in refresh Codex found on #4082 and the same fix (Codex
+            # refutation of this change, C2, 2026-09-29).
+            self._capture_choices()
 
             agent = resolve_serving_agent_binding(
                 self._base_path,
