@@ -880,6 +880,8 @@ class AutomationStore:
         ``last_due_at`` is when it fired; ``last_reason`` is ``woke:<wake id>``
         or why the wake was refused. The wake's own run stays on the wake's row.
         No ``revision`` bump: this is the runtime's record, not an owner edit.
+        An older fire that lands late never replaces a newer one, and never
+        moves ``updated_at`` back (Codex refute 2026-09-30, P2).
         """
         stamp = _iso(now)
         conn = self._connect(create=True)
@@ -889,8 +891,9 @@ class AutomationStore:
             with conn:
                 conn.execute(
                     "UPDATE automations SET last_due_at = ?, last_reason = ?, "
-                    "updated_at = ? WHERE automation_id = ? AND trigger_kind = ?",
-                    (stamp, reason, stamp, automation_id, TRIGGER_EVENT),
+                    "updated_at = MAX(updated_at, ?) "
+                    "WHERE automation_id = ? AND trigger_kind = ? AND last_due_at <= ?",
+                    (stamp, reason, stamp, automation_id, TRIGGER_EVENT, stamp),
                 )
         finally:
             conn.close()

@@ -587,3 +587,34 @@ def test_a_last_wake_is_read_only_from_the_subscriptions_own_universe(
         bobs.automation_id, reason="woke:x", now=datetime.now(timezone.utc),
     )
     assert AutomationStore(home).get(bobs.automation_id).last_reason == ""
+
+
+def test_a_late_older_fire_never_replaces_the_latest(home: Path) -> None:
+    """Two events race; the older one's record lands last (refute P2)."""
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    store = AutomationStore(home)
+    newer = datetime(2026, 9, 30, 12, 0, 5, tzinfo=timezone.utc)
+    store.record_event_fire(sub.automation_id, reason="woke:newer", now=newer)
+    store.record_event_fire(sub.automation_id, reason="event_wake_refused:x",
+                            now=newer.replace(second=1))
+    row = store.get(sub.automation_id)
+    assert (row.last_reason, row.last_due_at) == ("woke:newer", "2026-09-30T12:00:05+00:00")
+    assert row.updated_at >= "2026-09-30T12:00:05+00:00"
+
+
+def test_last_wake_is_only_a_wake_this_subscription_stored(home: Path) -> None:
+    """Same universe is not enough: another wake of the universe is not this
+    subscription's output (refute concern)."""
+    sub = _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    with _as(OWNER):
+        other = register_automation(
+            home, universe_id=UNIVERSE, owner_principal_id=OWNER, name="manual",
+            branch_def_id=FOLLOWER, not_before="2026-01-01T00:00:00Z",
+            inputs={"event": {"subscription_id": "another_subscription"}},
+        )
+    AutomationStore(home).record_event_fire(
+        sub.automation_id, reason=f"woke:{other.automation_id}",
+        now=datetime.now(timezone.utc),
+    )
+    out = _read(home, "get", automation_id=sub.automation_id)["automation"]
+    assert "last_wake" not in out, out
