@@ -46,13 +46,32 @@ def liveness_path(base_path: str | Path, token: str) -> Path | None:
 
 
 def hold_liveness(base_path: str | Path, token: str) -> Any:
-    """Take ``token``'s liveness lock. Keep the result for the process life."""
-    from tinyassets.singleton_lock import acquire_singleton_lock
+    """Take ``token``'s liveness lock. Keep the result for the process life.
+
+    Cleanup removes a DEAD token's file, and a fresh registrant's file reads as
+    dead between its creation and its lock. So after locking, the registrant
+    checks that the path still names the file it locked; if cleanup unlinked
+    it meanwhile, it locks a new one. Without this a live process would hold a
+    lock on a deleted file, and its runs would be unprovable ("unknown")
+    forever once it died (Codex refute 2026-09-30, round 2).
+    """
+    from tinyassets.singleton_lock import acquire_singleton_lock, release_singleton_lock
 
     path = liveness_path(base_path, token)
     if path is None:
         raise ValueError(f"liveness token {token!r} is not a plain token")
-    return acquire_singleton_lock(path)
+    for _attempt in range(5):
+        held = acquire_singleton_lock(path)
+        if not held.acquired or held.fd is None:
+            return held
+        try:
+            same = os.path.samestat(os.fstat(held.fd), os.stat(path))
+        except OSError:
+            same = False
+        if same:
+            return held
+        release_singleton_lock(held)
+    raise RuntimeError(f"could not keep a liveness file for token {token}")
 
 
 def owner_state(base_path: str | Path, token: str) -> str:

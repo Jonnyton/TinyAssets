@@ -21,6 +21,11 @@ def owner_state(token) -> "alive" | "dead" | "unknown"
   `pid:hex` does not match it, which is why seats can never be proven alive today.
 - `unknown` covers a missing file, a probe error, or an unregistered token.
   `unknown` is never treated as dead.
+- A registrant's new file reads as dead between its creation and its lock, and
+  cleanup removes dead tokens' files. So after locking, the registrant checks that
+  the path still names the file it locked (`samestat`) and re-locks if not.
+- Cleanup probes death first and reads references (leases, in-flight runs) second.
+  A dead process cannot add a reference after it died.
 - The automation consumer keeps its own `consumer_id` lease holder: one process
   may hold several tokens. Only runs and seats adopt `owner_token()`.
 
@@ -86,6 +91,10 @@ CREATE TRIGGER run_terminal_outbox_on_transition AFTER UPDATE OF status ON runs
   the watcher and at boot for rows owed longer than 30 s.
 - **Acknowledgement only on success.** A delivery is acknowledged only after the
   emit succeeds (`strict`). A failed emit stays owed.
+- **Transient refusals stay owed too.** A refusal that passes on its own
+  (`no_serving_assignment`, `usage_limited`, `consumer_disabled`) keeps the event
+  owed. A final refusal (the owner lost admin, the branch is gone) is recorded on
+  the subscription, and the event is acknowledged.
 - **Idempotent wake.** The consumer registers at most one wake per
   `(subscription, event occurrence)`, enforced by a unique partial index on
   `automations.event_key`:

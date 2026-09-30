@@ -109,6 +109,9 @@ def emit(
             payload=dict(payload),
             event_id=event_id,
         )
+    except EventDeliveryDeferred as deferred:
+        logger.info("automation event deferred type=%s: %s", event_type, deferred)
+        return None if strict else []
     except Exception:  # noqa: BLE001 - an event must never fail its cause
         logger.exception("automation event emit failed type=%s", event_type)
         return None if strict else []
@@ -153,6 +156,7 @@ def _emit(
         return []
     now = datetime.now(timezone.utc)
     stored: list[str] = []
+    retry: list[str] = []
     for sub in subs:
         owner = sub.owner_principal_id
         # The branch is read as its owner: a private branch is refused to an
@@ -185,10 +189,29 @@ def _emit(
                 reason = f"event_wake_refused:{exc.reason}"
                 _record_refusal(base, sub, reason)
                 _record_fire(base, sub, reason, now)
+                if exc.reason in RETRYABLE_REFUSALS:
+                    retry.append(exc.reason)
                 continue
         _record_fire(base, sub, f"{EVENT_WOKE_PREFIX}{wake.automation_id}", now)
         stored.append(wake.automation_id)
+    if retry:
+        # Nothing about the event is wrong: the universe cannot take a wake
+        # RIGHT NOW. Failing keeps a durable event owed, so it is delivered
+        # again once the assignment or usage returns; the wakes this delivery
+        # did store are found by their event key next time.
+        raise EventDeliveryDeferred(",".join(sorted(set(retry))))
     return stored
+
+
+class EventDeliveryDeferred(RuntimeError):
+    """A matching subscription could not take its wake yet (see RETRYABLE_REFUSALS)."""
+
+
+#: Refusals that pass on their own -- a serving assignment comes back, a usage
+#: window refills, the consumer is switched on. A durable event refused for one
+#: of these stays owed. Every other refusal (the owner lost admin, the branch
+#: is gone) is final for this event and is recorded on the subscription.
+RETRYABLE_REFUSALS = frozenset({"no_serving_assignment", "usage_limited", "consumer_disabled"})
 
 
 def _event_key(

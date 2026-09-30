@@ -1136,3 +1136,50 @@ def test_cleanup_reads_references_after_proving_death(home: Path, monkeypatch) -
     finally:
         consumer._release_liveness()
     assert path.is_file(), "the run's proof of death was deleted"
+
+
+# -- round 2 (gpt-6-astra) ------------------------------------------------------
+
+
+def test_a_transient_refusal_keeps_the_event_owed(home: Path, monkeypatch) -> None:
+    """No serving assignment at the moment the run ends: the wake cannot be
+    stored yet, so the event stays owed and lands once the assignment is back."""
+    import tinyassets.provider_assignment as assignment
+    from tinyassets.runs import deliver_terminal_events
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    real = assignment.load_provider_assignment
+    monkeypatch.setattr(assignment, "load_provider_assignment", lambda *a, **k: None)
+    _finish(home, actor=OWNER)
+    with _as(None):
+        assert deliver_terminal_events(home, older_than=0) == 0
+    assert _wakes(home) == []
+    monkeypatch.setattr(assignment, "load_provider_assignment", real)
+    with _as(None):
+        assert deliver_terminal_events(home, older_than=0) == 1
+    assert len(_wakes(home)) == 1
+
+
+@pytest.mark.skipif(__import__("os").name != "posix",
+                    reason="Windows refuses to unlink a file another handle holds open")
+def test_a_registrant_whose_file_was_cleaned_up_locks_a_new_one(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Cleanup unlinked a fresh registrant's file between its creation and its
+    lock: the registrant notices and locks a file that is really at the path."""
+    from tinyassets import process_liveness, singleton_lock
+
+    real = singleton_lock.acquire_singleton_lock
+    calls: list[int] = []
+
+    def racing(path):
+        held = real(path)
+        if not calls:
+            Path(path).unlink()  # cleanup's unlink lands after our lock
+        calls.append(1)
+        return held
+
+    monkeypatch.setattr(singleton_lock, "acquire_singleton_lock", racing)
+    held = process_liveness.hold_liveness(tmp_path, "proc_racer")
+    assert held.acquired and len(calls) == 2
+    assert process_liveness.owner_state(tmp_path, "proc_racer") == process_liveness.ALIVE
