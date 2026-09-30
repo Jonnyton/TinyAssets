@@ -33,15 +33,20 @@ from tests.test_automations import (
     _consumer_with_inline_executor,
     registered,  # noqa: F401 - fixture
 )
+from tinyassets import process_liveness
 from tinyassets.automations import (
     Automation,
     AutomationRunUnstopped,
     AutomationStore,
     automation_lease_key,
-    holder_is_provably_dead,
-    holder_liveness_path,
 )
+from tinyassets.process_liveness import liveness_path as holder_liveness_path
 from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+
+
+def holder_is_provably_dead(base, holder) -> bool:
+    return process_liveness.owner_state(base, holder) == process_liveness.DEAD
+
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
@@ -64,9 +69,10 @@ def _holder_process(
         f"""
         import os, sys
         from datetime import datetime, timezone
-        from tinyassets.automations import AutomationStore, hold_process_liveness
+        from tinyassets.automations import AutomationStore
+        from tinyassets.process_liveness import hold_liveness
         base = {str(tmp_path)!r}
-        held = hold_process_liveness(base, {holder!r})
+        held = hold_liveness(base, {holder!r})
         assert held.acquired
         for uid in {list(universes)!r}:
             assert AutomationStore(base).acquire_universe_lease(
@@ -158,7 +164,7 @@ def test_a_holder_id_cannot_name_a_path_outside_the_liveness_dir(tmp_path) -> No
     assert holder_liveness_path(tmp_path, "../../etc/passwd") is None
     assert holder_liveness_path(tmp_path, "") is None
     assert holder_liveness_path(tmp_path, DEAD) == (
-        tmp_path / automations_module.LIVENESS_DIR / f"{DEAD}.lock"
+        tmp_path / process_liveness.LIVENESS_DIR / f"{DEAD}.lock"
     )
 
 
@@ -223,7 +229,7 @@ def test_an_unacquired_liveness_lock_leaves_no_false_death_proof(
         path.write_text("")
         return LockAcquisition(acquired=False, fd=None, path=path, existing_pid=None)
 
-    monkeypatch.setattr(automations_module, "hold_process_liveness", refused)
+    monkeypatch.setattr(process_liveness, "hold_liveness", refused)
     consumer = _started_consumer(tmp_path, monkeypatch)
     try:
         assert consumer._liveness is None

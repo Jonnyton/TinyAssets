@@ -45,7 +45,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sqlite3
 import time
 import uuid
@@ -234,6 +233,15 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("automations", "event_filter_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("automations", "overlap", "TEXT NOT NULL DEFAULT 'queue'"),
     ("universe_leases", "run_id", "TEXT NOT NULL DEFAULT ''"),
+    ("automations", "event_key", "TEXT NOT NULL DEFAULT ''"),
+)
+
+#: One wake per (subscription, event): a terminal event is delivered at least
+#: once, so its wake must be stored at most once (run-owner-proof D4). Created
+#: after the migrations, which is when the column is known to exist.
+_EVENT_KEY_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_event_key "
+    "ON automations(event_key) WHERE event_key != ''"
 )
 
 #: A row read with how many attempts it has had -- the ``once`` due key.
@@ -431,6 +439,8 @@ class Automation:
     event_type: str = ""
     event_filter: dict[str, Any] | None = None
     overlap: str = "queue"
+    #: An event wake's identity, ``<subscription>:<event>:<id>``; '' otherwise.
+    event_key: str = ""
     #: ``once`` rows only, read from ``automation_attempts``: how many attempts
     #: were claimed, and when the latest was.
     attempt_count: int = 0
@@ -465,82 +475,6 @@ def _parse(stamp: str) -> datetime | None:
     except ValueError:
         return None
     return _as_utc(parsed)
-
-
-# -- Holder liveness ----------------------------------------------------------
-
-#: Directory under the data root where every running consumer holds an OS lock
-#: on a file named for its lease holder id, for the whole process lifetime.
-LIVENESS_DIR = ".consumer_liveness"
-
-_HOLDER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-
-
-def holder_liveness_path(base_path: str | Path, holder: str) -> Path | None:
-    """The lock file that proves ``holder``'s process is alive, or None.
-
-    None for a holder id that is not a plain token: such an id can never be
-    proven dead, so its lease is honoured until it expires.
-    """
-    if not _HOLDER_RE.match(holder or ""):
-        return None
-    return Path(base_path) / LIVENESS_DIR / f"{holder}.lock"
-
-
-def hold_process_liveness(base_path: str | Path, holder: str) -> Any:
-    """Take this process's liveness lock. Keep the result for the process life.
-
-    The kernel drops the lock when the process dies, however it dies -- a
-    deploy's SIGKILL included. That makes "the holder is dead" a fact another
-    process can check, rather than a guess from a refresh that stopped.
-    """
-    from tinyassets.singleton_lock import acquire_singleton_lock
-
-    path = holder_liveness_path(base_path, holder)
-    if path is None:
-        raise ValueError(f"lease holder {holder!r} is not a plain token")
-    return acquire_singleton_lock(path)
-
-
-def _probe_holder(base_path: str | Path, holder: str) -> str:
-    """``"dead"``, ``"alive"`` or ``"unknown"`` -- read-only, never deletes.
-
-    The file is the proof, and a holder can hold leases in several universes,
-    so a probe that deleted it after reclaiming ONE lease left every other
-    lease of that dead holder unprovable (Codex round 2, 2026-09-27).
-    """
-    from tinyassets.singleton_lock import _lock_fd, _unlock_fd
-
-    path = holder_liveness_path(base_path, holder)
-    if path is None or not path.is_file():
-        return "unknown"
-    try:
-        fd = os.open(str(path), os.O_RDWR)
-    except OSError:
-        return "unknown"
-    try:
-        if not _lock_fd(fd):
-            return "alive"
-        _unlock_fd(fd)
-        return "dead"
-    finally:
-        os.close(fd)
-
-
-def holder_is_provably_dead(base_path: str | Path, holder: str) -> bool:
-    """True only when ``holder``'s process is gone. Never a guess.
-
-    The holder's liveness file exists and nobody holds its lock, so the
-    process that took it has exited. A missing file (a holder from a build
-    before this, or one that never started a consumer) is NOT evidence of
-    death: its lease stands until it expires. So does any probe error.
-    """
-    return _probe_holder(base_path, holder) == "dead"
-
-
-def holder_is_provably_alive(base_path: str | Path, holder: str) -> bool:
-    """True when ``holder``'s process still holds its liveness lock."""
-    return _probe_holder(base_path, holder) == "alive"
 
 
 # -- Store --------------------------------------------------------------------
@@ -588,6 +522,7 @@ def _from_row(row: sqlite3.Row) -> Automation:
         event_type=str(row["event_type"] or ""),
         event_filter=_decoded_filter(row["event_filter_json"]),
         overlap=str(row["overlap"] or OVERLAP_QUEUE),
+        event_key=str(row["event_key"] or ""),
         attempt_count=int(
             (row["attempt_count"] if "attempt_count" in row.keys() else 0) or 0
         ),
@@ -630,7 +565,23 @@ class AutomationStore:
             }
             if column not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        conn.execute(_EVENT_KEY_INDEX)
         return conn
+
+    def get_by_event_key(self, event_key: str) -> Automation | None:
+        """The wake already stored for this event, or None."""
+        if not event_key:
+            return None
+        conn = self._connect(create=False)
+        if conn is None:
+            return None
+        try:
+            row = conn.execute(
+                f"{_SELECT_ROWS} WHERE event_key = ?", (event_key,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return None if row is None else _from_row(row)
 
     def get(self, automation_id: str) -> Automation | None:
         conn = self._connect(create=False)
@@ -702,9 +653,9 @@ class AutomationStore:
                     inputs_json, desired_state, pause_reason, revision,
                     created_at, updated_at, retired_at, last_due_at,
                     last_run_id, last_reason, last_finished_at, not_before,
-                    event_type, event_filter_json, overlap
+                    event_type, event_filter_json, overlap, event_key
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          ?, ?, ?)
+                          ?, ?, ?, ?)
                 """,
                 (
                     automation.automation_id,
@@ -730,6 +681,7 @@ class AutomationStore:
                     automation.event_type,
                     json.dumps(automation.event_filter or {}, sort_keys=True),
                     automation.overlap,
+                    automation.event_key,
                 ),
             )
             conn.execute("COMMIT")
@@ -925,9 +877,12 @@ class AutomationStore:
             return False
         expires = _parse(str(row["expires_at"]))
         unexpired = expires is not None and expires > moment
+        from tinyassets.process_liveness import ALIVE, DEAD, owner_state
+
+        state = owner_state(self.base_path, current)
         if unexpired:
-            return not holder_is_provably_dead(self.base_path, current)
-        return holder_is_provably_alive(self.base_path, current)
+            return state != DEAD
+        return state == ALIVE
 
     def acquire_universe_lease(
         self,
@@ -948,7 +903,7 @@ class AutomationStore:
 
         An EXPIRED lease is stealable -- a process that died mid-run must not
         wedge its work forever. So is one whose holder is PROVABLY dead
-        (``holder_is_provably_dead``): a deploy kills the process mid-run, and
+        (``process_liveness.owner_state``): a deploy kills the process mid-run, and
         waiting out a TTL as long as the run timeout froze automations for
         hours. A holder merely late to refresh is not dead. TTL is the run
         timeout, and the holder re-stamps it while it works, so expiry means
@@ -1346,13 +1301,20 @@ def register_automation(
     overlap: str = "",
     inputs: dict[str, Any] | None = None,
     now: datetime | None = None,
+    event_key: str = "",
 ) -> Automation:
     """Store one automation, or refuse with a named reason (D4).
 
     Every precondition a due run needs is checked HERE, in the owner's own
     request, where a refusal is a message they can act on. Storing a row that
     cannot fire would move the failure onto a background thread they never see.
+
+    ``event_key`` names an event wake: the wake already stored for that key is
+    returned instead of a second one, before anything is charged.
     """
+    existing = AutomationStore(base_path).get_by_event_key(event_key)
+    if existing is not None:
+        return existing
     from tinyassets.api.branches import _resolve_readable_branch
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.provider_assignment import load_provider_assignment
@@ -1425,33 +1387,40 @@ def register_automation(
         raise AutomationUnavailable("usage_limited")
     store = AutomationStore(base)
     stamp = _iso(moment)
-    return store.insert(
-        Automation(
-            automation_id=uuid.uuid4().hex,
-            universe_id=uid,
-            owner_principal_id=owner,
-            name=str(name or "").strip(),
-            branch_def_id=resolved[0],
-            trigger_kind=trigger_kind,
-            interval_seconds=seconds,
-            cron_expr=expr,
-            inputs=dict(inputs or {}),
-            desired_state=STATE_ACTIVE,
-            pause_reason="",
-            revision=1,
-            created_at=stamp,
-            updated_at=stamp,
-            retired_at="",
-            last_due_at="",
-            last_run_id="",
-            last_reason="",
-            last_finished_at="",
-            not_before=once_at,
-            event_type=kind_event,
-            event_filter=event_match,
-            overlap=policy,
-        ),
+    candidate = Automation(
+        automation_id=uuid.uuid4().hex,
+        universe_id=uid,
+        owner_principal_id=owner,
+        name=str(name or "").strip(),
+        branch_def_id=resolved[0],
+        trigger_kind=trigger_kind,
+        interval_seconds=seconds,
+        cron_expr=expr,
+        inputs=dict(inputs or {}),
+        desired_state=STATE_ACTIVE,
+        pause_reason="",
+        revision=1,
+        created_at=stamp,
+        updated_at=stamp,
+        retired_at="",
+        last_due_at="",
+        last_run_id="",
+        last_reason="",
+        last_finished_at="",
+        not_before=once_at,
+        event_type=kind_event,
+        event_filter=event_match,
+        overlap=policy,
+        event_key=event_key,
     )
+    try:
+        return store.insert(candidate)
+    except sqlite3.IntegrityError:
+        # A concurrent delivery of the same event stored it first.
+        stored = store.get_by_event_key(event_key)
+        if stored is None:
+            raise
+        return stored
 
 
 # -- Due selection ------------------------------------------------------------
@@ -2316,7 +2285,6 @@ def _pause_if_hopeless(
 __all__ = [
     "DEFAULT_RUN_TIMEOUT_SECONDS",
     "LEASE_REFRESH_SECONDS",
-    "LIVENESS_DIR",
     "MAX_CONSECUTIVE_FAILURES",
     "MAX_ONCE_ATTEMPTS",
     "MIN_INTERVAL_SECONDS",
@@ -2346,10 +2314,6 @@ __all__ = [
     "cancel_grace_seconds",
     "cron_min_gap_seconds",
     "due_automations",
-    "hold_process_liveness",
-    "holder_is_provably_alive",
-    "holder_is_provably_dead",
-    "holder_liveness_path",
     "register_automation",
     "run_due_automation",
     "run_timeout_seconds",

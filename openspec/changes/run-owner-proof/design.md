@@ -27,11 +27,14 @@ def owner_state(token) -> "alive" | "dead" | "unknown"
 
 - `runs.owner_token TEXT` is nullable and added by the existing idempotent
   column migration.
-- `create_run` stamps `owner_token()`. So does `resume_run`, because a resumed run
-  belongs to the process that resumes it.
-- Every run-executing process calls `owner_token()` before its first run, so the
-  lock exists before any row names it. That covers the server and each engine MCP
-  child (`engine_mcp_server` main), and `create_run` guarantees it.
+- Run insertion stamps the creating process's token. Every transition to
+  `running` re-stamps it with the executing process's, because whoever takes a
+  run forward owns it (a resume, or a worker that did not queue it).
+- `owner_token()` takes the process's liveness lock before it returns the token,
+  so no row can name an owner whose proof does not exist yet. Engine MCP children
+  take theirs on their first run, lazily, so there is no separate start-up call.
+- The consumer's cleanup of dead holders' lock files keeps any file an in-flight
+  run still names: that file is the run's proof of death.
 
 ## D3. Recovery ends exactly the provably dead
 
@@ -53,9 +56,9 @@ It is called:
 What changes for each kind of row:
 - **Rows with no token** (written before this change) keep #4125's boot rule:
   started before the lock holder began.
-- **The read-time orphan check** skips rows with a token. It remains only as a
-  display fallback for rows with no token and stays silent. A row with a token is
-  ended by proof or not at all.
+- **The read-time orphan check is deleted.** A read never ends a run: a row is
+  ended by proof or not at all. There is no lasting second path for rows with no
+  token; they get the one-time boot cutoff.
 - **An alive owner's run is never touched, however long it is quiet.** That is the
   founder rule that a served turn runs until it is finished.
 - **A live but wedged process** stays covered by the existing run timeout and

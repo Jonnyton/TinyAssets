@@ -226,6 +226,7 @@ def test_a_deploy_killed_run_is_announced_as_interrupted(home: Path) -> None:
     _subscribe(home, "run_completed",
                {"branch_def_id": FOLLOWED, "outcome": "interrupted"})
     run_id = _start(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
+    _started_before_this_process(home, run_id)
     with _as(None):  # boot: no request is bound
         assert recover_in_flight_runs(home) == 1
     [wake] = _wakes(home)
@@ -289,7 +290,8 @@ def test_a_recovered_run_wakes_only_its_own_owner_not_a_co_admin(
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
     _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED}, owner=carol,
                branch_def_id="branch_carols")
-    _start(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
+    run_id = _start(home, actor=f"universe:{UNIVERSE}", bound=OWNER)
+    _started_before_this_process(home, run_id)
     with _as(None):
         assert recover_in_flight_runs(home) == 1
     assert [wake.owner_principal_id for wake in _wakes(home)] == [OWNER]
@@ -743,12 +745,10 @@ def recovery(home: Path, monkeypatch):
 
 
 def _started_before_this_process(base: Path, run_id: str) -> None:
-    """The run was started by the process a deploy killed."""
-    from tinyassets.runs import PROCESS_STARTED_AT, runs_db_path
+    """The run was owned by the process a deploy killed."""
+    from tests.run_owner_helpers import mark_owner_dead
 
-    with sqlite3.connect(runs_db_path(base)) as conn:
-        conn.execute("UPDATE runs SET started_at = ? WHERE run_id = ?",
-                     (PROCESS_STARTED_AT - 60, run_id))
+    mark_owner_dead(base, run_id)
 
 
 def _status(base: Path, run_id: str) -> str:
@@ -838,3 +838,158 @@ def test_a_failed_recovery_is_retried_on_the_next_run_tool(
     assert recovery._RUNS_RECOVERY_DONE is False
     recovery._ensure_runs_recovery()
     assert recovery._RUNS_RECOVERY_DONE is True and len(calls) == 2
+
+
+# -- run-owner-proof: recovery on proven death, and the durable outbox --------
+
+
+def _run_owned_by_child(home: Path, *, die: bool):
+    """A real process that creates a running run of FOLLOWED, then dies (its
+    liveness lock released by the kernel) or stays alive and silent."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import os, sys
+        from tinyassets.runs import RUN_STATUS_RUNNING, create_run, update_run_status
+        base = {str(home)!r}
+        run_id = create_run(base, branch_def_id={FOLLOWED!r}, thread_id="t",
+                            inputs={{}}, actor={OWNER!r})
+        update_run_status(base, run_id, status=RUN_STATUS_RUNNING)
+        print(run_id, flush=True)
+        if {die!r}:
+            os._exit(0)  # no release, no terminal status: what a crash leaves
+        sys.stdin.readline()
+    """)
+    child = subprocess.Popen(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", script], cwd=str(Path(__file__).resolve().parents[1]),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    run_id = child.stdout.readline().strip()
+    assert run_id, "the child never created its run"
+    if die:
+        child.wait(timeout=30)
+    return child, run_id
+
+
+def test_a_crashed_processes_run_is_recovered_and_announced_once(home: Path) -> None:
+    """The P1 from #4125: an engine child dies mid-run while the server lives.
+    Its liveness lock is gone, so recovery has proof, interrupts the run and
+    announces it; a second delivery of the same event stores no second wake."""
+    from tinyassets.runs import deliver_terminal_events, runs_db_path
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    _child, run_id = _run_owned_by_child(home, die=True)
+
+    with _as(None):
+        assert recover_in_flight_runs(home) == 1
+    assert _status(home, run_id) == "interrupted"
+    [wake] = _wakes(home)
+    assert (wake.inputs["event"]["run_id"], wake.inputs["event"]["outcome"]) == (
+        run_id, "interrupted")
+
+    # At-least-once delivery: the event is owed again (a crash after the emit,
+    # before the mark) -- and the idempotent wake keeps it to one chain.
+    with sqlite3.connect(runs_db_path(home)) as conn:
+        conn.execute("UPDATE run_terminal_outbox SET delivered_at = NULL")
+    with _as(None):
+        assert deliver_terminal_events(home, older_than=0) == 1
+    assert [w.automation_id for w in _wakes(home)] == [wake.automation_id]
+
+
+def test_a_live_silent_processes_run_is_never_recovered(home: Path) -> None:
+    """However old and quiet, a run whose owner still holds its lock stands."""
+    from tinyassets.runs import runs_db_path
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    child, run_id = _run_owned_by_child(home, die=False)
+    try:
+        with sqlite3.connect(runs_db_path(home)) as conn:
+            conn.execute("UPDATE runs SET started_at = 1 WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM run_events WHERE run_id = ?", (run_id,))
+        with _as(None):
+            assert recover_in_flight_runs(home) == 0
+        assert _status(home, run_id) == RUN_STATUS_RUNNING
+        assert _wakes(home) == []
+    finally:
+        child.stdin.write("\n")
+        child.stdin.flush()
+        child.wait(timeout=30)
+
+
+def test_a_terminal_event_lost_between_commit_and_emit_is_redelivered(
+    home: Path, monkeypatch,
+) -> None:
+    import tinyassets.runs as runs_module
+
+    _subscribe(home, "run_completed", {"branch_def_id": FOLLOWED})
+    real = runs_module.deliver_terminal_events
+    monkeypatch.setattr(runs_module, "deliver_terminal_events", lambda *a, **k: 0)
+    run_id = _finish(home, actor=OWNER)  # the process "dies" before emitting
+    assert _wakes(home) == []
+    monkeypatch.setattr(runs_module, "deliver_terminal_events", real)
+    with _as(None):
+        assert runs_module.deliver_terminal_events(home, older_than=0) == 1
+    [wake] = _wakes(home)
+    assert wake.inputs["event"]["run_id"] == run_id
+    with _as(None):
+        assert runs_module.deliver_terminal_events(home, older_than=0) == 0
+
+
+def test_a_dead_owners_liveness_file_outlives_its_unrecovered_run(home: Path) -> None:
+    """The consumer's cleanup of dead holders' files must not delete the proof
+    a run still needs to be recovered."""
+    from tinyassets import process_liveness
+    from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+
+    _child, run_id = _run_owned_by_child(home, die=True)
+    token = _owner_token(home, run_id)
+    consumer = AssignedQueueConsumer(home)
+    try:
+        consumer._hold_liveness()
+    finally:
+        consumer._release_liveness()
+    assert process_liveness.owner_state(home, token) == process_liveness.DEAD
+
+
+def _owner_token(base: Path, run_id: str) -> str:
+    from tinyassets.runs import runs_db_path
+
+    with sqlite3.connect(runs_db_path(base)) as conn:
+        return str(conn.execute(
+            "SELECT owner_token FROM runs WHERE run_id = ?", (run_id,)).fetchone()[0])
+
+
+def test_only_the_recovery_lock_holder_recovers(home: Path, recovery) -> None:
+    _child, run_id = _run_owned_by_child(home, die=True)
+    assert recovery.recover_dead_owner_runs_now() == 0, "no lock, no recovery"
+    assert _status(home, run_id) == RUN_STATUS_RUNNING
+    with _as(None):
+        recovery._ensure_runs_recovery()
+    assert _status(home, run_id) == "interrupted"
+
+
+def test_the_process_that_takes_a_run_forward_owns_it(home: Path) -> None:
+    """Queued by one live process, taken running by another that then dies:
+    the run is the dead executor's, so it is recovered."""
+    import subprocess
+    import sys
+    import textwrap
+
+    run_id = _start(home, actor=OWNER)  # created here: this live process owns it
+    with sqlite3.connect(str(home / ".runs.db")) as conn:
+        conn.execute("UPDATE runs SET status = 'queued' WHERE run_id = ?", (run_id,))
+    script = textwrap.dedent(f"""
+        import os
+        from tinyassets.runs import RUN_STATUS_RUNNING, update_run_status
+        update_run_status({str(home)!r}, {run_id!r}, status=RUN_STATUS_RUNNING)
+        os._exit(0)
+    """)
+    subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", script], cwd=str(Path(__file__).resolve().parents[1]),
+        check=True, timeout=60,
+    )
+    with _as(None):
+        assert recover_in_flight_runs(home) == 1
+    assert _status(home, run_id) == "interrupted"

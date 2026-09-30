@@ -172,6 +172,7 @@ def _emit(
                         },
                     },
                     now=now,
+                    event_key=_event_key(sub, event_type, payload),
                 )
             except AutomationUnavailable as exc:
                 reason = f"event_wake_refused:{exc.reason}"
@@ -181,6 +182,15 @@ def _emit(
         _record_fire(base, sub, f"{EVENT_WOKE_PREFIX}{wake.automation_id}", now)
         stored.append(wake.automation_id)
     return stored
+
+
+def _event_key(sub: Automation, event_type: str, payload: dict[str, Any]) -> str:
+    """One wake per subscription and event. Terminal events are delivered at
+    least once (the runs outbox), so a second delivery must find the first
+    wake rather than store another -- a second wake is a second chain of an
+    owner's loop (run-owner-proof D4)."""
+    ident = str(payload.get("run_id") or payload.get("request_id") or "")
+    return f"{sub.automation_id}:{event_type}:{ident}" if ident else ""
 
 
 def _record_fire(base: Path, sub: Automation, reason: str, now: datetime) -> None:

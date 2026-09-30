@@ -372,7 +372,7 @@ def test_last_activity_ignores_interrupted_run_that_never_started(
     from tinyassets.runs import create_run, recover_in_flight_runs
 
     udir = _make_universe(universe_base, "u1", activity_age_hours=48)
-    create_run(
+    run_id = create_run(
         universe_base,
         branch_def_id="b1",
         thread_id="t1",
@@ -380,7 +380,9 @@ def test_last_activity_ignores_interrupted_run_that_never_started(
         actor="universe:u1",
         queue_universe_id="u1",
     )  # left queued -- never transitioned to running
+    from tests.run_owner_helpers import mark_owner_dead
 
+    mark_owner_dead(universe_base, run_id)  # the restart killed its process
     recovered = recover_in_flight_runs(universe_base)
     assert recovered == 1  # sanity: the sweep actually touched this row
 

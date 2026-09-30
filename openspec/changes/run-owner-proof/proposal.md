@@ -14,7 +14,7 @@ owns an in-flight run, so every recovery path guesses:
   - Each serving universe has an engine MCP child that executes runs, so a
     sibling's live but quiet run is taken for dead.
   - A crashed child's run is ended silently after an hour, so the owner's loop
-    stops. Filed P1: `docs/concerns/2026-09-30-run-liveness-has-no-owner-proof.md`.
+    stops. (Filed as a P1 concern from #4125; this change resolves and deletes it.)
   - Announcing that guess forks loops (astra, #4125 round 2): a wrongly ended run
     can still finish and announce itself, giving two wakes and two chains.
 - **Seats** (`universe_seats.py`, two-dimension-usage-limits). A seat is
