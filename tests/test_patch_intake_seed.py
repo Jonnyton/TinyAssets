@@ -300,6 +300,61 @@ def test_approval_is_refused_when_the_intake_does_not_accept_this_sender(
     assert _seeded(_rail())["request_id"] == row["request_id"], "still waiting"
 
 
+def test_an_explicitly_enumerated_sender_can_approve_and_send(
+    world, monkeypatch, provider_probe,
+):
+    """An intake need not be open to the world to be offered to named senders.
+
+    This is the case a permission check reconstructed from the SENDER-facing
+    receiver view gets wrong: that view omits ``allowed_senders`` on purpose, so
+    ``open_to_all or actor in allowed_senders`` reads False and the owner is told
+    the intake is closed -- while delivery would in fact have succeeded. The
+    authority has to be the same question delivery asks.
+    """
+    base, auth = world
+    auth("receiver")
+    named = json.loads(server.write_graph(
+        target="receiver", operation="create", graph_id="u-receiver",
+        payload_json=json.dumps({
+            "branch_def_id": "b-receiver", "node_id": "entry",
+            "input_keys": ["topic"], "allowed_senders": ["sender"],
+            "open_to_all": False, "discoverable": False,
+            "description": "Invited senders only",
+        }),
+    ))
+    auth("sender")
+    _offer(monkeypatch, named["receiver_id"])
+    row = _seeded(_rail())
+    result = _answer(row["request_id"], values={})
+
+    assert result.get("status") == "answered", result
+    assert [g["destination"] for g in _grants(base)] == [named["receiver_id"]]
+    assert "delivery_id" in _send(_link(named), occurrence="invited")
+
+
+def test_a_misconfigured_intake_gates_no_delivery_at_all(
+    world, monkeypatch, provider_probe, caplog,
+):
+    """Nothing is offered, so nothing is fenced -- and ordinary work still runs.
+
+    Not a fail-open: an invalid value means no universe was handed an address by
+    the platform and no grant exists under it. Refusing every delivery instead
+    would break unrelated cross-user work over a typo in one variable.
+    """
+    base, auth = world
+    auth("receiver")
+    somebody = _intake(description="Reached by discovery, not by the platform")
+    auth("sender")
+    link = _link(somebody)
+    monkeypatch.setenv(patch_intake.RECEIVER_ID_VAR, "not a receiver id")
+    with caplog.at_level(logging.ERROR, logger="tinyassets.patch_intake"):
+        sent = _send(link, occurrence="ordinary-under-misconfig")
+
+    assert "delivery_id" in sent, sent
+    assert not _grants(base), "and no grant was invented to let it through"
+    assert any("misconfigured" in record.message for record in caplog.records)
+
+
 def test_approval_is_refused_when_the_offered_intake_changed(world, monkeypatch):
     """A stored row outlives the configuration it was created under."""
     base, auth = world

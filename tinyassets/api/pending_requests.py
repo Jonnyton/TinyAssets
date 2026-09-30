@@ -1973,15 +1973,19 @@ def _grant_patch_intake(
     * the row still names the intake this deployment offers -- a stored ask
       outlives the configuration it was created under, and a grant for a
       retired address authorizes nothing;
-    * the intake is actually there and not revoked;
     * it accepts THIS sender. An intake that is merely discoverable lets a
       sender read its terms while delivery refuses, so granting against one
       would hand the owner a connection that cannot send. Refused with the
-      reason instead.
+      reason instead. Asked through ``sender_is_permitted``, which is the same
+      question delivery asks -- NOT reconstructed from the receiver view, whose
+      sender-facing form omits ``allowed_senders`` and would therefore refuse an
+      explicitly enumerated sender who can in fact deliver;
+    * its contract can be read, which is also how "it is actually there and not
+      revoked" is established.
 
-    The reachability read runs as the answering owner's own principal through
-    the ordinary receiver read, so it discloses exactly what any sender may see
-    and nothing about the intake owner's graph.
+    Both reads run as the answering owner's own principal through the ordinary
+    receiver surfaces, so they disclose exactly what any sender may see and
+    nothing about the intake owner's graph.
     """
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path
@@ -2005,9 +2009,22 @@ def _grant_patch_intake(
             "request_pending": True,
         }
     actor = permissions.current_actor_id().strip()
+    base = _base_path()
+    if not receiver_store.sender_is_permitted(
+        base, receiver_id=receiver_id, sender_id=actor
+    ):
+        return {
+            "error": "patch_intake_closed",
+            "detail": (
+                f"the {intake['label']} intake is not accepting reports from "
+                "this account, so approving this would grant a connection that "
+                "cannot send; the request stays open"
+            ),
+            "request_pending": True,
+        }
     try:
         receiver = receiver_store.inspect_receiver(
-            _base_path(), receiver_id=receiver_id, principal_id=actor,
+            base, receiver_id=receiver_id, principal_id=actor,
         )
     except (receiver_store.ReceiverAccessDenied, ValueError):
         return {
@@ -2016,19 +2033,6 @@ def _grant_patch_intake(
                 f"the {intake['label']} intake is not reachable from this "
                 "account right now, so there is nothing to connect to; the "
                 "request stays open and you can approve it once it is back"
-            ),
-            "request_pending": True,
-        }
-    if receiver.get("revoked") or not (
-        receiver.get("open_to_all")
-        or actor in (receiver.get("allowed_senders") or [])
-    ):
-        return {
-            "error": "patch_intake_closed",
-            "detail": (
-                f"the {intake['label']} intake is not accepting reports from "
-                "this account, so approving this would grant a connection that "
-                "cannot send; the request stays open"
             ),
             "request_pending": True,
         }

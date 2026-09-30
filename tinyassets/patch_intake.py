@@ -171,10 +171,16 @@ def require_send_consent(*, universe_dir: str | Path, receiver_id: str) -> None:
     the platform put the address in front of the universe, so the platform holds
     the user's yes for it.
 
-    Misconfiguration does NOT open the gate: a present-but-invalid value refuses
-    every delivery rather than letting one through unchecked.
+    A present-but-invalid configuration gates NOTHING here, and that is not a
+    fail-open. An invalid value means no intake is being offered: nothing was
+    ever granted under it and no universe was handed an address by the platform.
+    Any receiver a universe reached on its own -- including, if it discovered it,
+    the one an operator meant to name -- is governed by its owner's exposure,
+    exactly as every other receiver is. Refusing every delivery instead would
+    break unrelated cross-user work over a typo in one variable, on a surface
+    nobody would connect to that variable.
     """
-    intake = configured_intake()
+    intake = _intake_or_none("fencing a delivery")
     if intake is None or intake["receiver_id"] != str(receiver_id or ""):
         return
     if not consent_is_active(universe_dir, intake["receiver_id"]):
