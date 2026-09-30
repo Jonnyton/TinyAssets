@@ -37,6 +37,11 @@ def stored_run(tmp_path, monkeypatch):
         node_defs=[],
     )
     monkeypatch.setattr(daemon_server, "get_branch_definition", lambda *a, **k: {})
+    # The fake branch stands in for one the caller may read; who may read a
+    # branch is tested in test_branch_version_read_authority.py.
+    import tinyassets.api.runs as _runs_api
+
+    monkeypatch.setattr(_runs_api, "_branch_readable_by_caller", lambda _bid: True)
     monkeypatch.setattr(branches.BranchDefinition, "from_dict", staticmethod(lambda _: fake))
     _authenticate("owner", scopes=["tinyassets.universe.read", "tinyassets.extensions.read"])
     _make_private_universe(tmp_path, "owned")

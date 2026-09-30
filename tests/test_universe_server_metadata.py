@@ -15,36 +15,16 @@ def _list_prompts():
 
 class TestUniverseServerMetadata:
     def test_tool_metadata_is_directory_ready(self):
+        """Every registered tool is a canonical handle with directory metadata.
+        The legacy fat tools (universe, extensions, goals, gates, wiki) are no
+        longer registered (2026-09-30)."""
         tools = {tool.name: tool for tool in _list_tools()}
-
-        universe = tools["universe"]
-        assert universe.title == "Universe Operations"
-        assert universe.tags == {
-            "agent-workflow",
-            "ai-builder",
-            "collaboration",
-            "custom-ai",
-            "daemon",
-            "general-purpose",
-            "tinyassets",
-            "universe",
-            "universe-builder",
-            "workflow-builder",
-        }
-        assert universe.annotations.readOnlyHint is False
-        assert universe.annotations.destructiveHint is False
-        assert universe.annotations.idempotentHint is False
-        assert universe.annotations.openWorldHint is True
-        assert 'action="inspect"' in universe.description
-
-        extensions = tools["extensions"]
-        assert extensions.title == "Graph Extensions"
-        assert {"extensions", "nodes", "plugins", "customization"} <= extensions.tags
-        assert extensions.annotations.readOnlyHint is False
-        assert extensions.annotations.destructiveHint is False
-        assert extensions.annotations.idempotentHint is False
-        assert extensions.annotations.openWorldHint is True
-        assert "extension_guide" in extensions.description
+        assert set(tools) == {"read_graph", "write_graph", "run_graph", "read_page",
+                              "write_page", "converse", "get_status"}
+        for tool in tools.values():
+            assert tool.title, tool.name
+            assert tool.annotations is not None, tool.name
+            assert tool.description, tool.name
 
     def test_prompt_metadata_is_present(self):
         prompts = {prompt.name: prompt for prompt in _list_prompts()}

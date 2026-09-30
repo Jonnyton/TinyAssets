@@ -75,76 +75,6 @@ def test_server_instructions_point_to_control_station_prompt() -> None:
     assert len(text) < 1600
 
 
-def test_extensions_tool_description_points_to_prompts_for_rules() -> None:
-    """#15 (post-c97feac): the extensions tool description no longer
-    carries the NO SIMULATION / INTENT DISAMBIGUATION / AFFIRMATIVE CONSENT
-    blocks. Description is I/O contract only; behavioral rules live in
-    control_station + extension_guide prompts. Description must cite
-    those prompts.
-    """
-    tool = next(t for t in _list_tools() if t.name == "extensions")
-    text = (tool.description or "").lower()
-    # Must reference the prompts that carry the behavioral guidance.
-    assert "control_station" in text or "extension_guide" in text
-    # Still name core action surface so the bot can find it.
-    assert "run_branch" in text
-    assert "build_branch" in text
-    assert "no simulation" not in text
-    assert "affirmative consent" not in text
-    # #1733 intentionally expanded the I/O contract to restore exact action
-    # catalog parity. Keep that replacement contract pinned instead of the
-    # superseded pre-catalog character budget.
-    assert "action groups:" in text
-    for action in (
-        "get_action_scope_status",
-        "list_run_receipts",
-        "subscribe_branch",
-    ):
-        assert action in text
-    # The reconciled action catalog is 1,948 chars. This leaves about 33%
-    # growth headroom while staying under half the 6,000-char MCP ceiling.
-    assert len(tool.description or "") < 2600
-
-
-def test_wiki_tool_description_is_not_a_catchall() -> None:
-    """#27: wiki must explicitly refuse the "save anything" role when a
-    user wants workflow structure, state, or task tracking. Route them
-    to `extensions` instead.
-    """
-    tool = next(t for t in _list_tools() if t.name == "wiki")
-    text = tool.description or ""
-    lower = text.lower()
-    compact = re.sub(r"\s+", " ", lower)
-    # Scope negation — wiki is NOT for workflow structure / state.
-    assert (
-        "not for workflow" in compact
-        or "save anything" in compact
-    )
-    # Explicit routing guidance to `extensions`.
-    assert "extensions" in lower
-    # Name at least one misuse pattern we want the bot to recognize.
-    assert "build / design / create a workflow" in lower or "build a workflow" in lower
-
-
-def test_universe_tool_description_is_general_not_fiction_only() -> None:
-    """#28 post-4ef0769 (universe docstring trimmed to ≤6 lines + Args):
-    the multi-domain example list moved to control_station prompt (which
-    is the canonical framing surface). Universe tool description must
-    still avoid fiction-only framing but gets the breadth via pointer
-    to control_station.
-    """
-    tool = next(t for t in _list_tools() if t.name == "universe")
-    text = (tool.description or "").lower()
-    # Must cite control_station as the framing + operating-guidance source.
-    assert "control_station" in text
-    # Not fiction-only — generic workspace framing.
-    assert "workflow" in text or "workspace" in text
-    # No fiction-exclusive framing.
-    assert "only for fiction" not in text
-    assert "hard rule" not in text
-    assert len(tool.description or "") < 2200
-
-
 def test_control_station_prompt_carries_the_rules() -> None:
     """#27/#28/#34 post-4ef0769: the prompt a control-station client loads
     must carry workflow-builder framing, routing guidance, and the
@@ -197,17 +127,6 @@ def test_control_station_reports_daemon_memory_surface_gap() -> None:
     assert "not exposed by the advertised" in text
 
 
-def test_universe_schema_exposes_daemon_id_for_daemon_memory_actions() -> None:
-    """BUG-086: daemon memory status requires daemon_id, so the MCP schema
-    must expose a top-level daemon_id field instead of forcing callers through
-    hidden inputs_json.
-    """
-    tool = next(t for t in _list_tools() if t.name == "universe")
-    properties = tool.parameters.get("properties", {})
-    assert "daemon_id" in properties
-    assert "daemon_id" not in tool.parameters.get("required", [])
-
-
 def test_control_station_reports_treasury_status_surface_gap() -> None:
     """Treasury status stays named without inventing a canonical route."""
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
@@ -252,20 +171,6 @@ def test_control_station_prompts_canonical_read_first_for_query_intent() -> None
         f"control_station must enumerate query-intent cue phrases; "
         f"found: {hits}"
     )
-
-
-def test_extensions_tool_still_lists_branch_query_actions() -> None:
-    """#42 post-4ef0769: describe_branch / get_branch / list_branches
-    remain listed as action names in the extensions tool's I/O contract
-    description. Preference guidance (use-this-when / use-this-first /
-    phone-legibility) moved to prompts.
-    """
-    tool = next(t for t in _list_tools() if t.name == "extensions")
-    text = (tool.description or "").lower()
-    # Action names present for discovery.
-    assert "describe_branch" in text
-    assert "get_branch" in text
-    assert "list_branches" in text
 
 
 def test_branch_design_guide_prompt_covers_branch_authoring() -> None:
@@ -327,21 +232,6 @@ def test_control_station_pins_build_branch_explicit_ask_rule() -> None:
     assert "standalone node registration remains unavailable" in text
     # Explicit-ask language at canonical site.
     assert "explicit" in text or "ambiguous" in text
-
-
-def test_universe_tool_docstring_points_to_cross_universe_rule() -> None:
-    """#15 post-4ef0769: the cross-universe isolation rule moved from the
-    universe tool docstring to control_station prompt's canonical section
-    (one lexical site, not two). Docstring must still direct the client
-    to control_station for the rule.
-    """
-    tool = next(t for t in _list_tools() if t.name == "universe")
-    text = (tool.description or "").lower()
-    # Docstring cites control_station as the rule source.
-    assert "control_station" in text
-    # Universe-isolation concept surfaced (docstring can still name it
-    # even while deferring full rule to control_station).
-    assert "universe" in text
 
 
 def test_control_station_prompt_has_cross_universe_section() -> None:
