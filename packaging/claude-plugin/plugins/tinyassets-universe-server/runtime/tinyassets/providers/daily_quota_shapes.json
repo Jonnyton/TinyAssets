@@ -1,0 +1,21 @@
+{
+  "daily_fact_pattern": "per[ _-]?day|daily|\\b[rt]pd\\b",
+  "fact_paths": [
+    ["message"],
+    ["code"],
+    ["details", "*", "violations", "*", "quotaId"],
+    ["details", "*", "violations", "*", "quotaMetric"]
+  ],
+  "nested_headers_path": ["metadata", "headers"],
+  "daily_windows": [
+    {"remaining": "x-ratelimit-remaining-requests-day", "reset": "x-ratelimit-reset-requests-day"},
+    {"remaining": "x-ratelimit-remaining-requests-per-day", "reset": "x-ratelimit-reset-requests-per-day"},
+    {"remaining": "x-ratelimit-remaining-tokens-day", "reset": "x-ratelimit-reset-tokens-day"},
+    {"remaining": "x-ratelimit-remaining-tokens-per-day", "reset": "x-ratelimit-reset-tokens-per-day"}
+  ],
+  "declared_daily_window": {
+    "remaining": "x-ratelimit-remaining-requests",
+    "reset": "x-ratelimit-reset-requests"
+  },
+  "epoch_reset_header": "x-ratelimit-reset"
+}

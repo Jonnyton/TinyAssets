@@ -69,11 +69,17 @@ def _advertised_tools():
     }
 
 
+#: Tool names that existed and were retired (2026-09-30). Not registered any
+#: more, but still heads a stale instruction might name, so the claim detector
+#: must keep recognising them.
+RETIRED_TOOL_NAMES = frozenset({"universe", "extensions", "goals", "gates", "wiki"})
+
+
 def _registered_tool_names() -> set[str]:
     return {
         tool.name
         for tool in _run(universe_server.mcp.list_tools(run_middleware=False))
-    }
+    } | RETIRED_TOOL_NAMES
 
 
 def _instruction_surfaces() -> dict[str, str]:

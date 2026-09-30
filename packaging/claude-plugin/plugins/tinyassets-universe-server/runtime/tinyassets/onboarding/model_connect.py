@@ -100,6 +100,14 @@ async def handle_model_connect(request):
 
     def deposit_key():
         with identity_context(identity):
+            from tinyassets.onboarding.source_connect import connect_source
+            from tinyassets.providers.free_sources import source_preset
+
+            source = source_preset(data["preset_id"])
+            if source is not None:
+                base, home = scope(create=True)
+                return connect_source(base=base, uid=home, owner=identity.user_id,
+                                      preset=source, key=data["key"])
             # Only trusted installed data can opt in; validate before home creation.
             preset = hosted.load_preset(data["preset_id"], require_manual_key=True)
             base, home = scope(create=True, empty=True)

@@ -32,11 +32,17 @@ def test_goals_tool_is_registered_callable(us_env):
     assert callable(us.goals)
 
 
-def test_all_deprecated_tools_remain_callable_during_migration(us_env):
+def test_legacy_fat_functions_are_in_process_only(us_env):
+    """The canonical routers still call these in-process, but none is a
+    connector tool any more (2026-09-30): hidden-but-dispatchable was a route
+    to another user's private branch history."""
+    import asyncio
+
     us = us_env
-    for name in us._DEPRECATED_TOOL_NAMES:
-        assert hasattr(us, name), f"missing tool: {name}"
-        assert callable(getattr(us, name))
+    registered = {tool.name for tool in asyncio.run(us.mcp.list_tools())}
+    for name in {"universe", "extensions", "goals", "gates", "wiki"}:
+        assert callable(getattr(us, name)), name
+        assert name not in registered, name
 
 
 # ─── control_station prompt invariants ──────────────────────────────────
