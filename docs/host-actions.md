@@ -34,6 +34,15 @@ an `invalid_redirect_uri` / "redirect URI not allowed" error instead of a sessio
 The app shell itself loads fine either way, so `curl` proof of `/app` passing does
 not prove sign-in works.
 
+**Third-party OAuth connections with a PRE-REGISTERED client.** The generic
+connection flow's one fixed redirect URI moved too, to
+`https://tinyassets.io/app/model-callback/connect`. Connections that dynamically
+register a client send the new callback automatically and need nothing. But if a
+provider's `client_id` was supplied by hand, that provider's own app settings
+still list the `/mcp/app/...` return and will refuse the exchange — whoever owns
+that provider account updates the redirect URI there. Nothing in this repo can
+do it, and it is per-connection rather than platform-wide.
+
 **Also, only if Stripe billing is switched on** (it is inert unless
 `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` are set): the Stripe webhook endpoint
 is registered as a URL and moved with the app. Repoint it to
