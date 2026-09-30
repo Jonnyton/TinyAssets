@@ -1011,6 +1011,12 @@ def _validate_served_effect_declaration(effects: object) -> None:
 #: Small enough that a 200kB payload does not return 200kB of excerpt, wide
 #: enough that the offending character is visible in context.
 _PAYLOAD_JSON_EXCERPT_RADIUS = 60
+#: Cap on the decoder's OWN message. The excerpt was bounded from the start and
+#: `exc.msg` was not, which Codex broke on review with a 200k-char `msg`
+#: returning a 200,234-char error: the whole point of this helper is that a
+#: refusal costs the agent a few tokens, so every variable-length part of it
+#: needs a bound, not just the one whose size was obvious.
+_PAYLOAD_JSON_MESSAGE_MAX = 200
 
 
 def _payload_json_error(raw: str | None, exc: BaseException | None = None) -> str:
@@ -1028,6 +1034,14 @@ def _payload_json_error(raw: str | None, exc: BaseException | None = None) -> st
     around the reported position so payload size never reaches the agent.
     ``exc`` is optional: called without one, the payload is re-parsed here, so a
     caller that only has the string still gets a positioned answer.
+
+    TOTAL on its input. It runs on the served refusal path, so it must never be
+    the thing that raises: a diagnostic that crashes turns a precise refusal
+    into a 500. Every attribute it reads off ``exc`` is validated rather than
+    trusted, because ``JSONDecodeError`` is subclassable and a subclass can
+    carry ``pos=None``, ``pos=-100`` or ``msg=None`` (Codex refute, all three
+    reproduced as TypeError / IndexError / AttributeError). Falling back to the
+    bare sentence is correct there -- it is what the caller had before.
     """
     import json
 
@@ -1045,18 +1059,24 @@ def _payload_json_error(raw: str | None, exc: BaseException | None = None) -> st
             "payload_json must be valid JSON. It nests too deeply to parse; "
             "flatten the structure."
         )
-    start = max(0, exc.pos - _PAYLOAD_JSON_EXCERPT_RADIUS)
-    end = min(len(text), exc.pos + _PAYLOAD_JSON_EXCERPT_RADIUS)
+    pos = exc.pos
+    if type(pos) is not int or not 0 <= pos <= len(text):
+        return "payload_json must be valid JSON."
+    raw_message = exc.msg
+    if not isinstance(raw_message, str):
+        return "payload_json must be valid JSON."
+    start = max(0, pos - _PAYLOAD_JSON_EXCERPT_RADIUS)
+    end = min(len(text), pos + _PAYLOAD_JSON_EXCERPT_RADIUS)
     excerpt = repr(text[start:end])[1:-1]
-    caret = "" if exc.pos >= len(text) else (
-        f" The character at that position is {text[exc.pos]!r}."
+    caret = "" if pos >= len(text) else (
+        f" The character at that position is {text[pos]!r}."
     )
     # `json`'s own message for a control character ends in " at", which would
     # read "... at at line 1" once we append the position.
-    message = exc.msg.removesuffix(" at").rstrip()
+    message = raw_message[:_PAYLOAD_JSON_MESSAGE_MAX].removesuffix(" at").rstrip()
     return (
         f"payload_json must be valid JSON. {message} at line {exc.lineno} "
-        f"column {exc.colno} (character {exc.pos}).{caret} "
+        f"column {exc.colno} (character {pos}).{caret} "
         f"near: ...{excerpt}... "
         "A newline, tab or emoji inside a JSON string must be escaped "
         "(\\n, \\t, \\uXXXX); send the spec as one JSON object."
@@ -1267,9 +1287,13 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
         {"name": "Morning focus note", "branch_def_id": "<from the build reply>",
          "cron_expr": "0 7 * * *"}
 
-    Cron is five fields, minute first, in the owner's schedule timezone. Runs of
-    one branch never overlap. ``read_graph target="automations"`` lists them with
-    the ``expected_revision`` that pause/resume/delete need.
+    Cron is five fields, minute first, matched against the SERVER's local clock:
+    there is no per-owner timezone, so "7am" is 7am where the daemon runs, which
+    may not be where the owner is. I say which clock I used, and I confirm the
+    real answer with ``read_graph target="automations"`` -- it reports
+    ``next_due_at``, the instant it will actually fire, beside ``revision``
+    (which I then send back AS ``expected_revision`` to pause, resume or
+    delete). Runs of one branch never overlap.
 
     **When a create is refused**, the reply carries ``errors`` (what is wrong)
     and ``suggestions`` (which key to change), plus ``attempted_spec`` -- the

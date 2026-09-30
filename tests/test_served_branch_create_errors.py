@@ -37,11 +37,12 @@ from __future__ import annotations
 
 import importlib
 import json
+import pathlib
 from pathlib import Path
 
 import pytest
 
-from tests.engine_authority_helpers import mock_engine_admission
+from tests.engine_authority_helpers import mock_engine_admission, seed_bound_engine
 
 # ---------------------------------------------------------------------------
 # The live payloads, verbatim
@@ -143,6 +144,9 @@ def served(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authenticate_request
     monkeypatch.setattr(s, "_GRAPH_ID", "u-morning")
     mock_engine_admission(monkeypatch, {"u-morning"})
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
+    # Real serving binding + admin ACL on the pinned universe, not a bypass, so
+    # the universe the branch is built into is one that could actually run it.
+    seed_bound_engine(monkeypatch)
     yield s
 
 
@@ -165,8 +169,19 @@ def _fixes(out: dict) -> list[str]:
 
 
 def _landed(out: dict) -> bool:
-    """Did a branch actually get built? A rejection carries `status: rejected`."""
-    return out.get("status") != "rejected" and not out.get("error")
+    """Did a branch actually get BUILT -- proved by the id, not by silence.
+
+    Codex refute: the first version returned True for `{}` and for
+    `{"errors": [...]}` without a `status`, so any reply shape this file did not
+    anticipate would read as success and every "must land" test would pass
+    vacuously. Keyed on the positive evidence a real build carries instead.
+    """
+    return (
+        out.get("status") != "rejected"
+        and not out.get("error")
+        and not out.get("errors")
+        and bool(out.get("branch_def_id"))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +221,44 @@ def test_the_parse_error_excerpt_is_bounded(served):
     out = _create(served, huge)
     assert "line" in out["error"]
     assert len(out["error"]) < 1_000, len(out["error"])
+
+
+def test_the_decoders_own_message_is_bounded_too():
+    """Codex refute: the EXCERPT was bounded and `exc.msg` was not.
+
+    A 200,000-char `msg` produced a 200,234-char refusal -- riding straight into
+    the agent's context, which is the cost this whole helper exists to avoid.
+    Every variable-length part needs a bound, not just the obvious one.
+    """
+    from tinyassets import engine_mcp_server as s
+
+    exc = json.JSONDecodeError("y" * 200_000, "{}", 0)
+    assert len(s._payload_json_error("{}", exc)) < 1_000
+
+
+@pytest.mark.parametrize("attr,value", [
+    ("pos", None), ("pos", -100), ("pos", 10_000), ("msg", None), ("msg", 42),
+])
+def test_the_parse_helper_never_raises_on_a_malformed_decoder_error(attr, value):
+    """It runs on the REFUSAL path, so it must never be what raises.
+
+    Codex refute reproduced TypeError (`pos=None`), IndexError (`pos=-100`) and
+    AttributeError (`msg=None`). A diagnostic that crashes converts a precise
+    refusal into a 500 -- strictly worse than the bare sentence it replaced.
+    """
+    from tinyassets import engine_mcp_server as s
+
+    exc = json.JSONDecodeError("bad", '{"a": 1}', 3)
+    setattr(exc, attr, value)
+    answer = s._payload_json_error('{"a": 1}', exc)
+    assert answer.startswith("payload_json must be valid JSON")
+
+
+def test_a_recursion_error_says_what_to_do():
+    from tinyassets import engine_mcp_server as s
+
+    answer = s._payload_json_error("{}", RecursionError("too deep"))
+    assert "nests too deeply" in answer
 
 
 def test_a_parse_error_still_refuses(served):
@@ -614,6 +667,116 @@ def test_the_chapter_shows_how_to_schedule_the_branch():
     text = s.SERVED_TOOL_CHAPTERS["write_graph"]["branches"]
     assert 'target="automation"' in text
     assert "cron" in text or "schedule" in text
+
+
+def _chapter_cron_payload() -> dict:
+    """The chapter's automation example, parsed out of the served text."""
+    from tinyassets import engine_mcp_server as s
+
+    text = s.SERVED_TOOL_CHAPTERS["write_graph"]["branches"]
+    for start in range(len(text)):
+        if text[start] != "{":
+            continue
+        depth = 0
+        for end in range(start, len(text)):
+            if text[end] == "{":
+                depth += 1
+            elif text[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        blob = json.loads(text[start:end + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(blob, dict) and blob.get("cron_expr"):
+                        return blob
+                    break
+    raise AssertionError("the branches chapter has no cron automation example")
+
+
+def test_the_chapters_cron_expression_passes_the_real_trigger_validator():
+    """Item 6's second half: the SCHEDULE field is validated, not just quoted.
+
+    `automations.register` reaches `_validated_trigger` only AFTER five
+    authority/readiness gates (consumer flag, admin ACL, founder home, serving
+    assignment, branch ownership), none of which says anything about the field
+    shape this chapter documents. So the field validator is driven directly --
+    that is the code that decides whether `cron_expr` is well formed.
+    """
+    from tinyassets.automations import TRIGGER_CRON, _validated_trigger
+
+    payload = _chapter_cron_payload()
+    # The documented minimum, exactly: no field the chapter omits is required,
+    # and none it names is surplus.
+    assert set(payload) == {"name", "branch_def_id", "cron_expr"}, payload
+    kind, seconds, expr = _validated_trigger(0, payload["cron_expr"])
+    assert kind == TRIGGER_CRON
+    assert seconds == 0
+    assert expr == payload["cron_expr"]
+
+
+def test_the_chapters_cron_expression_fires_once_a_day(served):
+    """"every morning" must actually mean daily, not every minute.
+
+    A five-field expression is easy to write as `* 7 * * *` (sixty runs) instead
+    of `0 7 * * *` (one). Measured with the scheduler's own gap function.
+    """
+    from tinyassets.automations import cron_min_gap_seconds
+
+    assert cron_min_gap_seconds(_chapter_cron_payload()["cron_expr"]) == 86_400
+
+
+def test_the_chapters_branch_is_registrable_as_an_automation_target(served):
+    """The branch the chapter builds satisfies what automation create requires.
+
+    `register` refuses `branch_not_readable` / `branch_not_owned`, which is the
+    part of the scheduling story the BRANCH spec is responsible for: the example
+    must build a branch the actor can then schedule.
+    """
+    from tinyassets.api.branches import _resolve_readable_branch
+    from tinyassets.api.helpers import _base_path
+
+    branch = _create(served, _chapter_specs()[0])
+    assert _landed(branch), branch
+    resolved = _resolve_readable_branch(branch["branch_def_id"], str(_base_path()))
+    assert resolved is not None, "the chapter's branch is not readable back"
+    assert str(resolved[1].get("author") or "").strip() == "tester"
+
+
+def test_the_chapter_names_the_revision_field_a_read_actually_returns():
+    """Codex refute: the chapter said `expected_revision` is REPORTED.
+
+    An automation read returns `revision` (`api/automations.py:220`);
+    `expected_revision` is what pause/resume/delete SEND. Naming the wrong one
+    sends the agent looking for a key that is not in the reply.
+    """
+    from tinyassets.api import automations as api
+
+    source = pathlib.Path(api.__file__).read_text(encoding="utf-8")
+    assert '"revision": automation.revision,' in source
+
+    from tinyassets import engine_mcp_server as s
+
+    text = s.SERVED_TOOL_CHAPTERS["write_graph"]["branches"]
+    assert "``revision``" in text
+    assert "beside the ``expected_revision``" not in text
+
+
+def test_the_chapter_does_not_promise_a_per_owner_cron_timezone():
+    """Cron matches the SERVER's local clock; no owner timezone exists.
+
+    `automations._due_instant` calls `_cron_matches(expr,
+    time.localtime(...))`, and nothing in the codebase stores a per-owner
+    schedule timezone. Saying otherwise would have the universe tell an owner
+    "7am your time" for a cron it cannot honour that way.
+    """
+    from tinyassets import engine_mcp_server as s
+
+    text = s.SERVED_TOOL_CHAPTERS["write_graph"]["branches"]
+    assert "owner's schedule timezone" not in text
+    assert "no per-owner timezone" in text
+    # And it points at the field that gives the real answer.
+    assert "next_due_at" in text
 
 
 def test_the_chapter_is_named_in_the_resident_index():
