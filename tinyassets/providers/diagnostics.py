@@ -299,6 +299,7 @@ HELD_ATTEMPT_RUN_CLASSES: dict[str, str] = {
     "auth_invalid": "auth_invalid",
     "provider_rate_limited": "quota_exhausted",
     "provider_credit_exhausted": "quota_exhausted",
+    "provider_daily_quota": "quota_exhausted",
     "provider_overloaded": "provider_overloaded",
     "timed_out": "timeout",
     "provider_error": "provider_error",

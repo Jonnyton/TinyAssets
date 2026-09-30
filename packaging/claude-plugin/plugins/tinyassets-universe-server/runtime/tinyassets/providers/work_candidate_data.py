@@ -208,6 +208,9 @@ class WorkCandidateData:
                 if boundary.exhaustion == item:
                     if boundary.failure_class:
                         detail.append(boundary.failure_class)
+                    if boundary.daily_detail:
+                        detail.append(boundary.daily_detail)
+                        detail.append("Connect another free source, or add credit at that provider")
                     if boundary.retry_after_s is not None:
                         detail.append(f"retry after {boundary.retry_after_s:g}s")
                     break

@@ -2552,6 +2552,8 @@ def _attempt_class(exc: BaseException) -> str | None:
         for attempt in reversed(attempts):
             if getattr(attempt, "status", "") != "skipped":
                 continue
+            if getattr(attempt, "failure_class", None) == "provider_daily_quota":
+                return "provider_daily_quota"
             coarse = str(getattr(attempt, "skip_class", None) or "")
             if coarse in _MEASURED_SKIP_CLASSES:
                 return coarse

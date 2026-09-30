@@ -378,6 +378,7 @@
                the notification request"). ONE node: renderRail moves it into the
                request's tab, so what the user typed survives the rail refresh. -->
           <div id="connect-panel" class="connect-panel" hidden>
+            <div id="free-source-cards"></div>
             <div id="connect-primary">
               <button id="btn-hosted-model" class="btn btn--primary connect-go" type="button"></button>
               <span id="connect-primary-note" class="rtab-help">Free models only; nothing is bought.
@@ -6103,7 +6104,7 @@
       // openConnectRequest (founder 2026-09-30, on a free account whose only
       // rail row was one it could neither act on nor remove). Still rendered
       // when something opened it deliberately, so that route has a card.
-      if(isOptionalRequest(req) && !open) return;
+      if(isOptionalRequest(req) && !open && !req.suggestion) return;
       wanted.push({req, open, setup: isSetupRequest(req),
                    signature: JSON.stringify([req, open, isOptionalRequest(req)])});
     });
@@ -6138,7 +6139,7 @@
       const kind = document.createElement("span");
       kind.className = "rtab-kind"; kind.textContent = req.kind;
       const title = document.createElement("span");
-      title.className = "rtab-title"; title.textContent = req.title;
+      title.className = "rtab-title"; title.textContent = req.suggestion || req.title;
       btn.appendChild(kind); btn.appendChild(title);
       btn.addEventListener("click",()=>{
         railOpen = (railOpen === req.request_id) ? null : req.request_id;
@@ -6168,6 +6169,7 @@
     // not, because it is connecting something new.
     SignInConnect.configure(setup.service || "", setup.universe_id || "");
     HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
+    if(typeof FreeSourceCards!=="undefined") FreeSourceCards.render(setup.sources || []);
     ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
     const panel = $("connect-panel");
     panel.hidden = false;
@@ -6178,6 +6180,50 @@
   // "Other ways to connect": each shape is explicit fields completed through
   // the same connect request an agent would raise. Nothing is inferred - an
   // unpowered universe has no model to infer with - and no provider is named.
+  const FreeSourceCards={
+    signature:"",busy:false,
+    render(sources){
+      const host=$("free-source-cards");
+      const signature=JSON.stringify(sources);
+      if(this.signature===signature) return;
+      this.signature=signature;host.replaceChildren();
+      for(const source of sources){
+        const card=document.createElement("details");
+        const title=document.createElement("summary");title.textContent=source.name;card.appendChild(title);
+        const offer=document.createElement("p");offer.textContent=source.offer;card.appendChild(offer);
+        const help=document.createElement("a");help.textContent="Get your API key";
+        help.href=source.help_url;help.target="_blank";help.rel="noopener noreferrer";card.appendChild(help);
+        const label=document.createElement("label");label.textContent="API key";
+        const input=document.createElement("input");input.type="password";input.autocomplete="off";
+        label.appendChild(input);card.appendChild(label);
+        const terms=document.createElement("p");
+        terms.textContent="Use your own free or trial account with paid usage disabled. Calls follow your provider's billing settings; TinyAssets cannot enforce them.";
+        card.appendChild(terms);
+        const button=document.createElement("button");button.type="button";button.className="btn btn--primary";
+        button.textContent="Connect this source";card.appendChild(button);
+        const status=document.createElement("p");status.setAttribute("role","status");card.appendChild(status);
+        button.addEventListener("click",async()=>{
+          if(this.busy)return;
+          let key=input.value;input.value="";
+          if(!key||key.length>2048||!/^[!-~]+$/.test(key)){key="";status.textContent="Paste only your API key.";return;}
+          const epoch=MCP._loginEpoch;
+          this.busy=true;button.disabled=true;status.textContent="Checking your models…";
+          try{
+            const pending=HostedModelConnect.post("deposit_key",{preset_id:source.id,key});key="";
+            const result=await pending;
+            if(epoch!==MCP._loginEpoch)return;
+            if(result.status!=="confirmation_required")throw new Error("model_confirmation_required");
+            status.textContent="Key saved. Confirm model access in the request below to add it to your pool.";
+            refreshRail();
+          }catch(error){
+            if(epoch===MCP._loginEpoch)status.textContent="Not connected yet ("+(error.message||"unknown error")+"). Check your key and model access, then try again.";
+          }finally{key="";this.busy=false;button.disabled=false;}
+        });
+        host.appendChild(card);
+      }
+    },
+  };
+
   const ConnectShapes={
     shape:"",
     labels:{api_key:"API key", local:"Your own server", sign_in:"Sign in again"},
