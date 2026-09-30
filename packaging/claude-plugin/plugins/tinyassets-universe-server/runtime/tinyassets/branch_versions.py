@@ -636,6 +636,29 @@ def _validate_version_exists(conn: sqlite3.Connection, version_id: str) -> None:
         raise KeyError(f"parent_version_id '{version_id}' not found.")
 
 
+def branch_readable_by(actor: str | None, *, author: Any, visibility: Any) -> bool:
+    """THE branch read rule: public, or the caller wrote it.
+
+    A missing, NULL or blank visibility is PRIVATE (private by default, founder
+    2026-09-26): a legacy row without the field is never readable by everyone
+    because the field is absent. Its author still reads it.
+    """
+    if (visibility or "private") == "public":
+        return True
+    return actor is not None and (author or "") == actor
+
+
+def version_readable_by(
+    actor: str | None, *, author: Any, visibility: Any, public: Any,
+) -> bool:
+    """THE version read rule: its branch's author reads every version, history
+    included; anyone else needs a publicly readable branch AND the version's
+    publication mark (founder 2026-09-30)."""
+    if actor is not None and (author or "") == actor:
+        return True
+    return branch_readable_by(None, author=author, visibility=visibility) and bool(public)
+
+
 def mark_versions_public(
     base_path: str | Path, version_ids: list[str], *, public: bool = True,
 ) -> None:

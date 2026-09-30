@@ -543,10 +543,10 @@ def _resolve_readable_branch(
         # the field existed must not be readable by everyone because the field is
         # absent. Fail closed (founder 2026-09-26); its author still reads it via
         # the author check below.
-        visibility = branch.get("visibility") or "private"
-        if visibility == "public" or (
-            actor is not None and branch.get("author", "") == actor
-        ):
+        from tinyassets.branch_versions import branch_readable_by
+
+        if branch_readable_by(actor, author=branch.get("author"),
+                              visibility=branch.get("visibility")):
             return selector, branch
         return None
 
@@ -572,7 +572,7 @@ def _resolve_readable_version(
     private edit history, and publishing a branch must expose only the version
     its owner confirmed (founder 2026-09-30, astra round 3 on #4107).
     """
-    from tinyassets.branch_versions import get_branch_version
+    from tinyassets.branch_versions import get_branch_version, version_readable_by
 
     version_id = (version_id or "").strip()
     if not version_id:
@@ -583,9 +583,10 @@ def _resolve_readable_version(
     readable = _resolve_readable_branch(version.branch_def_id, base_path)
     if readable is None:
         return None
-    actor = _request_branch_actor()
-    is_author = actor is not None and (readable[1].get("author") or "") == actor
-    if not (is_author or version.public):
+    if not version_readable_by(
+        _request_branch_actor(), author=readable[1].get("author"),
+        visibility=readable[1].get("visibility"), public=version.public,
+    ):
         return None
     return version_id, version.to_dict()
 
