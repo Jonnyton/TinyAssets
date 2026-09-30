@@ -201,6 +201,7 @@ def _csp(nonce: str, issuer: str) -> str:
     return (
         "default-src 'none'; "
         f"script-src 'nonce-{nonce}'; "
+        "worker-src 'self'; "
         f"style-src 'nonce-{nonce}'; "
         f"connect-src {connect}; "
         "img-src 'self' data:; "

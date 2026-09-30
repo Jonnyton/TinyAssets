@@ -247,6 +247,28 @@ event emit it sits beside: it never fails the answer.
 
 ## 3. Surfaces
 
+### Browser slice as implemented (2026-09-30)
+
+The founder split native Android into a later PR. This slice implements the
+browser surface only; Electron push support is not claimed. Account has the
+owner-wide on/off control, a separate explicit browser-registration action,
+and the owner's token-free device list. Turning on asks permission, registers
+`/app/sw.js` with `/app` scope, reads the authenticated VAPID public key, then
+registers the subscription before enabling delivery. The page CSP allows
+same-origin workers while keeping page scripts nonce-only. An existing
+subscription is rebound on verified login; sign-out unsubscribes it.
+
+Items use the existing answer API: Accept supplies item values, Deny dismisses
+that item, and Send reply submits its values and feedback as an item answer.
+Whole-request Send reply retains its existing conversational behavior. Polls
+update item completion in place without rebuilding the card or other drafts.
+`?request=<id>&item=<id>` opens the request and focuses the named item.
+
+Main's simplified clear is request-level: only whole-request closure clears
+the notification. A partial item answer leaves it displayed. Main also removed
+the pending-request cap; references below to `MAX_PENDING` describe the earlier
+design, not a current bound. This slice introduces no limiter.
+
 ### Routes (slice 2, after #4112)
 
 Under the new app prefix, bearer-authenticated like `/app/me`:

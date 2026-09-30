@@ -74,12 +74,16 @@ self.addEventListener('notificationclick', function (event) {
   event.notification.close();
   var target = '/app' + (data.request_id ? '?request=' + encodeURIComponent(
     data.request_id) : '');
+  if (data.request_id && data.item_id) target += '&item=' + encodeURIComponent(data.item_id);
   event.waitUntil(clients.matchAll({type: 'window', includeUncontrolled: true})
     .then(function (windows) {
       for (var i = 0; i < windows.length; i++) {
-        if (windows[i].url.indexOf('/app') !== -1 && 'focus' in windows[i]) {
-          windows[i].navigate(target);
-          return windows[i].focus();
+        var url = new URL(windows[i].url);
+        if (url.origin === self.location.origin && url.pathname === '/app'
+            && 'focus' in windows[i]) {
+          return windows[i].navigate(target).then(function (client) {
+            return client ? client.focus() : clients.openWindow(target);
+          });
         }
       }
       return clients.openWindow(target);
