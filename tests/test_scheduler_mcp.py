@@ -108,6 +108,7 @@ class TestSubscribeBranch:
          "source:s1", "made_up_event"],
     )
     def test_subscribe_refuses_and_points_at_automation_events(self, event_type):
+        from tinyassets.automations import EVENT_TYPES
         from tinyassets.scheduler import list_scheduler_subscriptions
 
         result = json.loads(extensions(
@@ -118,7 +119,10 @@ class TestSubscribeBranch:
         ))
         assert result["error"] == "event_type_not_subscribable", result
         assert "target=automation" in result["detail"]
-        assert result["valid"] == ["pending_request_answered", "run_completed"]
+        # The automation event set is the one source; a copied list here went
+        # stale the moment app_event joined it.
+        assert result["valid"] == sorted(EVENT_TYPES)
+        assert {"run_completed", "pending_request_answered", "app_event"} <= set(result["valid"])
         assert list_scheduler_subscriptions(_base()) == []
 
     def test_subscribe_missing_branch_def_id_error(self):

@@ -649,6 +649,7 @@ def _authorized_version_child_fixture(self):
            "node_defs": [], "edges": []}
     with (
         patch("tinyassets.branch_versions.branch_version_def_id", return_value="child"),
+        patch("tinyassets.branch_versions.branch_version_is_public", return_value=True),
         patch("tinyassets.daemon_server.get_branch_definition", return_value=raw),
     ):
         yield
@@ -1349,6 +1350,7 @@ class TestInvokeBranchExecutionContext:
         with (
             patch("tinyassets.branch_versions.branch_version_def_id",
                   return_value="child"),
+            patch("tinyassets.branch_versions.branch_version_is_public", return_value=True),
             patch("tinyassets.daemon_server.get_branch_definition",
                   return_value=self._child_raw()),
             patch("tinyassets.branches.BranchDefinition.from_dict",
@@ -1772,7 +1774,7 @@ class TestInvokeBranchVersionDesignUsedEmit:
         )
         # Publish a version of it.
         record = publish_branch_version(
-            tmp_path,
+            tmp_path, public=True,
             branch_dict={
                 "branch_def_id": "child",
                 "name": "child",

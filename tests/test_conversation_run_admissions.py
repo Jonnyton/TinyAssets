@@ -301,7 +301,7 @@ def test_legacy_default_pair_behavior_is_unchanged(store):
         "question", "answer"]
 
 
-def source_version(base, *, nested=False):
+def source_version(base, *, nested=False, public=True):
     from tinyassets.branch_versions import publish_branch_version
 
     with sqlite3.connect(db_path(base)) as conn:
@@ -312,7 +312,8 @@ def source_version(base, *, nested=False):
     if nested:
         node["invoke_branch_spec"] = {"branch_def_id": "mutable-child"}
     return publish_branch_version(base, {"branch_def_id": "shared", "author": "creator",
-                                         "visibility": "public", "node_defs": [node]})
+                                         "visibility": "public", "node_defs": [node]},
+                                  public=public)
 
 
 def test_public_foreign_source_is_not_blanket_banned(store):
@@ -326,7 +327,10 @@ def test_public_foreign_source_is_not_blanket_banned(store):
 
 
 @pytest.mark.parametrize("visibility", [None, ""])
-def test_legacy_empty_visibility_preserves_canonical_public_read_rule(store, visibility):
+def test_legacy_empty_visibility_is_private_here_too(store, visibility):
+    """Private by default: a NULL or blank visibility is private for the
+    conversation source gate exactly as for every other reader -- one rule
+    (branch_versions.version_readable_by), not a second definition."""
     from tinyassets.storage import conversation_run_admissions as cr
 
     version = source_version(store)
@@ -342,9 +346,35 @@ def test_legacy_empty_visibility_preserves_canonical_public_read_rule(store, vis
         conn.execute("UPDATE branch_definitions SET visibility=? WHERE branch_def_id='shared'",
                      (visibility,))
     with cr.authorized_scope(store, owner=OWNER, universe=HOME) as scope:
+        with pytest.raises(PermissionError, match="source unavailable"):
+            cr.authorize_source(scope, version.branch_version_id, version.content_hash)
+
+
+def test_initialize_migrates_the_mark_before_any_source_read(store):
+    """A runs DB from before the publication mark: deployment initialize adds
+    the column and backfills, so the first admission neither crashes on the
+    missing column nor loses a source the old rule exposed."""
+    from tinyassets.storage import conversation_run_admissions as cr
+
+    version = source_version(store)
+    with sqlite3.connect(runs_db_path(store)) as conn:
+        conn.execute("DROP TABLE branch_versions_migrations")
+        conn.execute("ALTER TABLE branch_versions DROP COLUMN public")
+    cr.initialize(store)
+    with cr.authorized_scope(store, owner=OWNER, universe=HOME) as scope:
         source = cr.authorize_source(scope, version.branch_version_id, version.content_hash)
         with cr.runs_transaction(scope) as conn:
-            assert cr.load_source_in_transaction(conn, scope, source)["branch_def_id"] == "shared"
+            assert cr.load_source_in_transaction(conn, scope, source)["author"] == "creator"
+
+
+def test_unmarked_version_of_a_public_branch_is_not_a_foreign_source(store):
+    """A public branch's unpublished history is its author's alone, here too."""
+    from tinyassets.storage import conversation_run_admissions as cr
+
+    version = source_version(store, public=False)
+    with cr.authorized_scope(store, owner=OWNER, universe=HOME) as scope:
+        with pytest.raises(PermissionError, match="source unavailable"):
+            cr.authorize_source(scope, version.branch_version_id, version.content_hash)
 
 
 def test_source_access_revoked_refuses_before_snapshot_read(store):

@@ -269,9 +269,12 @@ class TestDeclarationBinding:
 
         leaky = dict(DECLARATION)
         leaky["evidence_contract"] = {"headers": {"authorization": "Bearer abc"}}
-        version = publish_branch_version(
-            env.base, _branch([leaky], branch_def_id="b3"), publisher=env.owner
-        )
+        from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+        branch = {**_branch([leaky], branch_def_id="b3"), "author": env.owner}
+        initialize_author_server(env.base)
+        save_branch_definition(env.base, branch_def=branch)
+        version = publish_branch_version(env.base, branch, publisher=env.owner)
         with pytest.raises(HandoffValidationError, match="credential material"):
             service.list_declarations(
                 actor_id=env.owner,
@@ -291,6 +294,11 @@ class TestDeclarationBinding:
             "output_keys": ["submission"],
             "handoffs": [dict(DECLARATION, destination="arxiv.org/math")],
         })
+        from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+        branch["author"] = env.owner
+        initialize_author_server(env.base)
+        save_branch_definition(env.base, branch_def=branch)
         version = publish_branch_version(env.base, branch, publisher=env.owner)
         with pytest.raises(HandoffValidationError, match="declared as a handoff twice"):
             service.list_declarations(

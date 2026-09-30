@@ -977,7 +977,7 @@ def test_substrate_accepts_selector_matching_authoritative_bvid(base_path):
     ]
     branch_dict["state_schema"] = [{"name": "x", "type": "str"}]
     branch_dict["entry_point"] = "n1"
-    version = publish_branch_version(base_path, branch_dict, publisher="host")
+    version = publish_branch_version(base_path, branch_dict, public=True, publisher="host")
     authoritative = version.branch_version_id
 
     echoed = [

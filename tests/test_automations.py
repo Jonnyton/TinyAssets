@@ -169,11 +169,14 @@ def _seed_version_invoking_branch(
     parent_id: str = "branch_parent_version",
     child_id: str = "branch_child_version",
     author: str = OWNER,
+    public: bool = True,
+    child_visibility: str = "public",
 ) -> str:
     """A root that invokes a PUBLISHED VERSION of a child, async.
 
     The version-pinned async launch is a fourth child path, and it was the one
-    that still dropped the guard after round 2 (Codex round 3 §a).
+    that still dropped the guard after round 2 (Codex round 3 §a). ``public``
+    is the author's publication mark; ``False`` pins an unpublished snapshot.
     """
     from tinyassets.branch_versions import publish_branch_version
     from tinyassets.daemon_server import initialize_author_server, save_branch_definition
@@ -183,7 +186,7 @@ def _seed_version_invoking_branch(
         branch_def_id=child_id,
         name="Versioned child",
         author=author,
-        visibility="public",
+        visibility=child_visibility,
         graph_nodes=[GraphNodeRef(id="v1", node_def_id="v1")],
         edges=[EdgeDefinition(from_node="v1", to_node="END")],
         entry_point="v1",
@@ -198,7 +201,8 @@ def _seed_version_invoking_branch(
         state_schema=[{"name": "child_out", "type": "str"}],
     )
     save_branch_definition(tmp_path, branch_def=child.to_dict())
-    version = publish_branch_version(tmp_path, child.to_dict(), publisher=author)
+    version = publish_branch_version(tmp_path, child.to_dict(), publisher=author,
+                                     public=public)
 
     parent = BranchDefinition(
         branch_def_id=parent_id,
@@ -1425,6 +1429,42 @@ def test_an_async_version_pinned_child_is_guarded_too(
     child = get_run(tmp_path, child_ids[0]) or {}
     assert child.get("status") == "cancelled"
     assert "automation_owner_lost_admin" in str(child.get("error"))
+
+
+@pytest.mark.parametrize("child_visibility", ["public", "private"])
+def test_an_owners_automation_runs_its_own_unpublished_pinned_child(
+    tmp_path: Path,
+    monkeypatch,
+    child_visibility: str,
+) -> None:
+    """The publication mark gates OTHER people. An owner's own automation (run
+    actor ``universe:<id>``, owner the user) pins a version of the owner's own
+    branch that was never published -- on a public or a private branch -- and
+    that child must run (astra refute 2026-09-30: the private case was still
+    refused, because the owner path keyed on an owner_user_id automation runs
+    do not carry)."""
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.runs import get_run, wait_for
+
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_version_invoking_branch(tmp_path, public=False, child_visibility=child_visibility)
+    assert [v.public for v in list_branch_versions(tmp_path, "branch_child_version")] == [False]
+    versioned = register_automation(
+        tmp_path,
+        **_registration_kwargs(name="versioned", branch_def_id="branch_parent_version"),
+    )
+    fake = _CountingProvider()
+    with _real_providers(codex=fake):
+        run_due_automation(tmp_path, versioned, "2026-08-29T12:10:00+00:00", now=NOW)
+        child_ids = _child_run_ids(tmp_path, "branch_child_version")
+        for child_id in child_ids:
+            wait_for(child_id, timeout=30)
+
+    assert child_ids, "the owner's own pinned child never started"
+    assert (get_run(tmp_path, child_ids[0]) or {}).get("status") == "completed"
 
 
 def test_the_run_row_names_the_authority_loss_not_a_generic_cancel(

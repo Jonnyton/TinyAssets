@@ -180,7 +180,9 @@ def _save_poisoned_parent(base: Path, *, branch_id: str, source_code: str) -> st
     )
     save_branch_definition(base, branch_def=branch.to_dict())
     bd = get_branch_definition(base, branch_def_id=branch_id)
-    v = publish_branch_version(base, bd, publisher="legacy-host")
+    # A published snapshot others fork: it carries the publication mark (the
+    # state the one-time backfill leaves on a public branch's versions).
+    v = publish_branch_version(base, bd, publisher="legacy-host", public=True)
     return v.branch_version_id
 
 

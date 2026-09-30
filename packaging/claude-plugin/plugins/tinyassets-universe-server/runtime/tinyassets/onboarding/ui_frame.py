@@ -158,7 +158,10 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     listAutomations: function () { return call("list_automations", {}); },
     listRuns: function (options) { return call("list_runs", options || {}); },
     readRun: function (runId) { return call("read_run", {run_id: runId}); },
-    readRunOutput: function (runId, field, offset) { return call("read_run_output", {run_id: runId, field: field, offset: offset || 0}); }
+    readRunOutput: function (runId, field, offset) { return call("read_run_output", {run_id: runId, field: field, offset: offset || 0}); },
+    listFiles: function (path) { return call("list_files", {path: path || ""}); },
+    readFile: function (path, offset) { return call("read_file", {path: path, offset: offset || 0}); },
+    emit: function (name, data) { return call("emit", {name: name, data: data || {}}); }
   });
 
   parentWindow.postMessage({ta_ui: PROTOCOL, type: "ready"}, "*");

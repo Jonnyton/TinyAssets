@@ -2555,9 +2555,12 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
     # ``.keys()``.
     row_keys = row.keys() if hasattr(row, "keys") else []
     goal_id = row["goal_id"] if "goal_id" in row_keys else None
+    # A missing, NULL or blank visibility is PRIVATE (private by default,
+    # founder 2026-09-26). Reading it as "public" here made every reader's
+    # fail-closed check dead code: they only ever saw the normalized value.
     visibility = (
-        row["visibility"] if "visibility" in row_keys else "public"
-    ) or "public"
+        row["visibility"] if "visibility" in row_keys else None
+    ) or "private"
     fork_from = row["fork_from"] if "fork_from" in row_keys else None
     skills = _json_loads(row["skills_json"], []) if "skills_json" in row_keys else []
     # Branch-level execution choices. Same guard: a row predating the
