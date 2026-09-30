@@ -262,6 +262,42 @@ class TestAccountDeletion:
         assert uo.owned_universes(base, A) == []
         assert uo.tier_of(base, owner) == TIER_FREE
 
+    def test_a_deleted_owner_does_not_block_the_survivors_own_deletion(self, base):
+        """A owned B's home; A deleted their account. B must still be able to
+        delete theirs -- the redacted owner names nobody who could resolve it."""
+        from tinyassets.account_deletion import deletion_blockers
+
+        grant_universe_ownership(base, universe_id="u-home-a", owner_id=A)
+        grant_universe_ownership(base, universe_id="u-home-b", owner_id=A)
+        set_founder_home(base, founder_sub=B, universe_id="u-home-b")
+        self._delete_rows(base, A, "u-home-a")
+
+        conn = sqlite3.connect(ds.db_path(base))
+        conn.row_factory = sqlite3.Row
+        try:
+            blockers = deletion_blockers(conn, principal=B, home="u-home-b")
+        finally:
+            conn.close()
+
+        assert not [b for b in blockers if "universe_owner" in b], blockers
+
+    def test_a_live_foreign_owner_still_blocks(self, base):
+        """The exemption is for redacted owners only: a LIVE owner's universe is
+        not the home-holder's to delete."""
+        from tinyassets.account_deletion import deletion_blockers
+
+        grant_universe_ownership(base, universe_id="u-home-b", owner_id=A)
+        set_founder_home(base, founder_sub=B, universe_id="u-home-b")
+
+        conn = sqlite3.connect(ds.db_path(base))
+        conn.row_factory = sqlite3.Row
+        try:
+            blockers = deletion_blockers(conn, principal=B, home="u-home-b")
+        finally:
+            conn.close()
+
+        assert any("universe_owner" in b for b in blockers), blockers
+
 
 def test_an_interrupted_migration_leaves_nothing_and_retries(base, monkeypatch):
     """The table IS the marker that the backfill ran, so they commit together:

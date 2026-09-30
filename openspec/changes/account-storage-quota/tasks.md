@@ -8,6 +8,21 @@ Design approval gates task 2 onward. Task 1 is read-only and gates the numbers.
       D3, read-only. Record the numbers here. If either account is above 1 GiB,
       return Q1 to the founder before enforcing.
 
+      **Result, 2026-09-30 ~18:10Z, production, read-only
+      (`scripts/droplet.py ssh` running a `mode=ro` walk):**
+      - 3 universes, 3 `founder_home` rows, 0 ambiguous. The backfill binds all
+        3, and **0 stay unattributed**.
+      - Account `5ac36c1b` (hash) home: **2,898.8 MiB** of non-runtime files.
+        That is **over 1 GiB, so STOP; enforcement is held.** 2,800.2 MiB of it
+        is leaked `.workspace-staging` (334 directories, 2026-09-09 to 09-21;
+        concern `2026-09-30-workspace-staging-leaks-on-failed-checkouts`).
+        Without staging it is about 98 MiB, of which 93.6 MiB is
+        `.credentials/codex`.
+      - The two other accounts hold 0.3 MiB each.
+      - Shared root stores, totals across all accounts: `.runs.db` 70.5 MiB,
+        `.langgraph_runs.db` 94.5 MiB, commons `wiki` 9.5 MiB; custody,
+        daemon wikis and project memory are 0.
+
 ## 2. Shape
 
 - [ ] 2.1 `usage_policy`: storage in GiB (free 2, paid 20), with
