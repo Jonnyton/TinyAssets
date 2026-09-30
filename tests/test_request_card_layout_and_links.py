@@ -42,6 +42,15 @@ def _css() -> str:
     return html[html.index("<style"):html.index("</style>")]
 
 
+#: Comments have to go before the rules are read. This stylesheet is heavily
+#: commented, and a `/* ... */` block sitting above a rule lands INSIDE the
+#: selector text of a naive `([^{}]+)\{...\}` scan -- so an exact selector match
+#: silently finds nothing and the rule reads as absent. It cost a real
+#: false negative on `.rtab-link.rtab-link--agent`, which was present the whole
+#: time.
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+
+
 def _rule(css: str, selector: str) -> str:
     """Every declaration that applies to ``selector``, from all its rules.
 
@@ -50,12 +59,25 @@ def _rule(css: str, selector: str) -> str:
     only the first match asserts nothing about the page.
     """
     found = []
-    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", _CSS_COMMENT_RE.sub(" ", css)):
         selectors = [part.strip() for part in match.group(1).split(",")]
         if selector in selectors:
             found.append(" ".join(match.group(2).split()))
     assert found, f"no CSS rule for {selector!r}"
     return ";".join(found)
+
+
+def test_the_css_reader_finds_a_rule_that_follows_a_comment():
+    """The helper itself, because a stylesheet this commented breaks a naive one.
+
+    Without comment stripping, `_rule` returns "absent" for any rule whose
+    preceding `/* ... */` block gets swept into its selector text -- which is
+    most of them here, and makes every layout assertion in this file vacuous in
+    exactly the direction that passes.
+    """
+    css = "/* a comment about the thing */\n.thing{color:red}\n.other{color:blue}"
+    assert _rule(css, ".thing") == "color:red"
+    assert _rule(css, ".other") == "color:blue"
 
 
 # --------------------------------------------------------------------------- #
@@ -149,6 +171,21 @@ def test_an_agent_field_link_is_labelled_as_the_universes_suggestion():
         "the path is hidden, so an invented page still reads as a real one"
     assert "rtab-link--agent" in link["cls"], "styled as platform chrome"
     assert "noopener" in link["rel"] and "noreferrer" in link["rel"]
+
+
+def test_an_agents_link_never_borrows_the_platform_accent_colour():
+    """The accent is the platform's own voice (founder: "never styled as
+    platform chrome"). `.connect-panel .rtab-link` paints links with it, so the
+    agent-link rule needs two classes to outrank that one wherever a field link
+    is rendered \u2014 equal specificity would hand it to whichever came last in
+    the stylesheet.
+    """
+    css = _css()
+    agent = _rule(css, ".rtab-link.rtab-link--agent")
+    assert "color:var(--ink-dim)" in agent
+    assert "var(--accent)" not in _rule(css, ".rtab-link--agent"), (
+        "the agent-link rule sets the platform accent on itself"
+    )
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
