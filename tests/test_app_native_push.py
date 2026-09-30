@@ -12,6 +12,7 @@ from tests.test_app_browser_notifications import functions, run_js
 
 NAMES = (
     "notificationSession", "notificationAPI", "nativePush", "setNativeActive",
+    "armNativeFor",
     "wireNativePush",
     "nativeFcmToken", "registerNativeNotifications", "rebindNativeNotifications",
     "unregisterNativeNotifications",
@@ -19,13 +20,14 @@ NAMES = (
 
 # The page's own globals the functions close over, then a fake push plugin.
 PRELUDE = """
-const NATIVE=true, NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner";
+const NATIVE=true, NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner",
+  NATIVE_PUSH_RECIPIENT="app.push.recipient";
 let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
 const store={}, localStorage={getItem:k=>k in store?store[k]:null,
   setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}};
 const MCP={_loginEpoch:1}; let queueOwner='alice'; const token=()=>'alice-token';
 const calls=[], posts=[], listeners={};
-let permission='granted', registerBehavior='token', postOk=true, FCM='fcm-token-1';
+let fetchHook=null, permission='granted', registerBehavior='token', postOk=true, FCM='fcm-token-1';
 const plugin={
   checkPermissions:async()=>({receive:permission}),
   requestPermissions:async()=>{calls.push('requestPermissions');return {receive:permission};},
@@ -38,12 +40,14 @@ const plugin={
   unregister:async()=>calls.push('unregister'),
   removeAllDeliveredNotifications:async()=>calls.push('removeAll'),
 };
-let replyPlugin={setActive:async({active})=>{calls.push('active:'+active);},
+let replyPlugin={setActive:async({active,recipient})=>{
+    calls.push('active:'+active+(active?':'+recipient:''));},
   consume:async()=>{calls.push('consume');return {};}};
 const nativePlugin=name=>name==='PushNotifications'?plugin
   :(name==='NotificationReply'?replyPlugin:null);
 const fetch=async(path,options)=>{posts.push({path,options,body:JSON.parse(options.body||'null')});
-  return {ok:postOk,status:postOk?200:500,json:async()=>({device_id:'dev_1'})};};
+  return {ok:postOk,status:postOk?200:500,json:async()=>{if(fetchHook) fetchHook();
+    return {device_id:'dev_1',recipient:'rTAG'};}};};
 const out=()=>console.log(JSON.stringify({calls,posts,store}));
 """
 
@@ -66,7 +70,8 @@ out();""")
     assert out["store"]["app.push.fcm"] == "1"
     # The native message service is armed, for THIS owner only.
     assert out["store"]["app.push.owner"] == "alice"
-    assert out["calls"][-1] == "active:true"
+    assert out["store"]["app.push.recipient"] == "rTAG"
+    assert out["calls"][-1] == "active:true:rTAG"
 
 
 def test_a_denied_permission_registers_nothing():
@@ -162,9 +167,24 @@ out();""")
     # Bob's notifications come off the screen, his parked reply is discarded, and
     # display stays off until the token has moved to the new owner.
     assert calls.index("active:false") < calls.index("removeAll") < calls.index("consume")
-    assert calls[-1] == "active:true"
+    assert calls[-1] == "active:true:rTAG"
     assert out["posts"][0]["body"]["platform"] == "fcm"
     assert out["store"]["app.push.owner"] == "alice"
+
+
+def test_a_login_that_ended_while_registering_arms_nothing():
+    """The continuation outlived its sign-in: sign-out landed while the POST's
+    response was still being read. It must not re-arm the phone for the owner
+    who just left (round 2, race on `await response.json()`)."""
+    out = run("""
+fetchHook=()=>{MCP._loginEpoch++;};   // sign-out lands while the response is read
+let error='';
+try{ await registerNativeNotifications(notificationSession()); }catch(e){ error=e.message; }
+console.log(JSON.stringify({calls,store,error}));""")
+
+    assert not any(c.startswith("active:true") for c in out["calls"])
+    assert "app.push.fcm" not in out["store"] and "app.push.recipient" not in out["store"]
+    assert "Account changed" in out["error"]
 
 
 def test_a_failed_move_leaves_display_off_and_the_phone_unregistered():
@@ -197,7 +217,10 @@ console.log(JSON.stringify({pending:pendingReply,consumedNatively,calls}));""")
 REPLY_NAMES = ("collectNotificationReply", "applyPendingReply")
 
 REPLY_PRELUDE = """
-const NATIVE=true; let pendingReply=null, railCache=[];
+const NATIVE=true, NATIVE_PUSH_RECIPIENT="app.push.recipient";
+let pendingReply=null, railCache=[];
+const store={'app.push.recipient':'rTAG'};
+const localStorage={getItem:k=>k in store?store[k]:null};
 const fields={'fb_req_1::one':{value:''},'note_req_1::one':{},'fb_req_1':{value:''},
   'note_req_1':{},'composer-input':{value:''}};
 const $=id=>fields[id]; const answered=[], refreshed=[];
@@ -215,7 +238,7 @@ def run_reply(body: str):
 
 def test_a_reply_collected_natively_is_submitted_as_an_item_answer():
     out = run_reply("""
-consumed={request_id:'req_1',item_id:'one',text:'Yes, at noon'};
+consumed={request_id:'req_1',item_id:'one',text:'Yes, at noon',recipient:'rTAG'};
 railCache=[{request_id:'req_1',items:[{item_id:'one',status:'pending',fields:[]}]}];
 await collectNotificationReply();
 applyPendingReply();
@@ -237,6 +260,25 @@ console.log(JSON.stringify({answered}));""")
 
     assert out["answered"][0]["target"]["request_id"] == "req_1"
     assert out["answered"][0]["text"] == "Looks good"
+
+
+def test_a_reply_parked_for_another_account_is_dropped_not_rehomed():
+    out = run_reply("""
+consumed={request_id:'req_1',item_id:'one',text:'alices words',recipient:'rOTHER'};
+await collectNotificationReply();
+console.log(JSON.stringify({pending:pendingReply,refreshed}));""")
+
+    assert out["pending"] is None and out["refreshed"] == []
+
+
+def test_a_reply_is_dropped_when_no_account_is_armed_on_this_phone():
+    out = run_reply("""
+delete store['app.push.recipient'];
+consumed={request_id:'req_1',text:'words',recipient:'rTAG'};
+await collectNotificationReply();
+console.log(JSON.stringify({pending:pendingReply}));""")
+
+    assert out["pending"] is None
 
 
 def test_no_reply_waiting_changes_nothing():

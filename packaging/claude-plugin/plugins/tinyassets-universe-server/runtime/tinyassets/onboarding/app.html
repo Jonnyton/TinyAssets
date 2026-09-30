@@ -5982,17 +5982,33 @@
   // /app/devices under the signed-in session and the server files it under the
   // authenticated subject -- nothing in the body names an owner. The token is
   // write-only (no read returns it).
-  const NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner";
+  const NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner",
+        NATIVE_PUSH_RECIPIENT="app.push.recipient";
   let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
   function nativePush(){ return NATIVE ? nativePlugin("PushNotifications") : null; }
   // Tells the native message service whether the signed-in owner wants
   // notifications on this phone. It is checked on every arriving message, so
   // turning it off at sign-out stops display at once, however long FCM takes to
   // delete the token.
-  async function setNativeActive(active){
+  // `recipient` is the tag the SERVER returned for this owner; every message
+  // carries the tag of whoever it was sent to, and native drops any that does
+  // not match the account the phone is armed for.
+  async function setNativeActive(active, recipient){
     const R=NATIVE ? nativePlugin("NotificationReply") : null;
     if(!R) return;
-    try{ await R.setActive({active}); }catch(_error){ /* an older shell has no gate */ }
+    try{ await R.setActive({active, recipient: recipient||""}); }
+    catch(_error){ /* an older shell has no gate */ }
+  }
+  // Arms the phone for the owner a registration was just made for -- only if
+  // that owner is STILL the signed-in one. No await sits between the check and
+  // the native call, so a sign-out that lands later is ordered after it and
+  // wins; a continuation that outlived its login arms nothing.
+  function armNativeFor(session, created){
+    if(!session.current() || !created || !created.recipient) return false;
+    localStorage.setItem(NATIVE_PUSH_OWNER,queueOwner||"");
+    localStorage.setItem(NATIVE_PUSH_RECIPIENT,created.recipient);
+    setNativeActive(true, created.recipient);
+    return true;
   }
   function wireNativePush(){
     const P=nativePush();
@@ -6035,10 +6051,9 @@
     if(permission.receive!=="granted") throw new Error("Notifications are blocked. Allow them in Android settings to turn them on.");
     const value=await nativeFcmToken();
     if(!value) throw new Error("Couldn't get a notification address for this phone. Try again.");
-    await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
+    const created=await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
+    if(!armNativeFor(session, created)) throw new Error("Account changed. Open Account again.");
     localStorage.setItem(NATIVE_PUSH_FLAG,"1");
-    localStorage.setItem(NATIVE_PUSH_OWNER,queueOwner||"");
-    await setNativeActive(true);
   }
   async function rebindNativeNotifications(){
     // The phone's token can change while the app is closed, and nothing is
@@ -6061,9 +6076,8 @@
       if(permission.receive!=="granted"){ localStorage.removeItem(NATIVE_PUSH_FLAG); return; }
       const value=await nativeFcmToken();
       if(!value) return;
-      await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
-      localStorage.setItem(NATIVE_PUSH_OWNER,queueOwner||"");
-      await setNativeActive(true);
+      const created=await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
+      if(!armNativeFor(session, created)) throw new Error("Account changed.");
     }catch(_error){
       // If ownership cannot be moved, stop this phone receiving the old
       // owner's notifications. The owner can turn them on again in Account.
@@ -6074,6 +6088,7 @@
     const P=nativePush(), R=nativePlugin("NotificationReply");
     localStorage.removeItem(NATIVE_PUSH_FLAG);
     localStorage.removeItem(NATIVE_PUSH_OWNER);
+    localStorage.removeItem(NATIVE_PUSH_RECIPIENT);
     await setNativeActive(false);
     // A reply the previous owner typed but this page never submitted belongs to
     // that owner: drop it natively and here, so the next sign-in never sees it.
@@ -6091,7 +6106,10 @@
     if(!R) return;
     try{
       const reply=await R.consume();
-      if(reply && reply.request_id && reply.text){
+      // Only for the account this phone is armed for: a reply that belongs to
+      // anyone else is dropped, not re-homed to whoever is signed in now.
+      const mine=localStorage.getItem(NATIVE_PUSH_RECIPIENT);
+      if(reply && reply.request_id && reply.text && mine && reply.recipient===mine){
         pendingReply={request_id:reply.request_id,item_id:reply.item_id||"",text:reply.text,seen:0};
         refreshRail();
       }

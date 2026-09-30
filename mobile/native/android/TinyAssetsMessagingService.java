@@ -45,6 +45,7 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
     static final String EXTRA_REQUEST_ID = "request_id";
     static final String EXTRA_ITEM_ID = "item_id";
     static final String EXTRA_NONCE = "reply_nonce";
+    static final String EXTRA_RECIPIENT = "recipient";
     static final String REPLY_KEY = "reply";
     static final String CHANNEL_ID = "requests";
     static final int NOTIFICATION_ID = 1;
@@ -55,6 +56,7 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
     private static final String PREFS = "tinyassets_notifications";
     private static final String NONCE_KEY = "reply_nonce";
     private static final String ACTIVE_KEY = "push_active";
+    private static final String RECIPIENT_KEY = "push_recipient";
 
     static String safeId(String value) {
         return value != null && ID.matcher(value).matches() ? value : null;
@@ -62,20 +64,29 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
 
     /** The per-install secret a Reply intent must carry. App-private storage. */
     /**
-     * Whether the signed-in owner turned notifications on for this phone. The
-     * web layer flips it on register and off on sign-out, synchronously, so a
-     * message that arrives after sign-out -- even if FCM has not finished
-     * deleting the token -- is dropped rather than shown to whoever holds the
-     * handset now.
+     * The account this phone is armed for, or null when it is armed for none.
+     * The web layer sets it on register (to the opaque recipient tag the
+     * server returned for the signed-in owner) and clears it on sign-out,
+     * synchronously. Every message carries the tag of the owner it was sent
+     * to, and one that does not match is dropped -- so a message arriving after
+     * sign-out, or one already in flight when the handset changed hands, is
+     * never shown to whoever holds the phone now, however long FCM takes to
+     * delete the token.
      */
-    static boolean isActive(Context context) {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(ACTIVE_KEY, false);
+    static String armedRecipient(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (!prefs.getBoolean(ACTIVE_KEY, false)) return null;
+        return prefs.getString(RECIPIENT_KEY, null);
     }
 
-    static void setActive(Context context, boolean active) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putBoolean(ACTIVE_KEY, active).apply();
+    static void setActive(Context context, boolean active, String recipient) {
+        SharedPreferences.Editor edit = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit();
+        if (active && safeId(recipient) != null) {
+            edit.putBoolean(ACTIVE_KEY, true).putString(RECIPIENT_KEY, recipient);
+        } else {
+            edit.putBoolean(ACTIVE_KEY, false).remove(RECIPIENT_KEY);
+        }
+        edit.apply();
     }
 
     static synchronized String replyNonce(Context context) {
@@ -112,7 +123,9 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
             manager.cancel(requestId, NOTIFICATION_ID);
             return;
         }
-        if (!isActive(this)) return;
+        String armed = armedRecipient(this);
+        String recipient = data.get("recipient");
+        if (armed == null || recipient == null || !armed.equals(recipient)) return;
         String title = data.get("title");
         String body = data.get("body");
         if (title == null || body == null) return;
@@ -159,7 +172,10 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
             .putExtra(EXTRA_REQUEST_ID, requestId)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         if (itemId != null) intent.putExtra(EXTRA_ITEM_ID, itemId);
-        if (reply) intent.putExtra(EXTRA_NONCE, replyNonce(this));
+        if (reply) {
+            intent.putExtra(EXTRA_NONCE, replyNonce(this));
+            intent.putExtra(EXTRA_RECIPIENT, armedRecipient(this));
+        }
         // A RemoteInput reply is written into the PendingIntent by the system,
         // so it must be MUTABLE: explicitly from Android 12, and by default
         // before it (where FLAG_IMMUTABLE would stop the reply text arriving).

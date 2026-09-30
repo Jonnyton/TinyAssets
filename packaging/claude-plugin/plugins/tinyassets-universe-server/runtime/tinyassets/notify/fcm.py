@@ -121,6 +121,10 @@ def _message(device: dict, notification: Notification) -> dict[str, Any]:
     ``notification``; nothing a caller supplies names a field.
     """
     data = {str(k): str(v) for k, v in notification.data.items()}
+    # Whose message this is, from the device row the SERVER resolved -- never
+    # from the notification's own data, so content cannot claim another owner.
+    if device.get("recipient"):
+        data["recipient"] = str(device["recipient"])
     if not notification.silent:
         data["title"] = notification.title
         data["body"] = notification.body

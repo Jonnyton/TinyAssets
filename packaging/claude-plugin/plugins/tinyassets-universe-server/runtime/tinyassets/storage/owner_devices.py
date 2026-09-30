@@ -238,6 +238,20 @@ def _connect(base_path: str | Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def recipient_tag(owner_user_id: str) -> str:
+    """An opaque, non-reversible tag naming WHOSE notification a message is.
+
+    Sent with every FCM message and returned to the owner's own app at
+    registration, so the phone can refuse a message that is not for the account
+    it is currently armed for -- even one already in flight when the handset
+    changed hands. It is a fixed function of the subject: nothing a caller
+    supplies selects it, and it identifies no one outside the platform.
+    """
+    return "r" + hashlib.sha256(
+        f"recipient\x00{owner_user_id}".encode("utf-8")
+    ).hexdigest()[:20]
+
+
 def _token_digest(platform: str, identity: str) -> str:
     """The destination digest, NAMESPACED BY PLATFORM.
 
@@ -536,7 +550,11 @@ def delivery_targets(base_path: str | Path, *, owner_user_id: str) -> list[dict[
             "ORDER BY created_at ASC",
             (sub,),
         ).fetchall()
-    return [{"device_id": r[0], "platform": r[1], "token": r[2]} for r in rows]
+    tag = recipient_tag(sub)
+    return [
+        {"device_id": r[0], "platform": r[1], "token": r[2], "recipient": tag}
+        for r in rows
+    ]
 
 
 def notifications_enabled(base_path: str | Path, *, owner_user_id: str) -> bool:

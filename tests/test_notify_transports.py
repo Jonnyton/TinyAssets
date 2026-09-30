@@ -216,6 +216,19 @@ def test_the_endpoint_cannot_be_influenced_by_the_device_or_the_body(
     assert [r.full_url for r in wire.requests] == [TOKEN_URL, SEND_URL]
 
 
+def test_the_recipient_tag_comes_from_the_device_row_never_from_content(
+    service_account, wire,
+):
+    transport = resolve_transports()["android"]
+
+    transport(
+        {"token": "device-token-1", "recipient": "rALICE"},
+        _note(data={"request_id": "req_abc", "recipient": "rMALLORY"}),
+    )
+
+    assert wire.body_of(SEND_URL)["message"]["data"]["recipient"] == "rALICE"
+
+
 def test_a_silent_clear_carries_no_notification_block(service_account, wire):
     transport = resolve_transports()["android"]
 

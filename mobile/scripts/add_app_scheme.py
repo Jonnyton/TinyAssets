@@ -167,7 +167,13 @@ public class MainActivity extends BridgeActivity {
                 return null;
             }
             if (text == null || text.toString().trim().isEmpty()) return null;
-            NotificationReplyPlugin.park(requestId, itemId, text.toString());
+            // The reply belongs to the account the notification was for. If the
+            // phone is armed for a different one (or none) -- sign-out, an
+            // account switch -- the text is dropped, never re-homed.
+            String recipient = intent.getStringExtra(TinyAssetsMessagingService.EXTRA_RECIPIENT);
+            String armed = TinyAssetsMessagingService.armedRecipient(this);
+            if (recipient == null || armed == null || !armed.equals(recipient)) return null;
+            NotificationReplyPlugin.park(requestId, itemId, text.toString(), recipient);
             NotificationManager manager =
                 (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager != null) {

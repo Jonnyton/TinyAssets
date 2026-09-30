@@ -20,11 +20,13 @@ public class NotificationReplyPlugin extends Plugin {
     private static String requestId;
     private static String itemId;
     private static String text;
+    private static String recipient;
 
-    static synchronized void park(String request, String item, String reply) {
+    static synchronized void park(String request, String item, String reply, String owner) {
         requestId = request;
         itemId = item;
         text = reply;
+        recipient = owner;
     }
 
     /**
@@ -40,7 +42,7 @@ public class NotificationReplyPlugin extends Plugin {
             call.reject("active must be true or false");
             return;
         }
-        TinyAssetsMessagingService.setActive(getContext(), active);
+        TinyAssetsMessagingService.setActive(getContext(), active, call.getString("recipient"));
         call.resolve();
     }
 
@@ -52,10 +54,12 @@ public class NotificationReplyPlugin extends Plugin {
                 result.put("request_id", requestId);
                 if (itemId != null) result.put("item_id", itemId);
                 result.put("text", text);
+                result.put("recipient", recipient);
             }
             requestId = null;
             itemId = null;
             text = null;
+            recipient = null;
         }
         call.resolve(result);
     }

@@ -302,13 +302,16 @@ def test_the_reply_intent_is_bound_to_a_secret_only_this_app_holds():
     # Display is gated by the owner's switch, checked per arriving message and
     # set synchronously by the page -- so a message after sign-out is dropped
     # even if FCM has not finished deleting the token.
-    assert "if (!isActive(this)) return;" in service
-    assert "static void setActive(Context context, boolean active)" in service
+    assert "!armed.equals(recipient)" in service
+    assert "!armed.equals(recipient)" in injector
+    assert "static void setActive(Context context, boolean active, String recipient)" in service
     assert "setActive(PluginCall call)" in _java("NotificationReplyPlugin.java")
-    # The only things an intent carries are the two ids and the secret: the
-    # notification has no credential to leak by construction.
+    # The only things an intent carries are the two ids, the secret and the
+    # recipient tag: the notification has no credential to leak by construction.
     extras = re.findall(r"putExtra\((\w+)", service)
-    assert sorted(extras) == ["EXTRA_ITEM_ID", "EXTRA_NONCE", "EXTRA_REQUEST_ID"]
+    assert sorted(extras) == [
+        "EXTRA_ITEM_ID", "EXTRA_NONCE", "EXTRA_RECIPIENT", "EXTRA_REQUEST_ID",
+    ]
 
 
 def test_a_notification_opens_the_request_deep_link_and_ids_are_validated():

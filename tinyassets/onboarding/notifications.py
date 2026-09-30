@@ -193,8 +193,12 @@ async def handle_devices(request: Any) -> Any:
         return JSONResponse(
             {"error": "device_registration_unavailable"}, status_code=503,
         )
+    # `recipient` is the tag this owner's messages carry, so the phone can drop
+    # one that is not for the account it is armed for. Derived from the
+    # authenticated subject; it names no one else.
     return JSONResponse({"device_id": result["device_id"],
-                         "platform": result["platform"]})
+                         "platform": result["platform"],
+                         "recipient": devices.recipient_tag(owner)})
 
 
 async def handle_notify_settings(request: Any) -> Any:

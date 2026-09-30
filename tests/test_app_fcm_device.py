@@ -63,6 +63,17 @@ def test_an_fcm_device_registers_under_the_authenticated_owner(app_env):
     assert _targets(BOB) == []
 
 
+def test_registration_returns_the_callers_own_recipient_tag_and_no_one_elses(app_env):
+    from tinyassets.storage.owner_devices import recipient_tag
+
+    alice = _register(ALICE)[1]
+    bob = _register(BOB, token="bobs-phone", owner_user_id=ALICE)[1]
+
+    assert alice["recipient"] == recipient_tag(ALICE)
+    assert bob["recipient"] == recipient_tag(BOB) != alice["recipient"]
+    assert ALICE not in alice["recipient"]        # opaque, not the subject
+
+
 def test_a_body_cannot_name_the_owner_of_an_fcm_device(app_env):
     status, _created, _ = _register(
         ALICE, owner_user_id=BOB, owner_sub=BOB, user_id=BOB, device_id="dev_forged",
@@ -188,3 +199,7 @@ def test_a_request_reaches_the_registered_fcm_device_through_the_real_transport(
     assert message["data"]["item_ids"] == "one"
     assert message["android"]["priority"] == "high"
     assert "fcm-registration-token-bob" not in json.dumps(message)
+    # Whose message it is, so a phone armed for someone else drops it.
+    from tinyassets.storage.owner_devices import recipient_tag
+
+    assert message["data"]["recipient"] == recipient_tag(ALICE) != recipient_tag(BOB)
