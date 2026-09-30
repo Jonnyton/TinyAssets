@@ -102,6 +102,16 @@ const result={same:card===host.children[0],draft:$('fb_req::two').value,
     assert "Whole request" in out["text"]
 
 
+def test_pending_item_poll_does_not_reenable_an_inflight_answer():
+    out = run_js(functions("updateRailItems") + """
+const button={disabled:true}, input={disabled:false}, check={id:'check_req::one',disabled:true};
+const $=id=>id==='item_req::one'?{querySelectorAll:()=>[button,input,check]}:null;
+updateRailItems({request_id:'req',items:[{item_id:'one',status:'pending'}]});
+console.log(JSON.stringify({button:button.disabled,input:input.disabled,check:check.disabled}));
+""")
+    assert out == {"button": True, "input": False, "check": True}
+
+
 def test_request_and_item_deep_link_opens_and_focuses_the_item():
     out = _run_rail([], """
 globalThis.railLink='req'; globalThis.railDeepItem='one';
@@ -191,3 +201,28 @@ const clients={matchAll:async()=>[
     assert out["navigated"] == ["/app?request=r%20%261&item=one"]
     assert out["focused"] == ["app"]
     assert out["opened"] == ["/app?request=r2"]
+
+
+def test_worker_claims_new_tabs_and_falls_back_if_navigation_rejects():
+    out = run_js("""
+const handlers={}, opened=[];let claimed=false;
+const self={location:{origin:'https://tinyassets.io'},addEventListener:(k,f)=>handlers[k]=f};
+const clients={claim:async()=>{claimed=true;},matchAll:async()=>[
+ {url:'https://tinyassets.io/app',focus(){},navigate:async()=>{throw TypeError('uncontrolled');}}
+],openWindow:async u=>opened.push(u)};
+""" + SERVICE_WORKER + """
+(async()=>{
+ let waiting;handlers.activate({waitUntil:p=>waiting=p});await waiting;
+ handlers.notificationclick({notification:{data:{request_id:'req'},close(){}},
+ waitUntil:p=>waiting=p});await waiting;
+ console.log(JSON.stringify({claimed,opened}));
+})();
+""")
+    assert out == {"claimed": True, "opened": ["/app?request=req"]}
+
+
+def test_item_reply_is_described_as_an_answer_not_an_approval():
+    out = run_js(functions("answerLine", "frameTitle") + """
+console.log(JSON.stringify(answerLine({title:'First'},'reply',{feedback:'my reply'})));
+""")
+    assert out == 'Answered "First" — my reply'

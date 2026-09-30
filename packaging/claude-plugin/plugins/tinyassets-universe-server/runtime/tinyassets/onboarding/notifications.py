@@ -47,6 +47,9 @@ MAX_BODY_BYTES = 8192
 SERVICE_WORKER = """\
 // TinyAssets web push. Served unauthenticated on purpose: a browser fetches a
 // service worker with no bearer. It carries no key and no identity.
+self.addEventListener('activate', function (event) {
+  event.waitUntil(clients.claim());
+});
 self.addEventListener('push', function (event) {
   if (!event.data) return;
   var payload;
@@ -83,6 +86,8 @@ self.addEventListener('notificationclick', function (event) {
             && 'focus' in windows[i]) {
           return windows[i].navigate(target).then(function (client) {
             return client ? client.focus() : clients.openWindow(target);
+          }).catch(function () {
+            return clients.openWindow(target);
           });
         }
       }

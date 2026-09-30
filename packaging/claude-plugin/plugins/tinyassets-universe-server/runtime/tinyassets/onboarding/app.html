@@ -95,6 +95,11 @@
           overflow-y:auto;padding:.6rem;display:flex;flex-direction:column;gap:.5rem;
           min-width:0}
     .rail[hidden]{display:none}
+    .rtab-item{border-bottom:1px solid var(--line);padding:.6rem 0;margin-bottom:.6rem}
+    .rtab-item-heading{display:flex;align-items:flex-start;gap:.4rem;overflow-wrap:anywhere}
+    .rtab-item-heading input{width:auto;flex:0 0 auto;margin:.2rem 0 0}
+    .rtab-item-name{flex:1;min-width:0}
+    .rtab-item-status{display:block;font-size:.7rem;color:var(--muted)}
     .rail-head{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;
                color:var(--muted);padding:.2rem .3rem}
     .rtab{border:1px solid var(--line);border-radius:10px;background:var(--surface-2);
@@ -6290,7 +6295,7 @@
       if(check) check.checked=done;
       if(status) status.textContent=done ? (item.status === "dismissed" ? "Denied" : "Answered") : "Waiting";
       if(box) box.querySelectorAll("button, input, textarea, select").forEach(el=>{
-        el.disabled=el.id === "check_" + id || done;
+        if(el.id === "check_" + id || done) el.disabled=true;
       });
     });
   }
@@ -6619,14 +6624,16 @@
     const box = document.createElement("div"); box.className = "rtab-body";
     (req.items||[]).forEach(item=>{
       const id=req.request_id + "::" + item.item_id;
-      const entry=document.createElement("section"); entry.id="item_" + id;
+      const entry=document.createElement("section"); entry.id="item_" + id; entry.className="rtab-item";
       entry.tabIndex=-1;
-      const heading=document.createElement("label"); heading.className="rtab-label";
+      const heading=document.createElement("label"); heading.className="rtab-item-heading";
       const check=document.createElement("input"); check.type="checkbox";
       check.id="check_" + id; check.disabled=true;
-      heading.appendChild(check); heading.appendChild(document.createTextNode(item.title));
+      heading.appendChild(check);
+      const name=document.createElement("span"); name.className="rtab-item-name"; name.textContent=item.title;
+      heading.appendChild(name);
       const status=document.createElement("span"); status.id="status_" + id;
-      heading.appendChild(status); entry.appendChild(heading);
+      status.className="rtab-item-status"; name.appendChild(status); entry.appendChild(heading);
       entry.appendChild(railBody({...item, request_id:id, parent_request_id:req.request_id}));
       box.appendChild(entry);
     });
@@ -6731,7 +6738,7 @@
         ? frame(k, 60) + ": (provided)"
         : frame(k, 60) + ": " + frame(values[k], 200));
       line = "Answered \"" + title + "\" \u2014 " + parts.join("; ");
-    } else line = "Approved: \"" + title + "\"";
+    } else line = (mode === "reply" ? "Answered \"" : "Approved: \"") + title + "\"";
     if(payload && payload.dont_ask_again) line += " (and don\u2019t ask me this again)";
     if(payload && payload.feedback) line += " \u2014 " + payload.feedback;
     return line;
