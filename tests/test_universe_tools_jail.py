@@ -608,6 +608,7 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
         seen["actor"] = permissions.current_request_actor_id()
         seen["read"] = _run(s.read_file(path="notes/background-self.md"))
         seen["write"] = _run(s.write_file(path="notes/handoff.md", content="next: x\n"))
+        seen["root_write"] = _run(s.write_file(path="root-note.md", content="lost?\n"))
         seen["listing"] = _run(s.run_bash(command="ls -A /u"))
         seen["consents"] = _run(s.run_bash(command="cat /u/.effector_consents.db"))
         return SimpleNamespace(run_id="run-a", status="completed", output={}, error="")
@@ -637,3 +638,7 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
     listing = seen["listing"].split("[exit code")[0].split()
     assert "notes" in listing and not [name for name in listing if name.startswith(".")], listing
     assert "No such file" in seen["consents"], seen["consents"]
+    # /u itself is read-only: a root write is refused, not accepted into a
+    # tmpfs and silently lost when the call ends.
+    assert not seen["root_write"].startswith("wrote"), seen["root_write"]
+    assert "root-note.md" not in listing
