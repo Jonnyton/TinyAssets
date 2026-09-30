@@ -37,6 +37,7 @@
     // fail at write time (Codex, 2026-09-26).
     MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
     MAX_LIBRARY_BYTES:4194304,MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
+    MAX_LIST_RUNS:50,MAX_OUTPUT_CHUNK:8192,MAX_ID:200,
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
 
@@ -244,7 +245,9 @@
     // what was asked and nothing is guessed from a near-match.
     ACTIONS:Object.freeze({
       whoami:"whoami",list_agents:"listAgents",
-      send_message:"sendMessage",read_conversation:"readConversation"}),
+      send_message:"sendMessage",read_conversation:"readConversation",
+      list_automations:"listAutomations",list_runs:"listRuns",
+      read_run:"readRun",read_run_output:"readRunOutput"}),
     receive(event){
       // Only THIS frame's window is heard. Another frame, a popup, or the page
       // itself cannot speak for the bundle, and the check is on the window
@@ -383,6 +386,89 @@
           at:typeof turn.ts==="number"?turn.ts:null,truncated:!!turn.truncated});
       }
       return {turns};
+    },
+
+    // ---- live state: the viewer's own automations and runs, read-only -------
+    // What a screen needs to show agents WORKING rather than a picture of them.
+    // Same rules as the reads above: `graph_id` is always this.home, the answer
+    // is checked against it where it names a universe, and every reply is built
+    // from picked fields. Automation `inputs` and a run's `actor` never cross:
+    // the first is the owner's private configuration, the second a principal id.
+    //
+    // The server scopes each of these to the named universe, so a run id from
+    // anywhere else reads as not found rather than being returned.
+    async listAutomations(){
+      const doc=await MCP.callTool("read_graph",
+        {target:"automations",graph_id:this.home,limit:100},{idempotent:true});
+      if(!doc||doc.error||!Array.isArray(doc.automations)) throw new Error("your automations are unavailable");
+      if(String(doc.universe_id||"")!==this.home)
+        throw new Error("those automations belong to another universe; this UI's access ended");
+      const automations=[];
+      for(const a of doc.automations){
+        // A retired fleet-era row names no universe and runs nothing: skip it.
+        if(!a||typeof a!=="object"||a.universe_id!==this.home) continue;
+        const t=(a.trigger&&typeof a.trigger==="object")?a.trigger:{};
+        automations.push({automation_id:String(a.automation_id||""),name:String(a.name||""),
+          branch_id:String(a.branch_def_id||""),
+          trigger:{kind:String(t.kind||""),interval_seconds:Number.isFinite(t.interval_seconds)?t.interval_seconds:null,
+            cron:String(t.cron_expr||""),event:String(t.event_type||"")},
+          state:String(a.desired_state||""),paused_because:String(a.pause_reason||""),
+          last_run_id:String(a.last_run_id||""),last_result:String(a.last_reason||""),
+          last_finished_at:a.last_finished_at||null,next_due_at:a.next_due_at||null,
+          consecutive_failures:Number.isInteger(a.consecutive_failures)?a.consecutive_failures:0});
+      }
+      return {automations};
+    },
+    async listRuns(args){
+      const limit=Number.isInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_LIST_RUNS):this.MAX_LIST_RUNS;
+      const call={target:"runs",graph_id:this.home,limit};
+      if(typeof args.status==="string"&&args.status.trim()) call.run_status=args.status.trim();
+      const doc=await MCP.callTool("read_graph",call,{idempotent:true});
+      if(!doc||doc.error||!Array.isArray(doc.runs)) throw new Error("your runs are unavailable");
+      const runs=[];
+      for(const r of doc.runs){
+        if(!r||typeof r!=="object") continue;
+        runs.push(this.runSummary(r));
+      }
+      return {runs};
+    },
+    runSummary(r){
+      return {run_id:String(r.run_id||""),branch_id:String(r.branch_def_id||""),
+        name:String(r.run_name||""),status:String(r.status||""),
+        started_at:r.started_at||null,finished_at:r.finished_at||null,
+        last_node_id:String(r.last_node_id||"")};
+    },
+    runId(args){
+      const id=typeof args.run_id==="string"?args.run_id.trim():"";
+      if(!id||id.length>this.MAX_ID) throw new Error("run_id is required");
+      return id;
+    },
+    async readRun(args){
+      const id=this.runId(args);
+      const doc=await MCP.callTool("read_graph",
+        {target:"run",graph_id:this.home,run_id:id},{idempotent:true});
+      if(!doc||doc.error||String(doc.run_id||"")!==id) throw new Error("that run is not one of yours");
+      const nodes=[];
+      for(const n of Array.isArray(doc.node_statuses)?doc.node_statuses:[])
+        if(n&&typeof n==="object") nodes.push({node_id:String(n.node_id||""),status:String(n.status||"")});
+      const catalog=doc.output_catalog&&Array.isArray(doc.output_catalog.fields)?doc.output_catalog.fields:[];
+      return Object.assign(this.runSummary(doc),{error:String(doc.error||""),nodes,
+        output_fields:catalog.filter(f=>f&&typeof f.name==="string").map(f=>f.name)});
+    },
+    // One output field of one of the viewer's runs, in bounded chunks: what an
+    // agent node wrote is how a screen shows what that agent said.
+    async readRunOutput(args){
+      const id=this.runId(args);
+      const field=typeof args.field==="string"?args.field:"";
+      if(!field||field.length>this.MAX_ID) throw new Error("field is required");
+      const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
+      const doc=await MCP.callTool("read_graph",{target:"run_output",graph_id:this.home,run_id:id,
+        field_name:field,output_offset:offset,output_max_chars:this.MAX_OUTPUT_CHUNK},{idempotent:true});
+      if(!doc||doc.error||typeof doc.chunk!=="string") throw new Error("that output is not available");
+      return {field:String(doc.field_name||field),encoding:doc.encoding==="json"?"json":"text",
+        text:doc.chunk,offset:Number.isInteger(doc.offset)?doc.offset:offset,
+        total_chars:Number.isInteger(doc.total_chars)?doc.total_chars:null,
+        next_offset:Number.isInteger(doc.next_offset)?doc.next_offset:null};
     },
 
     // ---- switching: explicit, persisted through ONE write path -------------

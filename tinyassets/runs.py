@@ -2944,7 +2944,17 @@ def list_runs(
     branch_def_id: str = "",
     status: str = "",
     limit: int = 50,
+    universe_id: str = "",
 ) -> list[dict[str, Any]]:
+    """Newest runs first, at most ``limit`` of them.
+
+    ``universe_id`` narrows IN SQL, before the limit. Filtering afterwards
+    returned the newest ``limit`` runs of the whole deployment and then kept
+    this universe's share of them -- on a shared host usually none, although
+    the universe had runs. It is a superset of the caller's own universe
+    predicate (``api.runs._run_universe_id``: the ``universe:<uid>`` actor,
+    else the queue binding), which still runs on every row it returns.
+    """
     initialize_runs_db(base_path)
     _recover_orphaned_runs_on_read(base_path)
     clauses: list[str] = []
@@ -2952,6 +2962,12 @@ def list_runs(
     if branch_def_id:
         clauses.append("branch_def_id = ?")
         params.append(branch_def_id)
+    if universe_id:
+        clauses.append(
+            "((actor LIKE 'universe:%' AND TRIM(SUBSTR(actor, 10)) = ?)"
+            " OR TRIM(COALESCE(queue_universe_id, '')) = ?)"
+        )
+        params.extend([universe_id, universe_id])
     if status:
         clauses.append("status = ?")
         params.append(status)

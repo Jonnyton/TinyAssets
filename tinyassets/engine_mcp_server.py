@@ -1679,13 +1679,26 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
     token, no reach into the surrounding page, and NO network of its own -- fetch,
     WebSocket, form posts, remote images and WebRTC are all unavailable. Its only
-    capability is four calls on a ``tinyassets`` object, acting as whoever is
+    capability is these calls on a ``tinyassets`` object, acting as whoever is
     LOOKING at it, inside their own universe:
 
         await tinyassets.whoami()                  -> {universe_id, universe_name}
         await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
         await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
         await tinyassets.readConversation(limit)   -> {turns:[{speaker,text,at}]}
+        await tinyassets.listAutomations()         -> {automations:[{automation_id,name,
+                  branch_id,trigger,state,last_run_id,last_result,next_due_at,...}]}
+        await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,
+                  status,started_at,finished_at,last_node_id}]}   # newest first, <= 50
+        await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
+                  error,output_fields:[...]}
+        await tinyassets.readRunOutput(run_id, field, offset)
+                                                   -> {text,next_offset,...}  # 8192 chars a chunk
+
+    The last four are how a screen shows agents actually working: which
+    automations are live and when each fires next, which runs are going, and
+    what an agent node wrote (its output key). They read only, and polling them
+    every few seconds is fine.
 
     Anything else it calls is refused by name. ``sendMessage`` reaches the
     universe's currently selected conversation; naming a different agent is refused
