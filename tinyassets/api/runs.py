@@ -405,19 +405,41 @@ def _run_mermaid_from_events(
 
 
 _RUNS_RECOVERY_DONE = False
+#: The held recovery lock, kept for the process lifetime.
+_RUNS_RECOVERY_LOCK: Any = None
+_RUNS_RECOVERY_LOCK_NAME = ".run_recovery.lock"
 
 
 def _ensure_runs_recovery() -> None:
-    """Once per process, mark any queued/running rows in the runs DB as
-    ``interrupted``. Called from Phase 3 run handlers so the recovery
-    happens on first use without needing a server start hook."""
-    global _RUNS_RECOVERY_DONE
+    """Once per process, interrupt the runs a dead process left in flight.
+
+    Only ONE live process sweeps: the one holding the data dir's recovery
+    lock, which the server takes at boot before it starts anything that runs.
+    Every engine MCP child is a separate process that also serves run tools,
+    and the first run tool in one used to sweep EVERY queued/running row --
+    the server's live automation runs included (live 2026-09-30: a background
+    run was marked interrupted while running, and its interrupted event fired
+    a second wake of the same loop). And the sweep takes only runs started
+    before this process began, so it never interrupts a run of its own.
+    """
+    global _RUNS_RECOVERY_DONE, _RUNS_RECOVERY_LOCK
     if _RUNS_RECOVERY_DONE:
         return
     try:
-        from tinyassets.runs import recover_in_flight_runs
+        from tinyassets.runs import PROCESS_STARTED_AT, recover_in_flight_runs
+        from tinyassets.singleton_lock import acquire_singleton_lock
 
-        recover_in_flight_runs(_base_path())
+        base = Path(_base_path())
+        base.mkdir(parents=True, exist_ok=True)
+        lock = acquire_singleton_lock(base / _RUNS_RECOVERY_LOCK_NAME)
+        if not lock.acquired:
+            logger.info(
+                "in-flight run recovery: another live process (pid %s) owns it",
+                lock.existing_pid,
+            )
+        else:
+            _RUNS_RECOVERY_LOCK = lock
+            recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
     except Exception:
         logger.exception("in-flight run recovery failed")
     _RUNS_RECOVERY_DONE = True
