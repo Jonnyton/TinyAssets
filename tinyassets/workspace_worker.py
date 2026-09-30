@@ -604,6 +604,33 @@ def reconcile_push_intents(base_path: Any, **kwargs: Any) -> list[tuple[str, str
     return _reconcile(base_path, **kwargs)
 
 
+def _mark_staging_in_use(request: Any) -> bool:
+    """Hold a share on the staging tree for this worker's whole life, and hand the
+    same descriptor to every git it runs.
+
+    The parent's liveness token proves only the PARENT alive; a worker -- or a
+    git in its own session -- can outlive a killed parent and still be writing
+    here. The kernel keeps a shared lock while any process holds a copy of the
+    descriptor, so the sweep can see them (gpt-6-astra, PR #4143 round 1).
+    Never released: the kernel does it when this process and its gits exit.
+
+    Returns False when the share could not be taken. The caller then REFUSES the
+    operation: running unmarked would let a sweep remove the tree underneath it
+    (gpt-6-astra, PR #4143 round 2).
+    """
+    if not isinstance(request, dict) or not request.get("staging_dir"):
+        return True
+    from tinyassets import workspace_git, workspace_staging
+
+    try:
+        fd = workspace_staging.hold_in_use(request["staging_dir"])
+    except OSError:
+        return False
+    if fd is not None:
+        workspace_git.inherit_descriptor(fd)
+    return True
+
+
 def run_workspace_worker(channel: Any) -> None:
     """Child entry point. Sanitize, answer ONE request, exit."""
     from tinyassets.storage.outbound_connections import _sanitize_child_environment
@@ -612,6 +639,13 @@ def run_workspace_worker(channel: Any) -> None:
     try:
         channel.send({"op": "ready"})
         request = channel.recv()
+        if not _mark_staging_in_use(request):
+            channel.send({
+                "ok": False,
+                "error": "workspace staging could not be marked in use",
+                "stderr_class": "transport",
+            })
+            return
         channel.send(handle_request(request))
     except Exception as exc:  # noqa: BLE001 - a child that dies silently is worse
         try:

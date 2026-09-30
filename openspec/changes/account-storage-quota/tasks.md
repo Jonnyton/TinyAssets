@@ -14,8 +14,10 @@ Design approval gates task 2 onward. Task 1 is read-only and gates the numbers.
         3, and **0 stay unattributed**.
       - Account `5ac36c1b` (hash) home: **2,898.8 MiB** of non-runtime files.
         That is **over 1 GiB, so STOP; enforcement is held.** 2,800.2 MiB of it
-        is leaked `.workspace-staging` (334 directories, 2026-09-09 to 09-21;
-        concern `2026-09-30-workspace-staging-leaks-on-failed-checkouts`).
+        is leaked `.workspace-staging` (334 directories, 2026-09-09 to 09-21).
+        **Resolved 2026-09-30:** leak fixed in #4143, and the boot sweep removed
+        all 334 (2,936,213,247 bytes) at 20:00:54Z. Staging is excluded from
+        user storage (founder decision).
         Without staging it is about 98 MiB, of which 93.6 MiB is
         `.credentials/codex`.
       - The two other accounts hold 0.3 MiB each.

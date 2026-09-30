@@ -314,11 +314,25 @@ def test_required_tests_cannot_decline_to_report() -> None:
         f"{condition!r}: without it a failed shard SKIPS the required check, "
         f"and protection treats skipped as SUCCESS"
     )
-    assert "if" not in wf["jobs"]["required-tests-shard"], (
-        "shards must have no job-level `if:` -- a skipped shard never uploads, "
-        "and although the aggregate then fails closed, the PR is blocked for a "
-        "reason that is not a test result"
+    # The heavy run happens ONCE, on the merge-group commit (founder
+    # 2026-09-30: "cut the double CI run in the merge queue"). Shards may skip
+    # on exactly one event -- the pull request -- and on nothing else, so the
+    # queue, the schedule and a manual dispatch always run them.
+    queue_only = "github.event_name != 'pull_request'"
+    assert _expr(wf["jobs"]["required-tests-shard"].get("if", "")) == queue_only, (
+        "shards skip ONLY on pull_request; any other condition could skip the "
+        "merge-queue run, which is the one that gates main"
     )
+    assert "merge_group" in triggers, "without merge_group the shards never run at all"
+    agg_steps = wf["jobs"]["required-tests"]["steps"]
+    decide = next(s for s in agg_steps if "--aggregate" in str(s.get("run", "")))
+    assert _expr(decide.get("if", "")) == queue_only, (
+        "the aggregate's gate step must run on every non-PR event"
+    )
+    assert any(
+        _expr(s.get("if", "")) == "github.event_name == 'pull_request'" for s in agg_steps
+    ), "on a PR the aggregate must still REPORT, explicitly deferring to the queue"
+    assert _expr(wf["jobs"]["slow-tests"].get("if", "")) == queue_only
 
 
 def test_required_tests_enforces_an_adequate_vacuity_floor() -> None:

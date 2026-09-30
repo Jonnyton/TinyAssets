@@ -156,6 +156,13 @@ jobs:
     # Deliberately NOT `required-tests`: only the aggregate may carry the
     # protection context, or a green shard could satisfy it alone.
     name: required-tests shard ${{ matrix.shard }}/6
+    # ONE heavy run per change (founder 2026-09-30: "cut the double CI run in
+    # the merge queue"). Every PR reaches main through the merge queue, which
+    # runs these shards on the merge-group commit -- the tree that actually
+    # lands. Running them on the PR too was a second full run of the same code,
+    # ~10-17 min of every PR's wall clock. The aggregate below still REPORTS on
+    # the PR (it cannot be skipped), explicitly deferring to the queue.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -238,7 +245,14 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: On a pull request the gate runs in the merge queue
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "required-tests runs once, on the merge-group commit, when this PR"
+          echo "enters the merge queue. A red result there removes it from the queue."
+
       - name: Download shard results
+        if: github.event_name != 'pull_request'
         uses: actions/download-artifact@v4
         with:
           pattern: junit-required-shard-*
@@ -246,6 +260,7 @@ jobs:
           merge-multiple: true
 
       - name: Decide the gate over the union of all shards
+        if: github.event_name != 'pull_request'
         env:
           SHARD_RESULT: ${{ needs.required-tests-shard.result }}
         run: |
@@ -336,6 +351,9 @@ jobs:
 
   slow-tests:
     name: slow-tests
+    # Queue-only, like the shards above: skipped on the PR, run on the
+    # merge-group commit before anything lands.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
