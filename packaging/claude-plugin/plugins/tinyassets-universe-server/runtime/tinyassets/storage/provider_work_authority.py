@@ -2323,9 +2323,14 @@ class SQLiteProviderWorkAuthorityStore:
                 raise PermissionError("native model cannot use HTTP discovery")
             return selection
 
+        from tinyassets.exceptions import WorkModelExhaustedError
         from tinyassets.providers.definition import get_definition
         from tinyassets.providers.discovery_snapshot import DiscoverySnapshot
-        from tinyassets.providers.model_selection import _selection_definition, _validate_snapshot
+        from tinyassets.providers.model_selection import (
+            _selection_definition,
+            _validate_snapshot,
+            eligible_model_ids,
+        )
         from tinyassets.providers.work_model_selection import selection_with_model
 
         if type(model_snapshot) is not DiscoverySnapshot:
@@ -2335,9 +2340,26 @@ class SQLiteProviderWorkAuthorityStore:
         )
         if definition is None:
             raise PermissionError("workflow model source is unavailable")
-        # An omitted workflow model retains its source's declared default. An
-        # explicit model is never replaced with a convenient available sibling.
-        model_id = selection.model_id or model_snapshot.models.default_model_id or definition.model
+        # An omitted workflow model takes the best model this account can
+        # actually run NOW, from the same eligibility order `_validate_snapshot`
+        # admits a named model against. It used to take
+        # `snapshot.default_model_id or definition.model` -- a registration-time
+        # claim -- and live 2026-09-30 that pinned a model the account no longer
+        # had (see `eligible_model_ids`). An EXPLICIT model is still never
+        # replaced with a convenient available sibling: it is validated as
+        # named, and refused if it is not eligible.
+        model_id = selection.model_id
+        if not model_id:
+            eligible = eligible_model_ids(
+                definition, model_snapshot,
+                access=member.access, needs_tools=needs_tools,
+            )
+            if not eligible:
+                # Typed: nothing this source offers is runnable under the
+                # owner's accepted ceilings and capability needs. That is a
+                # different owner action from "connect a provider".
+                raise WorkModelExhaustedError(WorkModelExhaustedError.MESSAGE)
+            model_id = eligible[0]
         definition = _selection_definition(
             self.base_path, receipt.principal_id, receipt.universe_id,
             selection.provider, model_id, member.access,

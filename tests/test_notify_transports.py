@@ -506,5 +506,5 @@ def test_dispatch_reaches_both_platforms_with_their_own_transport(
     assert len(wire.sent_to(SEND_URL)) == 1
     assert len(wire.sent_to(PUSH_ENDPOINT)) == 1
     assert wire.body_of(SEND_URL)["message"]["notification"]["title"] == (
-        "Alice's universe"
+        "Alice's universe asks"
     )

@@ -227,7 +227,7 @@ def test_manual_bounded_json(content, content_type, expected):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(
             app=Starlette(routes=onboarding.onboarding_routes())), base_url="https://tinyassets.io",
         ) as client:
-            return await client.post("/mcp/app/model-connect/deposit_key", content=content,
+            return await client.post("/app/model-connect/deposit_key", content=content,
                                      headers={"Origin": "https://tinyassets.io",
                                               "Content-Type": content_type})
     assert asyncio.run(run()).status_code == expected

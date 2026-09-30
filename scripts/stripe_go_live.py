@@ -6,7 +6,7 @@ one that is *not* founder-only is a command rather than dashboard archaeology, a
 "are we ready?" has an answer nobody has to reconstruct from memory.
 
     python scripts/stripe_go_live.py --check
-    python scripts/stripe_go_live.py --provision --webhook-url https://tinyassets.io/mcp/app/billing/webhook
+    python scripts/stripe_go_live.py --provision --webhook-url https://tinyassets.io/app/billing/webhook
 
 ``--check`` is read-only and safe to run against live mode. ``--provision`` creates the
 price and the webhook endpoint if they are missing, and is idempotent: run it twice and
@@ -323,7 +323,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--webhook-url",
-        default="https://tinyassets.io/mcp/app/billing/webhook",
+        default="https://tinyassets.io/app/billing/webhook",
         help="the endpoint Stripe should deliver to",
     )
     args = parser.parse_args()

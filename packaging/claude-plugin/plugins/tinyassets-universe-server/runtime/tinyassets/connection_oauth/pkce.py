@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Iterator
 
 FLOW_TTL_SECONDS = 600
-CALLBACK_PREFIX = "/mcp/app/model-callback/"
+CALLBACK_PREFIX = "/app/model-callback/"
 #: The one fixed redirect URI path of the generic flow. A standard client is
 #: registered for an exact redirect URI, so the handle travels as ``state``.
 CONNECT_CALLBACK_PATH = CALLBACK_PREFIX + "connect"

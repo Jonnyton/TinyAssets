@@ -637,6 +637,34 @@ def test_a_slot_after_creation_is_still_claimed_inside_grace():
 
 
 # ---------------------------------------------------------------------------
+# A row whose stored zone stopped resolving must not take the poller with it
+# ---------------------------------------------------------------------------
+
+
+def test_an_unresolvable_stored_zone_makes_one_row_unrunnable_not_the_pump():
+    """`docs/concerns/automation-timezone-host-aliases.md`, the crash half.
+
+    The tz database drops and renames zones, and a host-specific name may not
+    exist on the next host at all. Due selection scans EVERY automation for a
+    universe, so a row it cannot evaluate has to disqualify itself rather than
+    raise -- otherwise one bad row stops every other schedule in that universe.
+    """
+    broken = _cron("0 7 * * *", zone="Mars/Olympus_Mons")
+    assert _due_instant(broken, _utc("2027-06-15T14:00:00+00:00")) == ""
+    assert next_due_at(broken, _utc("2027-06-15T13:00:00+00:00")) == ""
+    assert slot_key_for_due("0 7 * * *", "Mars/Olympus_Mons", "2027-06-15T14:00:00+00:00") == ""
+
+
+def test_a_healthy_row_beside_a_broken_one_still_fires():
+    """The point of failing soft: the other schedules keep running."""
+    broken = _cron("0 7 * * *", zone="Mars/Olympus_Mons")
+    healthy = _cron("0 7 * * *", zone=LA)
+    moment = _utc("2027-06-15T14:00:00+00:00")
+    assert _due_instant(broken, moment) == ""
+    assert _due_instant(healthy, moment) == "2027-06-15T14:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
 # 2b: the owner's zone, captured and then used as the default
 # ---------------------------------------------------------------------------
 

@@ -1418,6 +1418,38 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     -- "their page calls this either X or Y" is honest and the owner can resolve
     it in a second. A confidently wrong label is worse than an uncertain one.
 
+    **A WEBHOOK LINK IS NOT A TOKEN.** When the owner hands you a link whose
+    secret is IN the address — a Slack ``hooks.slack.com/services/T…/B…/<token>``,
+    a Discord ``discord.com/api/webhooks/<id>/<token>``, a Zapier catch hook, a
+    TinyAssets ``/mcp/hooks/<token>`` — there is no bearer token to ask for and
+    NOTHING about that link goes in ``path_template``. Use
+    ``"auth_scheme": "url_secret"``, write ``{secret}`` where the code is, and
+    ask for the WHOLE LINK in one field named ``capability_url``::
+
+        "action": {"type": "connect_http", "destination": "bug-reports",
+                   "auth_scheme": "url_secret",
+                   "endpoints": [{"host": "hooks.slack.com",
+                                  "path_template": "/services/{secret+}",
+                                  "methods": ["POST"]}]},
+        "fields": [{"name": "capability_url", "type": "secret",
+                    "label": "Webhook URL",
+                    "help": "the whole link they gave you, starting https://"}]
+
+    ``{secret}`` is one path segment; ``{secret+}`` is the rest of the path (use
+    it when the code is several segments, as Slack's is). It takes NO
+    ``param_patterns`` entry — the value comes from the vault. The platform
+    checks the pasted link against the host and template and pulls the code out
+    itself, so never ask the owner to "paste the part after the last slash".
+    Then the node's packet addresses the PLACEHOLDER, not the code::
+
+        "request": {"method": "POST", "path": "/services/{secret+}",
+                    "body": {"text": "..."}}
+
+    The real address only exists for the instant the call is made. That is why
+    a real code in ``path_template`` (or in a packet) is refused: a grant is
+    stored in the clear and shown to the owner, and a packet is part of the
+    graph anyone you share it with can read.
+
     **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
     a ``connect_http`` or ``extend_http`` ask and it means: everything this key
     can do on this channel -- any path, any verb, and clone or push to any
@@ -1493,6 +1525,18 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     A ``connect_http`` ask for a destination that already has a key makes the
     user paste a secret they already gave you — the one thing they must never
     be asked to do twice.
+
+    **A CDN block is NOT a key problem.** Failure class
+    ``destination_blocked_client`` means the destination's edge refused the
+    request before the service saw it — the body carries the edge's own code
+    (``error code: 1010`` and friends). The key was never presented to anything
+    that reads keys, so rotating it is the wrong ask and retrying gets the same
+    block. Every outbound call already sends this platform's own client string;
+    you do not set ``User-Agent`` on a packet and a request that tries is
+    refused. If a service insists on a particular one, it is declared ONCE on
+    the connection as a constant header, not per call. Say what happened, name
+    the destination and the code, and ask for the constant header — or tell
+    them the destination has to allow this platform at their end.
 
     **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
     ``git_read:owner/name`` / ``git_write:owner/name``. That is what lets the

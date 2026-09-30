@@ -2,8 +2,11 @@
 
 - [ ] 1. `user_accounts.timezone` column + `set_account_timezone` /
       `get_account_timezone`, validated against `zoneinfo`.
-- [ ] 2. `POST /mcp/app/account/timezone`, identity-required, refusing an
-      unresolvable name rather than clearing the stored one.
+- [ ] 2. `POST /app/account/timezone`, identity-required, refusing an
+      unresolvable name rather than clearing the stored one. (`/app`, not
+      `/mcp/app`: #4112 moved the app to `https://tinyassets.io/app` and left
+      no alias, so the path is covered by `_is_app_path` and identity-gated by
+      default.)
 - [ ] 3. App reports `Intl.DateTimeFormat().resolvedOptions().timeZone` on
       sign-in/load.
 - [ ] 4. `automations.timezone` + `automations.last_due_local` columns.

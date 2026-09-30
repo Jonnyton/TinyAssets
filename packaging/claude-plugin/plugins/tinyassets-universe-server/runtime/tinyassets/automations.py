@@ -1622,9 +1622,19 @@ def _latest_cron_slot(
 
     try:
         schedule = CronSchedule.parse(automation.cron_expr)
-    except CronParseError:
+        # A stored zone can stop resolving -- the tz database drops and renames
+        # names, and a host-specific one may not exist on the next host at all
+        # (`docs/concerns/automation-timezone-host-aliases.md`). One such row
+        # must leave itself un-runnable, not raise out of the poll that is
+        # scanning EVERY automation for this universe. Same shape as the
+        # unparseable expression beside it.
+        zone = resolve_zone(cron_zone_name(automation))
+    except (CronParseError, UnknownTimezone):
+        logger.warning(
+            "automation %s cannot be scheduled: unusable cron expression or "
+            "timezone", automation.automation_id or "<unsaved>",
+        )
         return None
-    zone = resolve_zone(cron_zone_name(automation))
     born = _parse(automation.created_at)
     today = local_now(moment, zone).date()
     candidates: list[tuple[datetime, _date, _time]] = []
@@ -1814,7 +1824,13 @@ def next_due_at(automation: Automation, now: datetime) -> str:
 
         try:
             schedule = CronSchedule.parse(automation.cron_expr)
-        except CronParseError:
+            # Guarded together with the expression, and for the same reason: a
+            # stored zone that no longer resolves makes a row un-runnable, and
+            # this function is read by the projection every time an automation
+            # is listed. "No next fire" is the truthful answer for a row that
+            # cannot be scheduled.
+            zone = resolve_zone(cron_zone_name(automation))
+        except (CronParseError, UnknownTimezone):
             return ""
         # Walks LOCAL DATES and resolves each day's slots through the zone, so
         # this agrees with `_due_instant` by construction rather than by two
@@ -1822,7 +1838,6 @@ def next_due_at(automation: Automation, now: datetime) -> str:
         # minutes and skipped by arithmetic derived from local fields; that
         # survived DST (measured), but it read the PROCESS's clock, which is the
         # defect this replaces.
-        zone = resolve_zone(cron_zone_name(automation))
         today = local_now(moment, zone).date()
         limit = (moment + NEXT_DUE_HORIZON).astimezone(zone).date()
         local_day = today

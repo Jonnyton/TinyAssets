@@ -151,7 +151,7 @@ dispatch, not anonymity and not a capability set.
 - **THEN** the request is refused before dispatch and nothing is written
 
 ### Requirement: Voice-session signaling requires the authenticated founder identity
-The provider-capability configuration path, `GET /mcp/app/voice/status` capability check, and `POST /mcp/app/voice/session` broker SHALL require a resolved authenticated subject, SHALL derive the founder home universe and current serving provider through the same canonical home resolver instead of caller-selected authority, and SHALL fail closed before mutation, connection lookup, or network activity when identity or ownership cannot be proven. Capability configuration additionally requires both a current admin ACL and exact connection-grant ownership by the authenticated actor.
+The provider-capability configuration path, `GET /app/voice/status` capability check, and `POST /app/voice/session` broker SHALL require a resolved authenticated subject, SHALL derive the founder home universe and current serving provider through the same canonical home resolver instead of caller-selected authority, and SHALL fail closed before mutation, connection lookup, or network activity when identity or ownership cannot be proven. Capability configuration additionally requires both a current admin ACL and exact connection-grant ownership by the authenticated actor.
 
 #### Scenario: Anonymous caller configures or requests Voice
 - **WHEN** a request reaches capability configuration, Voice status, or the voice-session broker without a resolved authenticated subject
@@ -219,11 +219,11 @@ server SHALL refuse to start in dev mode without it.
 
 Exactly these paths SHALL be served without the MCP bearer, each binding a
 named principal or reading no state: the OAuth discovery routes
-(`/.well-known/*` and `/mcp/.well-known/*`); the app shell `/mcp/app` and
-its PKCE exchange, refresh and logout route `/mcp/app/token` (the signed-in
+(`/.well-known/*` and `/mcp/.well-known/*`); the app shell `/app` and
+its PKCE exchange, refresh and logout route `/app/token` (the signed-in
 user, or the flow itself); inbound hook routes `/mcp/hooks/<id>` (exactly one path segment,
 the existing predicate; the hook's owner is stamped on the emitted event);
-`/mcp/app/billing/webhook` (Stripe-signed; the handler binds the customer
+`/app/billing/webhook` (Stripe-signed; the handler binds the customer
 from the event). No other path
 SHALL be exempt, and no exemption SHALL be a wildcard prefix.
 

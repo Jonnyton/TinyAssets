@@ -1789,18 +1789,12 @@ def _action_list_universes(**_kwargs: Any) -> str:
             "note": f"Base directory does not exist: {base}",
         })
 
-    try:
-        all_entries = list(base.iterdir())
-    except OSError as exc:
-        return json.dumps({
-            "universes": [],
-            "count": 0,
-            "note": f"Base directory unreadable ({base}): {exc}",
-        })
-
     from tinyassets.api import visibility
     from tinyassets.daemon_server import owned_universe_ids
 
+    # Ownership first: reading it initializes its store in this directory, so
+    # entries listed before it described a directory the call then changed --
+    # the first list on a fresh data dir said "empty" and the second did not.
     try:
         owned = owned_universe_ids(base)
     except Exception as exc:  # noqa: BLE001 - fail closed, and say why
@@ -1809,6 +1803,15 @@ def _action_list_universes(**_kwargs: Any) -> str:
             "universes": [],
             "count": 0,
             "note": f"Ownership store unavailable: {exc}",
+        })
+
+    try:
+        all_entries = list(base.iterdir())
+    except OSError as exc:
+        return json.dumps({
+            "universes": [],
+            "count": 0,
+            "note": f"Base directory unreadable ({base}): {exc}",
         })
 
     universes = []

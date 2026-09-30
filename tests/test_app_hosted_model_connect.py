@@ -37,7 +37,7 @@ let NATIVE=false,me={setup:'empty'},auth='owner-token',viewGeneration=0;
 let queueScope='',queueOwner='',uploadsRestored=false;const Uploads=null;
 let exchangeResult=null,answerResult={status:'answered'},answerThrows=null;
 let signedInNow=false,workosCalls=0,chatCount=0,refreshes=0,engineConnected=null;
-const window={location:{pathname:'/mcp/app',search:'',assign:url=>navigations.push(url)}};
+const window={location:{pathname:'/app',search:'',assign:url=>navigations.push(url)}};
 const history={replaceState:(a,b,url)=>{window.location.pathname=url;window.location.search='';}};
 const token=()=>auth,authHeaders=()=>({Authorization:auth});
 let ensureFreshToken=async()=>{};
@@ -94,7 +94,7 @@ def saved_callback(query="?code=synthetic-code"):
     return """
 sessionStorage.setItem(HostedModelConnect.storageKey,JSON.stringify({flow:'f'.repeat(43),
  verifier:'v'.repeat(43),preset:'guided_models_v1',expires:Date.now()+60000}));
-window.location.pathname='/mcp/app/model-callback/'+'f'.repeat(43);
+window.location.pathname='/app/model-callback/'+'f'.repeat(43);
 window.location.search=__QUERY__;
     """.replace("__QUERY__", json.dumps(query))
 
@@ -179,7 +179,7 @@ answerResult=()=>{me={setup:'connected',universe_id:'u',principal_id:'p'};
  return {status:'answered'};};
 await boot();""")
     assert result["workosCalls"] == 0
-    assert result["path"] == "/mcp/app" and not result["search"]
+    assert result["path"] == "/app" and not result["search"]
     assert not result["stored"] and not result["navigations"]
     assert len(result["requests"]) == 1
     assert result["requests"][0]["url"].endswith("/exchange")
@@ -337,7 +337,7 @@ assert.equal($('hosted-key-input').value,'');
 """)
     assert len(result["requests"]) == 1
     call = result["requests"][0]
-    assert call["url"] == "/mcp/app/model-connect/deposit_key"
+    assert call["url"] == "/app/model-connect/deposit_key"
     assert call["body"] == {"preset_id": "guided_models_v1", "key": "synthetic-private-key"}
     assert result["answers"] == [{"request_id": "request-a", "values": {}}]
     assert not result["navigations"] and not result["stored"]

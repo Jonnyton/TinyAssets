@@ -528,6 +528,12 @@ def test_unsupported_auth_scheme_rejected(base: Path) -> None:
     not persist yet" -- which was stale: the header name is a per-CALL field on
     the request packet, and the stored credential is a single token identical to
     bearer. See ``test_header_scheme_deposits_generically``.
+
+    ``url_secret`` joined the set on 2026-09-30 (change
+    ``capability-url-connections``): a capability URL's credential is a path
+    segment, which is what every other scheme had nothing to say about. It is
+    deposited through ``tests/test_capability_url_connections.py``, not here,
+    because it also needs a ``{secret}`` placeholder in its endpoint.
     """
     udir = _make_universe(base, "u-as", admin="founder")
     _login("founder")
@@ -535,7 +541,7 @@ def test_unsupported_auth_scheme_rejected(base: Path) -> None:
         result = _connect("u-as", auth_scheme=bad)
         assert result["error"] == "unsupported_auth_scheme", bad
         assert set(result["allowed_auth_schemes"]) == {
-            "bearer", "basic", "header", "oauth1a",
+            "bearer", "basic", "header", "oauth1a", "url_secret",
         }
     assert _http_records(udir) == []
 

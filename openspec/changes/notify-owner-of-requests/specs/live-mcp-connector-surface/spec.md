@@ -51,6 +51,44 @@ The answer path SHALL accept an optional `item_id`, resolving exactly that item 
 - **WHEN** the owner answers the request as a whole with two items still unresolved
 - **THEN** the request is `answered` and those two items are reported as unanswered
 
+### Requirement: Items do not change the identity of a request without them
+A request's deduplication identity SHALL include its items only when it has items, so a request with none keeps the identity it had before items existed. A live pending request SHALL still deduplicate, and a standing decision recorded against it SHALL still match. A request or standing decision stored under the superseded identity — the same tuple with an empty item list appended — SHALL be rewritten once to the canonical one, so deduplication, the standing decision and the execution pin all agree again; no other stored identity SHALL be altered.
+
+#### Scenario: A request stored under the superseded identity still deduplicates
+- **WHEN** an itemless request was stored with an empty item list in its identity, and the identical ask is raised after the upgrade
+- **THEN** it lands on that pending request rather than opening a second tab, and that request is still answerable
+
+#### Scenario: A standing decision stored under the superseded identity still settles
+- **WHEN** the owner recorded "don't ask me this again" under the superseded identity, and the identical ask is raised after the upgrade
+- **THEN** the ask is refused as already settled
+
+#### Scenario: No other identity is rewritten
+- **WHEN** a stored identity has real items, a different element count, a non-list final element, or a non-canonical serialisation
+- **THEN** it is left exactly as stored
+
+#### Scenario: A standing decision survives
+- **WHEN** an owner dismissed a request with "don't ask me this again", and the identical request with no items is asked afterwards
+- **THEN** the ask is refused as already settled and no new request is stored
+
+#### Scenario: A live pending request still deduplicates
+- **WHEN** the identical itemless ask is raised while one is already pending
+- **THEN** it lands on the pending request rather than opening a second tab
+
+#### Scenario: An itemised ask is its own question
+- **WHEN** the same kind, title and body are asked once without items and once with them
+- **THEN** they are two distinct requests
+
+### Requirement: An item answer is bound to the request that was displayed
+Answering one item SHALL require that the stored request still reproduces what the owner was shown, by the same check the whole-request answer uses. A request whose stored content changed after it was rendered SHALL refuse the item answer, naming that it changed, and SHALL resolve neither the item nor the request.
+
+#### Scenario: An item of an edited request is not answered
+- **WHEN** a request's stored items no longer reproduce what the owner was shown, and one of its items is answered
+- **THEN** the answer is refused and the item and the request are both still pending
+
+#### Scenario: Answering an item does not break the binding
+- **WHEN** the owner answers one item of an unmodified request
+- **THEN** the request still reproduces what was displayed, so its remaining items stay answerable
+
 ### Requirement: A background run raises a request as its owner
 A run executing under the owner's bound run identity SHALL be able to raise a request in that owner's own universe through the engine surface, and that request SHALL be indistinguishable in the rail from one raised in a chat turn. A caller that is not an `admin` of the named universe SHALL receive the uniform absent-resource refusal.
 

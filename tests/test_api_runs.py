@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from tinyassets.api import runs as runs_mod
 from tinyassets.api.runs import (
     _FAILURE_TAXONOMY,
@@ -28,6 +30,12 @@ from tinyassets.api.runs import (
 )
 
 # ── module surface ──────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _pin_data_dir(tmp_path, monkeypatch):
+    """The run handlers sweep in-flight runs in the data dir on first use:
+    never the developer's real one."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 
 def test_module_exposes_expected_public_names():
@@ -187,10 +195,22 @@ def test_failure_payload_shape():
 # ── _ensure_runs_recovery idempotency ───────────────────────────────────────
 
 
-def test_ensure_runs_recovery_is_idempotent():
-    """Multiple calls don't re-run the recovery sweep."""
+def test_ensure_runs_recovery_is_idempotent(tmp_path, monkeypatch):
+    """Multiple calls don't re-run the recovery sweep. Pinned to tmp_path: the
+    sweep takes a lock and rewrites run rows in whatever data dir it is given."""
+    import os
+
+    from tinyassets.api import runs as api_runs
+
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_DONE", False)
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_LOCK", None)
+    monkeypatch.setattr(api_runs, "_base_path", lambda: tmp_path)
     _ensure_runs_recovery()
+    held = api_runs._RUNS_RECOVERY_LOCK
     _ensure_runs_recovery()  # second call must not raise
+    assert api_runs._RUNS_RECOVERY_LOCK is held
+    if held is not None and held.fd is not None:
+        os.close(held.fd)
 
 
 # ── handler error path (no-monkeypatch path) ────────────────────────────────

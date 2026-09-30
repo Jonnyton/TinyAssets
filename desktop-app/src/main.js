@@ -1,6 +1,6 @@
 // TinyAssets desktop shell (Electron).
 //
-// A thin native window over the live SPA at https://tinyassets.io/mcp/app — the
+// A thin native window over the live SPA at https://tinyassets.io/app — the
 // SAME page the Android Capacitor app wraps (mobile/capacitor.config.json). No
 // second chat UI: product logic (WorkOS sign-in, connect-subscription, chat)
 // lives in the SPA and is reused verbatim, so every surface stays identical and
