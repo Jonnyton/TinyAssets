@@ -7,7 +7,7 @@ from datetime import timedelta
 import pytest
 
 from tests import test_native_discovery_integration as integration
-from tinyassets import daemon_server, universe_server
+from tinyassets import daemon_server
 from tinyassets.api import model_options, permissions
 from tinyassets.credential_vault import write_credential_vault
 from tinyassets.exceptions import ProviderError
@@ -25,7 +25,10 @@ def picker(native, monkeypatch):
     monkeypatch.setattr(model_options, "_base_path", lambda: native.base)
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "owner-1")
-    return lambda: json.loads(universe_server.read_graph(target="model_options"))
+    from tinyassets.api.graph_reads import read_graph
+
+    # The complete catalogue (the owner door's read); the connector projects it.
+    return lambda: json.loads(read_graph(target="model_options"))
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)

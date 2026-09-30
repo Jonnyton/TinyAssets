@@ -185,3 +185,20 @@ def test_a_custom_ui_conversation_read_is_paged_and_fails_loudly():
     assert "conversation_limit:limit" in body
     assert "has_more:more" in body and "next_before:" in body
     assert 'throw new Error("your conversation could not be read")' in body
+
+
+def test_a_reply_body_that_lands_after_an_account_switch_is_refused():
+    """Codex round 2: headers from account A, B signs in while the body
+    downloads, A's rail renders for B. The login is re-checked after the body."""
+    html = _html()
+    owner = html[html.index("  const Owner = {"):html.index("  // ---- UI ----")]
+    body_read = owner.index("doc=await resp.json()")
+    fence = owner.index("MCP._assertLogin(loginEpoch);", body_read)
+    assert fence < owner.index("return doc;", body_read)
+
+
+def test_a_custom_ui_run_list_says_when_older_runs_exist():
+    html = _html()
+    body = _method_source(html, "async listRuns(args){")
+    assert "limit:limit+1" in body and "has_more:doc.runs.length>limit" in body
+    assert "Math.min(" not in body, "no fixed ceiling on the page a bundle asks for"

@@ -2093,7 +2093,8 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.listAutomations()         -> {automations:[{automation_id,name,
                   branch_id,trigger,state,last_run_id,last_result,next_due_at,...}]}
         await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,
-                  status,started_at,finished_at,last_node_id}]}   # newest first, <= 50
+                  status,started_at,finished_at,last_node_id}], has_more}
+                  # newest first; limit defaults to 50, has_more says there are older
         await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
                   error,output_fields:[...]}
         await tinyassets.readRunOutput(run_id, field, offset)
