@@ -602,7 +602,7 @@ class TestBackfill:
     right about preserving behaviour and wrong about what the behaviour was:
     `public_read`'s own column default is 1, so the derivation declared every
     legacy directory and every maintenance bucket `public`
-    (observed live 2026-09-02; see openspec/changes/private-by-default-universes/).
+    (observed live 2026-09-02; see openspec/changes/archive/2026-09-30-private-by-default-universes/).
     Per the founder, 2026-09-26, the platform declares nothing open on an owner's
     behalf. The original test's narrow true case — a universe whose `public_read`
     is already False is declared private — is kept below as
