@@ -201,6 +201,7 @@ def _csp(nonce: str, issuer: str) -> str:
     return (
         "default-src 'none'; "
         f"script-src 'nonce-{nonce}'; "
+        "worker-src 'self'; "
         f"style-src 'nonce-{nonce}'; "
         f"connect-src {connect}; "
         "img-src 'self' data:; "
@@ -1776,6 +1777,11 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding.file_upload import handle_file_upload
     from tinyassets.onboarding.model_connect import handle_model_callback, handle_model_connect
     from tinyassets.onboarding.model_preferences import handle_model_preferences
+    from tinyassets.onboarding.notifications import (
+        handle_devices,
+        handle_notify_settings,
+        handle_service_worker,
+    )
     from tinyassets.onboarding.ui_frame import handle_ui_frame
 
     return [
@@ -1802,6 +1808,14 @@ def onboarding_routes() -> list[Any]:
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/connections", handle_connections, methods=["GET", "POST"]),
         Route("/app/files", handle_file_upload, methods=["POST"]),
+        # Notifications. `/app/devices` and `/app/notify` are identity-gated by
+        # `_is_app_path`'s segment-boundary rule -- no enumeration to extend --
+        # and `tests/test_app_notification_routes.py` pins that. `/app/sw.js`
+        # is the exception: a browser fetches a service worker with no bearer,
+        # so it has a carve-out in `_auth_challenge_path`.
+        Route("/app/devices", handle_devices, methods=["GET", "POST"]),
+        Route("/app/notify", handle_notify_settings, methods=["GET", "POST"]),
+        Route("/app/sw.js", handle_service_worker, methods=["GET", "HEAD"]),
     ]
 
 
