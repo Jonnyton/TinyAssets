@@ -234,14 +234,36 @@ def _daemon_memory(base: Path, account_id: str) -> int:
     if not daemons:
         return 0
     marks = ",".join("?" * len(daemons))
-    entries = _sum_sql(
-        daemon_brain_db_path(base),
-        "SELECT SUM(length(CAST(content AS BLOB)) + length(CAST(metadata_json AS BLOB))) "
-        f"FROM daemon_brain_entries WHERE daemon_id IN ({marks})",
-        tuple(daemons),
-    )
+    db = daemon_brain_db_path(base)
+
+    def _col(name: str) -> str:
+        return f"length(CAST({name} AS BLOB))"
+
+    # EVERY variable-sized column a caller can fill, not just content: an
+    # unmeasured column is a place to put bytes nobody counts (gpt-6-astra,
+    # PR #4158: promotion metadata, temporal bounds, source paths).
+    tables = {
+        "daemon_brain_entries": (
+            "content", "metadata_json", "temporal_bounds_json", "source_path",
+            "source_hash", "source_id", "source_type", "reliability", "language_type",
+        ),
+        "daemon_memory_promotions": (
+            "summary", "metadata_json", "entry_ids_json", "target_path",
+        ),
+        "daemon_memory_events": (
+            "metadata_json", "entry_ids_json", "query_text", "source_id", "source_type",
+        ),
+    }
+    total = 0
+    for table, columns in tables.items():
+        total += _sum_sql(
+            db,
+            f"SELECT SUM({' + '.join(_col(c) for c in columns)}) "
+            f"FROM {table} WHERE daemon_id IN ({marks})",
+            tuple(daemons),
+        )
     wikis = sum(_walk_bytes(daemon_wiki_root(base, daemon_id)) for daemon_id in daemons)
-    return entries + wikis
+    return total + wikis
 
 
 #: THE registry. A store not listed here is a place to put bytes that nobody
@@ -356,6 +378,16 @@ def measure(base_path: str | Path, scope_id: str, store: str, *, now: float | No
     if size < 0:
         raise ValueError(f"{store} measured negative bytes for {scope_id}")
     with _txn(base) as conn:
+        existing = conn.execute(
+            "SELECT start_seq FROM measurements WHERE scope_id = ? AND store = ?",
+            (scope_id, store),
+        ).fetchone()
+        if existing is not None and int(existing[0]) > start_seq:
+            # A scan that STARTED later already landed. This one saw less: writing
+            # it would replace a newer number with an older one after that newer
+            # scan had already retired the pending rows it covered -- bytes
+            # counted nowhere (gpt-6-astra, PR #4158). Discard it.
+            return size
         conn.execute(
             "INSERT INTO measurements (scope_id, store, bytes, start_seq, measured_at, dirty) "
             "VALUES (?, ?, ?, ?, ?, 0) ON CONFLICT (scope_id, store) DO UPDATE SET "
@@ -711,22 +743,21 @@ def account_for_actor(base_path: str | Path, actor: str) -> str | None:
     return person if person and is_account(base_path, person) else None
 
 
-def is_account(base_path: str | Path, principal: str) -> bool:
-    """Whether ``principal`` is an ACCOUNT storage is charged to: it owns a
-    universe or has a home. The host, a platform daemon's ``host`` owner, or a
-    subject that never founded anything has no pool, so it is not gated -- its
-    bytes are counted wherever they land on a universe."""
-    from tinyassets.daemon_server import get_founder_home
-    from tinyassets.universe_owner import owned_universes
+#: The platform's own principals: never a person, so never an account.
+_PLATFORM_PRINCIPALS = frozenset({"host", "system"})
 
+
+def is_account(base_path: str | Path, principal: str) -> bool:
+    """Whether ``principal`` is an ACCOUNT storage is charged to.
+
+    Every authenticated person is -- including a collaborator who owns no
+    universe and has no home: they still have a pool (the free tier), or their
+    writes into someone else's universe would escape every quota (gpt-6-astra,
+    PR #4158). Only the platform's own principals are exempt.
+    """
+    del base_path  # kept for call-site symmetry; the answer needs no lookup
     person = named_principal(principal or "")
-    if not person:
-        return False
-    try:
-        return bool(owned_universes(base_path, person) or get_founder_home(base_path, person))
-    except Exception:  # noqa: BLE001 -- unreadable: not provably an account
-        _log.warning("could not resolve whether %r is an account", person, exc_info=True)
-        return False
+    return bool(person) and person.lower() not in _PLATFORM_PRINCIPALS
 
 
 def account_for_daemon(base_path: str | Path, daemon_id: str) -> str | None:

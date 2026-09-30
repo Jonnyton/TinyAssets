@@ -163,6 +163,34 @@ class TestPendingIsNeverLost:
         # lock as "unavailable", which is what an unserialized admission does.
         assert refusals == [sa.FAILURE_QUOTA] * 5
 
+    def test_a_superseded_measurement_is_discarded(self, base, monkeypatch):
+        """gpt-6-astra PR #4158: scan S1 starts, a write commits, scan S2 measures
+        it and retires its pending row; S1 then lands its smaller number. It
+        must be discarded, or the write is counted nowhere."""
+        udir = _universe(base, "u-one", A)
+        sa.commit(_admit(base, "u-one", 0))
+        real = sa.STORES["universe_files"].measure
+        state = {"nested": False}
+
+        def _slow_first_scan(b, scope):
+            size = real(b, scope)  # S1 sees nothing yet
+            if not state["nested"]:
+                state["nested"] = True
+                res = _admit(base, "u-one", 40 * KIB)
+                _write(udir, "late.bin", 40 * KIB)
+                sa.commit(res)
+                sa.measure(base, "u-one", "universe_files")  # S2: sees it, retires pending
+            return size
+
+        monkeypatch.setitem(
+            sa.STORES, "universe_files",
+            sa.Store("universe_files", sa.SCOPE_UNIVERSE, _slow_first_scan),
+        )
+        sa.measure(base, "u-one", "universe_files")  # S1 lands last
+        monkeypatch.undo()
+
+        assert sa.usage(base, A).used_bytes >= 40 * KIB
+
     def test_a_write_larger_than_its_reservation_fails_loudly(self, base):
         _universe(base, "u-one", A)
         res = _admit(base, "u-one", 1 * KIB)

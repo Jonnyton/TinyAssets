@@ -527,11 +527,12 @@ def capture_daemon_memory(
     """
     from tinyassets import storage_accounting
 
-    nbytes = (
-        len(str(content or "").encode("utf-8"))
-        + len(json.dumps(metadata or {}, default=str).encode("utf-8"))
-        + 1024
-    )
+    # Every caller-supplied field is persisted (content, metadata, temporal
+    # bounds, source path/hash/id, ...), so all of it is reserved, not just
+    # content (gpt-6-astra, PR #4158).
+    nbytes = len(json.dumps(
+        {"content": content, "metadata": metadata, **fields}, default=str,
+    ).encode("utf-8")) + 1024
     with storage_accounting.charged(
         base_path,
         account_id=storage_accounting.account_for_daemon(base_path, daemon_id),
@@ -1434,6 +1435,9 @@ def promote_daemon_memory_to_wiki(
     nbytes = (
         2 * len(str(summary or "").encode("utf-8"))
         + _entries_bytes(base_path, daemon_id, entry_ids)
+        + len(json.dumps(metadata or {}, default=str).encode("utf-8"))
+        + len(json.dumps(list(entry_ids), default=str).encode("utf-8"))
+        + len(str(target_rel_path or "").encode("utf-8"))
         + 1024
     )
     with storage_accounting.charged(

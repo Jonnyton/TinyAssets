@@ -161,6 +161,13 @@ class TestUiLibrary:
             self._save(base, A, [{"ui_id": "ui", "html": "x" * (60 * KIB)}], revision=7)
         assert self._save(base, A, [{"ui_id": "ui", "html": "x" * (60 * KIB)}])["revision"] == 1
 
+    def test_a_collaborator_with_no_universe_still_has_a_pool(self, base):
+        """gpt-6-astra PR #4158: a collaborator who owns nothing was exempt, so
+        their saves into someone else's universe escaped every quota."""
+        _account_with_bytes(base, A, "u-a", 1 * KIB)
+        with pytest.raises(sa.StorageRefused):
+            self._save(base, B, [{"ui_id": "ui", "html": "x" * (110 * KIB)}])
+
     def test_the_api_returns_the_refusal_record(self, base, monkeypatch):
         from tinyassets.api import app_ui
 
@@ -232,6 +239,33 @@ class TestDaemonMemory:
             promote_daemon_memory_to_wiki(
                 base, daemon_id=daemon, entry_ids=[entry["entry_id"]], summary="s",
             )
+
+    def test_every_persisted_field_is_reserved_not_just_content(self, base):
+        """A tiny content with a huge source path must not slip the gate."""
+        from tinyassets.daemon_brain import capture_daemon_memory
+
+        _account_with_bytes(base, A, "u-a", 90 * KIB)
+        daemon = _daemon(base, A)
+        with pytest.raises(sa.StorageRefused):
+            capture_daemon_memory(
+                base, daemon_id=daemon, content="tiny", memory_kind="failure_mode",
+                source_type="manual", source_id="pytest", reliability="host_observed",
+                source_path="p" * (20 * KIB), language_type="policy",
+            )
+
+    def test_promotion_metadata_is_reserved_and_measured(self, base):
+        from tinyassets.daemon_brain import promote_daemon_memory_to_wiki
+
+        _account_with_bytes(base, A, "u-a", 1 * KIB)
+        daemon = _daemon(base, A)
+        entry = _capture(base, daemon, "short")
+        promote_daemon_memory_to_wiki(
+            base, daemon_id=daemon, entry_ids=[entry["entry_id"]], summary="s",
+            metadata={"blob": "m" * (30 * KIB)},
+        )
+        sa.measure(base, A, "daemon_memory")
+        measured = dict(((s, st), b) for s, st, b in sa.usage(base, A).breakdown)
+        assert measured[(A, "daemon_memory")] >= 30 * KIB
 
     def test_the_mcp_action_returns_the_refusal(self, base, monkeypatch):
         from tinyassets.api import universe as api_universe
