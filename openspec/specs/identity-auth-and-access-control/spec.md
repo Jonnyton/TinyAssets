@@ -221,9 +221,7 @@ Exactly these paths SHALL be served without the MCP bearer, each binding a
 named principal or reading no state: the OAuth discovery routes
 (`/.well-known/*` and `/mcp/.well-known/*`); the app shell `/mcp/app` and
 its PKCE exchange, refresh and logout route `/mcp/app/token` (the signed-in
-user, or the flow itself); the connect-deposit routes `/mcp/connect/*` (the
-depositing user's session, matched by the existing traversal-safe
-predicate); inbound hook routes `/mcp/hooks/<id>` (exactly one path segment,
+user, or the flow itself); inbound hook routes `/mcp/hooks/<id>` (exactly one path segment,
 the existing predicate; the hook's owner is stamped on the emitted event);
 `/mcp/app/billing/webhook` (Stripe-signed; the handler binds the customer
 from the event). No other path

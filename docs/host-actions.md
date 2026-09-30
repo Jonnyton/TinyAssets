@@ -198,8 +198,8 @@ rest.
 
 ## Decide: should a deposit serve the universe by itself?
 
-The deposit spec (`openspec/changes/byo-llm-deposit-surface/specs/byo-llm-deposit-surface/spec.md`,
-"The deposit result directs the owner to the existing serving re-point") says the deposit
+The deposit spec (`openspec/specs/byo-llm-deposit-surface/spec.md`,
+"The result is non-secret and names the serving re-point") says the deposit
 **SHALL NOT itself enable serving**. On 2026-09-01 a pasted Codex deposit through the app
 left the universe chatting but every run refused with `provider_not_bound`, because the
 paste path never followed the hint. #2760 fixes that in the app (the paste path and the

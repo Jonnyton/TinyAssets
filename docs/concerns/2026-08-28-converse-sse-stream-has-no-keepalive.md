@@ -105,6 +105,41 @@ client's reconciliation on reconnect should prefer the stored turn over its own
 optimistic verdict — see [[webapp-send-is-not-proof-of-delivery]] for the
 mirror-image failure.
 
+## 2026-09-30: the client's own silence bound EXCLUDES itself, by error class
+
+Found while diagnosing a different turn
+(`c7d6279d4af74d798375d3f13780140e`, PR #4108, after a Codex refute round).
+
+The client does bound a long stream, which this file had not recorded: the body
+reader is `await this._bound(reader.read(), ...silence())`
+(`tinyassets/onboarding/app.html:1120`), a bound on the gap BETWEEN chunks
+rather than on total duration, set to `SILENCE_MS: 120000`
+(`app.html:1003`) — 120s against an origin that pings every 15s.
+
+**But it is not what the recorded incidents saw, and the error class proves it.**
+The silence bound raises `stream_silent` with the words *"your universe stopped
+sending anything back; it may still be working on this"* (`app.html:1101-1102`).
+Every cut recorded above reported `stream_truncated` — *"the reply was cut off
+in transit"* — which is raised only where the body ENDED, or arrived corrupt,
+without this request's answer (`app.html:1080-1085`, and the stream-died path at
+`app.html:1319-1321`).
+
+So this is a discriminator the earlier entries lacked:
+
+* `stream_silent` → nothing arrived for 120s. Pings stopped or were stripped.
+* `stream_truncated` → bytes STOPPED, mid-stream, before the answer. A closed
+  connection, not a quiet one.
+
+Every incident in this file is the second kind. That **rules the ping question
+out as their cause** — a stream still pinging and then cut is cut by something
+closing it, which keeps the deploy candidate and an intermediary in play and
+removes "the origin went quiet" from the list. The origin-side ping proof
+(`tests/test_mcp_sse_keepalive.py`) was therefore never the missing evidence for
+these cuts.
+
+Resolving evidence should now record WHICH of the two classes the client
+reported, since they point at different causes.
+
 ## How to resolve this file
 
 Delete it when one authenticated `converse` longer than 3 minutes completes

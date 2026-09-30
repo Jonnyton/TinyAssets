@@ -97,7 +97,7 @@ LEVEL_METADATA_KEY = "visibility_level"
 #: default decided the level of every universe born through the connector
 #: REPRODUCED as a P1 concern on 2026-08-06, re-verified live 2026-08-28 and
 #: 2026-09-03, resolved here). A creator may still pass an explicit level to
-#: override; see openspec/changes/private-by-default-universes/.
+#: override; see openspec/changes/archive/2026-09-30-private-by-default-universes/.
 DEFAULT_CREATE_VISIBILITY = "private"
 
 #: Rules-metadata key recording WHO decided the declared level.
@@ -435,7 +435,7 @@ def backfill_universe_visibility(
     current behaviour preserved a level nobody chose, and boot declared every
     legacy directory and every maintenance bucket ``public`` (observed live on
     2026-09-02: 12 of 12 universes public, 7 of them maintenance buckets and
-    IdP-migration backups; see openspec/changes/private-by-default-universes/).
+    IdP-migration backups; see openspec/changes/archive/2026-09-30-private-by-default-universes/).
     Per the founder, 2026-09-26, the platform does not declare an open level on
     an owner's behalf; the owner exposes their universe explicitly. A universe
     whose ``public_read`` was already ``False`` was declared ``private`` before

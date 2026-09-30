@@ -29,16 +29,28 @@ An automation SHALL carry an `overlap` policy: `queue` (the default), `skip`
 or `cancel_previous`. Any other value SHALL be refused at registration. When
 a row falls due while its agent is running, in this process or another:
 - `queue` SHALL wait and start once the running run ends;
-- `skip` SHALL spend the due instant without a run, retiring a one-shot wake;
+- `skip` SHALL spend a cadence's due instant without a run. A one-shot wake
+  has one fire only, so under `skip` it SHALL wait as under `queue` and never
+  be retired or dropped for overlapping;
+- a row waiting for its agent SHALL record `waiting_for_previous_run` where
+  its owner reads the automation;
 - `cancel_previous` SHALL request cancellation of the agent's running run,
   and start once it has stopped. A row SHALL never cancel its own running
   occurrence.
 
 The policy SHALL apply even when every consumer slot is full.
 
-#### Scenario: skip drops the overlapping run
-- **WHEN** a `skip` wake falls due while its branch is running
-- **THEN** no run starts, its attempt is recorded as skipped, and the wake retires
+#### Scenario: skip drops the overlapping cadence run
+- **WHEN** a `skip` cadence falls due while its branch is running
+- **THEN** no run starts, its attempt is recorded as skipped, and the next
+  instant is owed
+
+#### Scenario: a one-shot wake under skip waits instead of retiring
+- **WHEN** a `skip` one-shot wake falls due while its branch is running,
+  including the wake a `run_completed` subscription stores while the run that
+  fired it still holds the agent
+- **THEN** the wake is not retired, the owner sees `waiting_for_previous_run`,
+  and it runs once the agent is free
 
 #### Scenario: cancel_previous stops the running one first
 - **WHEN** a `cancel_previous` row falls due while its branch is running
