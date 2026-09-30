@@ -53,8 +53,9 @@ Python process that receives **data and no credentials**:
     blocks on stdin for ``{"id", "result"}`` / ``{"id", "error"}``; the
     parent performs the action through the caller-supplied ``invoke`` under
     the run's authority. The child never holds a credential or a handle.
-    :data:`MAX_RPC_CALLS` per run, :data:`MAX_RPC_REPLY_BYTES` per reply,
-    and the wall-clock timeout covers time spent blocked in a call.
+    There is no cap on how MANY calls a node makes; :data:`MAX_RPC_REPLY_BYTES`
+    bounds each reply, and the wall-clock timeout covers time spent blocked in
+    a call.
 
 Node contract — the source defines ``run`` taking one or two positional
 arguments::
@@ -123,9 +124,12 @@ MAX_STDERR_BYTES = 64 * 1024
 #: Bound on what the node's own ``print()`` calls may retain, in the child.
 MAX_USER_PRINT_BYTES = 64 * 1024
 
-#: How many ``invoke_mcp_action`` round-trips one node may make.
-MAX_RPC_CALLS = 500
-
+#: There is no cap on how many ``invoke_mcp_action`` round-trips a node makes.
+#: ``MAX_RPC_CALLS = 500`` failed the node at call 501 with "too many rpc calls" --
+#: a structural bound on what one node may be, and an account has exactly two
+#: limits, cloud bytes and concurrent agent seats (founder, 2026-09-30). Each
+#: individual call is still bounded below.
+#:
 #: Bound on a single RPC reply written back to the child.
 MAX_RPC_REPLY_BYTES = 1024 * 1024
 
@@ -141,9 +145,12 @@ _NEVER_BIND_PREFIXES = ("/data",)
 #: launcher reports, and only the tests-only launcher reports anything else.
 WORKSPACE_MOUNT_POINT = "/workspace"
 
-#: Workspace caps (design D2 / graph-execution-substrate): per NODE, not per
-#: command, so a loop of small commands is bounded by the same numbers.
-MAX_WORKSPACE_COMMANDS = 1000
+#: Workspace bounds (design D2 / graph-execution-substrate). These are per-NODE
+#: SIZE bounds -- how much one node may hand back -- not a count of what it may
+#: do. ``MAX_WORKSPACE_COMMANDS = 1000`` was the count, and it refused the
+#: 1001st command with "workspace limit: at most 1000 commands per node", which
+#: bounded the LENGTH OF A LOOP an author wrote. It is gone (founder,
+#: 2026-09-30); the node's own wall clock and its seat are what bound it.
 MAX_WORKSPACE_OUTPUT_BYTES = 1024 * 1024
 MAX_WORKSPACE_READ_BYTES = 1024 * 1024
 MAX_WORKSPACE_GLOB_RESULTS = 10_000
@@ -219,7 +226,6 @@ class WorkspaceLimits:
     parent would kill the jail anyway and a shorter budget fails legibly.
     """
 
-    max_commands: int = MAX_WORKSPACE_COMMANDS
     max_output_bytes: int = MAX_WORKSPACE_OUTPUT_BYTES
     command_timeout_s: float | None = None
     max_read_bytes: int = MAX_WORKSPACE_READ_BYTES
@@ -248,7 +254,6 @@ class WorkspaceLimits:
     def as_message(self) -> dict[str, Any]:
         """The caps the runner enforces, as they cross the pipe."""
         return {
-            "max_commands": self.max_commands,
             "max_output_bytes": self.max_output_bytes,
             "command_timeout_s": self.command_timeout_s,
             "max_read_bytes": self.max_read_bytes,
@@ -850,9 +855,6 @@ def _make_workspace(conf, remaining):
     """Return the `ws` object bound to one workspace root."""
     root = _WsRoot(conf["root"]) if _WS_HAS_DIR_FD else _WsPathRoot(conf["root"])
     limits = conf.get("limits") or {}
-    # The child runner has no module constants; 1000 is MAX_WORKSPACE_COMMANDS
-    # (a test pins the two together).
-    max_commands = int(limits.get("max_commands", 1000))
     max_output = int(limits.get("max_output_bytes", 1048576))
     max_read = int(limits.get("max_read_bytes", 1048576))
     max_glob = int(limits.get("max_glob_results", 10000))
@@ -992,10 +994,7 @@ def _make_workspace(conf, remaining):
                         )
                     child_env[key] = value
 
-            if counters["commands"] >= max_commands:
-                raise RuntimeError(
-                    "workspace limit: at most %d commands per node" % max_commands
-                )
+            # Counted, never capped: a loop's length is the author's decision.
             counters["commands"] += 1
 
             parts = [] if cwd is None else _ws_split(cwd, "cwd")
@@ -1452,8 +1451,7 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
             raise ValueError(
                 f"invoke_mcp_action kwargs are not JSON-serializable: {exc}"
             )
-        if _rpc["used"] >= MAX_RPC_CALLS:
-            raise RuntimeError("too many rpc calls")
+        # Counted, never capped: the count is evidence on the result.
         _rpc["used"] += 1
         rpc_id = _rpc["next_id"]
         _rpc["next_id"] += 1
@@ -1580,8 +1578,6 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
     _real_stdout.flush()
 ''').replace(
     "MAX_USER_PRINT_BYTES", str(MAX_USER_PRINT_BYTES)
-).replace(
-    "MAX_RPC_CALLS", str(MAX_RPC_CALLS)
 ).replace(
     "__RLIMIT_HELPER__", _RLIMIT_HELPER.strip()
 ).replace(

@@ -481,16 +481,17 @@ def test_the_workspace_profile_is_the_one_the_design_names() -> None:
         "RLIMIT_NOFILE": 1024,
         "RLIMIT_NPROC": 1024,
     }
-    from tinyassets.node_sandbox import MAX_WORKSPACE_COMMANDS
-
-    assert limits.max_commands == MAX_WORKSPACE_COMMANDS
-    # The child runner's fallback cannot import the constant; pin it by text.
+    # There is no command COUNT any more: MAX_WORKSPACE_COMMANDS bounded the
+    # length of a loop an author wrote (founder, 2026-09-30). The SIZE bounds,
+    # which bound what one node hands back, stay.
     import pathlib as _pl
 
     from tinyassets import node_sandbox as _ns
 
+    assert not hasattr(_ns, "MAX_WORKSPACE_COMMANDS")
+    assert not hasattr(limits, "max_commands")
     src = _pl.Path(_ns.__file__).read_text(encoding="utf-8")
-    assert f'limits.get("max_commands", {MAX_WORKSPACE_COMMANDS})' in src
+    assert "max_commands" not in src
     assert limits.max_output_bytes == 1024 * 1024
     assert limits.command_timeout_s is None
 
@@ -600,22 +601,26 @@ def test_ws_run_tails_are_capped_and_flagged(workspace: Path) -> None:
     assert result.output_state["result"]["len"] <= 4096
 
 
-def test_the_command_after_the_last_one_refuses(workspace: Path) -> None:
-    """The cap is per NODE. Two here for speed; the shipped default is 64."""
+def test_a_loop_of_commands_is_never_refused_for_its_length(workspace: Path) -> None:
+    """``MAX_WORKSPACE_COMMANDS`` is gone; a loop runs as long as the author wrote.
+
+    It refused the 1001st command with "workspace limit: at most 1000 commands
+    per node" -- and ``WorkspaceLimits(max_commands=N)`` let a caller make that
+    smaller still. The bound on a workspace node is its wall clock and its seat.
+    The SIZE bounds (output, read, glob) are untouched and tested below.
+    """
     source = (
         PROBE + "\n"
         "def run(state):\n"
         "    seen = []\n"
-        "    for _ in range(3):\n"
+        "    for _ in range(12):\n"
         f"        seen.append(probe(lambda: ws.run([{PY!r}, '-c', 'pass'])['returncode']))\n"
         "    return {'result': seen}\n"
     )
-    result = _run_node(workspace, source, limits=WorkspaceLimits(max_commands=2))
+    result = _run_node(workspace, source, limits=WorkspaceLimits())
     assert result.success is True, result.error
     outcomes = [step["outcome"] for step in result.output_state["result"]]
-    assert outcomes == ["ADMITTED", "ADMITTED", "RuntimeError"]
-    assert "workspace limit" in result.output_state["result"][2]["message"]
-    assert "at most 2 commands" in result.output_state["result"][2]["message"]
+    assert outcomes == ["ADMITTED"] * 12, outcomes
 
 
 def test_the_cumulative_byte_cap_refuses(workspace: Path) -> None:

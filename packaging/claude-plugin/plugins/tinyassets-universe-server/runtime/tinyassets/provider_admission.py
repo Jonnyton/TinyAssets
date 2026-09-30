@@ -23,9 +23,11 @@ would do, would silently multiply memory risk with no sign that they had. A boun
 stated purpose is the thing it protects can be reasoned about; one that protects by
 accident cannot.
 
-Hard Rule 8 (fail loudly, never silently) decides the behaviour at the limit: wait
-briefly for a slot, then **refuse with an honest, actionable message**. A refusal a user
-can retry is strictly better than an OOM that takes every other user down with it.
+Admission keeps production's configurable wait deadline (20 seconds by default).
+A resident CLI polling a queued child can exhaust the nested reserve; indefinite
+admission would hang that chain. Durable continuation must retire the waiting
+parent process before this deadline can be removed. Same-process blocking work
+can transfer exclusive ownership, and queued waits remain visible.
 """
 
 from __future__ import annotations
@@ -37,6 +39,8 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 
 _log = logging.getLogger(__name__)
 
@@ -74,14 +78,13 @@ _log = logging.getLogger(__name__)
 _LIMIT_VAR = "TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS"
 _DEFAULT_LIMIT = 6
 
-#: How long a caller waits for a slot before being told no. Long enough to ride out a
-#: brief burst, short enough that a queued user gets an answer rather than a hang.
 _WAIT_VAR = "TINYASSETS_PROVIDER_ADMISSION_WAIT_S"
 _DEFAULT_WAIT_S = 20.0
+_POLL_SECONDS = 0.05
 
 
 class ProviderBusy(RuntimeError):
-    """Every provider slot is taken. The caller should surface this, not swallow it."""
+    """Every provider slot is taken after the admission deadline or a no-wait probe."""
 
 
 def _positive_int(var: str, default: int) -> int:
@@ -122,21 +125,117 @@ _live = 0
 _peak_live = 0
 _admitted = 0
 _refused = 0
+#: Callers currently QUEUED for a slot. Declared here, not only assigned inside
+#: `reset_for_tests`: a module global that only a test helper creates reads fine
+#: under pytest and raises `NameError` from `admission_snapshot` in production,
+#: which is how a status surface breaks with a green suite.
+_waiting = 0
 
 
-#: Slots held back for NESTED work. A served turn holds a slot for the whole life of its
-#: provider subprocess, and that subprocess is an agent that can call `run_graph` — whose
-#: nodes need slots of their own. With every slot taken by outer turns, the children
-#: queue behind their own parents and fail (Codex reproduced six outer holders producing
-#: six AllProvidersExhaustedError and zero nested launches).
-#:
-#: I first deferred this as needing a design change, on the grounds that nothing marks a
-#: call as nested. That was wrong, and Codex showed why: `run_graph` child calls already
-#: carry a typed `provider_invocation` carrier, so the distinction is available for free
-#: at the point it is needed. Arbitrary deeper recursion would still need propagated
-#: depth — this covers the served-root -> child topology that is actually reachable.
+#: Retain headroom for nested calls without an in-process blocking parent.
+#: Served run_graph queues a worker and returns; CLI/engine-MCP callers cannot
+#: transfer a process-local handle. The reserve helps that first layer, but
+#: cannot make arbitrary model-side polling chains deadlock-free. A suspended
+#: CLI also retains its resident memory: treating it as absent is not safe.
+#: In-process blocking children use exclusive transfer below instead.
 _NESTED_RESERVE_VAR = "TINYASSETS_PROVIDER_NESTED_RESERVE"
 _DEFAULT_NESTED_RESERVE = 1
+
+
+@dataclass(eq=False)
+class HeldProviderSlot:
+    """Process-local ownership, never serialized into a tool or carrier.
+
+    Like universe_seats._reenter's depth=1 predicate, ``lent`` permits only
+    ONE child at a time. Each borrower receives a fresh ownership handle so
+    that it can in turn lend to a grandchild without a recursion/depth cap.
+    """
+
+    parent: HeldProviderSlot | None = None
+    pid: int = field(default_factory=os.getpid)
+    active: bool = True
+    lent: bool = False
+
+
+_held_slot: ContextVar[HeldProviderSlot | None] = ContextVar("held_provider_slot", default=None)
+_blocking_parent: ContextVar[HeldProviderSlot | None] = ContextVar(
+    "blocking_provider_parent", default=None,
+)
+
+
+def blocking_parent_slot() -> HeldProviderSlot | None:
+    """Explicitly lent context; merely copying a provider's context grants nothing."""
+    return _blocking_parent.get()
+
+
+@contextmanager
+def blocking_provider_child():
+    """Only around a child call whose caller remains blocked until it settles.
+
+    The handle stays in this process, like universe_seats.parent_seat_id.
+    Cross-process engine-MCP calls acquire normally. The reserve still gives
+    those calls headroom, but cannot prove arbitrary cross-process chains free
+    of deadlock: that requires a process-aware suspension protocol.
+    """
+    parent = _held_slot.get() or _blocking_parent.get()
+    if parent is None:
+        yield
+        return
+    # Reserve the transfer for the entire blocking call, including thread
+    # startup. A copied context used after this scope closes cannot borrow it.
+    with provider_slot(nested=True, parent_slot=parent) as child:
+        token = _blocking_parent.set(child)
+        try:
+            yield
+        finally:
+            _blocking_parent.reset(token)
+            # A timed-out worker may still be executing. Do not resume the
+            # parent on the same physical slot until that borrower settles.
+            with _cv:
+                while child.lent:
+                    _cv.wait()
+                # Close admission atomically with observing the last return.
+                # A worker with a copied context must not borrow between here
+                # and provider_slot's finally, after the parent resumes.
+                child.active = False
+
+
+@contextmanager
+def independent_provider_work(*, parent_slot=None):
+    """Queued work does not suspend its caller and cannot inherit its slot."""
+    held = _held_slot.set(None)
+    parent = _blocking_parent.set(parent_slot)
+    try:
+        yield
+    finally:
+        _blocking_parent.reset(parent)
+        _held_slot.reset(held)
+
+
+def _take_lease_locked(nested: bool, parent: HeldProviderSlot | None):
+    if parent is not None and parent.pid == os.getpid() and parent.active and not parent.lent:
+        parent.lent = True
+        return HeldProviderSlot(parent=parent), _effective_limit(nested)
+    limit = _take_locked(nested)
+    if limit is None:
+        return HeldProviderSlot(), _effective_limit(nested)
+    return None, limit
+
+
+def _return_lease(lease: HeldProviderSlot) -> None:
+    with _cv:
+        lease.active = False
+        # A detached child must not make capacity disappear when its parent
+        # unwinds. The last descendant returns the physical slot.
+        if not lease.lent:
+            while lease.parent is not None:
+                lease = lease.parent
+                lease.lent = False
+                if lease.active:
+                    _cv.notify_all()
+                    return
+            _release()
+        _cv.notify_all()
 
 
 def _effective_limit(nested: bool) -> int:
@@ -150,29 +249,65 @@ def _effective_limit(nested: bool) -> int:
     return max(1, limit - min(reserve, limit - 1))
 
 
-def _try_acquire(timeout: float, *, nested: bool = False) -> tuple[bool, int]:
-    """Take a slot, or give up after ``timeout``. Blocking — see `provider_slot_async`."""
+def _take_locked(nested: bool) -> int | None:
+    """Take a slot if one is free, under ``_cv``. Returns the limit if not."""
     global _live, _peak_live, _admitted
-    deadline = time.monotonic() + timeout
+    limit = _effective_limit(nested)
+    if _live < limit:
+        _live += 1
+        _peak_live = max(_peak_live, _live)
+        _admitted += 1
+        return None
+    return limit
+
+
+def _try_acquire_now(*, nested: bool = False) -> tuple[bool, int]:
+    """Take a slot if one is free right now. Never waits."""
     with _cv:
-        while True:
-            limit = _effective_limit(nested)
-            if _live < limit:
-                _live += 1
-                _peak_live = max(_peak_live, _live)
-                _admitted += 1
-                return True, limit
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False, limit
-            _cv.wait(remaining)
+        limit = _take_locked(nested)
+        return (True, _effective_limit(nested)) if limit is None else (False, limit)
+
+
+def _acquire_waiting(*, nested: bool, on_wait, parent_slot=None) -> HeldProviderSlot:
+    """Wait up to the production deadline; return exclusive ownership."""
+    global _waiting
+    announced = False
+    started = time.monotonic()
+    deadline = started + _positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)
+    try:
+        with _cv:
+            while True:
+                lease, limit = _take_lease_locked(nested, parent_slot)
+                if lease is not None:
+                    return lease
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _refuse(limit)
+                if not announced:
+                    announced = True
+                    _waiting += 1
+                    _log.info("provider admission: all %d slots busy; waiting", limit)
+                    if on_wait is not None:
+                        try:
+                            on_wait(limit)
+                        except Exception:  # noqa: BLE001
+                            _log.warning("provider admission: on_wait raised", exc_info=True)
+                _cv.wait(remaining)
+    finally:
+        if announced:
+            with _cv:
+                _waiting -= 1
+            _record_wait(time.monotonic() - started)
 
 
 def _release() -> None:
     global _live
     with _cv:
         _live -= 1
-        _cv.notify()
+        # notify_all, not notify: async waiters do not sit on the condition
+        # variable, and a sync waiter woken for a slot another thread took must
+        # re-check rather than the wake being consumed and lost.
+        _cv.notify_all()
 
 
 def _refuse(limit: int) -> ProviderBusy:
@@ -197,6 +332,9 @@ def _refuse(limit: int) -> ProviderBusy:
 _MAX_SAMPLES = 512
 _stats_lock = threading.Lock()
 _durations: list[float] = []
+#: How long queued callers actually waited. Published so a wait that has become a
+#: hang is visible as a number rather than as silence.
+_waits: list[float] = []
 
 
 def admission_snapshot() -> dict:
@@ -212,17 +350,26 @@ def admission_snapshot() -> dict:
     """
     with _cv:
         live, peak, admitted, refused = _live, _peak_live, _admitted, _refused
+        waiting = _waiting
     with _stats_lock:
         d = sorted(_durations)
+        w = sorted(_waits)
     out = {
         "limit": _positive_int(_LIMIT_VAR, _DEFAULT_LIMIT),
         "admitted": admitted,
         "refused": refused,
         "live": live,
+        "waiting": waiting,
         "peak_concurrent": peak,
         "samples": len(d),
         "sample_unit": "provider attempt, not user turn",
     }
+    if w:
+        out["wait_seconds"] = {
+            "count": len(w),
+            "p50": round(w[len(w) // 2], 2),
+            "max": round(w[-1], 2),
+        }
     if d:
         def _q(p: float) -> float:
             # One indexing rule for every quantile. Mixing `len//2` for the median with
@@ -243,26 +390,48 @@ def admission_snapshot() -> dict:
 
 
 def reset_for_tests() -> None:
-    global _live, _peak_live, _admitted, _refused
+    global _live, _peak_live, _admitted, _refused, _waiting
     with _cv:
-        _live = _peak_live = _admitted = _refused = 0
+        _live = _peak_live = _admitted = _refused = _waiting = 0
     with _stats_lock:
         _durations.clear()
+        _waits.clear()
 
 
 @contextmanager
-def provider_slot(*, nested: bool = False):
-    """Hold one provider-subprocess slot, or raise :class:`ProviderBusy`.
+def provider_slot(*, nested: bool = False, on_wait=None, parent_slot=None):
+    """Wait for one provider-subprocess slot, or raise ProviderBusy at the deadline.
 
     **Blocking.** Only for callers that are already on a worker thread. Async callers
     must use :func:`provider_slot_async`, or they stall their event loop — Codex
     reproduced exactly that: with a blocking acquire, two coroutines gathered on one
     loop refused each other because the waiter prevented the holder from finishing.
 
+    ``on_wait(limit)`` fires once if this call has to queue, so a surface with a user
+    in front of it can say so.
+
     Released on every exit path, including exceptions — a slot leaked on an error is a
     permanent capacity loss, and errors are exactly when the system is already busy.
     """
-    ok, limit = _try_acquire(_positive_float(_WAIT_VAR, _DEFAULT_WAIT_S), nested=nested)
+    lease = _acquire_waiting(nested=nested, on_wait=on_wait, parent_slot=parent_slot)
+    token = _held_slot.set(lease)
+    started = time.monotonic()
+    try:
+        yield lease
+    finally:
+        _held_slot.reset(token)
+        _return_lease(lease)
+        _record(time.monotonic() - started)
+
+
+@contextmanager
+def try_provider_slot(*, nested: bool = False):
+    """Hold a slot IF one is free right now, else raise :class:`ProviderBusy`.
+
+    For diagnostics only. A probe that queues behind real user turns is reporting on
+    a box it is itself loading, and the answer it eventually gives is about the past.
+    """
+    ok, limit = _try_acquire_now(nested=nested)
     if not ok:
         raise _refuse(limit)
     started = time.monotonic()
@@ -274,14 +443,16 @@ def provider_slot(*, nested: bool = False):
 
 
 @asynccontextmanager
-async def provider_slot_async(*, nested: bool = False):
-    """Async-safe form: waits for a slot WITHOUT blocking the event loop.
+async def provider_slot_async(*, nested: bool = False, on_wait=None, parent_slot=None):
+    """Wait up to the admission deadline without blocking the event loop.
 
-    The wait happens on a worker thread, so other coroutines on the same loop — notably
-    the ones already holding slots — keep running and can release. A blocking acquire
-    here turned the bound into a self-inflicted deadlock at any limit.
+    The wait costs no thread, so other coroutines on the same loop — notably the ones
+    already holding slots — keep running and can release. A blocking acquire here
+    turned the bound into a self-inflicted deadlock at any limit.
+
+    ``on_wait(limit)`` fires once if this call has to queue.
     """
-    # Poll with a NON-blocking attempt and yield between tries, rather than handing the
+    # Poll with a NON-blocking attempt and yield between tries, rather than handing a
     # blocking acquire to `asyncio.to_thread`. Cancelling a `to_thread` await cancels
     # only the await: the orphaned worker goes on to acquire a slot nobody will ever
     # release. Codex reproduced exactly that — `waiter_body_entered=False, admitted=2,
@@ -289,19 +460,41 @@ async def provider_slot_async(*, nested: bool = False):
     #
     # A 50 ms poll costs nothing next to a provider call measured in seconds, and it is
     # cancellation-safe by construction: nothing is in flight to abandon.
-    deadline = time.monotonic() + _positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)
-    while True:
-        ok, limit = _try_acquire(0.0, nested=nested)
-        if ok:
-            break
-        if time.monotonic() >= deadline:
-            raise _refuse(limit)
-        await asyncio.sleep(0.05)
+    global _waiting
+    announced = False
+    started_wait = time.monotonic()
+    deadline = started_wait + _positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)
+    try:
+        while True:
+            with _cv:
+                lease, limit = _take_lease_locked(nested, parent_slot)
+            if lease is not None:
+                break
+            if not announced:
+                announced = True
+                with _cv:
+                    _waiting += 1
+                _log.info("provider admission: all %d slots busy; awaiting one", limit)
+                if on_wait is not None:
+                    try:
+                        on_wait(limit)
+                    except Exception:  # noqa: BLE001
+                        _log.warning("provider admission: on_wait raised", exc_info=True)
+            if time.monotonic() >= deadline:
+                raise _refuse(limit)
+            await asyncio.sleep(_POLL_SECONDS)
+    finally:
+        if announced:
+            with _cv:
+                _waiting -= 1
+            _record_wait(time.monotonic() - started_wait)
+    token = _held_slot.set(lease)
     started = time.monotonic()
     try:
-        yield
+        yield lease
     finally:
-        _release()
+        _held_slot.reset(token)
+        _return_lease(lease)
         _record(time.monotonic() - started)
 
 
@@ -312,3 +505,12 @@ def _record(elapsed: float) -> None:
         _durations.append(elapsed)
         if len(_durations) > _MAX_SAMPLES:
             del _durations[: len(_durations) - _MAX_SAMPLES]
+
+
+def _record_wait(elapsed: float) -> None:
+    """How long a queued caller waited. Bounded like `_durations`: an unbounded list
+    behind an unbounded wait would be the second leak of the same shape."""
+    with _stats_lock:
+        _waits.append(elapsed)
+        if len(_waits) > _MAX_SAMPLES:
+            del _waits[: len(_waits) - _MAX_SAMPLES]

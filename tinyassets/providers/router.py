@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import logging
 import math
 import time
@@ -41,6 +42,12 @@ from tinyassets.exceptions import (
     SelectedModelContextError,
 )
 from tinyassets.provider_admission import ProviderBusy as _ProviderBusy
+
+# Admission deadline refusals must release reservations for launches that never ran.
+from tinyassets.provider_admission import (
+    blocking_parent_slot,
+    blocking_provider_child,
+)
 from tinyassets.provider_admission import provider_slot_async as _provider_slot
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
@@ -1134,7 +1141,10 @@ class ProviderRouter:
                     # budget reservation as INDETERMINATE and cooled a provider that had
                     # never started — the caller then saw AllProvidersExhaustedError
                     # instead of "busy, retry" (Codex reproduced this).
-                    async with _provider_slot(nested=_is_nested(universe_context)):
+                    async with _provider_slot(
+                        nested=_is_nested(universe_context),
+                        parent_slot=blocking_parent_slot(),
+                    ):
                         before_launch = getattr(
                             served_authority, "before_provider_launch", None
                         ) if served_authority is not None else None
@@ -1674,6 +1684,7 @@ class ProviderRouter:
         return response.text, response.provider, self._call_meta(response, attempts=1)
 
 
+    @blocking_provider_child()
     def call_with_policy_sync(
         self,
         role: str,
@@ -1734,7 +1745,18 @@ class ProviderRouter:
             finally:
                 loop.close()
 
-        future = self._thread_pool.submit(_run)
+        # A synchronous nested caller is blocked until this worker settles.
+        # Copy its explicit loan, not just the universe carrier. Nested work
+        # cannot queue behind blocked ancestors in the fixed sync-worker pool.
+        call_context = contextvars.copy_context()
+        nested_pool = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            if blocking_parent_slot() is not None else None
+        )
+        pool = nested_pool or self._thread_pool
+        future = pool.submit(call_context.run, _run)
+        if nested_pool is not None:
+            nested_pool.shutdown(wait=False)
         try:
             return future.result(timeout=inner_timeout + 30)
         except concurrent.futures.TimeoutError:
@@ -1756,6 +1778,7 @@ class ProviderRouter:
         thread_name_prefix="tinyassets-provider-sync",
     )
 
+    @blocking_provider_child()
     def call_sync(
         self,
         role: str,
@@ -1839,7 +1862,18 @@ class ProviderRouter:
             finally:
                 loop.close()
 
-        future = self._thread_pool.submit(_run)
+        # A synchronous nested caller is blocked until this worker settles.
+        # Copy its explicit loan, not just the universe carrier. Nested work
+        # cannot queue behind blocked ancestors in the fixed sync-worker pool.
+        call_context = contextvars.copy_context()
+        nested_pool = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            if blocking_parent_slot() is not None else None
+        )
+        pool = nested_pool or self._thread_pool
+        future = pool.submit(call_context.run, _run)
+        if nested_pool is not None:
+            nested_pool.shutdown(wait=False)
         try:
             return future.result(timeout=inner_timeout + 30)
         except concurrent.futures.TimeoutError:
