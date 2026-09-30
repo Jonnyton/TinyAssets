@@ -699,6 +699,9 @@ def read_graph(
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings,
             agent_binding, app_ui (your own UI library and choice),
+            universe_files / universe_file (the owner's own universe folder:
+            query=<path under /u>; list a directory, or read a file in chunks
+            with file_offset/file_max_bytes),
             model_options (all owned model choices, including
             unavailable ones — the COMPLETE catalogue, which a large source makes
             very large; if you are reading this into a model's context use
@@ -937,6 +940,21 @@ def read_graph(
                 binding_id=agent_binding_id,
             )
         )
+    if normalized in {"universe_file", "universe_files"}:
+        # The OWNER's read of their universe folder (/u): the files their agents
+        # share. Admin-only, link-free, bounded; every refusal is not_found.
+        from tinyassets.api.universe_file_reads import MAX_READ_BYTES as MAX_UNIVERSE_FILE_READ_BYTES
+        from tinyassets.api.universe_file_reads import list_files, read_file
+
+        if normalized == "universe_files":
+            return json.dumps(list_files(universe_id=graph_id, path=query))
+        return json.dumps(read_file(
+            universe_id=graph_id, path=query, offset=file_offset,
+            # This handle's file_max_bytes defaults to run_file's 512 KiB; a
+            # folder read pages at most MAX_READ_BYTES, so the default clamps.
+            count=min(file_max_bytes, MAX_UNIVERSE_FILE_READ_BYTES)
+            if isinstance(file_max_bytes, int) else file_max_bytes,
+        ))
     if normalized == "app_ui":
         # The caller's own UI library + choice; keyed by the authenticated caller.
         from tinyassets.api.app_ui import read_app_ui
@@ -1003,6 +1021,8 @@ def read_graph(
             "agent_bindings",
             "agent_binding",
             "app_ui",
+            "universe_file",
+            "universe_files",
             "receiver",
             "receivers",
             "output_links",
