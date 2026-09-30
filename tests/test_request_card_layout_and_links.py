@@ -240,11 +240,26 @@ function mk(id){return {id:id||'',textContent:'',hidden:false,value:'',open:fals
  classList:{set:new Set(),toggle(c,on){on?this.set.add(c):this.set.delete(c);},
   contains(c){return this.set.has(c);}},
  setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},
- appendChild(c){if(c.parentNode){const p=c.parentNode;p.children=p.children.filter(x=>x!==c);}
+ appendChild(c){if(c.parentNode){const p=c.parentNode;p.children=p.children.filter(x=>x!==c);
+     blurSubtree(c);}
    c.parentNode=this;this.children.push(c);return c;},
- replaceChildren(){this.children.forEach(c=>c.parentNode=null);this.children=[];},
+ replaceChildren(){this.children.forEach(c=>{c.parentNode=null;blurSubtree(c);});
+   this.children=[];},
  querySelectorAll(){return [];},
- addEventListener(e,f){this['on'+e]=f;},scrollIntoView(){},focus(){}};}
+ addEventListener(e,f){this['on'+e]=f;},scrollIntoView(){},
+ // Focus follows the DOM: a browser blurs an element that leaves the tree,
+ // and re-appending it does NOT give focus back. Modelling that is the whole
+ // point of the settled-rail early return.
+ focus(){focused=this;}};}
+let focused=null;
+// A browser blurs an element the moment it leaves the document, and moving one
+// within the document blurs it too. Without this the harness cannot tell a
+// detach-and-reattach from an untouched node, and a focus assertion written on
+// it passes against the reverted fix (checked).
+function blurSubtree(node){
+  if(node===focused) focused=null;
+  for(const child of node.children||[]) blurSubtree(child);
+}
 const document={createElement:t=>{const e=mk('');e.tag=t;return e;},
   createTextNode:t=>{const e=mk('');e.tag='#text';e.textContent=t;return e;}};
 // The page's own fixed elements, which exist whatever the rail is showing.
@@ -256,6 +271,7 @@ const rail=els.get('request-rail'), host=els.get('rail-items');
 rail.appendChild(host);
 rail.appendChild(els.get('connect-panel'));
 Object.defineProperty(host,'textContent',{get(){return '';},set(v){this.replaceChildren();}});
+function inTree(node){for(let at=node;at;at=at.parentNode) if(at===rail) return true; return false;}
 function findById(node,id){
   if(node.id===id) return node;
   for(const child of node.children){const hit=findById(child,id); if(hit) return hit;}
@@ -336,6 +352,59 @@ def test_a_typed_reply_note_survives_the_fifteen_second_rail_poll():
     assert out["secret"] == "ghp_typed_but_not_submitted", \
         "the rail poll deleted a key the user had pasted but not submitted"
     assert out["tabs"] == 1
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_an_unchanged_rail_is_not_touched_at_all_so_the_cursor_survives():
+    """Keeping the value is not enough if the caret goes with the poll.
+
+    Detaching a node blurs it, and re-appending does not give focus back, so a
+    rail that re-appends its own unchanged cards still interrupts typing every
+    fifteen seconds. When the answer is "exactly what is on screen", the render
+    has to touch nothing.
+    """
+    out = _run_rail(
+        [_ASK],
+        "railOpen='req_gtm';renderRail(railCache);"
+        "const box=$('fb_req_gtm');box.focus();box.value='half a sen';"
+        "renderRail(" + json.dumps([_ASK]) + ");"
+        "const result={note:box.value,stillFocused:focused===box,"
+        "attached:inTree(box),sameNode:$('fb_req_gtm')===box};",
+    )
+    assert out["note"] == "half a sen"
+    assert out["sameNode"] is True, "the card was rebuilt"
+    assert out["attached"] is True, "the reused node was left out of the document"
+    assert out["stillFocused"] is True, "the poll took the caret out of the box"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_a_new_ask_arriving_beside_an_open_card_keeps_what_was_typed_in_it():
+    """The rail's COMPOSITION changed, so it has to be rebuilt -- and the card
+    the user is mid-reply in has to come through that rebuild intact.
+
+    This is the case node reuse exists for; the unchanged-rail early return does
+    not cover it, because the rail genuinely is not what is on screen any more.
+    An agent raising a second ask while you answer the first is ordinary.
+    """
+    arrived = {"request_id": "req_new", "kind": "API", "status": "pending",
+               "title": "One more thing", "fields": [],
+               "action": {"type": "answer"}}
+    out = _run_rail(
+        [_ASK],
+        "railOpen='req_gtm';renderRail(railCache);"
+        "$('fb_req_gtm').value='most of a reply';"
+        "$('f_req_gtm_token').value='ghp_typed_but_not_submitted';"
+        "renderRail(" + json.dumps([_ASK, arrived]) + ");"
+        "const result={note:$('fb_req_gtm').value,"
+        "secret:$('f_req_gtm_token').value,tabs:host.children.length};",
+    )
+    assert out["tabs"] == 2, "the new ask did not render"
+    assert out["note"] == "most of a reply", (
+        "a second ask arriving wiped the reply being typed into the first"
+    )
+    assert out["secret"] == "ghp_typed_but_not_submitted", (
+        "a second ask arriving wiped a key pasted into the first"
+    )
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")

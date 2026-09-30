@@ -950,7 +950,16 @@ def test_invalid_parent_path_is_not_created(
 ) -> None:
     database = tmp_path / "missing" / "authority.sqlite"
 
-    with pytest.raises(evidence_api.EvidenceSchemaError, match="parent"):
+    # The refusal is the same on both platforms; only the wording differs, and
+    # `match="parent"` only ever matched the Windows one
+    # (`_windows_open_plain_directory` says "parent or ancestor"). POSIX walks
+    # ancestors with `os.open(dir_fd=...)` and says "unsafe ancestor", so this
+    # assertion had never once run on Linux -- verified 2026-09-30 on
+    # `scripts/linux_oracle.py`, which reports the actual message. What is being
+    # asserted is that a missing ancestor is REFUSED and nothing is created, so
+    # the pattern covers either wording rather than one platform's.
+    with pytest.raises(evidence_api.EvidenceSchemaError,
+                       match="(?:parent|ancestor)"):
         evidence_api.ExecutionEvidenceStore(database, initialize=True)
 
     assert not database.parent.exists()

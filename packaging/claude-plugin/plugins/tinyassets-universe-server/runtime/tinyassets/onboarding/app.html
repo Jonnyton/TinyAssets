@@ -6042,19 +6042,26 @@
       head.textContent = railCache.some(r=>!isOptionalRequest(r))
         ? "Waiting on you" : "Nothing waiting on you";
     }
-    // Park the setup panel before the tabs are rebuilt, so the node (and what
-    // the user typed into it) survives every refresh.
-    const panel = $("connect-panel");
-    if(panel){ panel.hidden = true; if(panel.parentNode !== rail) rail.appendChild(panel); }
-    host.textContent = "";
     const folded = foldedModelAccess(railCache);
     HostedModelConnect.adopt(folded);
-    let setupOpen = false;
     // Keep the rail present even with nothing waiting: with the nav button gone
     // it is the only route to adding a key yourself, and a surface that vanishes
     // is a surface a user cannot find.
     rail.hidden = false;
-    const keep = new Map();
+
+    // WHAT THE RAIL SHOULD SHOW, decided before anything is touched.
+    //
+    // The rail polls every 15 seconds. Rebuilding the cards on each poll
+    // DELETED whatever the user had typed into one: live 2026-09-30, a Deny
+    // note typed into "Reply or note" reached the thread as a bare
+    // `Denied: "<title>"`, because the poll had already emptied the box the
+    // click was about to read. Keeping each node keeps its values, with no copy
+    // of a typed secret anywhere outside the DOM -- but keeping the node is not
+    // enough on its own, because DETACHING one blurs it, and re-appending does
+    // not give focus back. Text that survives under a cursor that does not is
+    // still a poll the user can feel. So: work out the answer first, and when
+    // the answer is "exactly what is already on screen", touch nothing at all.
+    const wanted = [];
     railCache.forEach(req=>{
       if(folded && req.request_id === folded.request_id) return;
       // A sticky ask is a PRECONDITION, not a question: it opens itself and has
@@ -6069,17 +6076,27 @@
       // rail row was one it could neither act on nor remove). Still rendered
       // when something opened it deliberately, so that route has a card.
       if(isOptionalRequest(req) && !open) return;
-      const setup = isSetupRequest(req);
-      // REUSE the existing node when the row and its open state are unchanged.
-      // The rail re-renders on a 15-second poll, and rebuilding the card
-      // DELETED whatever the user had typed into it: live 2026-09-30, a Deny
-      // note typed into "Reply or note" reached the thread as a bare
-      // `Denied: "<title>"`, because the poll had already emptied the box the
-      // click was about to read. Keeping the node keeps its values, with no
-      // copy of a typed secret anywhere outside the DOM. The setup card is
-      // exempt: its inputs live in #connect-panel, which is parked and
-      // re-hosted on purpose above.
-      const signature = JSON.stringify([req, open, isOptionalRequest(req)]);
+      wanted.push({req, open, setup: isSetupRequest(req),
+                   signature: JSON.stringify([req, open, isOptionalRequest(req)])});
+    });
+    // The setup card is never reused: its inputs live in #connect-panel, which
+    // is parked on the rail and re-hosted on purpose, so its presence always
+    // takes the rebuilding path below.
+    const settled = wanted.length === host.children.length && wanted.every((w, at)=>{
+      const kept = railNodes.get(w.req.request_id);
+      return !w.setup && kept && kept.signature === w.signature
+        && host.children[at] === kept.node;
+    });
+    if(settled) return;
+
+    // Park the setup panel before the tabs are rebuilt, so the node (and what
+    // the user typed into it) survives every refresh.
+    const panel = $("connect-panel");
+    if(panel){ panel.hidden = true; if(panel.parentNode !== rail) rail.appendChild(panel); }
+    host.textContent = "";
+    let setupOpen = false;
+    const keep = new Map();
+    wanted.forEach(({req, open, setup, signature})=>{
       const previous = railNodes.get(req.request_id);
       if(previous && !setup && previous.signature === signature){
         keep.set(req.request_id, previous);

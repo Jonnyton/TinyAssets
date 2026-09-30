@@ -127,6 +127,13 @@ _MAX_CONSONANT_RUN = 5
 #: decimal digits is 66 bits.
 _MAX_DIGIT_RUN = 15
 
+#: Much tighter when the run ALSO carries letters. Writing that mixes the two
+#: uses short digit groups -- a year, a month, a day, a version, an index:
+#: ``2026-04-25-session-additions.md``, ``sp800-53``. A nine-digit group glued to
+#: words by underscores is not something writing does; it is an identifier or a
+#: key, and ``ghp_REPRO_SECRET_123456789`` is exactly that shape.
+_MAX_MIXED_DIGIT_RUN = 5
+
 #: NO TABLE OF PROVIDER PREFIXES. A 54-entry one lived here for an afternoon --
 #: ``ghp_``, ``xoxb-``, ``github_pat_``, ``AKIA`` and the rest -- and
 #: ``check_channel_agnostic`` was right to refuse it: a channel is something a
@@ -369,9 +376,10 @@ def _word_shaped(core: str) -> bool:
     parts = _SEPARATOR_RE.split(core)
     if not all(parts):
         return False
-    if not all(_part_is_word(part) for part in parts):
-        return False
     letters = "".join(c for c in core if c.isascii() and c.isalpha())
+    mixed = bool(letters) and any(c.isdigit() for c in core)
+    if not all(_part_is_word(part, mixed=mixed) for part in parts):
+        return False
     if not letters:
         # No letters at all: a number, a date, a timestamp range. Already judged
         # part by part against _MAX_DIGIT_RUN, and there is no word claim to make.
@@ -387,7 +395,7 @@ def _word_shaped(core: str) -> bool:
     return _bigram_ratio(letters) >= _MIN_BIGRAM_RATIO
 
 
-def _part_is_word(part: str) -> bool:
+def _part_is_word(part: str, *, mixed: bool) -> bool:
     """One separator-delimited part of a run, judged on its own.
 
     Three structures count, all of them things writing has and key material does
@@ -401,8 +409,10 @@ def _part_is_word(part: str) -> bool:
         return part.isalpha()
     if part.isdigit():
         # A date, a version, a count, a phone number. Bounded, because past that
-        # length a digit run IS key material: 20 decimal digits is 66 bits.
-        return len(part) <= _MAX_DIGIT_RUN
+        # length a digit run IS key material: 20 decimal digits is 66 bits. The
+        # bound is tighter inside a run that also has letters -- see the
+        # constants.
+        return len(part) <= (_MAX_MIXED_DIGIT_RUN if mixed else _MAX_DIGIT_RUN)
     if part.isalpha():
         return _alpha_part_is_word(part)
     if _SHORT_SUFFIXED_RE.match(part):
