@@ -38,11 +38,18 @@ function resolveAppUrl(isPackaged) {
 //   IDP sign-in hosts       — WorkOS AuthKit federates the top-level frame to
 //                             these during "Continue with …"; they must complete
 //                             in-window for the OAuth round-trip to set the cookie.
+//   api.workos.com          — AuthKit's social login hops through
+//                             api.workos.com/user_management/authorize on the
+//                             way to Google and back. Without it the hop was
+//                             cancelled and handed to the system browser, which
+//                             signed the user in THERE while the app window sat
+//                             on the AuthKit page (founder, 2026-10-01).
 // gstatic.com / googleusercontent.com were REMOVED: they are subresource hosts
 // (not top-level navigations), so allow-listing them only widened what page may
 // REPLACE the app — pure downside.
 const EXACT_HOSTS = [
   'tinyassets.io',
+  'api.workos.com',
   'accounts.google.com',
   'login.microsoftonline.com',
   'login.live.com',
