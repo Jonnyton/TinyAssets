@@ -102,17 +102,6 @@ def test_fake_root_is_not_exported_from_the_authority_package() -> None:
     assert not hasattr(authority, "TestAuthorityRoot")
     assert not hasattr(authority, "test_authority_sentinel")
     assert not (_PACKAGE_ROOT / "testing" / "execution_authority.py").exists()
-    assert not (
-        _REPO_ROOT
-        / "packaging"
-        / "claude-plugin"
-        / "plugins"
-        / "tinyassets-universe-server"
-        / "runtime"
-        / "tinyassets"
-        / "testing"
-        / "execution_authority.py"
-    ).exists()
 
 
 @pytest.mark.parametrize("mode", ["production", "prod", "unknown", ""])

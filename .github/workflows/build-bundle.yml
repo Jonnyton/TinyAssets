@@ -109,14 +109,20 @@ jobs:
   pack-plugin:
     # Publish the built plugin where Claude Code can install it from GitHub:
     # an orphan `plugin-dist` branch with the marketplace manifest at its root,
-    # so `/plugin marketplace add TinyAssets/TinyAssets@plugin-dist` resolves.
+    # so `/plugin marketplace add TinyAssets/TinyAssets#plugin-dist` resolves.
     # Rebuilt from scratch on every release; it carries no history of its own.
+    # The release tag is stamped as the plugin version (Claude Code updates on
+    # a version change), prereleases never publish, and an older or equal tag
+    # is refused so a late or re-run job cannot move the branch backward.
     name: Publish the Claude plugin on release
     needs: stage-and-probe
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' && !github.event.release.prerelease
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: plugin-dist
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -147,17 +153,43 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release tag ${RELEASE_TAG} is not vX.Y.Z; the plugin version is the tag"
+            exit 1
+          fi
+          auth="$(git config --get http.https://github.com/.extraheader)"
+          published=""
+          if git -c "http.https://github.com/.extraheader=${auth}" fetch -q --depth 1 origin plugin-dist 2>/dev/null; then
+            published="$(git show FETCH_HEAD:plugins/tinyassets-universe-server/.claude-plugin/plugin.json \
+              | python -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          fi
+          newest="$(printf '%s\n%s\n' "${published:-0.0.0}" "$version" | sort -V | tail -1)"
+          if [ -n "$published" ] && { [ "$published" = "$version" ] || [ "$newest" != "$version" ]; }; then
+            echo "plugin-dist already has ${published}; ${version} is not newer, not publishing."
+            exit 0
+          fi
           dist="$RUNNER_TEMP/plugin-dist"
           mkdir -p "$dist/.claude-plugin" "$dist/plugins"
           cp -a packaging/claude-plugin/plugins/tinyassets-universe-server "$dist/plugins/"
           rm -f "$dist/plugins/tinyassets-universe-server/runtime/.build.lock"
           cp packaging/claude-plugin/.claude-plugin/marketplace.json "$dist/.claude-plugin/"
+          VERSION="$version" python - "$dist" <<'PY'
+          import json, os, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          for rel, key in ((".claude-plugin/marketplace.json", "plugins"),
+                           ("plugins/tinyassets-universe-server/.claude-plugin/plugin.json", None)):
+              path = root / rel
+              data = json.loads(path.read_text(encoding="utf-8"))
+              for entry in (data[key] if key else [data]):
+                  entry["version"] = os.environ["VERSION"]
+              path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          PY
           git -C "$dist" init -q -b plugin-dist
           git -C "$dist" config user.name "github-actions[bot]"
           git -C "$dist" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C "$dist" add -A
           git -C "$dist" commit -q -m "plugin ${RELEASE_TAG} from ${GITHUB_SHA}"
           # The checkout's persisted GITHUB_TOKEN (contents: write) authenticates.
-          auth="$(git config --get http.https://github.com/.extraheader)"
           git -C "$dist" -c "http.https://github.com/.extraheader=${auth}" \
             push --force "https://github.com/${GITHUB_REPOSITORY}.git" plugin-dist
