@@ -12,19 +12,25 @@ later.
       `control_station`, persona/seed text, and the `universe_tools.py`
       self-description. Rewrite sentences rather than swap words, so the
       engine block stays within the 30,000 ratchet (D5).
-- [ ] 0.3 Website pages, `llms.txt`, plugin display name/description, and
-      store-listing copy in the repo. Rebuild the plugin mirror.
+- [ ] 0.3 Website pages, `llms.txt`, plugin display name/description,
+      store-listing copy in the repo, and native strings (Android channel text
+      with an always-update `ensureChannel`, iOS mic string, mobile/desktop
+      loading pages, D9). Rebuild the plugin mirror.
 
 ## C1. MCP surface
 
 - [ ] 1.1 Generate the exhaustive alias inventory (parameters, targets, enum
       values, error codes, response keys) from the live schemas. Record it in
       `command_center_aliases.py`, the single table (D3).
-- [ ] 1.2 Website read contract accepts either key; land it, then verify it is
-      live before 1.3 deploys (D4).
-- [ ] 1.3 Server: new names primary, a pre-validation alias middleware on both
-      servers, the `conflicting_alias` refusal, alias-hit logging, and renamed
-      error codes and response keys. App routes normalize through the same table.
+- [ ] 1.2 First-party readers prefer the new key and fall back to the old one:
+      the app, the bridge, the website read contract, and
+      `mcp_tool_canary.py` (D4).
+- [ ] 1.3 Server: new names primary. Aliases at the MCP middleware (with
+      strict validation pinned off) and at the owner door / app routes before
+      validation. Migrate direct Python callers, with a test against retired
+      keywords. Dual response keys, a `deprecated_fields` note, the
+      `conflicting_alias` refusal, alias-hit logging, and `present_actor`
+      (D3/D4/D7).
 - [ ] 1.4 Rename `meet_universe` to `meet_command_center` and sync the
       `live-mcp-connector-surface` delta.
 - [ ] 1.5 Bridge identity carries both the new and the old keys permanently,
@@ -41,7 +47,8 @@ later.
 
 ## Later
 
-- [ ] 3.1 Remove the aliases once production shows 14 consecutive days with
-      zero alias hits (bridge aliases excepted).
+- [ ] 3.1 Once production shows 14 consecutive days with zero alias hits,
+      remove the input aliases and the old response keys and bump
+      `schema_version`. Bridge aliases are kept.
 - [ ] 3.2 Record the founder's D6/D7 decision. If either is overruled, open its
       own change.

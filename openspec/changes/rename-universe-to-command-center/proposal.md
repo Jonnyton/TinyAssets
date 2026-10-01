@@ -40,6 +40,8 @@ three things that already depend on the old word:
 | MCP error codes | `no_home_universe`, `universe_access_denied`, `invalid_universe`, ... | Some are matched by `app.html` |
 | Storage | 11 tables, ~80 `universe_id` columns, `u-` id prefix, `.universe_id`, `.universe-tool-slots`, `.universe_seats.db`, `universe:` actor prefix | |
 | Env vars | `TINYASSETS_*UNIVERSE*`, 9 names | Operator-facing only |
+| Native shells | Android notification channel, iOS mic permission, mobile/desktop loading pages | Ship only with a native release (design D9) |
+| Stored actor ids in reads | `universe:<id>` printed by `api/runs.py:1508` | Translated at presentation (design D7) |
 | Plugin id | `tinyassets-universe-server` (marketplace + `plugin.json`) | Installed copies update by this id |
 | Docs | 5,019 / 556 | Mostly dated audits, design notes and reviews |
 | `openspec/specs` | 765 / 49 | Two capability dirs are named `universe-*` |

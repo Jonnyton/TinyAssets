@@ -85,13 +85,28 @@ One module, `tinyassets/command_center_aliases.py`, holds the only mapping:
 - any other enum value C1's generated inventory finds (e.g. a workspace
   `storage: "universe"`).
 
-A FastMCP `Middleware.on_call_tool`, the pattern already used at
-`engine_mcp_server.py:287` and `universe_server.py:3991`, rewrites an incoming
-call's arguments through that table **before** schema validation, on both the
-connector server and the engine server. The advertised schema carries only the
-new names, so aliases cost zero description bytes. The app's own HTTP routes
-that take `universe_id` in a JSON body (e.g. Stop, `app.html:1852`) normalize
-through the same table.
+The table is applied at **every boundary that validates arguments**, not only at
+MCP. Codex's refute found three such boundaries:
+
+- **MCP.** A FastMCP `Middleware.on_call_tool`, the pattern already used at
+  `engine_mcp_server.py:287` and `universe_server.py:3991`, rewrites a call's
+  arguments before the tool's argument validation, on both servers. FastMCP
+  3.2.0 runs middleware ahead of tool execution under its default validation
+  setting. `strict_input_validation` must stay off, because it would add SDK
+  validation upstream of middleware, and a test pins that it is off. The
+  advertised schema carries only the new names, so aliases cost zero
+  description bytes.
+- **The owner door (HTTP).** `owner_door/routes.py:_validated` (`:61`) refuses
+  unknown argument names, and the app's `Owner.read` posts to it
+  (`app.html:1608`). It normalizes through the table **before** that check. The
+  same applies to the other app JSON routes that take `universe_id` (e.g. Stop,
+  `app.html:1852`).
+- **Direct Python callers.** Python callers of a renamed function, for example
+  `engine_mcp_server.py:725` calling the connector's
+  `get_status(universe_id=...)`, are migrated in the same PR. They do not get
+  an alias: a Python call can be changed and checked, so it needs no
+  compatibility path. A test fails if any call site still passes a retired
+  keyword to a renamed function.
 
 The rewrite rules:
 
@@ -116,22 +131,37 @@ Rejected alternatives:
 - *A hard cut with no aliases.* Every open conversation would fail on its next
   call, and the error would name a parameter the user never chose.
 
-### D4. Response keys switch to the new names; the bridge keeps both
+### D4. Responses carry both key names during the window; the bridge keeps both permanently
 
-Server responses emit `command_center_id`, `command_centers` and the renamed
-error codes. They do **not** emit both old and new keys: duplicating them costs
-bytes on every read and leaves two authorities for one fact.
+*Revised after Codex's refute.* The first draft switched response keys
+outright and relied on the app's stale-asset reload, which does not hold:
 
-First-party clients move with the slice:
+- the reload checks only every ten minutes (`app.html:7598`), waits while the
+  person is typing (`:7613`), and can hold for up to three hours while a turn is
+  in flight (`:7626`);
+- already-loaded bridge code rejects a conversation or file response that has
+  no `universe_id` (`app_ui.js:425`, `:541`, `:558`);
+- `get_status` promises one release of deprecation notice before a field is
+  renamed, and a `schema_version` bump for breaking changes
+  (`universe_server.py:3923`).
 
-- `app.html` and `app_ui.js` are served by the same deploy, so they switch
-  atomically. The desktop (Electron) and Android shells load the live SPA.
-- The website deploys separately (`deploy-site-react.yml`). Its read contract
-  (`WebSite/shared/mcp/public-read-contract.js`) accepts **either** key, and that
-  change lands and is verified live **before** the server stops emitting the old
-  key.
-- An open app window from before the deploy is covered by D3 on input, and by
-  the existing stale-asset reload on output.
+So, during the alias window, every response that carries a renamed key carries
+**both**: `command_center_id` and `universe_id` (and so on), holding the same
+value from the same source. One authority, two spellings. `get_status` adds a
+`deprecated_fields` note naming the old keys and keeps its `schema_version`; it
+bumps the version only when the old keys are removed.
+
+The old response keys are removed together with the input aliases (D3's 14-day
+condition), in the same PR, which also bumps `schema_version`.
+
+First-party readers switch to the new key in C1 and fall back to the old one:
+
+- `app.html` and `app_ui.js`;
+- the website read contract (`WebSite/shared/mcp/public-read-contract.js`);
+- `scripts/mcp_tool_canary.py:241`, which the uptime workflow runs;
+- the owner-door contract test (`tests/test_owner_door.py:329`).
+
+Because the server keeps emitting the old keys, deploy order does not matter.
 
 **The custom UI bridge is the exception.** Its identity object returns
 `command_center_id` and `command_center_name` **and** `universe_id` and
@@ -184,8 +214,19 @@ This covers `u-<id>` directories, the 11 `universe*` tables, about 80
 `.universe_seats.db`, the stored `universe:<id>` actor ids, and the
 `TINYASSETS_*UNIVERSE*` env vars.
 
-No person sees these. `u-` is not even the word. The actor id is opaque, and it
-appears in a read only as an identifier.
+No person sees these, with **one exception the refute found**:
+
+- **The stored actor id.** `api/runs.py:1508` prints `Actor:
+  {run_record['actor']}` into the run summary, and `:1536` returns the raw value
+  structurally, so `universe:<id>` reaches the chatbot.
+
+The storage stays, and the presentation translates. C1 adds one
+`present_actor()` at the API boundary. It renders `universe:<id>` as
+`command_center:<id>` in summaries and in the structured field. The raw stored
+value is never parsed back from presented output; nothing takes an actor as
+input. `u-` in an id is not the word, so ids themselves are untouched. The `/u`
+jail hides root dot-entries (`universe_tools.py:294`), so the marker files are
+not visible to the agent.
 
 A migration would have to:
 
@@ -214,6 +255,24 @@ the platform editing a user's agent. The served guidance names the new term, so
 an agent with older notes reads "command center" in its current instructions
 and adopts it. The `/u` mount point is unchanged; it is a path, not the word.
 
+### D9. Native shells carry their own copy and ship on their own release
+
+The refute found copy that a live SPA deploy does not reach:
+
+- the Android notification-channel description
+  (`mobile/native/android/TinyAssetsMessagingService.java:225`);
+- the iOS microphone permission string (`mobile/scripts/add_ios_scheme.py:46`);
+- the bundled loading pages (`mobile/www/index.html:43`,
+  `desktop-app/src/loading.html:43`).
+
+C0 changes all four. Android also returns early when the channel already exists
+(`:222`), so an updated binary would keep the old description. `ensureChannel`
+therefore always calls `createNotificationChannel`. Android applies a new name
+and description to an existing channel id and leaves the user's importance
+setting alone. These reach people only with the next Play and desktop
+releases. The founder runs those (`docs/host-actions.md`), and until then the
+shells show the old word on those few strings.
+
 ## Risks / Trade-offs
 
 - **Code and product words diverge** (D6). Mitigated by the PLAN glossary line.
@@ -221,8 +280,8 @@ and adopts it. The `/u` mount point is unchanged; it is a path, not the word.
 - **An alias lingers.** The 14-day zero-hit rule is measured. If hits never
   reach zero (a client hard-coded `universe_id`), the aliases stay, which costs
   nothing.
-- **Website skew.** The website accepts either key before the server switches
-  (D4 ordering).
+- **Response size during the window.** Responses carry both id keys, a few
+  bytes per response, until the aliases are removed (D4).
 - **Copy tests.** Many tests assert exact strings, so C0 updates them in the
   same slice. A green suite after C0 proves the tests moved, not that they were
   weakened: each changed assertion swaps the old string for the new one, and no
@@ -230,15 +289,25 @@ and adopts it. The `/u` mount point is unchanged; it is a path, not the word.
 
 ## Migration Plan
 
-C0 (copy) → C1a (website accepts either key; verify live) → C1b (server: new
-names, aliases middleware, renamed prompt, error codes; canary
-`--assert-handles` green; `deployed_sha.py --assert-contains`) → C2 (living
-docs, specs, capability dir renames with every reference updated) → alias
-removal once the 14-day condition holds. C3 and C4 run only if the founder
+C0 (copy, including the native strings, which ship with the next native
+releases) → C1 (one PR covering the server and the first-party readers):
+
+- new names primary;
+- aliases at all three boundaries (D3);
+- dual response keys (D4);
+- `present_actor` (D7);
+- the renamed prompt;
+- evidence: canary `--assert-handles` green and `deployed_sha.py
+  --assert-contains`.
+
+→ C2 (living docs and specs, with the capability dir renames and every reference
+updated) → alias and old-key removal with a `schema_version` bump, once the
+14-day condition holds. C3 and C4 run only if the founder
 overrules D6 or D7.
 
-Rollback: C0 and C2 are text. C1b rolls back by reverting the PR. Because inputs
-accept both names, a rollback leaves no client unable to call.
+Rollback: C0 and C2 are text. C1 rolls back by reverting the PR. Because
+responses carry both keys and inputs accept both names, a rollback leaves no
+client unable to call or read.
 
 ## Open Questions
 
