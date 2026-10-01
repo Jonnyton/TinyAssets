@@ -1,0 +1,63 @@
+name: Queue handoff
+
+# Two failed merge-queue runs on one head, then stop and hand off.
+#
+# Measured 2026-09-27..10-01: 39 of 65 queue removals were failed checks, and
+# one PR was removed six times on the way to merging. A blind re-queue of the
+# same head repeats a full merge-group run and holds everything behind it.
+# Each `failed_checks` dequeue is recorded against the dequeued head SHA in a
+# ledger comment. On the second one for the same SHA, scripts/queue_attempts.py
+# posts a classified failure record, labels the PR `queue-handoff` and disables
+# auto-merge. auto-enroll-merge.yml refuses to re-arm only while the record for
+# the CURRENT head exists AND the label is on: a new head is never held, and
+# removing the label retries the head.
+#
+# Not required and not a gate on anything: it only stops a retry loop.
+
+on:
+  # _target: runs the trusted default-branch copy with a token that can label
+  # and comment. It never checks out or executes PR code.
+  pull_request_target:
+    types: [dequeued]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to evaluate
+        required: true
+      head:
+        description: The PR head SHA the failed attempt was on
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: queue-handoff-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  handoff:
+    name: queue-handoff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The default branch, never the PR head.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Hand off a PR that failed the queue twice on one head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head }}
+        run: python scripts/queue_attempts.py handoff --repo "$REPO" --pr "$PR" --head "$HEAD_SHA"

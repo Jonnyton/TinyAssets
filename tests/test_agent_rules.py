@@ -15,9 +15,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinyassets import agent_rules
+from tinyassets import agent_review, agent_rules
 from tinyassets.agent_rules import ASK_FIRST, DO, DO_IF_PREAPPROVED, HAND_OFF
 
+
+def _approving_review():
+    return agent_review.bound(
+        lambda *_a, **_kw: '{"verdict": "proceed", "reason": "ok"}', active=True)
 
 def _universe(tmp_path: Path) -> Path:
     path = tmp_path / "data" / "u-alpha"
@@ -129,7 +133,9 @@ def test_a_rule_stops_a_call_its_grant_would_allow(tmp_path, behaviour, kind):
 def test_the_seed_lets_a_granted_write_proceed_to_its_grant_check(tmp_path):
     from tinyassets.effectors.authenticated_external_call import _rule_refusal
 
-    assert _rule_refusal(_universe(tmp_path), "conn-1", "POST") is None
+    # The rule lets it through; the check on the run's model (D1d) approves here.
+    with _approving_review():
+        assert _rule_refusal(_universe(tmp_path), "conn-1", "POST") is None
 
 
 def test_an_unreadable_rule_store_refuses_the_call(tmp_path, monkeypatch):
@@ -263,3 +269,111 @@ def test_a_rule_refusal_gets_its_own_class_and_advice(kind, failure_class):
     assert runs._classify_external_write(line.lower()) == failure_class
     advice = runs.external_write_suggested_action(failure_class)
     assert advice and "yours to fix" not in advice
+
+
+# -- D1b: declared operation kinds -----------------------------------------------------
+
+
+def test_an_undeclared_operation_is_a_write(tmp_path):
+    assert agent_rules.classify(_universe(tmp_path), "stripe", "post", "/v1/charges") == (
+        "app.write", "POST")
+
+
+def test_a_declared_payment_is_handed_back_by_default(tmp_path):
+    from tinyassets.effectors.authenticated_external_call import _rule_refusal
+
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "stripe", "payment", method="POST",
+                             path_prefix="/v1/charges")
+    assert agent_rules.classify(universe, "stripe", "POST", "/v1/charges/ch_1") == (
+        "money.move", "POST")
+    refusal = _rule_refusal(universe, "stripe", "POST", "/v1/charges")
+    assert refusal["error_kind"] == "rule_hand_off"
+    # The same connection's undeclared paths are ordinary writes.
+    with _approving_review():
+        assert _rule_refusal(universe, "stripe", "POST", "/v1/customers") is None
+
+
+def test_the_longest_prefix_and_a_specific_method_win(tmp_path):
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "gh", "read", path_prefix="/")
+    agent_rules.declare_kind(universe, "gh", "write", method="POST", path_prefix="/repos")
+    agent_rules.declare_kind(universe, "gh", "access", method="PUT",
+                             path_prefix="/repos/o/r/collaborators")
+    assert agent_rules.classify(universe, "gh", "GET", "/user")[0] == "app.read"
+    assert agent_rules.classify(universe, "gh", "POST", "/repos/o/r/issues")[0] == "app.write"
+    assert agent_rules.classify(universe, "gh", "PUT",
+                                "/repos/o/r/collaborators/bob")[0] == "access.grant"
+    assert agent_rules.classify(universe, "gh", "GET", "/repositories")[0] == "app.read", (
+        "a prefix matches whole path segments")
+
+
+def test_a_message_kind_asks_first_by_default(tmp_path):
+    from tinyassets.effectors.authenticated_external_call import _rule_refusal
+
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "slack", "message", path_prefix="/api/chat.postMessage")
+    assert _rule_refusal(universe, "slack", "POST",
+                         "/api/chat.postMessage")["error_kind"] == "rule_ask_first"
+
+
+@pytest.mark.parametrize("prefix", ["v1", "/v1?x=1", "/v1#f"])
+def test_a_bad_prefix_or_kind_is_refused(tmp_path, prefix):
+    universe = _universe(tmp_path)
+    with pytest.raises(agent_rules.RuleRefused):
+        agent_rules.declare_kind(universe, "c", "read", path_prefix=prefix)
+    with pytest.raises(agent_rules.RuleRefused):
+        agent_rules.declare_kind(universe, "c", "steal")
+
+
+def test_the_request_path_is_read_from_a_url_or_a_path():
+    from tinyassets.effectors.authenticated_external_call import _request_path
+
+    assert _request_path({"url": "https://api.x.com/v1/a?b=1"}) == "/v1/a"
+    assert _request_path({"path": "/v1/b?c=2"}) == "/v1/b"
+    assert _request_path({}) == "/"
+
+
+# -- gpt-6-astra on #4199 ---------------------------------------------------------------
+
+
+def test_a_fragment_cannot_hide_a_declared_payment(tmp_path):
+    from tinyassets.effectors.authenticated_external_call import _request_path, _rule_refusal
+
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "stripe", "payment", method="POST",
+                             path_prefix="/v1/charges")
+    assert _request_path({"path": "/v1/charges#"}) == "/v1/charges"
+    refusal = _rule_refusal(universe, "stripe", "POST", _request_path({"path": "/v1/charges#"}))
+    assert refusal["error_kind"] == "rule_hand_off"
+
+
+def test_a_trailing_slash_is_one_spelling(tmp_path):
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "stripe", "payment", method="POST",
+                             path_prefix="/v1/charges/")
+    assert agent_rules.list_kinds(universe)[0].path_prefix == "/v1/charges"
+    assert agent_rules.classify(universe, "stripe", "POST", "/v1/charges/")[0] == "money.move"
+    with pytest.raises(agent_rules.RuleRefused):
+        # An any-method read on the same path would loosen the payment.
+        agent_rules.declare_kind(universe, "stripe", "read", path_prefix="/v1/charges/")
+
+
+def test_declaring_read_over_an_ask_first_write_needs_confirmation(tmp_path):
+    universe = _universe(tmp_path)
+    agent_rules.set_rule(universe, "app.write", ASK_FIRST, connection="gh")
+    with pytest.raises(agent_rules.RuleRefused) as refused:
+        agent_rules.declare_kind(universe, "gh", "read", method="POST", path_prefix="/graphql")
+    assert "Confirm" in str(refused.value)
+    agent_rules.declare_kind(universe, "gh", "read", method="POST", path_prefix="/graphql",
+                             confirm=True)
+    assert agent_rules.classify(universe, "gh", "POST", "/graphql")[0] == "app.read"
+
+
+def test_removing_a_payment_declaration_needs_confirmation(tmp_path):
+    universe = _universe(tmp_path)
+    declared = agent_rules.declare_kind(universe, "stripe", "payment", path_prefix="/v1")
+    with pytest.raises(agent_rules.RuleRefused):
+        agent_rules.delete_kind(universe, declared.id)
+    assert agent_rules.list_kinds(universe), "nothing removed without confirmation"
+    assert agent_rules.delete_kind(universe, declared.id, confirm=True) is True

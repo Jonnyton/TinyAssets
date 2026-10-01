@@ -276,20 +276,6 @@ The system SHALL store immutable draft-output versions keyed by universe and fan
 - **WHEN** a caller rolls back to an existing earlier version
 - **THEN** that row becomes current without inserting an additional version row
 
-### Requirement: Node-Scope Manifest Parsing
-
-The system SHALL parse the node-scope YAML shape into node entries that distinguish full-canon access from narrow slices and declared external sources. A missing or empty manifest SHALL default to in-universe full-canon access; `narrow_slice` SHALL require at least one entity, relation, or document identifier; and a non-universe member SHALL require an allowed external-source kind plus identifier. Unknown top-level fields, access modes, source kinds, and malformed entries SHALL raise `NodeScopeManifestError`. As-built limitations: the format defines no schema-version field (so any version declaration is rejected as an unknown top-level field), this is a loader with no production enforcement consumer, and `universe_member` uses ordinary boolean coercion so a non-empty string such as `"false"` is treated as true.
-
-#### Scenario: Narrow slice without identifiers is refused
-
-- **WHEN** a node declares `narrow_slice` access with no entity, relation, or document IDs
-- **THEN** manifest parsing raises `NodeScopeManifestError`
-
-#### Scenario: Missing manifest uses the default scope
-
-- **WHEN** the configured manifest file does not exist
-- **THEN** the loader returns the default in-universe full-canon manifest rather than failing
-
 ### Requirement: Standalone Temporal Fact Library
 
 The system SHALL expose a standalone SQLite temporal-fact library that can assert facts, supersede or invalidate them, query point-in-time/current/history views, report overlapping-window fact pairs, and rebuild an in-memory changed-entity index. As-built limitations: timestamps are compared lexically, current queries can admit a future `valid_from`, conflict SQL has null and branch-filter gaps, values are stringified, supersession does not require the replacement's lineage field to point back, `branches_with_conflicts` returns an empty placeholder, and no production integration or focused test suite proves stronger behavior.
@@ -368,20 +354,6 @@ The system SHALL produce a critique and reflection through the configured global
 
 - **WHEN** critique keywords produce an `updated_weights` mapping
 - **THEN** the mapping is returned to the caller but no memory weights are persisted or changed automatically
-
-### Requirement: Memory Tool Placeholder Envelopes
-
-The system SHALL expose the six current `tinyassets.memory.tools` callable envelopes, accept their optional scope inputs, and validate lifecycle-tier progression only in `memory_promote`, but SHALL NOT claim scope enforcement or durable effects that the implementations do not perform. As built, scope inputs are ignored by the placeholder operations; search and conflict calls return empty results; assertion fabricates a response identifier without storing a fact; and promote/forget/consolidate report envelope success without mutating the episodic, temporal, mini-Brain, or OKF stores.
-
-#### Scenario: Placeholder search has no backend query
-
-- **WHEN** a memory-search tool call supplies scope metadata
-- **THEN** it returns the shipped empty-result envelope without querying the memory backends
-
-#### Scenario: Placeholder promotion validates progression only
-
-- **WHEN** a promotion tool call has a valid tier progression
-- **THEN** it can report success without changing any persisted memory row
 
 ### Requirement: OKF v0.1 export reads only the curated wiki source set
 

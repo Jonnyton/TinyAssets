@@ -127,33 +127,6 @@ the runner SHALL derive pass/fail from `min_score`.
 - **THEN** the runner SHALL return verdict `pass` and preserve scenario,
   candidate, privacy, and threshold context in details.
 
-### Requirement: The shipped MCP-call dispatcher is synchronous and reports, rather than enforces, budgets
-
-The current `mcp_call` dispatcher SHALL synchronously invoke one supplied action
-handler, parse its JSON response when possible, run supplied evaluators or the
-default status evaluator, and aggregate scores by the current mean, minimum, or
-mean-fallback weighted modes. It MUST clamp evaluator scores to `[-1.0, 1.0]`
-and report over-wall-time budget in details, but it SHALL NOT be represented as
-enforcing token budgets, enforcing wall-time termination, running in parallel,
-or providing a sandbox.
-
-#### Scenario: A slow handler produces evidence but is not terminated by the runtime
-
-- **GIVEN** an `mcp_call` scenario whose action handler exceeds its declared
-  `max_wall_time_seconds`
-- **WHEN** the handler returns and the dispatcher completes evaluation
-- **THEN** the result details SHALL report the elapsed time and `over_budget`,
-  while the current dispatcher SHALL not claim that it terminated the handler.
-
-#### Scenario: Unsupported future scenario execution is not claimed as shipped
-
-- **GIVEN** a review of acceptance-scenario execution beyond a registered
-  `mcp_call` dispatcher
-- **WHEN** it describes the as-built runtime
-- **THEN** it SHALL state that unregistered surfaces return `skip` and SHALL
-  NOT claim distributed workers, parallel scenario execution, a new sandbox,
-  or generic realtime scenario orchestration as implemented.
-
 ### Requirement: The public hyperparameter evaluator skips bounded absence cases and otherwise exposes ordinary failures
 
 `tinyassets.outcomes` SHALL publicly export
