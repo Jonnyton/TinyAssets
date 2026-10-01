@@ -74,7 +74,7 @@ def test_stop_keeps_the_result_and_cancels_a_running_run(pinned):
     assert _write("stop", activity_id=aid)["status"] == acts.COMPLETED
     record = acts.get(universe, aid)
     assert record["outcome"] == "stopped" and record["result_summary"] == "half done"
-    assert stopped == ["run-1"]
+    assert stopped == ["run-1"], "the run retired by this very transition is cancelled"
 
 
 def test_pause_then_resume_queues_it_again(pinned):

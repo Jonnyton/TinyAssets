@@ -414,10 +414,11 @@ class AssignedQueueConsumer:
         )
         # Activities (harness D2): settle ended runs and start queued ones on
         # the same cadence, so nothing waits for a restart to be picked up.
+        # It runs on its own thread: the pump and its heartbeats never wait on it.
         try:
-            from tinyassets.activity_dispatcher import dispatch_all
+            from tinyassets.activity_dispatcher import tick_in_background
 
-            dispatch_all(self.base_path)
+            tick_in_background(self.base_path)
         except Exception:  # noqa: BLE001 - activities never stop the pump
             logger.exception("activity dispatch tick failed")
         for universe_id in serving_universes:

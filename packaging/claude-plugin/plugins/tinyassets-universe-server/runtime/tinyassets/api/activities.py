@@ -38,7 +38,8 @@ def _wake(base_path: Path, universe_id: str) -> None:
 
 def _public(record: dict) -> dict:
     """What the agent and the owner see; the runner's bookkeeping stays inside."""
-    hidden = {"runner_token", "runner_generation", "owner_principal", "brief"}
+    hidden = {"runner_token", "runner_generation", "owner_principal", "brief",
+              "retiring_token", "claimed_at"}
     view = {k: v for k, v in record.items() if k not in hidden}
     view["brief"] = record["brief"][:2_000]
     return view
@@ -72,7 +73,6 @@ def write(base_path: Path, *, universe_id: str, actor_id: str, operation: str,
             raise activities.ActivityRefused("No such activity.", kind="not_found")
         expect = payload.get("expected_revision")
         expect = int(expect) if isinstance(expect, int) and expect > 0 else None
-        run_id = record["runner_token"] if record["status"] == activities.IN_PROGRESS else ""
         if op == "stop":
             record = activities.transition(universe_dir, activity_id, activities.COMPLETED,
                                            expect_revision=expect, outcome="stopped",
@@ -84,10 +84,12 @@ def write(base_path: Path, *, universe_id: str, actor_id: str, operation: str,
             record = activities.transition(universe_dir, activity_id, activities.SCHEDULED,
                                            expect_revision=expect)
             _wake(Path(base_path), universe_id)
-        if run_id and op in {"stop", "pause"}:
+        # The run that was executing is read off the same transaction that
+        # retired it, so the cancel targets exactly that run.
+        if record.get("retiring_token") and op in {"stop", "pause"}:
             from tinyassets import activity_runner
 
-            activity_runner.stop(Path(base_path), run_id)
+            activity_runner.stop(Path(base_path), record["retiring_token"])
         return {"activity_id": activity_id, "status": record["status"],
                 "revision": record["revision"]}
     except activities.ActivityRefused as exc:

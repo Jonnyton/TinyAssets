@@ -68,6 +68,12 @@ MAX_SUMMARY = 4_000
 MAX_REASON = 300
 MAX_EVENTS = 200
 PAGE = 50
+#: A claim that never bound a run is taken over only after this long, so a
+#: second dispatcher never starts a duplicate run for a claim still binding.
+UNBOUND_GRACE_S = 120.0
+#: A run that will not start is retried with backoff, then the activity fails.
+MAX_START_FAILURES = 3
+START_BACKOFF_S = 30.0
 
 _ID = re.compile(r"^act_[0-9a-f]{16}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
@@ -94,12 +100,15 @@ _SCHEMA = (
         last_tool_seq      INTEGER NOT NULL DEFAULT 0,
         runner_token       TEXT NOT NULL DEFAULT '',
         runner_generation  INTEGER NOT NULL DEFAULT 0,
+        claimed_at         REAL NOT NULL DEFAULT 0,
+        retiring_token     TEXT NOT NULL DEFAULT '',
+        start_failures     INTEGER NOT NULL DEFAULT 0,
         revision           INTEGER NOT NULL DEFAULT 1,
         created_at         REAL NOT NULL,
         updated_at         REAL NOT NULL,
         finished_at        REAL NOT NULL DEFAULT 0)""",
-    """CREATE INDEX IF NOT EXISTS activities_by_update
-        ON activities(updated_at DESC, activity_id DESC)""",
+    """CREATE INDEX IF NOT EXISTS activities_by_creation
+        ON activities(created_at DESC, activity_id DESC)""",
     """CREATE UNIQUE INDEX IF NOT EXISTS activities_by_schedule
         ON activities(origin_ref) WHERE origin_kind = 'schedule'""",
     """CREATE TABLE IF NOT EXISTS effect_intents (
@@ -134,7 +143,8 @@ _COLUMNS = (
     "activity_id", "agent_id", "parent_activity_id", "session_key", "owner_principal",
     "title", "brief", "origin_kind", "origin_ref", "approval_id", "status", "outcome",
     "waiting_reason", "waiting_request_id", "result_summary", "result_path",
-    "last_tool_seq", "runner_token", "runner_generation", "revision", "created_at",
+    "last_tool_seq", "runner_token", "runner_generation", "claimed_at", "retiring_token",
+    "start_failures", "revision", "created_at",
     "updated_at", "finished_at",
 )
 
@@ -254,9 +264,11 @@ def _event(conn: sqlite3.Connection, record: dict, kind: str, reason: str = "") 
         "INSERT INTO activity_events (activity_id, seq, ts, kind, line) VALUES (?, ?, ?, ?, ?)",
         (activity_id, seq, time.time(), kind, _one_line(line, MAX_REASON)),
     )
-    # Bounded: the oldest delivered lines go first; undelivered ones are kept.
+    # Bounded to the newest MAX_EVENTS lines, delivered or not: status lines are
+    # a recent window onto the record, which stays the truth, so an activity that
+    # loops through waits cannot grow its history without limit.
     conn.execute(
-        "DELETE FROM activity_events WHERE activity_id = ? AND delivered = 1 AND seq <= ?",
+        "DELETE FROM activity_events WHERE activity_id = ? AND seq <= ?",
         (activity_id, seq - MAX_EVENTS),
     )
 
@@ -305,7 +317,8 @@ def create(universe_dir: Path, *, owner_principal: str, title: str, brief: str,
         "origin_kind": origin_kind, "origin_ref": origin_ref, "approval_id": approval_id,
         "status": SCHEDULED, "outcome": "", "waiting_reason": "", "waiting_request_id": "",
         "result_summary": "", "result_path": "", "last_tool_seq": 0, "runner_token": "",
-        "runner_generation": 0, "revision": 1, "created_at": now, "updated_at": now,
+        "runner_generation": 0, "claimed_at": 0.0, "retiring_token": "",
+        "start_failures": 0, "revision": 1, "created_at": now, "updated_at": now,
         "finished_at": 0.0,
     }
     with _txn(universe_dir, create=True) as conn:
@@ -333,8 +346,8 @@ def get(universe_dir: Path, activity_id: str) -> dict | None:
         return _get(conn, activity_id)
 
 
-def _encode_cursor(updated_at: float, activity_id: str) -> str:
-    raw = json.dumps([updated_at, activity_id]).encode()
+def _encode_cursor(created_at: float, activity_id: str) -> str:
+    raw = json.dumps([created_at, activity_id]).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
@@ -351,10 +364,11 @@ def _decode_cursor(cursor: str) -> tuple[float, str]:
 @_when_absent(lambda: {"activities": [], "next_cursor": None})
 def list_page(universe_dir: Path, *, status: str | None = None, cursor: str | None = None,
               limit: int = PAGE) -> dict:
-    """One page of activities, newest change first, and the cursor to the next.
+    """One page of activities, newest first, and the cursor to the next.
 
-    Every activity is reachable by following ``next_cursor``; nothing is cut
-    for size.
+    Ordered by creation, which never changes, so following ``next_cursor``
+    reaches every activity that existed when the walk began even while others
+    change status; nothing is cut for size.
     """
     if status is not None and status not in STATUSES:
         raise ActivityRefused(f"Unknown status {status!r}.")
@@ -365,17 +379,17 @@ def list_page(universe_dir: Path, *, status: str | None = None, cursor: str | No
         params.append(status)
     if cursor:
         updated_at, last_id = _decode_cursor(cursor)
-        where.append("(updated_at < ? OR (updated_at = ? AND activity_id < ?))")
+        where.append("(created_at < ? OR (created_at = ? AND activity_id < ?))")
         params += [updated_at, updated_at, last_id]
     sql = f"SELECT {', '.join(_COLUMNS)} FROM activities"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY updated_at DESC, activity_id DESC LIMIT ?"
+    sql += " ORDER BY created_at DESC, activity_id DESC LIMIT ?"
     with closing(_connect(universe_dir)) as conn:
         rows = [_row(r) for r in conn.execute(sql, (*params, limit + 1))]
     more = len(rows) > limit
     rows = rows[:limit]
-    next_cursor = (_encode_cursor(rows[-1]["updated_at"], rows[-1]["activity_id"])
+    next_cursor = (_encode_cursor(rows[-1]["created_at"], rows[-1]["activity_id"])
                    if more else None)
     return {"activities": rows, "next_cursor": next_cursor}
 
@@ -416,6 +430,9 @@ def transition(universe_dir: Path, activity_id: str, to: str, *,
             "waiting_reason": _one_line(waiting_reason, MAX_REASON) if waiting else "",
             "waiting_request_id": _one_line(waiting_request_id, 80) if waiting else "",
             "runner_token": "",
+            # The run leaving is kept as retiring until it has actually ended,
+            # so a resume never starts a second run beside a cancelled one.
+            "retiring_token": record["runner_token"] or record["retiring_token"],
         }
         if outcome:
             changes["outcome"] = _one_line(outcome, 80)
@@ -456,36 +473,73 @@ def answered(universe_dir: Path, activity_id: str, request_id: str) -> bool:
     return True
 
 
+def _claimable(record: dict, replaceable: Callable[[str], bool], now: float) -> bool:
+    status = record["status"]
+    retiring = record["retiring_token"]
+    if retiring and not replaceable(retiring):
+        return False  # its previous run has not ended yet
+    if status == SCHEDULED:
+        failures = record["start_failures"]
+        return not failures or now >= record["updated_at"] + START_BACKOFF_S * 2 ** (failures - 1)
+    if status != IN_PROGRESS:
+        return False
+    token = record["runner_token"]
+    if token:
+        return replaceable(token)
+    return now >= record["claimed_at"] + UNBOUND_GRACE_S
+
+
 @_when_absent(lambda: None)
 def claim(universe_dir: Path, activity_id: str, *,
-          replaceable: Callable[[str], bool]) -> int | None:
+          replaceable: Callable[[str], bool], now: float | None = None) -> int | None:
     """Claim an activity for a new run; the new generation, or None.
 
-    Step 1 of reserve, bind, release (design D4). A queued activity is
-    claimable. An ``in_progress`` one is claimable when it names no run (a
-    dispatcher died between claiming and binding) or when
-    ``replaceable(run_id)`` -- its run ended without settling the record, or
-    was interrupted -- so a live run is never replaced.
+    Step 1 of reserve, bind, release (design D4). Claimable: a queued activity
+    (after its start backoff) whose previous run has ended; an ``in_progress``
+    one whose run ended or was interrupted (``replaceable``); or one whose
+    claim never bound a run within ``UNBOUND_GRACE_S`` (its dispatcher died).
+    A live run is never replaced, and a claim still binding is never raced.
     """
+    now = time.time() if now is None else now
     with _txn(universe_dir) as conn:
         record = _get(conn, activity_id)
-        if record is None:
+        if record is None or not _claimable(record, replaceable, now):
             return None
         resumed = record["status"] == IN_PROGRESS
-        if resumed:
-            current = record["runner_token"]
-            if current and not replaceable(current):
-                return None
-        elif record["status"] != SCHEDULED:
-            return None
         generation = record["runner_generation"] + 1
         conn.execute(
-            "UPDATE activities SET status = ?, runner_token = '', runner_generation = ?, "
-            "revision = revision + 1, updated_at = ? WHERE activity_id = ?",
-            (IN_PROGRESS, generation, _bump(record), activity_id),
+            "UPDATE activities SET status = ?, runner_token = '', retiring_token = '', "
+            "runner_generation = ?, claimed_at = ?, revision = revision + 1, updated_at = ? "
+            "WHERE activity_id = ?",
+            (IN_PROGRESS, generation, now, _bump(record), activity_id),
         )
         _event(conn, record, "resumed" if resumed and record["last_tool_seq"] else IN_PROGRESS)
     return generation
+
+
+@_when_absent(lambda: None)
+def note_start_failure(universe_dir: Path, activity_id: str, generation: int,
+                       reason: str) -> str | None:
+    """A claimed run would not start: queue again with backoff, or fail after
+    ``MAX_START_FAILURES``. The status it landed in, or None if superseded."""
+    with _txn(universe_dir) as conn:
+        record = _get(conn, activity_id)
+        if (record is None or record["status"] != IN_PROGRESS
+                or record["runner_generation"] != generation or record["runner_token"]):
+            return None
+        failures = record["start_failures"] + 1
+        to = FAILED if failures >= MAX_START_FAILURES else SCHEDULED
+        changes = {"status": to, "start_failures": failures, "updated_at": _bump(record),
+                   "revision": record["revision"] + 1}
+        if to == FAILED:
+            changes.update(outcome="failed:run_refused", finished_at=time.time())
+        conn.execute(
+            f"UPDATE activities SET {', '.join(f'{k} = ?' for k in changes)} "
+            "WHERE activity_id = ?", (*changes.values(), activity_id),
+        )
+        record.update(changes)
+        _event(conn, record, to, _one_line(reason, 120))
+    return to
 
 
 @_when_absent(lambda: False)
@@ -574,17 +628,16 @@ def activity_for_run(universe_dir: Path, run_id: str) -> dict | None:
 
 
 @_when_absent(list)
-def needing_a_runner(universe_dir: Path, *, replaceable: Callable[[str], bool]) -> list[str]:
-    """Queued activities, and running ones with no run bound or a replaceable
-    run, oldest first."""
+def needing_a_runner(universe_dir: Path, *, replaceable: Callable[[str], bool],
+                     now: float | None = None) -> list[str]:
+    """Activities a dispatcher should act on now, oldest first: claimable ones
+    and running ones whose bound run ended (to settle)."""
+    now = time.time() if now is None else now
     with closing(_connect(universe_dir)) as conn:
-        rows = conn.execute(
-            "SELECT activity_id, status, runner_token FROM activities "
-            "WHERE status IN (?, ?) ORDER BY created_at, activity_id",
-            (SCHEDULED, IN_PROGRESS),
-        ).fetchall()
-    return [aid for aid, status, token in rows
-            if status == SCHEDULED or not token or replaceable(token)]
+        rows = [_row(r) for r in conn.execute(
+            f"SELECT {', '.join(_COLUMNS)} FROM activities WHERE status IN (?, ?) "
+            "ORDER BY created_at, activity_id", (SCHEDULED, IN_PROGRESS))]
+    return [r["activity_id"] for r in rows if _claimable(r, replaceable, now)]
 
 
 @_when_absent(set)
@@ -638,18 +691,24 @@ def events_page(universe_dir: Path, activity_id: str, *, after: int = 0,
             "next_after": events[-1]["seq"] if len(rows) > limit else None}
 
 
-@_when_absent(lambda: 0)
-def fence_all(universe_dir: Path, *, outcome: str) -> int:
+@_when_absent(list)
+def fence_all(universe_dir: Path, *, outcome: str) -> list[str]:
     """Fail every unfinished activity and supersede its runner (account deletion).
 
-    Runs before the store is removed, so a runner still alive cannot write the
-    store back into existence through a stale generation.
+    Runs before the store is removed, so a runner still alive cannot act
+    through a stale generation. Returns the runs still named, current or
+    retiring, for the caller to cancel.
     """
+    now = time.time()
     with _txn(universe_dir) as conn:
-        cur = conn.execute(
-            "UPDATE activities SET status = ?, outcome = ?, runner_token = '', "
+        runs = [token for row in conn.execute(
+            "SELECT runner_token, retiring_token FROM activities") for token in row if token]
+        conn.execute(
+            "UPDATE activities SET status = ?, outcome = ?, "
+            "retiring_token = CASE WHEN runner_token != '' THEN runner_token "
+            "ELSE retiring_token END, runner_token = '', "
             "runner_generation = runner_generation + 1, revision = revision + 1, "
             "updated_at = ?, finished_at = ? WHERE status NOT IN (?, ?)",
-            (FAILED, _one_line(outcome, 80), time.time(), time.time(), COMPLETED, FAILED),
+            (FAILED, _one_line(outcome, 80), now, now, COMPLETED, FAILED),
         )
-        return cur.rowcount
+    return runs

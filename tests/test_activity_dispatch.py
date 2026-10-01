@@ -144,7 +144,8 @@ def test_one_activity_failing_does_not_stop_the_others(monkeypatch, universe):
 
 def test_dispatch_all_reaches_every_universe_with_a_store(monkeypatch, tmp_path):
     seen = []
-    monkeypatch.setattr(dispatcher, "dispatch_universe", lambda b, uid: seen.append(uid))
+    monkeypatch.setattr(dispatcher, "dispatch_universe",
+                        lambda b, uid, **kw: seen.append(uid))
     for name in ("u-a", "u-b"):
         (tmp_path / name).mkdir()
         acts.create(tmp_path / name, owner_principal=OWNER, title="t", brief="b",
@@ -257,8 +258,9 @@ def test_a_start_that_loses_its_claim_cancels_the_run(monkeypatch, universe):
     cancelled = []
     monkeypatch.setattr(runs, "request_cancel", lambda base, run_id: cancelled.append(run_id))
     aid = _new(universe)
-    stale = acts.claim(universe, aid, replaceable=lambda r: False)
-    acts.claim(universe, aid, replaceable=lambda r: False)  # a newer claim
+    stale = acts.claim(universe, aid, replaceable=lambda r: False, now=1000.0)
+    acts.claim(universe, aid, replaceable=lambda r: False,
+               now=1000.0 + acts.UNBOUND_GRACE_S + 1)  # a newer claim
     runner.start(universe.parent, universe.name, acts.get(universe, aid), stale)
     assert cancelled == ["run-late"]
     assert acts.get(universe, aid)["runner_token"] == ""
@@ -277,3 +279,51 @@ def test_start_refuses_when_the_owner_no_longer_owns_the_universe(monkeypatch, u
     with pytest.raises(acts.ActivityRefused) as refused:
         runner.start(universe.parent, universe.name, acts.get(universe, aid), generation)
     assert refused.value.kind == "owner_lost"
+
+
+def test_a_tick_starts_at_most_its_budget(monkeypatch, universe):
+    runs = _Runs(monkeypatch, universe)
+    for i in range(5):
+        _new(universe, f"t{i}")
+    dispatcher.dispatch_all(universe.parent, starts=2)
+    assert len(runs.started) == 2
+    dispatcher.dispatch_all(universe.parent, starts=2)
+    assert len(runs.started) == 4
+
+
+def test_a_second_dispatcher_in_the_process_waits_its_turn(monkeypatch, universe):
+    runs = _Runs(monkeypatch, universe)
+    _new(universe)
+    lock = dispatcher._universe_lock(universe.name)
+    with lock:
+        _dispatch(universe)
+    assert runs.started == []
+    _dispatch(universe)
+    assert len(runs.started) == 1
+
+
+def test_a_run_that_will_not_start_is_retried_with_backoff(monkeypatch, universe):
+    _Runs(monkeypatch, universe)
+
+    def refuse(*_a):
+        raise acts.ActivityRefused("no executor", kind="run_refused")
+
+    monkeypatch.setattr(runner, "start", refuse)
+    aid = _new(universe)
+    _dispatch(universe)
+    record = acts.get(universe, aid)
+    assert record["status"] == acts.SCHEDULED and record["start_failures"] == 1
+    _dispatch(universe)
+    assert acts.get(universe, aid)["start_failures"] == 1, "backing off, not retried at once"
+
+
+def test_an_activities_branch_with_extra_steps_is_refused(tmp_path):
+    from tinyassets.daemon_server import save_branch_definition
+
+    branch = runner.ensure_branch(tmp_path, "u-alpha", OWNER).to_dict()
+    extra = dict(branch["node_defs"][0], node_id="pre", tools_allowed=[],
+                 prompt_template="runs before the barrier")
+    branch["node_defs"].append(extra)
+    save_branch_definition(tmp_path, branch_def=branch)
+    with pytest.raises(runner.ActivityBranchInvalid, match="exactly one agent node"):
+        runner.ensure_branch(tmp_path, "u-alpha", OWNER)

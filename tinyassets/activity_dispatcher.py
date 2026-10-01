@@ -19,6 +19,7 @@ act on one activity.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from tinyassets import activity_runner as runner
@@ -29,6 +30,19 @@ logger = logging.getLogger(__name__)
 #: Owner-authority refusals that end an activity, and the one that waits for
 #: the owner (no model connected yet is something they fix, not a failure).
 _WAITS = {"no_serving_assignment": "Connect a model so your agent can work on this."}
+
+#: At most this many runs started per tick across all universes, so a tick
+#: has bounded work; the rest wait for the next tick, in order.
+STARTS_PER_TICK = 20
+
+_universe_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+_tick_lock = threading.Lock()
+
+
+def _universe_lock(universe_id: str) -> threading.Lock:
+    with _locks_guard:
+        return _universe_locks.setdefault(universe_id, threading.Lock())
 
 
 def _run_outcome(base_path: Path, run_id: str) -> tuple[str, str]:
@@ -69,11 +83,12 @@ def _settle_ended(base_path: Path, universe_id: str, record: dict) -> bool:
     return False  # interrupted: claim a new run below
 
 
-def _start(base_path: Path, universe_id: str, activity_id: str) -> None:
+def _start(base_path: Path, universe_id: str, activity_id: str) -> bool:
+    """Try to start a run; True if one was started."""
     universe_dir = base_path / universe_id
     record = activities.get(universe_dir, activity_id)
     if record is None:
-        return
+        return False
     reason = runner.owner_unavailable(base_path, universe_id, record["owner_principal"])
     if reason and reason not in _WAITS:
         try:
@@ -81,30 +96,50 @@ def _start(base_path: Path, universe_id: str, activity_id: str) -> None:
                                   outcome="failed:owner_lost")
         except activities.ActivityRefused:
             pass
-        return
+        return False
     if reason:
         activities.note_waiting_for_seat(universe_dir, activity_id)
-        return
+        return False
     generation = activities.claim(
         universe_dir, activity_id,
         replaceable=lambda run_id: runner.state(base_path, run_id) == runner.ENDED)
     if generation is None:
-        return
+        return False
     try:
         runner.start(base_path, universe_id, record, generation)
     except activities.ActivityRefused as exc:
-        to = activities.FAILED if exc.kind != "run_refused" else activities.SCHEDULED
+        if exc.kind == "run_refused":
+            # Transient: back off, and fail after a bounded number of tries.
+            activities.note_start_failure(universe_dir, activity_id, generation, str(exc))
+            return False
         try:
-            activities.transition(universe_dir, activity_id, to, generation=generation,
-                                  outcome=f"failed:{exc.kind}" if to == activities.FAILED
-                                  else "")
+            activities.transition(universe_dir, activity_id, activities.FAILED,
+                                  generation=generation, outcome=f"failed:{exc.kind}")
         except activities.ActivityRefused:
             pass
+        return False
+    return True
 
 
-def dispatch_universe(base_path: str | Path, universe_id: str) -> None:
-    """Settle ended runs and start queued activities in one universe."""
-    base_path = Path(base_path)
+def dispatch_universe(base_path: str | Path, universe_id: str, *,
+                      budget: list[int] | None = None) -> None:
+    """Settle ended runs and start queued activities in one universe.
+
+    One dispatcher per universe at a time in this process (a second caller --
+    the served tool's wake racing the tick -- returns at once; the store's
+    claims fence any other process). ``budget`` is a shared one-item counter of
+    starts left this tick.
+    """
+    lock = _universe_lock(universe_id)
+    if not lock.acquire(blocking=False):
+        return
+    try:
+        _dispatch_universe(Path(base_path), universe_id, budget)
+    finally:
+        lock.release()
+
+
+def _dispatch_universe(base_path: Path, universe_id: str, budget: list[int] | None) -> None:
     universe_dir = base_path / universe_id
 
     def replaceable(run_id: str) -> bool:
@@ -118,20 +153,45 @@ def dispatch_universe(base_path: str | Path, universe_id: str) -> None:
             if record["status"] == activities.IN_PROGRESS and record["runner_token"]:
                 if _settle_ended(base_path, universe_id, record):
                     continue
-            _start(base_path, universe_id, activity_id)
+            if budget is not None and budget[0] <= 0:
+                return
+            if _start(base_path, universe_id, activity_id) and budget is not None:
+                budget[0] -= 1
         except Exception:  # noqa: BLE001 - one activity never stops the others
             logger.exception("activity dispatch failed universe=%s activity=%s",
                              universe_id, activity_id)
 
 
-def dispatch_all(base_path: str | Path) -> None:
-    """Every universe that has an activity store (the consumer tick)."""
+def dispatch_all(base_path: str | Path, *, starts: int = STARTS_PER_TICK) -> None:
+    """Every universe that has an activity store, within one tick's budget."""
     base_path = Path(base_path)
     records = base_path / ".agent-sessions"
     if not records.is_dir():
         return
+    budget = [starts]
     for store in sorted(records.glob("*/agent-activities.db")):
         universe_id = store.parent.name
         if universe_id.startswith(".") or not (base_path / universe_id).is_dir():
             continue
-        dispatch_universe(base_path, universe_id)
+        try:
+            dispatch_universe(base_path, universe_id, budget=budget)
+        except Exception:  # noqa: BLE001 - one universe never stops the others
+            logger.exception("activity dispatch failed universe=%s", universe_id)
+
+
+def tick_in_background(base_path: str | Path) -> bool:
+    """Run one ``dispatch_all`` off the caller's thread; skipped while the last
+    one is still going. The consumer's tick never waits on activities."""
+    if not _tick_lock.acquire(blocking=False):
+        return False
+
+    def run() -> None:
+        try:
+            dispatch_all(base_path)
+        except Exception:  # noqa: BLE001
+            logger.exception("activity dispatch tick failed")
+        finally:
+            _tick_lock.release()
+
+    threading.Thread(target=run, name="activity-dispatch", daemon=True).start()
+    return True

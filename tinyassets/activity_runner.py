@@ -103,6 +103,20 @@ def ensure_branch(base_path: Path, universe_id: str, owner_principal: str) -> An
         raise ActivityBranchInvalid(
             "Your Activities workflow has no agent node, so there is nothing to run an "
             "activity with. Add one back, or delete the workflow to get the default back.")
+    # One agent node and nothing else: no step may run before the start
+    # barrier links the run to its activity (the barrier is at the agent call).
+    extra = [n for n in branch.node_defs if n.node_id not in agents]
+    shaped = (
+        len(agents) == 1 and not extra and len(branch.graph_nodes or []) <= 1
+        and not any(getattr(n, "effects", None) or getattr(n, "invoke_branch_spec", None)
+                    or getattr(n, "invoke_branch_version_spec", None)
+                    for n in branch.node_defs)
+    )
+    if not shaped:
+        raise ActivityBranchInvalid(
+            "Your Activities workflow must be exactly one agent node (edit its "
+            "instructions and tools freely); other steps belong in workflows the agent "
+            "runs. Delete the workflow to get the default back.")
     if str(branch.author or "") != owner_principal:
         raise ActivityBranchInvalid(
             "Your Activities workflow is not authored by you, so it cannot run your "

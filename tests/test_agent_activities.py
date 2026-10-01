@@ -184,9 +184,13 @@ def test_only_the_bound_run_passes_the_start_barrier(tmp_path):
 def test_a_claim_whose_dispatcher_died_before_binding_is_reclaimed(tmp_path):
     universe = _universe(tmp_path)
     aid = _new(universe)["activity_id"]
-    first = acts.claim(universe, aid, replaceable=_never_dead)
-    assert acts.needing_a_runner(universe, replaceable=_never_dead) == [aid]
-    second = acts.claim(universe, aid, replaceable=_never_dead)
+    first = acts.claim(universe, aid, replaceable=_never_dead, now=1000.0)
+    # Still binding: a second dispatcher must not start a duplicate run.
+    assert acts.needing_a_runner(universe, replaceable=_never_dead, now=1001.0) == []
+    assert acts.claim(universe, aid, replaceable=_never_dead, now=1001.0) is None
+    later = 1000.0 + acts.UNBOUND_GRACE_S + 1
+    assert acts.needing_a_runner(universe, replaceable=_never_dead, now=later) == [aid]
+    second = acts.claim(universe, aid, replaceable=_never_dead, now=later)
     assert second == first + 1
     assert not acts.bind_run(universe, aid, first, "orphan"), "the stale claim cannot bind"
     assert acts.bind_run(universe, aid, second, "run-b")
@@ -280,7 +284,8 @@ def test_account_deletion_fences_every_unfinished_activity(tmp_path):
     queued = _new(universe)["activity_id"]
     done, done_gen = _running(universe, "r2")
     acts.transition(universe, done, acts.COMPLETED, generation=done_gen, outcome="done")
-    assert acts.fence_all(universe, outcome="failed:account_deleted") == 2
+    assert sorted(acts.fence_all(universe, outcome="failed:account_deleted")) == [
+        "r2", "run-a"], "the live run and the finished one's retiring run, to cancel"
     assert acts.get(universe, aid)["status"] == acts.FAILED
     assert acts.get(universe, queued)["outcome"] == "failed:account_deleted"
     assert acts.get(universe, done)["outcome"] == "done"
@@ -305,3 +310,47 @@ def test_the_store_is_charged_to_its_universe(tmp_path):
     assert storage_accounting.measure(base, "u-alpha", "agent_activities") > 0
     store = storage_accounting.STORES["agent_activities"]
     assert store.scope == storage_accounting.SCOPE_UNIVERSE
+
+
+def test_a_paused_activity_does_not_restart_beside_its_still_running_run(tmp_path):
+    universe = _universe(tmp_path)
+    aid, gen = _running(universe, "run-a")
+    record = acts.transition(universe, aid, acts.PAUSED)
+    assert record["retiring_token"] == "run-a" and record["runner_token"] == ""
+    acts.transition(universe, aid, acts.SCHEDULED)
+    alive = {"run-a"}
+    assert acts.claim(universe, aid, replaceable=lambda r: r not in alive) is None
+    alive.clear()
+    assert acts.claim(universe, aid, replaceable=lambda r: r not in alive) == gen + 1
+    assert acts.get(universe, aid)["retiring_token"] == ""
+
+
+def test_a_run_that_will_not_start_backs_off_then_fails(tmp_path):
+    universe = _universe(tmp_path)
+    aid = _new(universe)["activity_id"]
+    now = 1000.0
+    for attempt in range(1, acts.MAX_START_FAILURES + 1):
+        generation = acts.claim(universe, aid, replaceable=_never_dead, now=now)
+        assert generation, attempt
+        landed = acts.note_start_failure(universe, aid, generation, "no runner")
+        record = acts.get(universe, aid)
+        if attempt < acts.MAX_START_FAILURES:
+            assert landed == acts.SCHEDULED
+            assert acts.claim(universe, aid, replaceable=_never_dead,
+                              now=record["updated_at"] + 1) is None, "backing off"
+            now = record["updated_at"] + acts.START_BACKOFF_S * 2 ** (attempt - 1) + 1
+        else:
+            assert landed == acts.FAILED and record["outcome"] == "failed:run_refused"
+
+
+def test_the_list_walk_is_complete_while_activities_change(tmp_path):
+    universe = _universe(tmp_path)
+    made = [_new(universe, title=f"t{i}")["activity_id"] for i in range(acts.PAGE + 5)]
+    page = acts.list_page(universe)
+    # An activity on the next page changes status mid-walk; it must still be seen.
+    later = page["activities"][-1]["activity_id"]
+    moved = next(a for a in made if a not in {r["activity_id"] for r in page["activities"]})
+    acts.transition(universe, moved, acts.PAUSED)
+    rest = acts.list_page(universe, cursor=page["next_cursor"])
+    seen = {r["activity_id"] for r in page["activities"] + rest["activities"]}
+    assert seen == set(made) and later in seen
