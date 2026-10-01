@@ -1,291 +1,323 @@
 ## Context
 
-Behaviour is already specified by the harness requirement *An agent works on
-several activities at once, without a connected client, and recovers them after
-a restart*, and by *The agent's activities and schedules are read completely*
-(change `universe-agent-harness`). This design covers only what that leaves
-open:
+Two harness requirements (change `universe-agent-harness`) already specify the
+behaviour:
+- *An agent works on several activities at once, without a connected client,
+  and recovers them after a restart*;
+- *The agent's activities and schedules are read completely*.
+
+This design covers only what they leave open:
 - where the records live;
-- how an activity runs with no request;
+- under what authority an activity runs with no request;
 - how an effect is recorded before it fires;
+- how an activity is fenced, dispatched and resumed;
 - how a schedule names an activity.
 
-Facts from origin/main, 2026-10-01:
+Facts from origin/main, 2026-10-01. Revised after the gpt-6-astra refute
+(ADAPT), with its citations re-checked.
 
 | Fact | Where |
 |---|---|
-| A served turn needs the request's verified identity and provider carrier | `universe_intelligence.converse` (`provider_request_capability`) |
-| The only client-less agent turn is an agent node inside a branch run, bound to the owner by `owner_run_identity` | `shared_self.prepare_shared_self_turn`, `workflow_agent.call_background_work_agent` |
-| Automations bind the owner's foreground session from the row, so they get foreground admission and budget | `automations._bind_automation_provider_call`; spec `user-owned-automations` |
-| Session records are keyed by any string; only the adapter name is validated | `agent_sessions._record_path`, `load` |
-| Seat ceilings depend on class, never kind; a dead holder's seat is reaped on the next acquire | `universe_seats` (`KIND_*`, `_reap`) |
-| A served turn caught by a deploy is settled, never operation=stop|pause|resumed | `agent_turn_reconcile.reconcile_orphaned_turns` |
-| The tool journal (planned, started, finished) exists for journaled turns | `storage/agent_turn_journal.py` |
-| `authenticated_external_call` reserves nothing before a send. The existing reserve-before-send store lives in the universe folder | `storage/external_write_receipts.py` |
-| `automations.branch_def_id` is `NOT NULL`; migrations add columns | `automations._AUTOMATIONS_TABLE`, `_MIGRATIONS` |
+| A served turn needs the request's verified identity. Its provider capability is request-scoped and dies with the request | `universe_intelligence.converse`; `auth/middleware.provider_request_capability` |
+| Background compute admission exists only for a work subject the authority store knows. Work items are typed (`run`, `background_attempt`, `branch_task`, `agent_invocation`), and receipts are unique per `(universe, kind, id)` with a generation | `provider_work_authority._WORK_ITEM_KINDS`; `storage/provider_work_authority._RECEIPT_TABLE_SCHEMA` |
+| The foreground lane admits a `run` subject: founder-home check, assignment and manifest admission, credential path, budget. It requires a branch snapshot and a run record | `foreground_run_provider._ForegroundRunProviderSession` (`prepare`, `_validate_founder_home`, `_validate_run`, `_admit`) |
+| Run recovery interrupts a run only when its owner's liveness lock exists and nobody holds it. Alive or unknown owners are never touched | `runs.recover_in_flight_runs` (owner token, `process_liveness`) |
+| Seats keep an ALIVE holder past lease expiry. `try_acquire` keeps a queue ticket without holding a thread | `universe_seats._reap`, `try_acquire` |
+| `authenticated_external_call` receives run and node identifiers, never an agent tool-call id. It records nothing before the send | `effectors/authenticated_external_call.py` (`_run`, the proxy request) |
+| The existing reserve-before-send store lives inside the universe folder, which a provider jail binds read-write | `storage/external_write_receipts.py`; `providers/provider_jail` |
+| Automations take a lease keyed by `branch_def_id` and apply overlap policies in the consumer before execution | `automations.automation_lease_key`; `runtime/assigned_queue_consumer.py` |
+| Account deletion stages `<root>/<home>`. Removing `.agent-sessions/<home>` is in S2 (#4188), which has not landed | `account_deletion.py` |
 
 ## Goals / Non-Goals
 
 **Goals**
-- A durable record per activity that survives a deploy and that no agent can
-  forge.
-- Resume after a restart from the last completed tool call, never sending an
-  effect twice.
-- A seat while running, none while waiting, and never a refusal for being over
-  the seat count.
-- A schedule can start an activity under the full user-owned automation contract.
-- Complete, cursor-paged reads.
+- A durable record per activity, which no agent can forge.
+- Compute admitted under the owner's own authority, with no request present.
+- At most one live runner per activity.
+- No external effect sent twice across a crash.
+- Durable dispatch that does not depend on boot.
+- Complete, paged reads.
+- A schedule can start an activity.
 
 **Non-Goals**
-- The full execution context: delegated authority and the research flag (D8,
-  D3).
+- Delegated authority, and the research flag (D8, D3).
 - Browser contexts (D5).
-- The `ta` command (D6). It wraps the contract here.
-- Cross-agent activities and their lesser-of-two authority (D8).
+- The `ta` command (D6), which wraps this contract.
+- Nested activities.
 
 ## Decisions
 
 ### 1. Records live outside the universe, beside `rules.db`
 
-The store is `<data root>/.agent-sessions/<universe>/agent-activities.db`. This
-is the same directory as the S1 session records, S2 `steering.db`, S4
-`activity.db` (the tool journal) and D1 `rules.db`.
-- **Why not the universe folder:** a workflow provider jail binds the universe
-  read-write. An agent that can write its own `in_progress` or `confirmed` rows
-  could forge a receipt or unlock a retry.
-- **Name:** "activity" was taken by S4's tool journal, so the store is
-  `agent-activities.db`. A shared name would be two definitions of one fact.
-- **Lifecycle:** it is declared in `storage_accounting.ROOT_ENTRIES` and counted
-  against the owning universe. Account deletion removes the whole
-  `.agent-sessions/<home>`, which S2 (#4188) adds.
+The store is `<data root>/.agent-sessions/<universe>/agent-activities.db`. A
+provider jail binds the universe read-write, so anything inside it could be
+forged. The name avoids S4's `activity.db` (the tool journal).
 
-Schema (SQLite, WAL, `busy_timeout` 10 s, `BEGIN IMMEDIATE` for every transition):
+The schema uses SQLite with WAL and `busy_timeout`. Every transition runs under
+`BEGIN IMMEDIATE`, with compare-and-set on `revision` and on `runner_generation`.
 
 ```sql
 CREATE TABLE activities (
-  activity_id        TEXT PRIMARY KEY,          -- 'act_' + 16 hex, platform-minted
+  activity_id        TEXT PRIMARY KEY,           -- 'act_' + 16 hex, platform-minted
   agent_id           TEXT NOT NULL DEFAULT 'main',
-  parent_activity_id TEXT NOT NULL DEFAULT '',
+  parent_activity_id TEXT NOT NULL DEFAULT '',   -- recorded for D8; always '' here
   session_key        TEXT NOT NULL UNIQUE,       -- 'activity:<activity_id>'
-  owner_principal    TEXT NOT NULL,              -- authenticated at creation
-  title              TEXT NOT NULL,              -- <= 200 chars
-  brief              TEXT NOT NULL,              -- the task text, <= 16 KiB
+  owner_principal    TEXT NOT NULL,              -- derived server-side at creation
+  title              TEXT NOT NULL,              -- one line, <= 200 chars
+  brief              TEXT NOT NULL,              -- <= 16 KiB
   origin_kind        TEXT NOT NULL CHECK (origin_kind IN ('ask','proposal','schedule')),
-  origin_ref         TEXT NOT NULL DEFAULT '',   -- turn id, proposal id or automation id
-  approval_id        TEXT NOT NULL DEFAULT '',   -- D3: the pre-approved action, if any
+  origin_ref         TEXT NOT NULL DEFAULT '',   -- turn id | proposal id | '<automation_id>@<due_at>'
+  approval_id        TEXT NOT NULL DEFAULT '',
   status             TEXT NOT NULL CHECK (status IN
-                       ('scheduled','in_progress','waiting_on_you','operation=stop|pause|resumed','completed','failed')),
+                       ('scheduled','in_progress','waiting_on_you','paused','completed','failed')),
   outcome            TEXT NOT NULL DEFAULT '',   -- done | stopped | failed:<class>
   waiting_reason     TEXT NOT NULL DEFAULT '',
-  result_summary     TEXT NOT NULL DEFAULT '',   -- <= 4,000 chars; full result is a workspace file
+  waiting_request_id TEXT NOT NULL DEFAULT '',   -- the owner request it waits on
+  result_summary     TEXT NOT NULL DEFAULT '',   -- <= 4,000 chars; full result in a workspace file
   result_path        TEXT NOT NULL DEFAULT '',
-  last_tool_seq      INTEGER NOT NULL DEFAULT 0, -- last COMPLETED tool call
-  lease_holder       TEXT NOT NULL DEFAULT '',   -- process_liveness owner token
-  lease_expires_at   REAL NOT NULL DEFAULT 0,
-  revision           INTEGER NOT NULL DEFAULT 1, -- compare-and-set for owner edits
-  created_at         REAL NOT NULL,
-  updated_at         REAL NOT NULL,
-  finished_at        REAL NOT NULL DEFAULT 0
+  last_tool_seq      INTEGER NOT NULL DEFAULT 0,
+  runner_token       TEXT NOT NULL DEFAULT '',   -- process_liveness owner token of the live runner
+  runner_generation  INTEGER NOT NULL DEFAULT 0, -- fences every write a runner makes
+  revision           INTEGER NOT NULL DEFAULT 1,
+  created_at REAL NOT NULL, updated_at REAL NOT NULL, finished_at REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX activities_by_update ON activities(updated_at DESC, activity_id DESC);
+CREATE UNIQUE INDEX activities_by_schedule ON activities(origin_ref) WHERE origin_kind = 'schedule';
 
-CREATE TABLE activity_effects (
-  activity_id     TEXT NOT NULL,
-  effect_seq      INTEGER NOT NULL,
-  idempotency_key TEXT NOT NULL UNIQUE,  -- sha256(activity_id, tool_call_id, action_digest)
-  action_digest   TEXT NOT NULL,         -- agent_review.action_digest of the structured action
-  connection_id   TEXT NOT NULL,
-  operation       TEXT NOT NULL,
-  path            TEXT NOT NULL,
-  state           TEXT NOT NULL CHECK (state IN
-                    ('planned','sent','confirmed','failed','unknown','owner_resolved')),
-  receipt_json    TEXT NOT NULL DEFAULT '',  -- status code + safe summary, never a body or credential
-  created_at      REAL NOT NULL,
-  updated_at      REAL NOT NULL,
-  PRIMARY KEY (activity_id, effect_seq)
+CREATE TABLE effect_intents (
+  intent_key     TEXT PRIMARY KEY,   -- sha256(run_id, node_key, effect_index, wire_digest)
+  activity_id    TEXT NOT NULL,
+  run_id         TEXT NOT NULL,
+  node_key       TEXT NOT NULL,
+  effect_index   INTEGER NOT NULL,
+  wire_digest    TEXT NOT NULL,      -- digest of the RESOLVED request: method, URL, transformed body
+  connection_id  TEXT NOT NULL, operation TEXT NOT NULL, path TEXT NOT NULL,
+  state          TEXT NOT NULL CHECK (state IN
+                   ('planned','sent','confirmed','failed','unknown','owner_resolved')),
+  resolution     TEXT NOT NULL DEFAULT '',  -- happened | not_happened | try_again
+  receipt_json   TEXT NOT NULL DEFAULT '',  -- status code + safe summary only
+  created_at REAL NOT NULL, updated_at REAL NOT NULL
 );
+CREATE INDEX effect_intents_by_activity ON effect_intents(activity_id, created_at);
 
 CREATE TABLE activity_events (
-  activity_id TEXT NOT NULL,
-  seq         INTEGER NOT NULL,
-  ts          REAL NOT NULL,
-  kind        TEXT NOT NULL,   -- started | waiting_for_seat | waiting_on_you | operation=stop|pause|resumed | operation=stop|pause|resumed | completed | failed | stopped
-  line        TEXT NOT NULL,   -- platform-computed, <= 300 chars
-  delivered   INTEGER NOT NULL DEFAULT 0,  -- reached the main session
+  activity_id TEXT NOT NULL, seq INTEGER NOT NULL, ts REAL NOT NULL,
+  kind TEXT NOT NULL,   -- created | in_progress | waiting_for_seat | waiting_on_you | paused
+                        -- | scheduled | completed | failed | stopped | resumed
+  line TEXT NOT NULL,   -- platform-composed, <= 300 chars
+  delivered INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (activity_id, seq)
 );
 ```
 
-Event lines are composed by the platform from the record. They never contain
-model text, so they cannot carry an injection into the main session.
+**Status lines** are composed by the platform. The only agent-supplied text a
+line carries is the activity's title: quoted, one line, at most 80 characters.
 
-### 2. Session keys and parentage
+**Lifecycle**
+- *Retention.* Records stay until the owner deletes an activity (owner door) or
+  the account is deleted.
+- *Events.* Each activity keeps at most 200 events. Older delivered events are
+  dropped and the newest are kept.
+- *Effect intents.* Kept while their activity exists. Reads of them are paged.
+- *Quota.* The bytes in `.agent-sessions/<universe>/` count against that
+  universe's quota through the same usage function that measures the universe.
+  D2a wires and tests this; the `ROOT_ENTRIES` declaration alone does not.
+- *Account deletion.* S2's removal of `.agent-sessions/<home>` is a
+  prerequisite and lands first. Before that removal, deletion fences every
+  activity: it advances `runner_generation` and marks them `failed:account_deleted`.
+  A runner still alive therefore cannot recreate the store.
 
-- **Activity:** `activity:<activity_id>`.
-- **Further roster agent (D8):** `agent:<agent_id>:thread`.
-- **Main agent:** keeps `thread:principal:<owner>`.
-- `agent_sessions` hashes any key, so no change is needed there. Parentage is
-  the record's `agent_id` and `parent_activity_id`, not part of the key.
+### 2. Session keys
 
-### 3. Running with no request: the activity runner
+- An activity is `activity:<activity_id>`.
+- A further roster agent (D8) is `agent:<agent_id>:thread`.
+- The main agent keeps `thread:principal:<owner>`.
+- Parentage is recorded in the record, not in the key. `agent_sessions`
+  validates no key prefix.
 
-`agent_activities.run(universe_dir, activity_id)` runs one activity to a resting
-state: completed, failed, waiting_on_you or operation=stop|pause|resumed. Its inputs:
-- **Identity.** It uses the record's `owner_principal`, proven again at every
-  run start. This is the same founder-ownership check `shared_self` performs, and
-  the same `owner_run_identity` binding. If the owner no longer owns the
-  universe, the activity fails with `owner_lost`. Who could create the record:
-  - an authenticated served turn, whose verified actor is the owner;
-  - the owner door;
-  - an automation whose row names the owner.
-- **Compute.** It uses the owner's own provider, bound exactly as automations
-  bind it (`_bind_automation_provider_call`): foreground admission and budget,
-  never a platform model. With no compute connected, the activity waits on the
-  owner with that reason. It does not fail.
-- **Session.** The prompt is the persona plus a short activity preamble (title,
-  brief, origin). Turns run on `activity:<id>` through the same adapter path as
-  a served turn, so S1 operation=stop|pause|resume, S2 steering and S4 tool lines all apply by key.
-- **Seat.** It takes one `KIND_ACTIVITY` seat (background class, new kind) with
-  `acquire_blocking(wait_s=None)`. While it waits, it writes a
-  `waiting_for_seat` event; it is never refused. The seat is released when the
-  activity rests.
-- **Stop and operation=stop|pause|resume.** The activity is registered with `turn_interrupt`, keyed by
-  its session key, so stop and operation=stop|pause|resume take effect at the next tool boundary.
-  Stop sets `outcome='stopped'` and keeps `result_summary`.
+### 3. Authority: an `activity` work item in the foreground lane
 
-Runners execute on the serving process's background executor. One runner per
-activity is guaranteed by the lease: `lease_holder` with a 120 s expiry,
-refreshed on the seat refresh tick, taken by compare-and-set.
+An activity is compute the owner's universe spends with no request. The
+authority store already admits typed work items, so `activity` is added to
+`_WORK_ITEM_KINDS` with `work_item_id = activity_id`.
 
-### 4. Waiting releases the seat
+An activity provider session reuses the foreground lane's admission core
+unchanged: assignment and manifest admission, serving binding, credential path,
+budget accounting and receipts. Only the subject differs:
 
-When a rule asks first, or the auto-review asks for approval inside an
-activity, the activity does three things:
-- it raises the request with the activity id attached;
-- it sets `waiting_on_you`;
-- it ends its turn, releasing the seat.
+| Foreground `run` subject | `activity` subject |
+|---|---|
+| `prepare(run_id, branch, …)` takes a branch snapshot | `prepare_activity(activity_id, runner_generation)` reads the activity record |
+| Prompt nodes and roles come from the branch | One synthetic prompt node, role `writer` |
+| `_validate_run` checks status, actor, branch ids and cancel | `_validate_activity` checks status `in_progress`, the same `runner_token` and `runner_generation`, and `owner_principal` unchanged |
+| `_validate_founder_home` | the same check, plus the admin ACL check `owner_run_identity` makes, whose boolean result is consumed. Both must pass, or the activity fails `owner_lost` |
 
-The owner's answer re-queues the activity. A new runner then takes a seat
-through the same blocking acquire. The answer reaches the session as a
-platform line, and the approval id rides into the context (D2/D3).
+- **Fencing.** A resumed runner advances the receipt `generation`, which fences
+  the previous runner's receipt. A stalled old process cannot make another
+  model call under it.
+- **Budget.** Spend is recorded and charged exactly like a run's; only the work
+  item differs.
+- **Ownership.** Owners are derived on the server and never taken from tool
+  arguments or templates:
+  - *Served turn:* the verified actor, as automations do (`api/automations.py`).
+  - *Owner door:* the authenticated identity, for its own home.
+  - *Automation:* the row's owner, revalidated when it fires.
 
-### 5. Effects are recorded before they fire
+### 4. Dispatch and fencing: one live runner, never boot-only
 
-While an activity runner is bound (a contextvar, like the D1d review binding),
-`authenticated_external_call` does the following around the wire:
-1. Inserts `planned` with the idempotency key. The UNIQUE constraint makes a
-   second attempt of the same tool call a conflict, not a send.
-2. Moves to `sent` immediately before the wire.
-3. Moves to `confirmed` or `failed` with a safe receipt immediately after.
+A dispatcher runs in the serving process on the automation pump's cadence
+(every 30 s) and on demand when an activity is created or answered.
+1. It selects the activities that need a runner:
+   - `scheduled` activities;
+   - `in_progress` activities whose `runner_token`'s liveness lock exists and
+     is unheld. These are the same semantics as run recovery. A live or
+     unknown runner is never taken over.
+2. For each, it calls `try_acquire(work_key=activity_id, kind=activity)`:
+   - with a seat: it claims the activity by compare-and-set (status, set its own
+     `runner_token`, `runner_generation + 1`) and submits the runner;
+   - without one: it keeps the queue ticket, writes one `waiting_for_seat`
+     event, and moves on. No thread blocks on a seat.
+3. Every runner write (progress, transition, effect intent) carries
+   `runner_generation`. A write from a superseded generation affects no row,
+   and that runner stops.
 
-**After a restart,** every `sent` row is set to `unknown`. Every `planned` row
-was never sent and becomes `failed:not_sent`. The operation=stop|pause|resumed activity does not
-continue until each `unknown` row is resolved:
-- **Reconcile:** a receipt the effector can read back resolves it. V1 has none
-  generic. An owner-declared idempotency header on the connection is a later
-  extension, out of scope here.
-- **Otherwise:** the activity goes to `waiting_on_you` with "this may already
-  have happened: <operation> <path> on <connection>". The owner answers
-  *it happened*, *it didn't* or *try again*, and the row becomes
-  `owner_resolved`. Only *try again* permits a new attempt, under a new key.
+**Waiting releases the seat.** When an action asks first, or the auto-review
+asks for approval inside an activity, the activity:
+- raises one owner request and records its id in `waiting_request_id`;
+- moves `in_progress -> waiting_on_you`;
+- ends its turn and releases the seat.
 
-**Why not `external_write_receipts`:** it lives in the universe folder, which a
-provider jail binds read-write (Decision 1).
+The owner's answer moves it `waiting_on_you -> scheduled`, by compare-and-set on
+`waiting_request_id`. A stale or duplicate answer changes nothing.
 
-### 6. Resume after a deploy
+### 5. Effects: a platform intent recorded before the wire
 
-**At boot,** a operation=stop|pause|resumer scans each `.agent-sessions/*/agent-activities.db` for
-`in_progress` rows whose lease holder is dead or whose lease has lapsed. For
-each, it applies Decision 5 and starts a runner.
+Inside an activity, external effects fire in runs the activity started (through
+`run_graph`). The effector never has an agent tool-call id, so the platform
+mints the intent identity from what it does have:
 
-**The operation=stop|pause|resumed turn gets:**
-- the native session, when the adapter operation=stop|pause|resumes (S1 `native_operation=stop|pause|resume`);
-- otherwise a fresh session built from the record:
+`intent_key = sha256(run_id, node_key, effect_index, wire_digest)`
+
+`wire_digest` hashes the resolved request: method, URL and transformed body.
+The identity is stable for as long as the run exists. A run is never replayed
+past an interrupted node (`interrupted` is terminal), so a re-attempt is a new
+run with a new key, and it happens only after the owner answers.
+
+Requests from the agent's own bash, through the egress proxy, are not effector
+calls. They are governed as `shell.egress` by the owner's rules and are not
+recorded here.
+
+**Activity linkage.** A run started from an activity's turn records that
+`activity_id`, minted by the platform from the bound runner and never accepted
+as input. The effector applies the following only to runs that carry one:
+1. `INSERT planned`. A primary-key conflict means it was already attempted, and
+   nothing is sent.
+2. Commit `sent` durably before the wire. If that commit fails, nothing is sent.
+3. After the wire, record `confirmed` or `failed` with a safe receipt.
+   Transport uncertainty is `unknown`, never `failed`: a timeout or a reset
+   after the request was written.
+
+**Recovery.** A row is changed only after its run is interrupted, which happens
+only once its owner's liveness lock is provably dead:
+- `planned` becomes `failed` (`not_sent`), because `sent` commits before the
+  wire;
+- `sent` becomes `unknown`.
+
+The activity sees its child run interrupted and its unknown intents. It goes to
+`waiting_on_you` with "this may already have happened: <operation> <path> on
+<connection>". The owner answers *happened*, *not happened* or *try again*,
+which becomes `owner_resolved` with that resolution. Only *try again* lets the
+agent start a new run for that action.
+
+### 6. Resume
+
+A runner taking over an `in_progress` activity continues `activity:<id>`:
+- **Natively** when the adapter resumes (S1 `native_resume`).
+- **Otherwise from a session built from the record:**
   - the brief;
-  - the completed tool calls up to `last_tool_seq`, from the S4 journal, safe
-    summaries only;
+  - completed tool calls up to `last_tool_seq`, taken from the durable agent
+    turn journal (`storage/agent_turn_journal.py`) where the turn was journaled,
+    or from S4 safe summaries where it was not;
   - the partial result;
-  - the effect resolutions.
+  - effect resolutions.
 
-It is told plainly that it was interrupted and what completed. It never
-replays a tool call past `last_tool_seq`, and an effect it re-issues hits the
-key conflict of Decision 5.
+The session is told plainly that it was interrupted. Its runs are their own
+records, so it never re-executes a completed tool call by replay.
 
-### 7. Automations get an `activity` target
+### 7. Automations target an activity
 
-The migration is additive (two `_MIGRATIONS` rows, applied by `ALTER TABLE ADD COLUMN`):
-- `target_kind TEXT NOT NULL DEFAULT 'branch'`;
-- `activity_template_json TEXT NOT NULL DEFAULT ''` (title, brief, agent id).
-
-**Validation:**
-- a branch target needs a non-empty `branch_def_id` and an empty template;
-- an activity target needs `branch_def_id=''` and a valid template;
-- `NOT NULL` stands, so no table rebuild.
-
-**Firing** keeps every `user-owned-automations` guarantee: the authenticated
-owner from the row, the current serving assignment, foreground budget, and the
-`automation_attempts` firing fence. It creates an activity record with
-`origin_kind='schedule'` and `origin_ref=<automation_id>`, then hands it to the
-runner.
-- **Lease key:** `agent:<len>:<universe>:activity:<automation_id>`.
-- **Overlap policies** apply against that automation's previous activity:
-  `skip` and `queue` look at a non-resting previous activity, and
-  `cancel_previous` stops it.
-
-**Rollback:** code from before the change that meets an activity row fails that
-one automation on `branch ''`. The failure counter then operation=stop|pause|resumes it; the pump is
-unaffected.
+The migration is additive: two `_MIGRATIONS` rows, `target_kind` (default
+`branch`) and `activity_template_json` (default `''`). An activity target has
+`branch_def_id = ''`, so `NOT NULL` stands.
+- **Validation.**
+  - A branch target needs a branch and no template.
+  - An activity target needs a template and no branch.
+  - The owner comes from the authenticated creator and is never taken from the
+    template.
+- **Lease key.** A branch target keeps `agent:<len>:<universe>:<branch_def_id>`.
+  An activity target uses `agent:<len>:<universe>:activity:<automation_id>`,
+  which cannot collide with any branch id.
+- **Firing.** Firing keeps the owner revalidation, serving assignment, budget
+  and the `automation_attempts` fence. The activity is created with
+  `origin_ref = '<automation_id>@<due_at>'` under a unique index. Attempt and
+  activity live in different databases, so a crash between them is recovered by
+  re-firing the same attempt: the insert is idempotent, and it returns the
+  existing activity.
+- **Overlap policies** see the automation's latest activity:
+  - `skip` and `queue` apply while it is not resting;
+  - `cancel_previous` stops it.
+- **Rollback.** Code from before this change computes every activity target's
+  lease key as `…:<universe>:` and they collide. Before a downgrade, activity
+  targets are paused (`desired_state='paused'`). The migration plan makes that a
+  release step.
 
 ### 8. Served-tool contract and reads
 
-These are on the universe agent's served tools. The public connector is
+These calls are on the universe agent's served tools. The public connector is
 unchanged.
 
 | Call | Effect |
 |---|---|
-| `write_graph target=activity operation=start` `{title, brief}` | creates `scheduled`, starts a runner, returns `{activity_id, status}` |
-| `write_graph target=activity operation=stop|pause|resume\|operation=stop|pause|resume\|operation=stop|pause|resume` `{activity_id}` | transition, own universe only |
-| `read_graph target=activities` `{status?, cursor?}` | every item, 50 per page, keyset cursor `(updated_at, activity_id)` |
-| `read_graph target=activity` `{activity_id}` | the record, its effects and its events |
+| `write_graph target=activity operation=start` `{title, brief}` | creates `scheduled`, wakes the dispatcher, returns `{activity_id, status}` |
+| `write_graph target=activity operation=stop` / `pause` / `resume` `{activity_id}` | a checked transition, own universe only |
+| `read_graph target=activities` `{status?, cursor?}` | every activity, 50 per page, keyset cursor `(updated_at, activity_id)` |
+| `read_graph target=activity` `{activity_id, cursor?}` | the record plus one page of its events and effect intents |
 
-- **No size cap.** A page is complete or carries `next_cursor`; nothing is cut
-  for size. Fields are bounded at write time (Decision 1), so a page cannot grow
-  without limit.
-- **Activities may not start activities in this change.** `parent_activity_id`
-  is recorded for D8, and `operation=start` from inside an activity is refused with
+- A page is complete or carries `next_cursor`. Nothing is cut for size.
+- `operation=start` from inside an activity is refused with
   `nested_activity_unavailable`.
-- **The owner door** `/app/activities` offers the same list, stop, operation=stop|pause|resume and
-  operation=stop|pause|resume, for the authenticated owner's own home only, with `revision`
-  compare-and-set.
+- **The owner door** `/app/activities` offers the same list, stop, pause, resume
+  and delete, for the authenticated owner's own home only, with compare-and-set
+  on `revision`.
 
 ## Risks / Trade-offs
 
-- **A deploy during a send can leave an effect `unknown`.** This is
-  deliberately surfaced to the owner, never retried. The cost is a question
-  after some deploys; the alternative is a duplicate email or payment.
-- **No generic receipt read-back in v1,** so every unknown effect is an owner
-  question. Declared idempotency headers can narrow this later without a
-  storage change: the key is already recorded.
-- **The runner lives in the serving process.** A second serving process would
-  need the lease, which already exists. Single-writer assumptions elsewhere
-  (`agent_turn_boot`) are unchanged.
-- **Native operation=stop|pause|resume is adapter-dependent.** The record-built fallback is lossier
-  (summaries, not full tool output), but it never re-executes completed tool
-  calls.
+- **A deploy during a send becomes an owner question.** That is deliberate. A
+  duplicate payment or email costs more than a question.
+- **The activity subject adds a fifth work item kind** to an authority store
+  that guards credentials. The admission core is reused unchanged, and only the
+  subject validation is new. That is the narrowest addition that gives
+  background compute without a request. The alternative was representing each
+  activity as a platform-authored branch run, which would put a platform branch
+  in every universe.
+- **No generic receipt read-back.** Unknown effects are owner questions until
+  connections can declare idempotency headers. The intent key is already
+  recorded, so that needs no storage change.
 
 ## Migration Plan
 
-1. Ship the store and the runner dark behind the served-tool targets. Nothing
-   creates activities until the agent calls `operation=start`.
-2. Run the additive automations columns. Existing rows read as
-   `target_kind='branch'`, so behaviour is unchanged.
-3. Live proof: two activities in parallel after the chat is closed, and one
+1. Land S2 (#4188) first, for account deletion of `.agent-sessions/<home>`.
+2. Ship the store, the `activity` work item, the dispatcher and the served-tool
+   targets. Nothing creates activities until the agent calls `operation=start`.
+3. Ship the additive automations columns. Existing rows read as
+   `target_kind='branch'`.
+4. Live proof: two activities in parallel after the chat is closed, and one
    surviving a deploy with an effect in flight.
 
-Rollback is a revert. The new DB file is ignored by old code, and the new
-columns are ignored, except the per-automation failure described in Decision 7.
+**Rollback.** Pause activity-target automations, then revert. Old code ignores
+the store and the new columns.
 
 ## Open Questions
 
-None blocking. Generic receipt read-back is deferred: per-connection declared
-idempotency headers are the likely path, and need no storage change.
+None blocking. Per-connection idempotency headers would narrow owner questions
+later.

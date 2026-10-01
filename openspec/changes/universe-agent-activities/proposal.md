@@ -5,91 +5,96 @@ new user's command center work like a ChatGPT dot: one always-on agent that
 works on several things at once, with no chat open, and picks up where it left
 off after a restart. The harness requirement *An agent works on several
 activities at once, without a connected client, and recovers them after a
-restart* says what that does. It does not yet say where the records live, how an
-effect is recorded before it fires, or how a schedule names an activity instead
-of a branch.
+restart* says what that does. It leaves four questions open:
+- where the records live;
+- under what authority an activity spends compute when no request is present;
+- how an effect is recorded before it fires;
+- how a schedule names an activity instead of a branch.
 
-Those are storage shape, a served-tool contract and a migration: the things a
-wrong guess makes expensive. Design §6 D2 therefore opens this storage proposal
-before any D2 code.
+These are storage shape, authority, a served-tool contract and a migration,
+which is exactly what a wrong guess makes expensive. Design §6 D2 therefore
+opens this proposal before any D2 code.
 
 What main has today (verified 2026-10-01 at origin/main):
-- Nothing runs an agent turn for a session key without a request. `converse`
-  derives the principal, provider carrier and sandboxed config from the
-  authenticated request (`universe_intelligence.converse`). The only client-less
-  turn is an agent node inside a branch run (`shared_self`, `workflow_agent`).
-- A served turn caught by a deploy is settled as held, abandoned or
-  indeterminate at boot (`agent_turn_reconcile.reconcile_orphaned_turns`). It is
-  never operation=stop|pause|resumed.
-- `authenticated_external_call` records nothing before a send. Reserve-before-send
-  exists in `storage/external_write_receipts.py`, but that store lives inside
-  the universe folder, and only `wiki_write_back` and hand-offs use it.
-- Automations require a branch: `automations.branch_def_id TEXT NOT NULL`.
-- Seats have four kinds (`chat_turn`, `agent_node`, `automation`, `wake`), and
-  the ceiling depends on class, never kind.
+- **No request, no turn.** Nothing runs an agent turn without a request. A
+  served turn's provider capability is request-scoped, and background compute is
+  admitted only for typed work items in the provider authority store (`run`,
+  `background_attempt`, `branch_task`, `agent_invocation`).
+- **Deploys lose served turns.** A served turn caught by a deploy is settled,
+  never resumed. Run recovery interrupts a run only when its owner process is
+  provably dead.
+- **Effects are not journaled.** `authenticated_external_call` records nothing
+  before a send. The existing reserve-before-send store lives inside the
+  universe folder, which a provider jail binds read-write.
+- **Automations need a branch.** They require `branch_def_id`, and their lease
+  is keyed by it.
 
 ## What Changes
 
-- **New platform store** `.agent-sessions/<universe>/agent-activities.db`,
-  outside every universe folder, beside `rules.db`. It holds activity records,
-  pending effects and status lines. No agent-controlled environment can reach
-  it.
-- **New session keys:** `activity:<id>` for an activity and `agent:<id>:thread`
-  for a further roster agent's main session. Parentage is in the record. The
+- **New platform store:** `.agent-sessions/<universe>/agent-activities.db`,
+  outside every universe folder and beside `rules.db`. It holds activity
+  records, effect intents and status lines.
+- **New session keys:** `activity:<id>`, and `agent:<id>:thread` for D8. The
   main agent keeps `thread:principal:<owner>`.
-- **Pending effects.** An external effect from an activity is written as
-  `planned` with an idempotency key before it is attempted. After a restart a
-  `sent`-but-unconfirmed effect is `unknown`. Before anything retries, it is
-  reconciled through its receipt; if that fails, the activity waits on the owner
-  ("this may already have happened").
-- **A seat kind `activity`** in the background class. It is held while the
-  activity runs and released while it waits on the owner or is operation=stop|pause|resumed.
+- **A new `activity` work item kind** in the provider authority store. An
+  activity is admitted through the foreground lane's existing admission core,
+  with the same assignment, credential path and budget, and only the subject
+  validation is new: the activity record, the runner's liveness token and
+  generation, founder-home ownership, and the admin ACL.
+- **A durable dispatcher.** It runs on the pump cadence and on demand, never
+  only at boot. It takes over only runners whose liveness lock is provably dead,
+  using the same semantics as run recovery. It queues on seats without blocking
+  a thread (`try_acquire`) and fences every runner write by generation.
+- **Seat kind `activity`** in the background class. It is released while the
+  activity waits on the owner or is paused.
+- **Effect intents.** For runs an activity started, the effector commits
+  `planned`, then `sent`, before the wire, keyed on the run, node, effect index
+  and the resolved request. Transport uncertainty is recorded as `unknown`.
+  After an interruption, an unknown effect becomes an owner question and is
+  never retried blindly.
 - **Served-tool contract:**
-  - `write_graph target=activity` with `start`, `stop`, `operation=stop|pause|resume` and `operation=stop|pause|resume`;
-  - `read_graph target=activities|activity`, complete and cursor-paged.
-  - D6's `ta activity start/list/stop` wraps these, and adds no second
-    definition.
-- **Automations migration.** It adds two columns with `ALTER TABLE ADD COLUMN`:
-  - `target_kind`, default `branch`;
-  - `activity_template_json`, default `''`.
+  - `write_graph target=activity` with operations `start`, `stop`, `pause` and
+    `resume`;
+  - `read_graph target=activities` and `target=activity`, complete and
+    cursor-paged.
 
-  An activity target keeps `branch_def_id` as `''`, so `NOT NULL` stands and
-  there is no table rebuild. Code from before the change that meets such a row
-  fails that one automation with "branch not found", rather than the table.
-- **Owner door** `/app/activities`: list, stop, operation=stop|pause|resume and operation=stop|pause|resume, own home only.
-  The Activity tab reads it.
+  D6's `ta activity` wraps these.
+- **Automations get two additive columns,** `target_kind` and
+  `activity_template_json`. An activity target uses its own collision-free
+  lease key, and its firing is linked idempotently by
+  `<automation_id>@<due_at>`.
+- **Owner door `/app/activities`:** list, stop, pause, resume and delete, for
+  the owner's own home only.
 
-Not in this change:
-- the execution context beyond agent id and approval id (D8);
-- research turns (D3);
-- browser contexts (D5);
-- the `ta` command itself (D6).
+Not in this change: delegated authority (D8), research turns (D3), browser
+contexts (D5), the `ta` command (D6), and nested activities.
 
 ## Capabilities
 
 ### New Capabilities
-- `universe-agent-activities`: where activity records and pending effects live,
-  the session keys, the served-tool contract, and the automation activity target.
+- `universe-agent-activities`: the activity store, the work item, dispatch and
+  fencing, effect intents, the served-tool contract, and the automation
+  activity target.
 
 ### Modified Capabilities
-- `user-owned-automations`: a second target kind, under the same owner,
+- `user-owned-automations`: a second target kind under the same owner,
   assignment, budget and firing-fence contract.
 
 ## Impact
 
-- **Storage:**
-  - a new root-side DB declared in `storage_accounting.ROOT_ENTRIES`;
-  - two additive automations columns;
-  - account deletion already removes `.agent-sessions/<home>` once S2 (#4188)
-    lands.
-- **Code:**
-  - `tinyassets/agent_activities.py` (new);
-  - a client-less activity runner;
-  - `universe_seats` (one kind);
-  - `effectors/authenticated_external_call` (record before send, for activities);
-  - `automations.py`;
-  - `engine_mcp_server` (two targets);
-  - the onboarding door;
-  - `app.html` (Activity tab).
-- **No public connector change.** The six connector handles are unchanged. The
-  new targets are on the universe agent's served tools.
+- **Storage.**
+  - A new root-side DB. It is declared in `storage_accounting`, and its bytes
+    are charged to the universe's quota.
+  - Two additive automations columns.
+  - Prerequisite: S2 (#4188) must land first. It removes
+    `.agent-sessions/<home>` on account deletion.
+- **Authority.** One new work item kind, with the admission core reused.
+- **Code.**
+  - New: `tinyassets/agent_activities.py`, the dispatcher and runner.
+  - `provider_work_authority` and `foreground_run_provider`: the activity
+    subject.
+  - `universe_seats`: one new kind.
+  - `effectors/authenticated_external_call`: effect intents for activity runs.
+  - `runs.py`: activity linkage and recovery of intents.
+  - `automations.py`, `engine_mcp_server`, the onboarding door, `app.html`.
+- **No public connector change.**
