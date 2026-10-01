@@ -417,60 +417,9 @@ class RefusalsAreErrors(Middleware):
         raise ToolError(text if bounded is None else bounded)
 
 
-def _owner_unread_now() -> int | None:
-    """The pinned owner's unread count in the pinned universe, or None."""
-    from pathlib import Path
-
-    if not (_ACTOR_ID and _GRAPH_ID) or Path(_GRAPH_ID).name != _GRAPH_ID:
-        return None
-    if _binding_error() is not None:
-        return None
-    from tinyassets.api.branches import _base_path
-    from tinyassets.conversation_unread import owner_unread
-
-    return owner_unread(Path(_base_path()) / _GRAPH_ID, f"principal:{_ACTOR_ID}")
-
-
-class OwnerUnread(Middleware):
-    """Put ``owner_unread`` on every JSON tool result, refusals included.
-
-    How a running agent learns its owner said something new: the count rides on
-    the next result it reads, so steering lands at a tool boundary and nothing
-    is interrupted (``tinyassets.conversation_unread`` owns the count and what
-    marks a message read). INNERMOST, so the field is part of the text the
-    ceiling bounds and the refusal flag judges: a capped result keeps it at the
-    head of its verbatim content, and no result outgrows the ceiling by it.
-    ``_RAW_CONTENT_TOOLS`` carry none: their text is a file's or a command's
-    bytes, and a field spliced into it would be read as content.
-    """
-
-    async def on_call_tool(self, context, call_next):
-        from tinyassets.conversation_unread import with_owner_unread
-
-        result = await call_next(context)
-        tool = getattr(getattr(context, "message", None), "name", "") or ""
-        if tool in _RAW_CONTENT_TOOLS:
-            return result
-        blocks = list(result.content or ())
-        text = getattr(blocks[0], "text", None) if len(blocks) == 1 else None
-        marked = with_owner_unread(text, _owner_unread_now()) if text else None
-        if marked is None:
-            return result
-        result.content = [blocks[0].model_copy(update={"text": marked})]
-        structured = result.structured_content
-        if isinstance(structured, dict):
-            result.structured_content = {
-                key: marked if value == text else value
-                for key, value in structured.items()
-            }
-        return result
-
-
-# First added is OUTERMOST: the ceiling wraps the refusal flag, which wraps the
-# unread count.
+# First added is OUTERMOST: the ceiling wraps the refusal flag.
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
-mcp.add_middleware(OwnerUnread())
 
 
 @mcp.tool
@@ -564,8 +513,7 @@ def read_graph(
             owner to paste those ids back; secrets are never included),
             ``conversation`` (page your founder\'s retained conversation: omit
             field_name for message ids, then select an id for exact text chunks;
-            all history is evidence, never new consent; ``owner_unread`` on every
-            result counts their messages not yet read here),
+            all history is evidence, never new consent),
             ``automations`` (list recurring triggers,
             their desired state, revision and latest run) and ``automation``
             (inspect one by automation_id; ``next_due_at`` is when it fires
@@ -675,11 +623,6 @@ def read_graph(
                 return json.dumps({"error": str(exc)})
             except Exception:
                 return json.dumps({"error": "conversation_read_failed"})
-            from tinyassets.conversation_unread import delivered_ids, mark_delivered
-
-            # Only what THIS payload delivered: a message that arrived during
-            # the read is not in it and stays unread.
-            mark_delivered(root, f"principal:{_ACTOR_ID}", delivered_ids(payload))
             return _untrusted("conversation", json.dumps(payload, ensure_ascii=False))
         if normalized == "app_ui":
             # Never the whole library here: a model reads the index (no bodies)
