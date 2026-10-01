@@ -951,11 +951,12 @@ is D8. Nothing before D8 may assume there is one agent.
 
 | Per agent (keyed by `agent_id`) | Shared by the whole universe |
 |---|---|
-| Sessions: one per (agent, thread) | The brain and memory files: one information layer about the owner, their projects and their goals |
+| Sessions and conversation memory: one per (agent, thread) | The brain and memory files: one information layer about the owner, their projects and their goals |
 | Steering: a steer goes to the agent the owner is talking to in that thread | The workspace files (§4.3) |
 | The tool journal and status lines, which name the acting agent | Workflows and automations, attributed to the agent that made them |
 | Custom Rules and auto-review switches | |
-| Activities and their effect intents | |
+| Activities (effect intents inherit the agent through their activity) | Seats: account capacity stays shared, with each seat attributed to its agent |
+| Stop: a stop targets the addressed agent's turn, beside a separate stop-all | |
 | Profile, Activity and Rules pages; pending requests and push, which carry the agent's name | |
 
 **Visibility is a harness capability, not a code path.** Each agent's harness
@@ -968,40 +969,59 @@ config has a `visibility` scope, editable by the owner:
 
 The platform applies the scope when it builds an agent's context and when it
 serves `read_graph` reads. There is no `if main` anywhere. The cross-user floor
-is unchanged: "all activity" never leaves the universe.
+is unchanged: "all activity" never leaves the universe. An agent selector never
+stands in for ownership: every read and write still binds the authenticated
+owner and the pinned universe first.
+
+**What `own` is, and is not.** It is a context and serving policy: what the
+platform puts in front of an agent and returns from its reads. It is **not**
+isolation between one owner's agents. Agents of a universe share its files, so
+an agent with `bash` can reach the stores those files live in. Those are
+conversation memory (`.conversation_memory.db`) and native session files. The
+shared brain also carries what was learned from every conversation by design.
+Raw-transcript isolation between agents would need per-agent stores behind the
+jail. That is a separate decision, not claimed here.
 
 **One brain, many writers: the reconcile rule.** Several agents can save
 feedback into the same brain at once. Silent last-writer-wins would lose it, so
 the rule is:
-1. **Capture is append-only.** Saving a piece of owner feedback appends one
-   dated entry to the brain's `log.md`, naming the agent. Each entry is a
-   single atomic append, so concurrent captures never collide.
-2. **Edits are compare-and-swap.** An edit to a brain topic file applies only
-   to the content it was based on:
-   - `edit` already requires its exact old text;
-   - a whole-file `write` to a brain file carries the digest of the version it
-     read.
-
-   On a conflict the write is refused, and the refusal returns the current
-   content. The agent re-reads and merges, and nothing is overwritten unseen.
-3. **One reconciler folds the log into the topic files.** This is the main
-   agent by default (owner-changeable), during its idle research turn (D3). It
-   marks each entry it reconciled. File history (§4.15) keeps every version, so
-   any merge can be undone.
+1. **Capture is one immutable file per entry.** Saving a piece of owner
+   feedback creates `brain/inbox/<time>-<agent>-<id>.md`, named by a fresh id
+   and created exclusively, so concurrent captures never touch each other.
+   `log.md` stays the generated human-readable history.
+2. **Tool writes to brain files are compare-and-swap on the whole file.** The
+   platform's `write` and `edit` read the file's digest when the agent last
+   read it, and apply the change atomically only if the file still has that
+   digest. Exact-text matching alone would miss changes elsewhere in the file.
+   On a conflict the write is refused and the current content is returned. This
+   is guaranteed for writers that use the tools. A `bash` write to a brain file
+   bypasses it and is visible in file history; the guarantee is not claimed for
+   it.
+3. **One fenced reconciler.** The reconciler is the main agent by default
+   (owner-changeable). It runs single-flight per universe under the D3
+   scheduler's lease and folds inbox entries into topic files.
+   - Each topic file records the entry ids it absorbed in its frontmatter.
+   - Only after the topic write commits does the reconciler acknowledge the
+     entry, by moving it to `brain/inbox/done/`.
+   - On a crash between the two, the replay finds the id already absorbed and
+     only acknowledges it. Replay is idempotent, and no capture is lost.
+   - File history (§4.15) keeps every version, so any merge can be undone.
 
 **Slices this changes**
 
 | Slice | State | Change |
 |---|---|---|
-| S1 sessions | Merged | The main thread keeps `thread:principal:<owner>`. Other agents use `agent:<agent_id>:thread:<principal>`. No migration |
+| S1 sessions and conversation memory | Merged | The main thread keeps `thread:principal:<owner>` and conversation key `principal:<owner>`. Other agents use `agent:<agent_id>:thread:<principal>` and `agent:<agent_id>:principal:<owner>`. No migration |
+| Stop (`turn_interrupt`) | Shipped | Today a stop ends every live turn for (owner, universe). It becomes per agent and thread, with a separate stop-all |
 | S2 steering (#4188) | Merging | Keyed by session key, so it follows S1. The app sends the addressed agent with the steer (D8 UI) |
-| S4 journal (#4190) | Open | Rows carry the session key, which names the agent. The status line shows the agent's name (D8 roster name, "Your agent" until then) |
+| S4 journal (#4190) | Open | S4's activity journal is keyed by session, which names the agent. The shipped `agent_turn_journal` has no session or agent column; add one. The status line shows the agent's name (D8 roster name, "Your agent" until then) |
 | D1a rules | Merged | Already per agent (`rules.agent`, `MAIN_AGENT` is the seed) |
 | D1d review (#4200) | Merged | `review_off` lacks `agent_id`. Follow-up: rebuild it with `(agent_id, action_class)`, existing rows becoming `main` |
-| D2 activities | In build | Already `agent_id` on every record. Status lines go to the owning agent's main session, and also to any agent whose visibility covers it |
-| Pending requests and push | Shipped | Add the asking agent's id and name ("Your agent asks" becomes "<name> asks") |
+| D2 activities | In build | `agent_id` on each activity. Effect intents inherit it through `activity_id`. Status lines go to the owning agent's main session, and to any agent whose visibility covers it |
+| Pending requests and push | Shipped | Add the asking agent's id and name ("Your agent asks" becomes "<name> asks"). Deduplication, mute and answer routing are scoped per agent |
 | converse and the app | Shipped | Accept an addressed `agent_id` on a thread. The command center decides which agents are exposed (D8) |
-| Brain writes | Shipped | Append-only capture to `log.md`, digest compare-and-swap on whole-file brain writes, and the reconciler pass (D3 or D7) |
+| Brain writes | Shipped | Inbox capture files, digest compare-and-swap in the `write` and `edit` tools for brain files, and the fenced reconciler (D3 or D7) |
+| Seats | Shipped | Capacity stays per account; each seat carries the agent for attribution |
 
 ## 5. What already shipped, mapped onto the dot
 
