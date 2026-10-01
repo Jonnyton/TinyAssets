@@ -1082,6 +1082,249 @@ def test_merged_lane_does_delete_its_branch(repo: Path) -> None:
     assert git(repo, "branch", "--list", "landed").strip() == ""
 
 
+# --------------------------------------------------------------------------- #
+# (b2) preserve, then remove
+# --------------------------------------------------------------------------- #
+
+_UNSET = object()
+
+
+def preserve_items(repo: Path, *, states=_UNSET, policy=None, **kwargs):
+    """Inventory with the preserve path on. Default: gh answered and no branch has a PR."""
+    kwargs.setdefault("now", time.time() + 10 * 24 * HOUR)  # past 48h idle and 7-day age
+    pr_states = {} if states is _UNSET else states
+    return worktree_items(
+        repo,
+        preserve=policy or dh.PreservePolicy(root=repo.parent / "kept"),
+        pr_states_fn=lambda _repo: pr_states,
+        **kwargs,
+    )
+
+
+def stale(lane: Path) -> None:
+    """Backdate a lane against the REAL clock: apply re-checks idleness with time.time()."""
+    age(lane, 72, now=time.time())
+
+
+def apply_one(repo: Path, item, policy=None):
+    report = dh.Report(items=[item])
+    return dh.apply_removals(
+        report,
+        repo,
+        keep_gb=8.0,
+        log_path=None,
+        preserve=policy or dh.PreservePolicy(root=repo.parent / "kept"),
+    )
+
+
+def test_dirty_lane_with_a_merged_pr_is_preserved_then_removed(repo: Path) -> None:
+    """The 2026-10-01 case: finished lanes held a stray edit and were kept forever."""
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "a.txt").write_text("edited after the merge\n", encoding="utf-8")
+    (lane / "notes.md").write_text("exists nowhere else\n", encoding="utf-8")
+    stale(lane)
+    item = by_path(preserve_items(repo, states={"landed": {"MERGED"}}), lane)
+    assert (item.verdict, item.reason) == ("REMOVE", "preserve_then_remove"), item.detail
+    assert "held: dirty" in item.detail
+
+    lines = apply_one(repo, item)
+    assert not lane.exists(), lines
+    refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/preserved/").split()
+    assert len(refs) == 1 and refs[0].startswith("refs/preserved/"), refs
+    assert git(repo, "show", f"{refs[0]}:notes.md") == "exists nowhere else\n"
+    assert git(repo, "show", f"{refs[0]}:a.txt") == "edited after the merge\n"
+    assert git(repo, "rev-parse", f"{refs[0]}^").strip() == git(repo, "rev-parse", "landed").strip()
+    assert "landed" in git(repo, "branch", "--list", "landed"), "the branch ref is never deleted"
+    origin = repo.parent / "o"
+    assert git(origin, "for-each-ref", "refs/preserved/").strip() == "", "nothing is ever pushed"
+
+
+def test_unique_ignored_files_are_copied_with_a_verified_manifest(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "output").mkdir()
+    (lane / "output" / "review.md").write_bytes(b"a review note\n")
+    stale(lane)
+    kept = repo.parent / "kept"
+    item = by_path(preserve_items(repo, states={"landed": {"MERGED"}}), lane)
+    assert item.reason == "preserve_then_remove", item.detail
+    apply_one(repo, item)
+    assert not lane.exists()
+    (copy_dir,) = list(kept.iterdir())
+    assert (copy_dir / "output" / "review.md").read_bytes() == b"a review note\n"
+    manifest = json.loads((copy_dir / "MANIFEST.json").read_text(encoding="utf-8"))
+    assert [f["path"] for f in manifest["files"]] == ["output/review.md"]
+    import hashlib  # noqa: PLC0415
+
+    assert manifest["files"][0]["sha256"] == hashlib.sha256(b"a review note\n").hexdigest()
+
+
+def test_a_lane_with_an_open_pr_is_never_preserved(repo: Path) -> None:
+    lane = add_lane(repo, "inflight", merged=False)
+    (lane / "wip.txt").write_text("wip\n", encoding="utf-8")
+    stale(lane)
+    item = by_path(preserve_items(repo, states={"inflight": {"CLOSED", "OPEN"}}), lane)
+    assert (item.verdict, item.reason) == ("KEEP", "dirty")
+    assert "a PR is open" in item.detail
+
+
+def test_a_lane_idle_under_48h_is_kept(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "wip.txt").write_text("wip\n", encoding="utf-8")
+    item = by_path(
+        preserve_items(repo, states={"landed": {"MERGED"}}, now=time.time() + 30 * HOUR), lane
+    )
+    assert (item.verdict, item.reason) == ("KEEP", "dirty")
+    assert "idle under 48h" in item.detail
+
+
+def test_a_no_pr_lane_needs_a_week_old_newest_commit(repo: Path) -> None:
+    lane = add_lane(repo, "local", merged=False, push=False)
+    recent = by_path(preserve_items(repo, now=time.time() + 3 * 24 * HOUR), lane)
+    assert (recent.verdict, recent.reason) == ("KEEP", "unpushed_commits")
+    assert "no PR and a commit" in recent.detail
+    old = by_path(preserve_items(repo, now=time.time() + 8 * 24 * HOUR), lane)
+    assert (old.verdict, old.reason) == ("REMOVE", "preserve_then_remove"), old.detail
+    head = git(lane, "rev-parse", "HEAD").strip()
+    stale(lane)
+    apply_one(repo, old)
+    assert not lane.exists()
+    (ref,) = git(repo, "for-each-ref", "--format=%(refname)", "refs/preserved/").split()
+    assert git(repo, "rev-parse", ref).strip() == head, "a clean lane's ref is its HEAD"
+
+
+def test_unknown_pr_states_keep_every_lane(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "wip.txt").write_text("wip\n", encoding="utf-8")
+    stale(lane)
+    item = by_path(preserve_items(repo, states=None), lane)
+    assert (item.verdict, item.reason) == ("KEEP", "dirty")
+    assert "PR states unknown" in item.detail
+
+
+def test_more_than_the_cap_of_unique_data_is_kept(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "big.bin").write_bytes(b"x" * 4096)
+    stale(lane)
+    policy = dh.PreservePolicy(max_bytes=1024, root=repo.parent / "kept")
+    item = by_path(preserve_items(repo, states={"landed": {"MERGED"}}, policy=policy), lane)
+    assert (item.verdict, item.reason) == ("KEEP", "dirty")
+    assert "exceeds" in item.detail
+
+
+def test_tool_caches_are_neither_snapshotted_nor_counted(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "site" / "node_modules" / "pkg").mkdir(parents=True)
+    (lane / "site" / "node_modules" / "pkg" / "index.js").write_bytes(b"x" * 4096)
+    (lane / "notes.md").write_text("keep me\n", encoding="utf-8")
+    stale(lane)
+    policy = dh.PreservePolicy(max_bytes=1024, root=repo.parent / "kept")
+    item = by_path(preserve_items(repo, states={"landed": {"MERGED"}}, policy=policy), lane)
+    assert item.reason == "preserve_then_remove", item.detail
+    apply_one(repo, item, policy)
+    (ref,) = git(repo, "for-each-ref", "--format=%(refname)", "refs/preserved/").split()
+    tree = git(repo, "ls-tree", "-r", "--name-only", ref).split()
+    assert "notes.md" in tree
+    assert not [p for p in tree if "node_modules" in p]
+
+
+def test_a_failed_snapshot_keeps_the_worktree(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "wip.txt").write_text("wip\n", encoding="utf-8")
+    stale(lane)
+    item = by_path(preserve_items(repo, states={"landed": {"MERGED"}}), lane)
+    assert item.reason == "preserve_then_remove", item.detail
+
+    def broken(*_a, **_k):
+        raise dh.Undecidable("write-tree -> rc=128")
+
+    monkeypatch.setattr(dh, "snapshot_ref", broken)
+    apply_one(repo, item)
+    assert (lane / "wip.txt").exists(), "a lane that could not be preserved was removed"
+    assert (item.verdict, item.reason) == ("KEEP", "remove_failed")
+    assert "not preserved, so not removed" in item.detail
+
+
+def test_a_write_during_preservation_keeps_the_worktree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "wip.txt").write_text("wip\n", encoding="utf-8")
+    stale(lane)
+    item = by_path(preserve_items(repo, states={"landed": {"MERGED"}}), lane)
+    real = dh.snapshot_ref
+
+    def racing(worktree, head, ref):
+        sha = real(worktree, head, ref)
+        (Path(worktree) / "late.txt").write_text("written mid-preserve\n", encoding="utf-8")
+        return sha
+
+    monkeypatch.setattr(dh, "snapshot_ref", racing)
+    apply_one(repo, item)
+    assert (lane / "late.txt").exists()
+    assert "written to during preservation" in item.detail
+
+
+def test_head_moved_since_inventory_keeps_the_worktree(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "wip.txt").write_text("wip\n", encoding="utf-8")
+    stale(lane)
+    item = by_path(preserve_items(repo, states={"landed": {"MERGED"}}), lane)
+    git(lane, "add", "-A")
+    git(lane, "commit", "-q", "-m", "after inventory")
+    stale(lane)
+    apply_one(repo, item)
+    assert lane.exists()
+    assert "HEAD moved" in item.detail
+
+
+def test_a_locked_worktree_is_never_preserved(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "wip.txt").write_text("wip\n", encoding="utf-8")
+    git(repo, "worktree", "lock", "--reason", "initializing", str(lane))
+    stale(lane)
+    item = by_path(preserve_items(repo, states={"landed": {"MERGED"}}), lane)
+    assert (item.verdict, item.reason) == ("KEEP", "dirty")
+    assert "locked" in item.detail
+
+
+def test_preserve_path_is_refused_without_a_policy(repo: Path) -> None:
+    """A report built with the policy cannot be applied by a pass without one."""
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / "wip.txt").write_text("wip\n", encoding="utf-8")
+    stale(lane)
+    item = by_path(preserve_items(repo, states={"landed": {"MERGED"}}), lane)
+    report = dh.Report(items=[item])
+    dh.apply_removals(report, repo, keep_gb=8.0, log_path=None)
+    assert lane.exists()
+    assert "no preserve policy" in item.detail
+
+
+def test_pr_states_listing_at_its_limit_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A branch missing from a truncated list is not a branch with no PR."""
+    rows = [{"headRefName": f"b{i}", "state": "MERGED"} for i in range(dh.PR_STATES_LIMIT)]
+    monkeypatch.setattr(
+        dh, "run", lambda *_a, **_k: subprocess.CompletedProcess([], 0, json.dumps(rows), "")
+    )
+    assert dh.pr_states_by_branch(Path(".")) is None
+    monkeypatch.setattr(
+        dh,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            [], 0, json.dumps([{"headRefName": "x", "state": "closed"}]), ""
+        ),
+    )
+    assert dh.pr_states_by_branch(Path(".")) == {"x": {"CLOSED"}}
+
+
+def test_parse_worktrees_reads_the_lock() -> None:
+    porcelain = (
+        "worktree /a\nHEAD 1111\nbranch refs/heads/x\nlocked initializing\n\n"
+        "worktree /b\nHEAD 2222\ndetached\n\n"
+    )
+    a, b = dh.parse_worktrees(porcelain)
+    assert a.locked and not b.locked
+
+
 def test_is_disposable_ignored_matches_by_path_component() -> None:
     """The three paths Codex round 1 reproduced passing the old substring rule.
 
