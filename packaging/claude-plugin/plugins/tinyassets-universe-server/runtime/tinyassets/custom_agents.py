@@ -1143,9 +1143,12 @@ def list_bindings(
     base_path: str | Path,
     *,
     universe_id: str,
-    limit: int = 30,
+    limit: int | None = 30,
 ) -> list[dict[str, Any]]:
     """The owner's bindings, newest first, at most ``limit`` of them.
+
+    ``limit=None`` is every binding: a caller that must FIND one (the deposit's
+    binding hint) reads them all rather than a page it then filters.
 
     ``limit`` is honoured as asked. It used to be silently clamped to 100, so a
     caller that asked for more got exactly 100 back and could not tell whether
@@ -1155,7 +1158,7 @@ def list_bindings(
     account has exactly two (founder, 2026-09-30).
     """
     uid = (universe_id or "").strip()
-    page = max(1, int(limit))
+    page = -1 if limit is None else max(1, int(limit))  # SQLite: LIMIT -1 is none
     with _agent_connect(base_path) as conn:
         rows = conn.execute(
             """

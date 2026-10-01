@@ -250,7 +250,7 @@ def fence_connection(
         from tinyassets.storage.pending_requests import list_pending, resolve_request
 
         aliases = affected | {name.removeprefix("api_key_http:") for name in affected}
-        for request in list_pending(Path(universe), limit=None):
+        for request in list_pending(Path(universe)):
             action = request.get("action") or {}
             if action.get("type") == "bind_model_access" and aliases.intersection(
                 action.get("model_access") or {}

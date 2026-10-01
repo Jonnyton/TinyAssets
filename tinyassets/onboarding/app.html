@@ -91,6 +91,9 @@
        and answer it in place. Stacks below the thread on a phone, where the same
        requests are reachable through the same read. */
     .chat-body{flex:1;min-height:0;display:flex}
+    .history-error{padding:.4rem 1.1rem;color:var(--warn);border-bottom:1px solid var(--line);font-size:.85rem}
+    .rail-error{color:var(--warn);font-size:.8rem;margin:.3rem 0 .5rem}
+    .thread-earlier{align-self:center}
     .rail{width:16rem;flex:0 0 auto;border-left:1px solid var(--line);
           overflow-y:auto;padding:.6rem;display:flex;flex-direction:column;gap:.5rem;
           min-width:0}
@@ -313,6 +316,7 @@
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </nav>
       </header>
+      <div id="history-error" class="muted history-error" role="status" hidden></div>
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
@@ -322,6 +326,10 @@
         </div>
         <aside id="request-rail" class="rail" hidden>
           <div id="rail-head" class="rail-head">Waiting on you</div>
+          <div id="rail-error" class="rail-error" role="alert" hidden>
+            <span id="rail-error-text"></span>
+            <button id="btn-rail-retry" class="btn btn--link" type="button">Try again</button>
+          </div>
           <div id="rail-items"></div>
           <button id="btn-rail-add" class="btn btn--link" type="button"
             aria-expanded="false" aria-controls="rail-add-panel">Add a key yourself</button>
@@ -1524,24 +1532,6 @@
       if(consumerRequest!==null) args.consumer_request=JSON.parse(JSON.stringify(consumerRequest));
       return this.callTool("converse",args);
     },
-    getStatus(){ return this.callTool("get_status",{},{idempotent:true}); },
-    getModelOptions(){ return this.callTool("read_graph",{target:"model_options"},{idempotent:true}); },
-    // The shared cross-surface thread. The app rendered ONLY what was appended
-    // during the current page life, so any refresh — including the automatic
-    // one on a new build — emptied the conversation even though the server had
-    // it all along (founder, 2026-08-28).
-    getConversation(){
-      return this.callTool("get_status",{include_conversation:true},{idempotent:true});
-    },
-    // The rest of a message the peek bounded. Keyed by the turn's own stored id
-    // — never by its text or timestamp — and continued ONLY from the offset the
-    // server returned: JS String#length counts UTF-16 code units, so a client
-    // computing its own offset desynchronises on the first emoji.
-    readConversationChunk(id,offset,scope){
-      return this.callTool("read_graph",
-        {target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset},
-        {idempotent:true});
-    },
     // Deposit a generic outbound HTTP connection (an API key + the endpoints it
     // may call) DIRECTLY over /mcp — the secret rides the tool payload, never a
     // converse/chat turn — so the universe can then register a model
@@ -1559,9 +1549,6 @@
       return this.callTool("write_graph",{target:"connection",operation:"resolve_connection",
         payload_json:JSON.stringify({shape,hints,intent})});
     },
-    // The agent's pending asks. Same read from every surface, which is what
-    // makes them answerable from the phone with no second mechanism.
-    listRequests(){ return this.callTool("read_graph",{target:"pending_requests"}); },
     // The owner raising their own request: the rail's "other ways to connect"
     // composes the SAME connect ask an agent would, then answers it.
     requestFromUser(payload){
@@ -1576,6 +1563,95 @@
       return this.callTool("write_graph",{target:"connection",operation:"connect_compute",
         payload_json:JSON.stringify(payload)});
     },
+  };
+
+
+  // ---- Owner door (same-origin /app/api, Bearer) -----------------------------
+  //
+  // EVERY read this page renders comes through here, never through MCP. MCP is
+  // the MODEL door: it bounds what it returns to fit a model's context (24 KB),
+  // and on 2026-09-30 that bound hid the founder's whole request rail -- his 7
+  // requests were 34 KB, the free account's were not. This door has no bound at
+  // all (tinyassets/owner_door), so the owner sees every row whatever the size of
+  // their data. MCP keeps the ACTIONS: converse and write_graph.
+  //
+  // A reply is the domain's own document, a refusal included, exactly as the
+  // connector's dispatch produced it. A transport failure, a 5xx or a body that
+  // is not a document THROWS: a caller never mistakes a failed read for an
+  // empty one. Reads are idempotent, so one failed attempt is retried.
+  const Owner = {
+    async _post(path, args){
+      const loginEpoch=MCP._loginEpoch;
+      const body={};
+      for(const key of Object.keys(args||{})){
+        const value=args[key];
+        if(value!==undefined && value!==null) body[key]=value;
+      }
+      for(let attempt=0;;attempt++){
+        try{ await ensureFreshToken(); }catch(preErr){ throw notSent(preErr); }
+        MCP._assertLogin(loginEpoch);
+        const headers={"Content-Type":"application/json"};
+        const tk=token(); if(tk) headers["Authorization"]="Bearer "+tk;
+        let resp;
+        try{
+          resp=await fetch(path,{method:"POST",headers,credentials:"same-origin",
+            cache:"no-store",body:JSON.stringify(body)});
+        }catch(_netErr){
+          MCP._assertLogin(loginEpoch);
+          if(attempt<1){ await MCP._pause(1500); continue; }
+          throw transportError("offline","couldn’t reach the network",false);
+        }
+        MCP._assertLogin(loginEpoch);
+        if(resp.status===401){
+          const renewed=(attempt<1 && token()) ? await refreshAccessToken() : false;
+          MCP._assertLogin(loginEpoch);
+          if(renewed===null) throw notSent(transportError("auth_unavailable",
+            "couldn’t renew your sign-in just then", false));
+          if(renewed) continue;
+          const e=new Error("authentication_required"); e.authRequired=true; throw e;
+        }
+        let doc=null;
+        try{ doc=await resp.json(); }catch(_e){ doc=null; }
+        // The body arrives after the headers: a sign-in change while it
+        // downloaded makes it the PREVIOUS account's data (Codex round 2).
+        MCP._assertLogin(loginEpoch);
+        if(resp.ok && doc && typeof doc==="object" && !Array.isArray(doc)) return doc;
+        if((resp.status>=500 || resp.status===408 || resp.status===429) && attempt<1){
+          await MCP._pause(1500); continue;
+        }
+        const e=transportError(resp.ok ? "unreadable" : "http_error",
+          (doc && typeof doc.error==="string" && doc.error) ||
+          ("your universe answered "+resp.status), false);
+        e.status=resp.status; e.doc=doc;
+        throw e;
+      }
+    },
+    // The read_graph arguments, answered complete.
+    read(args){ return this._post("/app/api/read", args); },
+    // The get_status arguments (plus the conversation page cursor).
+    status(args){ return this._post("/app/api/status", args||{}); },
+    getStatus(){ return this.status({}); },
+    getModelOptions(){ return this.read({target:"model_options"}); },
+    // The shared cross-surface thread, one page at a time. The app rendered ONLY
+    // what was appended during the current page life, so any refresh emptied the
+    // conversation even though the server had it all along (founder,
+    // 2026-08-28). `before` is the page's own `next_before` cursor; without it
+    // this is the newest page. Every page says whether older turns exist.
+    getConversation(before){
+      const args={include_conversation:true};
+      if(Number.isSafeInteger(before)) args.conversation_before=before;
+      return this.status(args);
+    },
+    // The rest of a message the peek bounded. Keyed by the turn's own stored id
+    // — never by its text or timestamp — and continued ONLY from the offset the
+    // server returned: JS String#length counts UTF-16 code units, so a client
+    // computing its own offset desynchronises on the first emoji.
+    readConversationChunk(id,offset,scope){
+      return this.read({target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset});
+    },
+    // The agent's pending asks: EVERY one. Same read from every surface, which
+    // is what makes them answerable from the phone with no second mechanism.
+    listRequests(){ return this.read({target:"pending_requests"}); },
   };
 
   // ---- UI ----
@@ -2955,7 +3031,7 @@
       const epoch=++this.epoch;this.busy=true;this.stale=true;
       this.status("Refreshing your connected models…");this.render();
       try{
-        const doc=await MCP.getModelOptions();
+        const doc=await Owner.getModelOptions();
         if(epoch!==this.epoch) return;
         if(!doc||doc.error||doc.kind!=="advisory_model_options"||doc.version!==1||
           !Array.isArray(doc.options)||!Array.isArray(doc.unavailable)||!Array.isArray(doc.order)||
@@ -3218,10 +3294,10 @@
       if(!confirm("Restore "+recovery.legacy.provider_ref+" to its previous single-provider mode and reconnect? Your saved choices will not change.")) return;
       this.busy=true;this.render();
       try{
-        const home=await MCP.getModelOptions();
+        const home=await Owner.getModelOptions();
         if(epoch!==this.epoch) return;
         if(!home||home.error||home.universe_id!==recovery.universe_id) throw new Error("home changed");
-        const current=await MCP.callTool("read_graph",{target:"agent_binding",graph_id:recovery.universe_id,agent_binding_id:recovery.binding.id},{idempotent:true});
+        const current=await Owner.read({target:"agent_binding",graph_id:recovery.universe_id,agent_binding_id:recovery.binding.id});
         if(epoch!==this.epoch) return;
         const binding=current&&current.binding;
         if(!binding||binding.revision!==recovery.binding.revision||binding.status!=="configured") throw new Error("binding changed");
@@ -3380,8 +3456,8 @@
       if(Date.now()-started>30*60*1000)throw new Error("Still working. Check this same conversation again.");
       await new Promise(resolve=>setTimeout(resolve,1500));
       checkLogin();
-      payload=await MCP.callTool("read_graph",{target:"conversation_turn",
-        request_key:opts.consumerRequest.request_key},{idempotent:true});
+      payload=await Owner.read({target:"conversation_turn",
+        request_key:opts.consumerRequest.request_key});
       checkLogin();
       if(payload&&payload.consumer_turn&&payload.consumer_turn.state==="held"&&
          ["completed","failed","cancelled","interrupted"].includes(payload.consumer_turn.run_status)){
@@ -3900,7 +3976,7 @@
     line.className="muted"; line.textContent="Checking your saved conversation...";
     note.appendChild(line);
     let r=null;
-    try{ r=await MCP.getConversation(); }
+    try{ r=await Owner.getConversation(); }
     catch(e){
       if(!stillOwner()) return;
       line.textContent="Couldn\u2019t read your saved conversation just now ("+
@@ -4045,7 +4121,7 @@
     try{
       while(true){
         if(!stillOwner()) return null;
-        const r=await MCP.readConversationChunk(id,offset,scope);
+        const r=await Owner.readConversationChunk(id,offset,scope);
         if(!stillOwner()) return null;            // previous account's response
         if(!r||r.available!==true||typeof r.chunk!=="string"||r.error||
            r.offset!==offset||r.offset_unit!=="unicode_code_points"||
@@ -4070,7 +4146,7 @@
 
   async function pollStatus(){
     try{
-      const s=await MCP.getStatus(); const dot=$("dot");
+      const s=await Owner.getStatus(); const dot=$("dot");
       const host=s.active_host, alive=host&&host!=="none";
       dot.className="dot "+(alive?"dot--ok":"dot--warn");
       dot.title=alive?("host: "+host):"no active host";
@@ -5517,6 +5593,7 @@
       e.preventDefault(); interruptTurn();
     });
     $("btn-rail-add").addEventListener("click",toggleAddKey);
+    $("btn-rail-retry").addEventListener("click",()=>{ refreshRail(); });
     $("connect-shapes").addEventListener("click",e=>{
       const b=e.target&&e.target.closest?e.target.closest("button[data-shape]"):null;
       if(b){
@@ -7207,28 +7284,34 @@
     }finally{ buttons.forEach(b=>{ b.disabled = itemAnswered; }); }
   }
 
+  // A rail that fails to load never breaks the chat -- and never VANISHES
+  // either. On 2026-09-30 the founder's rail read came back without a list, this
+  // swallowed it, and the rail stayed hidden with no word about why. Now every
+  // outcome is drawn: the list, or a line saying it could not be loaded (above
+  // whatever loaded before, so a half-typed answer is not wiped). The 15-second
+  // poll retries on its own; the button retries now.
   async function refreshRail(){
     if(!token()) return;
-    try{
-      const r = await MCP.listRequests();
-      if(r && Array.isArray(r.pending)) renderRail(r.pending);
-      else railUnavailable();
-    }catch(err){
-      // A rail that fails to load must never break the chat -- but it must not
-      // vanish either. Live 2026-09-30 an oversized reply came back without a
-      // `pending` list and the whole column silently disappeared for one account.
+    let r=null, failure=null;
+    try{ r = await Owner.listRequests(); }
+    catch(err){
       if(err && err.authRequired) return;
-      railUnavailable();
+      failure = (err && err.message) || "the request failed";
     }
+    if(!failure && r && Array.isArray(r.pending)){
+      railFailed(null);
+      renderRail(r.pending);
+      return;
+    }
+    railFailed(failure || (r && typeof r.error==="string" && r.error) || "no list came back");
   }
-
-  function railUnavailable(){
-    const rail = $("request-rail"), head = $("rail-head");
-    if(!rail) return;
-    rail.hidden = false;
-    // Keep whatever cards are already showing; only the heading changes, so a
-    // passing failure never erases a request the user was reading.
-    if(head) head.textContent = "Couldn't load your requests — retrying";
+  function railFailed(reason){
+    const rail=$("request-rail"), box=$("rail-error"), text=$("rail-error-text");
+    if(!rail || !box) return;
+    if(reason===null){ box.hidden=true; if(text) text.textContent=""; return; }
+    rail.hidden=false;
+    box.hidden=false;
+    if(text) text.textContent="Couldn’t load what’s waiting on you ("+reason+").";
   }
 
   // Restore the conversation on load. Without this the thread only ever showed
@@ -7247,7 +7330,7 @@
     const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
     let turns = [];
     try{
-      const r = await MCP.getConversation();
+      const r = await Owner.getConversation();
       if(!stillOwner()) return;
       setQueueScope(r && (r.universe_id || r.universe));
       // A reload mid-turn: the exchange is not in history yet (it is stored on
@@ -7255,49 +7338,112 @@
       // still running. The same read already carries whether it IS running.
       readServerTurn(r); renderWorking();
       const conv = r && r.recent_conversation;
+      if(conv && typeof conv.error==="string"){
+        // The thread could not be READ. That is not an empty thread, and
+        // drawing it as one is how a conversation silently "disappears".
+        historyFailed(conv.error);
+        restoreInflight(turns); return;
+      }
+      historyFailed(null);
       turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
       if(!turns.length){ restoreInflight(turns); return; }
       historyLoaded = true;
-      // Oldest first, decided by each turn's own timestamp — NOT by assuming
-      // the peek's order. It once returned newest-first and this reversed it;
-      // the store now returns oldest-first (`load_recent_readonly` reverses its
-      // DESC page) and the reverse drew the thread upside down: after a reload
-      // the bottom of the chat was the oldest turn ("the conversation is reset
-      // to the past" — founder, 2026-08-29). Turns without a usable ts keep
-      // their given order.
-      const stamped = turns.every(t=>t && typeof t.ts==="number");
-      const ordered = stamped ? turns.slice().sort((a,b)=>a.ts-b.ts) : turns.slice();
-      ordered.forEach((t,index)=>{
-        if(!t||typeof t.text!=="string"||!t.text)return;
-        if(t.consumer_turn_id){
-          const seen=t.speaker==="founder"?renderedConsumerFounders:renderedConsumerTurns;
-          if(seen.has(t.consumer_turn_id))return;
-          seen.add(t.consumer_turn_id);
-        }
-        if(t.speaker==="platform"){
-          const previous=ordered[index-1];
-          const paired=previous&&typeof t.ts==="number"&&Number.isFinite(t.ts)&&previous.ts===t.ts;
-          appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code);
-          return;
-        }
-        const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
-        const drawn=appendMessage(who,t.text,
-          who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
-        // The peek said this turn is longer than what it returned. Offer the
-        // rest instead of letting the preview pass for the message; the bubble
-        // and its metadata (time, provider/model detail) are untouched.
-        if(t.truncated===true) offerFullMessage(drawn,t);
-      });
+      drawHistoryTurns(turns);
+      offerEarlier(conv.has_more===true ? conv.next_before : null, stillOwner);
       restoreInflight(turns);
-    }catch(_e){
+    }catch(err){
       // A failure belonging to the previous login is not this account's error
       // and must not reach its thread either.
       if(!stillOwner()) return;
-      // history is a convenience; never block the chat on it - but a message
-      // held only locally must not vanish because the peek failed: it is
-      // shown as unconfirmed, which is exactly what it is (Codex round 3, P1).
+      if(!(err && err.authRequired)) historyFailed((err && err.message) || "the request failed");
+      // History never blocks the chat - but a message held only locally must
+      // not vanish because the peek failed: it is shown as unconfirmed, which
+      // is exactly what it is (Codex round 3, P1).
       restoreInflight(turns);
     }
+  }
+
+  // Draw one page of stored turns at the END of the thread, oldest first,
+  // decided by each turn's own timestamp — NOT by assuming the page's order. It
+  // once returned newest-first and this reversed it; the store now returns
+  // oldest-first and the reverse drew the thread upside down: after a reload
+  // the bottom of the chat was the oldest turn ("the conversation is reset to
+  // the past" — founder, 2026-08-29). Turns without a usable ts keep their
+  // given order.
+  function drawHistoryTurns(turns){
+    const stamped = turns.every(t=>t && typeof t.ts==="number");
+    const ordered = stamped ? turns.slice().sort((a,b)=>a.ts-b.ts) : turns.slice();
+    ordered.forEach((t,index)=>{
+      if(!t||typeof t.text!=="string"||!t.text)return;
+      if(t.consumer_turn_id){
+        const seen=t.speaker==="founder"?renderedConsumerFounders:renderedConsumerTurns;
+        if(seen.has(t.consumer_turn_id))return;
+        seen.add(t.consumer_turn_id);
+      }
+      if(t.speaker==="platform"){
+        const previous=ordered[index-1];
+        const paired=previous&&typeof t.ts==="number"&&Number.isFinite(t.ts)&&previous.ts===t.ts;
+        appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code);
+        return;
+      }
+      const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
+      const drawn=appendMessage(who,t.text,
+        who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
+      // The peek said this turn is longer than what it returned. Offer the
+      // rest instead of letting the preview pass for the message; the bubble
+      // and its metadata (time, provider/model detail) are untouched.
+      if(t.truncated===true) offerFullMessage(drawn,t);
+    });
+  }
+
+  // "Show earlier messages": the thread is paged by an explicit cursor, and a
+  // page always says whether older turns exist. The app used to show the last
+  // 30 turns and nothing older, with no sign that anything was missing.
+  function offerEarlier(before, stillOwner){
+    const thread=$("thread"); if(!thread) return;
+    let button=$("btn-earlier");
+    if(!Number.isSafeInteger(before)){ if(button) button.remove(); return; }
+    if(!button){
+      button=document.createElement("button");
+      button.id="btn-earlier"; button.type="button"; button.className="btn btn--link thread-earlier";
+    }
+    button.textContent="Show earlier messages";
+    button.disabled=false;
+    button.onclick=()=>loadEarlier(button, before, stillOwner);
+    thread.insertBefore(button, thread.firstChild);
+  }
+  async function loadEarlier(button, before, stillOwner){
+    button.disabled=true; button.textContent="Loading earlier messages…";
+    const failed=(reason)=>{
+      button.disabled=false;
+      button.textContent="Couldn’t load earlier messages ("+reason+"). Try again";
+    };
+    let r;
+    try{ r=await Owner.getConversation(before); }
+    catch(err){
+      if(!stillOwner()) return;
+      if(err && err.authRequired) return sessionExpired();
+      return failed((err && err.message) || "the request failed");
+    }
+    if(!stillOwner()) return;
+    const conv=r && r.recent_conversation;
+    if(!conv || typeof conv.error==="string" || !Array.isArray(conv.turns))
+      return failed((conv && conv.error) || "no page came back");
+    // Drawn at the end, then moved as one block to just below the button, so
+    // the older page lands above everything already on screen.
+    const thread=$("thread"), anchor=button.nextSibling, start=thread.children.length;
+    drawHistoryTurns(conv.turns);
+    Array.from(thread.children).slice(start).forEach(node=>thread.insertBefore(node, anchor));
+    offerEarlier(conv.has_more===true ? conv.next_before : null, stillOwner);
+  }
+
+  // The conversation could not be read: say so in the thread, once, and clear
+  // it the moment a read succeeds.
+  function historyFailed(reason){
+    const note=$("history-error"); if(!note) return;
+    if(reason===null){ note.hidden=true; note.textContent=""; return; }
+    note.hidden=false;
+    note.textContent="Couldn’t load your saved conversation ("+reason+"). New messages still work.";
   }
 
   // A message the user sent whose reply never arrived. If the turn finished
@@ -7355,8 +7501,8 @@
       const epoch=MCP._loginEpoch, scope=queueScope, owner=queueOwner;
       const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner;
       try{
-        const observed=await MCP.callTool("read_graph",{target:"conversation_turn",
-          request_key:pending.consumerRequest.request_key},{idempotent:true});
+        const observed=await Owner.read({target:"conversation_turn",
+          request_key:pending.consumerRequest.request_key});
         // A reply that lands after a sign-in or home change paints nothing.
         if(!stillOwner())return;
         const turn=observed&&observed.consumer_turn;

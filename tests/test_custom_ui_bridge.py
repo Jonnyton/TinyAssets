@@ -63,6 +63,17 @@ let statusUniverseOverride='';
 const fetchMe=async()=>me;
 const sessionExpired=()=>{throw Error('expired');};
 const sendTurn=async(message,display,opts)=>{sends.push({message,display,opts});};
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={
  async callTool(tool,args){
   calls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});

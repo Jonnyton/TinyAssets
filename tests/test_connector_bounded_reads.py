@@ -19,6 +19,7 @@ import json
 import pytest
 
 import tinyassets.universe_server as us
+from tinyassets.api import graph_reads
 
 
 def _call(tool: str, arguments: dict):
@@ -69,23 +70,28 @@ def catalogue(monkeypatch):
     return document
 
 
-# ── the picker's read is untouched ──────────────────────────────────────────
+# ── two doors: the picker's read is complete, the model's is projected ──────
 
-def test_the_pickers_complete_catalogue_survives_the_ceiling(catalogue):
-    """`model_options` is exempt, and that exemption is what keeps the app working.
+def test_the_owner_door_reads_the_complete_catalogue_and_the_connector_projects_it(catalogue):
+    """The picker renders every choice through the OWNER door; the connector is a
+    model door and serves the compact projection under the same target name.
 
-    `tinyassets/onboarding/app.html:1423` reads this target, and the spec requires
-    every protocol-bounded choice to survive in structured content. If the ceiling
-    ever stops exempting it, the owner can no longer pick a model they own.
+    Until 2026-09-30 the connector exempted `model_options` from its ceiling
+    because the app's picker read it there. The app now reads through the owner
+    door (no ceiling), so that exemption has no reason left.
     """
-    result = _call("read_graph", {"target": "model_options"})
-    structured = result.structured_content
+    from tinyassets.api.graph_reads import read_graph
 
-    assert "truncated" not in structured
-    assert len(structured["options"]) == 400
-    assert len(json.dumps(structured).encode()) > 100_000, (
+    complete = json.loads(read_graph(target="model_options"))
+    assert len(complete["options"]) == 400
+    assert len(json.dumps(complete).encode()) > 100_000, (
         "the complete document is genuinely over the ceiling — that is the point"
     )
+
+    projected = _call("read_graph", {"target": "model_options"}).structured_content
+    summary = _call("read_graph", {"target": "model_options_summary"}).structured_content
+    assert projected == summary, "one projection under both names"
+    assert "options" not in projected or len(projected.get("options") or ()) < 400
 
 
 # ── the model's read is bounded ─────────────────────────────────────────────
@@ -161,7 +167,7 @@ def test_an_oversized_read_is_marked_in_structured_content(monkeypatch):
     from tinyassets.engine_result_bounds import DEFAULT_CEILING_BYTES
 
     huge = {"branches": [{"id": f"b-{i}", "name": "x" * 200} for i in range(400)]}
-    monkeypatch.setattr(us, "_extensions_impl", lambda **kw: json.dumps(huge))
+    monkeypatch.setattr(graph_reads, "_extensions_impl", lambda **kw: json.dumps(huge))
     assert len(json.dumps(huge).encode()) > DEFAULT_CEILING_BYTES
 
     structured = _call("read_graph", {"target": "branches"}).structured_content
@@ -177,7 +183,7 @@ def test_an_oversized_read_is_marked_in_structured_content(monkeypatch):
 
 def test_a_read_within_the_ceiling_is_unchanged(monkeypatch):
     payload = {"branches": [{"id": "b-1", "name": "small"}]}
-    monkeypatch.setattr(us, "_extensions_impl", lambda **kw: json.dumps(payload))
+    monkeypatch.setattr(graph_reads, "_extensions_impl", lambda **kw: json.dumps(payload))
 
     structured = _call("read_graph", {"target": "branches"}).structured_content
     assert structured == payload
@@ -270,7 +276,7 @@ def test_a_custom_conversation_reply_is_never_truncated(monkeypatch):
 
     monkeypatch.setattr(consumer_runtime, "read_turn", lambda *a, **k: turn,
                         raising=False)
-    monkeypatch.setattr(us, "_extensions_impl", lambda **kw: json.dumps(turn))
+    monkeypatch.setattr(graph_reads, "_extensions_impl", lambda **kw: json.dumps(turn))
 
     structured = _call("read_graph", {"target": "conversation_turn",
                                       "query": "k-1"}).structured_content
@@ -280,14 +286,12 @@ def test_a_custom_conversation_reply_is_never_truncated(monkeypatch):
     assert structured["reply"] == turn["reply"], "the universe's reply is the product"
 
 
-def test_the_request_rail_gets_the_whole_queue_however_large(monkeypatch):
-    """Live 2026-09-30: the founder's request rail disappeared after a deploy
-    while the free account's stayed. Same code, different data: seven pending
-    requests measured 34 KB, over the 24 KB ceiling, so `read_graph
-    target="pending_requests"` came back as a truncation marker with no
-    `pending` key and the app's rail never rendered. A queue is unusable when
-    partial, so it is exempt; how much an account holds must not decide what
-    its owner can see."""
+def test_a_heavy_queue_is_whole_at_the_owner_door_and_bounded_at_the_model_door(monkeypatch):
+    """Live 2026-09-30: the founder's seven pending requests measured 34 KB, over
+    the 24 KB ceiling, and the app's rail vanished. The interim fix (#4151)
+    exempted the queue from the connector's ceiling. The owner door supersedes
+    it: the app reads the queue whole through `/app/api/read`, and the connector
+    -- a model door -- bounds it visibly like any other oversized read."""
     queue = {
         "universe_id": "u-heavy",
         "pending": [
@@ -300,41 +304,24 @@ def test_the_request_rail_gets_the_whole_queue_however_large(monkeypatch):
 
     monkeypatch.setattr(pending_requests, "list_requests", lambda **kw: queue)
 
-    structured = _call("read_graph", {"target": "pending_requests"}).structured_content
+    whole = json.loads(graph_reads.read_graph(target="pending_requests"))
+    assert [r["request_id"] for r in whole["pending"]] == [f"req_{i}" for i in range(7)]
 
-    assert "truncated" not in structured
-    assert [r["request_id"] for r in structured["pending"]] == [
-        f"req_{i}" for i in range(7)
-    ]
+    structured = _call("read_graph", {"target": "pending_requests"}).structured_content
+    assert structured["truncated"] is True and "pending" not in structured
 
 
 def test_the_summary_points_at_a_bounded_continuation(catalogue):
-    """P1 from cross-family review: the hint sent callers back to the megabyte.
-
-    On the engine, `model_options` IS the compact projection and honours these
-    selectors. On the connector it is the complete, ceiling-exempt document that
-    ignores them — so naming it here told a caller to re-fetch the 1.27 MB
-    catalogue this projection exists to avoid.
-    """
-    structured = _call("read_graph", {"target": "model_options_summary"}).structured_content
+    """The continuation names a target that honours the selectors. On both
+    model-door surfaces that is `model_options` itself: it IS the projection."""
+    structured = _call("read_graph", {"target": "model_options"}).structured_content
     hint = structured["how_to_see_more"]
+    assert 'target="model_options"' in hint
 
-    assert "model_options_summary" in hint
-    assert 'target="model_options"' not in hint, (
-        "the connector's continuation must not name the unbounded read"
-    )
-
-    # The engine keeps its own correct default, so the two surfaces do not share
-    # one wrong answer.
-    from tinyassets.engine_read_views import (
-        CONNECTOR_MORE_TARGET,
-        ENGINE_MORE_TARGET,
-        compact_model_options,
-    )
+    from tinyassets.engine_read_views import MORE_TARGET, compact_model_options
 
     engine_hint = compact_model_options(_catalogue(20))["how_to_see_more"]
-    assert f'target="{ENGINE_MORE_TARGET}"' in engine_hint
-    assert ENGINE_MORE_TARGET != CONNECTOR_MORE_TARGET
+    assert f'target="{MORE_TARGET}"' in engine_hint
 
 
 def test_the_ceiling_governs_exactly_one_handle():
@@ -342,34 +329,31 @@ def test_the_ceiling_governs_exactly_one_handle():
 
     `converse` carries the universe's own reply to its founder — that reply is the
     product. `read_page`/`write_page` carry content the user authored (Hard Rule
-    9). `get_status` is read by the app itself, so bounding it breaks the status
-    dot. Widening this set means proving a partial reply is still a true one.
+    9). `get_status` carries the conversation peek's own page contract. Widening
+    this set means proving a partial reply is still a true one.
     """
     assert us._CEILING_TOOLS == {"read_graph"}
     for spared in ("converse", "read_page", "write_page", "get_status"):
         assert spared not in us._CEILING_TOOLS, spared
 
 
-def test_the_exempt_set_is_two_entries_for_two_reasons():
+def test_the_exempt_set_is_three_contracts_and_no_client():
     from tinyassets.engine_result_bounds import EXACT_BYTE_READS
 
     exempt = us._connector_ceiling_exempt()
     assert exempt == EXACT_BYTE_READS | {
-        ("read_graph", "model_options"),
         ("read_graph", "conversation"),
         ("read_graph", "conversation_turn"),
-        ("read_graph", "pending_requests"),
     }
-    # Each entry earns its place by being unusable when partial, or by a stated
-    # completeness requirement — never by being large, which is what the ceiling
-    # is FOR. An entry added for size is the regression to look for.
-    assert ("read_graph", "run_file") in exempt          # exact bytes
-    assert ("read_graph", "model_options") in exempt     # the picker's spec
-    assert ("read_graph", "conversation") in exempt      # message text + cursor
+    # Each entry earns its place by being unusable when partial -- never by being
+    # large (what the ceiling is FOR), and never because the owner's app reads it
+    # (the app reads through the owner door, which has no ceiling).
+    assert ("read_graph", "run_file") in exempt          # exact bytes + cursor
+    assert ("read_graph", "conversation") in exempt      # message chunk + cursor
     assert ("read_graph", "conversation_turn") in exempt  # the universe's reply
-    assert ("read_graph", "pending_requests") in exempt  # the rail renders it whole
-    # The bounded sibling is NOT exempt — if it were, the split bought nothing.
-    assert ("read_graph", "model_options_summary") not in exempt
+    for app_read in ("model_options", "model_options_summary", "pending_requests",
+                     "agent_binding", "app_ui"):
+        assert ("read_graph", app_read) not in exempt, app_read
 
 
 def test_a_positional_target_is_still_recognised():

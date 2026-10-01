@@ -331,7 +331,11 @@ class TestTheRefusal:
 
     def test_top_tier_refusal_has_no_link(self, base, monkeypatch):
         _write(_universe(base, "u-one", A), "big.bin", 95 * KIB)
-        monkeypatch.setattr(uo, "tier_of", lambda *_a, **_k: "paid")
+        from tinyassets.usage_policy import AccountType
+
+        monkeypatch.setattr(
+            uo, "account_type_of", lambda *_a, **_k: AccountType.SUBSCRIPTION,
+        )
         monkeypatch.setenv("TINYASSETS_PAID_STORAGE_GIB", str(100 * KIB / 1024**3))
 
         with pytest.raises(sa.StorageRefused) as refused:

@@ -266,6 +266,9 @@ def _bind(monkeypatch, payload: dict):
     monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
     mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     monkeypatch.setattr(us, "read_graph", lambda **kw: json.dumps(payload))
+    # model_options is read from the domain dispatch and projected by the engine.
+    monkeypatch.setattr("tinyassets.api.graph_reads.read_graph",
+                        lambda **kw: json.dumps(payload))
     return s
 
 

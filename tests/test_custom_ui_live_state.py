@@ -108,7 +108,10 @@ const listed=await ask('list_runs',Object.assign({status:'completed'},hostile));
 assert.equal(listed.ok,true,listed.error);
 const runCalls=calls.filter(c=>c.args.target==='runs');
 assert.equal(runCalls[0].args.graph_id,HOME);
-assert.equal(runCalls[0].args.limit,u.MAX_LIST_RUNS,'a bundle cannot raise the bound');
+// The bound plus ONE look-ahead row, which is how the page says older runs exist.
+assert.equal(runCalls[0].args.limit,u.MAX_LIST_RUNS+1,'a bundle cannot raise the bound');
+assert(listed.result.runs.length<=u.MAX_LIST_RUNS,'never more than the bound crosses');
+assert.equal(typeof listed.result.has_more,'boolean','a cut page says so');
 assert.equal(runCalls[0].args.run_status,'completed');
 assert.deepEqual(listed.result.runs.map(r=>r.run_id),['run-a']);
 assert.deepEqual(Object.keys(listed.result.runs[0]).sort(),

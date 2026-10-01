@@ -107,7 +107,11 @@ def test_single_source_daily_cap_sends_one_request_and_names_the_daily_limit(
     assert "provider_daily_quota" in record["error"], record["error"]
     router = call_module.get_provider_router()
     assert router._quota.daily_detail(provider)
-    assert router._quota.cooldown_remaining(provider) > 3600
+    # The cooldown runs to the reported reset (next 00:00 UTC), not a short
+    # retry. Measured against the reset itself, not a fixed hour: `> 3600`
+    # failed every run in the last hour of the UTC day (merge queue, 23:41Z).
+    until_reset = int(_RESET_MS) / 1000 - datetime.now(UTC).timestamp()
+    assert router._quota.cooldown_remaining(provider) >= until_reset - 120
 
     # The next run does not pay for the answer again: the source is skipped.
     again = parity._run(tmp_path, monkeypatch,

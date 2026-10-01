@@ -468,11 +468,13 @@ def _usage_in(conn: sqlite3.Connection, account_id: str, pairs, quota: int, tier
 
 
 def _quota(base: Path, account_id: str) -> tuple[int, str]:
-    from tinyassets.universe_owner import tier_of
+    """The account's storage quota from its ONE AccountType (#4157) -- the only
+    per-account input limits take; no second tier read here."""
+    from tinyassets.universe_owner import account_type_of
     from tinyassets.usage_policy import limits_for
 
-    limits = limits_for(tier_of(base, account_id))
-    return int(limits.storage_bytes), limits.name
+    limits = limits_for(account_type_of(base, account_id))
+    return int(limits.storage_bytes), str(limits.name)
 
 
 def usage(base_path: str | Path, account_id: str) -> Usage:

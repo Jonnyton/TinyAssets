@@ -616,13 +616,13 @@ def _limits(universe_id: str):
     try:
         return limits_for_universe(_universe_dir(universe_id))
     except Exception:
-        # `get_tier` already swallows its own failures and returns free; this
-        # catches a failure to RESOLVE the directory at all. Free is the safe
-        # answer: it is the tier that grants least.
-        _log.warning("could not resolve tier for %s; using free", universe_id)
-        from tinyassets.usage_policy import TIER_FREE
+        # The resolver already answers FREE for an unreadable owner or record;
+        # this catches a failure to RESOLVE the directory at all. Free is the
+        # safe answer: it is the type that grants least.
+        _log.warning("could not resolve the account type for %s; using free", universe_id)
+        from tinyassets.usage_policy import AccountType
 
-        return limits_for(TIER_FREE)
+        return limits_for(AccountType.FREE)
 
 
 def refresh(seat_id: str, *, db: Path | None = None, now: float | None = None) -> bool:
@@ -746,14 +746,15 @@ def waiting_message(
     from tinyassets.usage_policy import upgrade_sentence
 
     if tier is None:
-        from tinyassets.storage.subscription_state import TIER_FREE, get_tier
+        from tinyassets.universe_owner import account_type_for_universe
+        from tinyassets.usage_policy import AccountType
 
         try:
             from tinyassets.api.helpers import _universe_dir
 
-            tier = get_tier(_universe_dir(universe_id))
+            tier = account_type_for_universe(_universe_dir(universe_id))
         except Exception:
-            tier = TIER_FREE
+            tier = AccountType.FREE
     head = f"Waiting for a free seat ({int(running)} running)."
     tail = upgrade_sentence(tier, what="seats")
     return f"{head} {tail}".strip()
