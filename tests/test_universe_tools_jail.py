@@ -342,7 +342,8 @@ def test_the_agent_writes_its_own_wiki_but_not_the_trusted_write_back_markers(
         f"ls -A /u; echo forged > /u/{markers.name}; cat /u/{markers.name}"
     )))
     assert markers.name not in forge.split("[exit code")[0].split(), forge
-    assert "[exit code 0]" not in forge, forge
+    # A file of that name in /u is the agent's own workspace file (harness W2);
+    # the trusted markers at the universe root are untouched.
     assert markers.read_bytes() == b"SQLite format 3\x00 synthetic markers"
 
 
@@ -385,16 +386,17 @@ def test_the_agent_owns_its_whole_workspace_and_platform_state_stays_out(
 
 def test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt(world, monkeypatch):
     """The reviewer's reproduction through the real tool: a 4 MB config.yaml.
-    config.yaml is platform-owned and read-only in the jail, so the write is
-    refused; and a planted oversized one is never parsed by the next turn."""
+    The platform's config.yaml is read-only in the jail when it exists; with
+    none at the root, the agent's write lands in its own workspace (harness W2)
+    and never becomes the platform's config. A planted oversized one at the
+    root is never parsed by the next turn."""
     from tinyassets.config import UniverseConfig, load_universe_config
 
     s = _engine(monkeypatch, world)
     a = world.universe_a
     big = "timeout: 999\n" + "".join(f"k{i}: v{i}\n" for i in range(300_000))
-    assert _run(s.write_file(path="config.yaml", content=big[:4 * 1024 * 1024 - 1])).startswith(
-        "error:")
-    assert not (a / "config.yaml").exists()
+    _run(s.write_file(path="config.yaml", content=big[:4 * 1024 * 1024 - 1]))
+    assert not (a / "config.yaml").exists(), "the platform config is never the agent's write"
     started = time.monotonic()
     assert load_universe_config(a).timeout == UniverseConfig().timeout
     (a / "config.yaml").write_text(big, encoding="utf-8")  # planted from outside
