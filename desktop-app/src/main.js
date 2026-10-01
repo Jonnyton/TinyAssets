@@ -20,6 +20,7 @@
 'use strict';
 
 const { app, BrowserWindow, session, shell } = require('electron');
+const fs = require('node:fs');
 const path = require('node:path');
 const {
   resolveAppUrl,
@@ -69,10 +70,26 @@ const APP_URL = resolveAppUrl(app.isPackaged);
 
 let mainWindow = null;
 
+// Every navigation handed out of the window, as origin + path only (a query can
+// carry an OAuth code or state). A sign-in hop missing from the allow-list looks
+// to the user like "it sent me to the browser"; this file names the host.
+// <userData>/navigation-handoffs.log, capped at ~64 KB.
+function noteHandedOff(url) {
+  try {
+    const u = new URL(url);
+    const file = path.join(app.getPath('userData'), 'navigation-handoffs.log');
+    try {
+      if (fs.statSync(file).size > 65536) fs.truncateSync(file, 0);
+    } catch {}
+    fs.appendFileSync(file, `${new Date().toISOString()} ${u.protocol}//${u.host}${u.pathname}\n`);
+  } catch {}
+}
+
 // Route a blocked navigation target to the system browser — but ONLY if the URL
 // itself is safe to hand to the OS (https). file:/javascript:/data:/custom
 // schemes are dropped silently (openExternal on untrusted input is an RCE vector).
 function openExternalIfSafe(url) {
+  noteHandedOff(url);
   if (isSafeExternal(url)) {
     shell.openExternal(url).catch(() => {});
   }
@@ -95,10 +112,14 @@ function applyNavigationPolicy(contents) {
   contents.on('will-navigate', guard);
   contents.on('will-redirect', guard);
   // will-frame-navigate (Electron ≥ 22) fires for subframe navigations too.
+  // A SUBFRAME that is refused is cancelled silently, never handed to the
+  // browser: a page's hidden iframe is not the user asking to go somewhere.
+  // Google's sign-in page loads accounts.youtube.com/.../CheckConnection in an
+  // iframe, and handing it out opened a stray browser tab mid sign-in.
   contents.on('will-frame-navigate', (event) => {
     if (!isAllowedNavigation(event.url)) {
       event.preventDefault();
-      openExternalIfSafe(event.url);
+      if (event.isMainFrame) openExternalIfSafe(event.url);
     }
   });
   // Deny ALL new windows. An allowed https target opens in the system browser;

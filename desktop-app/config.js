@@ -38,9 +38,15 @@ function resolveAppUrl(isPackaged) {
 //   IDP sign-in hosts       — WorkOS AuthKit federates the top-level frame to
 //                             these during "Continue with …"; they must complete
 //                             in-window for the OAuth round-trip to set the cookie.
-//   api.workos.com          — AuthKit's social login hops through
-//                             api.workos.com/user_management/authorize on the
-//                             way to Google and back. Without it the hop was
+//   api.workos.com,         — AuthKit's social login goes out through
+//   auth.workos.com           api.workos.com/user_management/authorize and
+//                             Google returns to auth.workos.com/sso/oauth/
+//                             google/<id>/callback before AuthKit's own
+//                             /api/callback.
+//   accounts.youtube.com    — Google's sign-in page frames
+//                             accounts.youtube.com/accounts/CheckConnection to
+//                             sync its account session; refusing it can stall
+//                             the account chooser. Without it the hop was
 //                             cancelled and handed to the system browser, which
 //                             signed the user in THERE while the app window sat
 //                             on the AuthKit page (founder, 2026-10-01).
@@ -50,7 +56,9 @@ function resolveAppUrl(isPackaged) {
 const EXACT_HOSTS = [
   'tinyassets.io',
   'api.workos.com',
+  'auth.workos.com',
   'accounts.google.com',
+  'accounts.youtube.com',
   'login.microsoftonline.com',
   'login.live.com',
   'github.com',
