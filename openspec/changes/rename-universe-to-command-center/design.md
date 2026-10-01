@@ -55,9 +55,20 @@ What makes this more than a find-and-replace:
 | Prose | "command center", "your command center", plural "command centers" |
 | Titles / buttons | "Command Center" only in title case contexts; buttons are sentence case: "Switch command center" |
 | Identifiers / keys | `command_center`, `command_center_id`, `command_centers` |
-| Agent self-reference | "I'm your command center" (first person, matching current "my universe" phrasing) |
+| The place or account | "command center": "your command center's connections", "Switch command center", "No public command centers" |
+| The actor | "your agent": "Your agent is thinking...", "your agent replied", "Suggested by your agent", "Message your agent" |
+| Agent self-reference | First person; the agent works *in* "my command center" (the place) |
 | New-user greeting | "Welcome, commander." (empty-thread heading, `app.html` `#thread-empty`) |
 | The person | "commander" only in the greeting; elsewhere "you" as today |
+
+**Actor or place (lead decision, 2026-10-01).** "Universe" did two jobs: it
+named the place a person owns, and it named the mind that acts in it. The
+rename splits them. When the old word is the **subject of an action** (it
+thinks, replies, answers, sees, asks, builds, uses, is waiting on you), the
+new copy says **"your agent"**. When it names **where or whose** (a connection,
+a folder, an account, a setting, a list), the new copy says **"command
+center"**. New copy follows the same rule; a test cannot enforce the
+judgement, so review does.
 
 "Command center" is 6 characters longer than "universe". That matters only in
 the resident description budget (D5).
@@ -184,66 +195,193 @@ The channel-agnostic and vendor-neutral ratchets are unaffected: the change
 introduces no channel or vendor words. `build_plugin.py` regenerates the mirror
 in each slice.
 
-### D6. Code identifiers: recommend **not** renaming (C3 cut)
+### D6. Code identifiers: renamed (C3), in one freeze window
 
-The cost:
+*Decided by the founder, 2026-10-01: "rename them too". This replaces the
+earlier recommendation not to.*
 
-- 7,059 identifier occurrences and 12 modules renamed (`universe_server.py`,
-  `universe_intelligence.py`, ...), plus about 17,000 test lines that import or
-  monkeypatch them by module path.
-- A regenerated 10,000-line plugin mirror.
-- A conflict with every open PR.
-- A diff no reviewer can meaningfully check.
+**Scope.** Every identifier, module, test name and env var that spells the old
+word:
 
-It changes nothing a person or the agent reads. Without it, the cost is one
-glossary sentence in PLAN.md: "command center (in code and storage:
-`universe`)". It replaces the existing definition in place.
+- 7,059 identifier occurrences and 323 distinct names;
+- 12 `universe_*` modules (`universe_server.py` becomes
+  `command_center_server.py`, and so on);
+- about 17,000 test lines that import or monkeypatch them by module path;
+- the `TINYASSETS_*UNIVERSE*` env vars.
 
-If the founder wants it anyway, it is one scripted, generated PR in a window
-with no open PRs, gated on the full suite plus the Linux oracle, with no
-compatibility shims.
+The plugin id `tinyassets-universe-server` is renamed too, and the old id stays
+in the marketplace as a forwarding entry for one release, because installed
+copies update by id.
 
-The plugin id `tinyassets-universe-server` follows the same reasoning: installed
-copies update by that id. Its display name and description are copy and change
-in C0. The id stays.
+**Mechanics.**
 
-### D7. Storage and on-disk names: recommend **not** renaming
+1. A codemod (`scripts/rename_command_center.py`, written in C3) does the
+   mechanical part. It renames identifiers with libcst, renames modules with
+   `git mv`, and rewrites import strings and `monkeypatch.setattr("tinyassets.universe_...")`
+   targets. It is deterministic, so running it twice is a no-op.
+2. It writes a **non-mechanical report**: every site it refuses to touch, for a
+   person to review. That covers strings that are machine values (SQL, JSON
+   keys, stored identity, which belong to C4), `getattr` / `importlib` by
+   string, and fiction-domain "universe" meaning a story world.
+3. Env vars: the new name wins, and the old name is still read, with one
+   deprecation log line, until C4's verification passes. Operators' compose
+   files change in the same window (`compose-flags-inert-without-droplet-sync`).
 
-This covers `u-<id>` directories, the 11 `universe*` tables, about 80
-`universe_id` columns, `.universe_id`, `.universe-tool-slots`,
-`.universe_seats.db`, the stored `universe:<id>` actor ids, and the
-`TINYASSETS_*UNIVERSE*` env vars.
+**Freeze window.** The lead pauses the other lanes, the codemod runs on a fresh
+`origin/main`, and the PR lands. Then the lead rebases the paused lanes, and the
+same codemod run on each lane's branch does most of that rebase. The PR is
+gated on:
 
-No person sees these, with **one exception the refute found**:
+- the full suite in the Linux oracle and in CI's merge group;
+- the mirror rebuild (`build_plugin.py`);
+- the channel-agnostic and vendor-neutral ratchets;
+- the description budgets (D5);
+- `cross-provider-drift`.
 
-- **The stored actor id.** `api/runs.py:1508` prints `Actor:
-  {run_record['actor']}` into the run summary, and `:1536` returns the raw value
-  structurally, so `universe:<id>` reaches the chatbot.
+There are no compatibility shims for old module paths. Anything importing an
+old path fails loudly, which is the point of doing it in one window.
 
-The storage stays, and the presentation translates. C1 adds one
-`present_actor()` at the API boundary. It renders `universe:<id>` as
-`command_center:<id>` in summaries and in the structured field. The raw stored
-value is never parsed back from presented output; nothing takes an actor as
-input. `u-` in an id is not the word, so ids themselves are untouched. The `/u`
-jail hides root dot-entries (`universe_tools.py:294`), so the marker files are
-not visible to the agent.
+**Ordering.** C3 lands after C2 and before C4. C3 keeps every SQL string,
+table, column and on-disk name exactly as it is, so code and storage change in
+separate, separately revertible steps.
 
-A migration would have to:
+### D7. Storage: migrated (C4), guarded, from a schema-derived inventory
 
-- rename tables and columns under the write lock, during a deploy that already
-  kills in-flight turns;
-- rewrite every stored actor id and every prefix comparison;
-- re-derive the account-deletion table set, which keys on the column name, so a
-  missed table becomes a cross-user retention bug;
-- invalidate idempotency digests that include ids;
-- move directories that bind mounts and jails resolve by path;
-- run against production data with no rollback short of a restore.
+*Decided by the founder, 2026-10-01: "rename them too". This replaces the
+earlier recommendation not to. C4 gets its own change directory
+(`migrate-storage-to-command-center`), because a migration is spec-first. This
+section is the safety contract that change must meet.*
 
-Recommendation: **leave storage as is.** "Everywhere" is satisfied at every
-surface a person or agent reads. The API boundary (D3/D4) is the single place
-the names translate. If the founder overrules this, C4 becomes its own change
-with a migration, a backfill, a dry run on a production copy, and a rollback
-plan.
+**What moves.**
+
+- Tables: `universes` becomes `command_centers`, `universe_acl` becomes
+  `command_center_acl`, and so on.
+- Columns: `universe_id` becomes `command_center_id`; `queue_universe_id`,
+  `sender_universe_id` and the rest follow.
+- Marker files: `.universe_id` becomes `.command_center_id`,
+  `.universe-tool-slots` becomes `.command-center-tool-slots`, and
+  `.universe_seats.db` becomes `.command_center_seats.db`.
+- The stored actor prefix: `universe:<id>` becomes `command_center:<id>`.
+- The account-deletion key, `UNIVERSE_KEY`, follows the column.
+
+**What does not move: the `u-` id prefix and the `u-<id>` directories.** `u-`
+is not the word. It is part of an opaque id copied into hundreds of rows,
+URLs, bind mounts and the `/u` jail mount, so renaming it would be an id
+migration, not a name migration. The inventory lists these directories anyway,
+so the decision is visible. This is the one item the founder confirms
+(Open Questions).
+
+**1. The inventory is derived, never hand-listed**
+(`deletion-set-derived-from-schema`). `scripts/command_center_storage_inventory.py`
+walks the data dir and opens every SQLite file read-only, including the
+per-home databases and satellites. It reports:
+
+- every table and column whose name contains `universe`;
+- every TEXT column with values `LIKE 'universe:%'`;
+- every file or directory under the data dir named `.universe*`.
+
+That output is the migration's input. The migration renames what the
+inventory finds, by rule. A table nobody remembered is still migrated, and a
+name the rule cannot map stops the run before anything moves.
+
+**2. A layout guard ships first, alone (C4a).** A new `data_dir()/.layout.json`
+records `{"layout": 1}`, written if absent. Every image from C4a on refuses to
+start against a layout it does not know, before opening any database. It
+fails loudly and serves nothing.
+
+- An image built for layout 1 cannot run on renamed data (layout 2). That is
+  the deploy-rollback guard.
+- Images older than C4a cannot read the marker. On renamed data they would see
+  no `universes` table and could create a blank home. That is why C4b's
+  rollback is always restore plus the old image, never an image swap alone.
+- C4a deploys and runs at least one full day before C4b, so the guard is the
+  production baseline when the migration runs.
+
+**3. One locked, idempotent, resumable migration (C4b).** It runs at container
+start, before the server binds its port, under an exclusive data-dir lock that
+every process takes. That includes the engine child processes spawned per
+turn, so nothing reads during the migration.
+
+- **Per database:** one transaction of `ALTER TABLE ... RENAME TO` /
+  `RENAME COLUMN` plus `UPDATE ... SET actor = 'command_center:' || substr(...)`,
+  ending with `PRAGMA user_version` set to the new layout. A database is
+  either all old or all new.
+- **Per file:** an atomic `os.replace`.
+- **Progress:** recorded per database and file, so a crash resumes where it
+  stopped. Every step checks whether it is already done (new name present, old
+  absent), so a re-run is a no-op.
+- **Finish:** the marker flips to layout 2 only after the post-migration
+  verification passes.
+
+**Readers accept both shapes until the migration is verified.** Within one
+database there is no mixed state to read, because of the transaction. Across
+databases, files and values, readers fall back:
+
+- actor-prefix comparisons match `universe:` and `command_center:`;
+- seat and slot files open the new name and fall back to the old;
+- scripts and canaries reading storage accept either name.
+
+These fallbacks come out in a cleanup PR once the 14-day verification holds.
+
+**4. Deletion and export are proven against the migrated schema.** A test
+builds a data dir with every real schema creator, migrates it, and then:
+
+- **fails if any table or column still contains `universe`**, which guards
+  against an unmigrated column;
+- asserts `delete_account` removes every row of the deleted account and none
+  of another's;
+- asserts the operator reset (`scoped_reset`) does the same.
+
+Export has no code path today: the `/account` page routes data-export requests
+to the legal address, and they are answered by hand. C4b's runbook updates the
+operator's export queries to the new names, and the dry run executes them
+against the migrated copy. There is no export code to test.
+
+The existing `tests/test_account_deletion.py` new-column guard moves to the
+new key name.
+
+**5. Dry run on a copy of production, never on production.**
+
+- Take a snapshot with `deploy/backup-restore.sh` (read-only on the droplet),
+  copy it off the droplet, and run the migration in the Linux oracle container
+  against the copy.
+- The report gives, per database: row counts per table before and after (old
+  name mapped to new name; they must match exactly), and actor-prefix counts
+  (all moved, none left).
+- Reader checks before and after: `get_status`, `read_graph` (status, graphs,
+  runs) for every home, and the account-deletion refusal analysis for every
+  account. The answers must be identical.
+- The dry-run report is attached to the C4b PR. If any count or reader
+  differs, C4b does not run.
+
+**6. Backup and a written rollback.**
+
+- Immediately before C4b deploys, take a full snapshot with
+  `deploy/backup-restore.sh`, recording its timestamp and sha256.
+- Rollback is: stop the container, restore that snapshot, deploy the image sha
+  that ran before C4b (`deployed_sha.py` records it), then run the canary.
+- The rollback goes in `docs/ops/` with the exact commands. It is rehearsed
+  once against the dry-run copy.
+
+**7. A measured quiet window.** Every deploy interrupts in-flight turns. Turns
+on production over the 14 days to 2026-10-01 17:00Z (read-only count of
+`agent_turns.created_at`, by UTC hour):
+
+| UTC hours | 17-21 | 22-03 | 04-16 |
+|---|---|---|---|
+| Turns/hour, 14 days total | 6-15 | 25-63 | 85-130 |
+
+Proposed window: **18:00-20:00 UTC** (11:00-13:00 Pacific). It is re-measured
+the day before, and the founder's own planned sessions are checked, because
+the founder is the main live user.
+
+### D6/D7 shared risk: two big steps on one surface
+
+C3 and C4b each touch nearly every module. They are deliberately separate:
+C3 changes code only, so it is revertible by a plain revert. C4b changes data
+only, so it rolls back only by restore. Neither waits on the other's
+deprecation window. C4b needs only C3's code to have run in production long
+enough to be trusted.
 
 ### D8. Agent self-reference and existing brains
 
@@ -301,15 +439,19 @@ releases) → C1 (one PR covering the server and the first-party readers):
   --assert-contains`.
 
 → C2 (living docs and specs, with the capability dir renames and every reference
-updated) → alias and old-key removal with a `schema_version` bump, once the
-14-day condition holds. C3 and C4 run only if the founder
-overrules D6 or D7.
+updated) → C3 (code identifiers, one freeze window, D6) → C4a (the layout
+guard ships alone, D7) → C4b (the storage migration in a measured quiet
+window, D7) → alias and old-key removal with a `schema_version` bump, once the
+14-day condition holds.
 
 Rollback: C0 and C2 are text. C1 rolls back by reverting the PR. Because
 responses carry both keys and inputs accept both names, a rollback leaves no
-client unable to call or read.
+client unable to call or read. C3 rolls back by reverting the one PR before
+C4b runs. C4b rolls back only by restore plus the previous image (D7), never by
+a revert alone.
 
 ## Open Questions
 
-- The founder decides D6 (code identifiers) and D7 (storage). The
-  recommendation for both is no.
+- **The `u-` id prefix (D7).** It is kept. It is an opaque value, not the
+  word, and renaming it is an id migration. The founder confirms this or asks
+  for that migration separately.
