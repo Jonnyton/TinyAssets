@@ -141,9 +141,16 @@ who wants their agent to work differently in the background edits that branch.
 This is the platform's one canonical way to run an agent with no client
 attached, so everything comes from existing machinery and the authority store
 is unchanged:
-- **Admission, credential and budget:** the foreground run lane. It checks the
-  founder home and that the branch author is the owner principal, so the branch
-  is seeded with the owner as author, and only for an owner acting
+- **Admission, credential and budget:** the foreground run lane, through the
+  exact requestless recipe automations use:
+  - `_bind_automation_provider_call`-style binding with the record's owner;
+  - `owner_run_identity` with its boolean consumed (false means `owner_lost`);
+  - actor `universe:<id>`, with `owner_user_id` persisted;
+  - the per-node authority guard, which re-checks the owner's admin ACL live.
+    Foreground admission alone checks founder home and branch authorship, not
+    admin revocation.
+
+  The branch is seeded with the owner as author, and only for an owner acting
   authenticated.
 - **Seats:** the agent node's seat. It waits without a deadline, is never
   refused, and is released when the run ends.
@@ -154,8 +161,14 @@ Each run carries `activity_id` in its inputs, but **inputs are never trusted
 for linkage**. A run counts as an activity's run only if the record names it
 (`runner_token = run_id`, set when the run is claimed, below). Only then does
 its agent node continue the session `activity:<id>`, report progress and write
-effect intents. A run the agent starts itself through `run_graph` with a forged
-`activity_id` is an ordinary run.
+effect intents. Session selection, lineage, fencing and intent accounting are
+platform code around the agent node. An edited branch keeps or loses its node,
+but cannot change them.
+
+**Unlinked runs do nothing activity-shaped.** A run of the *Activities* branch
+that no record names is refused at its start barrier with
+`activity_run_unlinked` ("start an activity instead"). That covers a run the
+agent starts through `run_graph` with a forged `activity_id`, and a manual run.
 
 **The adapter boundary.** The record, session, status lines, effect intents and
 the Activity tab touch the substrate through one adapter,
@@ -177,19 +190,46 @@ activity is created or answered. It selects:
 
 A live run, or one whose owner is alive or unknown, is never replaced.
 
-For each, it **claims** by compare-and-set, setting `runner_generation + 1`,
-then starts a run of the activity branch and stamps `runner_token = run_id`
-under the same generation. Runner writes carry the generation, so a superseded
-run's writes change nothing.
+For each activity it does **reserve, bind, release**:
+1. **Claim** by compare-and-set: `runner_generation + 1`, `runner_token = ''`.
+2. **Reserve** a run row in `queued` state, which mints its `run_id`. Execution
+   has not started.
+3. **Bind**: stamp `runner_token = run_id` under that generation, by
+   compare-and-set.
+4. **Release** the run to the executor. Its start barrier re-reads the record
+   and executes only if the record names this run under a current generation.
+   Otherwise the run ends `activity_run_unlinked` without executing anything.
 
-**Waiting releases the seat.** When a rule asks first, or the auto-review asks
-for approval, the activity's run:
-1. raises one owner request and records its id (`waiting_request_id`);
-2. moves `in_progress -> waiting_on_you`;
-3. ends, which releases the seat.
+Recovery for every intermediate state:
 
-The owner's answer moves the activity `waiting_on_you -> scheduled` by
-compare-and-set on that request id, and the next run continues the session.
+| Crash after | State found | Dispatcher action |
+|---|---|---|
+| 1 | `in_progress`, empty `runner_token` | Re-claim (generation + 1). Nothing ran |
+| 2 | `in_progress`, empty token, an unlinked queued run | Re-claim. The orphan run fails its barrier |
+| 3 | `in_progress`, token = a queued or running run | Leave it. If its owner is provably dead, run recovery interrupts it, then re-claim |
+| 4 | live run | Leave it |
+
+Runner writes carry the generation, so a superseded run's writes change
+nothing.
+
+**Waiting is a yield, not an interruption.** Today `ask_first` and an
+auto-review hold return a refusal to the agent; they do not suspend anything.
+Inside an activity run, that refusal leads to a **yield**:
+1. Every effect of the run has already settled, because sends are synchronous:
+   each intent is `confirmed`, `failed` or `unknown`, and none is `planned` or
+   `sent`.
+2. The agent raises one owner request. It is bound to the exact pending action
+   (class, connection, operation, path and its action digest), and its id is
+   recorded as `waiting_request_id`.
+3. The activity moves `in_progress -> waiting_on_you`.
+4. The run ends with ordinary run status `completed` and outcome `yielded`,
+   which releases the seat.
+
+A yield is never labelled an interruption, and interruption recovery never
+touches it. The owner's answer moves the activity `waiting_on_you -> scheduled`
+by compare-and-set on that request id. An approval carries the approval id for
+that exact action (D2/D3), so the next run's identical action proceeds under
+*if pre-approved* and still passes auto-review.
 
 **Pause and stop** take effect at the activity run's next tool boundary.
 `holds(generation)` fails, and the run ends. Stop keeps `result_summary`.
@@ -243,14 +283,20 @@ An automation that starts an activity is an ordinary automation targeting the
 universe's *Activities* branch, with inputs `{title, brief}`. Automations,
 their lease keys and their contract are unchanged.
 
-When a run of the *Activities* branch starts with no activity named on it, the
-platform creates the record at run start:
-- `origin_kind='schedule'`;
-- `origin_ref='<automation_id>@<due_at>'`, under its unique index;
-- it then claims the record for that run.
+**Creation requires server-owned provenance.** An activity is created from a
+schedule only when the automation pump fires that automation. The pump passes
+a platform-only firing context that is never a run input: the claimed attempt's
+owner, `automation_id` and `due_at`. `_run_due_automation` already knows the
+due time, and `_execute` gains the parameter.
 
-Re-firing the same attempt after a crash returns the same record, which closes
-the two-database gap. The Scheduled view lists those automations next to the
+With that context, the platform creates the record before reserving the run
+(`origin_kind='schedule'`, `origin_ref='<automation_id>@<due_at>'` under its
+unique index), then does reserve, bind and release (Decision 4).
+- Re-firing the same attempt after a crash returns the same record.
+- Every other run of the branch is unlinked and refused (Decision 3). No
+  ordinary run creates an activity.
+- Creation goes through one function for every origin, which applies the owner
+  derivation and the nested-activity refusal. The Scheduled view lists those automations next to the
 research schedule (D3).
 
 ### 8. Served-tool contract and reads
@@ -298,7 +344,13 @@ unchanged.
    - one surviving a deploy with an effect in flight;
    - one started by a Monday automation.
 
-**Rollback** is a revert. The store and the seeded branch are inert to old code.
+**Rollback.** Before reverting, two steps:
+1. Pause every automation targeting an *Activities* branch.
+2. Stop all activities: fence them and let their runs end.
+
+Then revert. Old code ignores the store. It would still load and run the
+branch for any automation left active, without activity accounting, which is
+why those automations are paused first.
 
 ## Open Questions
 
