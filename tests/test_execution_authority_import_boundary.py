@@ -299,10 +299,14 @@ def test_database_schema_failure_with_unchanged_path_is_preserved(
     assert not (tmp_path / "state" / ".d0-authority-initialized").exists()
 
 
-def test_built_plugin_and_wheel_package_set_exclude_fake_authority() -> None:
+def test_built_plugin_and_wheel_package_set_exclude_fake_authority(tmp_path) -> None:
     build_script = _REPO_ROOT / "packaging" / "claude-plugin" / "build_plugin.py"
+    # Into tmp_path, never the tracked mirror: an in-place build from the
+    # suite raced other builds and deleted tracked files (2026-10-01).
+    runtime = tmp_path / "runtime"
     completed = subprocess.run(
-        [sys.executable, str(build_script), "--skip-probe"],
+        [sys.executable, str(build_script), "--skip-probe",
+         "--runtime-root", str(runtime)],
         cwd=_REPO_ROOT,
         capture_output=True,
         check=False,
@@ -310,14 +314,6 @@ def test_built_plugin_and_wheel_package_set_exclude_fake_authority() -> None:
         timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
-    runtime = (
-        _REPO_ROOT
-        / "packaging"
-        / "claude-plugin"
-        / "plugins"
-        / "tinyassets-universe-server"
-        / "runtime"
-    )
     assert (runtime / "tinyassets" / "execution_authority").is_dir()
     assert not (runtime / "tests").exists()
     forbidden = (
