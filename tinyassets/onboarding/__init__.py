@@ -1252,13 +1252,15 @@ async def _handle_rules(request: Any) -> Any:
                 _universe_dir(), str(spec.get("connection") or ""),
                 str(spec.get("kind") or ""), method=str(spec.get("method") or ""),
                 path_prefix=str(spec.get("path_prefix") or "/"),
+                confirm=data.get("confirm") is True,
             )
             return {"declared": declared.as_dict(), **_listing()}
         if "undeclare" in data:
             kind_id = data["undeclare"]
             if type(kind_id) is not int or kind_id <= 0 or kind_id > 9_223_372_036_854_775_807:
                 raise ValueError("undeclare must be a declaration id")
-            return {"undeclared": agent_rules.delete_kind(_universe_dir(), kind_id),
+            return {"undeclared": agent_rules.delete_kind(
+                        _universe_dir(), kind_id, confirm=data.get("confirm") is True),
                     **_listing()}
         if "delete" in data:
             rule_id = data["delete"]

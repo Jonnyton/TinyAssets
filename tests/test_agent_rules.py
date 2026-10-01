@@ -325,3 +325,48 @@ def test_the_request_path_is_read_from_a_url_or_a_path():
     assert _request_path({"url": "https://api.x.com/v1/a?b=1"}) == "/v1/a"
     assert _request_path({"path": "/v1/b?c=2"}) == "/v1/b"
     assert _request_path({}) == "/"
+
+
+# -- gpt-6-astra on #4199 ---------------------------------------------------------------
+
+
+def test_a_fragment_cannot_hide_a_declared_payment(tmp_path):
+    from tinyassets.effectors.authenticated_external_call import _request_path, _rule_refusal
+
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "stripe", "payment", method="POST",
+                             path_prefix="/v1/charges")
+    assert _request_path({"path": "/v1/charges#"}) == "/v1/charges"
+    refusal = _rule_refusal(universe, "stripe", "POST", _request_path({"path": "/v1/charges#"}))
+    assert refusal["error_kind"] == "rule_hand_off"
+
+
+def test_a_trailing_slash_is_one_spelling(tmp_path):
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "stripe", "payment", method="POST",
+                             path_prefix="/v1/charges/")
+    assert agent_rules.list_kinds(universe)[0].path_prefix == "/v1/charges"
+    assert agent_rules.classify(universe, "stripe", "POST", "/v1/charges/")[0] == "money.move"
+    with pytest.raises(agent_rules.RuleRefused):
+        # An any-method read on the same path would loosen the payment.
+        agent_rules.declare_kind(universe, "stripe", "read", path_prefix="/v1/charges/")
+
+
+def test_declaring_read_over_an_ask_first_write_needs_confirmation(tmp_path):
+    universe = _universe(tmp_path)
+    agent_rules.set_rule(universe, "app.write", ASK_FIRST, connection="gh")
+    with pytest.raises(agent_rules.RuleRefused) as refused:
+        agent_rules.declare_kind(universe, "gh", "read", method="POST", path_prefix="/graphql")
+    assert "Confirm" in str(refused.value)
+    agent_rules.declare_kind(universe, "gh", "read", method="POST", path_prefix="/graphql",
+                             confirm=True)
+    assert agent_rules.classify(universe, "gh", "POST", "/graphql")[0] == "app.read"
+
+
+def test_removing_a_payment_declaration_needs_confirmation(tmp_path):
+    universe = _universe(tmp_path)
+    declared = agent_rules.declare_kind(universe, "stripe", "payment", path_prefix="/v1")
+    with pytest.raises(agent_rules.RuleRefused):
+        agent_rules.delete_kind(universe, declared.id)
+    assert agent_rules.list_kinds(universe), "nothing removed without confirmation"
+    assert agent_rules.delete_kind(universe, declared.id, confirm=True) is True

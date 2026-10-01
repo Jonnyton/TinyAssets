@@ -5704,10 +5704,7 @@
           " \u2192 "+item.kind;
         const drop=document.createElement("button");
         drop.className="btn btn--link"; drop.type="button"; drop.textContent="Remove";
-        drop.addEventListener("click",async()=>{
-          const res=await rulesRequest({undeclare:item.id});
-          if(res.ok) renderRules(res.doc); else rulesSay("Could not remove that.");
-        });
+        drop.addEventListener("click",()=>sendConfirmed({undeclare:item.id}));
         row.appendChild(what); row.appendChild(drop); kinds.appendChild(row);
       });
       const kindPick=$("kind-kind"); kindPick.textContent="";
@@ -5736,13 +5733,20 @@
       if(!res.ok){ rulesSay("That rule was not saved."); return loadRules(); }
       rulesSay("Saved."); renderRules(res.doc);
     }
-    $("btn-kind-add").addEventListener("click",async()=>{
-      const res=await rulesRequest({declare:{connection:$("kind-connection").value,
-        method:$("kind-method").value,path_prefix:$("kind-path").value||"/",
-        kind:$("kind-kind").value}});
+    // A declaration that loosens what its calls are decided as is confirmed
+    // against the server's own words, like a rule (gpt-6-astra on #4199).
+    async function sendConfirmed(body){
+      let res=await rulesRequest(body);
+      if(res.status===409&&res.doc&&res.doc.detail){
+        if(!window.confirm(res.doc.detail)) return loadRules();
+        res=await rulesRequest(Object.assign({},body,{confirm:true}));
+      }
       if(!res.ok){ rulesSay((res.doc&&res.doc.detail)||"That was not saved."); return; }
       rulesSay("Saved."); renderRules(res.doc);
-    });
+    }
+    $("btn-kind-add").addEventListener("click",()=>sendConfirmed({declare:{
+      connection:$("kind-connection").value,method:$("kind-method").value,
+      path_prefix:$("kind-path").value||"/",kind:$("kind-kind").value}}));
     $("btn-notifications").addEventListener("click", ()=>toggleNotifications(false));
     $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
     // The phone app has no browser push; its one switch registers the phone.

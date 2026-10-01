@@ -43,13 +43,16 @@ const LISTING={rules:[{id:1,action_class:"money.move",connection:"",operation:""
 async function fetch(url, init){
   const body=init.body?JSON.parse(init.body):null;
   if(body) posts.push(body);
+  if(body&&body.undeclare&&!body.confirm)
+    return {ok:false,status:409,json:async()=>({detail:"Calls to stripe will be decided as a write."})};
   if(body&&body.action_class==="money.move"&&!body.confirm_handback)
     return {ok:false,status:409,json:async()=>({detail:"Your agent will be able to move money."})};
   return {ok:true,status:200,json:async()=>LISTING};
 }
 """
 
-_FUNCS = ("rulesRequest", "rulesSay", "renderRules", "loadRules", "saveRule")
+_FUNCS = ("rulesRequest", "rulesSay", "renderRules", "loadRules", "saveRule",
+          "sendConfirmed")
 
 _BODY = r"""
 (async()=>{
@@ -90,3 +93,25 @@ def test_loosening_a_handback_asks_with_the_servers_words_then_confirms(tmp_path
 def test_declining_sends_nothing_more(tmp_path):
     out = _run(tmp_path, {"confirm": False})
     assert len(out["posts"]) == 1 and "confirm_handback" not in out["posts"][0]
+
+
+_UNDECLARE = r"""
+(async()=>{
+  await sendConfirmed({undeclare:9});
+  console.log(JSON.stringify({posts, confirmed}));
+})();
+"""
+
+
+def test_removing_a_declaration_that_loosens_asks_first(tmp_path):
+    page, _csp = onboarding.render_app_html()
+    funcs = "\n".join(_js_function(page, name) for name in _FUNCS)
+    script = tmp_path / "rules_undeclare.js"
+    script.write_text(_SHIM + 'const SCENARIO={"confirm": true};\n' + funcs + _UNDECLARE,
+                      encoding="utf-8")
+    proc = subprocess.run([_NODE, str(script)], capture_output=True, text=True,
+                          encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["confirmed"] == ["Calls to stripe will be decided as a write."]
+    assert out["posts"] == [{"undeclare": 9}, {"undeclare": 9, "confirm": True}]

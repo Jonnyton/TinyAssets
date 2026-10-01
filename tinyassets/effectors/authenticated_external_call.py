@@ -649,7 +649,15 @@ def _request_path(request: dict[str, Any]) -> str:
         except ValueError:
             return "/"
     path = request.get("path")
-    return path.split("?", 1)[0] if isinstance(path, str) and path.startswith("/") else "/"
+    if not isinstance(path, str) or not path.startswith("/"):
+        return "/"
+    # Parsed the way the transport rebuilds the URL: no query, no fragment, so
+    # "/v1/charges#" classifies as the "/v1/charges" it is sent as
+    # (gpt-6-astra on #4199).
+    try:
+        return urllib.parse.urlsplit(path).path or "/"
+    except ValueError:
+        return "/"
 
 
 def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
