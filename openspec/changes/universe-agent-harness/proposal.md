@@ -45,34 +45,56 @@ where noted:
 - **Onboarding.** The universe asks for a name and one responsibility: what it
   owns, where it learns, its quality bar, what needs approval, and how often it
   reports. It writes the answers into its own files.
-- **Its own computer.** It has a jailed workspace, bash with public egress, and
-  its own browser.
-  - The browser runs in a sandbox whose profile the agent cannot read.
-  - The profile page has a live view, plus *Take over* / *Return control* for
-    logins and decisions.
+- **Its own computer.** It has a workspace it fully owns, including its wiki
+  and brain (the mechanism is left open), bash with public egress, and its own
+  browser.
+  - The browser is driven through a restricted broker: no raw CDP, no
+    evaluation, no cookie export, and a profile kept out of every agent
+    environment.
+  - The profile page has a live view, plus *Take over* / *Return control*.
+    Recording is suspended while the owner has control.
 - **Always on, several projects at once.** Work becomes **activities**: child
-  sessions that run in parallel on the user's seats, keep going after the chat
-  closes, and report into the main thread. Scheduled activities reuse
-  user-owned automations.
-- **Proactive research while idle.** Its tools are read-only, **enforced in
-  code**:
-  - write and edit are refused;
-  - bash runs read-only with no network;
-  - the platform socket answers read verbs only;
-  - connected-app calls are limited to reads;
-  - there is no browser.
-
-  Its output is proposals only. An approved proposal becomes a pre-approved
-  activity.
+  sessions that run in parallel on the user's seats and keep going after the
+  chat closes.
+  - They report into the main thread and resume after a deploy without
+    repeating an external effect.
+  - An activity releases its seat while waiting on the owner.
+  - Scheduled activities are an explicit target kind on user-owned automations.
+  - Schedules and activities are read completely, paged and never truncated.
+- **Proactive research while idle.** Defaults: after 30 min idle, at most
+  every 4 h, 08:00–22:00, single-flight, with events coalesced. It is shown and
+  editable in the Scheduled view, and says so plainly when no compute is
+  connected.
+  - It is read-only by capability: a research flag in the platform-minted
+    execution context, and a positive allowlist of side-effect-free reads.
+  - In the jail, writes are refused, bash has no network, and there is no
+    browser, extensions, hooks or flush.
+  - Its output is proposals only, through a dedicated path.
+- **Blocked work becomes a grant.** A block becomes a proposal naming the
+  exact rule, connection or capability that would unblock it, or a patch
+  request, or a scheduled recheck. It never stays a static blocked list.
 - **Custom Rules (authority).** Each action class gets one of four behaviours:
-  do without asking, do if pre-approved, ask first, or hand off. One decision
-  point is checked at every enforcement site. Rules are owner-only: the agent
-  can read them and propose changes, but cannot write them. Seed rules
-  reproduce the first version's "act inside, ask outside" default.
-- **Auto-review.** Before consequential actions, a check runs on the
-  **universe's own model** and fails closed. Fixed **reserved actions** always
-  hand back to the owner: credential or security changes, moving money, and
-  granting others access.
+  do without asking, do if pre-approved, ask first, or hand off.
+  - Every execution carries a platform-minted **execution context** naming the
+    initiating agent. It propagates through workflows, automations,
+    activities, extensions, MCP calls and effectors.
+  - Delegation never increases authority.
+  - Semantic classes come only from trusted integration declarations.
+  - Rules are owner-edited. The agent can read them and propose changes, but
+    cannot write them.
+  - Seed rules reproduce dots and the first version's "act inside, ask
+    outside" default.
+- **Auto-review.** On by default before consequential actions, with a per-class
+  off switch.
+  - It is a tool-free call on the **universe's own model**, under the
+    activity's existing seat.
+  - It treats action content as untrusted, binds to the exact action, can only
+    tighten, and fails closed.
+- **Hand-backs on by default, as editable rules.** Credential or security
+  changes, moving money, and granting others access hand back to the owner, as
+  in dots.
+  - The owner may change them, and the app says what that allows.
+  - Only the cross-user floor is locked.
 - **Profile and command center.** The profile has these parts:
   - an Activity tab: Waiting on you, In progress, Scheduled, Completed with
     receipts;
@@ -120,8 +142,9 @@ and adapter-specific behaviour is a declared capability (`resume`,
 ### New Capabilities
 
 - `universe-agent-harness`: the dot experience. It covers:
-  - onboarding, activities, proactive research, Custom Rules, auto-review and
-    reserved actions;
+  - onboarding, activities, proactive research and grantable blocks;
+  - the execution context, Custom Rules, auto-review and the hand-back
+    defaults;
   - the profile and roster, take-over, memory items, the harness roster and
     sharing;
   - sessions and compaction, steering, the four-tool surface, harness files
@@ -145,18 +168,21 @@ handle as a declared capability, journaled tool events), `universe_tools.py`
 deferred), `served_tools.py`, `shared_self.py` and `background_served_provider.py`
 (agent nodes resume their session), and `effectors/*` consent (standing grants).
 
-Storage: session logs and the universe-local git repo are new storage shapes,
-and platform state moves under `.runtime/`. Each gets its slice's own storage
-proposal before code.
+Storage: session logs (shipped in S1, outside the universe) and the file
+history store are new storage shapes. How the agent's own workspace is made is
+left open. Each gets its slice's own storage proposal before code.
 
-Authority: per-action Custom Rules with auto-review and reserved actions,
-replacing a fixed default. The rules store is owner-only. The cross-user floor,
-credential blindness and the standing-grant checks are unchanged.
+Authority: per-action Custom Rules evaluated for the initiating agent through a
+platform-minted execution context, with auto-review and hand-back defaults. This
+replaces a fixed default. The cross-user floor, credential blindness and the
+standing-grant checks are unchanged.
 
-Storage: also new are activity records, the rules store, proposals and the
-browser profile, all under `.runtime/` (S3c). The activity store opens its own
-storage proposal in D2. The rules store is specified here as part of the
-authority design.
+Storage: also new are activity records with pending effects, the rules store,
+auto-review results, proposals, import quarantine with activation records, and
+the browser profile. All of them sit outside every agent-controlled environment,
+following the pattern S1 used for session records. This does not depend on
+#4175. The activity store opens its own storage proposal in D2. The rules store
+is specified here as part of the authority design.
 
 Supersedes the S2–S8 slice plan in
 `universe-harness-four-tools/design-notes/universe-harness-design.md`. Its S1
@@ -164,5 +190,5 @@ is built and that change is archived after its delta syncs.
 
 Owner: Claude. Branch: `universe-agent-harness`. This PR is design only. Each
 slice ships as its own PR and is proven live. S1 (#4173) has shipped. S3a
-(#4174) and the S3c proposal (#4175) are in flight. Design §5 maps them onto
-the dot.
+(#4174) is in review. The S3c proposal (#4175) is paused, and this design does
+not depend on it. Design §5 maps all three onto the dot.

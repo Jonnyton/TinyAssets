@@ -67,7 +67,7 @@ adding resident schemas: servers are reached through one programmable layer
 in the tool description
 ([release](https://github.com/earendil-works/pi/releases/tag/v0.99.2)). This
 design keeps exactly the four tools. Bash is the programmable layer, and `ta
-search` is the discovery call (§4.6).
+search` is the discovery call (§4.7).
 
 ## 2. Research: the four reference harnesses (sources fetched 2026-10-01)
 
@@ -92,7 +92,7 @@ Sources:
 
 Current pi defaults to the four tools, and it now also ships `grep`/`find`/`ls`
 and built-in MCP behind codemode and deferred exposure. This design keeps the
-four and puts breadth behind `ta` in bash (§4.6).
+four and puts breadth behind `ta` in bash (§4.7).
 
 **Synthesis.**
 - Every reference keeps the **session** as the unit of continuity and compacts
@@ -220,29 +220,35 @@ computer and a responsibility. It does its own work, watches for things to do
 while idle, and acts under rules the user sets. It runs on the user's own
 compute.
 
-- **Platform supplies:** a persisted session, a jailed computer, rule
+- **Platform supplies:** a persisted session, a workspace the agent owns, rule
   enforcement and review, activity tracking, and a profile page.
-- **User owns:** everything else, including the instructions, memory,
-  skills, rules, model and the number of agents.
-- **Fixed boundaries:** the only platform-wide invariant is cross-user isolation
-  (`the-floor-is-cross-user-only`). Within a universe, the boundaries are the
-  user's own rules, plus the reserved actions of §4.9.
+- **User owns:** everything else, including the instructions, memory, skills,
+  rules, model and the number of agents.
+- **One locked floor: cross-user isolation**
+  (`the-floor-is-cross-user-only`). An agent can never touch another user's
+  universe, data or money.
+- **Everything else is a default the user can edit.** That includes the dots
+  protections: Custom Rules, the hand-backs and auto-review.
+- **Defaults reproduce dots exactly.** A new user gets the dots experience
+  without configuring anything.
 
 | Element | Section |
 |---|---|
 | Name plus one responsibility at onboarding | 4.2 |
-| Own computer and browser, with live view and take-over | 4.3 |
+| Its own computer: workspace, network, browser with take-over | 4.3 |
 | Always on, several projects at once (Activity) | 4.4 |
 | Read-only proactive research while idle, proposals only | 4.5 |
-| Exactly pi's four tools | 4.6 |
-| Custom Rules with four behaviours | 4.7 |
-| Auto-review | 4.8 |
-| Reserved hand-back actions | 4.9 |
-| Profile page, Pause, push | 4.10 |
-| Reachable from the app, `converse` and chat apps | 4.11 |
-| Memory editable item by item | 4.12 |
-| Harness layer and roster, any configuration | 4.13 |
-| Shareable harness bundles and command-center layouts | 4.14 |
+| Blocked work becomes something to grant | 4.6 |
+| Exactly pi's four tools | 4.7 |
+| Custom Rules and the execution context | 4.8 |
+| Auto-review | 4.9 |
+| Hand-backs (default rules) | 4.10 |
+| Profile page, Scheduled view, Pause, push | 4.11 |
+| Reachable from the app, `converse` and chat apps | 4.12 |
+| Memory editable item by item | 4.13 |
+| Harness layer and roster, any configuration | 4.14 |
+| Shareable harness bundles and command-center layouts | 4.15 |
+| Platform state is out of reach of every agent environment | 4.16 |
 
 ### 4.2 Onboarding: a name and one responsibility
 
@@ -255,564 +261,687 @@ dots asks for:
 - what needs approval;
 - how often it reports.
 
-The platform supplies the onboarding questions as part of the seed template
-(§4.13). They are not code paths. The agent writes the answers into its own
-files:
+The questions come from the seed template (§4.14). They are not code paths. The
+answers are recorded as follows:
 - the name goes to `identity.md`, as the personification spec already requires;
 - the responsibility goes to a `## Responsibility` section of `AGENTS.md`;
-- each "needs approval" item becomes an *Ask before taking action* rule. The
-  agent cannot write rules, so it proposes them in one request the owner
-  confirms (§4.7).
+- each "needs approval" item is proposed to the owner as an *Ask before taking
+  action* rule (§4.8). The agent cannot write rules itself.
 - the report cadence becomes a scheduled activity (§4.4).
 
 If no compute is connected, onboarding says so plainly and links to connecting
-compute. Nothing pretends to run (Hard Rule 8). The responsibility can be
-changed at any time, by telling the agent or in the profile's Harness tab.
+compute. Nothing pretends to run (Hard Rule 8).
 
 ### 4.3 Its own computer
 
-- **Workspace.** The jailed universe folder `/u`, with the whole user root
-  writable once S3c has moved platform state to `.runtime/`.
-- **Shell network.** `bash` has public egress through the checking proxy (S3a,
-  #4174).
-- **Browser.** A Chromium dedicated to the agent. It runs in its **own**
-  sandbox, separate from the tool jail.
-  - The agent drives it through a `browse` command in bash, which talks to the
-    browser over a per-universe socket.
-  - The browser profile (cookies, saved logins) lives under
-    `.runtime/browser/` and is never mounted into the tool jail. The agent can
-    use a session the owner logged into, but cannot read the cookie or password
-    store. This keeps credential blindness: dots stores credentials "without
-    model exposure", and so do we.
-- **Live view.** The profile's Computer tab streams the browser's screen
-  (CDP screencast frames over the owner door) and the tail of the running bash
-  command.
-- **Take over / Return control.** *Take over* hands the browser's input to the
-  owner, and the agent's `browse` calls block with `owner has control`.
-  - The owner logs in or decides, then presses *Return control*.
-  - The agent's session receives the mechanical line `owner returned control at
-    <url>`.
-  - Anything typed during take-over goes to the browser only. It never enters
-    the session log or the model.
+**Workspace.** The agent has **its own workspace that it fully owns**,
+including its own wiki and brain files.
+
+- Live evidence, 2026-10-01: the founder's agent wrote a 6 KB page, then said
+  "my wiki is read-only through the available tools" and had to save it under
+  `notes/`.
+- How the workspace is made is left open. S3c's move of platform state
+  (#4175) is paused after a REJECT review. The inverse shape, where the agent's
+  own workspace is its jail root and platform state stays where it is, is being
+  costed. This design depends only on the property, not on either mechanism.
+
+**Shell network.** `bash` reaches the public internet through the checking
+proxy (S3a, #4174).
+
+**Browser.** A Chromium dedicated to the agent, in its own sandbox outside every
+agent-controlled environment, driven through a **restricted broker**: the
+`browse` command over a per-universe socket.
+- **What the broker offers:** navigation, reading page text, an accessibility
+  snapshot, a screenshot, click, type, select, scroll, and download into the
+  workspace.
+- **What it never offers:** raw CDP, arbitrary script evaluation, cookie or
+  storage export, or network inspection.
+- **The profile** (cookies, saved logins) lives in platform-owned storage that
+  no agent environment mounts (§4.16).
+- **Filtering.** Login forms are protected fields that the agent cannot read
+  back. URLs returned to the agent have credential-bearing query parameters and
+  fragments stripped. Page text, screenshots, downloads, errors and logs pass a
+  credential filter.
+- **The honest promise.** The agent never holds stored credentials, saved
+  passwords or session cookies. A page that *displays* a secret (an API-key
+  settings page, for example) is filtered on a best-effort basis, so the owner
+  should not point the agent at such pages. That is the boundary, and the
+  profile says so.
+- **One context per activity.** Each activity gets its own browser context
+  sharing the logged-in profile. An approval for a browser step binds to the
+  target it was asked for (origin, path and form fingerprint) and is void if
+  that target has changed by execution time.
+
+**Live view and take-over.** The profile's Computer tab streams the active
+browser context through the owner door, together with the running `bash` tail.
+- *Take over* hands input to the owner, and the agent's `browse` calls wait with
+  `owner has control`.
+- While the owner has control, **recording stops**: nothing typed or shown
+  enters the session log, screenshots or the model.
+- *Return control* gives the session one platform-computed line, `owner returned
+  control at <sanitized url>`.
 
 ### 4.4 Always on, several projects at once: Activity
 
-- **Main thread.** The dot's main session is the owner thread that S1 already
-  keeps (`thread:principal:<owner>`, one session across app, phone, desktop and
-  connector). It stays responsive.
-- **Activities.** Work the dot takes on becomes an **activity**: a child
-  session keyed `activity:<id>`, with these fields:
-  - title;
-  - origin: an owner ask, an approved proposal, or a schedule;
-  - status: `in_progress`, `waiting_on_you`, `scheduled`, `paused`, `completed`
-    or `failed`;
-  - a result summary;
-  - receipts: the effects it caused, the approvals it used, and its tool
-    journal.
-- **Parallelism.** The dot starts activities with `ta activity start`, and
-  several run at once. Each takes an agent seat (#4154). When seats are full
-  the new activity waits visibly and is never refused (`usage-limits-are-
-  storage-and-seats`).
-- **Status reaches the main thread** as the S2 event line, for example
-  `activity "Invoice Acme" completed: invoice sent (receipt r_…)`.
-- **No client needed.** Activities do not need a connected client. They run
-  until done (`turn-runs-until-finished-not-wall-clock`) and survive deploys,
-  because the session log persists.
-- **Scheduled activities.** A scheduled activity is a user-owned automation
-  whose target is "start this activity on agent X". The existing
-  `user-owned-automations` rows and firing are reused, and the Scheduled tab
-  lists them with their next run.
-- **Storage.** Activity records are a new storage shape. Slice D2 opens its own
-  storage proposal before code. Records live under `.runtime/` and count to the
-  account storage pool.
+**Identity.**
+- The main agent keeps the S1 key `thread:principal:<owner>` unchanged.
+- Each further roster agent has the main key `agent:<agent_id>:thread`.
+- An activity is a child session keyed `activity:<id>`, recording its parent
+  agent and its parent activity if it has one.
+
+**An activity record holds:**
+- title;
+- origin: an owner ask, an approved proposal, or a schedule;
+- status: `in_progress`, `waiting_on_you`, `scheduled`, `paused`, `completed` or
+  `failed`;
+- a result summary;
+- receipts: effects, approvals used, and the tool journal;
+- the execution context of §4.8.
+
+**Running.**
+- The agent starts activities with `ta activity start`, and several run at once.
+- Each holds one agent seat (#4154) while running. When seats are full a new
+  activity waits visibly and is never refused.
+- An activity in `waiting_on_you` **releases its seat**, so a pending approval
+  cannot starve the account.
+- Status reaches the agent's main session as the S2 event line.
+- Activities need no connected client and run until done.
+
+**Surviving a deploy.** The session log alone is not enough to recover.
+- The activity record holds durable runnable state: status, lease, the last
+  completed tool call, and a pending-effect record with an idempotency key for
+  every external effect before it is attempted.
+- On restart, an activity resumes from its last completed tool call.
+- An effect whose outcome is unknown is reconciled through its receipt or the
+  effector's idempotency key before anything retries it.
+- If it still cannot be determined, the activity goes to `waiting_on_you` with
+  "this may already have happened: <effect>". It never retries blindly.
+
+**Scheduled activities.** Automations target branches today (`branch_def_id`
+in `automations.py:217`, and the lease identifies a branch). D2 adds an explicit
+`activity` target kind (agent id plus activity template) to the automation
+contract. It keeps everything `user-owned-automations` requires: the
+authenticated owner, the current serving assignment, the foreground budget and
+the firing fence. The timer is platform machinery. The execution belongs to the
+user's universe and runs on the user's compute.
+
+**Reads never truncate.** The Scheduled view, and the agent's own reads of its
+activities and schedules, are complete. They are paged by cursor, never cut at a
+size cap.
+- Live evidence: "the automation catalog truncates before I can recover the
+  existing schedule ID".
+- Lesson: `data-size-must-not-change-what-a-user-sees`.
+
+**Storage.** Activity records are a new storage shape. D2 opens its own storage
+proposal before code, and records are placed per §4.16.
 
 ### 4.5 Proactive research while idle (read-only, enforced in code)
 
-As in dots, the dot itself looks for ways to help while the owner is not
-working with it. This is a behaviour of the harness. It is not a graph the user
-must build, and it does not reuse the shape of any user-built wake loop.
+As in dots, the dot itself looks for ways to help while the owner is not working
+with it. This is harness behaviour. It is not a graph the user must build, and
+it does not reuse the shape of any user-built wake loop.
 
-- **When it runs.** A research turn starts only when all of these hold:
-  - the agent is not paused;
-  - it has no `in_progress` activity;
-  - the owner has not messaged for the idle period;
-  - the time is inside active hours.
+**When it runs.** A research turn starts only when all of these hold:
+- the agent is not paused;
+- it has no `in_progress` activity;
+- the owner has not messaged for the idle period;
+- the time is inside active hours;
+- no other research turn for the agent is running (single flight);
+- the cadence window has elapsed.
 
-  It then runs at most at the cadence in the agent's `settings.yaml`, and also
-  when a connected read source reports new items. Defaults: idle period 30 min,
-  cadence 4 h, active hours 08:00–22:00 in the owner's clock (open question 3).
-  Setting the cadence to `off` disables it.
-- **Read-only profile, enforced in code, not by prompt:**
-  - `read` works. `write` and `edit` are refused by the tool layer.
-  - `bash` runs with `/u` mounted read-only and **no egress socket bound**, so
-    no network.
-  - The `ta` socket opened for a research turn carries a read-only capability.
-    Every mutating handler refuses it, and only read verbs answer.
-  - Connected-app access goes through the credential-blind effectors. Only
-    operations declared as reads run.
-  - `browse` is not available.
-- **Output is proposals only.** The turn may raise zero or more requests of
-  kind `proposal`. Each names one concrete planned action and why, for example
-  "Invoice for the Acme article is not sent; draft and send it?".
-  - Approving a proposal starts an activity in which that exact action counts
-    as pre-approved (§4.7). The action still goes through auto-review.
-  - A turn that finds nothing sends nothing.
-- **Cost.** Research runs on the user's compute and seats like any turn, and
-  the profile shows its share of usage. Pause stops it.
+An event from a connected read source may bring the next run forward, but it
+obeys the same conditions. There is never more than one research turn per
+cadence window, and events arriving while a turn is pending coalesce.
 
-### 4.6 Tools: exactly pi's four
+**Defaults** (decided 2026-10-01): idle 30 min, cadence 4 h, active hours
+08:00–22:00 in the owner's clock, on for a new user. The research schedule
+appears in the profile's **Scheduled** view, where the owner can edit it or
+switch it off. With no compute connected, that row says so plainly instead of
+silently not running.
 
-- **Resident tools.** Every agent gets `read`, `write`, `edit` and `bash`
-  over `/u`, and no other resident tool. The tool definitions sent each round
-  are those four schemas plus one base-prompt line naming `ta`.
+**Read-only by capability, not by mount alone.** The daemon handlers behind
+`ta` can write even when the jail is read-only, so the boundary is a capability
+that every layer checks:
+- A research turn carries an unforgeable `research` flag in its execution
+  context (§4.8).
+- **Positive allowlist.** Only audited, side-effect-free read operations answer
+  a context with that flag. Everything else refuses, including automation
+  creation and execution, request actions, and connected-app operations not
+  declared as reads.
+- **Known violator.** `read_graph target=pending_requests` reaches
+  `list_requests` → `rail_entry`, which can retire offers and create a consent
+  request (`api/graph_reads.py:237`, `api/pending_requests.py:2024`,
+  `patch_intake.py:334`). It stays off the allowlist until it is side-effect
+  free.
+- **Inside the jail:** `write` and `edit` are refused. `bash` runs with the
+  workspace read-only and no egress socket bound. `browse` is absent.
+- The flag propagates into nested handlers, MCP calls and effectors.
+  Extensions and hooks do not run during research.
+- Research turns do not run the pre-compaction flush. They are short-lived and
+  start from the agent's files.
+- **Permitted bookkeeping.** The platform still writes its own bookkeeping:
+  the session journal, output spills to the session's output area, and usage
+  accounting. These are platform writes, not agent effects.
+
+**Output is proposals only**, through one narrow platform path. It is not
+general request creation. The turn returns structured proposals, each naming
+one planned action, why, and the evidence.
+- The platform validates them, bounds their size, and stores them as
+  `proposal` requests.
+- Approving one starts an activity in which that exact action counts as
+  pre-approved. It still passes auto-review.
+- A turn that finds nothing produces nothing.
+
+### 4.6 Blocked work becomes something to grant
+
+Live evidence: the founder's agent marked every item on its page "blocked on
+environment". A dot does not leave a static blocked list. When any turn, or
+research, finds work it cannot do, it turns each block into one of two things:
+
+- **A grant proposal.** The proposal names the exact rule change, connection or
+  capability that would unblock the work, for example "allow `app.write:github`
+  for opening PRs on repo X" or "connect Vercel read access". Approval applies
+  it and resumes the work.
+- **A patch request**, when the gap is in the platform itself, following
+  `capability-gaps-close-mid-turn-via-patch-requests`.
+
+A block that is neither (it is waiting on a person or on time) becomes a
+scheduled recheck activity, with its condition stated.
+
+### 4.7 Tools: exactly pi's four
+
+- **Resident tools.** Every agent gets `read`, `write`, `edit` and `bash` over
+  its workspace, and no other resident tool. The tool definitions sent each
+  round are those four schemas plus one base-prompt line naming `ta`.
 - **Native built-ins off.** Adapters that bring native tools run with them
-  disabled. Only the four reach the model. Today each adapter restricts its
-  native tools in its own way (`claude_provider.py`, `codex_provider.py`), and D6
-  makes that uniform.
-- **Breadth goes behind one searchable command in bash.** This is pi's codemode
-  idea, with bash as the interpreter:
-  - `ta search <words>` lists the matching capabilities across platform verbs
+  disabled. Today each adapter restricts its native tools in its own way
+  (`claude_provider.py`, `codex_provider.py`), and D6 makes that uniform.
+- **Breadth goes behind one searchable command in bash.** This is pi 0.99's
+  codemode idea, with bash as the interpreter:
+  - `ta search <words>` lists matching capabilities across platform verbs
     (graphs, runs, automations, activities, requests, commons), the user's
-    connected-app operations, user extensions, and any MCP servers the user
-    attached.
+    connected-app operations, user extensions, and attached MCP servers.
   - `ta describe <name>` prints one capability's arguments.
   - `ta <name> --json '<args>'` calls it, and a script can chain many calls in
     one `bash` command.
+  - `browse` (§4.3) is a command too, not a tool.
 - **Same handlers as the connector.** `ta` uses the same handlers as the public
-  connector, over the per-universe socket. The deferred-MCP route that the first
-  version planned for the agent is dropped. The public connector's six verbs
-  for chatbots are unchanged.
+  connector. The deferred-MCP route the first version planned for the agent is
+  dropped. The public connector's six verbs for chatbots are unchanged.
 
-### 4.7 Custom Rules (authority)
+### 4.8 Custom Rules and the execution context (authority)
 
 **Shape.** A rule has two parts:
 - **an action matcher:** a plain-language description plus a structured match
-  on an *action class* and optional fields such as destination or operation;
+  on an *action class* and optional fields;
 - **a behaviour:** `do` (take action without asking), `do_if_preapproved`,
   `ask_first`, or `hand_off`.
 
 The most specific matching rule wins. When two rules are equally specific, the
 stricter wins.
 
-**Action classes the platform can see and enforce:**
+**Execution context.** Rules mean nothing if a workflow the agent created
+later runs as "the owner". Today the effector authenticates as the connection
+grant's stored owner and carries no originating-agent context
+(`effectors/authenticated_external_call.py:829`). So every execution carries an
+unforgeable **execution context**, minted by the platform and never accepted
+from the agent. It holds:
+- universe;
+- initiating agent;
+- delegated authority;
+- research flag;
+- approval id, if any.
 
-| Class | Enforcement point |
-|---|---|
-| `universe.files`, `universe.shell`, `universe.workflows` (inside the universe) | tool layer, `ta` handlers |
-| `shell.egress` (public network from bash) | egress proxy, as one coarse class |
-| `app.read:<connection>` / `app.write:<connection>[:<op>]` | credential-blind effector call site |
-| `people.message:<channel>` (sending to people) | effector or channel send |
-| `commons.publish` / `share` (publishing, granting others access) | commons and visibility handlers |
-| `spend` (paid operations over a set budget) | effector cost declaration |
-| `browser.submit` (form submit or purchase click through `browse`) | browse socket |
-| `delete.external` (permanent deletion in a connected app) | effector op declaration |
+The context propagates through `ta`, workflows and automations the agent
+creates, activities it starts, extensions, MCP calls and effectors. Every
+enforcement point evaluates rules **for the initiating agent in the context**.
 
-**Honest limit.** Bash egress tunnels HTTPS, so the platform cannot see what an
-anonymous shell request does. `shell.egress` is one class, governed as a
-whole. Every credentialed action goes through the effectors, so rules bind
-there precisely.
+**Delegation never increases authority.**
+- A workflow, automation or activity an agent creates runs with at most that
+  agent's authority. When one agent starts an activity on another, the activity
+  runs with the **lesser** of the two.
+- Widening either requires an owner grant.
+- Editing another agent's harness files is its own class,
+  `harness.edit:<agent>`, seeded `ask_first`. Editing its own files is `do`.
+- Editing universe-level shared skills and extensions counts as editing every
+  agent that loads them. It is `do` when the universe has one agent, and
+  `ask_first` when other agents with different rules load them.
 
-**Who edits rules.** Rules are the one part of the harness the agent cannot
-write.
-- They live in owner-only platform state (`.runtime/state/rules`, after S3c).
+**Action classes, and how each is known:**
+
+| Class | Enforcement point | How the class is established |
+|---|---|---|
+| `workspace.files`, `workspace.shell`, `workspace.workflows` | tool layer, `ta` | by construction |
+| `harness.edit:<agent>` | tool layer, `ta` | the path or target agent |
+| `shell.egress` | egress proxy | one coarse class. Explicitly **not** assumed anonymous, because an uploaded token or bearer URL can ride on it |
+| `app.read:<conn>[:<op>]`, `app.write:<conn>[:<op>]` | effector | the operation kinds the connection definition declares (trusted classification). On the generic HTTP effector, an undeclared operation is `app.write` (consequential), whatever its method |
+| `people.message:<channel>` | channel or effector | declared by the channel or connection |
+| `commons.publish`, `share` | commons and visibility handlers | by construction |
+| `spend` | effector | declared cost |
+| `money.move`, `security.change`, `access.grant` | effector | declared by trusted integrations (payment, identity and admin connections) |
+| `browser.action` | `browse` broker | an interaction class only. Clicks, submits and typing are not inferred to be payments. The owner may set `hand_off` for named sites |
+
+The platform makes **no claim of universal payment or message detection** from
+raw HTTP or browser gestures. Semantic classes come from declared integrations.
+Unknown consequential operations fall to the agent's `app.write` or
+`browser.action` rule.
+
+**Who edits rules.** Rules live in platform-owned storage outside every agent
+environment (§4.16).
 - The owner edits them in the profile's Rules tab, or through the owner door.
-- The agent reads them through a read-only view, and may propose a rule change
-  as a request.
-- Reason: an agent that edits its own harness must never be able to loosen
-  its own authority.
+- The agent reads them through a read-only view, and may propose a change as a
+  request.
+- Reason: an agent must never loosen its own authority.
 
-**Seed rules** at onboarding reproduce the first version's "act inside, ask
-outside" default, now as rules the user can see and change:
+**Seed rules** reproduce dots, and the first version's "act inside, ask
+outside", as visible, editable rules:
 
 | Class | Seed behaviour |
 |---|---|
-| `universe.*`, `shell.egress`, `app.read:*` | `do` |
+| `workspace.*`, own `harness.edit`, `shell.egress`, `app.read:*` | `do` |
 | `app.write` to a destination with an existing standing grant | `do` (existing grants are honoured) |
-| `app.write` to a new destination, `people.message`, `commons.publish`, `share`, `spend` over budget, `browser.submit` | `ask_first` |
+| `app.write` to a new destination or an undeclared operation, `people.message`, `commons.publish`, `share`, `spend` over budget, `browser.action` on submit or purchase-looking controls, other agents' `harness.edit` | `ask_first` |
+| `money.move`, `security.change`, `access.grant` (the hand-backs, §4.10) | `hand_off` |
 | Each "needs approval" item from onboarding | `ask_first` |
-| Reserved classes (§4.9) | `hand_off`, not editable |
 
 **One decision point.** Every enforcement point calls
-`rules.decide(action, context)` before it executes:
-- `do`: proceed. A consequential action goes through auto-review first (§4.8).
-- `do_if_preapproved`: proceed only when the owner's own message in this
-  session, or an approved proposal, names exactly this action. Auto-review
-  judges the match. Otherwise the call is treated as `ask_first`.
-- `ask_first`: raise one app request with the planned action. The activity goes
-  to `waiting_on_you`, and the agent continues other work. An approval may tick
-  "always allow this", which writes a `do` rule.
-- `hand_off`: raise a request asking the owner to do it, offering *Take over*
-  when it is a browser step. The agent never executes it, even after approval.
+`rules.decide(action, context)` before executing:
+- `do`: proceed. A consequential action goes through auto-review first (§4.9).
+- `do_if_preapproved`: proceed only when an authenticated owner message in the
+  session, or an approved proposal, names exactly this action. Otherwise the
+  call is treated as `ask_first`.
+- `ask_first`: raise one app request. The activity goes to `waiting_on_you`,
+  and the agent continues other work. An approval may tick "always allow this",
+  which writes a `do` rule.
+- `hand_off`: raise a request for the owner to perform the action, offering
+  take-over for a browser step. The agent never executes it.
 
 **Existing grants are kept.** The standing destination grants
 (`effector_consents`, the `_check_consent` path) and their call-time checks are
 unchanged. They become the data the `app.write` rules consult.
 
-### 4.8 Auto-review
+### 4.9 Auto-review
 
-- **What triggers it.** Before any **consequential** action whose rule is `do`
-  or `do_if_preapproved`, the platform runs a review. Consequential means every
-  class outside `universe.*` and `app.read`.
-- **What runs it.** One structured call on **the universe's own model and
-  credentials**, through its seat. There is no platform model.
-- **Inputs:**
-  - the planned action, in structured form;
-  - the `## Responsibility` section and the owner's recent messages;
-  - the matching rules;
-  - the built-in safety requirements (a short fixed text in the base prompt);
-  - for `do_if_preapproved`, the message or proposal claimed as the
-    pre-approval.
-- **Output.** Either `proceed`, or `needs_approval: <one-line reason>`.
-  `needs_approval` converts the action to `ask_first`.
-- **Fails closed and loud.** If the review cannot run (no compute, an error, a
-  timeout), the action becomes a request that names the cause. It never
-  proceeds silently.
-- **Inside the universe it never runs.** Universe file history makes those
-  actions undoable, and reviewing them would recreate the drag measured in §3.
-- **Off switch.** Dots does not allow one. The founder asked for full harness
-  customization. Recommendation: on by default, and the owner may switch it off
-  per class in the Rules tab, except for the reserved classes (open question 2).
+- **What triggers it.** It is on by default for every **consequential** action
+  whose rule is `do` or `do_if_preapproved`. Consequential means every class
+  except `workspace.*`, own `harness.edit` and `app.read`.
+- **Off switch.** The owner may switch auto-review off **per class** in the
+  Rules tab (decided 2026-10-01). The tab says what that means: actions of that
+  kind then proceed on the rule alone.
+- **Invocation.** A separate, **tool-free** call on the universe's own model.
+  - It runs **under the activity's existing seat admission**, so it needs no
+    second seat and cannot deadlock waiting for one.
+  - It is not itself reviewed.
+  - It gets one bounded retry. After that the action becomes a request naming
+    the cause, and the activity releases its seat while waiting.
+- **Inputs, with provenance.**
+  - Trusted: the planned action in structured form, the matching rules, the
+    built-in safety requirements, and authenticated owner messages.
+  - Untrusted evidence, in a marked envelope: action text, page content, and
+    agent-editable harness files (including `## Responsibility`).
+- **Output.** `proceed`, or `needs_approval: <reason>`. The result binds to a
+  hash of the exact action and the rule-set version, and is void if either
+  changes.
+- **Review can only tighten.** It can turn `do` into `ask_first`. It can never
+  create a grant, loosen a rule, or override `hand_off`.
+- **Fails closed and loud.** No compute, an error or a timeout makes the action
+  a request naming the cause.
+- **Never inside the workspace.** Workspace actions are undoable through file
+  history, and reviewing them would recreate the drag measured in §3.
 
-### 4.9 Reserved actions
+### 4.10 Hand-backs (default rules)
 
-These classes are always `hand_off`. The owner does them, in take-over or in
-the connected app:
-- changing a password, credential or security setting on an external account;
-- moving money or making a payment;
-- granting another person access to the owner's accounts or data.
+Decided 2026-10-01. These ship **on by default**, exactly as in dots:
+- `security.change`: password, credential or security settings on an external
+  account;
+- `money.move`: moving money or making a payment;
+- `access.grant`: granting another person access to the owner's accounts or
+  data.
 
-They are enforced in code at the decision point. No rule, import or agent edit
-can change them.
+They are seed `hand_off` rules in the user's harness, **not** fixed platform
+policy, because the only platform invariant is cross-user isolation.
+- The owner may change them. The Rules tab says plainly what turning one off
+  means, for example "your agent will be able to move money from connected
+  accounts without handing it to you".
+- An imported bundle cannot loosen them on activation (§4.15).
 
-Dots' "permanent deletion" and "unrecognised software" confirmations map as
-follows. `delete.external` is `ask_first`, and the owner may set it to
-`hand_off`. Installing software **inside the jail** is not reserved, because the
-jail is the containment and file history covers it.
+Two more dots confirmations map like this:
+- **Permanent deletion** in a connected app is `app.write` with a declared
+  `delete` operation, seeded `ask_first`.
+- **Installing software inside the agent's own workspace** is not a hand-back.
+  The workspace is the containment.
 
-These protect the owner's own accounts from their own agent, which is a
-product choice beyond the cross-user floor (open question 1).
+What stays locked is the cross-user floor: no rule lets an agent reach another
+user's universe, data or money.
 
-### 4.10 The profile page and the command center
+### 4.11 The profile page, the Scheduled view and the command center
 
 **One agent's profile:**
 - **Header:** name, responsibility, status (working / idle / paused / waiting
-  on you), model, usage this period.
+  on you), model, usage this period, including research's share.
 - **Activity tab:** *Waiting on you* first, then *In progress*, *Scheduled* and
-  *Completed*. Completed items carry receipts. Each item can be steered (a
-  message into its session), paused or stopped. A stopped activity keeps its
-  partial result.
+  *Completed*. Completed items carry receipts. Each item can be steered, paused
+  or stopped, and a stopped activity keeps its partial result.
+  - *Scheduled* lists every scheduled activity and the research schedule, each
+    with its next run, editable. It is complete and paged, never truncated.
 - **Computer tab:** live browser view, Take over / Return control, and the
   current bash tail.
-- **Memory tab:** §4.12.
-- **Rules tab:** the four-behaviour editor, with proposed rule changes
-  awaiting approval.
-- **Harness tab:** the agent's files (`AGENTS.md`, skills, extensions,
-  `settings.yaml`), the history, and Undo.
+- **Memory tab:** §4.13.
+- **Rules tab:** the four-behaviour editor, the auto-review switch per class,
+  and proposed rule changes.
+- **Harness tab:** the agent's files, the history, and Undo.
 
-**Pause** (••• menu) stops the agent's new turns, proactive research and
-scheduled activities. The running turn stops at its next tool boundary
-(#4152). Resume continues where it left off.
+**Pause** (••• menu) stops the agent's new turns, research and scheduled
+activities. The running turn stops at its next tool boundary (#4152). Resume
+continues.
 
 **Push** is sent on *completed*, *waiting on you* and *new proposal*, through
-the existing phone, desktop and browser notifications (#4140, #4138), with a
-toggle per kind.
+the existing notifications (#4140, #4138), with a toggle per kind.
 
-**The roster view is the command center.** It has one row per agent, showing:
+**Roster view (the command center).** It has one row per agent, showing:
 - status;
 - the waiting-on-you count;
 - the current activity and the next scheduled run;
 - usage.
 
-From it the owner can reply or approve inline, pause, and open a profile.
+From it the owner can approve or reply inline, pause, and open a profile.
 
-**Layouts are the user's own.** Both pages are built on the custom-UI layer
-(`app-ui-library`, #4160 and #4165), so users redesign them and share the
-design (§4.14).
+**Both pages are built on the custom-UI layer** (`app-ui-library`, #4160 and
+#4165), so users redesign them and share the design (§4.15).
 
-### 4.11 Reachable everywhere
+### 4.12 Reachable everywhere
 
 - **App and connector.** The app (web, desktop, phone) and `converse` already
-  reach one main session per owner (S1).
+  reach the main agent's one session (S1).
 - **Chat apps** (Slack, Telegram, Teams and others) connect through **channel
   extensions** that relay into the same session.
   - Channels stay user-built (`channels-must-be-user-built-not-hardcoded-
     effectors`).
   - The published starter template ships ready-made channel extensions, so a
-    new user gets dots' "reach it in Slack" in one connect step, without
-    platform channel code.
+    new user gets dots' "reach it in Slack" in one connect step.
 - **One session.** A message from any of these steers the same session (S2).
 
-### 4.12 Memory, item by item
+### 4.13 Memory, item by item
 
 - **One item per bullet.** `MEMORY.md` holds one item per bullet, each with a
   short stable id (`- [m_7f3a] Prefers invoices on the 1st`). The agent adds
-  and edits items as it learns from feedback, which is how a dot "learns over
-  time".
-- **Memory tab.** The profile's Memory tab lists the items, and the owner can
-  edit or delete any one.
-- **History and Undo.** Every change is recorded in the universe file history,
-  with Undo.
-- **Deleting an item does not delete the agent.** That is the dots limitation
-  we drop.
+  and edits items as it learns from feedback.
+- **Memory tab.** The owner can view, edit or delete any single item.
+- **History and Undo.** Every change is recorded in the file history, with
+  Undo.
+- **Deleting an item never requires deleting the agent.** That is the dots
+  limitation we drop.
 
-### 4.13 The harness layer: fully user-configurable, any roster
+### 4.14 The harness layer: fully user-configurable, any roster
 
 **Per-agent harness files.** The main agent's files stay where S1 put them, at
-the universe root. Each further agent in the roster has the same layout under
+the workspace root. Each further agent has the same layout under
 `agents/<id>/`:
 - `AGENTS.md`: instructions and `## Responsibility`;
 - `identity.md`;
 - `MEMORY.md`;
-- `skills/` and `extensions/`: a skill or extension in `agents/<id>/` overrides
-  the root one of the same name;
+- `skills/` and `extensions/`: a per-agent one overrides a shared one of the
+  same name;
 - `settings.yaml`: model, research cadence, idle period, active hours,
-  compaction thresholds, channels and seat priority;
-- rules, which are owner-edited and held in `.runtime/` (§4.7).
+  compaction thresholds, channels and seat priority.
+
+Rules are owner-edited and stored per §4.16.
 
 **Any configuration.** The user can configure:
 - one dot or many;
 - specialists with narrow rules;
-- a lead dot that hands activities to others (`ta activity start --agent
-  <id>`).
+- a lead that hands activities to others (`ta activity start --agent <id>`),
+  under the delegation rule of §4.8.
 
-Each agent has its own sessions, activities, rules and profile, and all of them
-draw seats from the account pool. Graph agent nodes stay workflow primitives,
-and a graph can start an activity on a roster agent.
+Graph agent nodes stay workflow primitives, and a graph can start an activity on
+a roster agent, again with at most its creator's authority.
 
 **The seed template.** A new universe is seeded from an explicitly published,
 reviewed starter template, never the founder's live private files. The
 template holds the base `AGENTS.md`, the onboarding questions, the seed rules,
-starter skills and channel extensions. The user may replace any part of it.
+starter skills and channel extensions.
 
-### 4.14 Sharing harness bundles and command-center layouts
+### 4.15 Sharing harness bundles and command-center layouts
 
-- **What a bundle holds.** A bundle is one agent's or a whole roster's harness
-  (instructions, skills, extensions, settings, a rules *suggestion*),
-  optionally with the command-center and profile layouts.
-- **Reuse.** Bundles use the existing `universe-custom-agents` public-definition
-  shape, which is already immutable, bounded, secret-free and
-  provenance-tracked, with verified portable interchange.
+- **Format.** A **versioned bundle manifest**: one agent's or a roster's
+  harness (instructions, skills, extensions, settings, a rules *suggestion*),
+  optionally with layouts. Paths are relative, normalised, and refused if they
+  escape the bundle.
+- **Carrier.** The existing `universe-custom-agents` public definition. Its
+  components accept arbitrary JSON objects with a `kind` (`custom_agents.py:310`),
+  so skills, extensions and layouts fit without a new public table.
+  - A bundle over the 256 KiB envelope is refused, with its size named, until a
+    larger carrier is designed.
+  - D9 reconciles the spec's 64-component limit with the implementation, which
+    removed it.
 - **Export is explicit, and private by default.**
-  - Never included: memory (unless the owner opts in item by item), session
-    logs, credentials and browser state.
-  - A scrub pass removes the owner's email addresses, phone numbers, names and
-    connection identifiers from text.
-  - The owner confirms a preview of the scrubbed bundle before publishing.
-- **Import lands in quarantine.** It is copied to `imports/<id>/` and stays
-  inert: no rules apply, no extensions run, no schedules register and no
-  channels connect until the owner reviews and activates it in the app.
-  - Imported rule suggestions can be activated only as written or stricter.
-    Loosening one requires an explicit owner edit.
-  - Imported text reaches the agent inside the existing untrusted-content
-    envelope.
+  - Never included: memory (unless opted in item by item), session logs,
+    credentials and browser state.
+  - Contact details and connection identifiers are scrubbed.
+  - The owner confirms a preview before publishing.
+- **Import is quarantined outside the agent's reach.** Imported bundles sit in
+  platform-owned storage (§4.16), not in the agent's writable workspace, so
+  the agent cannot copy quarantined code into an active location.
+  - The agent may read a preview as untrusted content.
+  - An owner-controlled **activation record**, also outside agent-writable
+    state, is the only gate.
+  - Only activated content enters extension loading, the skill index or
+    trusted prompt assembly. Indexes never include quarantined content.
+  - Imported rule suggestions activate only as written or stricter. Loosening
+    one, including a hand-back, needs an explicit owner edit.
 
-### 4.15 Kept from the first version, unchanged
+### 4.16 Platform state is out of reach of every agent environment
 
-The full text is in Appendix A.
+S1 already learned this: authoritative session records live in the data root's
+`.agent-sessions/<universe>/`, outside every universe folder, because workflow
+provider jails bind the universe read-write and their hidden-directory masking
+exempts `.runtime/` (`agent_sessions.py:19-29`, `provider_jail.py:224`, `:259`).
 
-Everything below is unchanged from the first version:
-- sessions and compaction, with the pre-compaction flush;
-- the turn running until done;
-- owner steering at tool boundaries;
-- truthful tool results and the full journal (which feeds Activity receipts and
-  the live view);
-- the result-first tone and seed `AGENTS.md`;
-- self-improvement with a jailed history store and Undo;
-- the egress safety floor;
-- the delete list of the first version. The resident handbook moves to skills
-  read through `ta`.
+The new platform-owned records follow the same rule. They live outside **every**
+agent-controlled execution environment: the four-tool jail, workflow provider
+jails, extension processes and the browser sandbox. The records are:
+- rules;
+- auto-review results;
+- activity records and pending effects;
+- proposals;
+- import quarantine and activation records;
+- the browser profile.
+
+Agents see them only through read-only owner-door projections. Registering a
+path with a resolver is not enough.
 
 ## 5. What already shipped, mapped onto the dot
 
 | Shipped or in flight | Kept | Changed |
 |---|---|---|
-| **S1, #4173 (merged):** a native session per thread or agent node, resume as a declared capability, persona warmth and per-turn-consent text removed, seeded `AGENTS.md` | Sessions, which become the dot's main thread. Activities reuse the same keying (`activity:<id>`). The tone removal. Claude resume (S1b). | The seeded `AGENTS.md` text "act without asking inside, one request outside, an approval stands" becomes a **description** of the user's seed rules. Enforcement moves to `rules.decide` (D1). |
-| **S3a, #4174 (in review):** bash egress through the checking proxy socket | All of it. | Egress becomes the `shell.egress` rule class. The socket is not bound for read-only research turns (D3). |
-| **S3c, #4175 (proposal, harness-s3 building):** platform state leaves the universe root for `.runtime/` | All of it, and it is now a prerequisite. | Rules, activities, proposals and the browser profile are new `.runtime/` residents. The S3c resolver is where they register. |
-| **First version S2:** owner messages steer the live turn | All of it. | It also carries activity status lines. |
-| **First version S4:** journal, session log, spill to file | All of it. | It also feeds Activity receipts and the live view. |
-| **First version S5:** the platform as one extension (`ta` plus deferred MCP) | `ta` over the socket, and the resident block cut. | **Exactly four tools.** The deferred-MCP route for the agent is dropped, and `ta search` / `describe` is the single discovery layer (D6). |
-| **First version S6:** self-improvement and versioning | All of it. | Memory items get stable ids and the Memory tab (D7). Rules are excluded from what the agent can write. |
-| **First version S7:** outward actions through standing grants | The effectors and the standing-grant checks. | **Replaced** by Custom Rules, auto-review and reserved actions (D1). |
-| **First version S8:** every universe gets the harness | The starter template and deleting the old surface. | Onboarding and the profile join it (D4, D10). |
-| Spec requirement "inside acts without asking; outside asks once" | Its default effect, reproduced by the seed rules. | **Replaced** by the Custom Rules, auto-review and reserved-actions requirements. |
+| **S1, #4173 (merged):** native session per thread or agent node, persona warmth and per-turn-consent text removed, seeded `AGENTS.md` | Session keying. The main agent keeps `thread:principal:<owner>`, activities add `activity:<id>`, roster agents add `agent:<id>:thread`. The tone removal. Session records outside the universe, the pattern §4.16 generalises. | Only Codex declares `native_resume` today (`codex_provider.py:755`). Claude resume stays pending (S1b). The seeded `AGENTS.md` authority text becomes a **description** of the user's seed rules, and enforcement moves to `rules.decide` (D1). |
+| **S3a, #4174 (in review):** bash egress through the checking proxy socket | All of it. | Egress becomes the `shell.egress` class, which is not assumed anonymous. No socket is bound for research turns (D3). |
+| **S3c, #4175 (paused after a REJECT review):** platform state leaves the universe root | Nothing depends on it. | The design needs only "the agent has its own workspace it fully owns" (§4.3). The inverse shape is being costed. |
+| **First version S2:** owner steering | All of it. | It also carries activity status lines. |
+| **First version S4:** journal, session log, spill | All of it. | It also feeds receipts and the live view. |
+| **First version S5:** `ta` plus deferred MCP | `ta` over the socket, and the resident block cut. | **Exactly four tools**: deferred MCP for the agent is dropped, and `ta search`/`describe` is the discovery layer (D6). |
+| **First version S6:** self-improvement and versioning | All of it. | Memory items get stable ids and the Memory tab. Rules are excluded from what the agent can write. |
+| **First version S7:** outward actions through standing grants | The effectors and the standing-grant checks. | **Replaced** by Custom Rules, the execution context, auto-review and hand-back defaults (D1). |
+| **First version S8:** every universe | The starter template and deleting the old surface. | Onboarding and the profile join it. |
+| Spec requirement "inside acts without asking; outside asks once" | Its default effect, reproduced by the seed rules. | **Replaced** by the rules, context, review and hand-back requirements. |
 
 ## 6. Slices
 
-Each slice is its own PR, proven live in the founder's app before the next one
-lands, with at most 12 tasks. A slice that adds a storage shape opens its own
-storage proposal first. D1 is authority, and its proposal, design and spec
-deltas are this change (§4.7–4.9, spec delta). Order: substrate first, then the
-dot's felt pieces.
+Each slice is its own PR, proven live in the founder's app, with at most 12
+tasks. A slice adding a storage shape opens its own storage proposal first. D1
+is authority, and its proposal, design and spec deltas are this change.
+- **Proof scope.** Each slice's live proof uses only what has landed by then.
+- **Re-checks.** Where a later slice adds a surface (activity status in D2,
+  take-over in D5), that slice re-checks the earlier behaviour.
 
-**S2: Owner steering** (unchanged from the first version)
-1. Queue owner messages per session.
-2. Append them to the next tool result with the unread count.
-3. Write the idle-session opening line.
-4. Add activity status lines.
-5. Live proof: a mid-turn steer.
-
-**S3 remainder: Toolchain and the writable root** (S3a and S3c are in flight)
-1. Add python, node, git and ripgrep to the jail image.
-2. Land the S3c migration.
-3. Make the root writable for migrated universes.
+**W: Own workspace** (mechanism being costed in place of S3c)
+1. Choose the mechanism: own jail root, or the S3c move.
+2. Make the wiki and brain writable by the agent.
+3. Add python, node, git and ripgrep to the image.
 4. Write a jail-proof test per refused address class.
-5. Live proof: pip install, pytest and git clone.
+5. Live proof: write a wiki page, pip install, pytest, git clone.
+
+**S2: Owner steering** (unchanged)
+1. Queue messages per session.
+2. Append them to the next tool result with the unread count.
+3. Write the idle opening line.
+4. Live proof: a mid-turn steer.
 
 **S4: Journal and spill** (unchanged)
 1. Journal native tool events.
 2. Add the HTTP-loop session log and compaction.
-3. Spill oversized output to a file.
+3. Spill oversized output.
 4. Report one-line causes.
 5. Show live tool activity.
 6. Live proof: an oversized `read_graph` read in full.
 
-**D1: Custom Rules, auto-review, reserved actions**
-1. Define the action classes and the matcher.
-2. Add the owner-only rules store under `.runtime/`, registered with S3c.
-3. Add `rules.decide` at the tool layer, `ta`, the effectors, the egress proxy
-   and `browse`.
-4. Seed rules from the template, with honoured standing grants.
-5. Raise `ask_first` and `hand_off` as app requests with the activity status.
-6. Make "always allow" write a `do` rule.
-7. Write the auto-review call on the universe's own model, failing closed.
-8. Enforce the reserved classes in code.
-9. Make the agent's rule edits refused and proposal-only.
-10. Build the Rules tab.
-11. Change the S1 `AGENTS.md` authority text to describe the rules.
-12. Live proof: approve once, then reuse, plus a reserved action refused with
-    take-over offered.
+**D1: Custom Rules, execution context, auto-review, hand-backs**
+1. Define the action classes and the trusted classification from connection
+   declarations.
+2. Add the platform-minted execution context through `ta`, workflows,
+   automations, extensions, MCP calls and effectors.
+3. Apply delegation at the lesser of the two authorities.
+4. Add the rules store outside every agent environment.
+5. Add `rules.decide` at every enforcement point.
+6. Seed rules, including the hand-back defaults and honoured standing grants.
+7. Turn `ask_first` and `hand_off` into requests, with "always allow" writing a
+   `do` rule.
+8. Write the tool-free auto-review under the existing admission: bound to the
+   action hash, one retry, fail closed, tighten-only.
+9. Add the per-class auto-review switch with plain consequence text.
+10. Make agent rule writes refused and proposal-only.
+11. Build the Rules tab and change the S1 `AGENTS.md` authority text.
+12. Live proof: approve once, then reuse. A hand-back becomes a request. A
+    workflow created by a narrowed agent is refused what that agent is refused.
 
 **D2: Activities** (storage proposal first)
-1. Write the activity storage proposal.
-2. Add activity records under `.runtime/`.
+1. Write the storage proposal: records, pending effects, idempotency keys,
+   leases.
+2. Add the `agent:<id>:thread` and `activity:<id>` keys with parentage.
 3. Add `ta activity start/list/stop`.
-4. Make activities child sessions keyed `activity:<id>`.
-5. Have them take seats and wait visibly.
-6. Make scheduled activities automation targets.
+4. Hold a seat while running, release it while waiting.
+5. Resume after a deploy, reconciling unknown effects.
+6. Add the automation `activity` target kind with the full user-owned contract.
 7. Report status lines into the main thread.
 8. Keep partial results on stop.
-9. Build the Activity tab with *Waiting on you*, *In progress*, *Scheduled*
-   and *Completed*.
-10. Add Pause and Resume per agent.
-11. Live proof: two activities in parallel after the chat is closed.
+9. Build the Activity tab with a complete, paged Scheduled view.
+10. Add Pause and Resume.
+11. Live proof: two activities in parallel after the chat is closed, and one
+    surviving a deploy.
 
-**D3: Proactive research**
-1. Write the idle and cadence scheduler from `settings.yaml`.
-2. Run the read-only tool profile: refuse write and edit, mount bash read-only,
-   bind no egress socket.
-3. Add a read-only capability on the `ta` socket.
-4. Gate effector calls to reads only.
-5. Make `browse` absent.
-6. Add the `proposal` request kind.
-7. Make an approved proposal start a pre-approved activity.
-8. Send nothing when there is nothing to propose.
-9. Show the usage share on the profile.
-10. Write a jail test that each write path is refused in research.
-11. Live proof: a real proposal from a connected source.
+**D3: Proactive research and grantable blocks**
+1. Write the idle, cadence, single-flight and coalescing scheduler, with the
+   defaults in the Scheduled view.
+2. Carry the `research` flag in the context.
+3. Build the positive allowlist of audited reads, and make `pending_requests`
+   reads side-effect free.
+4. Inside the jail: refuse write and edit, mount bash read-only, bind no
+   egress, leave `browse` absent.
+5. Run no extensions, hooks or flush in research.
+6. Add the narrow proposal path.
+7. Make an approved proposal a pre-approved activity.
+8. Turn blocked work into grant proposals or patch requests.
+9. Show the no-compute notice on the research row.
+10. Write a jail and handler test that every write path is refused in research.
+11. Live proof: a real proposal, and a blocked item turned into a grant.
 
 **D4: Onboarding, profile and push**
-1. Write the template onboarding questions.
+1. Write the template questions.
 2. Write name and responsibility into the files.
 3. Propose the approval items as rules.
-4. Create the report cadence as a scheduled activity.
+4. Schedule the report cadence.
 5. Show the no-compute notice.
-6. Build the profile page header and tabs shell.
-7. Add push kinds for completed, waiting and proposal.
-8. Live proof: a fresh account onboarded end to end.
+6. Build the profile shell.
+7. Add the push kinds.
+8. Live proof: a fresh account onboarded.
 
 **D5: The computer**
-1. Run the browser sandbox separate from the tool jail.
-2. Add the `browse` CLI over a socket.
-3. Keep the profile in `.runtime/browser/`, unmounted from the jail.
-4. Stream the CDP screencast to the Computer tab.
-5. Add Take over / Return control with input forwarding.
-6. Write the `owner returned control` line.
-7. Keep take-over input out of the session log.
-8. Show the bash tail.
-9. Live proof: the owner logs in during take-over and the agent continues.
+1. Run the browser sandbox outside agent environments.
+2. Add the restricted broker command set: no CDP, eval or export.
+3. Keep the profile store outside agent reach.
+4. Protect login fields and sanitize URLs.
+5. Add the credential filter on text, screenshots, downloads and errors.
+6. Give each activity its own context, with approvals bound to the target.
+7. Add the live view.
+8. Add Take over / Return control with recording suspended.
+9. Live proof: the owner logs in during take-over, the agent continues, and no
+   secret is in the log.
 
 **D6: Exactly four tools**
-1. Add `ta search` and `ta describe` across platform verbs, connections,
-   extensions and attached MCP servers.
-2. Cut the resident block to four schemas plus the `ta` line.
-3. Disable native built-ins on every adapter.
-4. Drop the deferred-MCP plan for the agent.
+1. Add `ta search` and `ta describe`.
+2. Cut the resident block to four plus the `ta` line.
+3. Disable native built-ins everywhere.
+4. Drop deferred MCP for the agent.
 5. Move handbook chapters to skills.
-6. Lower the token ratchet.
-7. Live proof: tokens per round before and after, with every capability still
-   reachable.
+6. Lower the ratchet.
+7. Live proof: tokens per round before and after.
 
 **D7: Memory and harness editing**
 1. Give memory items stable ids.
-2. Build the Memory tab with edit and delete.
+2. Build the Memory tab.
 3. Add the jailed history store and Undo.
 4. Add `settings.yaml`.
 5. Build the Harness tab.
 6. Add seed curator and review skills.
 7. Delete `read_brain`, `write_brain`, `soul_edit` and the learning call.
-8. Live proof: delete one memory item, and Undo an `AGENTS.md` change.
+8. Live proof: delete one item, and Undo an `AGENTS.md` change.
 
 **D8: Roster and command center**
-1. Add the `agents/<id>/` layout and its override rules.
+1. Add the `agents/<id>/` layout and overrides.
 2. Add create, rename and remove agent.
-3. Make `ta activity start --agent`.
-4. Give each agent its own rules, sessions and profile.
+3. Make delegation activities run at the lesser authority.
+4. Classify shared-harness edits.
 5. Build the roster view with inline approve and pause.
 6. Build both pages on the custom-UI layer.
-7. Live proof: a lead dot hands work to a specialist.
+7. Live proof: a lead hands work to a specialist, which runs under the
+   specialist's rules.
 
 **D9: Sharing**
-1. Export through the custom-agents definition shape.
-2. Write the scrub pass with an owner-confirmed preview.
-3. Exclude memory, sessions, credentials and browser state.
-4. Include layouts.
-5. Import into an inert `imports/<id>/`.
-6. Allow activation only as written or stricter.
-7. Wrap imported text in the untrusted envelope.
-8. Live proof: a second account imports and activates the founder's bundle.
+1. Define the bundle manifest and path rules.
+2. Add the size policy and reconcile the component limit.
+3. Write the scrub pass with an owner-confirmed preview.
+4. Store quarantine outside agent reach.
+5. Add the owner activation record.
+6. Exclude quarantine from the index and loading.
+7. Activate only as written or stricter.
+8. Live proof: a second account imports, and nothing runs until it activates.
 
 **D10: Everywhere, and delete the old surface**
 1. Seed every new universe from the published starter template.
 2. Add starter channel extensions for Slack and Telegram.
-3. Delete the replaced handles and resident guidance.
+3. Delete the replaced handles and guidance.
 4. Run `ui-test` on a fresh account.
 5. Run the canary with `--assert-handles`.
 
-D1, D2 and D4 are the felt dot: rules, parallel work and a profile. D3 is the
-proactivity. D5 completes "its own computer". D6 is the pi surface. D8 and D9
-deliver "any configuration" and sharing.
+## 7. Decisions (2026-10-01, the lead from standing founder direction)
 
-## 7. Open questions for the founder
+1. **Hand-backs:** on by default, exactly as in dots. They are seed rules the
+   user may edit, and the UI explains what turning one off means. Only the
+   cross-user floor is locked.
+2. **Auto-review:** on by default for every consequential action, with a
+   per-class off switch.
+3. **Idle research:** idle 30 min, at most every 4 h, 08:00–22:00 local, on for
+   new users, on the user's own compute. It is visible and editable in the
+   Scheduled view, and says so plainly when no compute is connected.
+4. **Brain safety (approved in the first version):** rollback through file
+   history, not refusing the write.
 
-1. **Reserved actions.** Dots always hands back password and credential
-   changes, moving money, and granting others access. Here these would be
-   fixed in code, even though the only platform invariant is cross-user
-   isolation. *Recommendation:* fix them, as dots does. The agent can still
-   prepare everything, and the owner finishes the step in take-over.
-2. **Auto-review off switch.** Dots does not allow one, and you asked for full
-   customization. *Recommendation:* on by default for every action outside the
-   universe, and the owner may turn it off per class, except the reserved
-   classes.
-3. **Proactive research default.** It spends the user's own compute. *Default
-   proposed:* after 30 min idle, at most every 4 h, 08:00–22:00 in the owner's
-   clock, and on new items from connected read sources. On for a new user and
-   easy to set to `off`. On free models this cadence costs a few turns a day.
-4. **Brain safety (carried over).** Rollback through file history, instead of
-   refusing a write, remains the guard against a weak model blanking a file.
+No founder questions remain open in this revision. Approval of the whole is
+task 1.2.
 
 **Review record.**
-- gpt-6-astra refute review of 04983ba2 (first version), 2026-10-01: ADAPT,
-  folded in.
-- The dots revision is reviewed below (see the PR comment).
+- gpt-6-astra refute of 04983ba2 (first version): ADAPT, folded in.
+- gpt-6-astra refute of b3f7c054 (this revision): ADAPT. Eight DISAGREE points
+  and four extra findings are folded into §4.3–4.16, §5 and §6. Points 7 (four
+  tools) and 10 (no background-self derivation) were AGREE.
 
 ## Appendix A: first-version detail that is kept
 
 These sections are from the approved first version, renumbered. §4 overrides
 them where the two differ. In particular:
-- §4.7–4.9 replace the first version's authority section (3.5), which is
+- §4.8–4.10 replace the first version's authority section (3.5), which is
   omitted here.
-- §4.6 replaces its tool table (3.4), which is omitted here.
+- §4.7 replaces its tool table (3.4), which is omitted here.
 - The "Platform: one extension … deferred MCP" route is dropped.
 
 ### A.2 Sessions (biggest felt change)
@@ -825,8 +954,9 @@ them where the two differ. In particular:
   creations. The harness gives them the same primitive (an agent node may keep
   a session keyed by its node) so it can build good agents, but their behaviour
   is theirs, not the harness's.
-- **Storage.** The session log lives under `.runtime/agent-sessions/`, which
-  only the platform can write. The agent sees it read-only, through a
+- **Storage.** As built in S1, the session log lives in the data root's
+  `.agent-sessions/<universe>/`, outside every universe folder (§4.16), and
+  only the platform can write it. The agent sees it read-only, through a
   read-only mount at `/u/sessions` in the tool jail, never as a writable root
   path (Codex review finding 6). So it can read and grep its own history but
   cannot forge it. It is the
