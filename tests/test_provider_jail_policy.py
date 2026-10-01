@@ -71,7 +71,7 @@ def test_a_provider_launch_with_no_owning_universe_is_refused_before_spawn(no_sp
         with provider_launch_scope(None):
             await owned_process.aspawn_owned([sys.executable, "-c", "pass"])
 
-    with pytest.raises(ProviderConfinementError, match="no owning universe"):
+    with pytest.raises(ProviderConfinementError, match="no owning command center"):
         asyncio.run(drive())
     assert no_spawn == []
 
@@ -112,7 +112,7 @@ def test_a_view_cannot_bind_anything_outside_its_universe(tmp_path):
         universe_dir=universe,
         mounts=(JailMount("ro-bind", "/workspace", other),),
     )
-    with pytest.raises(ProviderConfinementError, match="inside its own universe"):
+    with pytest.raises(ProviderConfinementError, match="inside its own command center"):
         jail_argv(["cli"], view, bwrap_path="bwrap")
 
 
@@ -129,7 +129,7 @@ def test_a_view_for_another_universe_than_the_call_is_refused(tmp_path, no_spawn
     other = _universe(tmp_path, "u-bravo")
     view = UniverseView(universe_dir=other, mounts=())
     with provider_launch_scope(universe):
-        with pytest.raises(ProviderConfinementError, match="different universe"):
+        with pytest.raises(ProviderConfinementError, match="different command center"):
             confine_launch(["cli"], view=view)
 
 
