@@ -199,7 +199,7 @@ public class LocalCallbackPlugin extends Plugin {
         }
         boolean replay = !first && target.length() > 0 && target.equals(accepted.get());
         String page = (first || replay) ? target : null;
-        String body = page != null ? callbackPage(page) : "<!doctype html><html><body></body></html>";
+        String body = page != null ? callbackPage(page, getContext().getPackageName()) : "<!doctype html><html><body></body></html>";
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         OutputStream out = c.getOutputStream();
         out.write((
@@ -223,8 +223,10 @@ public class LocalCallbackPlugin extends Plugin {
      * the app completes the link even if the listener event never reached the
      * web layer or the app could not bring itself forward: auto-attempt after
      * a moment, and a big tap target (a user gesture always launches the app).
+     * The package is this install's own (the debug build is a separate
+     * io.tinyassets.app.debug install), so the link never lands in the other app.
      */
-    private static String callbackPage(String target) {
+    private static String callbackPage(String target, String appPackage) {
         int q = target.indexOf('?');
         String query = q >= 0 ? target.substring(q + 1) : "";
         // Rebuild the deep link from an allowlist of fields, re-encoded: the
@@ -241,7 +243,7 @@ public class LocalCallbackPlugin extends Plugin {
             } catch (Exception ignored) { }
         }
         String deep = "intent://auth?" + htmlEscape(rebuilt.toString())
-            + "#Intent;scheme=tinyassets;package=io.tinyassets.app;end";
+            + "#Intent;scheme=tinyassets;package=" + appPackage + ";end";
         return "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             + "<meta http-equiv=\"refresh\" content=\"1;url=" + deep + "\"></head>"
             + "<body style=\"font-family:system-ui;background:#0f1020;color:#eef0ff;text-align:center;padding:3rem 1.5rem\">"

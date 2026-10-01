@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.api.wiki import _parse_frontmatter, _wiki_root_for_universe
+from tinyassets.universe_files import read_universe_text
 
 OKF_VERSION = "0.1"
 
@@ -48,7 +49,7 @@ def export_okf_bundle(wiki_root: str | Path, target_dir: str | Path) -> dict[str
     for source_path in exported_sources:
         source_rel = _source_rel_path(source_root, source_path)
         bundle_rel = _bundle_rel_path(source_root, source_path)
-        raw = source_path.read_text(encoding="utf-8")
+        raw = read_universe_text(source_root, source_path.relative_to(source_root).as_posix())
         meta, body = _parse_frontmatter(raw)
         concept_meta = _concept_frontmatter(meta, body, source_rel, bundle_rel, source_path)
         converted_body = _convert_wikilinks(

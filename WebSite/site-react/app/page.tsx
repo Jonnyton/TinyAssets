@@ -180,7 +180,7 @@ export default function HomePage() {
                 <tr>
                   <td>Android</td>
                   <td>
-                    <Link href="/start/#android">pre-release build</Link>
+                    <Link href="/start/#android">closed test on Google Play</Link>
                   </td>
                 </tr>
                 <tr>

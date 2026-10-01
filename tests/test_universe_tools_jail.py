@@ -290,6 +290,43 @@ def test_the_owners_credentials_and_authority_state_are_out_of_reach(world, monk
     assert _run(s.write_file(path="notes/mine.md", content="ok")).startswith("wrote")
 
 
+def test_the_agent_writes_its_own_wiki_but_not_the_trusted_write_back_markers(
+    world, monkeypatch,
+):
+    """Harness W: the agent's own wiki is part of the workspace it owns. Live,
+    2026-10-01, the founder's agent said "my wiki is read-only through the
+    available tools" and filed its page under notes/. The daemon's trusted
+    wiki write-back markers sit at the universe ROOT, out of the jail."""
+    from tinyassets.api.helpers import _read_text, _scoped_wiki_root
+    from tinyassets.effectors.wiki_write_back import _destination_marker_db_path
+
+    s = _engine(monkeypatch, world)
+    a = world.universe_a
+    (a / "wiki" / "pages" / "projects").mkdir(parents=True)
+    markers = _destination_marker_db_path(a)
+    assert markers.parent == a, "the trusted markers live at the root, not in wiki/"
+    markers.write_bytes(b"SQLite format 3\x00 synthetic markers")
+
+    page = "wiki/pages/projects/done-and-blocked.md"
+    body = "---\ntitle: Done and blocked\n---\n# Done\n- shipped\n"
+    assert _run(s.write_file(path=page, content=body)).startswith("wrote")
+    assert _run(s.edit_file(path=page, old_text="shipped", new_text="shipped S1")) == (
+        f"edited /u/{page}"
+    )
+    assert "[exit code 0]" in _run(s.run_bash(command="mkdir -p wiki/pages/plans && "
+                                                      "echo '# Plan' > wiki/pages/plans/next.md"))
+    # The daemon reads what the agent wrote, through the bounded reader.
+    with _scoped_wiki_root(a / "wiki"):
+        assert "shipped S1" in _read_text((a / page).resolve())
+
+    forge = _run(s.run_bash(command=(
+        f"ls -A /u; echo forged > /u/{markers.name}; cat /u/{markers.name}"
+    )))
+    assert markers.name not in forge.split("[exit code")[0].split(), forge
+    assert "[exit code 0]" not in forge, forge
+    assert markers.read_bytes() == b"SQLite format 3\x00 synthetic markers"
+
+
 def test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt(world, monkeypatch):
     """The reviewer's reproduction through the real tool: a 4 MB config.yaml.
     config.yaml is platform-owned and read-only in the jail, so the write is
