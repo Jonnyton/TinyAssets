@@ -29,7 +29,9 @@ python WebSite/brand/render_og.py      # WebSite/site-react/public/og-image.png
 Both need Pillow; `render_og.py` also needs Python Playwright. Never hand-edit
 an exported PNG, SVG, ICO, ICNS, manifest icon, or generated component — change
 the geometry and re-run. `npm run check:brand` in `WebSite/site-react/` verifies
-the receipt and runs in every site test/deploy gate. The same generated content
+the receipt and runs in every site test/deploy gate. The served app (`tinyassets/onboarding/app.html`)
+is not in the receipt: only its badge is generated, so brand parity checks that
+badge against `mark-tile.svg`, and app feature edits never need a re-export. The same generated content
 fingerprint versions favicon and manifest URLs, so browser caches cannot retain
 the previous mark after a logo release.
 

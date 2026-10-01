@@ -6,12 +6,15 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 from . import CheckResult, Invariant, Status
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 RECEIPT = REPO_ROOT / "WebSite" / "brand" / "generated-assets.json"
 ANDROID_ROOT = REPO_ROOT / "mobile" / "resources" / "android"
+TILE_SVG = REPO_ROOT / "WebSite" / "brand" / "mark-tile.svg"
+APP_HTML = REPO_ROOT / "tinyassets" / "onboarding" / "app.html"
 TEXT_SUFFIXES = {".html", ".py", ".svg", ".tsx", ".webmanifest"}
 REQUIRED_SURFACES = {
     "WebSite/site-react/public/favicon.ico",
@@ -26,6 +29,34 @@ REQUIRED_SURFACES = {
     "docs/ops/play-assets/icon-512.png",
     "docs/ops/play-assets/feature-graphic-1024x500.png",
 }
+
+
+def app_badge_data_uri(tile_svg: str) -> str:
+    """The data URI the served app uses for its favicon and brand glyph.
+
+    The one definition: render_marks.py writes app.html with it, and the check
+    below derives what app.html must contain from the committed mark-tile.svg
+    (itself receipt-bound) with it.
+    """
+    return "data:image/svg+xml," + quote(tile_svg.strip(), safe="/:=,;'#")
+
+
+def app_badge_problems(app_html: str, tile_svg: str) -> list[str]:
+    """What is wrong with the app's badge, checked against the tile mark.
+
+    app.html used to sit in the receipt as a WHOLE-FILE hash, so every feature
+    edit to a 7,000-line file had to re-run the brand exporter or fail
+    brand-parity -- a second copy of app.html's bytes that only the badge
+    needed. The badge is the only part render_marks owns, so it is the only
+    part checked: both places it appears must carry the current mark.
+    """
+    uri = app_badge_data_uri(tile_svg)
+    problems = []
+    if f'<link rel="icon" href="{uri}" />' not in app_html:
+        problems.append("app.html favicon is not the current tile mark")
+    if f'--brand-mark:url("{uri}");' not in app_html:
+        problems.append("app.html --brand-mark is not the current tile mark")
+    return problems
 
 
 def _sha256(path: Path) -> str:
@@ -83,6 +114,16 @@ class BrandParityInvariant(Invariant):
         }
         for path in sorted(actual_android ^ recorded_android):
             problems.append(f"Android receipt set differs: {path}")
+
+        if not TILE_SVG.is_file() or not APP_HTML.is_file():
+            problems.append("mark-tile.svg or app.html is missing")
+        else:
+            problems.extend(
+                app_badge_problems(
+                    APP_HTML.read_text(encoding="utf-8"),
+                    TILE_SVG.read_text(encoding="utf-8").replace("\r\n", "\n"),
+                )
+            )
 
         if problems:
             return CheckResult(
