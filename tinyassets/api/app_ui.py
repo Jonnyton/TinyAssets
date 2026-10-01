@@ -23,6 +23,7 @@ from tinyassets.custom_agents import (
     get_app_ui,
     save_app_ui,
 )
+from tinyassets.storage_accounting import StorageRefused
 
 
 def read_app_ui(*, universe_id: str = "") -> dict[str, Any]:
@@ -61,6 +62,10 @@ def write_app_ui(
         return {"error": "app_ui_conflict", "detail": str(exc)}
     except AgentValidationError as exc:
         return {"error": "app_ui_validation_error", "detail": str(exc)}
+    except StorageRefused as refused:
+        # At the account's storage quota: the visible refusal, with its inline
+        # Upgrade link. Nothing was saved.
+        return dict(refused.record)
     return {"status": "saved", "app_ui": saved}
 
 
