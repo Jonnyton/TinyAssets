@@ -10,10 +10,13 @@ Per design-note ``2026-04-14-packaging-mirror-decision.md`` Option 1.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -66,7 +69,73 @@ def _copy_tree(source: Path, destination: Path) -> int:
     return count
 
 
-def _stage_runtime() -> int:
+@contextlib.contextmanager
+def _exclusive_build(runtime_root: Path):
+    """One build at a time per runtime root, released when the process dies.
+
+    The mirror is TRACKED, so a half-staged tree is a working-tree full of
+    deleted files. Two concurrent builds (pytest-xdist runs several build tests
+    at once) interleaved one's rmtree with the other's copy and left 247-302
+    tracked mirror files deleted (reproduced 2026-10-01). An OS file lock, not a
+    marker file, so a killed build never strands the next one.
+    """
+    # In the temp dir, keyed by the runtime it guards: a lock file inside the
+    # tracked runtime would itself show up as an untracked file.
+    key = hashlib.sha256(str(runtime_root.resolve()).encode("utf-8")).hexdigest()[:16]
+    with open(Path(tempfile.gettempdir()) / f"tinyassets-plugin-build-{key}.lock",
+              "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:  # LK_LOCK gives up after ~10s; keep waiting
+                    continue
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _replace_tree(source: Path, destination: Path) -> int:
+    """Stage ``source`` beside ``destination``, then swap it in whole.
+
+    Copying into a fresh sibling first means a copy that fails part-way (a full
+    disk, a locked file) raises with the old tree still in place, rather than
+    after an rmtree has already deleted it.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.staging-",
+                                    dir=destination.parent))
+    try:
+        count = _copy_tree(source, staging)
+        if destination.exists():
+            retired = Path(tempfile.mkdtemp(prefix=f".{destination.name}.old-",
+                                            dir=destination.parent))
+            retired.rmdir()
+            destination.rename(retired)
+            staging.rename(destination)
+            shutil.rmtree(retired)
+        else:
+            staging.rename(destination)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    return count
+
+
+def _stage_runtime(runtime_root: Path = RUNTIME_ROOT) -> int:
     """Replace the runtime's bundled `tinyassets/` tree with the live one.
 
     Preserves the runtime scaffolding (server.py, bootstrap.py,
@@ -75,46 +144,35 @@ def _stage_runtime() -> int:
     ``tinyassets/`` subtree (and the now-retired ``fantasy_author/``
     snapshot, if present) is purged + re-staged.
     """
-    tinyassets_dir = RUNTIME_ROOT / "tinyassets"
-    old_workflow_dir = RUNTIME_ROOT / "workflow"
-    legacy_fantasy = RUNTIME_ROOT / "fantasy_author"
+    with _exclusive_build(runtime_root):
+        for retired in ("workflow", "fantasy_author"):
+            # Pre-Option-1 snapshots. Remove so the runtime imports the
+            # auto-staged ``tinyassets.universe_server`` and never a frozen copy.
+            if (runtime_root / retired).exists():
+                shutil.rmtree(runtime_root / retired)
 
-    if tinyassets_dir.exists():
-        shutil.rmtree(tinyassets_dir)
-    if old_workflow_dir.exists():
-        shutil.rmtree(old_workflow_dir)
-    if legacy_fantasy.exists():
-        # Pre-Option-1 snapshot. Remove so the runtime imports the
-        # auto-staged ``tinyassets.universe_server`` and never the
-        # frozen ``fantasy_author/universe_server.py``.
-        shutil.rmtree(legacy_fantasy)
+        staged = _replace_tree(TINYASSETS_SRC, runtime_root / "tinyassets")
 
-    tinyassets_dir.mkdir(parents=True, exist_ok=True)
-    staged = _copy_tree(TINYASSETS_SRC, tinyassets_dir)
-
-    # The public model lists are DATA the runtime reads, resolved relative to the
-    # package (`public_model_lists.lists_directory()` -> parents[2]/"models"), which in
-    # this layout is RUNTIME_ROOT. Without them every source kind reads as unlisted and
-    # the picker silently loses its shared models -- Codex found the same omission in
-    # the Docker image on #4028, where the feature would have shipped dead.
-    lists_src = REPO_ROOT / "models"
-    if lists_src.is_dir():
-        lists_dst = RUNTIME_ROOT / "models"
-        if lists_dst.exists():
-            shutil.rmtree(lists_dst)
-        lists_dst.mkdir(parents=True, exist_ok=True)
-        staged += _copy_tree(lists_src, lists_dst)
+        # The public model lists are DATA the runtime reads, resolved relative to
+        # the package (`public_model_lists.lists_directory()` ->
+        # parents[2]/"models"), which in this layout is the runtime root. Without
+        # them every source kind reads as unlisted and the picker silently loses
+        # its shared models -- Codex found the same omission in the Docker image
+        # on #4028, where the feature would have shipped dead.
+        lists_src = REPO_ROOT / "models"
+        if lists_src.is_dir():
+            staged += _replace_tree(lists_src, runtime_root / "models")
     return staged
 
 
-def _probe_import() -> None:
+def _probe_import(runtime_root: Path = RUNTIME_ROOT) -> None:
     """Subprocess probe — same shape as build_bundle.py's probe.
 
     ``PYTHONDONTWRITEBYTECODE=1`` keeps the probe from generating
     ``__pycache__`` directories under the freshly-staged tree.
     """
     probe_script = (
-        f"import sys; sys.path.insert(0, {str(RUNTIME_ROOT)!r}); "
+        f"import sys; sys.path.insert(0, {str(runtime_root)!r}); "
         "import tinyassets.universe_server as us; "
         "assert hasattr(us, 'main'), 'tinyassets.universe_server.main missing'; "
         # WorkOS provider is lazy-imported at runtime; probe it explicitly so a
@@ -151,16 +209,26 @@ def main() -> None:
             "minimal CI matrix that lacks the runtime's deps."
         ),
     )
+    parser.add_argument(
+        "--runtime-root",
+        type=Path,
+        default=RUNTIME_ROOT,
+        help=(
+            "Stage into this runtime directory instead of the tracked plugin "
+            "mirror. Tests use it so the suite never rewrites the working tree."
+        ),
+    )
     args = parser.parse_args()
+    runtime_root = args.runtime_root.resolve()
 
-    file_count = _stage_runtime()
+    file_count = _stage_runtime(runtime_root)
     print(
-        f"Staged claude-plugin runtime tinyassets/ at {RUNTIME_ROOT / 'tinyassets'} "
+        f"Staged claude-plugin runtime tinyassets/ at {runtime_root / 'tinyassets'} "
         f"({file_count} files)"
     )
 
     if not args.skip_probe:
-        _probe_import()
+        _probe_import(runtime_root)
 
 
 if __name__ == "__main__":

@@ -244,42 +244,95 @@ def test_bundle_server_imports_tinyassets_package():
 # ─── build_plugin.py ─────────────────────────────────────────────────
 
 
-def test_build_plugin_stages_tinyassets_package():
+def _build_plugin(runtime_root: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+    """Stage into ``runtime_root`` -- never the tracked mirror.
+
+    Building in place made the suite rewrite tracked files, and under xdist two
+    builds interleaved and left hundreds of mirror files deleted (2026-10-01).
+    """
+    return _run(PLUGIN_BUILD, ["--runtime-root", str(runtime_root), *extra])
+
+
+def test_build_plugin_stages_tinyassets_package(tmp_path):
     """Plugin build re-stages tinyassets/ next to runtime/server.py."""
-    result = _run(PLUGIN_BUILD)
+    result = _build_plugin(tmp_path)
     assert result.returncode == 0, (
         f"build_plugin.py failed:\nstdout={result.stdout}\n"
         f"stderr={result.stderr}"
     )
-    assert (PLUGIN_RUNTIME / "tinyassets" / "universe_server.py").is_file()
+    assert (tmp_path / "tinyassets" / "universe_server.py").is_file()
     assert (PLUGIN_RUNTIME / "server.py").is_file()
     assert "probe-ok" in result.stdout
 
 
-def test_build_plugin_purges_legacy_fantasy_author_snapshot():
+def test_build_plugin_purges_legacy_fantasy_author_snapshot(tmp_path):
     """The pre-shim fantasy_author/ snapshot must be removed."""
-    # Pre-create a stale fantasy_author dir with a stub file to mimic
-    # the pre-Option-1 layout. The build should purge it.
-    legacy_dir = PLUGIN_RUNTIME / "fantasy_author"
-    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_dir = tmp_path / "fantasy_author"
+    legacy_dir.mkdir(parents=True)
     (legacy_dir / "universe_server.py").write_text("# stale\n")
-    try:
-        result = _run(PLUGIN_BUILD)
-        assert result.returncode == 0
-        assert not legacy_dir.exists(), (
-            "Stale fantasy_author/ snapshot must be purged on build"
+
+    result = _build_plugin(tmp_path, "--skip-probe")
+
+    assert result.returncode == 0, result.stderr
+    assert not legacy_dir.exists(), (
+        "Stale fantasy_author/ snapshot must be purged on build"
+    )
+
+
+def test_concurrent_plugin_builds_never_leave_a_partial_tree(tmp_path):
+    """Four builds at once end with the complete tree, every time."""
+    procs = [
+        subprocess.Popen(
+            [sys.executable, str(PLUGIN_BUILD), "--runtime-root", str(tmp_path),
+             "--skip-probe"],
+            cwd=str(REPO_ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
         )
-    finally:
-        if legacy_dir.exists():
-            shutil.rmtree(legacy_dir)
+        for _ in range(4)
+    ]
+    outcomes = [proc.communicate(timeout=300) + (proc.returncode,) for proc in procs]
+
+    assert [rc for _out, _err, rc in outcomes] == [0] * 4, outcomes
+    build = _load_module("tinyassets_plugin_build_test", PLUGIN_BUILD)
+    expected = {
+        src.relative_to(build.TINYASSETS_SRC)
+        for src in build.TINYASSETS_SRC.rglob("*")
+        if src.is_file() and not build._is_excluded(src)
+        and not any(build._is_excluded(parent) for parent in src.parents)
+    }
+    staged = {
+        path.relative_to(tmp_path / "tinyassets")
+        for path in (tmp_path / "tinyassets").rglob("*") if path.is_file()
+    }
+    assert staged == expected
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["models", "tinyassets"]
 
 
-def test_plugin_server_imports_tinyassets_package():
-    _run(PLUGIN_BUILD)
+def test_a_failed_copy_keeps_the_previous_tree(tmp_path, monkeypatch):
+    """A copy that dies part-way (a full disk) must not delete the old tree."""
+    build = _load_module("tinyassets_plugin_build_fail_test", PLUGIN_BUILD)
+    old = tmp_path / "tinyassets"
+    old.mkdir()
+    (old / "kept.py").write_text("# previous build\n")
+
+    def dies_part_way(source, destination):
+        (destination / "half.py").write_text("partial")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(build, "_copy_tree", dies_part_way)
+    with pytest.raises(OSError):
+        build._stage_runtime(tmp_path)
+
+    assert (old / "kept.py").read_text() == "# previous build\n"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["tinyassets"]
+
+
+def test_plugin_server_imports_tinyassets_package(tmp_path):
+    assert _build_plugin(tmp_path, "--skip-probe").returncode == 0
     probe = subprocess.run(
         [
             sys.executable, "-c",
-            f"import sys; sys.path.insert(0, {str(PLUGIN_RUNTIME)!r}); "
+            f"import sys; sys.path.insert(0, {str(tmp_path)!r}); "
             "import tinyassets.universe_server as us; "
             "assert callable(us.main); print('ok')",
         ],
@@ -297,15 +350,19 @@ def test_plugin_server_imports_tinyassets_package():
 def test_bundle_and_plugin_tinyassets_trees_match():
     """Both build scripts stage the same set of files from tinyassets/."""
     _run(MCPB_BUILD)
-    _run(PLUGIN_BUILD)
+    plugin_runtime = Path(tempfile.mkdtemp(prefix="tinyassets-plugin-"))
+    try:
+        assert _build_plugin(plugin_runtime, "--skip-probe").returncode == 0
+        plugin_files = {
+            p.relative_to(plugin_runtime / "tinyassets")
+            for p in (plugin_runtime / "tinyassets").rglob("*")
+            if p.is_file()
+        }
+    finally:
+        shutil.rmtree(plugin_runtime, ignore_errors=True)
     bundle_files = {
         p.relative_to(DIST_STAGE / "tinyassets")
         for p in (DIST_STAGE / "tinyassets").rglob("*")
-        if p.is_file()
-    }
-    plugin_files = {
-        p.relative_to(PLUGIN_RUNTIME / "tinyassets")
-        for p in (PLUGIN_RUNTIME / "tinyassets").rglob("*")
         if p.is_file()
     }
     diff = bundle_files.symmetric_difference(plugin_files)
