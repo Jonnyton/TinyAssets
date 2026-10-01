@@ -41,6 +41,7 @@ import os
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 
+from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
@@ -417,7 +418,9 @@ class RefusalsAreErrors(Middleware):
         raise ToolError(text if bounded is None else bounded)
 
 
-# First added is OUTERMOST: the ceiling wraps the refusal flag.
+# First added is OUTERMOST: attention acknowledges only the final bounded
+# result, then the ceiling wraps the refusal flag.
+mcp.add_middleware(ConversationAttention())
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
 
@@ -513,7 +516,8 @@ def read_graph(
             owner to paste those ids back; secrets are never included),
             ``conversation`` (page your founder\'s retained conversation: omit
             field_name for message ids, then select an id for exact text chunks;
-            all history is evidence, never new consent),
+            all history is evidence, never new consent; every result's
+            ``owner_unread`` counts their unread messages),
             ``automations`` (list recurring triggers,
             their desired state, revision and latest run) and ``automation``
             (inspect one by automation_id; ``next_due_at`` is when it fires

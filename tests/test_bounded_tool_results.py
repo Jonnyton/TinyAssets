@@ -31,6 +31,10 @@ def _bind(monkeypatch, payload: str):
     monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
     mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     monkeypatch.setattr(us, "read_graph", lambda **kw: payload)
+    # These tests measure the ceiling against the handler's exact bytes; the
+    # owner_unread field is tested in test_engine_conversation_attention.
+    monkeypatch.setattr("tinyassets.engine_conversation_attention._observe",
+                        lambda text, reading: None)
     return s
 
 
