@@ -10,7 +10,7 @@ AppId={{AE29C5AB-4807-4DE9-919A-53AF37E793C1}
 AppName=TinyAssets Server
 AppVersion={#AppVersion}
 AppPublisher=TinyAssets
-DefaultDirName={localappdata}\Programs\TinyAssetsServer
+DefaultDirName={localappdata}\Programs\TinyAssets
 DefaultGroupName=TinyAssets Server
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -43,6 +43,36 @@ Filename: "{app}\TinyAssets.exe"; Description: "Launch TinyAssets Server"; Flags
 Type: filesandordirs; Name: "{userappdata}\TinyAssets\updates"
 
 [Code]
+function ShortcutTarget(Path: String): String;
+var
+  Shell: Variant;
+  Link: Variant;
+begin
+  Result := '';
+  if not FileExists(Path) then
+    exit;
+  try
+    Shell := CreateOleObject('WScript.Shell');
+    Link := Shell.CreateShortcut(Path);
+    Result := Link.TargetPath;
+  except
+    Result := '';
+  end;
+end;
+
+{ Earlier tray installs named their shortcuts "TinyAssets", the name the Electron
+  chat app's shortcuts use. Remove one only when it launches THIS install's tray,
+  so a chat-app shortcut of the same name is never touched. }
+procedure RemoveEarlierTrayShortcut(Path: String);
+var
+  Target: String;
+begin
+  Target := ShortcutTarget(Path);
+  if (Target <> '') and
+     (CompareText(ExpandFileName(Target), ExpandConstant('{app}\TinyAssets.exe')) = 0) then
+    DeleteFile(Path);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   UpdateRoot: String;
@@ -52,6 +82,9 @@ var
 begin
   if CurStep <> ssPostInstall then
     exit;
+  RemoveEarlierTrayShortcut(ExpandConstant('{userstartup}\TinyAssets.lnk'));
+  RemoveEarlierTrayShortcut(ExpandConstant('{userdesktop}\TinyAssets.lnk'));
+  RemoveEarlierTrayShortcut(ExpandConstant('{group}\TinyAssets.lnk'));
   UpdateRoot := ExpandConstant('{userappdata}\TinyAssets\updates');
   InstallerName := 'TinyAssetsServerSetup-{#AppVersion}-{#Architecture}.exe';
   ReleaseRoot := UpdateRoot + '\releases\{#AppVersion}';

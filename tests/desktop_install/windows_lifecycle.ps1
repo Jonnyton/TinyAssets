@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $installerPath = (Resolve-Path -LiteralPath $Installer).Path
-$installRoot = Join-Path $env:LOCALAPPDATA "Programs\TinyAssetsServer"
+$installRoot = Join-Path $env:LOCALAPPDATA "Programs\TinyAssets"
 $dataRoot = Join-Path $env:APPDATA "TinyAssets"
 $tray = Join-Path $installRoot "TinyAssets.exe"
 $uninstaller = Join-Path $installRoot "unins000.exe"
@@ -60,7 +60,36 @@ function Invoke-Installer {
     ) -Phase $Phase
 }
 
+function New-Shortcut {
+    param([string]$Path, [string]$Target)
+    $link = (New-Object -ComObject WScript.Shell).CreateShortcut($Path)
+    $link.TargetPath = $Target
+    $link.Save()
+}
+
+function Get-TrayStartupLinks {
+    $shell = New-Object -ComObject WScript.Shell
+    @(Get-ChildItem -LiteralPath (Split-Path $startup) -Filter "*.lnk" |
+        Where-Object { $shell.CreateShortcut($_.FullName).TargetPath -ieq $tray })
+}
+
+# An earlier tray install named its shortcuts "TinyAssets", the same name the
+# Electron chat app uses. The installer must remove the earlier tray's entry and
+# leave a same-named chat-app shortcut alone.
+$earlierStartup = Join-Path (Split-Path $startup) "TinyAssets.lnk"
+$chatShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "TinyAssets.lnk"
+New-Shortcut -Path $earlierStartup -Target $tray
+New-Shortcut -Path $chatShortcut `
+    -Target (Join-Path $env:LOCALAPPDATA "Programs\tinyassets-desktop\TinyAssets.exe")
+
 Invoke-Installer -Phase "initial install"
+if (Test-Path -LiteralPath $earlierStartup) {
+    throw "the earlier tray's TinyAssets autostart entry survived the install"
+}
+if (-not (Test-Path -LiteralPath $chatShortcut -PathType Leaf)) {
+    throw "the installer removed a TinyAssets shortcut that is not the tray's"
+}
+Remove-Item -LiteralPath $chatShortcut
 if (-not (Test-Path -LiteralPath $tray -PathType Leaf)) {
     throw "installed tray executable is missing"
 }
@@ -77,8 +106,8 @@ Invoke-BoundedProcess -FilePath $tray `
 
 # Same-version repair must converge without a duplicate startup entry.
 Invoke-Installer -Phase "same-version repair"
-$startupEntries = @(Get-ChildItem -LiteralPath (Split-Path $startup) `
-    -Filter "TinyAssets Server.lnk")
+# Counted by target, so an entry under any name that launches the tray counts.
+$startupEntries = Get-TrayStartupLinks
 if ($startupEntries.Count -ne 1) {
     throw "repair produced $($startupEntries.Count) autostart entries"
 }
