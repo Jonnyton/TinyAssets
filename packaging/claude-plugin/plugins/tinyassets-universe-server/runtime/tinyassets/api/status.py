@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,25 @@ def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001 - an unreadable journal is reported, not guessed
         _LOGGER.warning("agent turn activity unreadable: %s", type(exc).__name__)
         return {"state": "unreadable", "reason": type(exc).__name__}
+
+
+def _thread_tool_activity(
+    udir: Path, actor_id: str, *, since: float | None = None,
+) -> list[dict[str, Any]] | None:
+    """The latest tool calls in ``actor_id``'s own conversation thread since
+    ``since`` (the running turn's start), newest first, or ``None`` when there is
+    no caller or the log cannot be read."""
+    actor = str(actor_id or "").strip()
+    if not actor:
+        return None
+    from tinyassets import agent_activity
+
+    try:
+        return agent_activity.recent(
+            udir, f"thread:principal:{actor}", limit=5, since=since)
+    except Exception as exc:  # noqa: BLE001 - the view is never worth a failed status
+        _LOGGER.warning("tool activity unreadable: %s", type(exc).__name__)
+        return None
 
 
 def _policy_hash(payload: dict[str, Any]) -> str:
@@ -1789,6 +1809,16 @@ def get_status(
     # from "this build does not report it".
     if universe_exists and permissions.universe_access_allows(uid, write=True):
         response["active_turn"] = _universe_active_turn(udir)
+        # What the agent's tools are doing in the CALLER'S OWN thread (harness
+        # S4): only that thread's calls, so a collaborator with write never sees
+        # the owner's commands, and the owner sees their agent work live.
+        turn_row = response["active_turn"]
+        if isinstance(turn_row, dict) and turn_row.get("state") != "unreadable":
+            age = turn_row.get("age_s")
+            since = time.time() - float(age) if isinstance(age, (int, float)) else None
+            tools = _thread_tool_activity(udir, permissions.current_actor_id(), since=since)
+            if tools:
+                turn_row["tools"] = tools
 
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about

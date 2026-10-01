@@ -1830,7 +1830,28 @@
     // Anchored to THIS page's clock. The row's own stamp is the server's, and a
     // device with a skewed clock would otherwise report a nonsense elapsed time.
     serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
-      startedMs:Date.now()-age*1000,observedAt:Date.now()};
+      startedMs:Date.now()-age*1000,observedAt:Date.now(),
+      tools:Array.isArray(row.tools)?row.tools:[]};
+  }
+  // What the agent's tools are doing, newest call first (harness S4): said on
+  // the ONE status line, after the sentence it already shows, never as a second
+  // indicator. Only this owner's own thread is reported by the server.
+  function toolLine(){
+    const t=serverTurnLive()&&serverTurn.tools&&serverTurn.tools[0];
+    if(!t||typeof t.tool!=="string"||!t.tool) return "";
+    const what=t.tool+(t.summary?": "+String(t.summary):"");
+    if(t.state==="running") return "running "+what;
+    if(t.state==="failed") return "ran "+what+" (failed"+(t.error?": "+String(t.error):"")+")";
+    return "ran "+what;
+  }
+  const TOOL_SEP=" \u00b7 ";
+  function paintToolLine(){
+    const line=$("status-line");
+    const text=String(line.textContent||"");
+    if(text.indexOf("Your universe is thinking...")!==0) return;
+    const base=text.split(TOOL_SEP)[0], tl=toolLine();
+    const next=tl?base+TOOL_SEP+tl:base;
+    if(next!==text) setStatusLine(next);
   }
   function serverTurnLive(){
     return !!serverTurn && (Date.now()-serverTurn.observedAt)<3*STATUS_WORKING_MS;
@@ -1993,7 +2014,7 @@
     // The flag is dropped on the way out: a local turn has taken the line, so our
     // sentence is no longer on screen and we must not later "clear" what that path
     // wrote (a queue count outlives the turn it was queued behind).
-    if(turnStartedAt){ serverStatusLine=false; return; }
+    if(turnStartedAt){ serverStatusLine=false; paintToolLine(); return; }
     if(!serverTurnLive()){
       // Ours to clear, or nobody's. A line another path wrote stays.
       if(serverStatusLine){ serverStatusLine=false; setStatusLine(""); }
@@ -2005,7 +2026,8 @@
     // at a turn they have no other evidence of.
     const detail=[elapsed,"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
-    setStatusLine("Your agent is thinking... " + detail);
+    const tl=toolLine();
+    setStatusLine("Your agent is thinking... " + detail + (tl?TOOL_SEP+tl:""));
   }
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The command center's actual

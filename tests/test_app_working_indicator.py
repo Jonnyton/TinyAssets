@@ -65,6 +65,8 @@ _DECLS = (
     r"let seatWait=[^\n]*;", r"let seatLineShown=[^\n]*;",
     # Lines steered into a running turn (harness S2).
     r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;",
+    # The tool-activity suffix on the status line (harness S4).
+    r"const TOOL_SEP=[^\n]*;",
 )
 _FUNCS = (
     "formatMessageTimestamp", "appendMessage", "setStatusLine",
@@ -90,7 +92,7 @@ _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued
               "renderStop", "takeInterruptFlush", "flushAfterTurn",
               "drainAfterStop", "takeBatch", "flushBatch",
               "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
-              "adoptSteered")
+              "adoptSteered", "toolLine", "paintToolLine")
 
 # A real tree. `insertBefore` and a detaching `remove` are the point: thread
 # order is what the ordering half of this bug is about.
