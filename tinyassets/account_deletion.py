@@ -1036,6 +1036,25 @@ def delete_account(
         if not home_removed:
             staged_path = str(staged)
 
+    if home:
+        # Session records, Custom Rules and review switches (rules.db) live
+        # beside the universe in .agent-sessions/<home>/, not inside it, so the
+        # home removal above does not take them. Anything but plain directories
+        # all the way down is refused and reported, never followed.
+        from tinyassets.agent_sessions import RECORDS_DIR
+
+        def _session_records() -> None:
+            parent = root / RECORDS_DIR
+            records = parent / _home_dir(root, home).name
+            for path in (parent, records):
+                if not path.exists() and not path.is_symlink():
+                    return
+                if path.is_symlink() or not path.is_dir():
+                    raise AccountDeletionError(f"{path.name} is not a plain directory")
+            _rmtree(records)
+
+        _phase("agent_session_records", _session_records)
+
     billing = "not_configured"
     if home:
         billing = _phase(

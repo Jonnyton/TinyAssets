@@ -642,17 +642,40 @@ def read_graph(
             ))
         if normalized == "access":
             from tinyassets.api.agent_access import read_access
+            from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_access
+            from tinyassets.engine_result_bounds import resolve_ceiling
 
-            return json.dumps(read_access(
-                universe_id=_GRAPH_ID, how_to_change=_SERVED_ACCESS_VERBS,
+            # Filtered by query, paged by field_name/output_offset, and sectioned
+            # under the ceiling, so the ceiling never cuts its tail (live
+            # 2026-10-01: standing decisions unreadable past 21,764 bytes).
+            return json.dumps(project_access(
+                read_access(universe_id=_GRAPH_ID, how_to_change=_SERVED_ACCESS_VERBS),
+                query=query, section=field_name, offset=output_offset,
+                budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
             ), default=str)
         if normalized in {"automations", "automation"}:
             from tinyassets.api.automations import automations
+            from tinyassets.engine_read_views import (
+                CEILING_HEADROOM_BYTES,
+                project_automation,
+                project_automations,
+            )
+            from tinyassets.engine_result_bounds import resolve_ceiling
 
-            return _automation_response(automations(
-                action="list" if normalized == "automations" else "get",
-                universe_id=_GRAPH_ID,
-                automation_id=(automation_id or "").strip(),
+            # Every row, paged to fit under the ceiling; input bodies are read
+            # one at a time (live 2026-10-01: 8 rows were 282,886 bytes).
+            budget = resolve_ceiling() - CEILING_HEADROOM_BYTES
+            if normalized == "automations":
+                return _automation_response(project_automations(
+                    automations(action="list", universe_id=_GRAPH_ID, limit=None),
+                    budget=budget, render=_automation_response,
+                    offset=output_offset,
+                ))
+            return _automation_response(project_automation(
+                automations(action="get", universe_id=_GRAPH_ID,
+                            automation_id=(automation_id or "").strip()),
+                budget=budget, render=_automation_response, field_name=field_name,
+                offset=output_offset, max_chars=output_max_chars,
             ))
         # graph_id is PINNED, never caller-supplied: the agent cannot address
         # another universe. ``branch`` is the one target that also needs a

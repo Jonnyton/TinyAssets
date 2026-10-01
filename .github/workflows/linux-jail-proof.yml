@@ -27,7 +27,9 @@ name: linux-jail-proof
 #     that a skill file the agent writes changes its next served turn.
 #
 # This job supplies the jail on a disposable GitHub-hosted Ubuntu VM and FAILS
-# unless EVERY named case is present in JUnit with no skip, failure or error.
+# unless EVERY case marked `@pytest.mark.real_jail` is present in JUnit with no
+# skip, failure or error. The marker is the only list: a new jail proof joins
+# by carrying it (and adding its file to `paths:` below so it retriggers).
 # It is cloud-only test infrastructure: no deployment, no production surface,
 # no account secrets, no self-hosted runner, never the founder's desktop.
 #
@@ -104,40 +106,6 @@ concurrency:
   group: linux-jail-proof-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
-env:
-  # The ONLY test files this job runs, and EVERY case it must see executed
-  # (space-separated; no path or nodeid here contains a space). Kept as env so
-  # the shell steps never interpolate an expression.
-  JAIL_TEST_FILES: >-
-    tests/test_delivery_node_rpc.py
-    tests/test_native_refresh_jail.py
-    tests/test_provider_universe_jail.py
-    tests/test_universe_tools_jail.py
-  JAIL_TEST_NODEIDS: >-
-    tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
-    tests/test_native_refresh_jail.py::test_jail_reads_workspace_but_not_launch_credentials
-    tests/test_native_refresh_jail.py::test_removing_the_launch_mask_exposes_the_snapshot
-    tests/test_provider_universe_jail.py::test_claude_node_call_reads_only_its_own_universe
-    tests/test_provider_universe_jail.py::test_codex_node_call_reads_only_its_own_universe
-    tests/test_provider_universe_jail.py::test_router_jails_a_new_command_adapter_with_no_jail_code
-    tests/test_universe_tools_jail.py::test_tools_reach_their_own_universe_and_nothing_else
-    tests/test_universe_tools_jail.py::test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch
-    tests/test_universe_tools_jail.py::test_io_uring_and_symlink_are_refused_in_the_jail
-    tests/test_universe_tools_jail.py::test_the_owners_credentials_and_authority_state_are_out_of_reach
-    tests/test_universe_tools_jail.py::test_the_agent_writes_its_own_wiki_but_not_the_trusted_write_back_markers
-    tests/test_universe_tools_jail.py::test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt
-    tests/test_universe_tools_jail.py::test_an_engine_pinned_to_another_universe_cannot_reach_it
-    tests/test_universe_tools_jail.py::test_bash_has_no_network
-    tests/test_universe_tools_jail.py::test_bash_reaches_a_public_site_only_through_the_checking_proxy
-    tests/test_universe_tools_jail.py::test_the_proxy_refuses_the_host_and_the_metadata_address
-    tests/test_universe_tools_jail.py::test_the_limits_are_applied_inside_the_jail
-    tests/test_universe_tools_jail.py::test_memory_limit_stops_a_runaway_allocation
-    tests/test_universe_tools_jail.py::test_process_limit_holds_and_a_fork_bomb_is_contained
-    tests/test_universe_tools_jail.py::test_cpu_output_and_wall_clock_limits_kill
-    tests/test_universe_tools_jail.py::test_a_jail_that_fills_the_shared_disk_is_killed
-    tests/test_universe_tools_jail.py::test_a_skill_the_agent_writes_changes_its_next_turn
-    tests/test_universe_tools_jail.py::test_a_background_run_reads_and_writes_its_notes_while_a_database_closes
-
 jobs:
   linux-jail-proof:
     name: linux-jail-proof
@@ -211,12 +179,17 @@ jobs:
           # `pip install -e` populated), not the system python.
           py="$(command -v python)"
           "$py" --version
-          read -r -a files <<< "$JAIL_TEST_FILES"
+          # The cases are whatever carries @pytest.mark.real_jail -- the ONE
+          # definition. The helper exits 2 when no test carries it.
+          # A plain assignment, so `set -e` stops on the helper's own failure.
+          listed="$(python scripts/ci_assert_junit_case.py --marker real_jail --list-files)"
+          mapfile -t files <<< "$listed"
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::JAIL_TEST_FILES is empty"
+            echo "::error::no test file carries pytest.mark.real_jail"
             exit 1
           fi
           args=("${files[@]}"
+                -m real_jail
                 -q -p no:cacheprovider
                 -o junit_family=xunit1
                 --basetemp "$PYTEST_BASETEMP"
@@ -242,18 +215,11 @@ jobs:
           JUNIT_PATH: ${{ runner.temp }}/junit-linux-jail.xml
         run: |
           set -euo pipefail
-          read -r -a nodeids <<< "$JAIL_TEST_NODEIDS"
-          if [ "${#nodeids[@]}" -eq 0 ]; then
-            echo "::error::JAIL_TEST_NODEIDS is empty"
-            exit 1
-          fi
-          nodeid_args=()
-          for nodeid in "${nodeids[@]}"; do
-            nodeid_args+=(--nodeid "$nodeid")
-          done
+          # Every case carrying the marker, derived from the test source by the
+          # same helper; absent, skipped, failed or errored fails the job.
           python scripts/ci_assert_junit_case.py \
             --junit "$JUNIT_PATH" \
-            "${nodeid_args[@]}" \
+            --marker real_jail \
             --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload junit

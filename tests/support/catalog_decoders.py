@@ -1,7 +1,8 @@
-"""Legacy discovery names backed by the shared bounded data interpreter.
+"""Test facade: the legacy discovery names over the shipped bundled decoder.
 
-Installed data preserves existing endpoint semantics. New owner-authored sources
-use the same catalogue compiler without acquiring bundled trust or legacy mode.
+No product code calls these; the tests use them to drive the same compiled
+catalogue and benchmark shapes ``DiscoveryProtocol.from_bundled_document``
+builds from the installed compatibility document.
 """
 
 from tinyassets.providers.discovery_catalogue import (

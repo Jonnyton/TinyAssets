@@ -1202,7 +1202,7 @@ async def _handle_rules(request: Any) -> Any:
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets import agent_rules
+    from tinyassets import agent_review, agent_rules
     from tinyassets.auth.middleware import current_identity
 
     if not onboarding_enabled():
@@ -1230,6 +1230,9 @@ async def _handle_rules(request: Any) -> Any:
             "handbacks": agent_rules.HANDBACK_CONSEQUENCES,
             "operation_kinds": [k.as_dict() for k in agent_rules.list_kinds(_universe_dir())],
             "kinds": agent_rules.OPERATION_KINDS,
+            "review_off": sorted(agent_review.switched_off(_universe_dir())),
+            "review_never": sorted(agent_review.NOT_CONSEQUENTIAL),
+            "review_always": sorted(agent_review.ALWAYS_REVIEWED),
         }
 
     if request.method == "GET":
@@ -1244,6 +1247,13 @@ async def _handle_rules(request: Any) -> Any:
         return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
 
     def _save():
+        if "review" in data:
+            spec = data["review"]
+            if not isinstance(spec, dict) or type(spec.get("enabled")) is not bool:
+                raise ValueError("review needs action_class and enabled")
+            agent_review.set_review(_universe_dir(), str(spec.get("action_class") or ""),
+                                    spec["enabled"], confirm=data.get("confirm") is True)
+            return {"reviewed": spec, **_listing()}
         if "declare" in data:
             spec = data["declare"]
             if not isinstance(spec, dict):
@@ -1286,7 +1296,7 @@ async def _handle_rules(request: Any) -> Any:
 
     try:
         return JSONResponse(await run_in_threadpool(_save), headers=_NO_STORE)
-    except agent_rules.RuleRefused as exc:
+    except (agent_rules.RuleRefused, agent_review.ReviewSwitchRefused) as exc:
         return JSONResponse(
             {"error": "rule_refused", "detail": str(exc)}, status_code=409, headers=_NO_STORE,
         )
