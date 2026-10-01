@@ -1757,7 +1757,13 @@
   const STATUS_IDLE_MS=30000, STATUS_WORKING_MS=10000;
   let statusBeatMs=STATUS_IDLE_MS;
   let serverTurn=null;
+  // This universe's chat waiting for one of the account's seats (`seats` in the
+  // status payload, owner-only). Its line carries the upgrade link inline.
+  let seatWait=null;
+  let seatLineShown=false;
   function readServerTurn(payload){
+    seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
+      ?payload.seats:null;
     const row=payload&&payload.active_turn;
     // `active_turn` absent (an older daemon) leaves whatever this page already
     // believed; an explicit null, a stale row, or a non-working state is an
@@ -1895,6 +1901,27 @@
   }
   function renderWorking(){
     renderStop();
+    if(seatWait){
+      // The waiting line, with the Upgrade link INSIDE it -- never a banner, card
+      // or modal (founder, 2026-09-30). No link on the top tier: the server sends
+      // upgrade_url null there.
+      const line=$("status-line");
+      line.textContent="Waiting for a free seat ("+Number(seatWait.running||0)+" running)";
+      if(seatWait.upgrade_url){
+        line.appendChild(document.createTextNode(" \u2014 "));
+        const link=document.createElement("a");
+        link.textContent="Upgrade";link.href=seatWait.upgrade_url;
+        line.appendChild(link);
+        line.appendChild(document.createTextNode(" for more seats."));
+      }
+      seatLineShown=true;
+      return;
+    }
+    if(seatLineShown){
+      // The seat came: the turn is running now, so the waiting line must not stay.
+      seatLineShown=false;
+      setStatusLine(turnStartedAt?"Your universe is thinking...":"");
+    }
     // ONE indicator, and it is the original line under the composer. #4020 added a
     // second, louder banner alongside it and the founder had both at once: "there
     // are now 2 indicators at once that my universe is thinking, i preferred only
@@ -4321,6 +4348,12 @@
       if(!r || !r.ok) return;
       PLAN = await r.json();
       renderPlan();
+      const entry=new URL(location.href);
+      if(!NATIVE && entry.searchParams.get("upgrade")==="1"){
+        entry.searchParams.delete("upgrade");
+        history.replaceState(null,"",entry.href);
+        if(PLAN.upgrade_url) await startSubscribe();
+      }
     }catch(_e){ /* the plan chip is never load-bearing for chat */ }
   }
 

@@ -534,15 +534,7 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
         ticket = None
         if prior is None:
             _enforce_sender_rate_limit(conn, receiver, sender_id=principal)
-            admission = engine_admissions.admit_detail(
-                receiver["universe_id"], write_max=engine_admissions.RUN_WRITE_LIMIT,
-                total_max=engine_admissions.RUN_TOTAL_LIMIT,
-                window_s=engine_admissions.RUN_WINDOW_SECONDS, fail_closed=True,
-                day_max=engine_admissions.RUN_DAY_LIMIT,
-            )
-            if admission.ticket is None:
-                raise ValueError("receiver_resource_admission_refused")
-            ticket = admission.ticket
+            ticket = engine_admissions.admit(receiver["universe_id"])
         receipt = deliveries.accept_in_transaction(
             conn, sender_id=principal, sender_universe_id=universe_id,
             link_id=link_id, occurrence_id=occurrence_id, request_payload=outputs,

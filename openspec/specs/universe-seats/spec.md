@@ -1,6 +1,16 @@
-# universe-seats (delta)
+# Universe Seats
 
-## ADDED Requirements
+> As-built (2026-09-30, change `two-dimension-usage-limits`): concurrent agent
+> seats, one pool per ACCOUNT (`tinyassets/universe_seats.py`), keyed through
+> the shared owner resolver `universe_owner`. The other account limit, cloud
+> storage, is change `account-storage-quota`.
+
+## Purpose
+
+Bound how many agent calls one account runs at once. Over the count, work
+waits -- visibly, with an inline upgrade link -- and is never refused or dropped.
+
+## Requirements
 
 ### Requirement: A seat is one in-flight agent call, and the ACCOUNT's tier sets how many run at once
 

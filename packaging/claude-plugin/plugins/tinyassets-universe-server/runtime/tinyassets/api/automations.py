@@ -119,10 +119,6 @@ _UNAVAILABLE_DETAIL = {
         "overlap must be queue (wait for the running one, the default), skip "
         "(drop this run) or cancel_previous (stop the running one first)."
     ),
-    "usage_limited": (
-        "This universe has reached its usage limit for engine edits in the "
-        "last hour, so nothing was stored. It frees up as older edits age out."
-    ),
     "not_owner_or_admin": (
         "This automation belongs to someone else. Only its owner or an admin "
         "on this universe can change it."
@@ -290,23 +286,7 @@ def _projection(
     }
     if recent_reason:
         projected["recent_reason"] = recent_reason
-    # A run the meter refused is never a silent drop: say which cap, and when
-    # capacity returns (plan item 6). Read live from the same ledger.
-    if "run_rate_limited" in (recent_reason, automation.last_reason):
-        notice = _usage_notice(automation.universe_id)
-        if notice is not None:
-            projected["usage_notice"] = notice
     return projected
-
-
-def _usage_notice(universe_id: str) -> dict[str, Any] | None:
-    try:
-        from tinyassets.engine_admissions import usage_notice
-
-        return usage_notice(universe_id)
-    except Exception:  # noqa: BLE001 - an enrichment, never a precondition
-        logger.warning("usage notice unavailable for %r", universe_id, exc_info=True)
-        return None
 
 
 def _recent_reasons(base: Path, universe_id: str) -> dict[str, str]:

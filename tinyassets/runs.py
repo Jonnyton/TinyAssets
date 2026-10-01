@@ -687,9 +687,9 @@ def _dispatch_waiting_run(base_path: str | Path, run_id: str) -> None:
                     enqueue_universe_id=universe_id,
                 )
 
-        future = _get_executor(invocation_depth=0).submit(
-            contextvars.Context().run, _worker,
-        )
+        future = _get_executor(
+            invocation_depth=0, pool_key=run_pool_key(base_path, universe_id),
+        ).submit(contextvars.Context().run, _worker)
         _track_future(run_id, future)
     except Exception as exc:  # noqa: BLE001 - a nomination must never fail its caller
         logger.exception("dispatch of waiting run %s failed", run_id)
@@ -4359,6 +4359,28 @@ def _managed_execution_scope(base_path: str | Path, run_id: str, *, provided=Non
             _RUN_EXECUTION_GUARD.reset(token)
 
 
+def _record_seat_wait(base_path, run_id: str, step_index: int, node_id: str,
+                      detail: dict) -> None:
+    """A node is waiting for its account's seat (`universe_seats`).
+
+    A system row, never a node status: the node has not run, so it must not read
+    as ``ran``. It carries the owner's waiting line, upgrade link included. A run
+    cancelled while its node waits stops waiting here: the cancellation
+    propagates out of the seat wait, which gives the queue position back.
+    """
+    record_event(base_path, RunStepEvent(
+        run_id=run_id,
+        step_index=step_index,
+        node_id=SYSTEM_EVENT_NODE_ID,
+        status="waiting_for_seat",
+        started_at=_now(),
+        finished_at=_now(),
+        detail={"node_id": node_id, **detail},
+    ))
+    if is_cancel_requested(base_path, run_id):
+        raise RunCancelledError(f"Run {run_id} cancelled while waiting for a seat.")
+
+
 def _owns_managed_execution(function):
     from functools import wraps
 
@@ -4531,6 +4553,10 @@ def _invoke_graph(
                 detail=detail,
             ))
             _emit_node_status(node_id, NODE_STATUS_RUNNING)
+            return
+
+        if phase == "waiting":
+            _record_seat_wait(base_path, run_id, step + _PENDING_OFFSET, node_id, detail)
             return
 
         if phase == "effect":
@@ -5574,16 +5600,67 @@ def _max_child_workers() -> int:
     return max(1, val)
 
 
-def _get_executor(invocation_depth: int = 0) -> ThreadPoolExecutor:
-    """Two-pool executor lookup. Depth-0 → _parent_pool; depth>=1 → _child_pool.
+#: One pool pair PER ACCOUNT, beside the keyless pair above. A run whose agent
+#: node waits for its account's seat waits on a worker thread; if that thread
+#: belonged to a pool every account shares, one busy account's queued runs would
+#: hold the threads another account's run needs -- the one thing the platform
+#: may never do (memory `the-floor-is-cross-user-only`). So a run is executed by
+#: its own account's pool, and an account can only ever wait behind itself.
+#: The host-wide memory bound is `provider_admission`, underneath, not this.
+_account_pools: dict[tuple[str, str], ThreadPoolExecutor] = {}
+
+
+def run_pool_key(base_path: str | Path, universe_id: str | None) -> str:
+    """The account whose pool runs work for ``universe_id``; '' for none.
+
+    `universe_seats.account_key` -- the same owner resolver seats use, so the
+    pool an account's runs wait in is exactly the account whose seats they wait
+    for. A resolver failure isolates on the universe instead: that pool is still
+    nobody else's.
+    """
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ""
+    from tinyassets.universe_seats import account_key
+
+    try:
+        return account_key(uid, root=base_path)
+    except Exception:  # noqa: BLE001 - isolation must not depend on the resolver
+        logger.warning("run pool: owner of %s unresolved; isolating on the universe", uid,
+                       exc_info=True)
+        return f"unattributed:{uid}"
+
+
+def run_pool_key_for_run(base_path: str | Path, run_id: str) -> str:
+    row = get_run(base_path, run_id) or {}
+    return run_pool_key(base_path, row.get("queue_universe_id"))
+
+
+def _get_executor(invocation_depth: int = 0, *, pool_key: str = "") -> ThreadPoolExecutor:
+    """Two-pool executor lookup. Depth-0 → parent pool; depth>=1 → child pool.
 
     Phase A item 5 / Task #76c. Each pool is lazy-init under the shared
     ``_executor_lock``. Child pool is sized larger than parent pool by
     default so a deep sub-branch chain can't starve top-level runs.
+
+    ``pool_key`` names the ACCOUNT (`run_pool_key`): its runs get a pool pair of
+    their own, so their seat waits never occupy a thread another account's run
+    is owed. The empty key is the keyless pair, for work with no universe.
     """
     global _parent_pool, _child_pool
+    child = invocation_depth >= 1
     with _executor_lock:
-        if invocation_depth >= 1:
+        if pool_key:
+            slot = ("child" if child else "parent", pool_key)
+            pool = _account_pools.get(slot)
+            if pool is None:
+                pool = ThreadPoolExecutor(
+                    max_workers=_max_child_workers() if child else _max_workers(),
+                    thread_name_prefix=f"tinyassets-{slot[0]}-acct",
+                )
+                _account_pools[slot] = pool
+            return pool
+        if child:
             if _child_pool is None:
                 _child_pool = ThreadPoolExecutor(
                     max_workers=_max_child_workers(),
@@ -5599,10 +5676,9 @@ def _get_executor(invocation_depth: int = 0) -> ThreadPoolExecutor:
 
 
 def shutdown_executor(wait: bool = True) -> None:
-    """Shut down both executor pools. Used by tests and graceful shutdown.
+    """Shut down every executor pool. Used by tests and graceful shutdown.
 
-    Phase A item 5 / Task #76c — two-pool model means both pools must be
-    drained on shutdown.
+    Phase A item 5 / Task #76c — two-pool model, and one pair per account.
     """
     global _parent_pool, _child_pool
     with _executor_lock:
@@ -5612,6 +5688,10 @@ def shutdown_executor(wait: bool = True) -> None:
         if _child_pool is not None:
             _child_pool.shutdown(wait=wait)
             _child_pool = None
+        pools = list(_account_pools.values())
+        _account_pools.clear()
+    for pool in pools:
+        pool.shutdown(wait=wait)
     with _futures_lock:
         _futures.clear()
 
@@ -5747,6 +5827,7 @@ def _execute_branch_core(
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
     _provider_parent=None,
+    _lend_seat: bool = False,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -5849,7 +5930,10 @@ def _execute_branch_core(
         if waiting is not None:
             return waiting
 
-    executor = _get_executor(invocation_depth=_invocation_depth)
+    executor = _get_executor(
+        invocation_depth=_invocation_depth,
+        pool_key=run_pool_key(base_path, _enqueue_universe_id),
+    )
 
     def _worker() -> RunOutcome:
         return _invoke_prepared_branch(
@@ -5873,6 +5957,13 @@ def _execute_branch_core(
     # blocking compiler invoke may explicitly hand a slot to this worker.
     with independent_provider_work(parent_slot=_provider_parent):
         worker_context = contextvars.copy_context()
+    if not _lend_seat:
+        # Nor its account seat: a queued run's caller keeps running, so a borrowed
+        # seat would carry two concurrent agent calls (gpt-6-astra round 2). Only
+        # a blocking invoke, whose caller waits for this run, lends it.
+        from tinyassets.universe_seats import detach_seat
+
+        worker_context.run(detach_seat)
     future = executor.submit(worker_context.run, _worker)
     _track_future(run_id, future)
 
@@ -6084,6 +6175,7 @@ def execute_branch_version_async(
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
     _provider_parent=None,
+    _lend_seat: bool = False,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -6130,6 +6222,7 @@ def execute_branch_version_async(
         owner_user_id=owner_user_id,
         _workspace_parent=_workspace_parent,
         _provider_parent=_provider_parent,
+        _lend_seat=_lend_seat,
         _enqueue_universe_id=_enqueue_universe_id,
         _invocation_depth=_invocation_depth,
     )
@@ -6305,7 +6398,7 @@ def resume_run(
     ))
 
     # Background worker: re-invoke graph with None inputs to trigger resume.
-    executor = _get_executor()
+    executor = _get_executor(pool_key=run_pool_key_for_run(base_path, run_id))
 
     def _resume_worker() -> RunOutcome:
         outcome = _invoke_graph_resume(
@@ -6351,6 +6444,9 @@ def resume_run(
 
     with independent_provider_work():
         worker_context = contextvars.copy_context()
+    from tinyassets.universe_seats import detach_seat
+
+    worker_context.run(detach_seat)  # a resumed run takes its own seats
     future = executor.submit(worker_context.run, _owned_resume_worker)
     _track_future(run_id, future)
 
@@ -6415,6 +6511,10 @@ def _invoke_graph_resume(
                 started_at=_now(),
                 detail=detail,
             ))
+            return
+
+        if phase == "waiting":
+            _record_seat_wait(base_path, run_id, step + _PENDING_OFFSET, node_id, detail)
             return
 
         if phase == "effect":
@@ -6972,12 +7072,14 @@ def poll_child_run_status(
     base_path: str | Path,
     run_id: str,
     *,
-    timeout_seconds: float = 300.0,
+    timeout_seconds: float | None = 300.0,
     poll_interval: float = 1.0,
     expected_actor: str | None = None,
     expected_universe_id: str | None = None,
 ) -> dict[str, Any]:
     """Block until *run_id* reaches a terminal status or *timeout_seconds* elapses.
+
+    ``timeout_seconds=None`` waits until the run is terminal.
 
     Returns the run record dict (same shape as ``get_run``).
     Raises ``TimeoutError`` if the run does not terminate in time.
@@ -6990,7 +7092,7 @@ def poll_child_run_status(
     """
     want_actor = (expected_actor or "").strip()
     want_universe = (expected_universe_id or "").strip()
-    deadline = time.monotonic() + timeout_seconds
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
     while True:
         record = get_run(base_path, run_id)
         if record is None:
@@ -7003,6 +7105,9 @@ def poll_child_run_status(
             raise KeyError(f"Child run '{run_id}' not found in runs DB.")
         if record.get("status") in _TERMINAL_STATUSES:
             return record
+        if deadline is None:
+            time.sleep(poll_interval)
+            continue
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ChildRunAwaitTimeout(

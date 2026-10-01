@@ -610,9 +610,9 @@ SHALL NOT create databases, migrate schemas, reconcile usage or mutate records.
 SQLite's normal coordination sidecars MAY be created by read-only connections;
 reads SHALL preserve locking and visibility of committed WAL transactions.
 No new handle or authority SHALL be introduced.
-Activity SHALL retain observed engine-mutation counts, but its limits SHALL name
-only the enforced total (900) and write-run (300) admission ceilings per rolling
-3600 seconds, without the retired `engine_mutations` category ceiling.
+Account seat observations SHALL report running and waiting counts only to the
+owning account, across all its universes. Other ACL administrators SHALL NOT see
+that account's aggregate occupancy. No account rate ceilings SHALL be exposed.
 
 #### Scenario: Owner asks about usage
 - **WHEN** the app's pinned agent reads status with its owner's existing admin authority for the universe
@@ -625,14 +625,6 @@ only the enforced total (900) and write-run (300) admission ceilings per rolling
 #### Scenario: Canary or unrelated user reads status
 - **WHEN** a caller is not authorized for private universe usage
 - **THEN** no private counts, paths, run identifiers or holder identities are disclosed
-
-#### Scenario: The oldest charge is about to expire
-- **WHEN** status reports a rolling-window expiration
-- **THEN** it gives a UTC next-charge-expiration instant and does not guarantee enough capacity for an unspecified future request
-
-#### Scenario: Engine usage is observed without a separate allowance
-- **WHEN** authorized status reports engine mutations
-- **THEN** activity contains their count and includes them in total, but `activity.limits` contains only `total` and `write_runs`
 
 ### Requirement: Legacy storage telemetry labels freshness and accounting scope
 The existing storage-utilization status SHALL preserve prior response keys while

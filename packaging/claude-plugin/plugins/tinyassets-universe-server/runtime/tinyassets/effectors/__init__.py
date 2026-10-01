@@ -337,44 +337,6 @@ def _bytes_moved(per_node: dict) -> int:
     return total
 
 
-def _budget_refusal(chain: "EffectChain", key: str, sink: str) -> "EffectFailedError | None":
-    """The budget an upcoming dispatch would break, as the node's failure, or None.
-
-    Only the universe's rolling hour is left here. The per-run dispatch and byte
-    budgets that used to run first are gone: they capped how much ONE run could
-    do and told the author to split their work up, which is a shape rule.
-    """
-    if chain.universe_id:
-        try:
-            from tinyassets.engine_admissions import (
-                BUDGET_WINDOW_S,
-                BYTES_PER_HOUR,
-                DISPATCHES_PER_HOUR,
-                dispatch_window_usage,
-            )
-
-            used_n, used_b = dispatch_window_usage(chain.universe_id)
-        except Exception:  # noqa: BLE001 - the per-run budget still holds
-            return None
-        if used_n >= DISPATCHES_PER_HOUR:
-            return EffectFailedError(
-                key, sink,
-                f"hourly budget exhausted: {used_n} effect dispatches in the last "
-                f"{BUDGET_WINDOW_S // 60} min (budget {DISPATCHES_PER_HOUR}); "
-                "wait for the window to clear",
-                "effect_budget_exhausted",
-            )
-        if used_b >= BYTES_PER_HOUR:
-            return EffectFailedError(
-                key, sink,
-                f"hourly budget exhausted: {used_b} outbound bytes in the last "
-                f"{BUDGET_WINDOW_S // 60} min (budget {BYTES_PER_HOUR}); "
-                "wait for the window to clear",
-                "effect_budget_exhausted",
-            )
-    return None
-
-
 @dataclass
 class EffectChain:
     """Run-scoped effect state. Effects fire at node time (design D1); this is
@@ -760,9 +722,6 @@ def dispatch_node_effects(
                 "run, so route the loop around the effect node or split the branch",
                 "effect_already_fired",
             )
-        refusal = _budget_refusal(chain, key, effects[0])
-        if refusal is not None:
-            raise refusal
         chain.inflight.add(key)
         chain.active += 1
         chain.dispatching.add(me)
@@ -784,13 +743,6 @@ def dispatch_node_effects(
         with chain.lock:
             chain.evidence[key] = per_node
             chain.bytes_out += moved
-        if chain.universe_id:
-            try:
-                from tinyassets.engine_admissions import charge_dispatch
-
-                charge_dispatch(chain.universe_id, dispatches=1, nbytes=moved)
-            except Exception:  # noqa: BLE001 - never let accounting break a dispatch
-                logging.getLogger(__name__).exception("dispatch budget charge failed")
     finally:
         with chain.lock:
             chain.inflight.discard(key)

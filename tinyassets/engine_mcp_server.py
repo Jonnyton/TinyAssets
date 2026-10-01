@@ -41,7 +41,6 @@ import os
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 
-from tinyassets import engine_admissions
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
@@ -72,26 +71,6 @@ _RUN_CAPABILITIES = ("read", "list", "write", "submit_request", "costly")
 # ``costly`` because branch create/build is a scope-gated costly op.
 _REMIX_CAPABILITIES = ("read", "list", "write", "costly")
 
-#: Effect-spam rate limit for run_graph (Codex gate #5): at most this many
-#: engine-triggered runs per universe per rolling window.
-#:
-#: Sized from the founder's OWN usage (2026-09-02): deleting 56 probe branches
-#: and renaming one graph -- ordinary housekeeping in their own universe, on a
-#: day they described as light use -- hit the previous 20-per-hour engine cap
-#: mid-sweep. A per-user cap a light user reaches is a shape defect, not a
-#: safety property: the only platform invariant is not affecting OTHER users,
-#: and every one of these runs on the owner's own subscription. Cross-user
-#: capacity (provider slots, memory) is bounded elsewhere.
-_RUN_GRAPH_RATE_WINDOW_S = engine_admissions.RUN_WINDOW_SECONDS
-_RUN_GRAPH_RATE_MAX = engine_admissions.RUN_WRITE_LIMIT
-# Runs of ANY kind (reads included) per window. Reads are reclassified off the
-# write budget once they prove they wrote nothing (tinyassets.engine_admissions),
-# but a loop of read-only runs is still bounded here: run_graph returns as soon
-# as the run is QUEUED, so this is what bounds compute on the owner's
-# subscription. Engine writes share this total without a category reservation.
-_RUN_GRAPH_TOTAL_MAX = engine_admissions.RUN_TOTAL_LIMIT
-
-
 def _bearer_ok(authorization_header, secret) -> bool:
     """Constant-time check that the header carries exactly ``Bearer <secret>``.
 
@@ -105,113 +84,13 @@ def _bearer_ok(authorization_header, secret) -> bool:
     return hmac.compare_digest(authorization_header or "", "Bearer " + secret)
 
 
-def _engine_run_admit(
-    *,
-    fail_closed: bool = False,
-    universe_id: str = "",
-    want_ticket: bool = False,
-    kind: str = "write",
-):
-    """Atomically admit one engine-triggered run/write under the rolling caps, or refuse.
-
-    The ledger and the count rule live in ``tinyassets.engine_admissions``:
-    every run admission is charged as a WRITE against ``_RUN_GRAPH_RATE_MAX`` (Codex
-    gate #5, the effect-spam bound), atomically (``BEGIN IMMEDIATE`` count-and-
-    insert, closing the TOCTOU race); a run that then proves it only READ is
-    reclassified by the effect dispatcher and stops counting against writes,
-    while ``_RUN_GRAPH_TOTAL_MAX`` still bounds runs of any kind. A dedicated
-    ledger, NOT the shared runs table (Codex 2026-08-19 (b)).
-
-    ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — the
-    OS sandbox + current owner authority are the primary controls, so a DB blip must
-    not wedge legitimate runs. remix/write_graph/brain pass True — the rolling cap
-    IS a real safety bound on an autonomous write, so a DB error refuses. They
-    also pass ``kind="engine"``: a durable mutation of the universe's own state
-    counts toward the total bound only, never the external-effect budget (live
-    2026-08-30: branch authoring spent nine of the twenty).
-    """
+def _engine_run_admit(*, universe_id: str = "") -> int:
+    """Record a run for effect settlement and return its ticket. Never refuses:
+    concurrency waits for a seat at the run's agent calls (`universe_seats`)."""
     from tinyassets import engine_admissions as _adm
 
     counted_universe = (universe_id or "").strip() or _GRAPH_ID
-    admission = _adm.admit_detail(
-        counted_universe,
-        write_max=_RUN_GRAPH_RATE_MAX,
-        total_max=_RUN_GRAPH_TOTAL_MAX,
-        window_s=_RUN_GRAPH_RATE_WINDOW_S,
-        fail_closed=fail_closed,
-        kind=kind,
-        # Every run is also metered per day (plan item 6): the usage limit
-        # that replaced depth, count and cadence caps.
-        day_max=_adm.RUN_DAY_LIMIT,
-    )
-    # ``want_ticket``: the caller will start a RUN and needs the admission's
-    # identity to bind it (Admission.ticket = ledger row id; ADMITTED_UNRECORDED
-    # when a fail-open blip admitted without a row; None = refused, and
-    # Admission.refused_by names the cap).
-    return admission if want_ticket else (admission.ticket is not None)
-
-
-def _engine_refusal(prefix: str, refused_by, universe_id: str = "") -> str:
-    """The refusal every engine surface returns, naming the cap that refused.
-
-    With ``universe_id``, a cap refusal also carries the owner-visible notice
-    (``engine_admissions.usage_notice``): which cap, and when capacity returns.
-    """
-    import json as _json
-
-    if universe_id and refused_by in ("write", "total", "day"):
-        notice = engine_admissions.usage_notice(universe_id)
-        if notice is not None:
-            return _json.dumps({
-                "error": f"{prefix} refused: {notice['message']}",
-                "usage_notice": notice,
-            })
-
-    if refused_by == "ledger":
-        # Not a quota: the admission ledger is unusable or tampered and this
-        # caller fails closed (Codex: never dress that up as "max 20").
-        return _json.dumps({
-            "error": (
-                f"{prefix} refused: the engine admission ledger is unavailable "
-                "or not trusted, so this write is not admitted; try again shortly."
-            ),
-        })
-    if refused_by == "day":
-        return _json.dumps({
-            "error": (
-                f"{prefix} refused: this universe has started "
-                f"{engine_admissions.RUN_DAY_LIMIT} runs in the last 24 hours, its daily "
-                "usage limit. Runs resume as the oldest ones age out."
-            ),
-        })
-    if refused_by == "total":
-        bound = f"max {_RUN_GRAPH_TOTAL_MAX} admissions (runs and engine edits)"
-    elif refused_by == "write":
-        bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
-    else:
-        # No cap is known: do not invent a write-budget diagnosis. None is
-        # possible for legacy boolean doubles, but real admissions name a cause.
-        return _json.dumps({
-            "error": (
-                f"{prefix} refused: the admission refusal reason is unavailable; "
-                "try again shortly."
-            ),
-        })
-    return _json.dumps({
-        "error": (
-            f"{prefix} rate limit reached ({bound} per "
-            f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-        ),
-    })
-
-
-def _admission_parts(admission) -> tuple:
-    """(ticket, refused_by) from what ``_engine_run_admit(want_ticket=True)``
-    returned - tolerant of a test double that returns a bare bool."""
-    ticket = getattr(admission, "ticket", admission)
-    if ticket is False:
-        ticket = None
-    return ticket, getattr(admission, "refused_by", None)
+    return _adm.admit(counted_universe)
 
 
 def _attach_run_admission(raw: str, ticket) -> None:
@@ -713,11 +592,6 @@ def read_graph(
     token = _bind_founder_identity()
     try:
         if normalized == "model_options":
-            ticket, refused = _admission_parts(
-                _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-            )
-            if ticket is None:
-                return _engine_refusal("model_options", refused)
             from tinyassets.api.graph_reads import read_graph as _domain_read
 
             # The complete domain read, projected HERE: the connector's
@@ -920,8 +794,6 @@ def run_graph(
     if normalized_operation == "deliver_output":
         if any((branch_def_id, branch_version_id, run_name, run_id)):
             return json.dumps({"error": "deliver_output cannot combine run selectors"})
-        if not _engine_run_admit(fail_closed=True):
-            return _engine_refusal("deliver_output", None)
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import run_graph as _deliver
 
@@ -962,13 +834,9 @@ def run_graph(
             "error": "branch_def_id is required to run a graph.",
         })
 
-    # Effect-spam rate limit (Codex gate #5): a prompt-injected engine could spam
-    # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
-    # the runs THIS universe can trigger via the engine per rolling window. The
-    # OS sandbox already bounds WHAT a code node can touch; this bounds HOW OFTEN.
-    ticket, refused_by = _admission_parts(_engine_run_admit(want_ticket=True))
-    if ticket is None:
-        return _engine_refusal("run_graph", refused_by, universe_id=_GRAPH_ID)
+    # Settlement identity only: the run is never refused here. How much runs at
+    # once is bounded by the account's seats, at the run's agent calls.
+    ticket = _engine_run_admit()
 
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import run_graph as _impl
@@ -2745,11 +2613,6 @@ def _write_served_automation(
             return json.dumps({"error": "payload_json must be a JSON object"})
         if not isinstance(document, dict):
             return json.dumps({"error": "payload_json must be a JSON object"})
-        ticket, refused = _admission_parts(
-            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-        )
-        if ticket is None:
-            return _engine_refusal("automation create", refused)
     else:
         document = None
     # Pausing/retiring must remain available when new work cannot be admitted.
@@ -2811,11 +2674,6 @@ def _write_served_webhook(*, operation: str, branch_id: str, payload_json: str) 
             return json.dumps({
                 "error": "webhook create takes branch_id only; the universe and owner are yours",
             })
-        ticket, refused = _admission_parts(
-            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-        )
-        if ticket is None:
-            return _engine_refusal("webhook create", refused)
         raw = _webhook_call("mint_webhook", branch_def_id=bid)
         try:
             result = json.loads(raw)
@@ -3059,8 +2917,6 @@ def write_graph(
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import write_graph as _write_file
 
-        if not _engine_run_admit(fail_closed=True, kind="engine"):
-            return _engine_refusal("write_graph", None)
         token = _bind_founder_identity((*_REMIX_CAPABILITIES, "tinyassets.extensions.write"))
         try:
             return _untrusted("run-file", _write_file(
@@ -3072,8 +2928,6 @@ def write_graph(
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import write_graph as _write_delivery
 
-        if not _engine_run_admit(fail_closed=True, kind="engine"):
-            return _engine_refusal("write_graph", None)
         token = _bind_founder_identity((*_REMIX_CAPABILITIES, "tinyassets.extensions.write"))
         try:
             return _untrusted("delivery-management", _write_delivery(
@@ -3140,11 +2994,6 @@ def write_graph(
             # Non-secret uses/constant headers on a connection the owner holds.
             # No secret, no endpoints, no serving change (the owner's answer to a
             # connect request is what selects a model for an unpowered universe).
-            ticket, refused = _admission_parts(
-                _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-            )
-            if ticket is None:
-                return _engine_refusal("connection setup", refused)
             from tinyassets.api.connection_uses import configure_connection
 
             token = _bind_founder_identity(("write",))
@@ -3165,11 +3014,6 @@ def write_graph(
             return json.dumps({"error": "invalid model setup payload"})
         if t == "connection" and document.get("capability_kind") != "model_discovery":
             return json.dumps({"error": "only model_discovery configuration is available here"})
-        ticket, refused = _admission_parts(
-            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-        )
-        if ticket is None:
-            return _engine_refusal("model setup", refused)
         token = _bind_founder_identity(("write",))
         try:
             if t == "model_preferences":
@@ -3198,11 +3042,6 @@ def write_graph(
                 "error": "unknown_app_ui_operation", "operation": operation,
                 "allowed_operations": ["save", *APP_UI_ENTRY_OPERATIONS],
             })
-        ticket, refused = _admission_parts(
-            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-        )
-        if ticket is None:
-            return _engine_refusal("app_ui", refused)
         from tinyassets.api.app_ui import change_app_ui, write_app_ui
         from tinyassets.auth.middleware import _current_identity
 
@@ -3247,14 +3086,6 @@ def write_graph(
         return json.dumps({
             "error": f"payload_json too large (max {_SERVED_MAX_SPEC_BYTES} bytes).",
         })
-    # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
-    # refuse the write, not admit it.
-    _wt, _wrefused = _admission_parts(
-        _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-    )
-    if _wt is None:
-        return _engine_refusal("write_graph", _wrefused)
-
     from tinyassets.api.extensions import _extensions_impl
     from tinyassets.auth.middleware import _current_identity
 
@@ -3753,13 +3584,6 @@ def remix_shape(
         })
     if not new_name:
         return json.dumps({"error": "name is required for the remixed branch."})
-    # Rolling write bound — FAIL CLOSED for this autonomous write (Codex #6).
-    _wt, _wrefused = _admission_parts(
-        _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-    )
-    if _wt is None:
-        return _engine_refusal("engine write", _wrefused)
-
     spec = {
         "name": new_name,
         "fork_from": selector,
@@ -3991,12 +3815,6 @@ def write_brain(
                 "(identity/founder/origin/body/orgchart) or a name."
             ),
         })
-    _wt, _wrefused = _admission_parts(
-        _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-    )
-    if _wt is None:
-        return _engine_refusal("engine write", _wrefused)
-
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_intelligence import commit_learning

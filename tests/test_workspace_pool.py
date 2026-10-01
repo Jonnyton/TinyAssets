@@ -494,45 +494,6 @@ def test_charges_outside_the_window_do_not_count(db: Path, roots: Roots) -> None
     assert wp.ledger_usage(db, "u1", now=lambda: later).jobs == 1
 
 
-def test_two_concurrent_checkouts_cannot_cross_the_hourly_bytes_bound(
-    db: Path, roots: Roots
-) -> None:
-    """engine-run-admissions: 5 GiB of the hour left, two 4 GiB reservations."""
-    barrier = threading.Barrier(2)
-    results: dict[str, object] = {}
-    lock = threading.Lock()
-
-    def attempt(name: str) -> None:
-        barrier.wait(timeout=30)
-        try:
-            outcome: object = admit_scratch(
-                db,
-                roots,
-                run_id="run-1",  # same run: the lock is reentrant, the ledger is not
-                max_bytes=4 * GIB,
-                bytes_per_hour=5 * GIB,
-                lease_id_factory=_ids(f"lease{name}"),
-            )
-        except wp.WorkspacePoolRefused as exc:
-            outcome = exc
-        with lock:
-            results[name] = outcome
-
-    threads = [threading.Thread(target=attempt, args=(name,)) for name in ("a", "b")]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=60)
-
-    admitted = [r for r in results.values() if isinstance(r, wp.Lease)]
-    refused = [r for r in results.values() if isinstance(r, wp.WorkspacePoolRefused)]
-    assert len(admitted) == 1, results
-    assert len(refused) == 1, results
-    assert refused[0].code == wp.REFUSED_QUOTA
-    assert "bytes per hour" in refused[0].detail
-    assert wp.ledger_usage(db, "u1").bytes == 4 * GIB
-
-
 def test_the_reservation_reconciles_downward_only(db: Path, roots: Roots) -> None:
     lease = admit_scratch(db, roots, max_bytes=4 * GIB, lease_id_factory=_ids("lease1"))
     assert wp.ledger_usage(db, "u1").bytes == 4 * GIB
@@ -563,23 +524,6 @@ def test_reconciling_an_unknown_lease_is_a_loud_error(db: Path, roots: Roots) ->
     admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
     with pytest.raises(ValueError, match="unknown lease"):
         wp.reconcile_bytes(db, "nope", 1)
-
-
-def test_a_refused_admission_writes_nothing(db: Path, roots: Roots) -> None:
-    admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
-    before = (
-        rows(db, "SELECT lease_id FROM workspace_leases"),
-        lock_rows(db),
-        rows(db, "SELECT rowid FROM workspace_ledger"),
-    )
-    with pytest.raises(wp.WorkspacePoolRefused):
-        admit_scratch(db, roots, bytes_per_hour=GIB, lease_id_factory=_ids("lease2"))
-    after = (
-        rows(db, "SELECT lease_id FROM workspace_leases"),
-        lock_rows(db),
-        rows(db, "SELECT rowid FROM workspace_ledger"),
-    )
-    assert after == before
 
 
 # --------------------------------------------------------------------------
@@ -1115,30 +1059,6 @@ def test_observation_preserves_the_uninstrumented_wait_policy(db: Path, roots: R
     assert outcomes[0][0] == ("admitted" if release else wp.REFUSED_BUSY)
 
 
-def test_quota_after_conflict_preserves_both_facts(db: Path, roots: Roots):
-    clock = [time.time()]
-    admit_scratch(db, roots)
-    observation = wp.AdmissionObservation()
-
-    def sleep(seconds):
-        clock[0] += seconds
-        with sqlite3.connect(db) as conn:
-            conn.execute(
-                "UPDATE workspace_ledger SET amount=? WHERE kind=?", (2 * GIB, wp.KIND_BYTES),
-            )
-
-    with pytest.raises(wp.WorkspacePoolRefused) as exc:
-        admit_scratch(
-            db, roots, run_id="run-2", bytes_per_hour=2 * GIB, wait_s=10,
-            sleep=sleep, now=lambda: clock[0], monotonic=lambda: clock[0],
-            observation=observation,
-        )
-    assert exc.value.code == wp.REFUSED_QUOTA
-    assert observation.snapshot() == {
-        "attempts": 2, "lock_conflicts": 1, "retry_sleep_seconds": 0.5,
-    }
-
-
 def test_without_a_wait_a_held_lock_refuses_at_once(db: Path, roots: Roots) -> None:
     admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
     slept: list[float] = []
@@ -1213,23 +1133,6 @@ def test_a_bounded_wait_gives_up_at_its_deadline(db: Path, roots: Roots) -> None
     assert slept == [0.5, 0.5, pytest.approx(0.2)]
 
 
-def test_a_quota_refusal_is_never_waited_on(db: Path, roots: Roots) -> None:
-    """A lock clears when a run ends; an exhausted hour does not clear inside a
-    node's timeout, and sleeping on it would turn a refusal into a hang."""
-    slept: list[float] = []
-    with pytest.raises(wp.WorkspacePoolRefused) as exc:
-        admit_scratch(
-            db,
-            roots,
-            bytes_per_hour=0,
-            wait_s=30.0,
-            sleep=slept.append,
-            lease_id_factory=_ids("lease1"),
-        )
-    assert exc.value.code == wp.REFUSED_QUOTA
-    assert slept == []
-
-
 # --------------------------------------------------------------------------
 # operation-scoped reservations (Codex P1 #2)
 # --------------------------------------------------------------------------
@@ -1297,21 +1200,6 @@ def test_an_interrupted_operation_keeps_its_maximum_charged(db: Path, roots: Roo
     assert rows(
         db, "SELECT reserved FROM workspace_ledger WHERE kind = 'bytes'"
     ) == [(1,)]
-
-
-def test_an_operation_is_refused_when_the_hour_is_spent(db: Path, roots: Roots) -> None:
-    with pytest.raises(wp.WorkspacePoolRefused) as exc:
-        wp.reserve_operation_bytes(
-            db,
-            universe_id="u1",
-            run_id="run-1",
-            operation_id="push-1",
-            max_bytes=6 * GIB,
-            bytes_per_hour=5 * GIB,
-        )
-    assert exc.value.code == wp.REFUSED_QUOTA
-    assert "bytes per hour" in exc.value.detail
-    assert wp.ledger_usage(db, "u1").bytes == 0
 
 
 def test_a_checkout_and_a_push_share_one_hourly_ledger(db: Path, roots: Roots) -> None:
@@ -1633,31 +1521,6 @@ def test_a_run_that_is_not_cancelled_still_admits_when_the_holder_releases(
         ("lease1",),
         ("lease2",),
     ]
-
-
-def test_a_quota_refusal_never_sleeps_and_is_never_a_cancellation(
-    db: Path, roots: Roots
-) -> None:
-    """A cancel predicate does not turn the one refusal that must stay
-    immediate into a wait, and an uncancelled run still gets its quota refusal
-    rather than a cancellation."""
-    admit_scratch(
-        db, roots, bytes_per_hour=GIB, max_bytes=GIB, lease_id_factory=_ids("lease1")
-    )
-    with pytest.raises(wp.WorkspacePoolRefused) as exc:
-        admit_scratch(
-            db,
-            roots,
-            run_id="run-2",
-            universe_id="u1",
-            bytes_per_hour=GIB,
-            max_bytes=GIB,
-            lease_id_factory=_ids("lease2"),
-            wait_s=600.0,
-            sleep=lambda s: pytest.fail("quota refusal must not enter the wait loop"),
-            should_cancel=lambda: False,
-        )
-    assert exc.value.code == wp.REFUSED_QUOTA
 
 
 # --------------------------------------------------------------------------

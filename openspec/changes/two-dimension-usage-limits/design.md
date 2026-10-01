@@ -422,3 +422,71 @@ enforce. Stated so it is a decision rather than an oversight.
 - **Extend the existing hourly ledger with a seat count** — a rolling-window
   counter cannot express occupancy. A row that ages out of a window is not a
   seat that was released.
+
+
+## 2026-09-30 as built: seats per ACCOUNT
+
+The founder superseded every per-universe statement above: one seat pool per
+person, shared across all their universes; universe creation stays unlimited.
+
+- **Account.** `universe_seats.account_key` asks `universe_owner.owner_of` (#4139,
+  the resolver storage uses) and prefixes it (`account:<id>`). A universe with no
+  owner row is `unattributed:<uid>`, its own free pool. The tier is
+  `universe_owner.tier_of`; `usage_policy` keeps only the tier table and
+  `upgrade_url`. The first draft's `account_for_universe` guessed the owner from
+  `universe_acl` / `agent_bindings` / `founder_home` -- a second definition, and an
+  inference from adjacent tables -- and is gone.
+- **Where seats are taken.** Only at agent calls: the prompt node's executor and
+  the chat turn. The prompt node keys on the RUN's universe from its
+  `BranchExecutionContext`: a run compiles nodes without a `universe_context` (it
+  rides inside the bound provider call), so the first draft's node site, keyed on
+  `universe_context`, never took a seat in any real run. The automation and wake
+  worker make one non-blocking try per poll BEFORE claiming an attempt
+  (`try_acquire`, ticket kept per automation) and give the seat straight back:
+  holding it across the run deadlocked (astra round 1) -- the run waits for a
+  shared run-pool worker while the pool's workers wait for that account's
+  seats. The first draft also held a seat around every `_invoke_graph`, blocking
+  a pool thread with no deadline; removed for the same reason. A prompt node
+  carries its seat into its call (`carrying`), so a blocking agent call nested
+  inside re-enters it.
+- **Visible waiting.** A waiting node emits phase `waiting`, which the runs sink
+  now records as a `waiting_for_seat` system event (it previously fell through
+  to `ran`). A run cancelled while waiting stops waiting and abandons its ticket.
+  A waiting chat is its waiter row, tagged with the universe; `get_status` shows
+  the owning account `seats` with `chat_waiting`, and the app paints the one
+  status line with the Upgrade link inside it.
+- **Atomicity.** `_txn` ran `executescript(_SCHEMA)` after `BEGIN IMMEDIATE`;
+  `executescript` commits first, so every reap, count and insert ran outside the
+  write lock (the WIP's bug too): two acquirers could take the last seat and two
+  releases of a lent seat left a depth-0 row holding a seat forever. Schema
+  statements now run one by one inside the transaction, on an autocommit
+  connection. A release the store refuses is retried by the refresher.
+- **Death.** Holder = `process_liveness.owner_token(ledger root)`. Reclaim on
+  proven death, or on a lapsed lease with no proof of life; waiters of a dead
+  process are dropped at once (a dead waiter ahead of the queue would otherwise
+  stall live work with a free seat). Release checks the holder.
+- **Settlement.** `engine_admissions.admit` never refuses (a tampered ledger
+  records nothing), engine edits are no longer recorded, and rows are pruned
+  after two hours. The `settlement_unavailable` refusal the first draft
+  introduced in place of the meters is gone with them.
+
+- **Budget and borrowing (astra round 2).** A node's provider budget is
+  restamped when its seat is held (`on_seated`), so a seat wait is never charged
+  to the call. A queued run (`execute_branch_async`, resume) detaches the
+  caller's seat from its copied context; only a blocking version invoke lends it
+  (`_lend_seat`).
+- **Enclosing deadlines (astra round 3).** A blocking version invoke polled its
+  child with a 300 s default, which a child's seat wait counted against. It now
+  waits until the child ends, as the blocking definition invoke always has; a
+  dead child still ends through run-owner proof.
+
+- **No shared thread waits for a seat.** A prompt node waits for its seat on
+  its run's worker thread, so the run pools are now one pair PER ACCOUNT
+  (`runs._get_executor(pool_key=run_pool_key(...))`, keyed by the same
+  `account_key`); keyless work keeps the old pair. One account's waiting runs
+  fill only its own pool, and another account's run is never queued behind
+  them. The host-wide memory bound stays `provider_admission`, underneath.
+
+Known and not fixed here, filed as a concern: a timed-out borrower whose parent
+released first remembers a stale depth, so it cannot lend the seat on to a
+nested blocking call.

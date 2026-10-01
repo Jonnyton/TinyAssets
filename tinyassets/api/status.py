@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -1764,6 +1765,20 @@ def get_status(
         resource_usage = for_authorized_status(_base_path(), uid)
         if resource_usage is not None:
             response["resource_usage"] = resource_usage
+            # The account's seats: running, waiting, whether THIS universe's chat
+            # is queued, and the waiting line with its upgrade link. Only to the
+            # owning account -- the counts span all of its universes, which a
+            # co-admin of this one has no business reading.
+            from tinyassets import universe_seats
+
+            try:
+                seats = universe_seats.status_for_owner(
+                    uid, root=_base_path(), actor_id=permissions.current_actor_id(),
+                )
+            except (universe_seats.SeatLedgerUnusable, OSError, ValueError, sqlite3.Error):
+                seats = {"availability": "unavailable"}
+            if seats is not None:
+                response["seats"] = seats
 
     # Whether this universe is working RIGHT NOW, whatever started the turn — a
     # typed message, an answered request, a queued line, another tab, another
