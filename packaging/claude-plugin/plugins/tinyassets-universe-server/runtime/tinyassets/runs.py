@@ -7719,7 +7719,8 @@ def _classify_failure(run: dict) -> str:
         return "timeout"
     if "exhausted" in lower or "cooldown" in lower:
         return "provider_exhausted"
-    if "code runs only in the command center that authored it" in lower:
+    if any(f"code runs only in the {word} that authored it" in lower
+           for word in ("command center", "universe")):  # pre-rename records
         # A public foreign branch with code was run directly (design D2): the
         # fix is a remix, one tool call away.
         return "node_not_accepted"

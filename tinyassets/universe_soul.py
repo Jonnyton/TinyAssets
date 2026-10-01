@@ -106,7 +106,7 @@ def has_soul(universe_dir: Path) -> bool:
 
 def render_soul_markdown(soul: UniverseSoul) -> str:
     return "\n".join([
-        "# Command Center Soul",
+        "# Universe Soul",
         "",
         f"- Schema version: {soul.schema_version}",
         f"- Name: {soul.name or NO_LOOP_MARKER}",

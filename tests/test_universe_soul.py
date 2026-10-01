@@ -63,7 +63,7 @@ def test_set_premise_writes_versioned_soul_profile(us):
     assert result["soul"]["schema_version"] == 1
     assert result["soul"]["versions_dir"] == "soul_versions"
     soul_md = (base / "u1" / "soul.md").read_text(encoding="utf-8")
-    assert "# Command Center Soul" in soul_md
+    assert "# Universe Soul" in soul_md
     assert "## Purpose" in soul_md
     assert "A wandering lab studies civic memory." in soul_md
     assert "## Edit Authority" in soul_md

@@ -841,7 +841,7 @@ _LEARN_CONTEXT = "learned from the founder during a conversation turn"
 # this drops the generic boilerplate so identity.md stays not-learned until the
 # founder actually defines it.
 _GENERIC_IDENTITY_RE = re.compile(
-    r"personified command center|starts? blank|blank slate|blank canvas|newborn|"
+    r"personified (?:command center|universe)|starts? blank|blank slate|blank canvas|newborn|"
     r"no name yet|persistent mind that|learns? who (?:it|i) (?:is|am)|"
     r"earns? (?:its|my) own understanding|no bio written",
     re.IGNORECASE,

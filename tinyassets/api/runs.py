@@ -770,7 +770,8 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
             "operator surface before running; approval is not exposed by the "
             "advertised handles.",
         )
-    if "code runs only in the command center that authored it" in msg:
+    if any(f"code runs only in the {word} that authored it" in msg
+           for word in ("command center", "universe")):  # pre-rename records
         return _failure_payload(
             exc, "node_not_accepted",
             "This branch's code was authored elsewhere. Remix it into your command center "
@@ -866,9 +867,13 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     held = _held_attempt_annotation(error_str, _provider_chain_from_error(error_str))
     if held is not None:
         return held
-    from tinyassets.providers.owner_binding import AUTHORITY_HELD_DETAIL
+    from tinyassets.providers.owner_binding import (
+        AUTHORITY_HELD_DETAIL,
+        LEGACY_AUTHORITY_HELD_DETAIL,
+    )
 
-    if AUTHORITY_HELD_DETAIL.lower() in msg:
+    if any(lead.lower() in msg
+           for lead in (AUTHORITY_HELD_DETAIL, LEGACY_AUTHORITY_HELD_DETAIL)):
         # A held run whose universe DOES have a provider connected: the message
         # carries the refusal's own words after this lead-in. Keyed BEFORE the
         # substring nets below, because those words are arbitrary -- a wrapped
@@ -880,7 +885,8 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "empty_llm_response",
             _EMPTY_LLM_RESPONSE_ACTION,
         )
-    if "code runs only in the command center that authored it" in msg:
+    if any(f"code runs only in the {word} that authored it" in msg
+           for word in ("command center", "universe")):  # pre-rename records
         # A public foreign branch with code was run directly (sandboxed-code-node D2).
         return (
             "node_not_accepted",

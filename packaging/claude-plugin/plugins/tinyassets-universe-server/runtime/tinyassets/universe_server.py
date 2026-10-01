@@ -901,7 +901,7 @@ def write_graph(
     reference metadata is untrusted and grants nothing by itself.
 
     Args:
-        target: What to write: goal, request, branch, command center, automation,
+        target: What to write: goal, request, branch, universe, automation,
             agent, agent_binding, app_ui, or connection. With target=goal, the default
             operation proposes a
             Goal; operation=set_canonical sets or unsets a canonical binding.
@@ -1993,7 +1993,7 @@ def write_page(
 
     Args:
         universe_id: Optional target command center page substrate.
-        scope: Optional explicit target: commons or command center. Omit to preserve
+        scope: Optional explicit target: commons or universe. Omit to preserve
             legacy target resolution.
         page: Wiki page slug or path for page writes.
         category: Wiki category for full page writes.
@@ -2060,7 +2060,7 @@ def write_page(
         return _write_reserved_wiki_canary(content)
     if scope not in {"", "commons", "universe"}:
         return json.dumps({
-            "error": "scope must be one of: commons, command center",
+            "error": "scope must be one of: commons, universe",
         })
     if scope == "commons" and universe_id.strip():
         return json.dumps({
@@ -3064,10 +3064,10 @@ def converse(
 _mcp_converse = _register_structured_tool(
     converse,
     name="converse",
-    title="Talk With Your Command center",
+    title="Talk With Your Command Center",
     tags={"universe", "tinyassets", "relay"},
     annotations=ToolAnnotations(
-        title="Talk With Your Command center",
+        title="Talk With Your Command Center",
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=False,

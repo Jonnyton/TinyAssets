@@ -80,6 +80,11 @@ CONNECT_PROVIDER_MESSAGE = (
 AUTHORITY_HELD_DETAIL = (
     "This command center's connected provider could not authorize this run: "
 )
+#: The same lead-in as errors stored before the universe -> command center rename
+#: wrote it; readers of stored errors match either.
+LEGACY_AUTHORITY_HELD_DETAIL = (
+    "This universe's connected provider could not authorize this run: "
+)
 _NO_OWNER_AUTHORITY = (
     f"{CONNECT_PROVIDER_MESSAGE} (The platform has no LLM: this call names a "
     "command center but carries no owner authority, so it was refused rather than "

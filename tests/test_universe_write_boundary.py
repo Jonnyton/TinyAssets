@@ -347,7 +347,7 @@ class TestPrivateCanonRelay:
         ))
 
         assert out["error"] == (
-            "scope must be one of: commons, command center"
+            "scope must be one of: commons, universe"
         )
         assert not list(universe_base.rglob("must-not-exist.md"))
 
