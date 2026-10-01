@@ -65,8 +65,9 @@ proposal. It is part of this program so the vocabulary is decided once.
   thread a new user opens to becomes **"Welcome, commander."** The agent's
   self-reference and served guidance call it **the user's command center**.
   Seed and soul text is included. No key, parameter or route changes.
-- **C1. MCP surface (this change's gated part).** The new names become primary
-  and the old names are accepted aliases:
+- **C1. MCP surface.** The new names replace the old ones as a clean cutover
+  (founder, 2026-10-01). An old name is refused, naming its replacement, with
+  no alias window:
   - the `universe_id` parameter becomes `command_center_id`;
   - the targets become `command_center`, `command_center_files` and
     `command_center_file`;
@@ -78,21 +79,19 @@ proposal. It is part of this program so the vocabulary is decided once.
 - **C2. Living docs.** Update PLAN.md, README, `openspec/specs` (including
   renaming the two `universe-*` capability dirs), skills, `docs/reference`, and
   the active changes this program touches. Dated records are not rewritten.
-- **C3. Code identifiers.** The founder decided (2026-10-01) to rename them.
-  It is a scripted codemod plus review of the non-mechanical sites, run in one
-  freeze window that the lead coordinates (design D6).
-- **C4. Storage.** The founder decided (2026-10-01) to rename them too. A
-  layout guard ships first. Then one locked, idempotent, resumable migration
-  runs with a schema-derived inventory, a production-copy dry run, a backup
-  and a written rollback, in a measured quiet window (design D7). C4 gets its
-  own change directory, because migrations are spec-first.
+- **The cutover (C3 + C4 + C5).** The founder decided on 2026-10-01 to rename
+  code identifiers, storage, and the `u-` id prefix (to `cc-`), all as a clean
+  cutover. They ship as **one** change (`command-center-cutover`): one image,
+  one freeze window, one locked migration run. A layout guard (C4a) ships at
+  least a day earlier. Design D10/D11.
 
 ## Capabilities
 
 ### Modified
 
 - `live-mcp-connector-surface`: the prompt catalog renames `meet_universe`, and
-  a new requirement covers the command center vocabulary and the alias window.
+  a new requirement covers the command center vocabulary and the refusal of
+  retired names.
 
 ## Impact
 
@@ -103,6 +102,7 @@ proposal. It is part of this program so the vocabulary is decided once.
   the ratchet, so C0/C1 must trim at least that much. `write_graph` goes from
   11,680 to about 11,722, under its 12,000 limit.
 - The first-party clients (app, website, desktop and Android shells, all of
-  which wrap the live SPA) move in the same slice. Stored custom UI bundles keep
-  the old bridge keys permanently.
-- A storage migration (C4), in its own change and after C3.
+  which wrap the live SPA) move in the same slice. Stored custom UI bundles are
+  migrated to the new bridge keys by the cutover (clean cutover; no permanent
+  old keys).
+- A storage and id migration (the cutover), in its own change, with external records (Stripe metadata) migrated too.
