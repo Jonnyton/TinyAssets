@@ -85,3 +85,32 @@ def test_scoped_reset_treats_the_workspace_as_owner_content(tmp_path):
     (universe / WS / "node_modules" / "pkg.weird-suffix").write_text("x", encoding="utf-8")
     blockers = _walk_home_without_following(universe)
     assert not [b for b in blockers if WS in b], blockers
+
+
+def test_every_explicit_provider_view_masks_the_workspace():
+    """gpt-6-astra round 2: codex's coding-turn view binds the universe at
+    /workspace itself, bypassing default_view's masks. It masks the workspace
+    at its translated path too; no other explicit provider view exists."""
+    import re
+
+    from tinyassets.providers import codex_provider
+
+    source = Path(codex_provider.__file__).read_text(encoding="utf-8")
+    assert 'JailMount("tmpfs", f"/workspace/{AGENT_WORKSPACE_DIR}")' in source
+    assert "ensure_agent_workspace(universe_root)" in source
+    builders = []
+    for path in Path(codex_provider.__file__).resolve().parents[1].rglob("*.py"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        builders += [path.name for _ in re.finditer(r"=\s*UniverseView\(", text)]
+    assert builders == ["codex_provider.py"], builders
+
+
+def test_promotion_never_replaces_a_root_brain_file_created_meanwhile(tmp_path):
+    universe = _universe(tmp_path)
+    (universe / WS).mkdir()
+    (universe / WS / "log.md").write_text("from workspace", encoding="utf-8")
+    universe_tools._promote_brain_files(universe, universe / WS)
+    assert (universe / "log.md").read_text(encoding="utf-8") == "from workspace"
+    (universe / WS / "log.md").write_text("second", encoding="utf-8")
+    universe_tools._promote_brain_files(universe, universe / WS)
+    assert (universe / "log.md").read_text(encoding="utf-8") == "from workspace"

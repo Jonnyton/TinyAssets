@@ -307,7 +307,12 @@ def _promote_brain_files(root: Path, workspace: Path) -> None:
         source, target = workspace / name, root / name
         if os.path.lexists(target) or source.is_symlink() or not source.is_file():
             continue
-        os.replace(source, target)
+        try:
+            # link() never replaces: a root file created meanwhile is kept.
+            os.link(source, target)
+        except FileExistsError:
+            continue
+        source.unlink()
 
 
 def _clear_link_mountpoint(workspace: Path, name: str) -> None:
