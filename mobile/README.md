@@ -52,7 +52,15 @@ npm install
 rm -rf android               # REQUIRED if you generated it before Capacitor 8
 npx cap add android          # generates the android/ native project
 npx cap sync android         # copies www/ + config into the native project
+python scripts/add_app_scheme.py            # deep link, native plugins, manifest
+python scripts/add_app_icons.py             # launcher icon + splash
+python scripts/configure_android_release.py # version + the separate debug identity
 ```
+
+Run the three scripts after every `cap add android`, exactly as CI does. Skipping
+`configure_android_release.py` leaves the debug build on the Play package, which
+is the collision described below; `npm run build:debug` / `build:release` run it
+for you.
 
 ## App icon + splash (required for release)
 

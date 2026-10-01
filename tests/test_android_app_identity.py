@@ -234,6 +234,18 @@ def test_debug_workflow_runs_the_badging_gate_on_the_apk_it_publishes() -> None:
     assert "gh release delete" not in workflow
 
 
+def test_every_build_entry_point_runs_the_identity_split() -> None:
+    for workflow in ("android-build.yml", "android-release.yml"):
+        text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+        assert "scripts/configure_android_release.py" in text, workflow
+    container = (MOBILE / "container/build.sh").read_text(encoding="utf-8")
+    assert container.index("configure_android_release.py") < container.index("bundleRelease")
+    scripts = json.loads((MOBILE / "package.json").read_text(encoding="utf-8"))["scripts"]
+    for name in ("build:debug", "build:release"):
+        command = scripts[name]
+        assert command.index("configure_android_release.py") < command.index("gradlew"), name
+
+
 # --- the in-app sign-in return --------------------------------------------------
 
 
@@ -316,20 +328,39 @@ async function finishExchange(){ out.exchanged = true; return true; }
 
 @pytest.mark.parametrize(
     "app_id,prefix",
-    [(PLAY_ID, "app."), (DEBUG_ID, "appdebug."), (None, "app.")],
+    [(PLAY_ID, "app."), (DEBUG_ID, "appdebug.")],
 )
 def test_app_sign_in_returns_to_the_install_it_started_in(
-    tmp_path: Path, app_id: str | None, prefix: str
+    tmp_path: Path, app_id: str, prefix: str
 ) -> None:
+    get_info = f"async getInfo(){{ return {{id:{json.dumps(app_id)}}}; }}"
+    result = _run_node(tmp_path, _native_sign_in(get_info))
+    assert result["state"] == prefix + "RANDOM"
+    assert f"&state={prefix}RANDOM&" in result["opened"]
+
+
+@pytest.mark.parametrize(
+    "get_info",
+    [
+        "async getInfo(){ throw new Error('not implemented'); }",
+        "async getInfo(){ return {}; }",
+        "",  # an App plugin without getInfo
+    ],
+)
+def test_app_sign_in_refuses_visibly_when_the_install_is_unknown(
+    tmp_path: Path, get_info: str
+) -> None:
+    # Guessing the Play app would strand a debug install's sign-in there.
+    result = _run_node(tmp_path, _native_sign_in(get_info))
+    assert "opened" not in result and result["state"] is None
+    assert "didn't say which install" in result["notice"]
+
+
+def _native_sign_in(get_info: str) -> str:
     html = _app_html()
     table = re.search(r"  const APP_RETURN_PACKAGES = \{[^\n]*\};", html)
     assert table, "app.html has no APP_RETURN_PACKAGES table"
-    get_info = (
-        "async getInfo(){ throw new Error('no App.getInfo'); }"
-        if app_id is None
-        else f"async getInfo(){{ return {{id:{json.dumps(app_id)}}}; }}"
-    )
-    program = "\n".join(
+    return "\n".join(
         (
             _SHIM,
             table.group(0),
@@ -337,13 +368,11 @@ def test_app_sign_in_returns_to_the_install_it_started_in(
             f"function nativePlugin(){{ return {{ {get_info} }}; }}",
             _js_function(html, "beginSignIn"),
             "(async()=>{ await beginSignIn();",
-            "  out.state = JSON.parse(store.pkce).state;",
+            "  out.state = store.pkce ? JSON.parse(store.pkce).state : null;",
+            "  out.notice = notice.textContent;",
             "  console.log(JSON.stringify(out)); })();",
         )
     )
-    result = _run_node(tmp_path, program)
-    assert result["state"] == prefix + "RANDOM"
-    assert f"&state={prefix}RANDOM&" in result["opened"]
 
 
 @pytest.mark.parametrize(
