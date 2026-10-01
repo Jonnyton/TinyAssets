@@ -27,7 +27,8 @@ import urllib.request
 
 import pytest
 
-from tests.test_authenticated_external_call_effector import (
+from tests.test_authenticated_external_call_effector import (  # noqa: F401
+    _a_reviewer_that_approves,  # autouse: an explicit approving D1d reviewer
     _install_loopback_driver,
     _Loopback,
 )

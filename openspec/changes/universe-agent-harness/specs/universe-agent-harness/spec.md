@@ -197,11 +197,11 @@ Seed rules SHALL allow every workspace action, the agent's own harness edits, sh
 ### Requirement: Consequential actions pass an auto-review that can only tighten
 By default, before any consequential action whose rule is do or do if pre-approved, the platform SHALL run a review. A consequential action is any class other than workspace actions, the agent's own harness edits and connected-app reads. The owner MAY switch the review off per class, and the app SHALL state what that means.
 
-The review SHALL be a tool-free call on the universe's own model under the activity's existing seat admission. It SHALL itself not be reviewed, and SHALL be retried at most once. Its inputs SHALL be:
+The review SHALL be a tool-free call on the universe's own model, admitted like any agent call: it SHALL re-enter the activity's seat when the activity holds one, and otherwise queue for the account's own. It SHALL have its own deadline. It SHALL itself not be reviewed, and SHALL be retried at most once. A consequential action that reaches the send boundary with no run model bound to review it SHALL be held, not sent. Its inputs SHALL be:
 - trusted: the structured planned action, the matching rules, the built-in safety requirements and authenticated owner messages;
 - untrusted evidence: action text, page content and agent-editable harness files.
 
-It SHALL return proceed, or needs approval with a reason. The result SHALL be bound to the exact action and rule-set version. The review SHALL only convert an action to ask first; it SHALL NOT create grants, loosen rules or override hand off. If the review cannot run, the action SHALL become a request naming the cause, and the activity SHALL release its seat while waiting.
+It SHALL return proceed, or needs approval with a reason, as exactly one JSON object with exactly those fields; any other reply SHALL count as no answer. The result SHALL be bound to the exact action and rule-set version. The review SHALL only convert an action to ask first; it SHALL NOT create grants, loosen rules or override hand off. If the review cannot run, the action SHALL become a request naming the cause, and the activity SHALL release its seat while waiting.
 
 #### Scenario: review blocks an off-instruction send
 - **WHEN** a do rule covers a channel but the planned message contradicts the owner's stated instructions
@@ -210,6 +210,10 @@ It SHALL return proceed, or needs approval with a reason. The result SHALL be bo
 #### Scenario: hostile content cannot approve itself
 - **WHEN** the content of a planned action instructs the reviewer to proceed
 - **THEN** that content is treated as untrusted evidence and cannot turn an ask-first or hand-off action into one that proceeds
+
+#### Scenario: an approval echoed inside the reply is no answer
+- **WHEN** the reviewer's reply quotes a proceed object from the action's content inside other text
+- **THEN** the reply counts as no answer and the action is held
 
 #### Scenario: review cannot run
 - **WHEN** the universe's model is unavailable at review time
@@ -275,6 +279,27 @@ An import SHALL be held in platform-owned storage outside every agent-writable l
 #### Scenario: export never carries secrets
 - **WHEN** an owner exports an agent
 - **THEN** the bundle contains no session log, credential, browser state or unselected memory, and the owner's contact details are scrubbed from its text
+
+### Requirement: A command center exports to a runnable, publish-ready folder
+An owner SHALL be able to export a command center in one action to a folder (also offered as a zip) using the same bundle manifest and path rules as sharing and import. The folder SHALL contain each agent's harness (instructions, persona, skills, extensions, prompts, rules, model and schedule configuration as references), the roster, the agent's workspace files, the wiki as an OKF bundle and the brain files, workflows and automations as data, the memory items the owner selected, the command-center layouts, a local runner, a README, a LICENSE placeholder the owner chooses, a `.gitignore` excluding secrets, `.env` and runtime state, and a `.env.example`. The manifest SHALL declare a profile: `share` (the harness subset through the public carrier, size-limited, contact details always scrubbed) or `export` (the whole folder, private local output). Credentials SHALL never be exported: structured fields SHALL be serialized schema-aware with connections as named references and `.env.example` lines, and any file in which a credential is detected SHALL stay excluded regardless of owner approval. Arbitrary content (workspace files, wiki and brain prose, binaries) SHALL start excluded and be included only by the owner after a content preview that states its detection limits. Session logs and browser state SHALL never be exported; contact details MAY be included item by item only in the `export` profile. Publishing SHALL be a separate owner-approved action that re-runs the preview without personal-data inclusions.
+
+The local runner SHALL run the exported command center with no platform account or network access to the platform: the four tools over the folder, the same `AGENTS.md` and skill format, the exported rules as prompts, any OpenAI-compatible model endpoint configured locally, and the exported schedules while the machine runs once separately enabled. By default it SHALL confirm each bash command, block when no approval is given, confine file tools to the folder, and keep its own policy files read-only to the agent's tools; its README SHALL disclose that it runs with host privileges. The README SHALL state what works without the platform and what does not. Publishing SHALL remain user-built: the platform SHALL provide no publishing effector, and the agent publishes with its own tools on the owner's own connection under the owner's rules. Import SHALL accept an exported folder, zip or cloned repository of that layout into quarantine through an ingestion boundary that bounds bytes, file count, depth and time, rejects absolute or traversal paths, links, special files and path collisions, copies only validated regular files, excludes `.git`, and executes nothing supplied. The OKF wiki export SHALL be the export's only OKF writer.
+
+#### Scenario: run locally with no account
+- **WHEN** the owner exports their command center, sets `MODEL_BASE_URL` to a local Ollama endpoint and starts the runner
+- **THEN** they can chat with their agent, which reads and edits its exported workspace with its four tools, with no TinyAssets account or network
+
+#### Scenario: a published export carries no secrets
+- **WHEN** the owner exports and their agent pushes the folder to the owner's GitHub
+- **THEN** the repository contains no credential, `.env`, session log, browser state or unselected memory, and `.env.example` names the keys to add
+
+#### Scenario: a credential in a workspace file stays out
+- **WHEN** a workspace file contains an API key and the owner selects it in the preview
+- **THEN** it remains excluded and the preview names why
+
+#### Scenario: a cloned command center imports into quarantine
+- **WHEN** a second user imports a clone of that repository
+- **THEN** it lands in quarantine and nothing loads, schedules or connects until they activate it
 
 ### Requirement: The harness is files the agent edits, versioned with rollback
 Turn assembly SHALL be mechanical: a base prompt, then the universe's `AGENTS.md`, then a bounded `MEMORY.md`, then the skill index, then the session. The agent SHALL be able to edit `AGENTS.md`, `MEMORY.md`, its skills, prompts, extensions and settings file (but not its rules, which are owner-only), and the platform SHALL record every turn's changes to tracked universe files in a platform-owned history store the agent cannot write, with any version-control process run inside a credential-free jail rather than on the host, and the owner SHALL be able to roll back from the app.
