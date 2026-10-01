@@ -1,7 +1,9 @@
-"""Existing graph authority used by the portable layout consumer, with real stores.
+"""Existing graph authority behind the conversation-design installation, with real stores.
 
-These are installation controls, not evidence that the browser renders a layout.
-The consumed DOM and ordinary app acceptance are separate required tests.
+The installation is the receiver's own non-serving agent binding
+(``role: app_experience``) that the app's custom-UI bridge writes when the
+person approves a conversation design. These are installation controls; the
+browser side is tests/test_app_consumer_controls.py.
 """
 
 import copy
@@ -18,13 +20,16 @@ def actor(name):
     return identity_context(Identity(user_id=name, username=name, capabilities=["write"]))
 
 
-def definition(name="Shared compact layout"):
+TAG = "conversation-design-test"
+
+
+def definition(name="Shared conversation design"):
     return {
-        "schema_version": 1, "name": name, "tags": ["tinyassets-app-layout-v1"],
-        "components": {"my_layout": {
-            "kind": "tinyassets.app-layout.v1", "version": 1,
-            "surfaces": ["requests", "conversation", "models", "status"],
-            "density": "compact",
+        "schema_version": 1, "name": name, "tags": [TAG],
+        "components": {"turn": {
+            "kind": "tinyassets.turn-graph.v1", "version": 1,
+            "branch_version_id": "bv-shared", "content_hash": "a" * 64,
+            "input_map": {"message": "question"}, "reply_key": "answer",
         }, "retained_component": {"kind": "future_renderer", "user_option": "preserve"}},
     }
 
@@ -75,7 +80,7 @@ def test_other_owner_discovers_remixes_and_applies_without_copying_private_data(
     memory.write_text("bob-private-memory-verbatim\n", encoding="utf-8")
 
     with actor("bob"):
-        found = custom_agents(action="list_agents", tags=["tinyassets-app-layout-v1"])
+        found = custom_agents(action="list_agents", tags=[TAG])
         assert source["agent_definition_id"] in {a["agent_definition_id"] for a in found["agents"]}
         assert custom_agents(action="get_binding", universe_id="u-alice",
                              binding_id=private_source["agent_binding_id"])["error"] == "not_found"
@@ -83,8 +88,8 @@ def test_other_owner_discovers_remixes_and_applies_without_copying_private_data(
         installed = install("u-bob", source["agent_definition_id"], private_config)
         remix = copy.deepcopy(source["portable_definition"])
         remix.pop("content_fingerprint", None)
-        remix["name"] = "My comfortable remix"
-        remix["components"]["my_layout"]["density"] = "comfortable"
+        remix["name"] = "My remix"
+        remix["components"]["turn"]["reply_key"] = "reply"
         remix["lineage"] = {key: [{"definition_id": source["agent_definition_id"],
                                   "component_key": key, "credit_share": 1.0}]
                              for key in remix["components"]}
@@ -114,7 +119,7 @@ def test_other_owner_discovers_remixes_and_applies_without_copying_private_data(
     assert memory.read_text(encoding="utf-8") == "bob-private-memory-verbatim\n"
 
 
-def test_layout_revision_conflict_and_foreign_mutation_leave_current_installation(homes):
+def test_revision_conflict_and_foreign_mutation_leave_current_installation(homes):
     with actor("alice"):
         source = publish(definition())
     with actor("bob"):
@@ -134,7 +139,7 @@ def test_layout_revision_conflict_and_foreign_mutation_leave_current_installatio
         assert current["configuration"] == configuration("new private value")
 
 
-def test_nonserving_layout_binding_preserves_real_serving_authority(tmp_path, monkeypatch):
+def test_nonserving_installation_preserves_real_serving_authority(tmp_path, monkeypatch):
     from tests.test_open_serving_bind import _bound_and_serving
     from tinyassets.daemon_server import grant_universe_access
     from tinyassets.provider_assignment import load_provider_assignment
@@ -146,10 +151,10 @@ def test_nonserving_layout_binding_preserves_real_serving_authority(tmp_path, mo
     before = load_provider_assignment(tmp_path, universe_id="u-owner")
     with actor("owner-1"):
         source = publish(definition())
-        layout = install("u-owner", source["agent_definition_id"], configuration("My layout"))
-        assert layout["agent_binding_id"] != serving["agent_binding_id"]
-        assert "provider_ref" not in layout["configuration"]
-        assert layout["status"] == "configured"
+        mine = install("u-owner", source["agent_definition_id"], configuration("My design"))
+        assert mine["agent_binding_id"] != serving["agent_binding_id"]
+        assert "provider_ref" not in mine["configuration"]
+        assert mine["status"] == "configured"
         assert serving_connection_is_current(tmp_path, universe_dir=universe,
                                              universe_id="u-owner", owner_user_id="owner-1")
     assert load_provider_assignment(tmp_path, universe_id="u-owner") == before

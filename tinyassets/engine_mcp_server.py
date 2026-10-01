@@ -2105,6 +2105,12 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.listFiles(path)           -> {entries:[{name,kind,size_bytes}]}
         await tinyassets.readFile(path, offset)    -> {content,encoding,next_offset,...}
         await tinyassets.emit(name, data)          -> {emitted, woke}
+        await tinyassets.conversationDesign()      -> {state, agent_definition_id,
+                  component_key}   # "default" or "active": what answers them
+        await tinyassets.setConversationDesign(definition_id, component_key)
+                  # ASKS to route their future messages to a published
+                  # tinyassets.turn-graph.v1 component; no arguments = default.
+                  # They approve in the app's own prompt, or it is refused.
 
     These are how a screen shows agents actually working: which automations are
     live and when each fires next, which runs are going, what an agent node
@@ -2121,7 +2127,9 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     Anything else it calls is refused by name. ``sendMessage`` reaches the
     universe's currently selected conversation; naming a different agent is refused
     rather than quietly redirected, so a room-per-agent screen should call
-    ``listAgents()`` and act on ``selected`` instead of assuming.
+    ``listAgents()`` and act on ``selected`` instead of assuming. Arranging,
+    spacing and choosing which conversation design answers are all things a UI
+    I build can do; the app has no separate design or layout screen.
 
     **Switching to it.** The person uses "Switch UI" in the app, and their choice is
     remembered. I can preselect one by saving

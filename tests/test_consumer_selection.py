@@ -58,7 +58,7 @@ def test_no_install_keeps_legacy_default(store):
     assert selected(store) is None
 
 
-def test_public_definition_and_layout_install_do_not_activate_handler(store):
+def test_public_definition_and_unselected_install_do_not_activate_handler(store):
     install(store, selected=False)
     assert selected(store) is None
 

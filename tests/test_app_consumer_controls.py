@@ -1,83 +1,124 @@
-"""Trusted consumer controls execute the shipped controller, not a copy."""
-import shutil
-import subprocess
-from pathlib import Path
+"""The conversation design through the custom-UI bridge, on the shipped controller.
 
-import pytest
+A custom UI can read which conversation design answers the person and ASK to
+change it; the change happens only when the person approves in the page's own
+prompt, and it is a revision-guarded write read back before it is reported.
+Recovery (restore default, restore previous) stays in the trusted Switch UI
+dialog, outside any custom UI. The harness is the bridge test's: the real
+AppUI against a server double that enforces the binding's compare-and-set.
+"""
+# ruff: noqa: E501 -- embedded JavaScript fixture mirrors controller expressions
+from tests.test_custom_ui_bridge import _run
 
-
-def test_consumer_selection_disable_rollback_and_uncertain_save(tmp_path):
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("Node required for actual JavaScript controller")
-    source = Path("tinyassets/onboarding/app_layout.js").read_text(encoding="utf-8")
-    harness = r'''
-const assert=require('node:assert/strict');
-const elements={}; const $=id=>elements[id]||(elements[id]={textContent:''});
-let writes=[], rows=[], failRead=false;
-const component={kind:'tinyassets.turn-graph.v1',version:1,branch_version_id:'v',
- content_hash:'a'.repeat(64),input_map:{message:'question'},reply_key:'answer'};
-const definition={agent_definition_id:'d',content_fingerprint:'b'.repeat(64),
- components:{turn:component},name:'My selected design'};
-const binding={agent_binding_id:'b',agent_definition_id:'d',revision:1,
- created_by:'owner',updated_by:'owner',universe_id:'home',status:'configured',
- configuration:{schema_version:1,name:'Private label',role:'app_experience',private:{keep:1}}};
-rows=[binding];
-// The owner door (reads). This harness has ONE fake server, `MCP` below, so
-// the owner door's reads are answered by it: a read the page makes is
-// recorded and stubbed exactly where the scenario already records it.
-const Owner={
-  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
-  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
-  getStatus(...x){return MCP.getStatus(...x);},
-  getConversation(...x){return MCP.getConversation(...x);},
-  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
-  getModelOptions(...x){return MCP.getModelOptions(...x);},
-  listRequests(...x){return MCP.listRequests(...x);}};
-const MCP={callTool:async(tool,args)=>{
- if(tool==='write_graph'){
-  writes.push(args); rows=[{...rows[0],revision:rows[0].revision+1,
-   agent_definition_id:args.agent_definition_id,configuration:JSON.parse(args.payload_json)}];
-  return {status:'configured',binding:rows[0]};
- }
- if(args.target==='agent_binding'){if(failRead)throw Error('lost reply');return {binding:rows[0]};}
- throw Error('unexpected read');
-}};
-const sessionExpired=()=>{throw Error('expired');};
+EXTRA = r'''
+let prompts=[],approve=true;
+const confirm=message=>{prompts.push(message);return approve;};
 '''
-    checks = r'''
+
+CHECKS = r'''
 (async()=>{
- const a=AppLayout;
- a.enabled=true;a.home='home';a.principal='owner';a.loaded=true;a.paint=()=>{};
- a.currentBindings=async()=>rows;
- a.getDefinition=async()=>definition;
- a.installation={binding_id:'b',revision:1,definition_id:'d',configuration:binding.configuration};
- a.inspected={agent:definition};
- assert(a.turnComponent(component).ok);
- assert(!a.turnComponent({...component,code:'unsafe'}).ok);
- await a.selectTurn('turn');
- assert.equal(writes.length,1);assert.equal(writes[0].expected_revision,1);
- assert.deepEqual(rows[0].configuration.private,{keep:1});
- assert.equal(rows[0].configuration.turn_consumer.state,'active');
- await a.disableTurn();
- assert.equal(writes.length,2);
- assert.deepEqual(rows[0].configuration.turn_consumer,{version:1,state:'disabled'});
- await a.rollbackTurn();
- assert.equal(writes.length,3);assert.equal(rows[0].configuration.turn_consumer.state,'active');
- assert.deepEqual(rows[0].configuration.private,{keep:1});
- rows[0]={...rows[0],revision:9};await a.disableTurn();
- assert.equal(writes.length,3);assert(a.uncertain);
- a.uncertain=false;a.installation.revision=9;failRead=true;
- await a.disableTurn();assert.equal(writes.length,4);assert(a.uncertain);
- await a.disableTurn();assert.equal(writes.length,4);
- a.uncertain=false;failRead=false;a.installation.revision=rows[0].revision;
- rows[0]={...rows[0],updated_by:'collaborator'};
- await a.disableTurn();assert.equal(writes.length,4);
- console.log('consumer controls passed');
-})().catch(e=>{console.error(e);process.exitCode=1});
+const u=AppUI;
+const turn={kind:'tinyassets.turn-graph.v1',version:1,branch_version_id:'bv-7',
+ content_hash:'a'.repeat(64),input_map:{message:'question'},reply_key:'answer'};
+definitions['d2']={agent_definition_id:'d2',name:'Shared design',content_fingerprint:'b'.repeat(64),
+ components:{turn,ui:{kind:'tinyassets.app-ui.v1'}}};
+definitions['d3']={agent_definition_id:'d3',name:'Unsupported',content_fingerprint:'c'.repeat(64),
+ components:{turn:{...turn,code:'unsafe'}}};
+binding=installed();
+appUi=stored([bundleOf()],{version:1,state:'active',ui_id:'office'});
+u.enable(HOME,PRINCIPAL);
+await settle(40);
+assert(u.active,'the remembered UI must be mounted: '+$('ui-status').textContent);
+const win=u.frame.contentWindow;
+emit({source:win,data:{ta_ui:1,type:'ready'}});
+let n=0;
+const ask=async(action,params)=>{
+ const id='c'+(n++);
+ emit({source:win,data:{ta_ui:1,type:'call',id,action,params:params||{}}});
+ for(let i=0;i<60;i++){
+  const hit=win.posts.find(p=>p.type==='result'&&p.id===id);
+  if(hit)return hit;
+  await new Promise(r=>setImmediate(r));
+ }
+ throw Error('the bridge never answered '+action);
+};
+const writes=()=>calls.filter(c=>c.tool==='write_graph'&&c.args.target==='agent_binding');
+
+// ---- the trusted panel shows the default before anything is chosen --------
+assert.equal($('ui-conversation').children[0].textContent,'Conversation design: default');
+assert.deepEqual((await ask('conversation_design')).result,{state:'default'});
+
+// ---- the ask is not the approval: a declined prompt writes nothing --------
+calls=[];approve=false;
+let r=await ask('set_conversation_design',{agent_definition_id:'d2',component_key:'turn'});
+assert.equal(r.ok,false);assert(/did not approve/.test(r.error),r.error);
+assert.equal(prompts.length,1);
+assert(prompts[0].includes('Office building')&&prompts[0].includes('Shared design')&&prompts[0].includes('bv-7'),prompts[0]);
+assert.equal(writes().length,0,'a declined change must not write');
+
+// ---- an unsupported component is refused before the person is asked ------
+prompts=[];approve=true;
+r=await ask('set_conversation_design',{agent_definition_id:'d3',component_key:'turn'});
+assert.equal(r.ok,false);assert(/no supported conversation component/.test(r.error),r.error);
+r=await ask('set_conversation_design',{agent_definition_id:'d2',component_key:'ui'});
+assert.equal(r.ok,false);
+assert.equal(prompts.length,0);assert.equal(writes().length,0);
+
+// ---- approved: one CAS write, private configuration kept, read back -------
+r=await ask('set_conversation_design',{agent_definition_id:'d2',component_key:'turn'});
+assert.equal(r.ok,true,r.error);
+assert.deepEqual(r.result,{state:'active',agent_definition_id:'d2',component_key:'turn'});
+assert.equal(writes().length,1);
+assert.equal(writes()[0].args.operation,'update');
+assert.equal(writes()[0].args.expected_revision,1);
+assert.equal(writes()[0].args.graph_id,HOME);
+assert.deepEqual(binding.configuration.private,{keep:1});
+assert.deepEqual(binding.configuration.turn_consumer,
+ {version:1,state:'active',component_key:'turn',definition_fingerprint:'b'.repeat(64)});
+assert.equal(JSON.stringify(r).includes('keep'),false,'the configuration never crosses into a bundle');
+assert.deepEqual((await ask('conversation_design')).result,r.result);
+const agents=(await ask('list_agents')).result.agents;
+assert.equal(agents.length,1);assert.equal(agents[0].selected,true);
+assert(/d2 \/ turn/.test($('ui-conversation').children[0].textContent));
+
+// ---- a bundle cannot name a universe: the write is pinned to the viewer ---
+calls=[];
+r=await ask('set_conversation_design',{state:'default',graph_id:'u-bob',universe_id:'u-bob'});
+assert.equal(r.ok,true,r.error);
+assert.equal(writes()[0].args.graph_id,HOME);
+assert.deepEqual(binding.configuration.turn_consumer,{version:1,state:'disabled'});
+
+// ---- trusted recovery: previous, then default, no prompt, no bundle -------
+prompts=[];calls=[];
+await u.restorePreviousConversation();
+assert.equal(prompts.length,0,'a click in the page\'s own dialog is the approval');
+assert.equal(writes().length,1);
+assert.equal(binding.configuration.turn_consumer.state,'active');
+await u.restoreDefaultConversation();
+assert.equal(writes().length,2);
+assert.deepEqual(binding.configuration.turn_consumer,{version:1,state:'disabled'});
+await u.restoreDefaultConversation();
+assert.equal(writes().length,2,'restoring an already-default conversation writes nothing');
+
+// ---- a change made elsewhere is not overwritten from a stale revision ----
+binding={...binding,updated_by:'collaborator'};
+calls=[];
+r=await ask('set_conversation_design',{agent_definition_id:'d2',component_key:'turn'});
+assert.equal(r.ok,false);assert(/not owner-controlled/.test(r.error),r.error);
+assert.equal(writes().length,0);
+
+// ---- a session that moved during the prompt does not write ---------------
+binding={...binding,updated_by:PRINCIPAL};
+calls=[];
+me={...me,universe_id:'u-other'};
+r=await ask('set_conversation_design',{agent_definition_id:'d2',component_key:'turn'});
+assert.equal(r.ok,false);
+assert.equal(writes().length,0,'a changed home must not receive the write');
+console.log('consumer controls passed');
+})().catch(err=>{console.error(err);process.exit(1);});
 '''
-    script = tmp_path / "consumer-controls.cjs"
-    script.write_text(harness + source + checks, encoding="utf-8")
-    result = subprocess.run([node, str(script)], capture_output=True, text=True,
-                            encoding="utf-8", timeout=20, check=False)
-    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_custom_ui_asks_and_the_person_approves_the_conversation_design(tmp_path):
+    out = _run(tmp_path, "consumer_controls.js", CHECKS, extra=EXTRA)
+    assert "consumer controls passed" in out

@@ -35,7 +35,19 @@ PUBLIC_APP_PATHS = {
     # open and the authenticated exchange after it is still challenged.
     "/app/model-callback/connect",
     "/app/sw.js",        # the browser fetches a service worker with no bearer
+    "/app/ui-frame",     # an <iframe src> carries no bearer; the frame holds no identity
 }
+
+
+def test_the_ui_frame_carve_out_is_exactly_one_path(app_env):
+    """Live 2026-10-01: every custom UI rendered `authentication_required`
+    because the iframe navigation carries no bearer. Exactly the bootstrap opens."""
+    from tinyassets.auth.middleware import _auth_challenge_path
+
+    assert not _auth_challenge_path("/app/ui-frame")
+    for near in ("/app/ui-frame/x", "/app/ui-frames", "/app/ui-frame.js",
+                 "/app/ui", "/app/api/ui-frame"):
+        assert _auth_challenge_path(near), near
 
 
 @pytest.fixture
