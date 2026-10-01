@@ -190,14 +190,15 @@ main() {
     # reads as dead here. On 2026-10-01 this script restarted the container
     # mid-deploy and helped kill the new image and fail the rollback
     # (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
-    # Opened for READING and never created: `<` cannot make the file, so a run
-    # here can never leave a lock file the deploy cannot open. fd 8 stays held
-    # through any restart below, so a deploy waits for us in turn.
-    if [[ -e "$HOST_MUTATION_LOCK" ]]; then
-        if exec 8<"$HOST_MUTATION_LOCK" && ! flock -n 8; then
-            log "a deploy holds ${HOST_MUTATION_LOCK}; standing down"
-            exit 0
-        fi
+    # This unit runs as root, the lock's owner, so `>>` may create it. Creating
+    # it here closes the window right after boot where a lockless check could
+    # race a deploy that takes the lock a moment later. fd 8 stays held through
+    # any restart below, so a deploy waits for us in turn.
+    if ! exec 8>>"$HOST_MUTATION_LOCK"; then
+        log "cannot open ${HOST_MUTATION_LOCK}; proceeding unlocked"
+    elif ! flock -n 8; then
+        log "a deploy holds ${HOST_MUTATION_LOCK}; standing down"
+        exit 0
     fi
 
     if ! command -v docker >/dev/null 2>&1; then

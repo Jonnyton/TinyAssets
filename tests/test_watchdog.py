@@ -486,3 +486,33 @@ def test_the_real_lock_reports_held_while_another_holder_has_it(tmp_path):
         os.close(holder)
     with _watchdog_module._host_mutation_lock(lock) as free:
         assert free is True
+
+
+def _unit_timeout_s(name: str) -> int:
+    import re
+
+    text = (_SCRIPTS.parent / "deploy" / name).read_text(encoding="utf-8")
+    match = re.search(r"^TimeoutStartSec=(\d+)s?$", text, re.M)
+    assert match, f"{name} TimeoutStartSec is no longer plain seconds"
+    return int(match.group(1))
+
+
+def test_the_lock_outlives_the_restart_job_it_covers():
+    """systemctl waits for the restart JOB, which the daemon unit's
+    TimeoutStartSec bounds. If watchdog.py or its own unit gave up first, the
+    lock would be released while the job's compose run was still mutating, and a
+    deploy could start on top of it (Codex refute, 2026-10-01)."""
+    daemon_job = _unit_timeout_s("tinyassets-daemon.service")
+    assert _watchdog_module.RESTART_JOB_TIMEOUT_SECONDS > daemon_job
+    assert _unit_timeout_s("tinyassets-watchdog.service") > (
+        _watchdog_module.RESTART_JOB_TIMEOUT_SECONDS)
+    assert _unit_timeout_s("daemon-watchdog.service") > daemon_job
+
+
+def test_the_watchdog_unit_creates_the_lock_as_root():
+    """The script runs as tinyassets and must never create the lock (under
+    protected_regular=2 that would lock root out of it). The unit's root
+    ExecStartPre makes sure it exists, so the watchdog is never lockless."""
+    text = (_SCRIPTS.parent / "deploy" / "tinyassets-watchdog.service").read_text(
+        encoding="utf-8")
+    assert "ExecStartPre=+/usr/bin/touch /var/lock/tinyassets-host-mutation.lock" in text

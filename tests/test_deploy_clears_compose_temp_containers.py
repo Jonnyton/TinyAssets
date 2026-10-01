@@ -33,9 +33,13 @@ def _function(name: str) -> str:
     return match.group(0)
 
 
-def _run(tmp_path: Path, names: list[str]) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+def _run(
+    tmp_path: Path, names: list[str], state: str = "exited",
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     listing = tmp_path / "names.txt"
-    listing.write_text("".join(f"{n}\n" for n in names), encoding="utf-8", newline="\n")
+    listing.write_text(
+        "".join(f"{n} {state}\n" for n in names), encoding="utf-8", newline="\n",
+    )
     calls = tmp_path / "calls.txt"
     script = tmp_path / "run.sh"
     script.write_text(
@@ -117,3 +121,22 @@ def test_the_rollback_converge_runs_the_same_cleanup():
     rollback = body[body.index("# --- 6. unhealthy -> restore the bundle"):]
     assert "if ! restart_stack; then" in rollback
     assert "remove_compose_temp_daemons" in _function("restart_stack")
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+@pytest.mark.parametrize("state", ["running", "restarting", "paused"])
+def test_a_temp_named_container_that_may_be_serving_is_left_alone(tmp_path: Path, state: str):
+    """`compose start` can start a temp-named replacement without renaming it, so a
+    running one may be the only daemon serving. Removing it would SIGKILL prod."""
+    result, calls = _run(tmp_path, ["1cc5a277f659_tinyassets-daemon"], state=state)
+    assert result.returncode == 0, result.stderr
+    assert [c for c in calls if c.startswith("rm ")] == []
+    assert "leaving it" in result.stderr
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+@pytest.mark.parametrize("state", ["created", "exited", "dead"])
+def test_every_not_running_state_is_cleaned(tmp_path: Path, state: str):
+    result, calls = _run(tmp_path, ["1cc5a277f659_tinyassets-daemon"], state=state)
+    assert result.returncode == 0, result.stderr
+    assert [c for c in calls if c.startswith("rm ")] == ["rm -f 1cc5a277f659_tinyassets-daemon"]

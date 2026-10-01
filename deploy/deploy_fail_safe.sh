@@ -179,8 +179,11 @@ LOGS_CONTAINER=tinyassets-logs
 # Kept in step with `deploy/compose.yml` and with
 # `universe_server.GRACEFUL_SHUTDOWN_S` by tests/test_deploy_drains_in_flight_turns.py.
 MAX_DAEMON_STOP_GRACE_S=20
-# Shared host-mutation lock (same path the watchdog uses); serializes all
-# image mutators so deploy/watchdog/autoheal cannot race.
+# Shared host-mutation lock. scripts/watchdog.py and deploy/daemon-watchdog.sh
+# check it (read-only, never created) and stand down while it is held. Until
+# 2026-10-01 this comment claimed they did when neither did, and both restarted
+# the daemon mid-deploy. GitHub-driven mutators serialize separately on the
+# `production-host-mutation` workflow concurrency group.
 LOCK_FILE="${LOCK_FILE:-/var/lock/tinyassets-host-mutation.lock}"
 LOCK_WAIT=120            # seconds to wait for the lock before refusing
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"   # seconds to reach 'healthy'
@@ -354,14 +357,25 @@ restart_stack() {
 # that temp name behind, and the next `up -d` fails on
 # "Conflict. The container name /<hex>_tinyassets-daemon is already in use".
 # That is what turned the 2026-10-01 forward failure into rollback_failed.
-# Runs under the host-mutation lock, so no live compose run of ours owns these.
+# Runs under the host-mutation lock. Only containers that are NOT running are
+# removed: `compose start` can start a temp-named replacement by id without
+# renaming it, so a running one may be the only serving daemon (Codex refute).
+# A running one is reported and left alone.
 remove_compose_temp_daemons() {
-  local name
-  for name in $(docker ps -a --format '{{.Names}}' 2>/dev/null \
-                | grep -E "^[0-9a-f]{12}_${DAEMON_CONTAINER}\$" || true); do
-    log "removing stray compose temp container ${name}"
-    docker rm -f "$name" >/dev/null 2>&1 || err "note: could not remove stray container ${name}"
-  done
+  local name state
+  while read -r name state; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$name" | grep -Eq "^[0-9a-f]{12}_${DAEMON_CONTAINER}\$" || continue
+    case "$state" in
+      created|exited|dead)
+        log "removing stray compose temp container ${name} (${state})"
+        docker rm -f "$name" >/dev/null 2>&1 || err "note: could not remove stray container ${name}"
+        ;;
+      *)
+        err "note: temp-named container ${name} is '${state}'; leaving it (it may be serving)"
+        ;;
+    esac
+  done < <(docker ps -a --format '{{.Names}} {{.State}}' 2>/dev/null || true)
 }
 
 # `up -d` does NOT recreate a container whose image and compose config are

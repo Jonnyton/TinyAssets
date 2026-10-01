@@ -74,6 +74,10 @@ DEFAULT_THRESHOLD = 3
 # being restart-looped every 30s when the underlying problem
 # (bad env, dep issue) isn't "restart will fix it."
 MIN_RESTART_INTERVAL_SECONDS = 600  # 10 min
+# Longer than tinyassets-daemon.service's TimeoutStartSec (200s), so the lock
+# outlives the restart job; tinyassets-watchdog.service's TimeoutStartSec is
+# longer again.
+RESTART_JOB_TIMEOUT_SECONDS = 230
 
 # Production alarm-log path. Env-var override allows tests + dev setups
 # to redirect to a tmp path without touching the real production file.
@@ -200,10 +204,16 @@ def _restart_service(unit: str) -> tuple[bool, str]:
             ["sudo", "-n", "/usr/bin/systemctl", "restart", unit],
             capture_output=True,
             text=True,
-            timeout=60,
+            # The restart is a systemd JOB: the unit's own compose run, bounded by
+            # its TimeoutStartSec=200s. systemctl waits for that job, and the
+            # host-mutation lock is held for as long as we wait. Giving up at
+            # 60s (the old value) released the lock while the job's compose was
+            # still mutating, which let a deploy start on top of it (Codex
+            # refute on the 2026-10-01 fix).
+            timeout=RESTART_JOB_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return (False, "systemctl restart timeout (>60s)")
+        return (False, f"systemctl restart timeout (>{RESTART_JOB_TIMEOUT_SECONDS}s)")
     except OSError as exc:
         return (False, f"systemctl invoke error: {exc}")
     if result.returncode == 0:

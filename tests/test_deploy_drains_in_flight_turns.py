@@ -292,3 +292,14 @@ def test_only_the_daemon_carries_the_grace(name: str):
         if isinstance(body, dict) and body.get("stop_grace_period") is not None
     }
     assert carriers == {name}, f"{sorted(carriers)} declare a grace; only {name} should"
+
+
+def test_the_units_own_converge_carries_the_same_stop_ceiling():
+    """Watchdog and manual restarts go through tinyassets-daemon.service. Its
+    `up -d` would otherwise stop the old container with its create-time
+    StopTimeout, which is 180s for anything recreated from a pre-2026-10-01
+    bundle."""
+    text = (REPO / "deploy" / "tinyassets-daemon.service").read_text(encoding="utf-8")
+    exec_start = [ln for ln in text.splitlines() if ln.startswith("ExecStart=")]
+    assert len(exec_start) == 1
+    assert f"up -d --timeout {_script_ceiling_s()} daemon cloudflared logs" in exec_start[0]

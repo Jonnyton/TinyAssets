@@ -66,8 +66,7 @@ container while probing the port every 0.25s:
 Each converge equals the SIGKILL bound, not uvicorn's 10s graceful timeout. That confirms the lifespan
 hang on the worker thread, and shows `--timeout` overrides the create-time StopTimeout.
 
-## Not fixed by this, and worth doing
+## Not fixed by this
 
-A deploy still costs stop + start (about 30s worst case plus boot) of 502. Zero-downtime needs the new
-container healthy on a second port before traffic moves, which means a switchable origin: cloudflared's
-dashboard ingress points at `localhost:8001` today.
+A deploy still costs stop + start of 502 (about 25s with a turn in flight). Tracked in
+`docs/concerns/2026-10-01-deploys-are-not-zero-downtime.md`.
