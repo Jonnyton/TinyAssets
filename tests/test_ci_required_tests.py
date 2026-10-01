@@ -405,3 +405,59 @@ def test_aggregate_applies_the_vacuity_floor_to_the_union(shards):
 def test_shard_floor_sits_below_one_shard_of_the_full_floor():
     """A shard floor above ~1/6 of the suite would fail a healthy small shard."""
     assert 500 <= gate.MIN_RAN_FLOORS["shard"] < gate.MIN_RAN_FLOOR // 6
+
+
+# ---- sharding: packing by measured duration ---------------------------------
+
+
+def test_pack_puts_longest_first_on_the_least_loaded_shard():
+    durations = {"a": 10.0, "b": 6.0, "c": 5.0, "d": 4.0, "e": 1.0}
+    owner = gate.pack(sorted(durations), durations, 2)
+    # a(10)->1; b(6)->2; c(5)->2 (6<10); d(4)->1 (10<11); e(1)->2 (11<14).
+    assert owner == {"a": 1, "b": 2, "c": 2, "d": 1, "e": 2}
+
+
+def test_pack_is_deterministic_and_order_independent():
+    durations = {f"tests/test_{i}.py": float(i % 7) for i in range(50)}
+    files = sorted(durations)
+    first = gate.pack(files, durations, 6)
+    assert gate.pack(list(reversed(files)), durations, 6) == first
+    assert set(first.values()) == set(range(1, 7))
+
+
+def test_a_file_the_table_does_not_know_weighs_the_median():
+    durations = {"x": 1.0, "y": 2.0, "z": 30.0}
+    # Median 2.0: the new file lands like a 2-second file, not like a free one.
+    owner = gate.pack(["x", "y", "z", "new"], durations, 2)
+    assert owner["z"] != owner["new"]
+    assert owner["new"] == owner["x"] == owner["y"]
+
+
+def test_a_missing_table_means_equal_weights_said_out_loud(tmp_path, capsys):
+    assert gate.load_durations(tmp_path / "nope.json") == {}
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_a_file_outside_the_packed_set_still_has_exactly_one_owner():
+    rel = "tests/never_on_disk/test_ghost.py"
+    owners = {gate.shard_of(rel, 6) for _ in range(3)}
+    assert owners == {gate._hash_shard(rel, 6)}
+
+
+def test_the_committed_table_packs_the_required_surface_within_tolerance():
+    """The founder's bar: no shard more than ~1.5x the median, by measured time."""
+    durations = gate.load_durations()
+    assert durations, ".github/test-durations.json is missing or empty"
+    heavy = [
+        line.strip().rstrip("/")
+        for line in (gate.REPO_ROOT / ".github" / "heavy-test-files.txt")
+        .read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    loads = [0.0] * 6
+    for path in (gate.REPO_ROOT / "tests").rglob("test_*.py"):
+        rel = path.relative_to(gate.REPO_ROOT).as_posix()
+        if not any(rel == h or rel.startswith(h + "/") for h in heavy):
+            loads[gate.shard_of(rel, 6) - 1] += durations.get(rel, 0.0)
+    ordered = sorted(loads)
+    assert ordered[-1] <= 1.5 * ((ordered[2] + ordered[3]) / 2), loads
