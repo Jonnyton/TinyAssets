@@ -58,7 +58,6 @@ const EXACT_HOSTS = [
   'api.workos.com',
   'auth.workos.com',
   'accounts.google.com',
-  'accounts.youtube.com',
   'login.microsoftonline.com',
   'login.live.com',
   'github.com',
@@ -74,6 +73,12 @@ const EXACT_HOSTS = [
 // tenant, which it never does. Still https + default-port gated below.
 // TODO(pin-authkit): replace with the exact prod tenant host once confirmed.
 const AUTHKIT_SUFFIX = 'authkit.app';
+
+// Hosts allowed ONLY as an iframe inside an allowed page, never as the window
+// itself. Google's sign-in page frames accounts.youtube.com/accounts/
+// CheckConnection to sync its account session (Codex 2026-10-01: an iframe need
+// is no reason to let the host replace the trusted window).
+const SUBFRAME_ONLY_HOSTS = ['accounts.youtube.com'];
 
 const BACKGROUND_COLOR = '#14140f';
 
@@ -94,6 +99,20 @@ function isAllowedNavigation(urlString) {
   return false;
 }
 
+// A URL may load in an IFRAME iff it could load in the window, or its host is a
+// subframe-only host (same https + default-port gate).
+function isAllowedSubframe(urlString) {
+  if (isAllowedNavigation(urlString)) return true;
+  let u;
+  try {
+    u = new URL(urlString);
+  } catch {
+    return false;
+  }
+  return u.protocol === 'https:' && u.port === ''
+    && SUBFRAME_ONLY_HOSTS.includes(u.hostname.toLowerCase());
+}
+
 // A URL is safe to hand to the OS (shell.openExternal) iff it is https. Custom
 // schemes (file:, javascript:, data:, smb:, app-protocol:, …) are DENIED —
 // openExternal on untrusted input is an RCE vector (Codex 2026-08-23 #1).
@@ -112,5 +131,6 @@ module.exports = {
   AUTHKIT_SUFFIX,
   BACKGROUND_COLOR,
   isAllowedNavigation,
+  isAllowedSubframe,
   isSafeExternal,
 };
