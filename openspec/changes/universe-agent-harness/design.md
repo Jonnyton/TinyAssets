@@ -649,6 +649,34 @@ From it the owner can approve or reply inline, pause, and open a profile.
 **Both pages are built on the custom-UI layer** (`app-ui-library`, #4160 and
 #4165), so users redesign them and share the design (§4.15).
 
+### 4.11a One concept: the command center (founder, 2026-10-01)
+
+> "your harness and ui are all your command center set up, universe becomes
+> command center, switch ui becomes switch command center and the opening
+> greating a new user gets becomes welcome commander"
+
+**One concept.** The user's harness, the roster, profile and Activity pages
+above, and the custom-UI work are **one concept: the user's command-center
+setup**. It is shareable as a single design (§4.15). The custom-UI work
+includes the GTM Village, custom UIs, and "change the harness and UI just by
+talking" (#4160, #4165, #4168).
+
+**User-facing copy:**
+- the app's "Switch UI" control becomes **"Switch command center"**;
+- a new user's opening greeting opens with **"Welcome, commander"**;
+- where the app presents the universe's own space to its owner, it is called
+  the **command center**.
+
+**What does not change.** The rename is user-facing copy and concept only.
+These stay as they are, because renaming them is a public-surface change with
+no user benefit:
+- internal identifiers and storage;
+- the MCP handles (`read_graph` … `converse`) and the connector's tool
+  descriptions;
+- PLAN.md's term "universe".
+
+Where the line is unclear, the C0 slice flags it in its PR.
+
 ### 4.12 Reachable everywhere
 
 - **App and connector.** The app (web, desktop, phone) and `converse` already
@@ -773,6 +801,15 @@ is authority, and its proposal, design and spec deltas are this change.
 - **Proof scope.** Each slice's live proof uses only what has landed by then.
 - **Re-checks.** Where a later slice adds a surface (activity status in D2,
   take-over in D5), that slice re-checks the earlier behaviour.
+
+**C0: Command-center naming** (copy only, shipped early, §4.11a)
+1. Rename "Switch UI" to "Switch command center" in the app and in its
+   served guidance.
+2. Make the new-user opening greeting open with "Welcome, commander".
+3. Use "command center" where the app names the universe's own space.
+4. Update tests that pin the old copy.
+5. Flag unclear lines in the PR.
+6. Live proof: the app header and a fresh account's greeting.
 
 **W: Own workspace** (mechanism being costed in place of S3c)
 1. Choose the mechanism: own jail root, or the S3c move.
