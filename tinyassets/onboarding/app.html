@@ -259,15 +259,9 @@
       overflow-x:auto;font-size:.8rem;white-space:pre-wrap}
     .dev-note{color:var(--ink-dim);font-size:.8rem}
     code{background:var(--surface-2);padding:.1rem .35rem;border-radius:6px;font-size:.85em}
-    .layout-root{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column}
-    .layout-slot{min-width:0;flex-shrink:0}.layout-slot--conversation{display:flex;flex-direction:column;min-height:18rem;flex:1}
-    .layout-slot--conversation .thread{min-height:10rem}.layout-slot--requests .rail{width:auto;max-width:none}
-    .layout-active>.chat-body,.layout-omitted{display:none!important}
-    .layout-density--compact .model-bar,.layout-density--compact .composer{padding:.3rem .6rem}
-    .layout-dialog{width:min(40rem,94vw);max-height:90vh;overflow:auto;background:var(--bg);color:var(--text);padding:1.2rem;border:1px solid var(--line);border-radius:12px}
-    .layout-dialog input:not([type=checkbox]),.layout-dialog textarea{width:100%;box-sizing:border-box;margin:.35rem 0}
-    .layout-dialog li{margin:.35rem 0}.layout-actions{display:flex;flex-wrap:wrap;gap:.5rem}
-    #layout-mode{font-size:.8rem} .chat-actions{flex-wrap:wrap}
+    .ui-dialog{width:min(40rem,94vw);max-height:90vh;overflow:auto;background:var(--bg);color:var(--text);padding:1.2rem;border:1px solid var(--line);border-radius:12px}
+    .ui-dialog li{margin:.35rem 0}.ui-dialog-actions{display:flex;flex-wrap:wrap;gap:.5rem}
+    #ui-mode{font-size:.8rem} .chat-actions{flex-wrap:wrap}
     /* A custom UI replaces the chat body rather than sitting beside it, and the
        frame itself carries no border: whatever is inside is somebody's own
        design, so the app does not frame it with its own chrome. */
@@ -306,11 +300,8 @@
           <span id="universe-name" class="universe-name">Your universe</span>
         </div>
         <nav class="chat-actions">
-          <span id="layout-mode" hidden></span>
           <span id="ui-mode" hidden></span>
           <button id="btn-ui-switch" class="btn btn--link" hidden>Switch UI</button>
-          <button id="btn-layouts" class="btn btn--link" hidden>App design</button>
-          <button id="btn-layout-restore" class="btn btn--link" hidden>Restore default</button>
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
           <button id="btn-account" class="btn btn--link">Account</button>
           <button id="btn-signout" class="btn btn--link">Sign out</button>
@@ -489,38 +480,25 @@
       <div id="ui-frame-host" hidden></div>
     </section>
 
-    <dialog id="ui-dialog" class="layout-dialog" aria-labelledby="ui-title">
+    <dialog id="ui-dialog" class="ui-dialog" aria-labelledby="ui-title">
       <h2 id="ui-title">Your UI</h2>
       <p>Switch between the default chat and any UI installed in this universe.
-      A custom UI runs isolated: it cannot read your sign-in, your other tabs, or
-      anything outside this universe, and it reaches your universe only through
-      four actions — your universe's name, your list of agents, sending a message,
-      and reading this conversation.</p>
-      <p class="muted">Those four are what it can use, so they are also what it
-      could keep. Someone else's UI is someone else's code: running it shows it
-      this conversation. Switch back to default chat to stop that.</p>
+      Ask your universe for any screen you like and it builds one. A custom UI
+      runs isolated: it cannot read your sign-in, your other tabs, or anything
+      outside this universe. It acts as you, in this universe only: it can read
+      your universe's name, your agents, this conversation, your automations,
+      runs and shared files, send messages, wake your own automations, and ask
+      to change which conversation design answers you.</p>
+      <p class="muted">What it can read, it could keep. Someone else's UI is
+      someone else's code: running it shows it this conversation. Switch back to
+      default chat to stop that.</p>
       <p id="ui-status" role="status" aria-live="polite"></p>
       <ul id="ui-list"></ul>
-      <div class="layout-actions">
+      <h3>Conversation</h3><div id="ui-conversation"></div>
+      <div class="ui-dialog-actions">
         <button id="btn-ui-refresh" class="btn" type="button">Refresh</button>
         <button id="btn-ui-close" class="btn" type="button">Close</button>
       </div>
-    </dialog>
-    <dialog id="layout-dialog" class="layout-dialog" aria-labelledby="layout-title">
-      <h2 id="layout-title">Your app design</h2>
-      <p>Arrange existing controls. Your conversations, model access and private settings stay yours.</p>
-      <p id="layout-status" role="status" aria-live="polite"></p>
-      <label for="layout-search">Find public designs</label><input id="layout-search" type="search">
-      <div class="layout-actions"><button id="btn-layout-search" class="btn">Search</button><button id="btn-layout-default" class="btn">Start from default</button><button id="btn-layout-refresh" class="btn">Refresh installation</button></div>
-      <ul id="layout-results"></ul><ul id="layout-candidates"></ul><div id="layout-inspect"></div>
-      <h3>Conversation behavior</h3><div id="consumer-controls"></div>
-      <ol id="layout-editor"></ol>
-      <label for="layout-density">Spacing</label><select id="layout-density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select>
-      <div class="layout-actions"><button id="btn-layout-preview" class="btn">Preview in this app</button><button id="btn-layout-apply" class="btn">Apply saved design</button></div>
-      <h3>Publish a design or remix</h3><p>Its name, description and design become public. Private messages and settings are never included. Publishing does not apply it.</p>
-      <label for="layout-publish-name">Public name</label><input id="layout-publish-name" maxlength="120">
-      <label for="layout-publish-description">Public description</label><textarea id="layout-publish-description"></textarea>
-      <div class="layout-actions"><button id="btn-layout-publish" class="btn">Publish publicly</button><button id="btn-layout-close" class="btn">Close</button></div>
     </dialog>
     <dialog id="model-dialog" class="model-dialog" aria-labelledby="model-title">
       <!-- Choosing a model moved OUT of here and into the #model-menu dropdown on
@@ -4298,13 +4276,10 @@
     HostedModelConnect.setup=me&&me.setup||"unavailable";
     const connected=HostedModelConnect.setup==="connected";
     engineConnected = connected ? true : HostedModelConnect.setup==="unavailable" ? null : false;
-    if(typeof AppLayout!=="undefined"){
-      if(connected) AppLayout.enable(me.universe_id,me.principal_id); else AppLayout.reset();
-      // The custom-UI switcher follows the SAME identity+home gate as the
-      // layout editor: a bundle only ever runs for a verified signed-in home.
-      if(typeof AppUI!=="undefined"){
-        if(connected) AppUI.enable(me.universe_id,me.principal_id); else AppUI.reset();
-      }
+    // The custom-UI switcher is gated on a verified identity and home: a
+    // bundle only ever runs for a verified signed-in home.
+    if(typeof AppUI!=="undefined"){
+      if(connected) AppUI.enable(me.universe_id,me.principal_id); else AppUI.reset();
     }
     // Powered or not, this is the universe's own chat. The owner and home were
     // taken above, from the same verified `me`.
@@ -4556,7 +4531,6 @@
     // never carried into whoever signs in next.
     if(Uploads) Uploads.abort();
     clearAccountScopedState();
-    if(typeof AppLayout!=="undefined") AppLayout.reset();
     clearCredentialFields();
     if(typeof AppUI!=="undefined") AppUI.reset();
     HostedModelConnect.reset();
@@ -7628,14 +7602,11 @@
     }catch(_e){ /* offline or blocked: try again next time */ }
   }
 
-  __TA_APP_LAYOUT__
-
   __TA_APP_UI__
 
   async function boot(){
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
-    if(typeof AppLayout!=="undefined") AppLayout.init();
     if(typeof AppUI!=="undefined") AppUI.init();
     HostedModelConnect.wire();
     wireNativeReturn();

@@ -400,10 +400,10 @@ await HostedModelConnect.depositKey();await HostedModelConnect.depositKey();
     assert not result["answers"] and not result["stored"]
 
 
-def test_finishing_keeps_portable_layout_current_owner_hooks():
+def test_finishing_keeps_custom_ui_current_owner_hooks():
     result = run_browser(saved_callback() + confirmation() + r"""
 const assert=require('node:assert/strict'),layoutCalls=[];
-globalThis.AppLayout={init(){layoutCalls.push(['init']);},
+globalThis.AppUI={init(){layoutCalls.push(['init']);},
  reset(){layoutCalls.push(['reset']);},
  enable(home,principal){layoutCalls.push(['enable',home,principal]);}};
 answerResult=()=>{me={setup:'connected',universe_id:'u-owner',principal_id:'owner'};

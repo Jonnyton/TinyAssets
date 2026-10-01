@@ -30,8 +30,8 @@ def _html() -> str:
 
 
 def test_the_app_never_reads_over_the_model_door():
-    """The rendered page includes app_layout.js and app_ui.js, so this covers all
-    three sources. A read added over MCP fails here, whatever its size today."""
+    """The rendered page includes app_ui.js, so this covers both
+    sources. A read added over MCP fails here, whatever its size today."""
     html = _html()
     assert _READ_OVER_MCP.findall(html) == []
     mcp = html[html.index("  const MCP = {"):html.index("  const Owner = {")]
@@ -143,12 +143,11 @@ def _method_source(html: str, head: str) -> str:
 
 
 _BUNDLE = r"""
-const AppLayout={PAGE:100};
 const calls=[];
 const ROWS=Array.from({length:437},(_,i)=>({agent_binding_id:"b"+i}));
 const Owner={read:async(a)=>{ calls.push(a.limit);
   return {bindings:ROWS.slice(0,a.limit)}; }};
-const ui={ __READ_WHOLE__ };
+const ui={ PAGE:100, __READ_WHOLE__ };
 (async()=>{
   const doc=await ui.readWhole({target:"agent_bindings",graph_id:"h"},"bindings");
   console.log(JSON.stringify({rows:doc.bindings.length, calls}));

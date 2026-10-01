@@ -38,11 +38,22 @@
     MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
     MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
     MAX_LIST_RUNS:50,MAX_OUTPUT_CHUNK:8192,MAX_ID:200,MAX_PATH:1024,MAX_FILE_CHUNK:65536,
+    // The first page of a whole-list read; see readWhole.
+    PAGE:100,
+    // The conversation design: which published conversation component handles
+    // this owner's future messages. It is the receiver's own non-serving agent
+    // binding (`configuration.role` = ROLE, choice in `turn_consumer`), which the
+    // server reads at turn admission (consumer_selection.py). A UI may ASK to
+    // change it; the person approves in this page's own chrome, never in the UI.
+    ROLE:"app_experience",TURN_KIND:"tinyassets.turn-graph.v1",
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
 
     epoch:0,home:"",principal:"",enabled:false,busy:false,
     library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,
+    // The conversation installation as last read (null: none, so default), the
+    // reason it could not be read, and the selection it replaced this visit.
+    conversation:null,conversationNote:"",previousTurn:null,selecting:false,
     // The stored row's revision as last read; 0 means no row exists yet.
     revision:0,
     // Bumped on every mount AND unmount. A request captures it, so a reply owed
@@ -130,13 +141,14 @@
       return {ok:true,key:keys[0],bundle:parsed.bundle};
     },
 
-    // ---- lifecycle and fencing (same shape as AppLayout) -------------------
+    // ---- lifecycle and fencing ---------------------------------------------
     fence(epoch,home){ return this.enabled&&epoch===this.epoch&&home===this.home; },
     reset(){
       this.epoch++; this.unmount();
       this.enabled=false; this.home=""; this.principal="";
       this.library=[]; this.unreadable=""; this.selection=null; this.busy=false;
       this.revision=0;
+      this.conversation=null; this.conversationNote=""; this.previousTurn=null; this.selecting=false;
       $("btn-ui-switch").hidden=true;
       this.status(""); this.paint();
     },
@@ -181,6 +193,7 @@
         const row=await this.fetchRow();
         if(!this.fence(epoch,home)) return;
         this.adopt(row);
+        await this.readConversationDesign();
       }catch(err){
         if(!this.fence(epoch,home)) return;
         if(err&&err.authRequired){ sessionExpired(); return; }
@@ -248,7 +261,8 @@
       send_message:"sendMessage",read_conversation:"readConversation",
       list_automations:"listAutomations",list_runs:"listRuns",
       read_run:"readRun",read_run_output:"readRunOutput",
-      list_files:"listFiles",read_file:"readFile",emit:"emit"}),
+      list_files:"listFiles",read_file:"readFile",emit:"emit",
+      conversation_design:"conversationDesign",set_conversation_design:"setConversationDesign"}),
     receive(event){
       // Only THIS frame's window is heard. Another frame, a popup, or the page
       // itself cannot speak for the bundle, and the check is on the window
@@ -322,12 +336,12 @@
     // bundle cannot enumerate anybody else's universe.
     // Every row of one of the viewer's OWN lists. The read takes a page size
     // and no offset, so ask for a page and, while the server fills it exactly,
-    // ask for a bigger one (AppLayout.currentBindings does the same): a bundle
+    // ask for a bigger one: a bundle
     // sees the whole list, never a first page passed off as all of it. A fixed
     // page here was an owner-volume cliff -- the 101st agent read as "no agent
     // of yours" (Codex on owner-door-complete-reads, 2026-09-30).
     async readWhole(args,key){
-      for(let page=AppLayout.PAGE;;page*=4){
+      for(let page=this.PAGE;;page*=4){
         const doc=await Owner.read(Object.assign({},args,{limit:page}));
         if(!doc||doc.error||!Array.isArray(doc[key])||doc[key].length<page) return doc;
       }
@@ -335,9 +349,10 @@
     async listAgents(){
       const doc=await this.readWhole({target:"agent_bindings",graph_id:this.home},"bindings");
       if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
-      const selected=AppLayout.installation&&AppLayout.installation.configuration&&
-        AppLayout.installation.configuration.turn_consumer;
-      const selectedId=selected&&selected.state==="active"?String(AppLayout.installation.binding_id):"";
+      // Read from the same list, not from a cache: the one installation whose
+      // conversation design is active is the selected agent.
+      const mine=doc.bindings.filter(b=>this.eligible(b));
+      const selectedId=mine.length===1&&this.describe(mine[0]).state==="active"?String(mine[0].agent_binding_id):"";
       const agents=[];
       for(const b of doc.bindings){
         if(!b||typeof b!=="object"||b.universe_id!==this.home) continue;
@@ -367,7 +382,8 @@
         const match=agents.agents.find(a=>a.agent_id===wanted||a.name===wanted);
         if(!match) throw new Error("no agent of yours is named "+wanted);
         if(!match.selected) throw new Error(
-          "this universe sends turns to its selected conversation only; select "+match.name+" in App design first");
+          "this universe sends turns to its selected conversation only, and "+match.name+" is not it; "+
+          "change the conversation design first (set_conversation_design)");
       }
       if(this.sending) throw new Error("a message from this UI is already in flight");
       this.sending=true;
@@ -551,6 +567,163 @@
       }finally{ this.emitting=false; }
     },
 
+    // ---- the conversation design: read, ask to change, trusted recovery ----
+    // Which published conversation component answers this owner's future
+    // messages. It used to be chosen in a fixed "App design" dialog; a UI can
+    // now read it and ASK for a change, so a screen of agents can route the
+    // conversation to the one the person picked. The ask is never the
+    // approval: the person confirms in this page's own prompt, drawn outside
+    // the bundle, naming what changes. The write is the receiver's own CAS
+    // update, read back before it is reported; the server still checks source
+    // access, the immutable Branch pin, model access and every effect when a
+    // turn is admitted, so a selection is data, never a grant.
+    eligible(b){
+      return !!(b&&b.created_by===this.principal&&b.universe_id===this.home&&
+        b.status==="configured"&&b.agent_binding_id&&b.agent_definition_id&&
+        Number.isInteger(b.revision)&&b.configuration&&typeof b.configuration==="object"&&
+        b.configuration.role===this.ROLE&&
+        !Object.prototype.hasOwnProperty.call(b.configuration,"provider_ref"));
+    },
+    // Field names only, exactly what the server adapter accepts.
+    turnComponent(c){
+      const fields=["kind","version","branch_version_id","content_hash","input_map","reply_key"].sort();
+      const ident=v=>typeof v==="string"&&v.length>0&&v.length<=this.MAX_ID&&v.trim()===v&&!/[\x00-\x1f\x7f]/.test(v);
+      if(!c||typeof c!=="object"||Array.isArray(c)||JSON.stringify(Object.keys(c).sort())!==JSON.stringify(fields)||
+         c.kind!==this.TURN_KIND||c.version!==1||!ident(c.branch_version_id)||
+         !/^[a-f0-9]{64}$/.test(c.content_hash)||!ident(c.reply_key))return this.unsupported("unsupported conversation adapter or source pin");
+      const m=c.input_map;
+      if(!m||typeof m!=="object"||Array.isArray(m)||!Object.hasOwn(m,"message")||
+         Object.keys(m).some(k=>!["message","history"].includes(k))||
+         Object.values(m).some(v=>!ident(v))||new Set(Object.values(m)).size!==Object.values(m).length)
+        return this.unsupported("unsupported conversation input mapping");
+      return {ok:true};
+    },
+    // Picked fields only: never the installation's configuration.
+    describe(b){
+      const t=b&&b.configuration&&b.configuration.turn_consumer;
+      if(!t||t.state==="disabled") return {state:"default"};
+      if(t.state==="active"&&typeof t.component_key==="string")
+        return {state:"active",agent_definition_id:String(b.agent_definition_id),component_key:t.component_key};
+      return {state:"unsupported"};
+    },
+    async installations(){
+      const doc=await this.readWhole({target:"agent_bindings",graph_id:this.home},"bindings");
+      if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your conversation design is unavailable");
+      return doc.bindings.filter(b=>this.eligible(b));
+    },
+    async readConversationDesign(){
+      const epoch=this.epoch,home=this.home;
+      try{
+        const rows=await this.installations();
+        if(!this.fence(epoch,home)) return;
+        this.conversation=rows.length===1?rows[0]:null;
+        this.conversationNote=rows.length>1?"More than one conversation installation exists, so none can be changed here until one remains.":"";
+      }catch(err){
+        if(!this.fence(epoch,home)) return;
+        if(err&&err.authRequired) throw err;
+        this.conversation=null;
+        this.conversationNote="Conversation design unreadable ("+(err&&err.message||"unknown error")+").";
+      }
+      this.paint();
+    },
+    async conversationDesign(){
+      const rows=await this.installations();
+      if(rows.length>1) return {state:"ambiguous"};
+      return this.describe(rows[0]||null);
+    },
+    async setConversationDesign(args){
+      const want=args.state==="default"?null:{
+        definition_id:typeof args.agent_definition_id==="string"?args.agent_definition_id.trim():"",
+        component_key:typeof args.component_key==="string"?args.component_key:""};
+      if(want&&(!want.definition_id||want.definition_id.length>this.MAX_ID||!want.component_key||want.component_key.length>this.MAX_ID))
+        throw new Error("agent_definition_id and component_key are required, or state \"default\"");
+      if(this.selecting) throw new Error("a conversation change is already in flight");
+      const ui=this.active?this.active.name:"This UI";
+      return this.changeConversation(want,(agent,target)=>confirm(target
+        ? "“"+ui+"” asks to send your future messages to “"+String(agent.name||"unnamed")+
+          "” (its conversation component "+target.component_key+", workflow version "+
+          String(agent.components[target.component_key].branch_version_id)+"). "+
+          "Your model choice and access still govern every call, and work already started is not changed. Allow?"
+        : "“"+ui+"” asks to restore the default conversation for your future messages. Allow?"));
+    },
+    // The ONE conversation write. `approve` is null only for this page's own
+    // recovery buttons, which are themselves the person's click.
+    async changeConversation(target,approve){
+      if(!this.enabled) throw new Error("not ready");
+      const epoch=this.epoch,home=this.home;
+      this.selecting=true; this.paint();
+      try{
+        const rows=await this.installations();
+        if(!this.fence(epoch,home)) throw new Error("your session changed");
+        if(rows.length>1) throw new Error("more than one conversation installation exists; nothing was changed");
+        const b=rows[0]||null;
+        if(b&&b.updated_by!==this.principal) throw new Error("the conversation installation is not owner-controlled; nothing was changed");
+        let definitionId,selection,agent=null;
+        if(target){
+          const doc=await Owner.read({target:"agent",agent_definition_id:target.definition_id});
+          if(!this.fence(epoch,home)) throw new Error("your session changed");
+          agent=doc&&doc.agent;
+          if(!agent||doc.error||agent.agent_definition_id!==target.definition_id) throw new Error("that design is unavailable");
+          const c=agent.components&&typeof agent.components==="object"&&
+            Object.prototype.hasOwnProperty.call(agent.components,target.component_key)?agent.components[target.component_key]:null;
+          const fit=this.turnComponent(c);
+          if(!fit.ok) throw new Error("that design has no supported conversation component "+target.component_key+": "+fit.reason);
+          if(!/^[a-f0-9]{64}$/.test(agent.content_fingerprint)) throw new Error("that design has no content fingerprint");
+          definitionId=target.definition_id;
+          selection={version:1,state:"active",component_key:target.component_key,definition_fingerprint:agent.content_fingerprint};
+        }else{
+          if(!b||this.describe(b).state==="default"){ this.conversation=b; return {state:"default"}; }
+          definitionId=String(b.agent_definition_id);
+          selection={version:1,state:"disabled"};
+        }
+        if(approve&&!approve(agent,target)) throw new Error("the person did not approve the change; nothing was changed");
+        // The prompt waited on a person: the session may have moved meanwhile.
+        await this.verify();
+        const config=b?JSON.parse(JSON.stringify(b.configuration)):{schema_version:1,name:"App experience",role:this.ROLE};
+        const previous=b?{definition_id:String(b.agent_definition_id),
+          selection:JSON.parse(JSON.stringify(config.turn_consumer||{version:1,state:"disabled"}))}:null;
+        config.turn_consumer=selection;
+        const result=await MCP.callTool("write_graph",{target:"agent_binding",operation:b?"update":"bind",
+          graph_id:home,agent_definition_id:definitionId,
+          ...(b?{agent_binding_id:b.agent_binding_id,expected_revision:b.revision}:{}),
+          payload_json:JSON.stringify(config)});
+        if(!this.fence(epoch,home)) throw new Error("your session changed");
+        const written=result&&result.binding;
+        if(!result||result.error||result.status!=="configured"||!written||!this.eligible(written)||
+           written.updated_by!==this.principal||String(written.agent_definition_id)!==definitionId||
+           (b&&written.agent_binding_id!==b.agent_binding_id))
+          throw new Error("the change was not confirmed"+(result&&result.error?" ("+String(result.error)+")":"")+"; it was not retried");
+        const doc=await Owner.read({target:"agent_binding",graph_id:home,agent_binding_id:written.agent_binding_id});
+        if(!this.fence(epoch,home)) throw new Error("your session changed");
+        const check=doc&&doc.binding;
+        if(!this.eligible(check)||check.updated_by!==this.principal||check.agent_binding_id!==written.agent_binding_id||
+           String(check.agent_definition_id)!==definitionId||check.revision!==written.revision||
+           JSON.stringify(check.configuration)!==JSON.stringify(config))
+          throw new Error("the change could not be confirmed by read-back; it was not retried");
+        this.previousTurn=previous; this.conversation=check; this.conversationNote="";
+        this.status(selection.state==="disabled"
+          ?"Default conversation restored for future messages. Work already started is not changed."
+          :"Conversation design changed for future messages. Your model choice and private data are unchanged.");
+        return this.describe(check);
+      }finally{ if(this.fence(epoch,home)){ this.selecting=false; this.paint(); } }
+    },
+    async recover(target){
+      if(!this.enabled||this.selecting) return;
+      try{ await this.changeConversation(target,null); }
+      catch(err){
+        if(err&&err.authRequired){ sessionExpired(); return; }
+        this.status("Conversation not changed: "+(err&&err.message||"unavailable")+".");
+        await this.readConversationDesign();
+      }
+    },
+    restoreDefaultConversation(){ return this.recover(null); },
+    restorePreviousConversation(){
+      const p=this.previousTurn;
+      if(!p) return;
+      return this.recover(p.selection.state==="active"
+        ?{definition_id:p.definition_id,component_key:p.selection.component_key}:null);
+    },
+
     // ---- switching: explicit, persisted through ONE write path -------------
     async choose(uiId){
       if(!this.enabled||this.busy) return;
@@ -660,6 +833,11 @@
 
     // ---- fixed chrome: textContent only, never markup ----------------------
     status(text){ const node=$("ui-status"); if(node) node.textContent=text||""; },
+    button(text,onClick,disabled){
+      const b=document.createElement("button"); b.type="button"; b.className="btn btn--link";
+      b.textContent=text; b.disabled=!!disabled; b.addEventListener("click",onClick); return b;
+    },
+    line(parent,text,cls){ const p=document.createElement("p"); if(cls) p.className=cls; p.textContent=text; parent.appendChild(p); return p; },
     paintHeader(){
       const label=$("ui-mode");
       if(!label) return;
@@ -672,17 +850,35 @@
       if(!list) return;
       list.replaceChildren();
       const row=document.createElement("li");
-      row.appendChild(AppLayout.button("Default chat",()=>this.chooseDefault(),this.busy||!this.active));
+      row.appendChild(this.button("Default chat",()=>this.chooseDefault(),this.busy||!this.active));
       list.appendChild(row);
       for(const bundle of this.library){
         const item=document.createElement("li"),current=!!(this.active&&this.active.ui_id===bundle.ui_id);
-        item.appendChild(AppLayout.button((current?"Using: ":"Use ")+bundle.name,
+        item.appendChild(this.button((current?"Using: ":"Use ")+bundle.name,
           ()=>this.choose(bundle.ui_id),this.busy||current));
         list.appendChild(item);
       }
       if(!this.library.length)
-        AppLayout.line(list,"No custom UI installed. Ask your universe to build one.","muted");
+        this.line(list,"No custom UI installed. Ask your universe to build one.","muted");
       $("btn-ui-refresh").disabled=this.busy;
+      this.paintConversation();
+    },
+    // Trusted recovery, outside any custom UI: what answers this person's
+    // messages, and the way back to the default without the UI's help.
+    paintConversation(){
+      const panel=$("ui-conversation");
+      if(!panel) return;
+      panel.replaceChildren();
+      const now=this.describe(this.conversation);
+      this.line(panel,now.state==="active"
+        ?"Conversation design: "+now.agent_definition_id+" / "+now.component_key+" (revision "+this.conversation.revision+")"
+        :now.state==="unsupported"?"Conversation selection is not supported by this app. Restore the default.":"Conversation design: default");
+      if(this.conversationNote) this.line(panel,this.conversationNote,"muted");
+      this.line(panel,"Your chosen model and existing access still govern every call. A change applies to future messages, not work already started.","muted");
+      panel.appendChild(this.button("Restore default conversation",()=>this.restoreDefaultConversation(),
+        this.selecting||now.state==="default"));
+      if(this.previousTurn) panel.appendChild(this.button("Restore previous conversation",
+        ()=>this.restorePreviousConversation(),this.selecting));
     },
     open(){
       if(!this.enabled) return;

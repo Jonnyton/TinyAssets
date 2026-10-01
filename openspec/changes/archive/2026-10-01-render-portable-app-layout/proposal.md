@@ -1,3 +1,9 @@
+> **Withdrawn 2026-10-01, never synced.** The founder, live: "there should only
+> be switch ui", and the App design controls "are better as things that should be
+> part of the custom ui". The layout system this change built is deleted;
+> arranging and spacing are what a custom UI is (`composable-ui-experiences`).
+> Production held zero layout definitions and zero installations.
+
 ## Why
 
 Public agent definitions already preserve shareable components, but the signed-in
