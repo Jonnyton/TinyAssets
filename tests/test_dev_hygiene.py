@@ -1301,6 +1301,12 @@ def test_a_path_git_silently_skips_fails_the_snapshot(repo: Path) -> None:
     """`update-index --index-info` warns "Ignoring path" and exits 0; the snapshot
     must notice the file is not in it rather than preserve everything else."""
     head = git(repo, "rev-parse", "HEAD").strip()
+    # `sub` must exist: POSIX resolves "sub/../a.txt" only through a real `sub`
+    # (Windows normalizes it away), and a path that does not resolve is treated as
+    # a deletion, never reaching update-index. git's verify_path then rejects the
+    # ".." component on every platform: "Ignoring path", exit 0.
+    (repo / "sub").mkdir()
+    assert (repo / "sub/../a.txt").exists(), "setup: the path must resolve to a real file"
     with pytest.raises(dh.Undecidable, match="does not hold"):
         dh.snapshot_commit(repo, head, ["sub/../a.txt"])
 
