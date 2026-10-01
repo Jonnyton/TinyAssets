@@ -29,6 +29,16 @@ when the person approves it in the app's own prompt, outside the custom UI.
 - **AND** the app's own prompt names the UI, the design and its workflow version, and a declined prompt writes nothing
 - **AND** an approved change is one revision-guarded write to the receiver's own installation in the viewer's current home, read back before it is reported
 
+#### Scenario: Two clients create the first installation at once
+- **WHEN** two clients that both read no installation each create one (`write_graph target=agent_binding operation=bind` with `role: app_experience`)
+- **THEN** exactly one create succeeds and the other is refused as `agent_conflict`, because the existence check and the insert are one statement
+- **AND** an actor never holds two installations of that role in one universe through the create path
+
+#### Scenario: More than one installation already exists
+- **WHEN** a universe holds several installations (left by an earlier client)
+- **THEN** turn admission refuses to pick one, a custom UI's change request is refused, and the Switch UI dialog offers "Restore default conversation"
+- **AND** that recovery keeps the first installation with the default conversation and retires the others out of the role, so exactly one remains
+
 #### Scenario: A collaborator changes the selected installation
 - **WHEN** current owner/home, latest updater, exact component pin or unique installation cannot be verified
 - **THEN** the consumer is held before execution without guessing an installation
