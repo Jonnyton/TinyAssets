@@ -318,7 +318,7 @@
       <div id="notify-prompt" class="notify-prompt" role="status" hidden>
         <span id="notify-prompt-text" class="notify-prompt-text"></span>
         <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
-        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">Not now</button>
+        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
       </div>
       <div class="chat-body">
         <div id="thread" class="thread">
@@ -6565,7 +6565,7 @@
     $("notify-prompt-text").textContent=NOTIFY_PROMPT_COPY[mode];
     $("btn-notify-prompt-on").hidden=mode!=="offer";
     $("btn-notify-prompt-on").disabled=false;
-    $("btn-notify-prompt-dismiss").textContent=mode==="offer" ? "Not now" : "Dismiss";
+    $("btn-notify-prompt-dismiss").textContent=mode==="offer" ? "No thanks" : "Dismiss";
     $("notify-prompt").hidden=false;
   }
   function hideNotifyPrompt(){ $("notify-prompt").hidden=true; }
