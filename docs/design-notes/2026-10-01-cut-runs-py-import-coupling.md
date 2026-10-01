@@ -63,6 +63,18 @@ exercises runs at runtime, and the selector would then under-select. The split
 and the name-only table remove the real dependency; laziness is used only
 where the dependency really is conditional (dispatch by action name).
 
+**R4's honest limit.**
+- A test that calls a *run* action through the server still runs `api/runs`,
+  but after R4 the static selector no longer sees that dependency. Those tests
+  move from "selected by import" to "caught by the queue".
+- Only tests calling *other* actions are truly decoupled.
+- Mitigation: keep the run action names in `api/action_names.py` as the one
+  definition, which `api/runs` asserts its table against. A selector rule
+  then maps that file to `api/runs`, so a test importing the names is selected
+  for a runs change.
+- Measured alone, R4 takes runs.py fan-in from 436 to 235 and graph_compiler
+  from 460 to 266.
+
 ## Expected effect (simulated against the real graph, 2026-10-01)
 
 | | runs.py fan-in | graph_compiler fan-in |
