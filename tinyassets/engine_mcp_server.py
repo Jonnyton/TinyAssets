@@ -2206,7 +2206,9 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       ``not_before`` or ``delay_seconds`` instead of a trigger is one wake I set
       for myself, so a timer heartbeat is optional. These are existing
       owner-scoped controls; a generic pending-request answer does not grant
-      tools or execute them. A code
+      tools or execute them. Pause stops future triggers; resume reactivates
+      the existing schedule; delete retires it and removes that automation's
+      branch dependency. A code
       node granted ``"enqueue_branch_run"`` wakes one of my branches now or not
       before a time: ``invoke_mcp_action("enqueue_branch_run",
       branch_def_id=..., inputs={...})``. Each automation holds its own lease, so
@@ -2793,8 +2795,6 @@ def write_graph(
     one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
     ``{"branch_def_id"}``), ``pending_request_answered`` or ``owner_message``
     wakes it with ``inputs.event``.
-    Pause stops future triggers; resume reactivates the existing
-    schedule; delete retires it and removes that automation's branch dependency.
     None cancels an already-running job. Read back the trigger and its last run
     before claiming work has stopped.
 
