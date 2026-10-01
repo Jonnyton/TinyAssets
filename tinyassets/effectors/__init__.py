@@ -385,6 +385,11 @@ class EffectChain:
     #: persisted on interrupt and seeded on resume.
     rpc_calls: int = 0
     invocation_depth: int = 0
+    #: The run's own provider call, for the auto-review of a consequential
+    #: action (harness D1d), and whether this chain belongs to a runner at all.
+    #: The legacy post-run dispatcher has no runner and no run model.
+    review_provider: Any = field(default=None, repr=False)
+    review_active: bool = False
     #: Usage budgets (change `run-usage-budgets`): what this RUN has dispatched
     #: and moved; the hourly half is in the admissions ledger under
     #: ``universe_id``. Graph shape is unbounded; this is what bounds it.
@@ -875,7 +880,10 @@ def _fire_node_effects(
                 adapter_kwargs["timeout_seconds"] = float(
                     getattr(node, "timeout_seconds", 0.0) or 0.0
                 )
-            result = adapter(**adapter_kwargs)
+            from tinyassets.agent_review import bound as review_bound
+
+            with review_bound(chain.review_provider, active=chain.review_active):
+                result = adapter(**adapter_kwargs)
         except Exception as exc:  # defensive: never raise from an adapter
             if is_cancellation(exc):
                 # The owner stopped the run. Recording it as one node's crash
@@ -920,6 +928,7 @@ def run_effects_for_branch(
     run_id="",
     dry_run=None,
     cloud_effect_session=None,
+    review_provider=None,
 ):
     """Post-run dispatch of every node's effects, in branch STORAGE order.
 
@@ -928,10 +937,14 @@ def run_effects_for_branch(
     time through ``dispatch_node_effects`` and never come here - the runner
     reads the chain's evidence instead, so nothing is dispatched twice.
     Failures are structured rows, never raised.
+
+    A consequential action is checked first (harness D1d) only with an
+    explicit ``review_provider``; without one it is held, never sent.
     """
     chain = EffectChain(
         run_id=run_id, base_path=base_path, dry_run=dry_run,
         cloud_effect_session=cloud_effect_session,
+        review_provider=review_provider, review_active=review_provider is not None,
     )
     schema_defaulted = _schema_defaulted_keys(getattr(branch, "state_schema", None))
     node_defs = list(getattr(branch, "node_defs", None) or [])

@@ -15,9 +15,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from tinyassets import agent_rules
+from tinyassets import agent_review, agent_rules
 from tinyassets.agent_rules import ASK_FIRST, DO, DO_IF_PREAPPROVED, HAND_OFF
 
+
+def _approving_review():
+    return agent_review.bound(
+        lambda *_a, **_kw: '{"verdict": "proceed", "reason": "ok"}', active=True)
 
 def _universe(tmp_path: Path) -> Path:
     path = tmp_path / "data" / "u-alpha"
@@ -129,7 +133,9 @@ def test_a_rule_stops_a_call_its_grant_would_allow(tmp_path, behaviour, kind):
 def test_the_seed_lets_a_granted_write_proceed_to_its_grant_check(tmp_path):
     from tinyassets.effectors.authenticated_external_call import _rule_refusal
 
-    assert _rule_refusal(_universe(tmp_path), "conn-1", "POST") is None
+    # The rule lets it through; the check on the run's model (D1d) approves here.
+    with _approving_review():
+        assert _rule_refusal(_universe(tmp_path), "conn-1", "POST") is None
 
 
 def test_an_unreadable_rule_store_refuses_the_call(tmp_path, monkeypatch):
@@ -284,7 +290,8 @@ def test_a_declared_payment_is_handed_back_by_default(tmp_path):
     refusal = _rule_refusal(universe, "stripe", "POST", "/v1/charges")
     assert refusal["error_kind"] == "rule_hand_off"
     # The same connection's undeclared paths are ordinary writes.
-    assert _rule_refusal(universe, "stripe", "POST", "/v1/customers") is None
+    with _approving_review():
+        assert _rule_refusal(universe, "stripe", "POST", "/v1/customers") is None
 
 
 def test_the_longest_prefix_and_a_specific_method_win(tmp_path):

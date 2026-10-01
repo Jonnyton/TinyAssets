@@ -569,8 +569,15 @@ unchanged. They become the data the `app.write` rules consult.
   Rules tab (decided 2026-10-01). The tab says what that means: actions of that
   kind then proceed on the rule alone.
 - **Invocation.** A separate, **tool-free** call on the universe's own model.
-  - It runs **under the activity's existing seat admission**, so it needs no
-    second seat and cannot deadlock waiting for one.
+  - It is admitted like any agent call, through the same seat-aware executor:
+    it re-enters the activity's seat when the activity holds one (an
+    automation), and otherwise queues for the account's own. The node's seat is
+    already released when its effects fire, so the review never waits behind
+    the work it reviews. It has its own deadline.
+  - A consequential action with no run model bound to review it is held at the
+    send boundary, never sent unchecked.
+  - Its answer must be exactly one JSON object with exactly the two fields; an
+    object echoed inside prose is no answer.
   - It is not itself reviewed.
   - It gets one bounded retry. After that the action becomes a request naming
     the cause, and the activity releases its seat while waiting.
@@ -993,6 +1000,22 @@ is authority, and its proposal, design and spec deltas are this change.
 11. Build the Rules tab and change the S1 `AGENTS.md` authority text.
 12. Live proof: approve once, then reuse. A hand-back becomes a request. A
     workflow created by a narrowed agent is refused what that agent is refused.
+
+*As built (2026-10-01, lead decision).* D1 ships as D1a, D1b and D1d:
+- **D1a:** the rules store, `decide`, the seed and the owner door.
+- **D1b:** declared operation kinds and the Rules editor.
+- **D1d:** the auto-review on the run's own model and the per-class switch.
+
+The execution context (tasks 2–3) is **folded into D8**. While "main" is the
+only agent, every action is already decided under main's rules, so it adds
+nothing earlier. Its two pieces that matter sooner land where they are first
+needed:
+- the research flag with D3;
+- the approval id with D2/D3. Until then, *if pre-approved* asks first, which
+  fails closed.
+
+Enforcement so far is at the credential-blind effector. The other points follow
+the surfaces that need them (`ta` in D6, `browse` in D5).
 
 **D2: Activities** (storage proposal first)
 1. Write the storage proposal: records, pending effects, idempotency keys,

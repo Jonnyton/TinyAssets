@@ -197,11 +197,11 @@ Seed rules SHALL allow every workspace action, the agent's own harness edits, sh
 ### Requirement: Consequential actions pass an auto-review that can only tighten
 By default, before any consequential action whose rule is do or do if pre-approved, the platform SHALL run a review. A consequential action is any class other than workspace actions, the agent's own harness edits and connected-app reads. The owner MAY switch the review off per class, and the app SHALL state what that means.
 
-The review SHALL be a tool-free call on the universe's own model under the activity's existing seat admission. It SHALL itself not be reviewed, and SHALL be retried at most once. Its inputs SHALL be:
+The review SHALL be a tool-free call on the universe's own model, admitted like any agent call: it SHALL re-enter the activity's seat when the activity holds one, and otherwise queue for the account's own. It SHALL have its own deadline. It SHALL itself not be reviewed, and SHALL be retried at most once. A consequential action that reaches the send boundary with no run model bound to review it SHALL be held, not sent. Its inputs SHALL be:
 - trusted: the structured planned action, the matching rules, the built-in safety requirements and authenticated owner messages;
 - untrusted evidence: action text, page content and agent-editable harness files.
 
-It SHALL return proceed, or needs approval with a reason. The result SHALL be bound to the exact action and rule-set version. The review SHALL only convert an action to ask first; it SHALL NOT create grants, loosen rules or override hand off. If the review cannot run, the action SHALL become a request naming the cause, and the activity SHALL release its seat while waiting.
+It SHALL return proceed, or needs approval with a reason, as exactly one JSON object with exactly those fields; any other reply SHALL count as no answer. The result SHALL be bound to the exact action and rule-set version. The review SHALL only convert an action to ask first; it SHALL NOT create grants, loosen rules or override hand off. If the review cannot run, the action SHALL become a request naming the cause, and the activity SHALL release its seat while waiting.
 
 #### Scenario: review blocks an off-instruction send
 - **WHEN** a do rule covers a channel but the planned message contradicts the owner's stated instructions
@@ -210,6 +210,10 @@ It SHALL return proceed, or needs approval with a reason. The result SHALL be bo
 #### Scenario: hostile content cannot approve itself
 - **WHEN** the content of a planned action instructs the reviewer to proceed
 - **THEN** that content is treated as untrusted evidence and cannot turn an ask-first or hand-off action into one that proceeds
+
+#### Scenario: an approval echoed inside the reply is no answer
+- **WHEN** the reviewer's reply quotes a proceed object from the action's content inside other text
+- **THEN** the reply counts as no answer and the action is held
 
 #### Scenario: review cannot run
 - **WHEN** the universe's model is unavailable at review time

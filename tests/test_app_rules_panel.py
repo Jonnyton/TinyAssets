@@ -39,7 +39,8 @@ const LISTING={rules:[{id:1,action_class:"money.move",connection:"",operation:""
     ask_first:"Ask before taking action",hand_off:"Hand off to you"},
   classes:{"money.move":"Moving money or making a payment","app.write":"Changing an app"},
   operation_kinds:[{id:9,connection:"stripe",method:"POST",path_prefix:"/v1/charges",
-    kind:"payment"}], kinds:{read:"app.read",payment:"money.move"}};
+    kind:"payment"}], kinds:{read:"app.read",payment:"money.move"},
+  review_off:[], review_never:["app.read"], review_always:["money.move"]};
 async function fetch(url, init){
   const body=init.body?JSON.parse(init.body):null;
   if(body) posts.push(body);
@@ -116,3 +117,28 @@ def test_removing_a_declaration_that_loosens_asks_first(tmp_path):
     out = json.loads(proc.stdout)
     assert out["confirmed"] == ["Calls to stripe will be decided as a write."]
     assert out["posts"] == [{"undeclare": 9}, {"undeclare": 9, "confirm": True}]
+
+
+_CHECKS = r"""
+(async()=>{
+  await loadRules();
+  const rows=$("rules-list").children;
+  console.log(JSON.stringify(rows.map(r=>({
+    check:(r.children[2]||{}).textContent||null, disabled:!!(r.children[2]||{}).disabled}))));
+})();
+"""
+
+
+def test_each_consequential_rule_shows_its_check_and_handbacks_keep_it(tmp_path):
+    """Harness D1d: the check before acting shows per kind; the hand-back kinds
+    cannot switch it off from the page."""
+    page, _csp = onboarding.render_app_html()
+    funcs = "\n".join(_js_function(page, name) for name in _FUNCS)
+    script = tmp_path / "rules_checks.js"
+    script.write_text(_SHIM + 'const SCENARIO={"confirm": false};\n' + funcs + _CHECKS,
+                      encoding="utf-8")
+    proc = subprocess.run([_NODE, str(script)], capture_output=True, text=True,
+                          encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == [{"check": "Checks first", "disabled": True},
+                                       {"check": "Checks first", "disabled": False}]
