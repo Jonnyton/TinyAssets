@@ -73,6 +73,17 @@ def test_the_chapter_is_fetchable_by_the_route_the_index_advertises() -> None:
         "tinyassets.listAgents",
         "tinyassets.sendMessage",
         "tinyassets.readConversation",
+        # One UI at a time, so a library bigger than one tool result never
+        # has to be read whole (live 2026-09-30: a cut read stopped a switch).
+        'operation="activate"',
+        'operation="use_default"',
+        'operation="add_ui"',
+        'operation="replace_ui"',
+        'operation="edit_ui"',
+        'operation="remove_ui"',
+        'query="<ui_id>"',
+        "field_name",
+        "expected_etag",
         # Switching and sharing.
         "ui_selection",
         'operation="publish"',
