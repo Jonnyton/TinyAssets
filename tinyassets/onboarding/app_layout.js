@@ -166,7 +166,7 @@
       // is still one consistent view.
       let bindings=[],page=this.PAGE;
       for(;;){
-        const doc=await MCP.callTool("read_graph",{target:"agent_bindings",graph_id:this.home,limit:page},{idempotent:true});
+        const doc=await Owner.read({target:"agent_bindings",graph_id:this.home,limit:page});
         if(!this.fence(epoch,home)) throw new Error("Session changed");
         if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("Installed layouts unavailable");
         bindings=doc.bindings;
@@ -181,7 +181,7 @@
       return this.candidates;
     },
     async getDefinition(id){
-      const doc=await MCP.callTool("read_graph",{target:"agent",agent_definition_id:id},{idempotent:true});
+      const doc=await Owner.read({target:"agent",agent_definition_id:id});
       if(!doc||doc.error||!doc.agent||doc.agent.agent_definition_id!==id) throw new Error("Definition unavailable or mismatched");
       return doc.agent;
     },
@@ -231,7 +231,7 @@
       const epoch=this.epoch,home=this.home,query=String($("layout-search").value||"").trim();
       this.status("Searching public layouts…");
       try{
-        const doc=await MCP.callTool("read_graph",{target:"agents",query,limit:30},{idempotent:true});
+        const doc=await Owner.read({target:"agents",query,limit:30});
         if(!this.fence(epoch,home)) return;
         if(!doc||doc.error||!Array.isArray(doc.agents)) throw new Error(doc&&doc.error?String(doc.error):"public layouts unavailable");
         this.results=doc.agents;
@@ -321,8 +321,8 @@
         if(!result||result.error||result.status!=="configured"||!written||!this.eligible(written)||
            written.updated_by!==this.principal||written.agent_definition_id!==definitionId||
            (b&&written.agent_binding_id!==b.agent_binding_id))throw Error("Selection save was not confirmed");
-        const doc=await MCP.callTool("read_graph",{target:"agent_binding",graph_id:home,
-          agent_binding_id:written.agent_binding_id},{idempotent:true});
+        const doc=await Owner.read({target:"agent_binding",graph_id:home,
+          agent_binding_id:written.agent_binding_id});
         if(!this.fence(epoch,home))return;
         const check=doc&&doc.binding;
         if(!this.eligible(check)||check.updated_by!==this.principal||check.agent_binding_id!==written.agent_binding_id||
@@ -418,7 +418,7 @@
         const written=result.binding;
         if(!this.eligible(written)||written.agent_definition_id!==defId||
           (this.installation&&written.agent_binding_id!==this.installation.binding_id)) throw new Error("Save returned a mismatched installation");
-        const check=await MCP.callTool("read_graph",{target:"agent_binding",graph_id:home,agent_binding_id:written.agent_binding_id},{idempotent:true});
+        const check=await Owner.read({target:"agent_binding",graph_id:home,agent_binding_id:written.agent_binding_id});
         if(!this.fence(epoch,home)) return;
         const b=check&&check.binding;
         if(!this.eligible(b)||b.agent_binding_id!==written.agent_binding_id||String(b.agent_definition_id)!==defId||b.revision!==written.revision){

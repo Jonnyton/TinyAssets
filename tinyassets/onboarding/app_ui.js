@@ -165,7 +165,7 @@
     // One read of the viewer's own row. The server keys it by the signed-in
     // caller, so there is nothing here to name and no owner to check.
     async fetchRow(){
-      const doc=await MCP.callTool("read_graph",{target:"app_ui",graph_id:this.home},{idempotent:true});
+      const doc=await Owner.read({target:"app_ui",graph_id:this.home});
       const row=doc&&doc.app_ui;
       if(!row||doc.error||!Number.isInteger(row.revision)||row.revision<0||row.universe_id!==this.home)
         throw Error((doc&&(doc.detail||doc.error))||"unexpected app UI reply");
@@ -320,13 +320,20 @@
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
     // bundle cannot enumerate anybody else's universe.
+    // Every row of one of the viewer's OWN lists. The read takes a page size
+    // and no offset, so ask for a page and, while the server fills it exactly,
+    // ask for a bigger one (AppLayout.currentBindings does the same): a bundle
+    // sees the whole list, never a first page passed off as all of it. A fixed
+    // page here was an owner-volume cliff -- the 101st agent read as "no agent
+    // of yours" (Codex on owner-door-complete-reads, 2026-09-30).
+    async readWhole(args,key){
+      for(let page=AppLayout.PAGE;;page*=4){
+        const doc=await Owner.read(Object.assign({},args,{limit:page}));
+        if(!doc||doc.error||!Array.isArray(doc[key])||doc[key].length<page) return doc;
+      }
+    },
     async listAgents(){
-      // One page, the size AppLayout reads with. A bundle asking "what agents do
-      // I have" is a display read: if a viewer keeps more than a page of them it
-      // sees the newest page, which is a page size, not a refusal. Nothing here
-      // disables a control on the count (that cliff was removed 2026-09-30).
-      const doc=await MCP.callTool("read_graph",
-        {target:"agent_bindings",graph_id:this.home,limit:AppLayout.PAGE},{idempotent:true});
+      const doc=await this.readWhole({target:"agent_bindings",graph_id:this.home},"bindings");
       if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
       const selected=AppLayout.installation&&AppLayout.installation.configuration&&
         AppLayout.installation.configuration.turn_consumer;
@@ -375,22 +382,29 @@
     // read hands a bundle whichever home the account moved to rather than the one
     // it was granted (Codex, 2026-09-26). `verify()` closes the window; this
     // closes the read itself, so neither depends on the other being right.
+    //
+    // One PAGE of it, newest first, and the page says whether older turns exist:
+    // `has_more` and `next_before`, which the bundle passes back as `before` to
+    // read the page before. An unreadable thread is an error, never `turns:[]`.
     async readConversation(args){
       const limit=Number.isInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_READ_TURNS):this.MAX_READ_TURNS;
-      const doc=await MCP.callTool("get_status",
-        {universe_id:this.home,include_conversation:true},{idempotent:true});
+      const call={universe_id:this.home,include_conversation:true,conversation_limit:limit};
+      if(Number.isSafeInteger(args.before)&&args.before>=0) call.conversation_before=args.before;
+      const doc=await Owner.status(call);
       if(!doc||doc.error) throw new Error("your conversation is unavailable");
       if(String(doc.universe_id||"")!==this.home)
         throw new Error("that conversation belongs to another universe; this UI's access ended");
       const conversation=doc.recent_conversation;
-      const raw=(conversation&&Array.isArray(conversation.turns))?conversation.turns:[];
+      if(!conversation||typeof conversation.error==="string"||!Array.isArray(conversation.turns))
+        throw new Error("your conversation could not be read");
       const turns=[];
-      for(const turn of raw.slice(-limit)){
+      for(const turn of conversation.turns){
         if(!turn||typeof turn.text!=="string") continue;
         turns.push({speaker:String(turn.speaker||"unknown"),text:turn.text,
           at:typeof turn.ts==="number"?turn.ts:null,truncated:!!turn.truncated});
       }
-      return {turns};
+      const more=conversation.has_more===true&&Number.isSafeInteger(conversation.next_before);
+      return {turns,has_more:more,next_before:more?conversation.next_before:null};
     },
 
     // ---- live state: the viewer's own automations and runs, read-only -------
@@ -403,8 +417,7 @@
     // The server scopes each of these to the named universe, so a run id from
     // anywhere else reads as not found rather than being returned.
     async listAutomations(){
-      const doc=await MCP.callTool("read_graph",
-        {target:"automations",graph_id:this.home,limit:100},{idempotent:true});
+      const doc=await this.readWhole({target:"automations",graph_id:this.home},"automations");
       if(!doc||doc.error||!Array.isArray(doc.automations)) throw new Error("your automations are unavailable");
       if(String(doc.universe_id||"")!==this.home)
         throw new Error("those automations belong to another universe; this UI's access ended");
@@ -424,18 +437,22 @@
       }
       return {automations};
     },
+    // Newest first, at most MAX_LIST_RUNS: a bundle is untrusted code and cannot
+    // raise the bound of one request. The page SAYS whether older runs exist
+    // (one look-ahead row is read to know), so a cut is never silent -- a fixed
+    // 50 with no signal is what Codex round 2 flagged.
     async listRuns(args){
-      const limit=Number.isInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_LIST_RUNS):this.MAX_LIST_RUNS;
-      const call={target:"runs",graph_id:this.home,limit};
+      const limit=Number.isSafeInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_LIST_RUNS):this.MAX_LIST_RUNS;
+      const call={target:"runs",graph_id:this.home,limit:limit+1};
       if(typeof args.status==="string"&&args.status.trim()) call.run_status=args.status.trim();
-      const doc=await MCP.callTool("read_graph",call,{idempotent:true});
+      const doc=await Owner.read(call);
       if(!doc||doc.error||!Array.isArray(doc.runs)) throw new Error("your runs are unavailable");
       const runs=[];
-      for(const r of doc.runs){
+      for(const r of doc.runs.slice(0,limit)){
         if(!r||typeof r!=="object") continue;
         runs.push(this.runSummary(r));
       }
-      return {runs};
+      return {runs,has_more:doc.runs.length>limit};
     },
     runSummary(r){
       return {run_id:String(r.run_id||""),branch_id:String(r.branch_def_id||""),
@@ -450,8 +467,8 @@
     },
     async readRun(args){
       const id=this.runId(args);
-      const doc=await MCP.callTool("read_graph",
-        {target:"run",graph_id:this.home,run_id:id},{idempotent:true});
+      const doc=await Owner.read(
+        {target:"run",graph_id:this.home,run_id:id});
       if(!doc||doc.error||String(doc.run_id||"")!==id) throw new Error("that run is not one of yours");
       const nodes=[];
       for(const n of Array.isArray(doc.node_statuses)?doc.node_statuses:[])
@@ -467,8 +484,8 @@
       const field=typeof args.field==="string"?args.field:"";
       if(!field||field.length>this.MAX_ID) throw new Error("field is required");
       const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
-      const doc=await MCP.callTool("read_graph",{target:"run_output",graph_id:this.home,run_id:id,
-        field_name:field,output_offset:offset,output_max_chars:this.MAX_OUTPUT_CHUNK},{idempotent:true});
+      const doc=await Owner.read({target:"run_output",graph_id:this.home,run_id:id,
+        field_name:field,output_offset:offset,output_max_chars:this.MAX_OUTPUT_CHUNK});
       if(!doc||doc.error||typeof doc.chunk!=="string") throw new Error("that output is not available");
       return {field:String(doc.field_name||field),encoding:doc.encoding==="json"?"json":"text",
         text:doc.chunk,offset:Number.isInteger(doc.offset)?doc.offset:offset,
@@ -488,8 +505,8 @@
     },
     async listFiles(args){
       const path=this.filePath(args.path,false);
-      const doc=await MCP.callTool("read_graph",
-        {target:"universe_files",graph_id:this.home,query:path},{idempotent:true});
+      const doc=await Owner.read(
+        {target:"universe_files",graph_id:this.home,query:path});
       if(!doc||doc.error||!Array.isArray(doc.entries)) throw new Error("that folder is not available");
       if(String(doc.universe_id||"")!==this.home)
         throw new Error("that folder belongs to another universe; this UI's access ended");
@@ -505,8 +522,8 @@
     async readFile(args){
       const path=this.filePath(args.path,true);
       const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
-      const doc=await MCP.callTool("read_graph",{target:"universe_file",graph_id:this.home,
-        query:path,file_offset:offset,file_max_bytes:this.MAX_FILE_CHUNK},{idempotent:true});
+      const doc=await Owner.read({target:"universe_file",graph_id:this.home,
+        query:path,file_offset:offset,file_max_bytes:this.MAX_FILE_CHUNK});
       if(!doc||doc.error) throw new Error("that file is not available");
       if(String(doc.universe_id||"")!==this.home)
         throw new Error("that file belongs to another universe; this UI's access ended");

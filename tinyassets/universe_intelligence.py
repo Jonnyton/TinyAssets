@@ -396,6 +396,40 @@ def _read_bundle_body(universe_dir: Path, filename: str) -> str:
         return ""
 
 
+def _founder_clock_section(universe_dir: Path, universe_id: str) -> str:
+    """Where my founder is in time, so I never ask them for it.
+
+    Live 2026-09-30: asked for a daily morning note, the universe opened a
+    request for "time and timezone" -- which the app already reports at every
+    sign-in (``/app/account/timezone``) and the scheduler already uses. The
+    platform knew; the universe was never told. Founder-only: a visitor's turn
+    does not learn the founder's clock. Unknown resolves to nothing rather than
+    a guess, so the universe asks only when the platform truly does not know.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from tinyassets.storage.account_timezone import get_account_timezone
+    from tinyassets.universe_owner import owner_of
+
+    try:
+        base = universe_dir.parent
+        owner = owner_of(base, universe_id)
+        zone = get_account_timezone(base, owner_user_id=owner) if owner else ""
+        if not zone:
+            return ""
+        now = datetime.now(ZoneInfo(zone))
+    except Exception:  # noqa: BLE001 - a clock we cannot read is not a broken turn
+        logger.warning("founder clock unavailable for %s", universe_id, exc_info=True)
+        return ""
+    return (
+        "# My founder's clock\n"
+        f"My founder is on {zone}; it is {now:%A %Y-%m-%d %H:%M} there now. "
+        "I use this for anything time-of-day (schedules, 'every morning', "
+        "'tonight') and never ask them for their timezone.\n\n"
+    )
+
+
 def _build_persona_system_prompt(
     universe_dir: Path,
     *,
@@ -572,6 +606,10 @@ def _build_persona_system_prompt(
     # paths, it asks for one file at a time, which it cannot do up front (it does
     # not know which files a change touches until it has read the code) and which
     # costs the founder an approval per file.
+    clock_section = (
+        _founder_clock_section(universe_dir, universe_id)
+        if tier == interlocutor.FOUNDER else ""
+    )
     ask_section = ""
     if tier == interlocutor.FOUNDER:
         ask_section = (
@@ -628,6 +666,7 @@ def _build_persona_system_prompt(
         f"{_UNTRUSTED_ENVELOPE_RULE}\n\n"
         f"{brain_section}"
         f"{ask_section}"
+        f"{clock_section}"
         f"# My soul\n{soul_section}\n\n"
         f"# What I know so far\n{grounding}"
     ).strip()

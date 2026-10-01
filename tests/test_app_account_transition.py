@@ -26,7 +26,8 @@ _NODE = shutil.which("node")
 # boundary fix is lifted when present so the test is RED (assertions, not an
 # import error) against a tree that does not have it yet.
 _LIFT = ("setQueueScope", "setQueueOwner", "ownsSavedRow", "savedItem",
-         "flushSendQueue", "enterSignedOut", "loadHistory")
+         "flushSendQueue", "enterSignedOut", "loadHistory", "drawHistoryTurns",
+         "offerEarlier", "loadEarlier", "historyFailed")
 _OPTIONAL = ("clearAccountScopedState", "clearThread", "clearComposerState",
              # Added 2026-09-26 with the sign-out credential fix: this harness
              # runs the page's REAL `enterSignedOut`, so a collaborator it gained
@@ -225,6 +226,17 @@ const CREDENTIAL_FIELDS=[{id:"hosted-key-input",value:""},{id:"endpoint-key",val
 const document={ querySelectorAll(selector){
   return selector==='input[type="password"]' ? CREDENTIAL_FIELDS : [];
 } };
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; }, invalidateSession(){},
   _conv:null, getConversation(){ return this._conv; } };
 function threadText(){
@@ -503,6 +515,17 @@ const NATIVE=false;
 const DOM={};
 function $(id){ if(!DOM[id]) DOM[id]={id, textContent:"", value:"",
   style:{}, focus(){ LOG.push(["focus",id]); }}; return DOM[id]; }
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; } };
 const Uploads={ aborted:0, abort(){ this.aborted++; } };
 const Voice={ refreshCapability(){} };

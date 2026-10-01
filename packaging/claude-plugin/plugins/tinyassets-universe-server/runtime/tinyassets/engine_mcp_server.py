@@ -592,8 +592,13 @@ def read_graph(
     token = _bind_founder_identity()
     try:
         if normalized == "model_options":
+            from tinyassets.api.graph_reads import read_graph as _domain_read
+
+            # The complete domain read, projected HERE: the connector's
+            # `model_options` is already a projection, and projecting a
+            # projection is not this door's view of the catalogue.
             return _untrusted("model_options", _projected(
-                _impl(target=normalized, graph_id=_GRAPH_ID),
+                _domain_read(target=normalized, graph_id=_GRAPH_ID),
                 lambda document: compact_model_options(
                     document, query=query, offset=output_offset,
                 ),
@@ -1951,11 +1956,13 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.whoami()                  -> {universe_id, universe_name}
         await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
         await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
-        await tinyassets.readConversation(limit)   -> {turns:[{speaker,text,at}]}
+        await tinyassets.readConversation(limit, before) -> {turns:[{speaker,text,at}],
+                  has_more, next_before}   # pass next_before as `before` for older
         await tinyassets.listAutomations()         -> {automations:[{automation_id,name,
                   branch_id,trigger,state,last_run_id,last_result,next_due_at,...}]}
         await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,
-                  status,started_at,finished_at,last_node_id}]}   # newest first, <= 50
+                  status,started_at,finished_at,last_node_id}], has_more}
+                  # newest first, at most 50; has_more says there are older
         await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
                   error,output_fields:[...]}
         await tinyassets.readRunOutput(run_id, field, offset)

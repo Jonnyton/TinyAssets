@@ -98,7 +98,9 @@ def test_mcp_tool_large_result_keeps_full_structured_content_with_bounded_text(
 
     # Any canonical handle whose result is large exercises the bounding; the
     # retired `gates` tool this used to call is no longer registered.
-    monkeypatch.setattr(us, "_goals_impl", _large_goals_result)
+    from tinyassets.api import graph_reads
+
+    monkeypatch.setattr(graph_reads, "_goals_impl", _large_goals_result)
 
     async def _call_read_graph():
         return await us.mcp.call_tool("read_graph", {"target": "goals"})

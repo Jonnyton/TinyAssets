@@ -735,7 +735,9 @@ universe and enforce the existing record ACL before content or mutation.
 
 ### Requirement: Shared unpowered model catalogue
 The read_graph handle SHALL accept target=model_options without changing its
-arguments or direct string/structured-adapter return contract. The read SHALL
+arguments. On the connector (the model door) its structured reply is the bounded
+catalogue projection; the complete document is served to the owner by the owner
+door. The read SHALL
 require the authenticated owner's complete current home and explicit admin ACL.
 It SHALL NOT create a home, agent, assignment, preference or inference grant.
 
@@ -749,10 +751,11 @@ It SHALL NOT create a home, agent, assignment, preference or inference grant.
 - **THEN** the read refuses without disclosing that graph's model inventory
 - **AND** omitted scope never resolves to a designated public universe
 
-#### Scenario: Complete choices, not a first-page sample
-- **WHEN** approved discovery returns more models than the default read limit
-- **THEN** all protocol-bounded choices survive in structured content
-- **AND** limit does not silently hide models from this catalogue target
+#### Scenario: Complete choices at the owner door, a projection at the model door
+- **WHEN** approved discovery returns more models than fit one model-context reply
+- **THEN** the owner door (`POST /app/api/read` with `target=model_options`) returns every protocol-bounded choice
+- **AND** the connector's `read_graph target=model_options` returns the bounded `compact_model_options` projection, identical to `target=model_options_summary`, whose cursor reaches every model exactly once
+- **AND** neither door silently hides a model: the projection always carries the catalogue totals
 
 #### Scenario: Registration is not execution authority
 - **WHEN** an owned registered HTTP source has approved discovery but is not accepted for inference
@@ -1141,3 +1144,24 @@ The served `read_graph target=run` SHALL re-read a run that is `queued`, `runnin
 #### Scenario: a run that settles inside the window
 - **WHEN** a run completes 3 seconds after the read begins
 - **THEN** one tool call returns the completed record
+
+### Requirement: The connector bounds reads only as a model-door projection
+
+The connector's single-result ceiling SHALL apply to `read_graph` replies as a
+projection at the model door. It SHALL NOT be the path by which the owner's own
+app reads its data; the app reads through the owner door
+(`onboarding-web-app`). The connector's ceiling-exempt set SHALL contain only
+reads whose contract a truncation marker would break: `run_file` and
+`conversation` (caller-bounded chunks carrying a cursor) and `conversation_turn`
+(the universe's committed reply, the same payload `converse` returns). No entry
+SHALL exist because a first-party client reads it.
+
+#### Scenario: A model-sized reply is bounded visibly
+- **WHEN** a `read_graph` reply on the connector exceeds the ceiling
+- **THEN** the reply is the truncation marker with `truncated: true`, the original size and a narrowing hint
+- **AND** the owner door serving the same read returns the complete document
+
+#### Scenario: The pending-request read is complete before any projection
+- **WHEN** an owner has more pending requests than any former default page
+- **THEN** `read_graph target=pending_requests` builds the complete list before the ceiling is applied
+- **AND** `limit` does not cut the owner's own pending rows

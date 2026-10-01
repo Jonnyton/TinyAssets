@@ -187,7 +187,7 @@ class TestBackfill:
 
 class TestTierOf:
     def test_no_home_is_free(self, base):
-        assert uo.tier_of(base, A) == TIER_FREE
+        assert uo.account_type_of(base, A) == TIER_FREE
 
     def test_the_home_subscription_is_the_account_tier(self, base):
         initialize_author_server(base)
@@ -196,8 +196,8 @@ class TestTierOf:
         set_founder_home(base, founder_sub=A, universe_id="u-home")
         _set_paid(home)
 
-        assert uo.tier_of(base, A) == TIER_PAID
-        assert uo.tier_of(base, B) == TIER_FREE
+        assert uo.account_type_of(base, A) == TIER_PAID
+        assert uo.account_type_of(base, B) == TIER_FREE
 
     def test_a_paid_non_home_universe_does_not_make_the_account_paid(self, base):
         initialize_author_server(base)
@@ -207,16 +207,16 @@ class TestTierOf:
         set_founder_home(base, founder_sub=A, universe_id="u-home")
         _set_paid(other)
 
-        assert uo.tier_of(base, A) == TIER_FREE
+        assert uo.account_type_of(base, A) == TIER_FREE
 
     def test_a_traversal_home_is_free_not_read(self, base):
         initialize_author_server(base)
         set_founder_home(base, founder_sub=A, universe_id="../outside")
 
-        assert uo.tier_of(base, A) == TIER_FREE
+        assert uo.account_type_of(base, A) == TIER_FREE
 
     def test_an_unnamed_principal_is_free(self, base):
-        assert uo.tier_of(base, "") == TIER_FREE
+        assert uo.account_type_of(base, "") == TIER_FREE
 
 
 # --------------------------------------------------------------------------- #
@@ -260,7 +260,7 @@ class TestAccountDeletion:
         assert owner == f"deleted:{_fingerprint(A)}"
         assert A not in owner
         assert uo.owned_universes(base, A) == []
-        assert uo.tier_of(base, owner) == TIER_FREE
+        assert uo.account_type_of(base, owner) == TIER_FREE
 
     def test_a_deleted_owner_does_not_block_the_survivors_own_deletion(self, base):
         """A owned B's home; A deleted their account. B must still be able to

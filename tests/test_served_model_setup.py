@@ -28,6 +28,10 @@ def test_model_reads_pin_universe_and_restore_identity(bound, monkeypatch, targe
         return json.dumps({"model_id": "untrusted catalogue text"})
 
     monkeypatch.setattr("tinyassets.universe_server.read_graph", read)
+    # model_options is read from the shared domain dispatch and projected by the
+    # engine (projecting the connector's projection would be a second bound), so
+    # the pin and identity are asserted at whichever read the target reaches.
+    monkeypatch.setattr("tinyassets.api.graph_reads.read_graph", read)
     selectors = {"agent_binding_id": "binding-x"} if target == "agent_binding" else {}
     output = engine.read_graph(target=target, **selectors)
     assert seen == [({"target": target, "graph_id": "u-setup", **selectors}, "owner-setup")]

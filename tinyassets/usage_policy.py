@@ -11,7 +11,7 @@ allowance per person, shared across all of their universes.
 * ``storage_bytes`` -- the account's cloud footprint (change
   `account-storage-quota`).
 
-Which tier an account is on is `universe_owner.tier_of`; this module only says what
+Which tier an account is on is `universe_owner.account_type_of`; this module only says what
 each tier permits. An unresolvable tier is FREE, never unlimited. There are no rate
 meters of any kind.
 """
@@ -22,6 +22,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass
+from enum import StrEnum
 from urllib.parse import quote
 
 _log = logging.getLogger(__name__)
@@ -29,10 +30,31 @@ _log = logging.getLogger(__name__)
 TIER_FREE = "free"
 TIER_PAID = "paid"
 
+
+class AccountType(StrEnum):
+    """The ONLY per-account input allowed to change behaviour (PLAN.md, *Owner
+    surfaces are complete*; founder 2026-09-30: "there are only two account types,
+    free or subscription and we dont care what connections they have").
+
+    Resolved in exactly one place, per ACCOUNT: `universe_owner.account_type_of`
+    (and `account_type_for_universe`, which goes through the owner). Policy takes
+    this value and nothing else about an account -- not its connections, not how
+    much it has stored or asked, not whose it is. Two numbers depend on it
+    (`limits_for`); nothing a user SEES does, apart from those numbers and the
+    upgrade link. ``SUBSCRIPTION`` keeps the stored value ``"paid"`` because that is
+    what billing has already written.
+
+    A ``StrEnum`` so a stored value and a constant compare equal (and format as
+    the stored word) without a conversion at every call site.
+    """
+
+    FREE = TIER_FREE
+    SUBSCRIPTION = TIER_PAID
+
 #: Weakest first. `upgrade_url` returns None for the last entry, so a future middle
 #: tier needs no change at the call sites -- "is there a tier above this one" is a
 #: question about the table, never a `tier != "free"` test at a message site.
-TIER_ORDER = (TIER_FREE, TIER_PAID)
+TIER_ORDER = (AccountType.FREE, AccountType.SUBSCRIPTION)
 
 #: Seats: concurrent agent calls per account.
 #:
@@ -126,14 +148,10 @@ class TierLimits:
     disagree with the seat count it is subtracted from.
     """
 
-    name: str
+    name: AccountType
     seats: int
     interactive_reserve: int
     storage_bytes: float
-
-    @property
-    def is_paid(self) -> bool:
-        return self.name == TIER_PAID
 
     @property
     def background_seats(self) -> int:
@@ -164,20 +182,20 @@ def app_path() -> str:
     return path.rstrip("/") or _DEFAULT_APP_PATH
 
 
-def upgrade_url(tier: str) -> str | None:
+def upgrade_url(tier: AccountType | str) -> str | None:
     """Where this tier's owner goes to buy more, or None on the top tier.
 
     None rather than a link on the highest tier because there is nothing to sell
     them, and derived from `TIER_ORDER` rather than compared against `"free"` so a
     future middle tier needs no change at any message site.
     """
-    normalized = normalize_tier(tier)
+    normalized = account_type(tier)
     if normalized == TIER_ORDER[-1]:
         return None
     return f"{_UPGRADE_ORIGIN}{quote(app_path())}?{_UPGRADE_QUERY}"
 
 
-def upgrade_sentence(tier: str, *, what: str = "seats") -> str:
+def upgrade_sentence(tier: AccountType | str, *, what: str = "seats") -> str:
     """The upgrade half of a waiting or full message: one clickable link inline,
     never a banner, button, card or modal (founder, 2026-09-30). Empty on the top
     tier, so a caller concatenates unconditionally and the top tier simply gets the
@@ -188,13 +206,17 @@ def upgrade_sentence(tier: str, *, what: str = "seats") -> str:
     return f"[Upgrade]({url}) for more {what}."
 
 
-def normalize_tier(tier: str) -> str:
-    """Resolve a tier string. Anything unrecognized is the WEAKEST tier and says
-    so, because the alternative to "unknown means free" is "unknown means
-    unlimited"."""
+def account_type(tier: AccountType | str) -> AccountType:
+    """Read a stored tier value as an `AccountType`. Anything unrecognized is the
+    WEAKEST type and says so, because the alternative to "unknown means free" is
+    "unknown means unlimited". This READS a value; it does not resolve whose
+    account it is -- that is `universe_owner.account_type_of`."""
+    if isinstance(tier, AccountType):
+        return tier
     normalized = (tier or "").strip().lower()
-    if normalized in TIER_ORDER:
-        return normalized
+    for member in TIER_ORDER:
+        if normalized == member.value:
+            return member
     if normalized:
         _log.warning(
             "unrecognized account tier %r; applying the %s tier's limits",
@@ -204,10 +226,12 @@ def normalize_tier(tier: str) -> str:
     return TIER_ORDER[0]
 
 
-def limits_for(tier: str) -> TierLimits:
-    """Resolve a tier's limits. An unknown tier resolves to FREE, never unlimited."""
-    normalized = normalize_tier(tier)
-    paid = normalized == TIER_PAID
+def limits_for(account: AccountType) -> TierLimits:
+    """What an account type permits. The account type is the whole input: there is
+    no other per-account argument, so no caller can make a limit depend on
+    anything else about the account. An unknown value resolves to FREE."""
+    normalized = account_type(account)
+    paid = normalized is AccountType.SUBSCRIPTION
     seats = _positive_int(
         _PAID_SEATS_VAR if paid else _FREE_SEATS_VAR,
         _DEFAULT_PAID_SEATS if paid else _DEFAULT_FREE_SEATS,
@@ -226,3 +250,11 @@ def limits_for(tier: str) -> TierLimits:
         interactive_reserve=reserve,
         storage_bytes=storage_mb * 1024.0 * 1024.0,
     )
+
+
+def limits_for_universe(universe_dir) -> TierLimits:
+    """The limits of the ACCOUNT that owns this universe (founder, 2026-09-30:
+    per account, not per universe)."""
+    from tinyassets.universe_owner import account_type_for_universe
+
+    return limits_for(account_type_for_universe(universe_dir))

@@ -60,7 +60,9 @@ def _serving_hint(base: Path, *, universe_id: str, actor: str) -> tuple[str | No
     try:
         from tinyassets.custom_agents import list_bindings
 
-        bindings = list_bindings(base, universe_id=universe_id, limit=30)
+        # Every binding: the owner's own is looked for AMONG them, so a page
+        # of 30 newer ones by other creators used to hide it.
+        bindings = list_bindings(base, universe_id=universe_id, limit=None)
     except Exception:  # noqa: BLE001 - hint is advisory; never fail the deposit
         return None, None
     owned = [b for b in bindings if b.get("created_by") == actor]

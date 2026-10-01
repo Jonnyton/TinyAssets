@@ -629,7 +629,7 @@ def test_universes_share_their_owners_pool_but_not_another_accounts(tmp_path):
 
 
 def test_the_seat_count_is_the_owners_tier(tmp_path):
-    """The tier is `universe_owner.tier_of`: the subscription on the owner's HOME
+    """The tier is `universe_owner.account_type_of`: the subscription on the owner's HOME
     universe covers every universe they own."""
     from tests.test_universe_owner import _set_paid
     from tinyassets.daemon_server import grant_universe_ownership, set_founder_home

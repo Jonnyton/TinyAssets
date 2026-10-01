@@ -35,6 +35,17 @@ $('composer-input').value='private unsent draft';$('composer').appendChild($('co
 const original=[...host.children],bodyOriginal=[...body.children];
 let me={principal_id:'alice',universe_id:'u-alice',setup:'connected'},rows=[],calls=[];
 const fetchMe=async()=>me,sessionExpired=()=>{throw Error('expired');};
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={callTool:async(tool,args)=>{calls.push({tool,args});return {bindings:rows};}};
 '''
     checks = r'''

@@ -139,14 +139,15 @@ def owner_of_key(key: str) -> str | None:
     return key[len(_ACCOUNT_PREFIX):] if key.startswith(_ACCOUNT_PREFIX) else None
 
 
-def tier_of_key(key: str, *, root: str | Path) -> str:
-    """The tier of an account key, via ``universe_owner.tier_of``. An
-    unattributed pool is free: unknown never resolves to paid."""
-    from tinyassets.universe_owner import tier_of
-    from tinyassets.usage_policy import TIER_FREE
+def tier_of_key(key: str, *, root: str | Path):
+    """The `AccountType` of an account key, via ``universe_owner.account_type_of``
+    -- the one per-account input policy takes. An unattributed pool is free:
+    unknown never resolves to a subscription."""
+    from tinyassets.universe_owner import account_type_of
+    from tinyassets.usage_policy import AccountType
 
     owner = owner_of_key(key)
-    return tier_of(root, owner) if owner else TIER_FREE
+    return account_type_of(root, owner) if owner else AccountType.FREE
 
 
 def limits_for_key(key: str, *, root: str | Path):

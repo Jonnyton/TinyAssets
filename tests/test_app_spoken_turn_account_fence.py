@@ -57,8 +57,8 @@ function accountBoundary(owner,scope){
   Voice.stop(false);
   MCP._loginEpoch++; clearAccountScopedState(); messages.length=0;
   setQueueOwner(owner); setQueueScope(scope);
-  MCP.getStatus=async()=>({active_host:"h",universe_id:scope});
-  MCP.getConversation=async()=>({universe_id:scope, recent_conversation:{turns:[]}});
+  Owner.getStatus=async()=>({active_host:"h",universe_id:scope});
+  Owner.getConversation=async()=>({universe_id:scope, recent_conversation:{turns:[]}});
 }
 function fence(){
   const live=els.thread.children.filter(n=>!n.removed);

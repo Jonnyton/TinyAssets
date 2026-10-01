@@ -149,7 +149,7 @@ def _pending_confirmation(base: Path, *, universe: Path, uid: str, owner: str,
 
     matches = []
     ledger = ConnectionLedger(base / "outbound.db")
-    for request in list_pending(universe, limit=None):
+    for request in list_pending(universe):
         action = request.get("action") or {}
         if action.get("type") != "bind_model_access":
             continue
