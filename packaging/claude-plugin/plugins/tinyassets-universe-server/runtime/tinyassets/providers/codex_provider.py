@@ -222,10 +222,13 @@ def _terminal_auth_failure(excerpt: str) -> bool:
     return any(phrase in lower for phrase in _TERMINAL_AUTH_PHRASES)
 
 
+#: Where the adapter's private home is mounted inside its jail.
+_JAIL_HOME = "/codex-home"
+
 _THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{0,127}")
 
 
-def _codex_session_exists(store: Path, thread_id: str) -> bool:
+def _native_session_exists(store: Path, thread_id: str) -> bool:
     """Whether ``store`` still holds the rollout file for ``thread_id``."""
     if not _THREAD_ID.fullmatch(thread_id or ""):
         return False
@@ -241,7 +244,7 @@ def _codex_home_file_mounts(codex_home: Path) -> list[JailMount]:
     for entry in sorted(codex_home.iterdir()):
         if entry.is_symlink() or not entry.is_file():
             continue
-        mounts.append(JailMount("ro-bind", f"/codex-home/{entry.name}", entry))
+        mounts.append(JailMount("ro-bind", f"{_JAIL_HOME}/{entry.name}", entry))
     if not mounts:
         raise ProviderError("codex served sandbox found no credential files to mount")
     return mounts
@@ -905,10 +908,10 @@ class CodexProvider(BaseProvider):
             resume_record = agent_sessions.resumable(
                 session_ref, adapter=self.name, model=model or "", prompt=prompt,
             )
-            if resume_record is not None and not _codex_session_exists(
+            if resume_record is not None and not _native_session_exists(
                 session_store, str(resume_record["handle"]),
             ):
-                logger.warning("codex session for %s is gone; starting a new one", session_ref.key)
+                logger.warning("native session for %s is gone; starting a new one", session_ref.key)
                 resume_record = None
             if resume_record is not None:
                 full_input = agent_sessions.resume_input(session_ref, resume_record, system)
@@ -949,17 +952,17 @@ class CodexProvider(BaseProvider):
                     # /codex-home/.lock: Read-only file system", exit 73 in 56 ms
                     # -> "codex exhausted", live 2026-08-22). The credential bytes
                     # stay immutable; only scratch files can be created beside them.
-                    JailMount("tmpfs", "/codex-home"),
+                    JailMount("tmpfs", _JAIL_HOME),
                     *_codex_home_file_mounts(codex_home),
                     *(
-                        (JailMount("bind", "/codex-home/sessions", session_store),)
+                        (JailMount("bind", f"{_JAIL_HOME}/sessions", session_store),)
                         if session_store is not None else ()
                     ),
                 ),
                 chdir="/workspace",
-                setenv=(("CODEX_HOME", "/codex-home"), ("HOME", "/tmp")),
+                setenv=(("CODEX_HOME", _JAIL_HOME), ("HOME", "/tmp")),
             )
-            proc_env["CODEX_HOME"] = "/codex-home"
+            proc_env["CODEX_HOME"] = _JAIL_HOME
             proc_env["HOME"] = "/tmp"
         else:
             # A universe's call runs in that universe (the shared jail binds
@@ -1175,7 +1178,7 @@ class CodexProvider(BaseProvider):
                 # A resumed launch that did not finish leaves no claim that the
                 # session is healthy: the next turn starts a new one rather than
                 # resuming into the same failure.
-                logger.warning("codex session %s did not complete; next turn starts fresh",
+                logger.warning("native session %s did not complete; next turn starts fresh",
                                session_ref.key)
                 agent_sessions.clear(session_ref)
             session_hold.close()
