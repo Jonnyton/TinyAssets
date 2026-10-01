@@ -1036,6 +1036,16 @@ def delete_account(
         if not home_removed:
             staged_path = str(staged)
 
+    if home:
+        # Session records, Custom Rules and review switches (rules.db) live
+        # beside the universe in .agent-sessions/<home>/, not inside it, so the
+        # home removal above does not take them.
+        from tinyassets.agent_sessions import RECORDS_DIR
+
+        records = root / RECORDS_DIR / _home_dir(root, home).name
+        if records.is_dir() and not records.is_symlink():
+            _phase("agent_session_records", lambda: _rmtree(records))
+
     billing = "not_configured"
     if home:
         billing = _phase(
