@@ -36,6 +36,19 @@ def _enforcement_on(monkeypatch):
 
 
 
+def _owned_home(tmp_path):
+    """A universe that is its owner's HOME, so the account's subscription is the one
+    recorded on it. The account type is per ACCOUNT (founder, 2026-09-30): a paid
+    record on an unowned universe entitles nobody."""
+    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
+
+    universe = tmp_path / "universe"
+    universe.mkdir(exist_ok=True)
+    grant_universe_ownership(tmp_path, universe_id="universe", owner_id="alice")
+    set_founder_home(tmp_path, founder_sub="alice", universe_id="universe")
+    return universe
+
+
 def _fire(universe, key, calls, *, run_id="run-1", fail=False):
     def invoke():
         calls.append(key)
@@ -109,7 +122,7 @@ def test_failed_effects_do_not_consume_the_budget(tmp_path, monkeypatch):
 def test_upgrading_the_tier_restores_capacity(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "1")
     monkeypatch.setenv("TINYASSETS_PAID_EFFECTS_PER_WINDOW", "50")
-    universe = tmp_path / "universe"
+    universe = _owned_home(tmp_path)
     calls: list[str] = []
 
     assert _fire(universe, "e1", calls)["status"] == STATUS_SUCCEEDED
@@ -123,7 +136,7 @@ def test_upgrading_the_tier_restores_capacity(tmp_path, monkeypatch):
 def test_cancelling_back_to_free_re_applies_the_free_ceiling(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "1")
     monkeypatch.setenv("TINYASSETS_PAID_EFFECTS_PER_WINDOW", "50")
-    universe = tmp_path / "universe"
+    universe = _owned_home(tmp_path)
     calls: list[str] = []
 
     apply_tier_event(universe, tier="paid", event_created=_next_event())

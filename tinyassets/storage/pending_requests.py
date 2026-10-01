@@ -493,31 +493,27 @@ def get_request(universe_dir: Path, request_id: str) -> dict[str, Any] | None:
         return None
 
 
-def list_pending(universe_dir: Path, limit: int | None = 10) -> list[dict[str, Any]]:
-    """Oldest first — the rail reads top to bottom in the order asked.
+def list_pending(universe_dir: Path) -> list[dict[str, Any]]:
+    """EVERY pending row, oldest first: the rail reads top to bottom in the order asked.
 
-    ``limit=None`` returns every pending row. Callers that must SEE all of them —
-    reconciling a revoked connection, matching a model-access ask — used to pass
-    the old ``MAX_PENDING`` for this, which silently became a real cutoff the
-    moment the ceiling stopped existing. A page size is a read preference; it is
-    not an account limit, and it must not quietly hide a row someone is waiting
-    on.
+    No page and no default page. A page size here was a cut on the owner's own
+    queue: the connector passed its default ``limit=30`` straight through, so a
+    31st request was never shown (2026-09-30), and the reconcile callers had to
+    remember ``limit=None`` to see them all. A queue is read whole.
+
+    A storage failure RAISES. It used to log and return ``[]``, which a caller
+    cannot tell from "nothing is waiting on you", so an unreadable queue drew an
+    empty rail. The owner surface has to be able to say it could not load.
+    A universe that has never had a request has no store yet, and that one IS
+    empty.
     """
-    try:
-        with _db(universe_dir) as conn:
-            if limit is None:
-                rows = conn.execute(
-                    f"{_SELECT} WHERE status = 'pending' ORDER BY created_at ASC"
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"{_SELECT} WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
-                    (max(1, int(limit)),),
-                ).fetchall()
-            return _projected(conn, rows)
-    except Exception:  # noqa: BLE001
-        logger.warning("pending_requests: list failed", exc_info=True)
+    if not (Path(universe_dir) / _DB_NAME).exists():
         return []
+    with _db(universe_dir) as conn:
+        rows = conn.execute(
+            f"{_SELECT} WHERE status = 'pending' ORDER BY created_at ASC"
+        ).fetchall()
+        return _projected(conn, rows)
 
 
 def find_by_action_type(

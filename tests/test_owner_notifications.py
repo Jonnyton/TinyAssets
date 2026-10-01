@@ -783,7 +783,7 @@ def test_a_new_request_does_notify_and_that_is_the_accepted_cost(base):
         _raise_request(base, A_UID, ALICE, transports, title=f"Thing {n}")
 
     assert len(recorder.calls) == 51
-    assert len(list_pending(base / A_UID, limit=100)) == 51
+    assert len(list_pending(base / A_UID)) == 51
 
 
 # --- failure ------------------------------------------------------------------

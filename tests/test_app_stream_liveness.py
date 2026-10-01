@@ -319,7 +319,7 @@ def test_retiring_a_failed_call_does_not_abort_a_healthy_turn(tmp_path):
   MCP.SILENCE_MS = 200;
   const turn = MCP.converse('keep working');
   await tick(40);
-  OUT.pollFailed = await MCP.getStatus().then(()=>false, ()=>true);
+  OUT.pollFailed = await Owner.getStatus().then(()=>false, ()=>true);
   OUT.answer = await turn;
   OUT.turnStreamCancelledEarly = false;
   OUT.calls = calls;

@@ -7,6 +7,7 @@ import pytest
 from tinyassets.usage_policy import (
     TIER_FREE,
     TIER_PAID,
+    AccountType,
     QuotaRefusal,
     limits_for,
     settlement_key,
@@ -33,7 +34,7 @@ def test_an_unresolvable_tier_falls_back_to_free_never_paid(value):
     """A lookup failure must not silently hand out the paid tier."""
     limits = limits_for(value)
     assert limits.name == TIER_FREE
-    assert limits.is_paid is False
+    assert limits.name is AccountType.FREE
     assert limits.effects == limits_for(TIER_FREE).effects
 
 

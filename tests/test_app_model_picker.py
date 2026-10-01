@@ -54,7 +54,7 @@ def test_choosing_closes_the_dropdown_and_reuses_the_fresh_catalogue(tmp_path):
       await ModelPicker.menuOpen();
       await ModelPicker.choose(ModelPicker.key(""" + json.dumps(ref("first")) + """));
       if(!$("model-menu").hidden) throw new Error('the list stayed open after a choice');
-      MCP.getModelOptions=async()=>{throw new Error('unnecessary refresh');};
+      Owner.getModelOptions=async()=>{throw new Error('unnecessary refresh');};
       await ModelPicker.menuOpen();
     """)
     assert result["ui"]["model-menu"]["hidden"] is False
@@ -67,7 +67,7 @@ def test_choosing_closes_the_dropdown_and_reuses_the_fresh_catalogue(tmp_path):
 
 def test_an_expired_catalogue_offers_nothing_to_pick(tmp_path):
     result = run_picker(tmp_path, """
-      expire();MCP.getModelOptions=async()=>{throw new Error('offline');};
+      expire();Owner.getModelOptions=async()=>{throw new Error('offline');};
       await ModelPicker.menuOpen();
     """)
     assert result["stale"] and result["choice"] is None
@@ -207,7 +207,19 @@ const ensureFreshToken=async()=>{refreshed++;},authHeaders=()=>({Authorization:"
 const sessionExpired=()=>{expired=true;ModelPicker.reset();};
 const openConnectRequest=()=>{connects++;};
 let doc=__DOC__,response=__RESPONSE__;
-const MCP={getModelOptions:async()=>JSON.parse(JSON.stringify(doc))};
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
+const MCP={};
+Owner.getModelOptions=async()=>JSON.parse(JSON.stringify(doc));
 MCP.callTool=async(name,args)=>{
  writes.push({name,args});
  if(name==="read_graph")
@@ -521,7 +533,7 @@ def test_refresh_failure_retains_labelled_stale_rows_and_blocks_changes(tmp_path
         tmp_path,
         choose("first")
         + """
-      MCP.getModelOptions=async()=>{throw new Error("offline");};
+      Owner.getModelOptions=async()=>{throw new Error("offline");};
       await ModelPicker.refresh();await ModelPicker.menuOpen();
     """
         + pick("first"),
@@ -544,7 +556,7 @@ def test_late_refresh_after_signout_cannot_repopulate_dialog(tmp_path):
     result = run_picker(
         tmp_path,
         """
-      let finish;MCP.getModelOptions=()=>new Promise(resolve=>{finish=resolve;});
+      let finish;Owner.getModelOptions=()=>new Promise(resolve=>{finish=resolve;});
       const pending=ModelPicker.refresh();ModelPicker.reset();finish(doc);await pending;
     """,
     )

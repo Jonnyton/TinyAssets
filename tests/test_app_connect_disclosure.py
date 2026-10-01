@@ -18,6 +18,7 @@ the transport are synthetic.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 
@@ -115,10 +116,18 @@ def run(steps: str) -> dict:
     if not node:  # pragma: no cover - the shipped page is JavaScript
         pytest.skip("node is required to execute the shipped renderer")
     program = HARNESS.replace("__SOURCE__", _slice()).replace("__STEPS__", steps)
-    result = subprocess.run(
-        [node, "-e", program],
-        capture_output=True, text=True, encoding="utf-8", timeout=30,
-    )
+    # A file, not `node -e`: the slice outgrew Windows' 32K command line
+    # (WinError 206). Written outside the repo, like every other harness.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as scratch:
+        script = os.path.join(scratch, "connect_disclosure.cjs")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        result = subprocess.run(
+            [node, script],
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

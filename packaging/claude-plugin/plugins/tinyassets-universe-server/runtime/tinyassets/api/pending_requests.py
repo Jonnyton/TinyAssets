@@ -1989,8 +1989,11 @@ def _reconnect_requests(base: Any, uid: str, udir: Any) -> list[dict[str, object
     return cards
 
 
-def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
-    """What the app's rail renders, and what the phone reads too.
+def list_requests(*, universe_id: str = "") -> dict[str, Any]:
+    """What the app's rail renders, and what the phone reads too: EVERY pending row.
+
+    Complete, with no page: the owner door returns it whole, and the model door
+    bounds the whole document visibly. A default page here hid a waiting request.
 
     Carries the agent's asks plus a derived connection entry: required without
     current serving authority, optional once powered. No agent is needed to ask.
@@ -2019,7 +2022,7 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     # their next sign-in with no migration. One call seeds and describes, so the
     # block cannot contradict the rail it is describing. Never raises.
     intake = rail_entry(uid, udir)
-    rows = list_pending(udir, limit=limit)
+    rows = list_pending(udir)
     # Prepended, not stored: derived from current serving authority, so it
     # cannot go stale, cannot be dismissed into a state where the universe is
     # mute with no way back, and needs no migration.
@@ -2119,7 +2122,7 @@ def withdraw_request(*, universe_id: str = "", payload: Any = None) -> dict[str,
     row = _withdraw(udir, request_id, reason=reason)
     if row.get("error"):
         return row
-    on_rail = any(r["request_id"] == request_id for r in list_pending(udir, limit=500))
+    on_rail = any(r["request_id"] == request_id for r in list_pending(udir))
     return {**{k: v for k, v in row.items() if k != "action"},
             "still_on_rail": on_rail}
 

@@ -231,8 +231,11 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/turn/interrupt",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
+        # The owner door: every read the app renders, complete.
+        "/app/api/read", "/app/api/status",
     }
     assert by_path["/app/files"].methods == {"POST"}
+    assert by_path["/app/api/read"].methods == {"POST"}
     # The owner's clock is a WRITE from their client, never a readable setting.
     assert by_path["/app/account/timezone"].methods == {"POST"}
     assert "GET" in by_path["/app"].methods
@@ -587,7 +590,9 @@ def test_the_app_restores_the_conversation_on_load():
     assert "turns.slice().sort((a,b)=>a.ts-b.ts)" in html
     assert "turns.slice().reverse()" not in html
     # It must never block the chat on a history failure.
-    assert "history is a convenience; never block the chat on it" in html
+    assert "History never blocks the chat" in html
+    # ...and a failure to read it is SAID, never drawn as an empty thread.
+    assert "historyFailed(conv.error)" in html
 
 def _js_function(html: str, name: str) -> str:
     """Source of ``function NAME(`` / ``async function NAME(`` from the app's
@@ -1620,6 +1625,17 @@ function showConnect(){ messages.push({role:"connect"}); }
 const SCENARIO=__SCENARIO__;
 const converseCalls=[], converseMethods=[], converseChoices=[], consumerRequests=[], statusCalls=[];
 let active=0, maxActive=0;
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={ converse: async (m,inputMethod,modelChoice,consumerRequest) => {
   converseCalls.push(m);
   converseMethods.push(inputMethod);
@@ -1636,7 +1652,7 @@ const MCP={ converse: async (m,inputMethod,modelChoice,consumerRequest) => {
 MCP.callTool=async(name,args)=>{statusCalls.push({name,args});return SCENARIO.consumerStatus;};
 const CFG={build: SCENARIO.build||"b1"};
 const token=()=>"t";
-MCP.getConversation=async()=>{
+Owner.getConversation=async()=>{
   if(SCENARIO.historyError) throw new Error("peek failed");
   return {universe_id: SCENARIO.universe||"u-1", recent_conversation:{turns: SCENARIO.history||[]}};
 };
@@ -1850,6 +1866,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
         "offerResend", "noteHeldQueue", "offerSavedConversationCheck",
         "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
+        "drawHistoryTurns", "offerEarlier", "loadEarlier", "historyFailed",
         # loadHistory now offers the rest of a turn the peek bounded; without
         # these the call is a ReferenceError its own catch swallows, and the
         # rest of the thread silently stops rendering.

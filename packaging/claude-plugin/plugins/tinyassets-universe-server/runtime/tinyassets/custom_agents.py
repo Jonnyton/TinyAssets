@@ -1143,9 +1143,12 @@ def list_bindings(
     base_path: str | Path,
     *,
     universe_id: str,
-    limit: int = 30,
+    limit: int | None = 30,
 ) -> list[dict[str, Any]]:
     """The owner's bindings, newest first, at most ``limit`` of them.
+
+    ``limit=None`` is every binding: a caller that must FIND one (the deposit's
+    binding hint) reads them all rather than a page it then filters.
 
     ``limit`` is honoured as asked. It used to be silently clamped to 100, so a
     caller that asked for more got exactly 100 back and could not tell whether
@@ -1155,7 +1158,7 @@ def list_bindings(
     account has exactly two (founder, 2026-09-30).
     """
     uid = (universe_id or "").strip()
-    page = max(1, int(limit))
+    page = -1 if limit is None else max(1, int(limit))  # SQLite: LIMIT -1 is none
     with _agent_connect(base_path) as conn:
         rows = conn.execute(
             """
@@ -1494,6 +1497,36 @@ def save_app_ui(
                if "ui_library" in changes else None)
     selection = (_canonical_json(changes["ui_selection"])
                  if "ui_selection" in changes else None)
+    from tinyassets import storage_accounting
+
+    # The library's bytes are the saver's account storage (account-storage-quota
+    # D7): at the quota this raises `StorageRefused` before anything is written.
+    account = owner if storage_accounting.is_account(base_path, owner) else None
+    reservation = storage_accounting.reserve(
+        base_path, account_id=account, scope_id=account or "", store="ui_library",
+        nbytes=sum(len(s.encode("utf-8")) for s in (library or "", selection or "")),
+    )
+    try:
+        saved = _save_app_ui_row(
+            base_path, owner=owner, uid=uid, expected_revision=expected_revision,
+            library=library, selection=selection,
+        )
+    except BaseException:
+        storage_accounting.release(reservation)
+        raise
+    storage_accounting.commit(reservation)
+    return saved
+
+
+def _save_app_ui_row(
+    base_path: str | Path,
+    *,
+    owner: str,
+    uid: str,
+    expected_revision: int,
+    library: str | None,
+    selection: str | None,
+) -> dict[str, Any]:
     now = time.time()
     with _agent_connect(base_path) as conn:
         if expected_revision == 0:
