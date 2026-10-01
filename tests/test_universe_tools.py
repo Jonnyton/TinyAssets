@@ -200,11 +200,11 @@ def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkey
         argv, "--ro-bind-try")
     # Replaced by a link after the scan: the argv is refused, not bound to it.
     other = _universe(tmp_path, "u-bravo")
-    (universe / "wiki").mkdir()
+    (universe / "lore").mkdir()
     view = universe_tools._universe_view(universe.resolve())
-    (universe / "wiki").rmdir()
+    (universe / "lore").rmdir()
     try:
-        (universe / "wiki").symlink_to(other, target_is_directory=True)
+        (universe / "lore").symlink_to(other, target_is_directory=True)
     except (OSError, NotImplementedError):
         pass
     else:
@@ -825,7 +825,7 @@ def test_agent_owned_paths_are_pinned():
         "projects.md", "goals.md", "index.md", "log.md", "voice.md", "AGENTS.md",
     )
     assert universe_tools.AGENT_HARNESS_DIRS == (
-        "skills", "prompts", "extensions", "workflows", "bin", "notes",
+        "skills", "prompts", "extensions", "workflows", "bin", "notes", "wiki",
     )
 
 

@@ -19,9 +19,9 @@ launch, with a narrower view:
 * the owning universe at ``/u``, and nothing else of ``/data``. ``/u`` is an
   allowlist, not the root with holes punched in it: a read-only tmpfs holding
   one bind per VISIBLE root entry. Only what the agent owns is bound
-  read-write (its brain files and the harness directories ``skills/``,
-  ``prompts/``, ``notes/`` ...), see :data:`AGENT_BRAIN_FILES`; every other
-  visible entry is read-only;
+  read-write (its brain files, its own ``wiki/`` and the harness directories
+  ``skills/``, ``prompts/``, ``notes/`` ...), see :data:`AGENT_BRAIN_FILES`;
+  every other visible entry is read-only;
 * no hidden root entry at all -- the credential vault
   (``.credential-vault.json``, ``.credentials/``), ``.runtime/``, the consent,
   usage and receipt databases and their SQLite sidecars -- so the agent can
@@ -131,7 +131,7 @@ AGENT_BRAIN_FILES: tuple[str, ...] = (
     "projects.md", "goals.md", "index.md", "log.md", "voice.md", "AGENTS.md",
 )
 AGENT_HARNESS_DIRS: tuple[str, ...] = (
-    "skills", "prompts", "extensions", "workflows", "bin", "notes",
+    "skills", "prompts", "extensions", "workflows", "bin", "notes", "wiki",
 )
 
 #: Kept for callers that name the platform-owned runtime directory.
