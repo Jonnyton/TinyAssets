@@ -306,3 +306,61 @@ def test_an_enumerator_never_migrates(tmp_path):
     assert up.migrated_platform_path(root, "provider_definitions.json") is None
     assert (root / "provider_definitions.json").exists()
     assert not (root / ".runtime").exists()
+
+
+def test_storage_charged_for_a_universe_is_identical_before_and_after_migration(tmp_path):
+    from tinyassets import storage_accounting as sa
+
+    root = _universe(tmp_path, "u-charged")
+    (root / ".effector_consents.db").write_bytes(b"x" * 1000)
+    (root / ".effector_consents.db-wal").write_bytes(b"w" * 300)
+    (root / ".credentials").mkdir()
+    (root / ".credentials" / "auth.json").write_bytes(b"c" * 70)
+    (root / "status.json").write_bytes(b"s" * 20)
+    (root / "soul.md").write_bytes(b"m" * 5)
+    (root / ".runtime" / "provider-child").mkdir(parents=True)
+    (root / ".runtime" / "provider-child" / "big").write_bytes(b"p" * 9999)
+
+    measure = sa.STORES["universe_files"].measure
+    before = measure(tmp_path, "u-charged")
+    up.ensure_migrated(root)
+    after = measure(tmp_path, "u-charged")
+
+    assert before == 1000 + 300 + 70 + 20 + 5
+    # The tombstone markers and the migration's own files are zero bytes.
+    assert after == before
+
+
+def test_scoped_reset_classifies_migrated_state_through_the_registry(tmp_path):
+    from tinyassets import scoped_reset
+
+    root = _universe(tmp_path, "u-reset")
+    (root / "soul.md").write_text("mine")
+    (root / "status.json").write_text("{}")
+    (root / "ledger.json").write_text("[]")
+    up.ensure_migrated(root)
+    # Resettable state and tombstones do not block.
+    assert scoped_reset._walk_home_without_following(root) == ()
+
+    (root / ".runtime" / "state" / ".credential-vault.json").write_text("{}")
+    (root / ".runtime" / "state" / ".runs.db").write_text("")
+    (root / ".runtime" / "state" / "mystery.bin").write_text("")
+    (root / ".runtime" / "provider-launch-credentials").mkdir()
+    blockers = "\n".join(scoped_reset._walk_home_without_following(root))
+    assert "credential" in blockers and ".credential-vault.json" in blockers
+    assert "audit" in blockers and ".runs.db" in blockers
+    assert "unclassified platform state" in blockers and "mystery.bin" in blockers
+    assert "provider-launch-credentials" in blockers
+
+
+def test_reset_sets_are_the_registry_not_a_hand_list():
+    from tinyassets import scoped_reset
+
+    for entry in up.PLATFORM_NAMES.values():
+        name = entry.name.casefold()
+        if entry.reset == up.RESET_CREDENTIAL:
+            assert name in scoped_reset._CREDENTIAL_NAMES
+        if entry.reset == up.RESET_AUDIT:
+            assert name in scoped_reset._HOME_AUDIT_PREFIXES
+        if entry.reset == up.RESET_OPERATIONAL:
+            assert name in scoped_reset._HOME_OPERATIONAL_NAMES

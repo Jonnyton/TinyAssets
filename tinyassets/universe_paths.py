@@ -498,7 +498,8 @@ def _migrate(root: Path, state: Path) -> None:
     marker = state / MARKER
     fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        os.write(fd, f"{len(steps)} entries moved\n".encode())
+        # Empty on purpose: its presence is the fact, and a zero-byte file
+        # keeps a universe's charged bytes identical across the move.
         os.fsync(fd)
     finally:
         os.close(fd)
