@@ -50,10 +50,14 @@ from tinyassets.api import permissions
 
 _BWRAP = shutil.which("bwrap") if sys.platform == "linux" else None
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "linux" or not _BWRAP,
-    reason="a real bubblewrap jail needs Linux + bwrap",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        sys.platform != "linux" or not _BWRAP,
+        reason="a real bubblewrap jail needs Linux + bwrap",
+    ),
+    # Runs in .github/workflows/linux-jail-proof.yml, where a skip fails.
+    pytest.mark.real_jail,
+]
 
 OWN_MARKER = "POSITIVE-CONTROL-OWN-UNIVERSE"
 FOREIGN_MARKER = "SYNTHETIC-UNIVERSE-B-CONTENT"
