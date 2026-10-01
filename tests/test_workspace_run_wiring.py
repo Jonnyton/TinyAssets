@@ -781,6 +781,6 @@ def test_served_docs_name_the_workspace_sink():
         "ws.run(",
         "ws.bundle(",
         "workspace_command_timeout",
-        "tiny/<universe>/<slug>",
+        "tiny/<command-center-id>/<slug>",
     ):
         assert needle in text or needle in doc, needle
