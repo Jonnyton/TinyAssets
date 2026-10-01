@@ -200,6 +200,20 @@
         this.status("Could not read your installed UIs ("+(err&&err.message||"unknown error")+"). Default chat is in use.");
       }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
     },
+    // After each turn: the universe can switch or edit this row by talking
+    // (write_graph target="app_ui" operation="activate" ...). A bodiless index
+    // read says whether the row moved; only then is it read whole and adopted,
+    // so an unchanged row never remounts a UI mid-use.
+    async turnSettled(){
+      if(!this.enabled||this.busy) return;
+      const epoch=this.epoch,home=this.home;
+      try{
+        const doc=await Owner.read({target:"app_ui",graph_id:home,query:"index"});
+        const row=doc&&doc.app_ui;
+        if(!this.fence(epoch,home)||!row||doc.error||!Number.isInteger(row.revision)) return;
+        if(row.revision!==this.revision) await this.load();
+      }catch(_err){ /* the next turn asks again; the current screen stays */ }
+    },
     adopt(row){
       if(!this.enabled) return;
       this.revision=row.revision;
@@ -811,8 +825,11 @@
         if(!result||result.error||result.status!=="saved"||!saved||saved.universe_id!==home||
            saved.revision!==row.revision+1)
           throw Error((result&&(result.detail||result.error))||noun+" save was not confirmed");
+        // Compared as VALUES, not as text: the store keeps canonical JSON with
+        // sorted keys, so {version,state,ui_id} comes back {state,ui_id,version}.
+        // A text compare called every saved choice a mismatch (live 2026-10-01).
         for(const key of Object.keys(changes))
-          if(JSON.stringify(saved[key])!==JSON.stringify(changes[key])) throw Error(noun+" save did not match");
+          if(this.canonical(saved[key])!==this.canonical(changes[key])) throw Error(noun+" save did not match");
         this.revision=saved.revision;
         return {ok:true,row:saved};
       }catch(err){
