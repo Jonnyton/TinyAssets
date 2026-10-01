@@ -191,11 +191,14 @@ def test_goal_yaml_omits_empty_ladder():
     assert "gate_ladder" not in payload
 
 
-def test_gate_claim_yaml_roundtrip():
+def test_gate_claim_yaml_roundtrip(tmp_path):
+    import sqlite3
+
     from tinyassets.catalog.serializer import (
         gate_claim_from_yaml_payload,
         gate_claim_to_yaml_payload,
     )
+    from tinyassets.daemon_server import initialize_author_server
 
     original = {
         "claim_id": "abc123",
@@ -204,11 +207,17 @@ def test_gate_claim_yaml_roundtrip():
         "rung_key": "draft_complete",
         "evidence_url": "https://example.com/x",
         "evidence_note": "first",
+        "conformance_pack_id": "publication-readiness",
         "claimed_by": "alice",
         "claimed_at": "2026-05-01T14:22:03Z",
         "retracted_at": None,
         "retracted_reason": "",
     }
+    # The fixture is a real gate_claims row: it once predated a column
+    # (conformance_pack_id) and failed for a shape the schema cannot produce.
+    with sqlite3.connect(initialize_author_server(tmp_path)) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(gate_claims)")}
+    assert set(original) == columns
     payload = gate_claim_to_yaml_payload(original)
     restored = gate_claim_from_yaml_payload(payload)
     assert restored == original
