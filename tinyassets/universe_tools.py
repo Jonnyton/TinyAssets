@@ -40,7 +40,9 @@ launch, with a narrower view:
 * an empty environment (``--clearenv``) plus a fixed ``PATH``/``HOME``;
 * a seccomp filter refusing ``symlink``/``mknod`` (see :func:`seccomp_program`):
   the daemon reads this folder from OUTSIDE the jail and follows links, so a
-  link planted towards another universe must never exist on disk.
+  link planted towards another universe must never exist on disk. The same
+  filter refuses io_uring, new user namespaces and the other kernel interfaces
+  listed in :mod:`tinyassets.providers.jail_seccomp`.
 
 Because the process sees only ``/u``, path policy is the jail's, not Python's:
 a path outside the universe, or a symlink the agent planted towards another
@@ -332,7 +334,7 @@ def tool_jail_argv(
     bwrap = provider_jail.BWRAP_RESOLVER()
     view = _universe_view(root, egress_socket)
     return jail_argv(
-        list(inner), view, bwrap_path=bwrap, share_net=False, clearenv=True,
+        list(inner), view, bwrap_path=bwrap, clearenv=True,
         seccomp_fd=seccomp_fd,
     )
 
@@ -342,75 +344,28 @@ def tool_jail_argv(
 TOOL_JAIL_ARGV: Callable[..., list[str]] = tool_jail_argv
 
 
-# The link filter. The jail makes the agent's view safe, but the DAEMON reads
-# the same folder from outside it (persona grounding, config, soul) and follows
-# links. A symlink the agent planted -- ``founder.md -> /data/<other>/founder.md``
-# dangles inside the jail and resolves on the host -- would pull another user's
-# file into this universe's prompt; a FIFO would hang the reading thread. So the
-# jailed process may create neither: ``symlink``/``symlinkat`` and
-# ``mknod``/``mknodat`` fail with EPERM. Hard links cannot reach outside ``/u``
-# (every other visible path is a different mount: EXDEV).
-#
-# io_uring is the way around a syscall filter: ``IORING_OP_SYMLINKAT`` (opcode
-# 38, kernel 5.15+) creates a link through a submission queue, which seccomp
-# never sees -- and production is 6.1 with no ``io_uring_disabled`` sysctl
-# (that arrived in 6.6). So the three io_uring setup calls are refused too;
-# with no ring, no ring op can run. The daemon-side safe reader
+# The syscall filter is shared with the provider jail
+# (:mod:`tinyassets.providers.jail_seccomp`): links and special files (the
+# daemon reads this folder from OUTSIDE the jail and follows links, so a link
+# planted towards another universe must never exist on disk), io_uring (the
+# way around a syscall filter) and the kernel interfaces a cross-user privilege
+# escalation on the shared kernel keeps using. The daemon-side safe reader
 # (:mod:`tinyassets.universe_files`) is the belt to this braces: it never
 # follows a link that already exists, whatever created it.
-#
-# Unknown architectures and the x32 ABI get EPERM for every call, so a filter
-# this module cannot vouch for never runs as ALLOW.
-_AUDIT_ARCH_X86_64 = 0xC000003E
-_AUDIT_ARCH_AARCH64 = 0xC00000B7
-_X32_SYSCALL_BIT = 0x40000000
-# symlink, symlinkat, mknod, mknodat, io_uring_setup/enter/register.
-_DENIED_X86_64 = (88, 266, 133, 259, 425, 426, 427)
-# symlinkat, mknodat, io_uring_setup/enter/register (asm-generic numbers).
-_DENIED_AARCH64 = (36, 33, 425, 426, 427)
-_SECCOMP_RET_ALLOW = 0x7FFF0000
-_SECCOMP_RET_EPERM = 0x00050000 | 1
 
 
 def seccomp_program() -> bytes:
     """The compiled cBPF filter bubblewrap loads with ``--seccomp``."""
-    import struct
+    from tinyassets.providers.jail_seccomp import deny_program
 
-    ld_abs, jeq, jge, ret = 0x20, 0x15, 0x35, 0x06
-    x86 = list(_DENIED_X86_64)
-    arm = list(_DENIED_AARCH64)
-    # Layout: [0] ld arch; [1] arch==x86_64?; [2] ld nr; [3] x32?; x86 checks;
-    # allow; [arm] arch==aarch64?; ld nr; arm checks; allow; [deny].
-    arm_at = 4 + len(x86) + 1
-    deny_at = arm_at + 2 + len(arm) + 1
-    prog: list[tuple[int, int, int, int]] = [
-        (ld_abs, 0, 0, 4),
-        (jeq, 0, arm_at - 2, _AUDIT_ARCH_X86_64),
-        (ld_abs, 0, 0, 0),
-        (jge, deny_at - 4, 0, _X32_SYSCALL_BIT),
-    ]
-    for nr in x86:
-        prog.append((jeq, deny_at - (len(prog) + 1), 0, nr))
-    prog.append((ret, 0, 0, _SECCOMP_RET_ALLOW))
-    assert len(prog) == arm_at
-    prog.append((jeq, 0, deny_at - (len(prog) + 1), _AUDIT_ARCH_AARCH64))
-    prog.append((ld_abs, 0, 0, 0))
-    for nr in arm:
-        prog.append((jeq, deny_at - (len(prog) + 1), 0, nr))
-    prog.append((ret, 0, 0, _SECCOMP_RET_ALLOW))
-    assert len(prog) == deny_at
-    prog.append((ret, 0, 0, _SECCOMP_RET_EPERM))
-    return b"".join(struct.pack("=HBBI", *insn) for insn in prog)
+    return deny_program()
 
 
 def _seccomp_fd() -> int:
     """A readable descriptor holding :func:`seccomp_program`, for the child."""
-    read_end, write_end = os.pipe()
-    try:
-        os.write(write_end, seccomp_program())
-    finally:
-        os.close(write_end)
-    return read_end
+    from tinyassets.providers.jail_seccomp import program_fd
+
+    return program_fd()
 
 
 def _statvfs(path: Path) -> os.statvfs_result | None:
@@ -1017,7 +972,7 @@ def bash(
     if socket_path is not None and python:
         from tinyassets import universe_egress
 
-        inner = [python, "-c", universe_egress.FORWARDER, *inner]
+        inner = universe_egress.forwarder_argv(python, inner)
         egress = {"egress_socket": socket_path}
     run = RUNNER(universe_dir, inner, limits=limits, wall_seconds=wall, **egress)
     body = _text(run.output)
