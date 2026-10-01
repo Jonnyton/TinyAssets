@@ -39,17 +39,16 @@ An adapter SHALL declare whether it can resume a native session from an opaque h
 - **WHEN** the next turn of a session runs on a different model or an adapter without resume
 - **THEN** the platform seeds it from the session's summary and recent entries
 
-### Requirement: Events wake an existing session and messages steer a live turn
-Every wake source (a message, a run completion, an answered request, an app event, an owner message, a schedule firing, a webhook) SHALL be appended to its target session as one mechanical event line computed by the platform; an idle session SHALL start a turn, and a session with a live turn SHALL receive the event at its next tool boundary, appended to that tool's result together with the current unread count.
+### Requirement: Owner messages and owner-relevant events reach the live session
+An owner message, or an event concerning the owner's session (a run that session started completing, a request it raised being answered), that arrives while a turn of that session is running SHALL be appended to the result of that turn's next tool call together with the current unread count; when the session is idle it SHALL open the session's next turn as one mechanical line computed by the platform. The platform SHALL NOT impose a wake policy on agents the universe builds.
 
-#### Scenario: a message steers the background agent mid-run
-- **WHEN** the founder sends a message while an agent node's turn is running tools
+#### Scenario: a message steers the agent mid-turn
+- **WHEN** the owner sends a message while the agent's turn is running tools
 - **THEN** the message text and unread count reach the model with the result of the next tool call, in the same turn
 
-#### Scenario: a wake carries only what changed
-- **WHEN** a run the agent started completes while its session is idle
-- **THEN** a turn starts in that session with a single event line naming the run and its outcome
-- **AND** the request does not re-render the agent's grounding or history as new text
+#### Scenario: a finished run is reported without being asked
+- **WHEN** a run the session started completes while the session is idle
+- **THEN** the session's next turn opens with a single line naming the run and its outcome
 
 ### Requirement: The agent's core tools are file and shell tools in its jailed universe with public network
 The agent SHALL have `read`, `write`, `edit` and `bash` over its universe mounted in the tool jail, with the whole user root writable and platform-owned state held under `.runtime/` and absent from the jail, and `bash` SHALL have public network egress that refuses loopback, private, link-local and metadata addresses. The jail image SHALL provide a shell toolchain including a language runtime, git and a headless browser.
@@ -73,7 +72,7 @@ Platform capabilities (graphs, runs, automations, requests, commons, connections
 A primary agent's default authority SHALL include every action inside its own universe (files, shell, network egress, browser, its workflows and agents, its own harness and brain, use of already-granted connections within their scope, and its own seats and compute). The agent SHALL ask only for a credential or wider grant it does not hold, for acting toward other people or their property without a standing grant for that destination, or for spending beyond a budget the user set, and SHALL ask by raising an app request rather than in chat. An approval SHALL be a standing, revocable grant checked at call time, not consent for a single action or turn.
 
 #### Scenario: no consent replay for a granted destination
-- **WHEN** the agent posts to a destination its owner already granted, from a later turn or a background wake with the owner signed out
+- **WHEN** the agent posts to a destination its owner already granted, from a later turn or a run with the owner signed out
 - **THEN** the call proceeds under the standing grant without a new request
 
 #### Scenario: a new destination is asked for once

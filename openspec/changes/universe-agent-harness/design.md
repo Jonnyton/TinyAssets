@@ -78,40 +78,33 @@ behind codemode and deferred exposure.
   `.runtime/` move for platform state is still pending.
 - **Skills.** `skill_index` and `harness_prompt` exist (`:1036-1108`). The
   founder's `skills/` directory is **empty**.
-- **Background self.** Agent nodes (`shared_self.py`) run the same converse
-  harness through `background_served_provider.py:815-852`. Each wake is
-  likewise a fresh, ephemeral turn.
+- **Agents it builds.** Agent nodes in the universe's own graphs
+  (`shared_self.py`) run the same converse harness through
+  `background_served_provider.py:815-852`, so the agents it builds inherit
+  every harness limit above. They are measured as the universe's own creations,
+  not as the harness.
 
-### 2.2 Production numbers (agent_turns, 2026-09-15 → 2026-10-01; 1,644 tiny turns)
+### 2.2 Production numbers (agent_turns, 2026-09-15 → 2026-10-01: tiny's chat turns)
 
-Turns were classified by the actual message after the memory block. 1,393 are
-background wakes ("I am tiny, continuing my background work …") and 251 are
-founder chat.
+The harness is the universe's own agent talking with its owner, so it is
+measured on chat turns only. Turns were classified by the actual message after
+the memory block. Of 1,644 tiny turns, 251 are chat with the founder. The other
+1,393 are wakes of a background agent tiny built for itself, which is a
+user-built graph and not part of the harness. They are excluded here (founder,
+2026-10-01: "dont conflate the two things").
 
-| Measure | Chat (251) | Wake (1,393) |
-|---|---|---|
-| Median input tokens per turn | 61,862 (p90 510,368) | 126,055 (p90 200,891) |
-| Total input tokens | 53.7M | **226.9M** |
-| Median reply length | 637 chars | 363 chars |
-| Replies containing an ask | 26% | 0% |
-| Replies with blocked / can't / unavailable language | 54% | 65% |
-| Replies with "I haven't verified / unverified / can't confirm" disclaimers | 29% (66) | 17% (231) |
-| Replies claiming any effect (merged, posted, PR, sent …) | 33 (15%) | 50 (3.7%) |
-| … of which not negated in the same reply | **7** | **2** |
-| Input tokens per effect-claiming reply | 1.6M | **4.5M** |
-| Turns ending indeterminate (`held_native_unknown`) or abandoned | 26 (10.4%) | 24 (1.7%) |
-
-**The 2026-09-30 wake storm.** There were 1,294 wakes between 03:14Z and 23:59Z,
-a median of **38 s apart**, totalling **186.6M input tokens**. 770 of the 1,280
-replies said, in effect, "no new evidence / no product progress". Typical
-examples:
-- "I read my handoff and found no new signal … I left continuation under the
-  host's control."
-- "I checked my handoff to choose useful work, but repeated an already-failing
-  inventory check; its output was truncated. I made no product progress."
-
-The founder said it on 2026-10-01 05:35Z: "each wake it does nothing 3 wakes now
-and soon to be 4 each time nothing done".
+| Measure (251 chat turns) | Value |
+|---|---|
+| Median input tokens per turn | 61,862 (p90 510,368) |
+| Total input tokens | 53.7M |
+| Median reply length | 637 chars |
+| Replies containing an ask | 26% |
+| Replies with blocked / can't / unavailable language | 54% |
+| Replies with "I haven't verified / unverified / can't confirm" disclaimers | 29% (66 of 225) |
+| Replies claiming any effect (merged, posted, PR, sent …) | 33 (15%) |
+| … of which not negated in the same reply | **7** |
+| Input tokens per effect-claiming reply | 1.6M |
+| Turns ending indeterminate (`held_native_unknown`) or abandoned | 26 (10.4%) |
 
 **Corrections.** 46 of 262 founder messages (18%) are corrections ("your still
 not understanding the general shape", "it could have easily by now made the
@@ -124,36 +117,35 @@ founder dismissed 15 and muted 8 more request kinds.
 **What tiny itself says blocks it** (`notes/continuation.md`, 2026-10-01 05:43Z):
 "Local FastMCP/pytest/Ruff/browser capabilities remain absent", and a
 `read_graph` result "truncates before its result can be compacted". In chat it
-said: "My background turn currently has a 15-minute maximum". That was its own
+said that a background turn "has a 15-minute maximum". That was its own
 900 s interval trigger, which it believed was a limit.
 
 **Workspace.** The universe root has 422 entries, 362 of them platform
 `.worker_supervisor.*.json` files. tiny's real work lives in `notes/` (about
 880 KB of scripts, JSON probes and plans), including a 4.4 KB
 `prompts/background-operating.md` and an 18 KB `notes/goals-and-outcomes.md`
-that it must re-read on every wake, because no session carries them.
+that it re-reads every turn, because no session carries what it already read.
 
 **Tool observability.** `agent_turn_tools` holds 109 rows, all from the
-HTTP-loop universe and **none for tiny's 1,644 native turns**. Nobody, including
+HTTP-loop universe and **none for tiny's native turns**. Nobody, including
 the founder and tiny, can see after the fact which tools a turn called.
 
-### 2.3 Top drag findings
+### 2.3 Top drag findings (chat turns)
 
-1. **No session.** Every message and every wake rebuilds context from scratch
-   and forgets its own tool work. Median wake: 126k input tokens. 2 of 1,369
-   wakes delivered an un-negated effect.
-2. **Empty-wake busy loop.** There were 1,294 wakes in one day, 38 s apart, and
-   60% of them said nothing changed. Because there is no session, "continue the
-   work" is expressed as "start a new run", and every run pays the rebuild.
-3. **Guidance teaches asking and hedging.** 26% of chat replies ask, and 29%
+1. **No session.** Every chat message rebuilds context from scratch and forgets
+   the agent's own earlier tool calls and results. The median turn is 61,862
+   input tokens, and 7 of 225 replies report an un-negated effect.
+2. **Guidance teaches asking and hedging.** 26% of chat replies ask, and 29%
    carry verification disclaimers. The persona prompt instructs warmth,
    curiosity, asking to clarify, and per-turn consent.
-4. **Tools are walled where the work is.** There is no network in bash, no
+3. **Tools are walled where the work is.** There is no network in bash, no
    browser, and no toolchain, and `read_graph` results truncate. Those are the
    blockers tiny lists itself, and they became 85 requests.
-5. **Heavy per-round context.** About 8k characters of persona, 7k of history
-   text and about 28.5k of tool descriptions are re-sent each round. Tool calls
-   are invisible for native turns, and 10.4% of chat turns end indeterminate.
+4. **Heavy per-round context.** About 8k characters of persona, 7k of history
+   text and about 28.5k of tool descriptions are re-sent each round.
+5. **Invisible, unreliable turns.** Native turns journal no tool calls, so
+   neither the founder nor tiny can see what a turn did, and 10.4% of chat turns
+   end indeterminate or abandoned.
 
 ## 3. Target design
 
@@ -167,7 +159,7 @@ and remembers. The platform supplies a few things:
 - credential-blind access to connections;
 - durable events.
 
-Everything else, including tone, habits, wake strategy, skills and goals, is a
+Everything else, including tone, habits, skills, goals and the other agents it builds, is a
 file the user and agent own and edit. This is PLAN.md Scoping Rule 1 taken
 seriously, and the cross-user floor (`the-floor-is-cross-user-only`) is the
 only fixed boundary.
@@ -176,12 +168,12 @@ only fixed boundary.
 
 - **Unit.** A *session* is a durable, append-only log of messages, tool calls,
   tool results, compactions and events. It has an id and belongs to one
-  universe. There is one per conversation thread: the founder's main thread is
-  one session across app, phone, desktop and connector. There is also one per
-  agent node, keyed by `(branch_def_id, node_id)`. The background self is an
-  agent node, so it has its own session. It shares the same files (brain,
-  `MEMORY.md`, notes) with chat, but not the same context window. That is how
-  Claude Code sessions in one project share CLAUDE.md and memory.
+  universe. There is one agent and one session per conversation thread: the
+  owner's main thread is one session across app, phone, desktop and connector.
+  Agents the universe builds for itself (agent nodes in its graphs) are its own
+  creations. The harness gives them the same primitive (an agent node may keep
+  a session keyed by its node) so it can build good agents, but their behaviour
+  is theirs, not the harness's.
 - **Storage.** The session log lives under `.runtime/agent-sessions/`, which
   only the platform can write. The agent sees it read-only, through a
   read-only mount at `/u/sessions` in the tool jail, never as a writable root
@@ -234,28 +226,21 @@ only fixed boundary.
   can carry, because every adapter returns tool results. Stop and "send all
   queued" is #4152.
 
-### 3.3 Wakes are events into an existing session
+### 3.3 Owner messages and events reach the live session
 
-- A wake is an event appended to a session:
-  - a message;
-  - `run_completed`;
-  - `pending_request_answered`;
-  - `app_event`;
-  - `owner_message` (#4171);
-  - a schedule firing (a schedule is just a timed event);
-  - a webhook.
-- If the session is idle, the event starts a turn. If a turn is live, the event
-  is steered in, as for messages.
-- The event message is mechanical and short, for example "since your last
-  turn: 2 new messages, run 7f3… completed (failed: …), request req_… answered".
-  It is computed by the platform and never authored by an LLM.
-- Continuing to work no longer means "schedule another run". The session is
-  still there, and the turn simply keeps going. A self-retriggering loop keeps
-  working (it is user-built), but each wake now costs only the event plus the
-  delta, not a 126k-token rebuild.
-- The platform adds no wake policy. How often to wake, and whether to run a
-  goal judge (Hermes `/goal`), are seed-harness defaults in `AGENTS.md` and a
-  seed workflow, which the user can edit (`enabling-primitives-not-prebuilt-complexity`).
+- A message the owner sends while a turn is running is steered into that turn
+  at the next tool boundary, appended to that tool's result together with the
+  unread count (#4170). The owner never waits for a long turn to end before
+  being heard. Stop, then send everything queued, is #4152.
+- Events that concern the owner's session reach it the same way when a turn is
+  live, or as the opening line of the next turn when it is idle. Those events
+  are a run it started finishing, a request it raised being answered, or an
+  owner message from another surface. The line is short and mechanical, for
+  example "since your last turn: run 7f3… completed (failed: …), request req_…
+  answered". It is computed by the platform and never authored by an LLM.
+- How any agent the universe builds wakes, loops or schedules itself is that
+  agent's own design. The platform supplies the event and trigger primitives
+  (`automation_events`, #4171) and adds no wake policy.
 
 ### 3.4 Tools
 
@@ -400,7 +385,7 @@ the base prompt, because it is a cross-user boundary.
 | Stop and queued messages | `turn_interrupt.py` (#4152) |
 | Unread counter | #4170 |
 | Event wakes | `automation_events.py`, `owner_message` (#4171), `pending_request_answered`, `app_event`, schedules, webhooks |
-| Agent nodes / background self | `shared_self.py`, `served_tools.node_tool_grant` |
+| Agent nodes (agents the universe builds) | `shared_self.py`, `served_tools.node_tool_grant` |
 | Jail and tools | `universe_tools.py`, `providers/provider_jail.py`, `universe_files.py` |
 | Skills | `universe_tools.skill_index` |
 | Asks | `pending_requests` and the request rail with phone/desktop/browser notifications (#4140, #4138) |
@@ -489,17 +474,16 @@ the base prompt, because it is a cross-user boundary.
      universe.
    - Proof: a multi-message thread with tool work, plus the before/after ask
      rate, disclaimer rate and tokens per turn.
-2. **S2: Wakes are events into the session, with steering.**
-   - Build: agent-node sessions are resumed by events (#4171), steering at tool
-     boundaries, the unread counter (#4170), and mechanical "since your last
-     turn" messages.
-   - Founder sees: a message sent while the background self works changes what
-     it does within one tool call.
-   - Hypothesis to measure: wakes and tokens per day fall. A self-retriggering
-     loop is the user's own design, so the platform makes each wake cheap and
-     informative but does not cap wakes (Codex review finding 9).
-   - Proof: measured wakes and tokens per day before and after, plus one live
-     mid-run steer.
+2. **S2: Owner messages steer the live turn.**
+   - Build:
+     - Owner messages and owner-relevant events (a run it started, a request
+       it raised) are appended to the next tool result of a running turn,
+       with the unread count (#4170).
+     - When the session is idle, the same mechanical line opens the next turn.
+   - Founder sees: a message sent while tiny is mid-task changes what it does
+     within one tool call, without pressing Stop.
+   - Proof: one live mid-turn steer in the app, and a finished run reported
+     on the next turn without being asked.
 3. **S3: Network, browser, toolchain, writable root.**
    - Build:
      - Packet-level filtered egress for both address families (risk 2).
@@ -550,7 +534,7 @@ the base prompt, because it is a cross-user boundary.
      - Removal of any remaining guidance that implies per-action consent.
    - Founder sees: one approval, then it keeps posting and opening PRs to that
      destination without asking again.
-   - Proof: a granted repo PR from a background wake with the founder signed out.
+   - Proof: a granted repo PR from a scheduled run with the founder signed out.
 8. **S8: Every universe gets the harness. Delete the old surface.**
    - Build:
      - New universes are seeded from an explicitly published, reviewed
@@ -561,8 +545,9 @@ the base prompt, because it is a cross-user boundary.
    - Proof: `ui-test` on a fresh account and the public canary with
      `--assert-handles`.
 
-S1 and S2 are where the felt drag is. S3 removes tiny's own listed blockers.
-S5 and S8 are the efficiency payoff.
+S1 and S2 are where the felt drag is. S3 removes tiny's own listed blockers,
+and S3 and S5 are also what let the agent build other agents well. S5 and S8
+are the efficiency payoff.
 
 **Review record.** gpt-6-astra refute review of 04983ba2, 2026-10-01: ADAPT.
 Findings 2–10 are folded in above. The production numbers in §2 are
@@ -570,12 +555,7 @@ measurements and were not re-run by the reviewer.
 
 ## 5. Open questions for the founder
 
-1. **One session or two for chat and the background self?** The recommendation
-   is two sessions sharing the same files: chat stays responsive while the
-   background works, and each window holds only its own work. That is how Claude
-   Code sessions share CLAUDE.md and memory. The alternative is one session that
-   chat interrupts, as OpenClaw's main session does.
-2. **Brain safety: git rollback instead of a write refusal.** On 2026-09-26 you
+1. **Brain safety: rollback instead of a write refusal.** On 2026-09-26 you
    asked for a code-level guard, not obedience, against a weak model blanking a
    brain file. This design makes the guard "every change is a git commit, a big
    shrink shows an Undo" instead of refusing the write. Is that acceptable?

@@ -9,14 +9,14 @@ proper lean clean efficient self improving agent harness".
 
 Production measurements of the founder's universe (`u-01kxm1vszd8hwp7em418asq8h9`,
 `/data/.tinyassets.db` and its own folder, read-only, 2026-10-01) show the drag in
-numbers. Every turn is a brand-new session: Codex runs `--ephemeral`, and memory
-is a 20-message, 7,000-character text block with every tool result dropped. On
-2026-09-30 the background agent woke 1,294 times, a median of 38 s apart, and
-consumed 186.6M input tokens. 770 of those wakes reported no new evidence or no
-progress. Across all 1,369 completed wakes, 2 reported an effect without
-negating it. In chat, 26% of replies contain an ask, 54% contain blocked/can't
-language, and 29% carry "I haven't verified" disclaimers. The design records
-the full audit.
+numbers, measured on its 251 chat turns with its owner (the background agent it
+built is excluded; it is a user-built agent, not the harness). Every turn is a
+brand-new session: Codex runs `--ephemeral`, and memory is a 20-message,
+7,000-character text block with every tool result dropped. The median chat turn
+spends 61,862 input tokens. 26% of replies contain an ask, 54% contain
+blocked/can't language, and 29% carry "I haven't verified" disclaimers. Of 225
+replies, 7 report an effect without negating it in the same reply, and 10.4% of
+turns end indeterminate or abandoned. The design records the full audit.
 
 The tools exist (S1 of `universe-harness-four-tools` shipped `read`/`write`/
 `edit`/`bash` in a jail), so the problem is no longer missing tools. The harness

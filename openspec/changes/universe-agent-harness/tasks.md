@@ -7,7 +7,7 @@
 ## 2. Slices (each its own PR, live-proven in the founder's app before the next starts; a slice touching storage shape opens its own proposal first)
 
 - [ ] 2.1 S1 Sessions, tone, authority: resume-capable adapters continue a durable native session per thread or agent node (no `--ephemeral`); resumed turns send only the new message and unseen messages; editable seeded `AGENTS.md` carries tone and authority; persona warmth/ask/per-turn-consent text deleted.
-- [ ] 2.2 S2 Wakes are events into the session: agent-node sessions resumed by events; steering at tool boundaries; unread counter; mechanical "since your last turn" message.
+- [ ] 2.2 S2 Owner messages steer the live turn: owner messages and owner-relevant events appended to the next tool result with the unread count; the same mechanical line opens an idle session's next turn.
 - [ ] 2.3 S3 Network, browser, toolchain, writable root: filtered egress, headless browser, python/node/git in the jail; platform state moved to `.runtime/`.
 - [ ] 2.4 S4 Truthful tools, full journal, platform session log: HTTP-loop session log with compaction on the universe's own model; every adapter journals tool calls; oversized output spills to a file; one-line real causes; live tool activity in the app.
 - [ ] 2.5 S5 The platform is one extension: `ta` CLI over the per-universe socket and deferred MCP; resident tool block cut to the core four; handbook chapters become skills.
