@@ -1375,11 +1375,11 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
             if expected.parent != root:
                 blockers.append("founder-home path escapes the data root")
             if registered is None:
-                blockers.append("founder-home binding has no universe row")
+                blockers.append("founder-home binding has no command center row")
             else:
                 registered_path = Path(str(registered[0])).resolve(strict=False)
                 if registered_path != expected:
-                    blockers.append("founder-home path disagrees with universe index")
+                    blockers.append("founder-home path disagrees with command center index")
             if not home_path.is_dir():
                 blockers.append("founder-home directory is missing")
             elif _is_link_or_reparse(home_path):
@@ -1396,7 +1396,7 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
     marker = root / ".active_universe"
     if home_id is not None and marker.is_file():
         if marker.read_text(encoding="utf-8").strip() == home_id:
-            blockers.append("active universe marker targets exact home")
+            blockers.append("active command center marker targets exact home")
     offer = root / "founder_offers" / f"{subject}.json"
     if offer.exists():
         blockers.append("enabled founder market offer must be disabled normally")
@@ -1696,7 +1696,7 @@ def plan_test_identity_reset(
         "filesystem_actions": filesystem_actions,
         "root_history_actions": root_history_actions,
         "preserved": [
-            "all other founder homes and universe content",
+            "all other founder homes and command center content",
             "commons, wiki, root run history, audit, market, and billing state",
             "global daemon identities and all credentials",
         ],

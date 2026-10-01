@@ -264,7 +264,7 @@ class ApiKeyHttpProvider(BaseProvider):
     ) -> ProviderResponse:
         if universe_dir is None:
             raise ProviderUnavailableError(
-                "api_key_http compute requires a universe context (universe_dir)"
+                "api_key_http compute requires a command center context (universe_dir)"
             )
         from tinyassets.storage.outbound_connections import (
             ConnectionAuthorizationError,
@@ -284,7 +284,8 @@ class ApiKeyHttpProvider(BaseProvider):
         if grant is None or getattr(grant, "revoked_at", None) is not None:
             raise ProviderUnavailableError(f"compute grant {grant_id} is absent or revoked")
         if getattr(grant, "universe_id", "") != universe_id:
-            raise ProviderUnavailableError("compute grant is not bound to the running universe")
+            raise ProviderUnavailableError("compute grant is not bound to the running command "
+                "center")
         connection_id = grant.connection_id
         owner_user_id = grant.owner_user_id
         view = read_ledger.get_connection_view(connection_id)

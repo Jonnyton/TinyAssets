@@ -709,7 +709,7 @@ def ensure_default_author(base_path: str | Path) -> dict[str, Any]:
     return register_author(
         base_path,
         display_name="House Daemon",
-        soul_text="Default house daemon for the host-run universe server.",
+        soul_text="Default house daemon for the host-run command center server.",
         created_by="system",
         metadata={"auto_created": True},
     )

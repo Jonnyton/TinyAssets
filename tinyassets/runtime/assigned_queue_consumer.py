@@ -446,7 +446,7 @@ class AssignedQueueConsumer:
                 universe_id, holder=self.consumer_id
             )
         except Exception:  # noqa: BLE001 - an unreleased lease expires on its own
-            logger.exception("universe lease release failed universe=%s", universe_id)
+            logger.exception("command center lease release failed universe=%s", universe_id)
 
     def _reap_finished(self) -> tuple[int, set[str]]:
         """Drop completed futures, then report free slots and busy universes.

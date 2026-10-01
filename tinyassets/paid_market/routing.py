@@ -198,7 +198,7 @@ def create_evaluation_receipt(
     retention: EvaluationRetention,
 ) -> EvaluationReceipt:
     if not tenant_id or not universe_id or not receipt_nonce or not tenant_key:
-        raise RoutingError("tenant, universe, nonce, and tenant key are required")
+        raise RoutingError("tenant, command center, nonce, and tenant key are required")
     if not descriptor_material or not policy_material:
         raise RoutingError("receipt commitments require non-empty material")
     _nonnegative_int(created_at, "created_at")

@@ -41,7 +41,7 @@ class UniverseConfig:
 
     None = no stored allowlist. Legacy/contextless routing preserves the full
     fallback chain, while an explicit requester-universe call derives a strict
-    ceiling from that universe's selected writer/judge so it cannot borrow the
+    ceiling from that command center's selected writer/judge so it cannot borrow the
     process-global chain. A list = strict allowlist; the
     router filters every fallback chain (writer/judge/extract) and the
     judge ensemble down to providers whose name appears here. If the
@@ -69,7 +69,7 @@ class UniverseConfig:
     # Engine source (how this universe's intelligence is powered) — set by
     # `universe action=set_engine`. The founder chooses at onboard.
     engine_source: str = "byo_api_key"
-    """How this universe sources its engine: ``byo_api_key`` (default; a BYO API
+    """How this command center sources its engine: ``byo_api_key`` (default; a BYO API
     key in the vault) / ``requester_local`` / ``self_hosted_endpoint`` /
     ``market_rented`` / ``host_daemon``. The BYO-API-key path is fully wired end-to-end; the others
     persist the founder's choice (deeper market-matching / endpoint-routing

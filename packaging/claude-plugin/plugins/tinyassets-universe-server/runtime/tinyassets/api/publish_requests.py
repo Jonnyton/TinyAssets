@@ -42,7 +42,7 @@ _MAX_ID = 200
 #: The fixed consent sentence. The platform's words, not the agent's.
 PUBLIC_SENTENCE = (
     "Anyone will be able to read and copy these. A copy runs in the copier's own "
-    "universe on their own compute and never reaches yours. Publishing does not "
+    "command center on their own compute and never reaches yours. Publishing does not "
     "share your conversations, files, credentials or automation inputs."
 )
 

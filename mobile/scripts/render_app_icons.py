@@ -125,7 +125,7 @@ def render_sources(
     d = ImageDraw.Draw(fg)
     x = 470
     d.text((x, 150), "TinyAssets", font=title_font, fill=(0xF2, 0xF0, 0xEC))
-    d.text((x + 4, 262), "Your own AI universe.", font=body_font, fill=(0x5E, 0xD6, 0xA6))
+    d.text((x + 4, 262), "Your own AI command center.", font=body_font, fill=(0x5E, 0xD6, 0xA6))
     d.text(
         (x + 4, 304), "Runs real work on your own LLM.", font=body_font,
         fill=(0xC8, 0xC6, 0xC2),

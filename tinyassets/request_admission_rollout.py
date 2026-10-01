@@ -173,7 +173,7 @@ def publish_rollout_manifest(
             else:
                 if str(current["rollout_id"]) != clean_rollout:
                     raise RolloutTransitionError(
-                        "rollout_id cannot change during a universe rollout"
+                        "rollout_id cannot change during a command center rollout"
                     )
                 current_state = str(current["state"])
                 if current_state != expected_state:

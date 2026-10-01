@@ -30,10 +30,10 @@ _STAGE_WORDS = {
     "connection": "Connecting to your model's provider",
     "model_request": "Waiting on your model's provider",
     "model_reply": "Reading your model's reply",
-    "tool": "Running one of your universe's tools",
+    "tool": "Running one of your command center's tools",
     "platform": "Inside TinyAssets",
 }
-_NO_STAGE = "Your universe's turn stopped"
+_NO_STAGE = "Your command center's turn stopped"
 
 #: The class in words: one clause per class, composed -- never a whole notice.
 _CLASS_WORDS = {
@@ -64,12 +64,12 @@ _CLASS_WORDS = {
         "setup, so send again in a minute"
     ),
     "auth_invalid": (
-        "your model provider reported a sign-in problem; check this universe's "
+        "your model provider reported a sign-in problem; check this command center's "
         "connection and reconnect the provider if needed. This is not evidence "
         "of a usage or billing limit"
     ),
     "endpoint_unreachable": (
-        "your universe could not reach its model provider; that is a network or "
+        "your command center could not reach its model provider; that is a network or "
         "service problem rather than anything you set up wrong, so send again shortly"
     ),
     "platform_fault": (
@@ -82,27 +82,27 @@ _CLASS_WORDS = {
     ),
     "timed_out": "the model attempt timed out",
     "native_auth_clue": (
-        "your model provider reported a sign-in problem; check this universe's "
+        "your model provider reported a sign-in problem; check this command center's "
         "provider connection and reconnect if needed, though we have not "
         "confirmed that was the only cause"
     ),
     "setup_required": (
-        "this universe has no model it can use right now; connect a model, or "
+        "this command center has no model it can use right now; connect a model, or "
         "reconnect one that stopped working, from the request under “Waiting on "
         "you”, then send your request again"
     ),
     "provider_protocol_error": (
-        "the connected model replied in a format this universe could not read; "
+        "the connected model replied in a format this command center could not read; "
         "try again, or choose another model"
     ),
     "provider_reply_timeout": (
-        "your model took longer to answer than this universe waits for one "
+        "your model took longer to answer than this command center waits for one "
         "reply, so that request was ended and whatever the turn finished before "
         "it stands. Asking it to continue, or to do the rest in smaller steps, "
         "usually works; a faster model also helps"
     ),
     "provider_refused": (
-        "your model provider refused to serve this model to this universe, "
+        "your model provider refused to serve this model to this command center, "
         "before it produced anything; that is an access decision on the "
         "provider's side, not a reply we failed to read. Its own words are below. "
         "Choose another model, or check that model's access and privacy settings "

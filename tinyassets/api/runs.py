@@ -185,8 +185,8 @@ def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
                 "action": action,
                 "required": "universe_id",
                 "note": (
-                    "Branches are run by universes. Route the run through "
-                    "the founder's own universe."
+                    "Branches are run by command centers. Route the run through "
+                    "the founder's own command center."
                 ),
             })
         return None
@@ -560,7 +560,7 @@ _WORK_MODEL_EXHAUSTED_ACTION = (
     "scope, and the classified failure and retry-after the run observed. Retry later, or "
     "widen the order - an explicit choice with no fallbacks stays exhausted "
     "rather than silently moving to another source. " + _OWN_MODEL_ROUTES
-    + " Changing what the universe serves elsewhere cannot rescue a pinned "
+    + " Changing what the command center serves elsewhere cannot rescue a pinned "
     "source, and nobody else needs to act."
 )
 
@@ -717,7 +717,7 @@ def _no_provider_advice() -> str:
     owner connects, so that is the one thing worth pointing at.
     """
     return (
-        "No LLM provider is reachable for this universe. It runs on a provider "
+        "No LLM provider is reachable for this command center. It runs on a provider "
         "you connect to it, not on platform API keys -- connect or reconnect "
         "one from the request in your rail."
     )
@@ -770,10 +770,10 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
             "operator surface before running; approval is not exposed by the "
             "advertised handles.",
         )
-    if "code runs only in the universe that authored it" in msg:
+    if "code runs only in the command center that authored it" in msg:
         return _failure_payload(
             exc, "node_not_accepted",
-            "This branch's code was authored elsewhere. Remix it into your universe "
+            "This branch's code was authored elsewhere. Remix it into your command center "
             "(write_graph with fork_from) and run your copy.",
         )
     if "approv" in msg:
@@ -781,7 +781,7 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
         return _failure_payload(
             exc, "node_not_approved",
             "Approval no longer gates code: a source_code node runs in the OS sandbox, "
-            "in the universe that authored it. If this run named an approval, the "
+            "in the command center that authored it. If this run named an approval, the "
             "branch predates that change - re-store the node and run again.",
         )
     if "workspace not available" in msg:
@@ -880,11 +880,11 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "empty_llm_response",
             _EMPTY_LLM_RESPONSE_ACTION,
         )
-    if "code runs only in the universe that authored it" in msg:
+    if "code runs only in the command center that authored it" in msg:
         # A public foreign branch with code was run directly (sandboxed-code-node D2).
         return (
             "node_not_accepted",
-            "This branch's code was authored elsewhere. Remix it into your universe "
+            "This branch's code was authored elsewhere. Remix it into your command center "
             "(write_graph with fork_from) and run your copy.",
         )
     if "workspace not available" in msg:
@@ -950,7 +950,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
         return (
             "node_not_approved",
             "Approval no longer gates code: a source_code node runs in the OS sandbox, "
-            "in the universe that authored it. Re-store the node and run again.",
+            "in the command center that authored it. Re-store the node and run again.",
         )
     if "source_code" in msg:
         return (
@@ -1005,8 +1005,8 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     if "expired" in msg or "unauthor" in msg or "forbidden" in msg or "401" in msg:
         return (
             "auth_invalid",
-            "The universe's model provider reported a sign-in problem. Check "
-            "the connection and reconnect the provider for this universe if "
+            "The command center's model provider reported a sign-in problem. Check "
+            "the connection and reconnect the provider for this command center if "
             "needed; this is not evidence of a usage or billing limit.",
         )
     if "provider" in msg or "api key" in msg or "api_key" in msg:
@@ -1549,7 +1549,7 @@ def _compose_run_snapshot(
         # Say so plainly: "queued" alone reads as stuck.
         snapshot["workspace_wait"] = dict(wait)
         wait_line = (
-            "Waiting for the universe workspace (position "
+            "Waiting for the command center workspace (position "
             f"{wait.get('position')} in line). It starts by itself when the "
             "workspace is free, keeps its place across a restart, and can "
             "still be cancelled."
@@ -2480,7 +2480,7 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
     if not flag_on:
         next_steps.append(
             "Set TINYASSETS_TIERED_SCOPE=on to enable full four-tier"
-            " isolation (universe/goal/branch/user)."
+            " isolation (command center/goal/branch/user)."
         )
     next_steps.append(
         "Check activity.log for 'retrieval.scope_mismatch' to diagnose"

@@ -99,7 +99,7 @@ assert.equal(JSON.stringify(autos).includes('is_you'),false);
 automationsUniverseOverride='u-bob';
 const wrongAutos=await ask('list_automations',{});
 assert.equal(wrongAutos.ok,false);
-assert(/another universe/.test(wrongAutos.error),wrongAutos.error);
+assert(/another command center/.test(wrongAutos.error),wrongAutos.error);
 automationsUniverseOverride='';
 
 // ---- runs: pinned, bounded, no principal id -------------------------------

@@ -79,7 +79,7 @@ cd android && ./gradlew assembleDebug
 ```
 
 Verify the full loop on the device: **sign in (WorkOS)** → **connect your AI
-subscription** → **chat with your universe**.
+subscription** → **chat with your command center**.
 
 ## Build a release bundle (.aab) for Google Play
 

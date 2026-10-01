@@ -146,7 +146,7 @@ def _universe_files(base: Path, universe_id: str) -> int:
     2026-09-30-workspace-staging-leaks-on-failed-checkouts) -- and permanent
     workspaces, which are their own store."""
     if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
-        raise ValueError(f"not a universe id: {universe_id!r}")
+        raise ValueError(f"not a command center id: {universe_id!r}")
     return _walk_bytes(base / universe_id, exclude_top=_NOT_USER_BYTES)
 
 
@@ -271,7 +271,7 @@ def _workspaces(base: Path, universe_id: str) -> int:
     """A universe's permanent workspace generations (published, and any being
     built or awaiting discard): ``<uid>/workspaces``."""
     if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
-        raise ValueError(f"not a universe id: {universe_id!r}")
+        raise ValueError(f"not a command center id: {universe_id!r}")
     return _walk_bytes(base / universe_id / "workspaces")
 
 
@@ -526,7 +526,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".universe-tool-slots": "platform: tool jail slots",
     ".agent-sessions": (
         "platform: which native session each thread resumes (bytes per thread; "
-        "the session files themselves live in the universe and count there)"
+        "the session files themselves live in the command center and count there)"
     ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
@@ -963,7 +963,7 @@ class StorageRefused(Exception):
 
 _OTHER_ACCOUNT_FULL = {
     "error": (
-        "This universe's owner is out of cloud storage, so this write was not "
+        "This command center's owner is out of cloud storage, so this write was not "
         "accepted. The owner can free space or upgrade."
     ),
     "failure_class": FAILURE_QUOTA,
@@ -993,7 +993,7 @@ def visible_record(refused: StorageRefused, viewer: str | None = None) -> dict:
 def refusal_record(usage_: Usage, requested: int, *, universes: int) -> dict:
     from tinyassets.usage_policy import upgrade_sentence
 
-    across = f" across {universes} universes" if universes > 1 else ""
+    across = f" across {universes} command centers" if universes > 1 else ""
     message = (
         f"Your account is using {_human(usage_.used_bytes)} of its "
         f"{_human(usage_.quota_bytes)} of cloud storage{across}, and this write needs "

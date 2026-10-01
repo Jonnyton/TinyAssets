@@ -1,7 +1,7 @@
-"""The universe agent's four tools: ``read``, ``write``, ``edit``, ``bash``.
+"""The command center agent's four tools: ``read``, ``write``, ``edit``, ``bash``.
 
-Slice S1 of "the universe is the harness" (PLAN.md Scoping Rule 1; OpenSpec
-change ``universe-harness-four-tools``). A universe IS its agent's harness and
+Slice S1 of "the command center is the harness" (PLAN.md Scoping Rule 1; OpenSpec
+change ``universe-harness-four-tools``). A command center IS its agent's harness and
 project folder, so its agent works in that folder with the same four
 primitives pi.dev gives an agent, and builds everything else from them.
 
@@ -16,7 +16,7 @@ Every call -- reads included -- runs as a process inside bubblewrap, built by
 the SAME :func:`tinyassets.providers.provider_jail.jail_argv` as a provider
 launch, with a narrower view:
 
-* the owning universe at ``/u``, and nothing else of ``/data``. ``/u`` is an
+* the owning command center at ``/u``, and nothing else of ``/data``. ``/u`` is an
   allowlist, not the root with holes punched in it: a read-only tmpfs holding
   one bind per VISIBLE root entry. Only what the agent owns is bound
   read-write (its brain files and the harness directories ``skills/``,
@@ -40,13 +40,13 @@ launch, with a narrower view:
 * an empty environment (``--clearenv``) plus a fixed ``PATH``/``HOME``;
 * a seccomp filter refusing ``symlink``/``mknod`` (see :func:`seccomp_program`):
   the daemon reads this folder from OUTSIDE the jail and follows links, so a
-  link planted towards another universe must never exist on disk.
+  link planted towards another command center must never exist on disk.
 
 Because the process sees only ``/u``, path policy is the jail's, not Python's:
-a path outside the universe, or a symlink the agent planted towards another
-universe, resolves inside the jail's own mount namespace and finds nothing.
+a path outside the command center, or a symlink the agent planted towards another
+command center, resolves inside the jail's own mount namespace and finds nothing.
 
-Resource limits (per call, per universe)
+Resource limits (per call, per command center)
 ----------------------------------------
 Measured on the production container 2026-09-24 (kernel 6.1, uid 1001, no
 capabilities, cgroup2 mounted READ-ONLY, so no per-universe cgroup can be
@@ -61,7 +61,7 @@ cap enforced while reading, and a watch on the jail's whole process tree
 volume. The kernel exempts root from ``RLIMIT_NPROC``, so a ROOT-run jail
 (a hosted CI runner's sudo fallback, a self-host running as root) runs inside
 its own cgroup v2 with ``pids.max`` and ``memory.max`` instead, or is refused.
-Concurrency is bounded per universe and across the host by lock-file slots,
+Concurrency is bounded per command center and across the host by lock-file slots,
 so the sum of jails is bounded too.
 
 Fail closed: no bubblewrap, no ``prlimit``, or a jail that exits before the
@@ -191,7 +191,7 @@ class UniverseToolError(RuntimeError):
 @dataclass(frozen=True)
 class ToolLimits:
     """The limits every tool jail runs under. Floor, not policy: on a shared
-    host a fork bomb or a memory spike in one universe is an outage for the
+    host a fork bomb or a memory spike in one command center is an outage for the
     others (design section 4)."""
 
     #: ``RLIMIT_AS`` per process.
@@ -317,9 +317,9 @@ def tool_jail_argv(
     try:
         root = Path(universe_dir).resolve(strict=True)
     except OSError:
-        raise UniverseToolError("the universe folder does not exist") from None
+        raise UniverseToolError("the command center folder does not exist") from None
     if not root.is_dir():
-        raise UniverseToolError("the universe folder does not exist")
+        raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
     view = _universe_view(root)
     return jail_argv(
@@ -479,7 +479,7 @@ def _slot(
     cancelling that await does not stop the worker thread, so a cancelled request
     keeps its place in the queue until a slot frees. The waiter holds no lock and
     no jail (one pipe descriptor only), and the queue's depth is the transport's
-    own thread pool rather than anything a universe chooses --
+    own thread pool rather than anything a command center chooses --
     ``docs/concerns/2026-09-30-a-cancelled-tool-call-keeps-waiting.md``.
 
     There is no deadline. A 30-second one used to turn a busy host into
@@ -507,7 +507,7 @@ def _slot(
                     with contextlib.suppress(Exception):
                         on_wait(time.monotonic() - started)
                 logger.info(
-                    "universe_tools: every host tool slot is busy; waiting (universe %s)",
+                    "universe_tools: every host tool slot is busy; waiting (command center %s)",
                     universe_dir.name,
                 )
             time.sleep(_SLOT_POLL_SECONDS)
@@ -598,7 +598,7 @@ def run_jailed(
     output_bytes: int | None = None,
     on_wait: Callable[[float], None] | None = None,
 ) -> ToolRun:
-    """Run ``inner`` in the universe's tool jail under ``limits``.
+    """Run ``inner`` in the command center's tool jail under ``limits``.
 
     If every host slot is taken the call WAITS for one; it is not refused for the
     host being busy. ``on_wait`` is invoked once when that happens, so a caller
@@ -1068,12 +1068,12 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
 
 _HARNESS_HEAD = (
     "# My folder and my four tools\n"
-    "My universe is a folder, mounted at /u, and I work in it with four tools: "
+    "My command center is a folder, mounted at /u, and I work in it with four tools: "
     "`read` (a file, or a range of its lines), `write` (create or replace a "
     "file), `edit` (replace one exact passage in a file) and `bash` (a shell in "
     "/u with no network and bounded memory, processes and time, so long-running "
     "work does not belong there: it is workflows and automations in this "
-    "universe, never a service hosted elsewhere -- handbook chapter "
+    "command center, never a service hosted elsewhere -- handbook chapter "
     "write_graph.systems). Relative paths are under /u. Nothing outside "
     "/u is mine or reachable. I can write my brain files (identity.md, "
     "founder.md, origin.md, body.md, orgchart.md, projects.md, goals.md, "

@@ -799,7 +799,7 @@ class _BackgroundAssignedProviderSession:
             supplied_context is not None
             and Path(supplied_context.universe_dir) != self._universe_dir
         ):
-            raise PermissionError("background provider universe cannot be substituted")
+            raise PermissionError("background provider command center cannot be substituted")
         if supplied_context is not None and any(
             getattr(supplied_context, field, None) is not None
             for field in ("provider_request", "provider_invocation", "served_provider",
