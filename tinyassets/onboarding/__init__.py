@@ -225,7 +225,6 @@ def render_app_html() -> tuple[str, str]:
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
         _HTML_PATH.read_text("utf-8")
-        .replace("__TA_APP_LAYOUT__", _HTML_PATH.with_name("app_layout.js").read_text("utf-8"))
         .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)
@@ -1411,15 +1410,21 @@ async def _handle_billing_status(request: Any) -> Any:
                         "reason": "no_home_universe"}
             # Tier and, if it is ending, when. No Stripe round-trip: `ends_at` is
             # persisted by the webhook, so this stays a local read even though it is
-            # polled. Usage limits belong to the metering change, which has NOT
-            # landed - reporting quotas here would advertise enforcement that does
-            # not exist.
+            # polled. Seats are enforced (`universe_seats`); storage is not yet, so
+            # it is not reported as a limit. `upgrade_url` is None on the top tier,
+            # which is what the app's `?upgrade=1` entry reads.
             plan = get_plan(_universe_dir(home))
+            from tinyassets.usage_policy import limits_for, upgrade_url
+
+            limits = limits_for(plan["tier"])
             return {
                 "tier": plan["tier"],
                 "ends_at": plan["ends_at"],
                 "billing_enabled": billing_enabled(),
-                "enforced": [],
+                "enforced": ["seats"],
+                "seats": limits.seats,
+                "interactive_reserve": limits.interactive_reserve,
+                "upgrade_url": upgrade_url(plan["tier"]),
             }
 
     return JSONResponse(

@@ -14,7 +14,7 @@
 
 - [ ] 3.1 Run focused Windows/Linux and confinement/model/turn regressions, plugin parity and hosted CI; obtain independent exact-head approval for the implemented candidate.
 - [ ] 3.2 Lead verifies deployment/handles and ordinary two-owner rendered user-agent adoption, retained private state, model selection, cancellation and failure recovery without authoring the user's design.
-- [ ] 3.3 Sync only demonstrated consumer behavior and archive the bounded slice; retain unsupported renderer/foreign-harness/setup gaps and separate layout-only acceptance.
+- [ ] 3.3 Sync only demonstrated consumer behavior and archive the bounded slice; retain unsupported renderer/foreign-harness/setup gaps. (Layout-only acceptance is void: the layout system was deleted 2026-10-01.)
 
 Lead authorized bounded implementation of exact contract 493bd98c on 2026-09-19.
 Shared run dispatch remains file-lane owned; no independent launch mechanism.

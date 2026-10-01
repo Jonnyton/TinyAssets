@@ -8,7 +8,6 @@ per-request HTTP bearer auth on the loopback engine server.
 from __future__ import annotations
 
 import importlib
-import sqlite3
 
 # ── per-request HTTP bearer auth (Codex #6) ──────────────────────────────────
 
@@ -53,44 +52,6 @@ def test_run_graph_refuses_without_current_serving_authority(monkeypatch, tmp_pa
 
 
 # ── atomic effect-spam admission (Codex #5) ──────────────────────────────────
-
-def test_engine_run_admit_caps_and_is_atomic(monkeypatch, tmp_path):
-    monkeypatch.setenv("TINYASSETS_ENGINE_GRAPH_ID", "u-tiny")
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    import tinyassets.engine_mcp_server as ems
-    ems = importlib.reload(ems)
-
-    admits = [ems._engine_run_admit() for _ in range(ems._RUN_GRAPH_RATE_MAX + 5)]
-    assert admits.count(True) == ems._RUN_GRAPH_RATE_MAX  # exactly the cap
-    assert admits[ems._RUN_GRAPH_RATE_MAX:] == [False] * 5  # then refused
-
-    # A different universe has its own independent budget.
-    monkeypatch.setenv("TINYASSETS_ENGINE_GRAPH_ID", "u-other")
-    ems = importlib.reload(ems)
-    assert ems._engine_run_admit() is True
-
-
-def test_engine_run_admit_ages_out_old_admissions(monkeypatch, tmp_path):
-    import time
-
-    monkeypatch.setenv("TINYASSETS_ENGINE_GRAPH_ID", "u-tiny")
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    import tinyassets.engine_mcp_server as ems
-    ems = importlib.reload(ems)
-
-    # Pre-seed the cap's worth of OLD admissions (outside the window).
-    db = tmp_path / ".engine_run_admissions.db"
-    conn = sqlite3.connect(str(db))
-    conn.execute("CREATE TABLE admissions (universe_id TEXT, ts REAL)")
-    old = time.time() - ems._RUN_GRAPH_RATE_WINDOW_S - 10
-    conn.executemany(
-        "INSERT INTO admissions VALUES (?,?)",
-        [("u-tiny", old) for _ in range(ems._RUN_GRAPH_RATE_MAX)],
-    )
-    conn.commit()
-    conn.close()
-    # Old admissions do not count -> a fresh run is admitted.
-    assert ems._engine_run_admit() is True
 
 
 # ── served-budget boot reconciliation + retention (Codex P1 / #7) ────────────

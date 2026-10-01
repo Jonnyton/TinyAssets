@@ -293,39 +293,6 @@ def test_remix_shape_forks_private_with_minimal_caps(monkeypatch):
     assert "submit_request" not in captured["caps"]
 
 
-def test_remix_shape_admission_fails_closed(monkeypatch):
-    """remix passes fail_closed=True so a DB blip refuses rather than admits."""
-    import tinyassets.universe_server as us
-    from tinyassets import engine_mcp_server as s
-
-    _bind_ids(monkeypatch, graph="u-9")
-    mock_engine_admission(monkeypatch, {"u-9"})
-    seen = {}
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or
-                        s.engine_admissions.Admission(None, "ledger"))
-    calls = {"n": 0}
-    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
-    out = json.loads(s.remix_shape(fork_from="v-1", name="mine"))
-    assert seen.get("fail_closed") is True
-    assert "ledger is unavailable" in out.get("error", "")
-    assert calls["n"] == 0
-
-
-def test_remix_shape_rate_limited(monkeypatch):
-    import tinyassets.universe_server as us
-    from tinyassets import engine_mcp_server as s
-
-    _bind_ids(monkeypatch, graph="u-9")
-    mock_engine_admission(monkeypatch, {"u-9"})
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw:
-                        s.engine_admissions.Admission(None, "total"))
-    calls = {"n": 0}
-    monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
-    out = json.loads(s.remix_shape(fork_from="v-1", name="mine"))
-    assert "rate limit" in out.get("error", "")
-    assert calls["n"] == 0
-
-
 def test_publish_shape_is_not_exposed_this_slice(monkeypatch):
     """PUBLISH is deferred to the consent-gated slice (Codex ADAPT #5) — the
     engine server must not expose it, and it is absent from the allowlist."""
@@ -353,37 +320,6 @@ def test_run_graph_refuses_foreign_private_branch(monkeypatch):
     out = json.loads(s.run_graph(branch_def_id="foreign-private"))
     assert "not found" in out.get("error", "")
     assert calls["n"] == 0  # the run path was never reached
-
-
-def test_run_graph_names_the_cap_that_refused(monkeypatch, tmp_path):
-    """Codex round 2 (P2): the refusal always said "max 20" even when the
-    60-run total bound was what refused."""
-    from tinyassets import engine_admissions as adm
-    from tinyassets import engine_mcp_server as s
-
-    _bind_ids(monkeypatch, graph="u-9")
-    mock_engine_admission(monkeypatch, {"u-9"})
-    monkeypatch.setattr(s, "_engine_run_admit",
-                        lambda **kw: adm.Admission(None, adm.REFUSED_BY_TOTAL))
-    out = json.loads(s.run_graph(branch_def_id="b1"))
-    assert f"max {s._RUN_GRAPH_TOTAL_MAX} admissions" in out["error"]
-    monkeypatch.setattr(s, "_engine_run_admit",
-                        lambda **kw: adm.Admission(None, adm.REFUSED_BY_WRITE))
-    out = json.loads(s.run_graph(branch_def_id="b1"))
-    assert f"max {s._RUN_GRAPH_RATE_MAX} runs that write" in out["error"]
-    # a bare False from an old-style double still means refused
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: False)
-    assert "reason is unavailable" in json.loads(s.run_graph(branch_def_id="b1"))["error"]
-    # the write surfaces name the cap the same way (Codex round 3)
-    total_text = s._engine_refusal("write_graph", "total")
-    assert f"max {s._RUN_GRAPH_TOTAL_MAX} admissions" in total_text
-    write_text = s._engine_refusal("engine write", "write")
-    assert f"max {s._RUN_GRAPH_RATE_MAX} runs that write" in write_text
-    for reason in (None, "engine", "unknown"):
-        text = s._engine_refusal("write_graph", reason)
-        assert "reason is unavailable" in text and "max" not in text
-    ledger_text = s._engine_refusal("write_graph", "ledger")
-    assert "not admitted" in ledger_text and "max" not in ledger_text     # not a quota
 
 
 def test_run_graph_binds_its_admission_to_the_started_run(monkeypatch, tmp_path):
@@ -421,9 +357,8 @@ def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):
     from tinyassets.universe_bundle import seed_okf_bundle
 
     monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
-    # _engine_run_admit keys its rolling-limit ledger off TINYASSETS_DATA_DIR
-    # (not _base_path), so isolate it per test or the shared ledger exhausts the
-    # 20/window cap across the suite and later writes are spuriously rate-limited.
+    # _engine_run_admit keys its settlement ledger off TINYASSETS_DATA_DIR (not
+    # _base_path), so isolate it per test.
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = tmp_path / uid
     seed_okf_bundle(udir, purpose="help the founder", loop_branch_def_id="")
@@ -604,7 +539,9 @@ def test_read_brain_does_not_follow_symlinked_section(monkeypatch, tmp_path):
     assert out["brain"]["identity"] == ""  # not disclosed
 
 
-def test_engine_run_admit_refuses_symlinked_ledger(monkeypatch, tmp_path):
+def test_engine_run_admit_never_writes_through_a_symlinked_ledger(monkeypatch, tmp_path):
+    """A tampered settlement ledger records nothing -- and refuses nothing: the
+    ledger admits every run (spec `engine-run-admissions`)."""
     import os
 
     import pytest
@@ -618,7 +555,10 @@ def test_engine_run_admit_refuses_symlinked_ledger(monkeypatch, tmp_path):
     ledger = tmp_path / ".engine_run_admissions.db"
     os.symlink(external_db, ledger)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    assert s._engine_run_admit(fail_closed=True) is False
+    from tinyassets.engine_admissions import ADMITTED_UNRECORDED
+
+    assert s._engine_run_admit() == ADMITTED_UNRECORDED
+    assert external_db.read_text(encoding="utf-8") == ""
 
 
 def test_write_brain_rejects_oversized_name(monkeypatch, tmp_path):
@@ -654,18 +594,6 @@ def test_write_brain_rejects_oversized_section(monkeypatch, tmp_path):
     huge = "x" * (s._BRAIN_MAX_SECTION_BYTES + 1)
     out = json.loads(s.write_brain(identity=huge))
     assert "too large" in out.get("error", "")
-
-
-def test_write_brain_admission_fails_closed(monkeypatch, tmp_path):
-    from tinyassets import engine_mcp_server as s
-
-    _seed_brain_universe(monkeypatch, tmp_path)
-    seen = {}
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or
-                        s.engine_admissions.Admission(None, "ledger"))
-    out = json.loads(s.write_brain(name="Aria"))
-    assert seen.get("fail_closed") is True
-    assert "ledger is unavailable" in out.get("error", "")
 
 
 def test_read_brain_fails_closed_unbound(monkeypatch):
@@ -1732,25 +1660,6 @@ def test_served_write_graph_refused_without_serving_authority(monkeypatch):
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation="create"))
     assert "current serving owner" in out.get("error", "")
-    assert calls["n"] == 0
-
-
-def test_served_write_graph_admission_fails_closed(monkeypatch):
-    """Admission is fail-closed: a DB blip refuses the write rather than admits."""
-    import tinyassets.api.extensions as ext
-    from tinyassets import engine_mcp_server as s
-
-    _bind_ids(monkeypatch, graph="u-9")
-    mock_engine_admission(monkeypatch, {"u-9"})
-    seen = {}
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or
-                        s.engine_admissions.Admission(None, "ledger"))
-    calls = {"n": 0}
-    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    out = json.loads(s.write_graph(target="branch", operation="create", payload_json="{}"))
-    assert seen.get("fail_closed") is True
-    assert seen.get("kind") == "engine"                  # never the external-effect budget
-    assert "ledger is unavailable" in out.get("error", "").lower()
     assert calls["n"] == 0
 
 

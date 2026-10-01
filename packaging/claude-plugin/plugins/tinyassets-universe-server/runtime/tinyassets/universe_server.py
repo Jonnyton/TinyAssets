@@ -920,7 +920,9 @@ def write_graph(
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update/bind_serving_provider/set_serving.
             With target=app_ui, save: payload_json sets ui_library and/or
-            ui_selection, expected_revision is the revision read (0 when none).
+            ui_selection, expected_revision is the revision read (0 when none);
+            or one UI, no revision: activate/use_default/add_ui/replace_ui/
+            edit_ui/remove_ui.
             With target=automation, create/list/get/pause/resume/delete — one
             recurring run of one of YOUR workflows, owned by you, in your own
             universe. It runs on whichever provider that universe is serving on
@@ -1497,9 +1499,14 @@ def write_graph(
             )
         )
     if normalized == "app_ui":
-        if (operation or "save").strip().lower() != "save":
-            return json.dumps({"error": "unknown_app_ui_operation", "target": "app_ui",
-                               "operation": operation, "allowed_operations": ["save"]})
+        app_ui_op = (operation or "save").strip().lower()
+        if app_ui_op != "save":
+            # One UI or only the choice, no revision (custom_agents.change_app_ui_entry).
+            from tinyassets.api.app_ui import change_app_ui
+
+            return json.dumps(change_app_ui(
+                universe_id=graph_id, operation=app_ui_op, payload=payload_json,
+            ))
         from tinyassets.api.app_ui import write_app_ui
 
         return json.dumps(write_app_ui(
@@ -1623,13 +1630,9 @@ def _inbound_event_run_fn(
         )
         if reservation_id:
             webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
-    except Exception as exc:  # noqa: BLE001 - a single failed event must not kill the loop
+    except Exception:  # noqa: BLE001 - a single failed event must not kill the loop
         logger.exception("event bus: failed to fire branch %s for %s", branch_def_id, actor)
         _release()
-        if str(exc).startswith("run_usage_limited"):
-            # Re-raised so the event loop logs it as a failed dispatch
-            # (plan item 6: a limit is never a silent drop).
-            raise
 
 
 def start_scheduler_for_serving() -> bool:

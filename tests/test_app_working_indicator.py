@@ -61,6 +61,8 @@ _DECLS = (
     r"let serverStatusLine=[^\n]*;",
     # The Stop control's state (sendTurn's cleanup reads it).
     r"let interruptRequested=[^\n]*;", r"const STOP_REQUEST_MS=[^\n]*;",
+    # The seat wait line (`universe_seats`).
+    r"let seatWait=[^\n]*;", r"let seatLineShown=[^\n]*;",
 )
 _FUNCS = (
     "formatMessageTimestamp", "appendMessage", "setStatusLine",
@@ -187,6 +189,7 @@ const MCP={ _loginEpoch:0, invalidateSession(){},
     const s={active_host:"h",universe_id:SCENARIO.universe||"u-1",universe_name:"Home"};
     if(Object.prototype.hasOwnProperty.call(SCENARIO,"activeTurn"))
       s.active_turn=SCENARIO.activeTurn;
+    if(Object.prototype.hasOwnProperty.call(SCENARIO,"seats")) s.seats=SCENARIO.seats;
     return s;
   },
   async getConversation(){
@@ -542,3 +545,51 @@ def test_a_local_turn_and_a_server_turn_do_not_both_speak(tmp_path, html):
     # from this page's knowledge that is true. Still one sentence, not two.
     assert "another window" in out["after"]["line"], out["after"]["line"]
     assert out["after"]["line"].count("thinking") == 1
+
+
+# ---------------------------------------------------------------------------
+# A chat waiting for one of the account's seats (`universe_seats`).
+# ---------------------------------------------------------------------------
+
+_SEAT_LINE = r"""
+setQueueOwner("p-1");
+await pollStatus();
+const line=els["status-line"];
+console.log(JSON.stringify({
+  text:line.textContent,
+  parts:line.children.map(c=>({text:c.textContent,href:c.href||""})),
+}));
+"""
+
+
+def _seats(**extra):
+    return {"running": 2, "waiting": 1, "chat_waiting": True,
+            "upgrade_url": "https://tinyassets.io/app?upgrade=1", **extra}
+
+
+def test_a_waiting_chat_shows_the_waiting_line_with_the_upgrade_link_inside_it(
+    tmp_path, html,
+):
+    """Founder, 2026-09-30: the waiting message itself carries a clickable Upgrade
+    link -- on the one status line, never a banner, card or modal."""
+    out = _run(tmp_path, html, {"activeTurn": None, "seats": _seats()}, _SEAT_LINE)
+    assert out["text"] == "Waiting for a free seat (2 running)"
+    links = [p for p in out["parts"] if p["href"]]
+    assert links == [{"text": "Upgrade", "href": "https://tinyassets.io/app?upgrade=1"}]
+    assert "".join(p["text"] for p in out["parts"]).endswith("for more seats.")
+
+
+def test_the_top_tier_waits_without_an_upgrade_link(tmp_path, html):
+    out = _run(tmp_path, html, {"activeTurn": None, "seats": _seats(upgrade_url=None)},
+               _SEAT_LINE)
+    assert out["text"] == "Waiting for a free seat (2 running)"
+    assert out["parts"] == [], "nothing to sell on the top tier"
+
+
+def test_another_universes_waiting_chat_is_not_shown_here(tmp_path, html):
+    """`interactive_waiting` counts the whole account; only `chat_waiting` -- THIS
+    universe's chat -- paints the line."""
+    out = _run(tmp_path, html, {"activeTurn": None,
+                                "seats": _seats(chat_waiting=False, interactive_waiting=1)},
+               _SEAT_LINE)
+    assert out["text"] == "" and out["parts"] == []

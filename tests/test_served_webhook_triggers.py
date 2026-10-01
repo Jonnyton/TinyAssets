@@ -171,13 +171,6 @@ def test_malformed_requests_refuse_without_side_effects(bound, operation, kwargs
     assert webhook_hooks.list_for_universe(bound, universe_id=UNIVERSE) == []
 
 
-def test_a_create_without_admission_mints_nothing(bound, monkeypatch):
-    monkeypatch.setattr(engine, "_engine_run_admit", lambda **_: False)
-    out = create()
-    assert "refused" in out.get("error", ""), out
-    assert webhook_hooks.list_for_universe(bound, universe_id=UNIVERSE) == []
-
-
 def test_documented_webhook_operations_are_the_dispatched_ones():
     from tinyassets.served_tools import SERVED_WEBHOOK_WRITE_OPERATIONS
 

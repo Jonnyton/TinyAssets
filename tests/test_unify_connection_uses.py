@@ -720,11 +720,3 @@ def test_served_configure_runs_as_the_owner_on_the_bound_universe(served, monkey
     assert seen == [({"universe_id": "u-setup", "payload": document}, "owner-setup")]
     assert current_identity() == before
 
-
-def test_served_configure_is_refused_without_admission(served, monkeypatch):
-    monkeypatch.setattr(served, "_engine_run_admit", lambda **kw: False)
-    monkeypatch.setattr("tinyassets.api.connection_uses.configure_connection",
-                        lambda **kw: pytest.fail("unadmitted connection configuration"))
-    result = json.loads(served.write_graph(target="connection", operation="configure",
-                                           payload_json="{}"))
-    assert "refused" in result["error"]

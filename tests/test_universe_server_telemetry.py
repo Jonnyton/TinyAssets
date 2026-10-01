@@ -544,7 +544,7 @@ def test_last_activity_ignores_refused_automation_attempt(
         "a1", due_at,
         run_id="",
         status="refused",
-        reason="run_rate_limited",
+        reason="context_unavailable",
         now=now,
         succeeded=None,
     )

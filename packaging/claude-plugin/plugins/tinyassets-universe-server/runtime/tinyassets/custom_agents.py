@@ -1027,6 +1027,12 @@ def _require_definition(
         raise AgentNotFoundError(f"agent definition {definition_id!r} was not found")
 
 
+#: Roles of which an actor holds at most one binding per universe. The
+#: conversation-design installation is read at turn admission, where two active
+#: ones make the owner's conversation ambiguous (consumer_selection.py).
+SINGLETON_BINDING_ROLES = frozenset({"app_experience"})
+
+
 def create_binding(
     base_path: str | Path,
     *,
@@ -1035,7 +1041,15 @@ def create_binding(
     created_by: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create private universe configuration for a public definition."""
+    """Create private universe configuration for a public definition.
+
+    A binding whose ``configuration.role`` is a singleton role (see
+    ``SINGLETON_BINDING_ROLES``) is created only if this actor has none with
+    that role in this universe yet. That is the create's compare-and-set: two
+    clients that both read "none yet" cannot both create the conversation-design
+    installation, which would leave turn admission ambiguous. The check and the
+    insert are ONE statement, so it holds under concurrency.
+    """
 
     uid = (universe_id or "").strip()
     did = (definition_id or "").strip()
@@ -1049,19 +1063,27 @@ def create_binding(
     if not actor:
         raise AgentValidationError("an authenticated created_by actor is required")
     configuration = _normalize_binding_payload(payload)
+    role = configuration.get("role")
+    if not isinstance(role, str) or role not in SINGLETON_BINDING_ROLES:
+        role = None
     binding_id = f"agent_binding_{new_ulid()}"
     created_at = time.time()
 
     with _agent_connect(base_path) as conn:
         _require_definition(conn, did)
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO agent_bindings (
                 agent_binding_id, universe_id, agent_definition_id,
                 configuration_json, revision, status, created_by, updated_by,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 1, 'configured', ?, ?, ?, ?)
+            SELECT ?, ?, ?, ?, 1, 'configured', ?, ?, ?, ?
+            WHERE ? IS NULL OR NOT EXISTS (
+                SELECT 1 FROM agent_bindings
+                WHERE universe_id = ? AND created_by = ?
+                  AND json_extract(configuration_json, '$.role') = ?
+            )
             """,
             (
                 binding_id,
@@ -1072,8 +1094,17 @@ def create_binding(
                 actor,
                 created_at,
                 created_at,
+                role,
+                uid,
+                actor,
+                role,
             ),
         )
+        if cursor.rowcount != 1:
+            raise AgentConflictError(
+                f"a binding with role {role!r} already exists in this universe; "
+                "read it and update it instead"
+            )
         row = _read_binding_row(
             conn,
             universe_id=uid,
@@ -1565,13 +1596,251 @@ def _save_app_ui_row(
     return _app_ui_document(row, uid)
 
 
+# ---- One UI at a time --------------------------------------------------------
+# A universe edits a person's UIs by TALKING, which means through a model whose
+# tool results are bounded (engine_result_bounds). A whole-row compare-and-set
+# needs the whole library read first, and a library larger than that bound is
+# cut before its revision: live 2026-09-30, the founder asked to try "GTM Village"
+# and their universe could not switch the screen. These operations name ONE UI
+# (or only the choice) and never need the library or its revision. Each one
+# re-reads the row and writes it back under ``revision = <the one it read>``, and
+# re-runs on a lost race, so nothing another writer saved in between -- the
+# app's whole-library save included -- is overwritten. The row revision still
+# advances, so the app's own compare-and-set sees the change.
+
+#: Fields ``edit_ui`` may change. ``kind``, ``version`` and ``ui_id`` are what
+#: the component IS; changing those is a ``replace_ui``.
+APP_UI_EDITABLE_FIELDS = ("name", "markup", "style", "script")
+APP_UI_ENTRY_OPERATIONS = (
+    "activate", "use_default", "add_ui", "replace_ui", "edit_ui", "remove_ui",
+)
+_APP_UI_ENTRY_ATTEMPTS = 8
+
+
+def app_ui_etag(component: Any) -> str:
+    """A short digest of one UI, so an edit can require the version it read."""
+    return hashlib.sha256(_canonical_json(component).encode("utf-8")).hexdigest()[:16]
+
+
+def app_ui_index(document: dict[str, Any]) -> dict[str, Any]:
+    """The row without any UI body: what a model reads to pick a target."""
+    entries = []
+    for entry in document.get("ui_library") or []:
+        if not isinstance(entry, dict):
+            continue
+        entries.append({
+            "ui_id": entry.get("ui_id"),
+            "name": entry.get("name"),
+            "etag": app_ui_etag(entry),
+            "chars": {field: len(entry[field]) for field in ("markup", "style", "script")
+                      if isinstance(entry.get(field), str)},
+        })
+    return {
+        "universe_id": document.get("universe_id"),
+        "revision": document.get("revision"),
+        "ui_selection": document.get("ui_selection"),
+        "uis": entries,
+    }
+
+
+def _entry_position(library: list[Any], ui_id: str) -> int:
+    for position, entry in enumerate(library):
+        if isinstance(entry, dict) and entry.get("ui_id") == ui_id:
+            return position
+    return -1
+
+
+def _named_ui_id(payload: dict[str, Any]) -> str:
+    ui_id = payload.get("ui_id")
+    if not isinstance(ui_id, str) or not ui_id.strip():
+        raise AgentValidationError("ui_id is required")
+    return ui_id.strip()
+
+
+def _missing_ui(ui_id: str, library: list[Any]) -> AgentNotFoundError:
+    installed = [e.get("ui_id") for e in library if isinstance(e, dict)]
+    return AgentNotFoundError(
+        f"no UI with ui_id {ui_id!r} in this library; installed: {installed}"
+    )
+
+
+def _check_etag(payload: dict[str, Any], entry: dict[str, Any]) -> None:
+    expected = payload.get("expected_etag")
+    if expected in (None, ""):
+        return
+    if expected != app_ui_etag(entry):
+        raise AgentConflictError(
+            f"UI {entry.get('ui_id')!r} changed since it was read "
+            f"(etag is now {app_ui_etag(entry)}); read it again before editing"
+        )
+
+
+def _component(payload: dict[str, Any]) -> dict[str, Any]:
+    component = payload.get("component")
+    if not isinstance(component, dict):
+        raise AgentValidationError("component must be an object")
+    _check_app_ui_fields({"ui_library": [component]})
+    return component
+
+
+def _edited_entry(entry: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    changes = payload.get("set") or {}
+    edits = payload.get("edits") or []
+    if not isinstance(changes, dict) or not isinstance(edits, list):
+        raise AgentValidationError("set must be an object and edits a list")
+    if not changes and not edits:
+        raise AgentValidationError("edit_ui needs set and/or edits")
+    edited = dict(entry)
+    for field, value in changes.items():
+        if field not in APP_UI_EDITABLE_FIELDS:
+            raise AgentValidationError(
+                f"set field {field!r} is not one of {list(APP_UI_EDITABLE_FIELDS)}"
+            )
+        if not isinstance(value, str):
+            raise AgentValidationError(f"set.{field} must be a string")
+        edited[field] = value
+    for number, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            raise AgentValidationError(f"edits[{number}] must be an object")
+        field, old, new = edit.get("field"), edit.get("old"), edit.get("new")
+        if field not in APP_UI_EDITABLE_FIELDS:
+            raise AgentValidationError(
+                f"edits[{number}].field must be one of {list(APP_UI_EDITABLE_FIELDS)}"
+            )
+        if not isinstance(old, str) or not old or not isinstance(new, str):
+            raise AgentValidationError(
+                f"edits[{number}] needs a non-empty old string and a new string"
+            )
+        current = edited.get(field)
+        count = current.count(old) if isinstance(current, str) else 0
+        if count != 1:
+            raise AgentValidationError(
+                f"edits[{number}]: the old text occurs {count} times in {field}; "
+                "it must occur exactly once (quote more of it)"
+            )
+        edited[field] = current.replace(old, new, 1)
+    return edited
+
+
+def _apply_app_ui_entry_operation(
+    library: list[Any], selection: Any, operation: str, payload: dict[str, Any],
+) -> tuple[list[Any] | None, Any, dict[str, Any]]:
+    """Pure: the new (library or None if unchanged, selection, outcome)."""
+
+    if operation == "use_default":
+        return None, {"version": 1, "state": "default"}, {"ui_selection": "default"}
+    if operation == "add_ui":
+        component = _component(payload)
+        if _entry_position(library, component["ui_id"]) >= 0:
+            raise AgentConflictError(
+                f"a UI with ui_id {component['ui_id']!r} is already installed; "
+                "use replace_ui or edit_ui"
+            )
+        return [*library, component], selection, {
+            "ui_id": component["ui_id"], "etag": app_ui_etag(component)}
+    ui_id = _named_ui_id(payload) if operation != "replace_ui" else _component(payload)["ui_id"]
+    position = _entry_position(library, ui_id)
+    if position < 0:
+        raise _missing_ui(ui_id, library)
+    entry = library[position]
+    if operation == "activate":
+        return None, {"version": 1, "state": "active", "ui_id": ui_id}, {
+            "ui_selection": "active", "ui_id": ui_id}
+    _check_etag(payload, entry)
+    if operation == "remove_ui":
+        remaining = library[:position] + library[position + 1:]
+        if isinstance(selection, dict) and selection.get("ui_id") == ui_id:
+            selection = {"version": 1, "state": "default"}
+        return remaining, selection, {"ui_id": ui_id, "removed": True}
+    replacement = (_component(payload) if operation == "replace_ui"
+                   else _edited_entry(entry, payload))
+    updated = list(library)
+    updated[position] = replacement
+    return updated, selection, {"ui_id": ui_id, "etag": app_ui_etag(replacement)}
+
+
+def change_app_ui_entry(
+    base_path: str | Path,
+    *,
+    owner_user_id: str,
+    universe_id: str,
+    operation: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply ONE targeted change to the caller's UI row, atomically.
+
+    ``operation`` is one of :data:`APP_UI_ENTRY_OPERATIONS`. No revision is
+    named: the change is computed against whatever is stored now and written
+    under that row's revision, so a concurrent writer is never overwritten --
+    a lost race re-reads and re-applies. A change that no longer applies after
+    the re-read (the UI was removed, an ``expected_etag`` no longer matches)
+    fails loudly rather than landing on content it was not made for.
+    """
+
+    owner, uid = _app_ui_scope(owner_user_id, universe_id)
+    if operation not in APP_UI_ENTRY_OPERATIONS:
+        raise AgentValidationError(
+            f"app UI operation {operation!r} is not one of {list(APP_UI_ENTRY_OPERATIONS)}"
+        )
+    if not isinstance(payload, dict):
+        raise AgentValidationError("app UI payload must be a JSON object")
+    with _agent_connect(base_path) as conn:
+        for _attempt in range(_APP_UI_ENTRY_ATTEMPTS):
+            row = conn.execute(
+                "SELECT * FROM universe_app_ui WHERE owner_user_id = ? AND universe_id = ?",
+                (owner, uid),
+            ).fetchone()
+            current = _app_ui_document(row, uid)
+            library, selection, outcome = _apply_app_ui_entry_operation(
+                current["ui_library"], current["ui_selection"], operation, payload,
+            )
+            library_json = None if library is None else _canonical_json(library)
+            selection_json = _canonical_json(selection) if selection is not None else None
+            now = time.time()
+            if row is None:
+                written = conn.execute(
+                    """
+                    INSERT INTO universe_app_ui (
+                        owner_user_id, universe_id, ui_library_json, ui_selection_json,
+                        revision, updated_at
+                    ) VALUES (?, ?, ?, ?, 1, ?)
+                    ON CONFLICT(owner_user_id, universe_id) DO NOTHING
+                    """,
+                    (owner, uid, library_json or "[]", selection_json, now),
+                ).rowcount
+            else:
+                written = conn.execute(
+                    """
+                    UPDATE universe_app_ui
+                       SET ui_library_json = COALESCE(?, ui_library_json),
+                           ui_selection_json = ?,
+                           revision = revision + 1,
+                           updated_at = ?
+                     WHERE owner_user_id = ? AND universe_id = ? AND revision = ?
+                    """,
+                    (library_json, selection_json, now, owner, uid, int(row["revision"])),
+                ).rowcount
+            if written == 1:
+                conn.commit()
+                return {**outcome, "revision": current["revision"] + 1}
+            conn.rollback()
+    raise AgentConflictError(
+        "app UI kept changing while this change was applied; try it again"
+    )
+
+
 __all__ = [
     "AGENT_SCHEMA_VERSION",
+    "APP_UI_EDITABLE_FIELDS",
+    "APP_UI_ENTRY_OPERATIONS",
     "AgentConflictError",
     "AgentNotFoundError",
     "AgentValidationError",
     "MAX_AGENT_JSON_BYTES",
     "MAX_LINEAGE_DEPTH",
+    "app_ui_etag",
+    "app_ui_index",
+    "change_app_ui_entry",
     "create_binding",
     "get_app_ui",
     "get_binding",

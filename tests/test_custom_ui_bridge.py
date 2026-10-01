@@ -55,6 +55,13 @@ let me={principal_id:PRINCIPAL,universe_id:HOME,setup:'connected'};
 let binding=null, definitions={}, calls=[], allCalls=[], sends=[], conversation=[];
 let appUi=null, raceNext=false;
 const clone=v=>JSON.parse(JSON.stringify(v));
+// What the store hands back: canonical JSON (custom_agents._canonical_json,
+// sort_keys=True) parsed again, so every object comes back with SORTED keys.
+// A double that echoed the client's own key order hid a live bug: the app
+// compared its save by JSON.stringify and called its own saved choice a
+// mismatch (founder, 2026-10-01: "UI choice save did not match").
+const canonical=v=>Array.isArray(v)?v.map(canonical):(v&&typeof v==='object')?
+ Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 const stored=(library,selection)=>({universe_id:HOME,ui_library:library||[],
  ui_selection:selection||null,revision:1,updated_at:1});
 const settle=async(n)=>{for(let i=0;i<(n||10);i++)await new Promise(r=>setImmediate(r));};
@@ -91,7 +98,7 @@ const MCP={
     return {error:'app_ui_conflict',detail:'app UI changed: expected revision '+args.expected_revision+', current is '+current};
    const changes=JSON.parse(args.payload_json);
    for(const key of Object.keys(changes)) assert(['ui_library','ui_selection'].includes(key),key);
-   appUi={...(appUi||stored([],null)),...clone(changes),revision:current+1,updated_at:2};
+   appUi={...(appUi||stored([],null)),...canonical(changes),revision:current+1,updated_at:2};
    return {status:'saved',app_ui:clone(appUi)};
   }
   if(tool==='read_graph'&&args.target==='agent_bindings')return {bindings:binding?[binding]:[]};
@@ -169,7 +176,7 @@ assert.deepEqual(u.readSelection({ui_selection:{version:1,state:'active',ui_id:'
 binding=installed();
 appUi=stored([bundleOf()],{version:1,state:'active',ui_id:'office'});
 definitions['d1']={agent_definition_id:'d1',content_fingerprint:'f'.repeat(64),components:{}};
-AppLayout.enable(HOME,PRINCIPAL); u.enable(HOME,PRINCIPAL);
+u.enable(HOME,PRINCIPAL);
 await settle();
 assert(u.active&&u.active.ui_id==='office','the remembered UI must be applied: '+$('ui-status').textContent);
 assert.equal(calls.filter(c=>c.tool==='read_graph'&&c.args.target==='app_ui').length,1);
@@ -583,10 +590,9 @@ def _run(tmp_path, name, checks, extra=""):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node required for actual JavaScript controller")
-    layout = Path("tinyassets/onboarding/app_layout.js").read_text(encoding="utf-8")
     controller = Path("tinyassets/onboarding/app_ui.js").read_text(encoding="utf-8")
     script = tmp_path / name
-    script.write_text(HARNESS + extra + layout + controller + checks, encoding="utf-8")
+    script.write_text(HARNESS + extra + controller + checks, encoding="utf-8")
     result = subprocess.run(
         [node, str(script)], capture_output=True, text=True, timeout=120
     )

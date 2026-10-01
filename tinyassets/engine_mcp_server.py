@@ -41,7 +41,6 @@ import os
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 
-from tinyassets import engine_admissions
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
@@ -72,26 +71,6 @@ _RUN_CAPABILITIES = ("read", "list", "write", "submit_request", "costly")
 # ``costly`` because branch create/build is a scope-gated costly op.
 _REMIX_CAPABILITIES = ("read", "list", "write", "costly")
 
-#: Effect-spam rate limit for run_graph (Codex gate #5): at most this many
-#: engine-triggered runs per universe per rolling window.
-#:
-#: Sized from the founder's OWN usage (2026-09-02): deleting 56 probe branches
-#: and renaming one graph -- ordinary housekeeping in their own universe, on a
-#: day they described as light use -- hit the previous 20-per-hour engine cap
-#: mid-sweep. A per-user cap a light user reaches is a shape defect, not a
-#: safety property: the only platform invariant is not affecting OTHER users,
-#: and every one of these runs on the owner's own subscription. Cross-user
-#: capacity (provider slots, memory) is bounded elsewhere.
-_RUN_GRAPH_RATE_WINDOW_S = engine_admissions.RUN_WINDOW_SECONDS
-_RUN_GRAPH_RATE_MAX = engine_admissions.RUN_WRITE_LIMIT
-# Runs of ANY kind (reads included) per window. Reads are reclassified off the
-# write budget once they prove they wrote nothing (tinyassets.engine_admissions),
-# but a loop of read-only runs is still bounded here: run_graph returns as soon
-# as the run is QUEUED, so this is what bounds compute on the owner's
-# subscription. Engine writes share this total without a category reservation.
-_RUN_GRAPH_TOTAL_MAX = engine_admissions.RUN_TOTAL_LIMIT
-
-
 def _bearer_ok(authorization_header, secret) -> bool:
     """Constant-time check that the header carries exactly ``Bearer <secret>``.
 
@@ -105,113 +84,13 @@ def _bearer_ok(authorization_header, secret) -> bool:
     return hmac.compare_digest(authorization_header or "", "Bearer " + secret)
 
 
-def _engine_run_admit(
-    *,
-    fail_closed: bool = False,
-    universe_id: str = "",
-    want_ticket: bool = False,
-    kind: str = "write",
-):
-    """Atomically admit one engine-triggered run/write under the rolling caps, or refuse.
-
-    The ledger and the count rule live in ``tinyassets.engine_admissions``:
-    every run admission is charged as a WRITE against ``_RUN_GRAPH_RATE_MAX`` (Codex
-    gate #5, the effect-spam bound), atomically (``BEGIN IMMEDIATE`` count-and-
-    insert, closing the TOCTOU race); a run that then proves it only READ is
-    reclassified by the effect dispatcher and stops counting against writes,
-    while ``_RUN_GRAPH_TOTAL_MAX`` still bounds runs of any kind. A dedicated
-    ledger, NOT the shared runs table (Codex 2026-08-19 (b)).
-
-    ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — the
-    OS sandbox + current owner authority are the primary controls, so a DB blip must
-    not wedge legitimate runs. remix/write_graph/brain pass True — the rolling cap
-    IS a real safety bound on an autonomous write, so a DB error refuses. They
-    also pass ``kind="engine"``: a durable mutation of the universe's own state
-    counts toward the total bound only, never the external-effect budget (live
-    2026-08-30: branch authoring spent nine of the twenty).
-    """
+def _engine_run_admit(*, universe_id: str = "") -> int:
+    """Record a run for effect settlement and return its ticket. Never refuses:
+    concurrency waits for a seat at the run's agent calls (`universe_seats`)."""
     from tinyassets import engine_admissions as _adm
 
     counted_universe = (universe_id or "").strip() or _GRAPH_ID
-    admission = _adm.admit_detail(
-        counted_universe,
-        write_max=_RUN_GRAPH_RATE_MAX,
-        total_max=_RUN_GRAPH_TOTAL_MAX,
-        window_s=_RUN_GRAPH_RATE_WINDOW_S,
-        fail_closed=fail_closed,
-        kind=kind,
-        # Every run is also metered per day (plan item 6): the usage limit
-        # that replaced depth, count and cadence caps.
-        day_max=_adm.RUN_DAY_LIMIT,
-    )
-    # ``want_ticket``: the caller will start a RUN and needs the admission's
-    # identity to bind it (Admission.ticket = ledger row id; ADMITTED_UNRECORDED
-    # when a fail-open blip admitted without a row; None = refused, and
-    # Admission.refused_by names the cap).
-    return admission if want_ticket else (admission.ticket is not None)
-
-
-def _engine_refusal(prefix: str, refused_by, universe_id: str = "") -> str:
-    """The refusal every engine surface returns, naming the cap that refused.
-
-    With ``universe_id``, a cap refusal also carries the owner-visible notice
-    (``engine_admissions.usage_notice``): which cap, and when capacity returns.
-    """
-    import json as _json
-
-    if universe_id and refused_by in ("write", "total", "day"):
-        notice = engine_admissions.usage_notice(universe_id)
-        if notice is not None:
-            return _json.dumps({
-                "error": f"{prefix} refused: {notice['message']}",
-                "usage_notice": notice,
-            })
-
-    if refused_by == "ledger":
-        # Not a quota: the admission ledger is unusable or tampered and this
-        # caller fails closed (Codex: never dress that up as "max 20").
-        return _json.dumps({
-            "error": (
-                f"{prefix} refused: the engine admission ledger is unavailable "
-                "or not trusted, so this write is not admitted; try again shortly."
-            ),
-        })
-    if refused_by == "day":
-        return _json.dumps({
-            "error": (
-                f"{prefix} refused: this universe has started "
-                f"{engine_admissions.RUN_DAY_LIMIT} runs in the last 24 hours, its daily "
-                "usage limit. Runs resume as the oldest ones age out."
-            ),
-        })
-    if refused_by == "total":
-        bound = f"max {_RUN_GRAPH_TOTAL_MAX} admissions (runs and engine edits)"
-    elif refused_by == "write":
-        bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
-    else:
-        # No cap is known: do not invent a write-budget diagnosis. None is
-        # possible for legacy boolean doubles, but real admissions name a cause.
-        return _json.dumps({
-            "error": (
-                f"{prefix} refused: the admission refusal reason is unavailable; "
-                "try again shortly."
-            ),
-        })
-    return _json.dumps({
-        "error": (
-            f"{prefix} rate limit reached ({bound} per "
-            f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-        ),
-    })
-
-
-def _admission_parts(admission) -> tuple:
-    """(ticket, refused_by) from what ``_engine_run_admit(want_ticket=True)``
-    returned - tolerant of a test double that returns a bare bool."""
-    ticket = getattr(admission, "ticket", admission)
-    if ticket is False:
-        ticket = None
-    return ticket, getattr(admission, "refused_by", None)
+    return _adm.admit(counted_universe)
 
 
 def _attach_run_admission(raw: str, ticket) -> None:
@@ -713,11 +592,6 @@ def read_graph(
     token = _bind_founder_identity()
     try:
         if normalized == "model_options":
-            ticket, refused = _admission_parts(
-                _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-            )
-            if ticket is None:
-                return _engine_refusal("model_options", refused)
             from tinyassets.api.graph_reads import read_graph as _domain_read
 
             # The complete domain read, projected HERE: the connector's
@@ -750,6 +624,18 @@ def read_graph(
             except Exception:
                 return json.dumps({"error": "conversation_read_failed"})
             return _untrusted("conversation", json.dumps(payload, ensure_ascii=False))
+        if normalized == "app_ui":
+            # Never the whole library here: a model reads the index (no bodies)
+            # and then ONE UI or one field chunk, so a library of any size never
+            # meets the result ceiling (live 2026-09-30: a cut read stopped a
+            # universe switching its founder's screen).
+            from tinyassets.api.app_ui import INDEX, read_app_ui
+
+            return json.dumps(read_app_ui(
+                universe_id=_GRAPH_ID, ui_id=(query or "").strip() or INDEX,
+                field_name=field_name, output_offset=output_offset,
+                output_max_chars=output_max_chars,
+            ))
         if normalized == "access":
             from tinyassets.api.agent_access import read_access
 
@@ -908,8 +794,6 @@ def run_graph(
     if normalized_operation == "deliver_output":
         if any((branch_def_id, branch_version_id, run_name, run_id)):
             return json.dumps({"error": "deliver_output cannot combine run selectors"})
-        if not _engine_run_admit(fail_closed=True):
-            return _engine_refusal("deliver_output", None)
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import run_graph as _deliver
 
@@ -950,13 +834,9 @@ def run_graph(
             "error": "branch_def_id is required to run a graph.",
         })
 
-    # Effect-spam rate limit (Codex gate #5): a prompt-injected engine could spam
-    # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
-    # the runs THIS universe can trigger via the engine per rolling window. The
-    # OS sandbox already bounds WHAT a code node can touch; this bounds HOW OFTEN.
-    ticket, refused_by = _admission_parts(_engine_run_admit(want_ticket=True))
-    if ticket is None:
-        return _engine_refusal("run_graph", refused_by, universe_id=_GRAPH_ID)
+    # Settlement identity only: the run is never refused here. How much runs at
+    # once is bounded by the account's seats, at the run's agent calls.
+    ticket = _engine_run_admit()
 
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import run_graph as _impl
@@ -2046,20 +1926,37 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
 
     **Where it lives.** One private row per person and universe, holding their
     UI library and which one they are using. Nothing is published by it, and
-    there is no setup step: the first save creates it. Read it first:
+    there is no setup step: the first change creates it. I never read or write
+    the whole library -- it can be far bigger than one tool result. I work ONE
+    UI at a time:
 
-        read_graph target="app_ui"   -> {"app_ui": {"ui_library": [...],
-                                          "ui_selection": ..., "revision": N}}
+        read_graph target="app_ui"                  -> {"app_ui": {"uis": [{ui_id, name,
+                                   etag, chars}], "ui_selection": ..., "revision": N}}
+        read_graph target="app_ui" query="<ui_id>"  -> {"ui": {...}, "etag": "..."}
+        read_graph target="app_ui" query="<ui_id>" field_name="script"
+                   output_offset=0                  -> one chunk + next_offset
 
-    then send back the whole edited list with the revision I read (0 when there
-    is no row yet):
+    and change it with one call, ``payload_json`` naming only that UI:
 
-        write_graph target="app_ui" operation="save" expected_revision=N
-          payload_json={"ui_library": [ <one or more UI components> ]}
+        operation="activate"    {"ui_id": "..."}     # switch the person's screen to it
+        operation="use_default" {}                   # back to ordinary chat
+        operation="add_ui"      {"component": {...}} # a new UI (its ui_id is new)
+        operation="replace_ui"  {"component": {...}} # the whole UI with that ui_id
+        operation="edit_ui"     {"ui_id": "...",
+            "set": {"style": "..."},                 # whole fields, and/or
+            "edits": [{"field": "script", "old": "<exact text, once>",
+                       "new": "..."}]}               # small exact replacements
+        operation="remove_ui"   {"ui_id": "..."}     # (its choice falls back to chat)
 
-    A field I leave out keeps its stored value, so saving a library never
-    clears the choice. If someone else saved in between, the save is refused as
-    a conflict and nothing is overwritten; I read again and redo the edit.
+    all as ``write_graph target="app_ui"``. No revision is needed: each applies
+    to what is stored now and never overwrites anything else. Adding
+    ``"expected_etag"`` (from my read) to replace/edit/remove refuses the change
+    if that UI changed since I read it. An ``edits`` entry whose old text is not
+    there exactly once is refused, so I quote enough of it. When the person
+    asks to try, open or switch to a UI, I ``activate`` it: the app shows it
+    after my reply. ``write_graph target="app_ui" operation="save"`` with
+    ``expected_revision`` and a whole ``ui_library`` rewrites everything; I do
+    not need it.
 
     **The UI component.** Exactly these seven fields, no others, or the app refuses
     it and says which field it did not expect:
@@ -2102,6 +1999,12 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.listFiles(path)           -> {entries:[{name,kind,size_bytes}]}
         await tinyassets.readFile(path, offset)    -> {content,encoding,next_offset,...}
         await tinyassets.emit(name, data)          -> {emitted, woke}
+        await tinyassets.conversationDesign()      -> {state, agent_definition_id,
+                  component_key}   # "default" or "active": what answers them
+        await tinyassets.setConversationDesign(definition_id, component_key)
+                  # ASKS to route their future messages to a published
+                  # tinyassets.turn-graph.v1 component; no arguments = default.
+                  # They approve in the app's own prompt, or it is refused.
 
     These are how a screen shows agents actually working: which automations are
     live and when each fires next, which runs are going, what an agent node
@@ -2118,20 +2021,20 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     Anything else it calls is refused by name. ``sendMessage`` reaches the
     universe's currently selected conversation; naming a different agent is refused
     rather than quietly redirected, so a room-per-agent screen should call
-    ``listAgents()`` and act on ``selected`` instead of assuming.
+    ``listAgents()`` and act on ``selected`` instead of assuming. Arranging,
+    spacing and choosing which conversation design answers are all things a UI
+    I build can do; the app has no separate design or layout screen.
 
-    **Switching to it.** The person uses "Switch UI" in the app, and their choice is
-    remembered. I can preselect one by saving
-    ``"ui_selection": {"version": 1, "state": "active", "ui_id": "<mine>"}`` to the
-    same row; ``{"version": 1, "state": "default"}`` means ordinary chat.
+    **Switching to it.** I switch it with ``activate`` / ``use_default`` above; the
+    person can also use "Switch UI" in the app, and the choice is remembered.
 
     **Sharing one.** Publishing is the person's own deliberate act: I raise a
     ``publish`` ask (chapter ``systems``) and they confirm it in their app; a
     UI I only install stays private. (The connector's ``write_graph
     target="agent" operation="publish"`` is the person's own direct route, not a
     call I have.) To use someone else's, I read it with
-    ``read_commons_shape agent_definition_id=...`` and save its component into
-    this person's ``ui_library``; that copy is theirs, the same thing the
+    ``read_commons_shape agent_definition_id=...`` and ``add_ui`` its component
+    into this person's library; that copy is theirs, the same thing the
     connector's ``operation="remix"`` does. A copy always runs as the person who
     installed it, in THEIR universe -- it can never reach back to whoever wrote it.
 
@@ -2325,8 +2228,8 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       ``tinyassets.automation-spec.v1`` per trigger (never its inputs).
     * **Installing someone else's**: ``browse_commons kind="agents"``, then
       ``read_commons_shape agent_definition_id=...``; ``remix_shape`` each
-      branch-ref's ``published_version_id``; save the ``ui`` component into this
-      person's ``app_ui``; create an automation per automation-spec against the
+      branch-ref's ``published_version_id``; ``add_ui`` the ``ui`` component into
+      this person's ``app_ui``; create an automation per automation-spec against the
       copy its ``workflow`` names (an ``event_filter.branch_def_id`` that names a
       workflow key means that copy's id). Every copy is private, runs on this
       person's own compute, and never reaches the author's universe.
@@ -2710,11 +2613,6 @@ def _write_served_automation(
             return json.dumps({"error": "payload_json must be a JSON object"})
         if not isinstance(document, dict):
             return json.dumps({"error": "payload_json must be a JSON object"})
-        ticket, refused = _admission_parts(
-            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-        )
-        if ticket is None:
-            return _engine_refusal("automation create", refused)
     else:
         document = None
     # Pausing/retiring must remain available when new work cannot be admitted.
@@ -2776,11 +2674,6 @@ def _write_served_webhook(*, operation: str, branch_id: str, payload_json: str) 
             return json.dumps({
                 "error": "webhook create takes branch_id only; the universe and owner are yours",
             })
-        ticket, refused = _admission_parts(
-            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-        )
-        if ticket is None:
-            return _engine_refusal("webhook create", refused)
         raw = _webhook_call("mint_webhook", branch_def_id=bid)
         try:
             result = json.loads(raw)
@@ -3024,8 +2917,6 @@ def write_graph(
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import write_graph as _write_file
 
-        if not _engine_run_admit(fail_closed=True, kind="engine"):
-            return _engine_refusal("write_graph", None)
         token = _bind_founder_identity((*_REMIX_CAPABILITIES, "tinyassets.extensions.write"))
         try:
             return _untrusted("run-file", _write_file(
@@ -3037,8 +2928,6 @@ def write_graph(
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import write_graph as _write_delivery
 
-        if not _engine_run_admit(fail_closed=True, kind="engine"):
-            return _engine_refusal("write_graph", None)
         token = _bind_founder_identity((*_REMIX_CAPABILITIES, "tinyassets.extensions.write"))
         try:
             return _untrusted("delivery-management", _write_delivery(
@@ -3105,11 +2994,6 @@ def write_graph(
             # Non-secret uses/constant headers on a connection the owner holds.
             # No secret, no endpoints, no serving change (the owner's answer to a
             # connect request is what selects a model for an unpowered universe).
-            ticket, refused = _admission_parts(
-                _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-            )
-            if ticket is None:
-                return _engine_refusal("connection setup", refused)
             from tinyassets.api.connection_uses import configure_connection
 
             token = _bind_founder_identity(("write",))
@@ -3130,11 +3014,6 @@ def write_graph(
             return json.dumps({"error": "invalid model setup payload"})
         if t == "connection" and document.get("capability_kind") != "model_discovery":
             return json.dumps({"error": "only model_discovery configuration is available here"})
-        ticket, refused = _admission_parts(
-            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-        )
-        if ticket is None:
-            return _engine_refusal("model setup", refused)
         token = _bind_founder_identity(("write",))
         try:
             if t == "model_preferences":
@@ -3151,20 +3030,27 @@ def write_graph(
         finally:
             _current_identity.reset(token)
     if t == "app_ui":
-        # The founder's own UI library + choice, compare-and-set. The row is keyed
-        # by the bound founder identity, so there is no universe or person to name.
-        if (operation or "save").strip().lower() != "save":
-            return json.dumps({"error": "app_ui supports operation='save' only"})
-        ticket, refused = _admission_parts(
-            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-        )
-        if ticket is None:
-            return _engine_refusal("app_ui", refused)
-        from tinyassets.api.app_ui import write_app_ui
+        # The founder's own UI library + choice. The row is keyed by the bound
+        # founder identity, so there is no universe or person to name. ``save``
+        # is the whole-row compare-and-set; every other operation changes ONE UI
+        # or only the choice and needs no revision (custom_agents.change_app_ui_entry).
+        op = (operation or "save").strip().lower()
+        from tinyassets.custom_agents import APP_UI_ENTRY_OPERATIONS
+
+        if op != "save" and op not in APP_UI_ENTRY_OPERATIONS:
+            return json.dumps({
+                "error": "unknown_app_ui_operation", "operation": operation,
+                "allowed_operations": ["save", *APP_UI_ENTRY_OPERATIONS],
+            })
+        from tinyassets.api.app_ui import change_app_ui, write_app_ui
         from tinyassets.auth.middleware import _current_identity
 
         token = _bind_founder_identity(("write",))
         try:
+            if op != "save":
+                return json.dumps(change_app_ui(
+                    universe_id=_GRAPH_ID, operation=op, payload=payload_json,
+                ))
             return json.dumps(write_app_ui(
                 universe_id=_GRAPH_ID, payload=payload_json,
                 expected_revision=expected_revision,
@@ -3200,14 +3086,6 @@ def write_graph(
         return json.dumps({
             "error": f"payload_json too large (max {_SERVED_MAX_SPEC_BYTES} bytes).",
         })
-    # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
-    # refuse the write, not admit it.
-    _wt, _wrefused = _admission_parts(
-        _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-    )
-    if _wt is None:
-        return _engine_refusal("write_graph", _wrefused)
-
     from tinyassets.api.extensions import _extensions_impl
     from tinyassets.auth.middleware import _current_identity
 
@@ -3706,13 +3584,6 @@ def remix_shape(
         })
     if not new_name:
         return json.dumps({"error": "name is required for the remixed branch."})
-    # Rolling write bound — FAIL CLOSED for this autonomous write (Codex #6).
-    _wt, _wrefused = _admission_parts(
-        _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-    )
-    if _wt is None:
-        return _engine_refusal("engine write", _wrefused)
-
     spec = {
         "name": new_name,
         "fork_from": selector,
@@ -3800,14 +3671,13 @@ _BRAIN_WRITE_CAPABILITIES = ("read", "list", "write")
 
 
 @mcp.tool
-def read_brain() -> str:
+def read_brain(section: str = "") -> str:
     """Read YOUR OWN brain — the durable files that ARE your system prompt every
     turn: who you are, who your founder is, where you came from, and your body /
     how you work, plus your learned self-model.
 
-    This is your project folder / harness. Whatever you save here with
-    ``write_brain`` is what you wake up already knowing next turn — read it first
-    so an edit builds on what's there instead of blanking it.
+    Your harness. What ``write_brain`` saves you wake up knowing — read first so
+    an edit builds on it, not blanks it. ``section`` (e.g. "body") reads one.
     """
     import json
 
@@ -3833,29 +3703,36 @@ def read_brain() -> str:
         # round-trip stays clean: write_brain re-wraps managed frontmatter, so
         # echoing a frontmatter-laden read back would otherwise NEST it (Codex
         # brain-loop review 2026-08-22).
+        wanted = (section or "").strip().lower()
+        if wanted and wanted not in _BRAIN_SECTIONS:
+            return json.dumps({"error": f"unknown brain section {wanted!r}",
+                               "sections": list(_BRAIN_SECTIONS)})
+        # One section when named: a whole brain can outgrow one tool result,
+        # and a write builds on the section it read (write_brain is per section).
+        chosen = {wanted: _BRAIN_SECTIONS[wanted]} if wanted else _BRAIN_SECTIONS
         brain = {}
-        for section, fname in _BRAIN_SECTIONS.items():
+        for key, fname in chosen.items():
             # A brain file symlinked out of the universe would disclose an external
             # file's contents to the agent — refuse to read through it (Codex
             # re-review); a contained regular file reads normally.
             try:
                 assert_contained(udir, udir / fname)
             except SoulEditError:
-                brain[section] = ""
+                brain[key] = ""
                 continue
             raw = _read_bundle_body(udir, fname)
             try:
                 _meta, body = _split_frontmatter(raw)
             except Exception:  # noqa: BLE001 - a malformed file still reads as-is
                 body = raw
-            brain[section] = body.strip()
+            brain[key] = body.strip()
         try:
             governed = set(read_governed_files(udir))
         except SoulEditError:
             governed = set()
         editable = [s for s, f in _BRAIN_SECTIONS.items() if f in governed]
         try:
-            self_model = read_self_model(udir)
+            self_model = {} if wanted else read_self_model(udir)
         except Exception:  # noqa: BLE001 - never break a read on a bad model file
             self_model = {}
         return json.dumps({
@@ -3938,12 +3815,6 @@ def write_brain(
                 "(identity/founder/origin/body/orgchart) or a name."
             ),
         })
-    _wt, _wrefused = _admission_parts(
-        _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
-    )
-    if _wt is None:
-        return _engine_refusal("engine write", _wrefused)
-
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_intelligence import commit_learning

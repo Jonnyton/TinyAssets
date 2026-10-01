@@ -1441,46 +1441,60 @@ def converse(
     # because the exchange is not even stored until after this function returns.
     if granted and turn_config.engine_mcp_enabled:
         system = system + "\n\n" + _UNRECORDED_LESSON
-    recorded: set = set()
-    reply = _call_writer(
-        turn_input,
-        system=system,
-        universe_context=ctx,
-        config=turn_config,
-        tools_observer=recorded.update,
-        **({} if response_observer is None else {"response_observer": response_observer}),
-    )
-    # Only a FOUNDER teaches the universe.
-    #
-    # `tier` used to gate reads and nothing else: `commit_learning` takes an
-    # actor_id and no tier at all, so every caller — at any tier — wrote durable
-    # soul and canon state. A cross-family review found this while assessing a
-    # Slack channel that speaks at T1, where it would have let any mapped sender
-    # inject durable facts into the founder's own brain.
-    #
-    # The read gate lives in `_build_persona_system_prompt` above; this is the
-    # matching write gate, placed here rather than at any one call site so a
-    # future non-founder caller inherits it instead of having to remember it.
-    #
-    # And it runs only when the turn did NOT record its own lesson. That is read
-    # from this turn's OWN journal (a completed `write_brain`), never guessed and
-    # never taken from the engine surface's separate request. When it did record,
-    # the founder is spared a whole round-trip; when it did not, this is exactly
-    # the call it always was, so no lesson is lost either way.
-    if bound_tier == interlocutor.FOUNDER:
-        if recorded & _BRAIN_RECORDING_TOOLS:
-            settled = True
-        else:
-            # Settled even when nothing was written: extraction ran and found
-            # nothing durable, which is a finished lesson, not an owed one. A
-            # FAILED extraction returns False, and then the lesson is still owed.
-            settled = _learn_from_turn(
-                ctx, universe_dir=udir, universe_id=uid,
-                founder_message=founder_message, reply=reply, actor_id=actor_id,
-            )
-        if learning_observer is not None:
-            try:
-                learning_observer(bool(settled))
-            except Exception:  # noqa: BLE001 - the reply is already earned
-                logger.warning("converse: learning outcome could not be reported")
-    return reply
+    # The chat turn is an agent call: it holds an INTERACTIVE seat of the
+    # universe's account for the model call (and the lesson extraction after it).
+    # Over the seat count it waits with no deadline -- never refused -- and its
+    # queue row, tagged with this universe, is what `get_status` reports as
+    # `seats.chat_waiting` with the waiting line and upgrade link. The interactive
+    # reserve means a chat only ever waits behind another chat.
+    from tinyassets import universe_seats
+
+    with universe_seats.hold(
+        universe_seats.account_key(uid, root=udir.parent),
+        seat_class=universe_seats.CLASS_INTERACTIVE,
+        kind=universe_seats.KIND_CHAT_TURN, universe_id=uid,
+        db=universe_seats.ledger_path(udir.parent),
+    ):
+        recorded: set = set()
+        reply = _call_writer(
+            turn_input,
+            system=system,
+            universe_context=ctx,
+            config=turn_config,
+            tools_observer=recorded.update,
+            **({} if response_observer is None else {"response_observer": response_observer}),
+        )
+        # Only a FOUNDER teaches the universe.
+        #
+        # `tier` used to gate reads and nothing else: `commit_learning` takes an
+        # actor_id and no tier at all, so every caller — at any tier — wrote durable
+        # soul and canon state. A cross-family review found this while assessing a
+        # Slack channel that speaks at T1, where it would have let any mapped sender
+        # inject durable facts into the founder's own brain.
+        #
+        # The read gate lives in `_build_persona_system_prompt` above; this is the
+        # matching write gate, placed here rather than at any one call site so a
+        # future non-founder caller inherits it instead of having to remember it.
+        #
+        # And it runs only when the turn did NOT record its own lesson. That is read
+        # from this turn's OWN journal (a completed `write_brain`), never guessed and
+        # never taken from the engine surface's separate request. When it did record,
+        # the founder is spared a whole round-trip; when it did not, this is exactly
+        # the call it always was, so no lesson is lost either way.
+        if bound_tier == interlocutor.FOUNDER:
+            if recorded & _BRAIN_RECORDING_TOOLS:
+                settled = True
+            else:
+                # Settled even when nothing was written: extraction ran and found
+                # nothing durable, which is a finished lesson, not an owed one. A
+                # FAILED extraction returns False, and then the lesson is still owed.
+                settled = _learn_from_turn(
+                    ctx, universe_dir=udir, universe_id=uid,
+                    founder_message=founder_message, reply=reply, actor_id=actor_id,
+                )
+            if learning_observer is not None:
+                try:
+                    learning_observer(bool(settled))
+                except Exception:  # noqa: BLE001 - the reply is already earned
+                    logger.warning("converse: learning outcome could not be reported")
+        return reply

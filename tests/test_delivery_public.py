@@ -111,18 +111,6 @@ def test_receiver_revocation_refuses_new_intake(linked, provider_probe):
         assert conn.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
 
 
-def test_receiver_admission_refusal_never_reserves_a_run(linked, provider_probe, monkeypatch):
-    from types import SimpleNamespace
-    base, _, _, link = linked
-    monkeypatch.setattr("tinyassets.engine_admissions.admit_detail",
-                        lambda *a, **k: SimpleNamespace(ticket=None))
-    response = _send(link)
-    assert response["detail"] == "receiver_resource_admission_refused"
-    with deliveries.transaction(base) as conn:
-        assert conn.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
-    assert provider_probe == []
-
-
 def test_sender_ledger_targets_delivery_not_private_run(linked, provider_probe, monkeypatch):
     _, _, _, link = linked
     ledger = []

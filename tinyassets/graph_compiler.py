@@ -368,11 +368,89 @@ def _get_shared_router() -> Any:
     return _SHARED_ROUTER
 
 
+def _seat_scope(universe_context, seat_scope) -> tuple[Path, str] | None:
+    """(data root, universe id) whose account this agent call is charged to.
+
+    The RUN's own universe first -- ``BranchExecutionContext.universe_id``, built
+    from the authenticated run row -- because that is what a real run carries: a
+    run compiles its nodes WITHOUT a ``universe_context`` (it rides inside the
+    bound provider call), so a seat keyed only on ``universe_context`` was never
+    taken by any run at all. A directly-built node with a universe context (the
+    local and test paths) falls back to that.
+    """
+    if seat_scope is not None and seat_scope[1]:
+        return Path(seat_scope[0]), str(seat_scope[1])
+    udir = getattr(universe_context, "universe_dir", None)
+    if udir is not None:
+        return Path(udir).parent, Path(udir).name
+    return None
+
+
+def _run_agent_with_timeout(fn, *, timeout_s, node_id, universe_context, event_sink,
+                            seat_scope=None, on_seated=None):
+    """Run one agent call holding a seat of the universe's ACCOUNT.
+
+    This is the executor, never the enqueuer: the seat is taken here, where the
+    model call is about to happen, and waited for with no deadline -- work over
+    the seat count queues, it is never refused (founder, 2026-09-30). The wait is
+    published as a ``waiting`` event carrying the owner's waiting line, and a run
+    cancelled while it waits stops waiting.
+
+    A node inside a run that already holds a seat (an automation, a blocking
+    parent) re-enters it; a parallel sibling pays for its own. Once the call is
+    submitted, its future owns the release -- a timed-out call that is still
+    running keeps its seat until it actually ends.
+
+    ``on_seated`` runs once the seat is held, before the call is submitted: the
+    node's provider budget starts THEN, never during the wait.
+    """
+    from tinyassets import universe_seats as seats
+
+    scope = _seat_scope(universe_context, seat_scope)
+    if scope is None:
+        # No universe at all: the local single-tenant daemon, which has no account.
+        return _run_with_timeout(fn, timeout_s=timeout_s, node_id=node_id)
+    root, universe_id = scope
+    account = seats.account_key(universe_id, root=root)
+    tier = seats.tier_of_key(account, root=root)
+
+    def waiting(state):
+        if event_sink is None:
+            return
+        try:
+            event_sink(
+                node_id=node_id, phase="waiting", kind="waiting_for_seat",
+                running=state.running, waiting=state.waiting,
+                detail=seats.waiting_message(running=state.running, tier=tier),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if _is_cancel_exception(exc):
+                raise
+            logger.exception("event_sink raised in %s (waiting)", node_id)
+
+    held = seats.acquire_blocking(
+        account, kind=seats.KIND_AGENT_NODE, universe_id=universe_id,
+        parent=seats.current_seat(), wait_s=None, on_waiting=waiting,
+        db=seats.ledger_path(root),
+    )
+    if on_seated is not None:
+        on_seated()
+    # The call runs carrying its seat (the worker hop copies this context), so a
+    # blocking agent call nested inside it re-enters the seat instead of waiting
+    # for one its own blocked parent holds.
+    with seats.carrying(held):
+        return _run_with_timeout(
+            fn, timeout_s=timeout_s, node_id=node_id,
+            on_done=lambda: seats.release(held.seat_id, db=held.db),
+        )
+
+
 def _run_with_timeout(
     fn: Callable[[], Any],
     *,
     timeout_s: float,
     node_id: str,
+    on_done=None,
 ) -> Any:
     """Call ``fn()`` on a worker thread, raise NodeTimeoutError on overrun.
 
@@ -428,9 +506,19 @@ def _run_with_timeout(
     import contextvars
 
     # Preserve the explicit blocking-invoke loan across the node worker hop.
-    future = executor.submit(contextvars.copy_context().run, _guarded)
-    if nested_executor is not None:
-        nested_executor.shutdown(wait=False)
+    try:
+        future = executor.submit(contextvars.copy_context().run, _guarded)
+    except BaseException:
+        if on_done is not None:
+            on_done()
+        raise
+    finally:
+        if nested_executor is not None:
+            nested_executor.shutdown(wait=False)
+    if on_done is not None:
+        # The future owns the release: a call still running past its timeout
+        # keeps what it holds until it actually ends.
+        future.add_done_callback(lambda _future: on_done())
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError as exc:
@@ -1264,6 +1352,7 @@ def _build_prompt_template_node(
     concurrency_tracker: ConcurrencyTracker | None = None,
     universe_context: "UniverseContext | None" = None,
     branch_def_id: str = "",
+    seat_scope: tuple[Path, str] | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that fills the prompt template and calls an
     LLM. Output is stored under the node's first ``output_keys`` entry
@@ -1544,7 +1633,13 @@ def _build_prompt_template_node(
             # budget as its provider cap — it would outlive the node's own
             # deadline by exactly the queue wait. Measured on the worker (these
             # closures run there), so it reflects real wait, not submit time.
-            _submitted_at = time.monotonic()
+            # Restamped when the call gets its account seat (`_seated`): a wait
+            # for a seat is not the provider's time, and charging it would hand a
+            # served call an already-spent budget (gpt-6-astra round 2, P1).
+            _submitted = [time.monotonic()]
+
+            def _seated() -> None:
+                _submitted[0] = time.monotonic()
 
             def _deadline_cfg() -> Any:
                 """The node's REMAINING budget as a provider cap.
@@ -1555,7 +1650,7 @@ def _build_prompt_template_node(
                 """
                 if _node_cfg is None:
                     return None
-                waited = time.monotonic() - _submitted_at
+                waited = time.monotonic() - _submitted[0]
                 if waited < _QUEUE_WAIT_SUBTRACT_THRESHOLD_S:
                     # Scheduling jitter, not queue wait. Hand over the node's
                     # own config unchanged so an unqueued call is unaffected.
@@ -1607,21 +1702,25 @@ def _build_prompt_template_node(
                                 universe_context=universe_context,
                                 response_observer=_observe_response,
                             )
-                        text_and_name = _run_with_timeout(
+                        text_and_name = _run_agent_with_timeout(
                             _policy_call,
                             timeout_s=timeout_s,
                             node_id=node.node_id,
+                            universe_context=universe_context, event_sink=event_sink,
+                            seat_scope=seat_scope, on_seated=_seated,
                         )
                         response, provider_served, provider_meta = text_and_name
                     else:
                         # Router unavailable or empty — fall through to the
                         # run_branch-injected provider bridge.
-                        response = _run_with_timeout(
+                        response = _run_agent_with_timeout(
                             lambda: _bridge(
                                 prompt, "", _observe_response, _deadline_cfg(),
                             ),
                             timeout_s=timeout_s,
                             node_id=node.node_id,
+                            universe_context=universe_context, event_sink=event_sink,
+                            seat_scope=seat_scope, on_seated=_seated,
                         )
                 except NodeTimeoutError:
                     raise
@@ -1633,12 +1732,14 @@ def _build_prompt_template_node(
                     raise _wrap_provider_failure(node.node_id, exc) from exc
             else:
                 try:
-                    response = _run_with_timeout(
+                    response = _run_agent_with_timeout(
                         lambda: _bridge(
                                 prompt, "", _observe_response, _deadline_cfg(),
                             ),
                         timeout_s=timeout_s,
                         node_id=node.node_id,
+                        universe_context=universe_context, event_sink=event_sink,
+                        seat_scope=seat_scope, on_seated=_seated,
                     )
                 except NodeTimeoutError:
                     raise
@@ -3137,39 +3238,19 @@ def _build_invoke_branch_node(
 
 
 def _charge_child_run(node: NodeDefinition, ctx: "BranchExecutionContext") -> Any:
-    """Meter one sub-branch run against its universe's usage; return the ticket.
+    """Record a sub-branch run for effect settlement; return the ticket.
 
-    A child run is a run. It is charged to the same per-universe admission a
-    run_graph or an automation pays, per hour and per day
-    (``tinyassets.engine_admissions``). That -- not a depth cap -- is what
-    bounds a chain that invokes itself (plan item 6). A run with no universe
-    (the local single-tenant daemon) has no universe to meter. Fails closed:
-    an unreadable meter must not admit unmetered work.
+    Never a refusal: a child run's agent calls wait for the account's seats
+    (``tinyassets.universe_seats``), which is what bounds a chain that invokes
+    itself. A run with no universe (the local single-tenant daemon) records
+    nothing.
     """
     from tinyassets import engine_admissions as ea
 
     universe_id = (getattr(ctx, "universe_id", "") or "").strip()
     if not universe_id:
         return None
-    admission = ea.admit_detail(
-        universe_id,
-        write_max=ea.RUN_WRITE_LIMIT,
-        total_max=ea.RUN_TOTAL_LIMIT,
-        window_s=ea.RUN_WINDOW_SECONDS,
-        fail_closed=True,
-        day_max=ea.RUN_DAY_LIMIT,
-    )
-    if admission.ticket is None:
-        notice = ea.usage_notice(universe_id) if admission.refused_by != "ledger" else None
-        when = (
-            notice["message"] if notice is not None
-            else "it frees up as older runs age out."
-        )
-        raise CompilerError(
-            f"Node '{node.node_id}': sub-branch run refused by this universe's "
-            f"usage limit ({admission.refused_by}). {when}"
-        )
-    return admission.ticket
+    return ea.admit(universe_id)
 
 
 def _bind_child_ticket(ticket: Any, run_id: str) -> None:
@@ -3378,10 +3459,19 @@ def _build_invoke_branch_version_node(
                         on_node_status=on_node_status,
                         _invocation_depth=depth + 1,
                         _provider_parent=blocking_parent_slot(),
+                        # This node blocks until the child ends, so the child
+                        # may borrow the seat it is carrying, if any.
+                        _lend_seat=True,
                     )
                     _bind_child_ticket(ticket, str(outcome.run_id or ""))
                     # Block until the child terminates; harvest its output dict.
-                    record = poll_child_run_status(_base, outcome.run_id)
+                    # No deadline, as the blocking definition invoke has none: the
+                    # child may first wait for its account's seat, and a wait is
+                    # never a failure (gpt-6-astra round 3). A dead child still
+                    # ends -- its run is terminalized on its owner's proven death.
+                    record = poll_child_run_status(
+                        _base, outcome.run_id, timeout_seconds=None,
+                    )
                 child_status = record.get("status", "")
                 child_output = record.get("output") or {}
 
@@ -3852,6 +3942,13 @@ def _build_node_inner(
             state_schema=state_schema, llm_policy=llm_policy,
             concurrency_tracker=concurrency_tracker,
             universe_context=universe_context, branch_def_id=branch_def_id,
+            # The run's authenticated universe, so the agent call holds a seat
+            # of that universe's ACCOUNT (`universe_seats`).
+            seat_scope=(
+                (Path(base_path), execution_context.universe_id)
+                if base_path is not None and execution_context is not None
+                and execution_context.universe_id else None
+            ),
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if domain_id:

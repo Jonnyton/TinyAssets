@@ -13,8 +13,11 @@ The native public definition/private binding split is already specified in
 `openspec/specs/universe-custom-agents/spec.md`. Definitions are immutable,
 multi-parent remix preserves lineage, unknown kinds remain portable, and binding
 updates are revision guarded. Existing handles already own these operations.
-The deployed `AppLayout` consumes just one declarative component and deliberately
-never writes the serving binding. The first-party conversation path still
+The deployed `AppLayout` consumed just one declarative component and deliberately
+never wrote the serving binding. (2026-10-01: the App design dialog and
+`app_layout.js` are deleted on founder direction; the consumer selection and
+recovery it hosted moved to the custom-UI bridge and the Switch UI dialog in
+`onboarding/app_ui.js`. Evidence files in this change cite the file as it was.) The first-party conversation path still
 builds persona/context, calls its writer and performs default learning in
 `tinyassets/universe_intelligence.py:961-1135`.
 
@@ -29,7 +32,7 @@ Primitive inventory (direct source verification, not absence inference):
 | Current receiver provider authority | `foreground_run_provider.py`, `api/runs.py:59`; each run session uses current verified actor/universe |
 | Canonical turn, receipt and model selection | `universe_server.converse`, `universe_intelligence.converse`, `providers/served_model_plan.py` |
 | Native component compilation | `agent_runtime_compiler.py:358`, `agent_runtime_plan_compiler.py:412`; these are not installed app/turn consumers |
-| Existing UI adapter | `onboarding/app_layout.js`; exact trusted surfaces, no arbitrary code |
+| Existing UI adapter | `onboarding/app_ui.js` (was `app_layout.js`, deleted 2026-10-01) |
 
 `check_primitive_exists.py action` returned CLEAN for run_graph/create_binding/
 update_binding/run_branch_version/bind/update. Direct inspection above proves
