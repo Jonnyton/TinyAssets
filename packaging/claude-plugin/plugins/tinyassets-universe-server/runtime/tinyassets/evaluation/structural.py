@@ -14,15 +14,29 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # spaCy -- gracefully degrade if model is unavailable
 # ---------------------------------------------------------------------------
-try:
-    import spacy
+# Loaded on first use, never at import. This module is reached at import time
+# by tinyassets.evaluation, so by outcomes, handoffs and the MCP server
+# itself: importing spaCy here put ~2.8 s and its numpy/thinc stack on every
+# server start and every process that imports the server (measured
+# 2026-10-01), for a model the server never calls.
+_UNLOADED = object()
+_NLP_CACHE: Any = _UNLOADED
 
-    try:
-        _NLP = spacy.load("en_core_web_sm")
-    except OSError:
-        _NLP = None
-except ImportError:
-    _NLP = None
+
+def _nlp() -> Any:
+    """The spaCy pipeline, or None when spaCy or its model is unavailable."""
+    global _NLP_CACHE
+    if _NLP_CACHE is _UNLOADED:
+        try:
+            import spacy
+
+            try:
+                _NLP_CACHE = spacy.load("en_core_web_sm")
+            except OSError:
+                _NLP_CACHE = None
+        except ImportError:
+            _NLP_CACHE = None
+    return _NLP_CACHE
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +152,9 @@ def _count_syllables(word: str) -> int:
 
 def _extract_sentences(text: str) -> list[str]:
     """Split text into sentences using spaCy or regex fallback."""
-    if _NLP is not None:
-        doc = _NLP(text)
+    nlp = _nlp()
+    if nlp is not None:
+        doc = nlp(text)
         return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
     # Regex fallback
     raw = re.split(r"(?<=[.!?])\s+", text)
@@ -148,8 +163,9 @@ def _extract_sentences(text: str) -> list[str]:
 
 def _content_words(text: str) -> set[str]:
     """Return lowercased content words (no stopwords / punctuation)."""
-    if _NLP is not None:
-        doc = _NLP(text)
+    nlp = _nlp()
+    if nlp is not None:
+        doc = nlp(text)
         return {
             t.lemma_.lower()
             for t in doc
@@ -545,7 +561,8 @@ def _check_timeline(state: dict[str, Any]) -> CheckResult:
 
 def _check_character_voice(prose: str, state: dict[str, Any]) -> CheckResult:
     """Character voice: POS distribution similarity to voice profiles."""
-    if _NLP is None:
+    nlp = _nlp()
+    if nlp is None:
         return CheckResult(
             name="character_voice",
             passed=True,
@@ -592,7 +609,7 @@ def _check_character_voice(prose: str, state: dict[str, Any]) -> CheckResult:
 
     for speaker, dialogues in attributions.items():
         combined = " ".join(dialogues)
-        doc = _NLP(combined)
+        doc = nlp(combined)
         total_tokens = sum(1 for t in doc if t.is_alpha)
         if total_tokens < 5:
             continue
