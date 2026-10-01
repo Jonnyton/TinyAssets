@@ -191,9 +191,10 @@ def test_custom_agent_reads_route_through_graph_handle(monkeypatch) -> None:
         return {"routed": kwargs["action"]}
 
     # Reads dispatch through the shared domain read (the connector delegates).
-    from tinyassets.api import graph_reads
-
-    monkeypatch.setattr(graph_reads, "_custom_agents_impl", fake_custom_agents)
+    # Patched by import path, not a module object held here: a test that reloads
+    # tinyassets modules earlier in the run leaves a stale object behind, and the
+    # connector resolves the dispatch from sys.modules on every call.
+    monkeypatch.setattr("tinyassets.api.graph_reads._custom_agents_impl", fake_custom_agents)
 
     listed = json.loads(
         read_graph(target="agents", query="coding", tags="agent,coding", limit=5)

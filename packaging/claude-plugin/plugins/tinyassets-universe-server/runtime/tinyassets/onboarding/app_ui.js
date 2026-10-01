@@ -437,12 +437,12 @@
       }
       return {automations};
     },
-    // Newest first, as many as the bundle asks for (50 when it names none), and
-    // the page SAYS whether older runs exist: one extra row is read to know.
-    // A fixed ceiling of 50 with no continuation cut the oldest runs off
-    // silently (Codex round 2); the bundle now asks for a bigger page to see them.
+    // Newest first, at most MAX_LIST_RUNS: a bundle is untrusted code and cannot
+    // raise the bound of one request. The page SAYS whether older runs exist
+    // (one look-ahead row is read to know), so a cut is never silent -- a fixed
+    // 50 with no signal is what Codex round 2 flagged.
     async listRuns(args){
-      const limit=Number.isSafeInteger(args.limit)&&args.limit>0?args.limit:this.MAX_LIST_RUNS;
+      const limit=Number.isSafeInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_LIST_RUNS):this.MAX_LIST_RUNS;
       const call={target:"runs",graph_id:this.home,limit:limit+1};
       if(typeof args.status==="string"&&args.status.trim()) call.run_status=args.status.trim();
       const doc=await Owner.read(call);

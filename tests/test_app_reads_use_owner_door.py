@@ -201,4 +201,5 @@ def test_a_custom_ui_run_list_says_when_older_runs_exist():
     html = _html()
     body = _method_source(html, "async listRuns(args){")
     assert "limit:limit+1" in body and "has_more:doc.runs.length>limit" in body
-    assert "Math.min(" not in body, "no fixed ceiling on the page a bundle asks for"
+    # A bundle is untrusted: one request stays bounded, and the cut is SAID.
+    assert "Math.min(args.limit,this.MAX_LIST_RUNS)" in body
