@@ -161,20 +161,20 @@ jobs:
             exit 0
           fi
 
-          # Queue-attempt cap: a head that already failed the merge queue twice
-          # is not re-armed (queue-handoff.yml records why). Exit 3 means
-          # capped. Any other failure of the check enrolls anyway, with a
+          # Queue-attempt cap: a head handed off by queue-handoff.yml (record
+          # for this exact head + the queue-handoff label) is not re-armed.
+          # Exit 3 means capped. Any other failure of the check enrolls anyway, with a
           # warning: the cap stops a retry loop, it must never block a merge.
           CAP_RC=0
           python scripts/queue_attempts.py check --repo "$REPO" --pr "$PR" || CAP_RC=$?
           if [ "$CAP_RC" -eq 3 ]; then
             if [ "$STATE" = "yes" ]; then
-              gh pr merge "$PR" --repo "$REPO" --disable-auto
+              gh pr merge "$PR" --repo "$REPO" --disable-auto || true
             fi
             {
               echo "### Auto-merge"
               echo ""
-              echo "Not enrolled: this head failed the merge queue twice. Push a fix to re-arm."
+              echo "Not enrolled: this head failed the merge queue twice (see the queue-handoff record). Push a fix, or remove the queue-handoff label to retry."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           elif [ "$CAP_RC" -ne 0 ]; then
