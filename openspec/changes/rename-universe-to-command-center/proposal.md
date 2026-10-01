@@ -65,8 +65,9 @@ proposal. It is part of this program so the vocabulary is decided once.
   thread a new user opens to becomes **"Welcome, commander."** The agent's
   self-reference and served guidance call it **the user's command center**.
   Seed and soul text is included. No key, parameter or route changes.
-- **C1. MCP surface (this change's gated part).** The new names become primary
-  and the old names are accepted aliases:
+- **C1. MCP surface (this change's gated part).** The new names replace the old
+  ones as a clean cutover (founder, 2026-10-01): an old name is refused,
+  naming its replacement, with no alias window:
   - the `universe_id` parameter becomes `command_center_id`;
   - the targets become `command_center`, `command_center_files` and
     `command_center_file`;
@@ -88,7 +89,8 @@ proposal. It is part of this program so the vocabulary is decided once.
 ### Modified
 
 - `live-mcp-connector-surface`: the prompt catalog renames `meet_universe`, and
-  a new requirement covers the command center vocabulary and the alias window.
+  a new requirement covers the command center vocabulary and the refusal of
+  retired names.
 
 ## Impact
 
