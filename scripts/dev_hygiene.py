@@ -924,7 +924,7 @@ def collect_worktrees(
     pr_state_fn=None,
     open_pr_fn=None,
     preserve: PreservePolicy | None = None,
-    pr_states_fn=None,
+    pr_records_fn=None,
 ) -> list[Item]:
     """Inventory this repo's worktrees. Never looks outside ``git worktree list``.
 
@@ -964,9 +964,11 @@ def collect_worktrees(
     # Every PR state, once per pass, only when the preserve path is on. ``None``
     # (gh could not answer, or the listing hit its limit) turns the preserve path
     # off for the whole pass rather than reading "no PR" into an unknown.
-    all_pr_states = None
+    all_pr_records = None
     if preserve is not None:
-        all_pr_states = (pr_states_fn if pr_states_fn is not None else pr_states_by_branch)(repo)
+        all_pr_records = (pr_records_fn if pr_records_fn is not None else pr_records_by_branch)(
+            repo
+        )
 
     here = Path.cwd().resolve()
     items: list[Item] = []
@@ -989,7 +991,7 @@ def collect_worktrees(
         )
         if preserve is not None and item.verdict == "KEEP" and item.reason in PRESERVABLE_KEEPS:
             item = preservable(
-                wt, item, policy=preserve, pr_states=all_pr_states, now=now, base_ref=base_ref
+                wt, item, policy=preserve, pr_records=all_pr_records, now=now, base_ref=base_ref
             )
         items.append(item)
     return items
@@ -1216,14 +1218,19 @@ def _judge_worktree(
 # thing this script exists to prevent.
 #
 # So a lane that is long idle AND finished is preserved first, then removed:
-#   * dirty tracked + untracked work -> one commit on a LOCAL-ONLY ref,
-#     ``refs/preserved/<name>-<YYYYMMDD>``, built through a temporary index so the
-#     worktree's own index and branch are untouched. Its parent is HEAD, so the
-#     branch's own commits stay reachable through it too.
-#   * ignored-but-unique files -> copied under ``<preserve-dir>/<name>-<stamp>/``
-#     with a MANIFEST.json of sha256 digests, each copy re-hashed.
+#   * tracked edits + untracked files -> one commit on a LOCAL-ONLY ref,
+#     ``refs/preserved/<name>``, built in a temporary index from the files' RAW
+#     bytes (``hash-object --no-filters``: no CRLF or clean-filter rewriting).
+#     Parents: HEAD, plus the real index as its own commit when it differs, so
+#     staged-only content survives the index being deleted with the worktree.
+#   * every ignored file that is not a tool cache -> copied under
+#     ``<preserve-dir>/<name>/files/`` with ``<name>/MANIFEST.json`` beside it.
+#   * the worktree is then RENAMED to a quarantine name -- on Windows that fails
+#     while any process holds a handle inside it -- and re-fingerprinted. Only an
+#     identical tree is deleted; anything else is renamed back and kept.
 # Nothing is ever pushed: this repo is public, and a dirty tree can hold a secret.
-# Anything the preserve step cannot capture and verify keeps the worktree.
+# Shapes it cannot preserve faithfully (submodules, embedded repositories, links)
+# keep the worktree, as does any step that cannot be verified.
 
 # The KEEP reasons that mean "holds work", which preservation can answer. Every
 # other KEEP -- open PR, recent activity, undecidable git, a protected branch --
@@ -1239,10 +1246,11 @@ PRESERVABLE_KEEPS = frozenset(
     }
 )
 
-# Tool-owned caches excluded from the snapshot even when untracked-and-not-ignored
-# (a site preview's node_modules once was: 5,700 paths). Deliberately narrower than
+# Tool-owned caches: untracked or ignored files under these directory names, and
+# compiled bytecode, are neither snapshotted nor copied. Deliberately narrower than
 # DISPOSABLE_IGNORED: ``build/``, ``dist/``, ``env/`` are ordinary names a person
-# can write into, so an untracked one is captured -- and counted against the cap.
+# can write into, so their files ARE preserved -- and counted against the cap. A
+# TRACKED file under one of these names is a tracked file like any other.
 SNAPSHOT_EXCLUDED_DIRS = (
     "node_modules",
     "__pycache__",
@@ -1254,8 +1262,10 @@ SNAPSHOT_EXCLUDED_DIRS = (
     ".next-build",
     ".svelte-kit",
 )
+TOOL_OWNED_GLOBS = ("*.pyc", "*.pyo")
 
 PR_STATES_LIMIT = 10_000
+_ZERO_OID = "0" * 40
 
 
 @dataclass(frozen=True)
@@ -1269,8 +1279,15 @@ class PreservePolicy:
     root: Path | None = None  # copies go here; default <git-common-dir>/tinyassets-preserved
 
 
-def pr_states_by_branch(repo: Path) -> dict[str, set[str]] | None:
-    """Head branch -> every PR state on it, or ``None`` when gh cannot say.
+@dataclass(frozen=True)
+class PrRecord:
+    state: str  # OPEN | MERGED | CLOSED
+    head_oid: str
+    cross_repo: bool = False
+
+
+def pr_records_by_branch(repo: Path) -> dict[str, list[PrRecord]] | None:
+    """Head branch -> every PR on it, or ``None`` when gh cannot say.
 
     A listing that reaches its limit is ``None`` too: a branch missing from a
     truncated list is not a branch with no PR.
@@ -1285,7 +1302,7 @@ def pr_states_by_branch(repo: Path) -> dict[str, set[str]] | None:
             "--limit",
             str(PR_STATES_LIMIT),
             "--json",
-            "headRefName,state",
+            "headRefName,state,headRefOid,isCrossRepository",
         ],
         cwd=repo,
         timeout=180,
@@ -1298,62 +1315,145 @@ def pr_states_by_branch(repo: Path) -> dict[str, set[str]] | None:
         return None
     if not isinstance(rows, list) or len(rows) >= PR_STATES_LIMIT:
         return None
-    states: dict[str, set[str]] = {}
+    records: dict[str, list[PrRecord]] = {}
     for row in rows:
         name = str(row.get("headRefName", ""))
         if name:
-            states.setdefault(name, set()).add(str(row.get("state", "")).upper())
-    return states
+            records.setdefault(name, []).append(
+                PrRecord(
+                    state=str(row.get("state", "")).upper(),
+                    head_oid=str(row.get("headRefOid", "")),
+                    cross_repo=bool(row.get("isCrossRepository")),
+                )
+            )
+    return records
 
 
-def _is_snapshot_excluded(rel: str) -> bool:
-    return any(part in SNAPSHOT_EXCLUDED_DIRS for part in rel.replace("\\", "/").split("/"))
+def _is_tool_owned(rel: str) -> bool:
+    parts = rel.replace("\\", "/").rstrip("/").split("/")
+    if any(part in SNAPSHOT_EXCLUDED_DIRS for part in parts):
+        return True
+    return any(fnmatch.fnmatch(parts[-1], g) for g in TOOL_OWNED_GLOBS)
 
 
 def newest_commit_age_days(worktree: Path, head: str, base_ref: str, now: float) -> float:
-    """Age of the newest commit on ``head`` that ``base_ref`` lacks. Raises Undecidable."""
-    out = git_ok(["log", "--format=%ct", "-n", "500", head, f"^{base_ref}"], worktree, timeout=60)
+    """Age of the newest commit on ``head`` that ``base_ref`` lacks. Raises Undecidable.
+
+    Every such commit, not the first N: committer dates are not monotonic, so a
+    recent commit can sit behind an old one.
+    """
+    out = git_ok(["log", "--format=%ct", head, f"^{base_ref}"], worktree, timeout=120)
     stamps = [int(s) for s in out.split() if s.strip().isdigit()]
     if not stamps:
         stamps = [int(git_ok(["log", "-1", "--format=%ct", head], worktree).strip())]
     return max(0.0, (now - max(stamps)) / 86400.0)
 
 
-def preservation_payload(worktree: Path) -> tuple[list[str], int]:
-    """``(ignored files to copy, bytes the preserve step would capture)``.
+def _contains(worktree: Path, ancestor: str, descendant: str) -> bool:
+    if not ancestor or not descendant:
+        return False
+    if ancestor == descendant:
+        return True
+    proc = run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=worktree)
+    return proc.returncode == 0
 
-    Bytes = untracked files the snapshot takes + the ignored files copied; a
-    tracked edit is a diff against content git already holds. Raises Undecidable.
-    """
+
+@dataclass
+class Payload:
+    changed: list[str]  # tracked edits/deletions + untracked files, worktree-relative
+    ignored: list[str]  # ignored files to copy
+    bytes: int
+
+
+def preservation_payload(worktree: Path) -> Payload:
+    """What the preserve step must capture. Raises Undecidable on any shape it
+    cannot preserve faithfully: a submodule, an embedded repository, a link."""
+    staged = git_ok(["ls-files", "--stage"], worktree, timeout=120)
+    if any(line.startswith("160000 ") for line in staged.splitlines()):
+        raise Undecidable("the lane has a submodule; its contents cannot be snapshotted")
+    raw = git_ok(
+        [
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--ignore-submodules=none",
+        ],
+        worktree,
+        timeout=300,
+    )
+    fields = [f for f in raw.split("\0") if f]
+    changed: list[str] = []
+    ignored_entries: list[str] = []
+    index = 0
+    while index < len(fields):
+        rec = fields[index]
+        index += 1
+        if len(rec) < 4 or rec[2] != " ":
+            raise Undecidable(f"unparseable status record {rec[:40]!r}")
+        xy, rel = rec[:2], rec[3:]
+        if "R" in xy or "C" in xy:
+            if index < len(fields):
+                changed.append(fields[index])  # the origin path of a rename/copy
+                index += 1
+        if xy == "!!":
+            ignored_entries.append(rel)
+            continue
+        if xy == "??" and rel.endswith("/"):
+            # -uall lists every file, so a directory here is a repository git
+            # will not descend into; `git add` would record a bare gitlink.
+            raise Undecidable(f"embedded repository at {rel}")
+        if xy == "??" and _is_tool_owned(rel):
+            continue
+        changed.append(rel)
+
     total = 0
-    for xy, rel in _status_entries(worktree):
-        if xy == "??" and not _is_snapshot_excluded(rel):
-            try:
-                total += (worktree / rel).stat().st_size
-            except OSError as exc:
-                raise Undecidable(f"cannot size {rel}: {exc}") from exc
+    for rel in changed:
+        target = worktree / rel
+        try:
+            info = os.stat(target, follow_symlinks=False)
+        except FileNotFoundError:
+            continue  # a deletion; the snapshot records it as one
+        except OSError as exc:
+            raise Undecidable(f"cannot stat {rel}: {exc}") from exc
+        if is_link(info):
+            raise Undecidable(f"{rel} is a link; links are not preserved")
+        total += info.st_size
+
     files: list[str] = []
-    for rel in unique_ignored_paths(worktree):
+    for rel in ignored_entries:
+        if _is_tool_owned(rel):
+            continue
         src = worktree / rel.rstrip("/")
         try:
-            if src.is_dir():
-                for parent, dirs, names in os.walk(src, onerror=_raise_walk_error):
-                    dirs[:] = [d for d in dirs if d not in SNAPSHOT_EXCLUDED_DIRS]
-                    for name in names:
-                        files.append(
-                            str(Path(parent, name).relative_to(worktree)).replace("\\", "/")
-                        )
-            elif src.is_file():
+            info = os.stat(src, follow_symlinks=False)
+            if is_link(info):
+                raise Undecidable(f"{rel} is a link; links are not preserved")
+            if not stat_mod.S_ISDIR(info.st_mode):
                 files.append(rel)
+                total += info.st_size
+                continue
+            for parent, dirs, names in os.walk(src, onerror=_raise_walk_error):
+                for name in list(dirs):
+                    if is_link(os.stat(Path(parent, name), follow_symlinks=False)):
+                        raise Undecidable(f"{Path(parent, name)} is a link")
+                dirs[:] = [d for d in dirs if d not in SNAPSHOT_EXCLUDED_DIRS]
+                for name in names:
+                    full = Path(parent, name)
+                    sub = str(full.relative_to(worktree)).replace("\\", "/")
+                    if _is_tool_owned(sub):
+                        continue
+                    info = os.stat(full, follow_symlinks=False)
+                    if is_link(info):
+                        raise Undecidable(f"{sub} is a link; links are not preserved")
+                    files.append(sub)
+                    total += info.st_size
+        except FileNotFoundError:
+            continue
         except OSError as exc:
             raise Undecidable(f"cannot list {rel}: {exc}") from exc
-    files = [f for f in files if not _is_snapshot_excluded(f)]
-    for rel in files:
-        try:
-            total += (worktree / rel).stat().st_size
-        except OSError as exc:
-            raise Undecidable(f"cannot size {rel}: {exc}") from exc
-    return files, total
+    return Payload(changed=changed, ignored=files, bytes=total)
 
 
 def preservable(
@@ -1361,15 +1461,18 @@ def preservable(
     item: Item,
     *,
     policy: PreservePolicy,
-    pr_states: dict[str, set[str]] | None,
+    pr_records: dict[str, list[PrRecord]] | None,
     now: float,
     base_ref: str,
 ) -> Item:
     """Turn a holds-work KEEP into ``preserve_then_remove`` when the lane is finished.
 
-    Finished = idle at least ``policy.idle_hours`` AND either its PR is merged or
-    closed, or it has no PR and no commit newer than ``max_commit_age_days``. Any
-    question that cannot be answered leaves the original KEEP in place.
+    Finished = idle at least ``policy.idle_hours`` AND either a same-repository PR
+    on this branch is merged or closed and its head CONTAINS this lane's HEAD (so a
+    reused branch name with newer work is not "finished" by an old PR), or no such
+    PR and no commit newer than ``max_commit_age_days``. A HEAD that is the head of
+    any open PR is never finished, branch or detached. Any question that cannot be
+    answered leaves the original KEEP in place.
     """
     path = Path(item.path)
 
@@ -1383,113 +1486,194 @@ def preservable(
         return still(f"idle under {policy.idle_hours:.0f}h")
     if wt.detached and (path / "_PURPOSE.md").exists():
         return still("detached lane holds a _PURPOSE.md")
-    if pr_states is None:
+    if pr_records is None:
         return still("PR states unknown")
-    states = pr_states.get(wt.branch, set()) if wt.branch else set()
-    if "OPEN" in states:
+    mine = [p for p in pr_records.get(wt.branch, []) if not p.cross_repo] if wt.branch else []
+    open_heads = {p.head_oid for recs in pr_records.values() for p in recs if p.state == "OPEN"}
+    if any(p.state == "OPEN" for p in mine) or wt.head in open_heads:
         return still("a PR is open")
-    if states & {"MERGED", "CLOSED"}:
-        finished = "PR " + "/".join(sorted(states & {"MERGED", "CLOSED"})).lower()
+    done = [
+        p for p in mine if p.state in {"MERGED", "CLOSED"} and _contains(path, wt.head, p.head_oid)
+    ]
+    if done:
+        finished = "PR " + "/".join(sorted({p.state.lower() for p in done}))
     else:
         try:
             age = newest_commit_age_days(path, wt.head, base_ref, now)
         except Undecidable as exc:
             return still(f"commit age undecidable ({exc})")
         if age < policy.max_commit_age_days:
-            return still(f"no PR and a commit {age:.1f} days old")
-        finished = f"no PR, newest commit {age:.0f} days old"
+            return still(f"no finished PR for this HEAD and a commit {age:.1f} days old")
+        finished = f"no finished PR for this HEAD, newest commit {age:.0f} days old"
     try:
-        _files, payload = preservation_payload(path)
+        payload = preservation_payload(path)
     except Undecidable as exc:
-        return still(f"payload undecidable ({exc})")
-    if payload > policy.max_bytes:
-        return still(f"{human(payload)} of unique data exceeds the {human(policy.max_bytes)} cap")
+        return still(f"cannot preserve this shape ({exc})")
+    if payload.bytes > policy.max_bytes:
+        return still(
+            f"{human(payload.bytes)} of unique data exceeds the {human(policy.max_bytes)} cap"
+        )
     item.verdict = "REMOVE"
-    item.detail = f"{finished}; held: {item.reason} ({item.detail}); preserves {human(payload)}"
+    item.detail = (
+        f"{finished}; held: {item.reason} ({item.detail}); preserves {human(payload.bytes)}"
+    )
     item.reason = "preserve_then_remove"
     return item
 
 
 def preserved_name(repo: Path, path: Path) -> str:
-    """A ref-safe, collision-resistant name: the path below the repo's parent."""
+    """A ref-safe name: the path below the repo's parent, plus a hash of the full
+    path so ``a/b`` and ``a-b`` cannot collide."""
+    resolved = path.resolve()
     try:
-        rel = path.resolve().relative_to(repo.resolve().parent)
-        raw = "-".join(rel.parts)
+        raw = "-".join(resolved.relative_to(repo.resolve().parent).parts)
     except ValueError:
-        raw = "-".join(path.resolve().parts[-2:])
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-.") or "worktree"
+        raw = "-".join(resolved.parts[-2:])
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-.") or "worktree"
+    tag = hashlib.sha1(str(resolved).lower().encode("utf-8")).hexdigest()[:8]
+    return f"{slug}-{time.strftime('%Y%m%d')}-{tag}"
 
 
-def snapshot_ref(worktree: Path, head: str, ref: str) -> str:
-    """Commit HEAD + every tracked edit and untracked file onto ``ref``. Returns the sha.
+def fingerprint(root: Path) -> dict[str, tuple[int, int]]:
+    """``{relpath: (size, mtime_ns)}`` for every file and directory. Raises
+    Undecidable on a link (nothing here reasons about where one points) and when
+    the tree exceeds the entry budget."""
+    out: dict[str, tuple[int, int]] = {}
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    info = entry.stat(follow_symlinks=False)
+                    if is_link(info):
+                        raise Undecidable(f"{entry.path} is a link")
+                    rel = os.path.relpath(entry.path, root).replace("\\", "/")
+                    if stat_mod.S_ISDIR(info.st_mode):
+                        stack.append(Path(entry.path))
+                        out[rel + "/"] = (0, 0)
+                    else:
+                        out[rel] = (info.st_size, info.st_mtime_ns)
+                    if len(out) > MAX_TREE_ENTRIES:
+                        raise Undecidable(f"{root} exceeds {MAX_TREE_ENTRIES} entries")
+        except OSError as exc:
+            raise Undecidable(f"cannot read {current}: {exc}") from exc
+    return out
 
-    A temporary index keeps the worktree's own index untouched. Verified before the
-    ref is written: nothing outside SNAPSHOT_EXCLUDED_DIRS may be left uncaptured.
-    Raises Undecidable on any failure.
+
+def _git_blob_id(data: bytes) -> str:
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def snapshot_commit(worktree: Path, head: str, changed: list[str]) -> str:
+    """A commit holding HEAD + every changed path's RAW bytes. Raises Undecidable.
+
+    Built in a temporary index, so the worktree's own index is untouched. Each
+    blob is written with ``hash-object --no-filters`` and re-derived from the
+    file's bytes, so CRLF conversion or a clean filter cannot rewrite it. A
+    real index that differs from HEAD becomes a second parent: staged-only content
+    would otherwise be deleted with the worktree.
     """
     fd, index = tempfile.mkstemp(prefix="ta-preserve-index-")
     os.close(fd)
     os.unlink(index)  # git must create it; an empty file is not a valid index
     env = dict(os.environ, GIT_INDEX_FILE=index)
-    excludes = [f":(exclude,glob)**/{name}/**" for name in SNAPSHOT_EXCLUDED_DIRS]
 
-    def git_env(args: list[str]) -> str:
+    def git_env(args: list[str], stdin: str = "") -> str:
+        # Bytes in and out: text mode on Windows turns "\n" into "\r\n", and
+        # `update-index --index-info` then IGNORES "a.txt\r" with exit 0.
         proc = subprocess.run(
             ["git", *args],
             cwd=str(worktree),
             env=env,
+            input=stdin.encode("utf-8"),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=600,
         )
         if proc.returncode != 0:
-            raise Undecidable(f"git {args[0]} -> rc={proc.returncode}: {proc.stderr.strip()[:200]}")
-        return proc.stdout
+            err = proc.stderr.decode("utf-8", "replace").strip()[:200]
+            raise Undecidable(f"git {args[0]} -> rc={proc.returncode}: {err}")
+        return proc.stdout.decode("utf-8", "surrogateescape")
+
+    def staged() -> dict[str, tuple[str, str]]:
+        entries = {}
+        for rec in git_env(["ls-files", "--stage", "-z"]).split("\0"):
+            meta, _, rel = rec.partition("\t")
+            if rel:
+                mode, sha, _stage = meta.split()
+                entries[rel] = (mode, sha)
+        return entries
 
     try:
         git_env(["read-tree", head])
-        git_env(["add", "-A", "--", ".", *excludes])
+        modes = {rel: mode for rel, (mode, _sha) in staged().items()}
+        records: list[str] = []
+        want: dict[str, str | None] = {}
+        unique = list(dict.fromkeys(changed))
+        present = [rel for rel in unique if os.path.lexists(worktree / rel)]
+        for rel in unique:
+            if rel not in present:
+                records.append(f"0 {_ZERO_OID}\t{rel}")
+                want[rel] = None
+        if present:
+            shas = git_env(
+                ["hash-object", "-w", "--no-filters", "--stdin-paths"],
+                "".join(f"{rel}\n" for rel in present),
+            ).split()
+            if len(shas) != len(present):
+                raise Undecidable("hash-object returned the wrong number of ids")
+            for rel, sha in zip(present, shas):
+                if _git_blob_id((worktree / rel).read_bytes()) != sha:
+                    raise Undecidable(f"{rel} changed while it was being preserved")
+                executable = os.name != "nt" and os.access(worktree / rel, os.X_OK)
+                mode = modes.get(rel, "100755" if executable else "100644")
+                if mode not in {"100644", "100755"}:
+                    raise Undecidable(f"{rel} has mode {mode}; not preserved as a file")
+                records.append(f"{mode} {sha}\t{rel}")
+                want[rel] = sha
+        if records:
+            git_env(["update-index", "-z", "--index-info"], "".join(r + "\0" for r in records))
+        # Verify the index holds exactly what was asked: git skips a path it
+        # dislikes with a warning and exit 0, which is how a preserved snapshot
+        # can silently be missing the one file that mattered.
+        now_staged = staged()
+        for rel, sha in want.items():
+            got = now_staged.get(rel, (None, None))[1]
+            if got != sha:
+                raise Undecidable(f"snapshot index does not hold {rel} (wanted {sha}, has {got})")
         tree = git_env(["write-tree"]).strip()
-        records = [
-            f
-            for f in git_env(["status", "--porcelain", "-z", "--untracked-files=all"]).split("\0")
-            if len(f) > 3 and f[2] == " "
-        ]
-        # X (staged) is what the snapshot holds; Y and "??" are what it does not.
-        missed = [
-            f[3:]
-            for f in records
-            if (f[:2] == "??" or f[1] != " ") and not _is_snapshot_excluded(f[3:])
-        ]
-        if missed:
-            raise Undecidable(f"snapshot left paths uncaptured: {', '.join(missed[:3])}")
-        if git_ok(["rev-parse", f"{head}^{{tree}}"], worktree).strip() == tree:
-            commit = head
-        else:
-            commit = git_ok(
-                [
-                    "-c",
-                    "user.name=dev-hygiene",
-                    "-c",
-                    "user.email=dev-hygiene@localhost",
-                    "commit-tree",
-                    tree,
-                    "-p",
-                    head,
-                    "-m",
-                    f"dev_hygiene: preserved worktree {worktree}",
-                ],
-                worktree,
-            ).strip()
     finally:
         if os.path.exists(index):
             os.unlink(index)
-    git_ok(["update-ref", ref, commit], worktree)
-    if git_ok(["cat-file", "-t", ref], worktree).strip() != "commit":
-        raise Undecidable(f"{ref} does not resolve to a commit after update-ref")
-    return commit
+
+    parents = ["-p", head]
+    real_tree = git_ok(["write-tree"], worktree).strip()  # fails on unmerged entries
+    if real_tree != git_ok(["rev-parse", f"{head}^{{tree}}"], worktree).strip():
+        staged = _commit_tree(worktree, real_tree, ["-p", head], "the lane's real index")
+        parents += ["-p", staged]
+    if (
+        parents == ["-p", head]
+        and tree == git_ok(["rev-parse", f"{head}^{{tree}}"], worktree).strip()
+    ):
+        return head
+    return _commit_tree(worktree, tree, parents, f"preserved worktree {worktree}")
+
+
+def _commit_tree(worktree: Path, tree: str, parents: list[str], what: str) -> str:
+    return git_ok(
+        [
+            "-c",
+            "user.name=dev-hygiene",
+            "-c",
+            "user.email=dev-hygiene@localhost",
+            "commit-tree",
+            tree,
+            *parents,
+            "-m",
+            f"dev_hygiene: {what}",
+        ],
+        worktree,
+    ).strip()
 
 
 def _sha256(path: Path) -> str:
@@ -1500,14 +1684,38 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def reserve(repo: Path, base: str, commit: str, root: Path, need_dir: bool) -> tuple[str, Path]:
+    """Create ``refs/preserved/<name>`` (create-only) and, if needed, an exclusive
+    ``root/<name>`` directory. Never overwrites an earlier preservation."""
+    for n in range(1, 50):
+        name = base if n == 1 else f"{base}-{n}"
+        dest = root / name
+        if need_dir:
+            try:
+                dest.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                raise Undecidable(f"cannot create {dest}: {exc}") from exc
+        ref = f"refs/preserved/{name}"
+        proc = run(["git", "update-ref", ref, commit, _ZERO_OID], cwd=repo)
+        if proc.returncode == 0:
+            return ref, dest
+        if need_dir:
+            dest.rmdir()
+    raise Undecidable(f"no free preserved name for {base}")
+
+
 def copy_with_manifest(worktree: Path, files: list[str], dest: Path) -> int:
-    """Copy ``files`` under ``dest`` and write a verified MANIFEST.json. Raises Undecidable."""
+    """Copy ``files`` under ``dest/files`` and write ``dest/MANIFEST.json`` beside
+    them -- outside the copied tree, so no copied path can collide with it."""
     manifest = []
     try:
         for rel in files:
-            src, out = worktree / rel, dest / rel
+            src, out = worktree / rel, dest / "files" / rel
             out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, out)
+            shutil.copyfile(src, out, follow_symlinks=False)
+            shutil.copystat(src, out, follow_symlinks=False)
             digest = _sha256(src)
             if _sha256(out) != digest:
                 raise Undecidable(f"copy of {rel} does not match its source")
@@ -1523,46 +1731,68 @@ def copy_with_manifest(worktree: Path, files: list[str], dest: Path) -> int:
 def preserve_and_remove(repo: Path, item: Item, policy: PreservePolicy) -> tuple[bool, str]:
     """Preserve one finished lane, verify the preservation, then remove the worktree.
 
-    Every step re-checks at the boundary, because inventory and apply are minutes
-    apart: HEAD must not have moved, the tree must still be idle, and nothing may be
-    written while the preserve step runs. The branch ref is never deleted.
+    Inventory and apply are minutes apart, so everything is re-proved here: HEAD
+    has not moved, the tree is still idle, and -- after the worktree is renamed to
+    a quarantine name nobody is writing to -- its fingerprint and HEAD match what
+    was preserved. The branch ref is never deleted.
     """
     path = Path(item.path)
+    quarantine = path.with_name(path.name + ".hygiene-removing")
     try:
         head = git_ok(["rev-parse", "HEAD"], path).strip()
         if item.head and head != item.head:
             return False, "changed since inventory: HEAD moved"
-        _size, newest_before = tree_stats(path)
-        if (time.time() - newest_before) / 3600.0 < policy.idle_hours:
+        before = fingerprint(path)
+        newest = max((m for _s, m in before.values()), default=0) / 1e9
+        if (time.time() - newest) / 3600.0 < policy.idle_hours:
             return False, "changed since inventory: the worktree is active again"
-        files, payload = preservation_payload(path)
-        if payload > policy.max_bytes:
-            return False, f"changed since inventory: {human(payload)} exceeds the cap"
-        stamp = time.strftime("%Y%m%d")
-        name = f"{preserved_name(repo, path)}-{stamp}"
-        ref = f"refs/preserved/{name}"
-        if run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=path).returncode == 0:
-            ref = f"{ref}-{int(time.time())}"
-        commit = snapshot_ref(path, head, ref)
-        copied = 0
-        if files:
-            common = Path(
-                git_ok(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo).strip()
-            )
-            root = policy.root or common / "tinyassets-preserved"
-            copied = copy_with_manifest(path, files, root / ref.rsplit("/", 1)[-1])
-        _size, newest_after = tree_stats(path)
+        payload = preservation_payload(path)
+        if payload.bytes > policy.max_bytes:
+            return False, f"changed since inventory: {human(payload.bytes)} exceeds the cap"
+        if (path / "_PURPOSE.md").exists():
+            import wt  # noqa: PLC0415  (sibling script; only needed on the apply path)
+
+            wt._archive_purpose(repo, path, item.branch, "dev_hygiene: preserve_then_remove")
+        commit = snapshot_commit(path, head, payload.changed)
+        common = Path(
+            git_ok(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo).strip()
+        )
+        root = policy.root or common / "tinyassets-preserved"
+        ref, dest = reserve(repo, preserved_name(repo, path), commit, root, bool(payload.ignored))
+        copied = copy_with_manifest(path, payload.ignored, dest) if payload.ignored else 0
+        admin = (path / ".git").read_text(encoding="utf-8").strip()
     except Undecidable as exc:
         return False, f"not preserved, so not removed: {exc}"
-    if newest_after > newest_before:
-        return False, f"written to during preservation; kept (preserved anyway as {ref})"
-    if item.idle_hours is not None:
-        item.idle_hours = (time.time() - newest_after) / 3600.0
-    proc = run(["git", "worktree", "remove", "--force", str(path)], cwd=repo, timeout=600)
-    if proc.returncode != 0:
-        refusal = proc.stderr.strip()[:200]
-        return False, f"preserved as {ref} but git worktree remove refused: {refusal}"
-    where = f"; {copied} ignored file(s) copied" if copied else ""
+    except Exception as exc:  # noqa: BLE001 -- any failure before removal keeps the lane
+        return False, f"not preserved, so not removed: {type(exc).__name__}: {exc}"
+
+    try:
+        os.rename(path, quarantine)
+    except OSError as exc:
+        return False, f"preserved as {ref}; kept: the folder is in use ({exc})"
+    try:
+        after = fingerprint(quarantine)
+        head_after = git_ok(["rev-parse", "HEAD"], quarantine).strip()
+    except Undecidable as exc:
+        after, head_after = {}, f"undecidable: {exc}"
+    if after != before or head_after != head:
+        try:
+            os.rename(quarantine, path)
+        except OSError as exc:
+            return (
+                False,
+                f"preserved as {ref}; changed during preservation and LEFT AT {quarantine}: {exc}",
+            )
+        return False, f"changed during preservation; kept (preserved anyway as {ref})"
+
+    ok, detail = remove_path(quarantine)
+    if not ok:
+        return False, f"preserved as {ref}; removal failed: {detail}"
+    if admin.startswith("gitdir:"):
+        admin_dir = Path(admin[len("gitdir:") :].strip())
+        if admin_dir.parent.resolve() == (common / "worktrees").resolve() and admin_dir.is_dir():
+            remove_path(admin_dir)
+    where = f"; {copied} ignored file(s) copied to {dest}" if copied else ""
     return True, f"preserved as {ref} @ {commit[:12]}{where}; branch ref kept"
 
 
