@@ -90,7 +90,10 @@
 #     and roll forward/back on its result (review #10).
 #   - A candidate that runs an irreversible /data migration before failing can
 #     make an image-only rollback insufficient (review #11). Startup migrations
-#     must stay additive/backward-compatible.
+#     stay additive/backward-compatible, EXCEPT a layout migration, which the
+#     data layout marker (tinyassets/storage_layout.py) records: when it says
+#     anything but layout 1 / stable, the image rollback is refused
+#     (`rollback_needs_restore`) and the fix is restore-from-backup.
 #
 # Usage:
 #   sudo deploy_fail_safe.sh <new_image_ref>
@@ -113,7 +116,7 @@
 #   2  new image unhealthy; rolled back to the previous image + bundle (healthy)
 #   3  manual intervention required — the rollback itself did not complete
 #      (`rollback_failed`, `rollback_env_write_failed`, `rollback_unhealthy`,
-#      `failed_no_rollback_target`). On `rollback_failed` the bundle-dirty
+#      `failed_no_rollback_target`, `rollback_needs_restore`). On `rollback_failed` the bundle-dirty
 #      marker is set and normal deploys refuse until `--restore-bundle` clears it.
 set -uo pipefail
 
@@ -280,6 +283,36 @@ tunnel_up() {
 }
 
 set_image() { printf '%s' "$1" | bash "$ENV_HELPER" set TINYASSETS_IMAGE; }
+
+# --- data layout guard (tinyassets/storage_layout.py, design D7.2) --------
+# An image-only rollback is safe only while the data is still in the layout
+# EVERY image understands: layout 1, state "stable" (or no marker yet). A
+# storage migration writes "migrating" before its first change and a newer
+# layout when it finishes; an older image started on that data would find
+# renamed tables and could create blank homes. Then the safe action is to
+# stop and restore from backup, never to start the old image.
+layout_marker_path() {
+  local dir
+  dir="$(docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data 2>/dev/null)" || return 1
+  [ -n "$dir" ] || return 1
+  printf '%s/.layout.json' "$dir"
+}
+layout_allows_image_rollback() {  # $1 = marker path; 0 = an image-only rollback is safe
+  local marker="$1"
+  [ -e "$marker" ] || return 0
+  python3 - "$marker" <<'LAYOUT_PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+ok = isinstance(doc, dict) and doc.get("layout") == 1 and doc.get("state") == "stable"
+sys.exit(0 if ok else 1)
+LAYOUT_PY
+}
 
 # The container must actually be RUNNING the requested image. A healthy daemon
 # is not proof: when the systemd unit could not start (2026-08-21), the OLD
@@ -1379,6 +1412,12 @@ if [ "$INSTALLED_THIS_RUN" = "1" ]; then
   clear_dirty || true
 else
   log "bundle: this run installed none; leaving the runtime files untouched during the image rollback"
+fi
+LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_image_rollback "$LAYOUT_MARKER"; then
+  err "the data layout marker is not layout 1 / stable (or cannot be read): the data may be migrated past ${PREV_IMAGE}; NOT starting it. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the previous image"
+  echo "deploy_result=rollback_needs_restore"
+  exit 3
 fi
 if ! set_image "$PREV_IMAGE"; then
   err "could not record rollback image ${PREV_IMAGE} in ${ENV_FILE} — manual intervention required"

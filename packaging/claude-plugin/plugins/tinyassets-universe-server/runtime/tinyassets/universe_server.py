@@ -4562,6 +4562,13 @@ def main(
 
     _session_seal.arm()
 
+    # Second: refuse to run against data this image does not understand, before
+    # anything opens a database (design D7.2: the cutover's layout guard). It
+    # also holds the shared layout lock a migration needs exclusively.
+    from tinyassets.storage_layout import require_layout
+
+    require_layout()
+
     logger.info(
         "Starting TinyAssets Server on %s:%d (transport=%s)",
         host, port, transport,

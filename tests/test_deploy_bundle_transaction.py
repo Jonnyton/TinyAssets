@@ -333,6 +333,10 @@ def main(argv):
     if argv[:1] == ["run"]:
         return 0 if state.get("preflight_ok", True) else 1
 
+    if argv[:2] == ["volume", "inspect"]:
+        # The data volume's host directory: the layout guard reads its marker.
+        print(os.environ.get("FAKE_DOCKER_VOLUME_DIR") or os.path.dirname(STATE_PATH))
+        return 0
     if argv[:2] == ["image", "inspect"]:
         fmt = argv[argv.index("-f") + 1] if "-f" in argv else ""
         target = argv[-1]
@@ -1251,6 +1255,23 @@ def test_unhealthy_candidate_restores_the_bundle_and_the_previous_image(box: Box
         "converging PREV_IMAGE against the NEW compose file rolls back half a change"
     )
     assert box.env_image() == OLD_IMAGE
+
+
+def test_no_image_rollback_onto_data_a_migration_has_touched(box: Box):
+    """The data layout guard (design D7.2): an older image must never start on
+    data a migration marked ``migrating`` or moved to a newer layout -- it could
+    create blank homes. The fail-safe stops and asks for the restore instead."""
+    volume = box.root / "data-volume"
+    volume.mkdir()
+    (volume / ".layout.json").write_text('{"layout": 1, "state": "migrating"}', encoding="utf-8")
+    box.stage_bundle()
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE])
+
+    completed = box.run(NEW_IMAGE, FAKE_DOCKER_VOLUME_DIR=str(volume))
+
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "rollback_needs_restore"
+    assert box.env_image() != OLD_IMAGE, "the previous image must not be started"
 
 
 def test_env_write_failure_after_install_restores_the_bundle(box: Box):

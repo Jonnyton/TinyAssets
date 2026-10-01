@@ -105,6 +105,21 @@ fi
 log "source: ${VOLUME_DIR}"
 log "dest:   ${BACKUP_DEST}"
 
+# The data-layout lock (tinyassets/storage_layout.py). The server holds it
+# SHARED for its lifetime; a storage migration takes it EXCLUSIVELY. Holding it
+# shared here means a backup never reads a half-migrated volume, and a migration
+# never starts while a backup is reading. Waiting up to 10 min, then failing
+# loudly, beats copying a moving target.
+if ! command -v flock >/dev/null 2>&1; then
+    log "ERROR: flock not found; refusing to read the volume without the layout lock"
+    exit 2
+fi
+exec 9>>"${VOLUME_DIR}/.layout.lock"
+if ! flock -s -w 600 9; then
+    log "ERROR: could not take the shared layout lock in 600s (a migration is running?)"
+    exit 2
+fi
+
 TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
 # ----- 3. brain tier — consistent archive of the irreplaceable subset ---
