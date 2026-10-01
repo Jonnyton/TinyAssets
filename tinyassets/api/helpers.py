@@ -222,14 +222,51 @@ def _read_json(path: Path) -> dict[str, Any] | list[Any] | None:
     return None
 
 
-def _read_text(path: Path, default: str = "") -> str:
-    """Safely read a text file."""
+def _read_platform_text(path: Path, default: str, errors: str) -> str:
+    """A text file outside the wiki: a platform log or record the tool jail
+    binds read-only or hides (``activity.log``, run logs)."""
     try:
         if path.exists():
-            return path.read_text(encoding="utf-8")
+            return path.read_text(encoding="utf-8", errors=errors)
     except OSError as exc:
         logger.warning("Failed to read %s: %s", path, exc)
     return default
+
+
+def _read_text(path: Path, default: str = "", *, errors: str = "strict") -> str:
+    """Read a text file; a wiki page is read link-free and bounded.
+
+    The universe's agent writes its own wiki from the tool jail, so a page is
+    untrusted input to the daemon reading it. It is walked from the wiki root
+    with no link at any component. Absent reads as ``default``. A link, a
+    non-regular file or a page over the bound raises
+    :class:`~tinyassets.universe_files.UniverseFileError` instead of reading
+    as empty, because a read-modify-write that saw "" would overwrite the page.
+    Every refusal other than "absent" propagates, whichever ``OSError`` the
+    host's safe reader raises it as.
+
+    Inside a universe-scoped wiki operation (:func:`_scoped_wiki_root`), a path
+    OUTSIDE that wiki is refused rather than read: a page path resolved through
+    a planted link would otherwise land on another universe's file and the
+    plain reader would follow it.
+    """
+    from tinyassets.universe_files import UniverseFileError, read_universe_file
+
+    root = _wiki_root()
+    try:
+        relpath = path.relative_to(root).as_posix()
+    except ValueError:
+        if _WIKI_ROOT_OVERRIDE.get() is not None:
+            raise UniverseFileError(
+                f"{path.name!r} is outside this universe's wiki; nothing was read"
+            ) from None
+        return _read_platform_text(path, default, errors)
+    try:
+        data = read_universe_file(root, relpath)
+    except FileNotFoundError:
+        return default
+    text = data.decode("utf-8", errors=errors)
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -277,7 +314,9 @@ def _find_all_pages(directory: Path) -> list[Path]:
     """Recursively find all .md files under a directory."""
     if not directory.is_dir():
         return []
-    return sorted(p for p in directory.rglob("*.md") if p.is_file())
+    return sorted(
+        p for p in directory.rglob("*.md") if not p.is_symlink() and p.is_file()
+    )
 
 
 __all__ = [
