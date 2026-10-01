@@ -135,6 +135,29 @@ class TestCommonsPages:
         ))
         assert out.get("failure_class") == sa.FAILURE_QUOTA, out
 
+    def test_a_collaborator_refused_in_the_owners_universe_learns_no_numbers(
+        self, base, signed_in,
+    ):
+        """gpt-6-astra PR #4167: the refusal is against the OWNER's pool, so a
+        collaborator gets a generic notice -- never the owner's usage, quota or
+        private universe ids. The owner, refused the same way, sees everything."""
+        from tinyassets.api import wiki as api_wiki
+
+        _fill(base, "u-a", 95 * KIB)
+        page = base / "u-a" / "wiki" / "p.md"
+        page.parent.mkdir(parents=True)
+
+        signed_in(B)
+        with pytest.raises(sa.StorageRefused) as refused:
+            api_wiki._charge_commons_write("y" * (20 * KIB), page)
+        seen_by_b = sa.visible_record(refused.value)
+        assert "largest" not in seen_by_b and "used_bytes" not in seen_by_b
+        assert "u-a" not in json.dumps(seen_by_b)
+        assert seen_by_b["failure_class"] == sa.FAILURE_QUOTA
+
+        signed_in(A)
+        assert sa.visible_record(refused.value)["largest"][0]["scope_id"] == "u-a"
+
     def test_a_page_in_a_universe_charges_that_universes_owner(self, base, signed_in):
         """A collaborator writing into A's universe spends A's storage."""
         from tinyassets.api import wiki as api_wiki

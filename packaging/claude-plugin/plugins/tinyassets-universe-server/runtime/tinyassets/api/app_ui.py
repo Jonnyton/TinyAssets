@@ -109,7 +109,7 @@ def write_app_ui(
     except StorageRefused as refused:
         # At the account's storage quota: the visible refusal, with its inline
         # Upgrade link. Nothing was saved.
-        return dict(refused.record)
+        return _visible_refusal(refused, actor)
     return {"status": "saved", "app_ui": saved}
 
 
@@ -144,3 +144,11 @@ def change_app_ui(
 
 
 __all__ = ["INDEX", "change_app_ui", "read_app_ui", "write_app_ui"]
+
+
+def _visible_refusal(refused, viewer=None):
+    """The refusal the CALLER may see: the charged account's full record only
+    if the caller is that account (storage_accounting.visible_record)."""
+    from tinyassets.storage_accounting import visible_record
+
+    return visible_record(refused, viewer)

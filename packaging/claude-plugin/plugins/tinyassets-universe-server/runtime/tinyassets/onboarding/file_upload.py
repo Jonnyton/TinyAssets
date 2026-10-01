@@ -217,7 +217,7 @@ async def handle_file_upload(request: Any) -> Any:
             except StorageRefused as refused:
                 # The account is at its storage quota: the visible refusal with
                 # its inline Upgrade link. 507 Insufficient Storage.
-                return dict(refused.record), 507
+                return _visible_refusal(refused), 507
             except (upload.UploadAborted, BlobProofError, store.FileCustodyRefused,
                     CurrentHomeChanged) as exc:
                 reason = _reason(exc, bridge)
@@ -239,3 +239,10 @@ async def handle_file_upload(request: Any) -> Any:
     finally:
         _SLOTS.release()
     return JSONResponse(doc, status, headers=_NO_STORE)
+
+def _visible_refusal(refused):
+    """The refusal the CALLER may see: the charged account's full record only
+    if the caller is that account (storage_accounting.visible_record)."""
+    from tinyassets.storage_accounting import visible_record
+
+    return visible_record(refused)

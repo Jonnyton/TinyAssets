@@ -2838,5 +2838,12 @@ def wiki(
         except StorageRefused as refused:
             # At the account's storage quota: the visible refusal, numbers and
             # inline Upgrade link. Nothing was written.
-            result = json.dumps(refused.record)
+            result = json.dumps(_visible_refusal(refused))
         return _stamp_universe_id(result, target_universe_id)
+
+def _visible_refusal(refused):
+    """The refusal the CALLER may see: the charged account's full record only
+    if the caller is that account (storage_accounting.visible_record)."""
+    from tinyassets.storage_accounting import visible_record
+
+    return visible_record(refused)

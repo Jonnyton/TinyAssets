@@ -764,7 +764,7 @@ def reserve_fitted(
     bound = min(int(cap), quota - current.used_bytes + max(0, int(credit)))
     if bound < minimum:
         universes = len({scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE})
-        raise StorageRefused(refusal_record(current, minimum, universes=universes))
+        raise StorageRefused(refusal_record(current, minimum, universes=universes), account)
     # The replaced bytes are still measured until their discard lands, so only
     # the part beyond them is new pending.
     reservation = reserve(
@@ -937,12 +937,52 @@ def _human(size: int | float) -> str:
 
 
 class StorageRefused(Exception):
-    """A gated write that must not happen. ``record`` is the structured failure
-    a surface returns; ``str(exc)`` is the owner-facing message."""
+    """A gated write that must not happen.
 
-    def __init__(self, record: dict):
+    ``record`` is the CHARGED account's structured failure -- its usage, quota,
+    tier and largest consumers. ``account_id`` is that account. A surface must
+    hand the detailed record only to that account: use `visible_record`. A
+    collaborator writing into someone else's universe is refused against the
+    OWNER's pool and must not learn the owner's numbers or private universes
+    (gpt-6-astra, PR #4167). ``str(exc)`` is the full message: it only reaches
+    the caller unwrapped on paths where the caller IS the charged account
+    (branch writes charge their author); every other surface goes through
+    `visible_record`.
+    """
+
+    def __init__(self, record: dict, account_id: str | None = None):
         self.record = record
+        self.account_id = account_id
         super().__init__(record["error"])
+
+
+_OTHER_ACCOUNT_FULL = {
+    "error": (
+        "This universe's owner is out of cloud storage, so this write was not "
+        "accepted. The owner can free space or upgrade."
+    ),
+    "failure_class": FAILURE_QUOTA,
+    "actionable_by": "owner",
+}
+
+
+def visible_record(refused: StorageRefused, viewer: str | None = None) -> dict:
+    """The refusal ``viewer`` may see: the full record if they ARE the charged
+    account, a generic owner-is-full notice otherwise. ``viewer`` defaults to the
+    authenticated request actor (resolved to its account)."""
+    if refused.account_id is None:
+        return dict(refused.record)  # not account-specific (e.g. ledger unavailable)
+    if viewer is None:
+        try:
+            from tinyassets.api.permissions import current_actor_id
+            from tinyassets.storage import data_dir
+
+            viewer = account_for_actor(data_dir(), current_actor_id()) or ""
+        except Exception:  # noqa: BLE001 -- unknown viewer: never the detail
+            viewer = ""
+    if viewer and viewer == refused.account_id:
+        return dict(refused.record)
+    return dict(_OTHER_ACCOUNT_FULL)
 
 
 def refusal_record(usage_: Usage, requested: int, *, universes: int) -> dict:
@@ -1102,7 +1142,7 @@ def reserve(
         )
     if rid is None:
         universes = len({scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE})
-        raise StorageRefused(refusal_record(current, nbytes, universes=universes))
+        raise StorageRefused(refusal_record(current, nbytes, universes=universes), account)
     return Reservation(base, rid, account, nbytes)
 
 

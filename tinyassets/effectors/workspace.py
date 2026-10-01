@@ -1131,7 +1131,10 @@ def _fit_permanent(
             credit=credit,
         )
     except storage_accounting.StorageRefused as refused:
-        record = dict(refused.record)
+        # The effector result reaches whoever drove this run -- possibly a
+        # collaborator in the owner's universe -- so only the charged account
+        # sees its numbers (gpt-6-astra, PR #4167). No bound actor: redacted.
+        record = storage_accounting.visible_record(refused)
         raise _Refused(record.pop("failure_class"), record.pop("error"), **record) from None
 
 

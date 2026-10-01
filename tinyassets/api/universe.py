@@ -3284,7 +3284,7 @@ def _action_daemon_memory_capture(
             metadata=metadata,
         )
     except StorageRefused as refused:
-        return json.dumps({"universe_id": uid, **refused.record})
+        return json.dumps({"universe_id": uid, **_visible_refusal(refused)})
     except (KeyError, ValueError, TypeError) as exc:
         return json.dumps({"universe_id": uid, "error": str(exc)})
     return json.dumps({"universe_id": uid, "daemon_id": daemon_id, "entry": entry}, default=str)
@@ -3432,7 +3432,7 @@ def _action_daemon_memory_promote(
             metadata=metadata,
         )
     except StorageRefused as refused:
-        return json.dumps({"universe_id": uid, **refused.record})
+        return json.dumps({"universe_id": uid, **_visible_refusal(refused)})
     except (KeyError, ValueError, TypeError) as exc:
         return json.dumps({"universe_id": uid, "error": str(exc)})
     result["universe_id"] = uid
@@ -6948,3 +6948,10 @@ def _universe_impl(
     # All WRITE actions are funneled through the ledger wrapper. READ actions
     # pass through untouched. See WRITE_ACTIONS for the authoritative set.
     return _dispatch_with_ledger(action, handler, kwargs)
+
+def _visible_refusal(refused):
+    """The refusal the CALLER may see: the charged account's full record only
+    if the caller is that account (storage_accounting.visible_record)."""
+    from tinyassets.storage_accounting import visible_record
+
+    return visible_record(refused)
