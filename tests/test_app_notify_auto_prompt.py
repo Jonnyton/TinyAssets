@@ -23,6 +23,7 @@ const NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner",
   NOTIFY_PROMPT_DISMISSED="app.push.prompt.dismissed";
 const NOTIFY_PROMPT_COPY={offer:"OFFER", blocked:"BLOCKED"};
 let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
+let nativeTeardown=Promise.resolve();
 const store={}, localStorage={getItem:k=>k in store?store[k]:null,
   setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}};
 const MCP={_loginEpoch:1}; let queueOwner='alice'; const token=()=>'alice-token';
@@ -50,19 +51,23 @@ NATIVE_NAMES = (
     "notificationSession", "notificationAPI", "nativePush", "setNativeActive",
     "armNativeFor", "wireNativePush", "nativeFcmToken",
     "registerNativeNotifications", "autoEnableNativeNotifications",
+    "unregisterNativeNotifications", "removeNativeRegistration",
 ) + PROMPT
 
 NATIVE = """
 const NATIVE=true;
 const listeners={};
-let permission='prompt', answer='granted';
+let permission='prompt', answer='granted', onCheck=null, unregisterDelay=0;
 const plugin={
-  checkPermissions:async()=>({receive:permission}),
+  checkPermissions:async()=>{if(onCheck) onCheck();return {receive:permission};},
   requestPermissions:async()=>{calls.push('requestPermissions');permission=answer;
     return {receive:permission};},
   addListener:(name,fn)=>{(listeners[name]=listeners[name]||[]).push(fn);},
   register:async()=>{calls.push('register');
     setTimeout(()=>(listeners.registration||[]).forEach(f=>f({value:'fcm-1'})),0);},
+  unregister:async()=>{await new Promise(r=>setTimeout(r,unregisterDelay));
+    calls.push('unregister');},
+  removeAllDeliveredNotifications:async()=>calls.push('removeAll'),
 };
 const replyPlugin={setActive:async({active})=>calls.push('active:'+active),consume:async()=>({})};
 const nativePlugin=name=>name==='PushNotifications'?plugin
@@ -144,6 +149,28 @@ await autoEnableNativeNotifications(); out();""")
     assert out["prompt"]["hidden"] is True
 
 
+def test_a_sign_out_while_checking_permission_asks_and_registers_no_one():
+    """Alice's prompt must not run on for Bob, who may have turned them off."""
+    out = native("""
+onCheck=()=>{MCP._loginEpoch++;};
+await autoEnableNativeNotifications(); out();""")
+
+    assert "requestPermissions" not in out["calls"] and "register" not in out["calls"]
+    assert out["posts"] == [] and "app.push.asked" not in out["store"]
+
+
+def test_a_registration_waits_for_the_last_sign_outs_teardown():
+    """Otherwise the old owner's late unregister() deletes the new token."""
+    out = native("""
+unregisterDelay=30; permission='granted';
+unregisterNativeNotifications();
+await autoEnableNativeNotifications(); out();""")
+
+    calls = out["calls"]
+    assert calls.index("unregister") < calls.index("register")
+    assert out["store"]["app.push.fcm"] == "1"
+
+
 WEB_NAMES = (
     "notificationSession", "notificationAPI", "subscribeBrowserPush",
     "offerBrowserNotifications", "enableFromPrompt",
@@ -151,13 +178,15 @@ WEB_NAMES = (
 
 WEB = """
 const NATIVE=false; let DESKTOP_SHELL=false;
-let existing=null, answer='granted';
+let existing=null, answer='granted', onSubscribe=null;
 const Notification={permission:'default',
   requestPermission:async()=>{calls.push('requestPermission');Notification.permission=answer;
     return answer;}};
-const subscription={toJSON:()=>({endpoint:'https://push.example/alice'})};
+const subscription={toJSON:()=>({endpoint:'https://push.example/alice'}),
+  unsubscribe:async()=>{calls.push('unsubscribed');existing=null;}};
 const registration={pushManager:{getSubscription:async()=>existing,
-  subscribe:async()=>{calls.push('subscribe');existing=subscription;return subscription;}}};
+  subscribe:async()=>{calls.push('subscribe');if(onSubscribe) onSubscribe();
+    existing=subscription;return subscription;}}};
 const navigator={serviceWorker:{getRegistration:async()=>existing?registration:null,
   register:async()=>registration, ready:Promise.resolve(registration)}};
 const window={Notification, PushManager:function(){}};
@@ -231,6 +260,25 @@ existing=subscription; await offerBrowserNotifications();
 console.log(JSON.stringify({calls,n:posts.length,prompt:prompt()}));""")
 
     assert out["n"] == 0 and out["calls"] == [] and out["prompt"]["hidden"] is True
+
+
+def test_a_subscription_that_outlives_its_login_is_removed():
+    out = web("""
+Notification.permission='granted'; onSubscribe=()=>{MCP._loginEpoch++;};
+await offerBrowserNotifications(); out();""")
+
+    assert out["calls"] == ["subscribe", "unsubscribed"]
+    assert out["posts"] == []
+
+
+def test_a_card_left_on_screen_after_turning_them_off_does_not_turn_them_on():
+    out = web("""
+await offerBrowserNotifications(); serverEnabled=false;
+await enableFromPrompt(); out();""")
+
+    assert "subscribe" not in out["calls"] and out["posts"] == []
+    assert "off for your account" in out["prompt"]["text"]
+    assert out["prompt"]["on"] is False
 
 
 def test_sign_in_runs_the_default_on_paths_and_sign_out_takes_the_line_down():

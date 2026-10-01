@@ -6395,6 +6395,9 @@
   const NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner",
         NATIVE_PUSH_RECIPIENT="app.push.recipient";
   let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
+  // The last sign-out's native teardown. A registration started after it must
+  // wait for it: its late `unregister()` would delete the new owner's token.
+  let nativeTeardown=Promise.resolve();
   function nativePush(){ return (typeof NATIVE !== "undefined" && NATIVE) ? nativePlugin("PushNotifications") : null; }
   // Tells the native message service whether the signed-in owner wants
   // notifications on this phone. It is checked on every arriving message, so
@@ -6459,6 +6462,7 @@
     let permission=await P.checkPermissions();
     if(permission.receive!=="granted") permission=await P.requestPermissions();
     if(permission.receive!=="granted") throw new Error("Notifications are blocked. Allow them in Android settings to turn them on.");
+    if(!session.current()) throw new Error("Account changed. Open Account again.");
     const value=await nativeFcmToken();
     if(!value) throw new Error("Couldn't get a notification address for this phone. Try again.");
     const created=await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
@@ -6495,6 +6499,10 @@
     }
   }
   async function unregisterNativeNotifications(){
+    let finished; nativeTeardown=new Promise(resolve=>{ finished=resolve; });
+    try{ await removeNativeRegistration(); } finally{ finished(); }
+  }
+  async function removeNativeRegistration(){
     const P=nativePush(), R=nativePlugin("NotificationReply");
     localStorage.removeItem(NATIVE_PUSH_FLAG);
     localStorage.removeItem(NATIVE_PUSH_OWNER);
@@ -6520,9 +6528,13 @@
     if(!P || localStorage.getItem(NATIVE_PUSH_FLAG)==="1") return;   // on already: the rebind owns it
     const session=notificationSession();
     try{
+      await nativeTeardown;
       const settings=await notificationAPI(session,"/app/notify");
       if(!settings.enabled) return;
       const permission=await P.checkPermissions();
+      // Each native step can outlast the login it started for; the next
+      // account is never asked, nor registered, on this one's behalf.
+      if(!session.current()) return;
       if(permission.receive!=="granted"){
         if(permission.receive==="denied" || localStorage.getItem(NATIVE_PUSH_ASKED)==="1"){
           if(session.current()) showNotifyPrompt("blocked");
@@ -6656,8 +6668,17 @@
     if(!session.current()) throw new Error("Account changed. Open Account again.");
     const key=settings.vapid_public_key.replace(/-/g,"+").replace(/_/g,"/");
     const bytes=Uint8Array.from(atob(key + "=".repeat((4-key.length%4)%4)),c=>c.charCodeAt(0));
-    const subscription=await registration.pushManager.getSubscription()
-      || await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});
+    let subscription=await registration.pushManager.getSubscription(), created=false;
+    if(!subscription){
+      subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});
+      created=true;
+    }
+    // A sign-out that landed while subscribing found nothing to remove: this
+    // subscription is for nobody now, so it does not outlive the login.
+    if(!session.current()){
+      if(created){ try{ await subscription.unsubscribe(); }catch(_error){ /* best effort */ } }
+      throw new Error("Account changed. Open Account again.");
+    }
     await notificationAPI(session,"/app/devices",{platform:"web",token:subscription.toJSON(),label:"Browser"});
   }
   // On by default in a browser too. A browser only shows its permission dialog
@@ -6689,6 +6710,11 @@
         throw new Error("Notifications are blocked in this browser. Allow them in its site settings, then turn them on in Account.");
       }
       const settings=await notificationAPI(session,"/app/notify");
+      if(!settings.enabled){
+        // Turned off in Account since the card appeared: that choice stands.
+        button.hidden=true;
+        throw new Error("Notifications are off for your account. Turn them on in Account.");
+      }
       if(!settings.vapid_public_key) throw new Error("Browser notifications are not configured yet.");
       await subscribeBrowserPush(session, settings);
       if(!session.current()) return;
@@ -6737,6 +6763,7 @@
       }
       await notificationAPI(session,"/app/notify",{enabled:enable});
       if(session.current()) status.textContent=enable ? "Notifications are on." : "Notifications are off on all devices.";
+      if(session.current() && typeof hideNotifyPrompt === "function") hideNotifyPrompt();
     }catch(error){ if(session.current()) status.textContent=error.message; }
     finally{
       notificationBusy=false;
