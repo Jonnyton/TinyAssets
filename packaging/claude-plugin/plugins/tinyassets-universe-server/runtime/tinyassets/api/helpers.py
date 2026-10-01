@@ -242,6 +242,13 @@ def _read_text(path: Path, default: str = "", *, errors: str = "strict") -> str:
     non-regular file or a page over the bound raises
     :class:`~tinyassets.universe_files.UniverseFileError` instead of reading
     as empty, because a read-modify-write that saw "" would overwrite the page.
+    Every refusal other than "absent" propagates, whichever ``OSError`` the
+    host's safe reader raises it as.
+
+    Inside a universe-scoped wiki operation (:func:`_scoped_wiki_root`), a path
+    OUTSIDE that wiki is refused rather than read: a page path resolved through
+    a planted link would otherwise land on another universe's file and the
+    plain reader would follow it.
     """
     from tinyassets.universe_files import UniverseFileError, read_universe_file
 
@@ -249,15 +256,14 @@ def _read_text(path: Path, default: str = "", *, errors: str = "strict") -> str:
     try:
         relpath = path.relative_to(root).as_posix()
     except ValueError:
+        if _WIKI_ROOT_OVERRIDE.get() is not None:
+            raise UniverseFileError(
+                f"{path.name!r} is outside this universe's wiki; nothing was read"
+            ) from None
         return _read_platform_text(path, default, errors)
     try:
         data = read_universe_file(root, relpath)
     except FileNotFoundError:
-        return default
-    except UniverseFileError:
-        raise
-    except OSError as exc:
-        logger.warning("Failed to read %s: %s", path, exc)
         return default
     text = data.decode("utf-8", errors=errors)
     return text.replace("\r\n", "\n").replace("\r", "\n")

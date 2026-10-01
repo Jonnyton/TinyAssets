@@ -104,7 +104,30 @@ def test_an_oversized_wiki_page_fails_loudly_instead_of_reading_empty(tmp_path, 
 
     monkeypatch.setattr(universe_files, "read_universe_file", bounded)
     with _scoped_wiki_root(universe / "wiki"):
-        with pytest.raises(universe_files.UniverseFileError):
+        # POSIX refuses with workspace_fs.UnsafePoolPath, other hosts with
+        # UniverseFileError: either way an OSError that is not "absent".
+        with pytest.raises(OSError) as refused:
+            _read_text(page.resolve())
+        assert not isinstance(refused.value, FileNotFoundError)
+
+
+def test_every_refusal_but_absent_propagates(tmp_path, monkeypatch):
+    """gpt-6-astra on #4185: the POSIX reader raises its own OSError type, which
+    an earlier draft logged and turned into "" -- and write-back then replaced
+    the page with one section."""
+    universe = _universe(tmp_path)
+    page = universe / "wiki" / "pages" / "a.md"
+    page.write_text("# A\n", encoding="utf-8")
+
+    class HostRefusal(OSError):
+        pass
+
+    def refuse(root, relpath, **_kw):
+        raise HostRefusal("refused by the host's safe reader")
+
+    monkeypatch.setattr(universe_files, "read_universe_file", refuse)
+    with _scoped_wiki_root(universe / "wiki"):
+        with pytest.raises(HostRefusal):
             _read_text(page.resolve())
 
 
@@ -125,10 +148,22 @@ def test_a_linked_wiki_page_is_refused(tmp_path):
 
 def test_a_file_outside_the_wiki_still_reads_as_before(tmp_path):
     """activity.log and run logs are platform records the jail binds read-only;
-    they keep the plain reader (and its size), not the wiki bound."""
+    outside a wiki operation they keep the plain reader, not the wiki bound."""
     universe = _universe(tmp_path)
     log = universe / "activity.log"
     log.write_text("line\n", encoding="utf-8")
+    assert _read_text(log) == "line\n"
+    assert _read_text(universe / "missing.log", "none") == "none"
+
+
+def test_inside_a_universe_wiki_operation_an_outside_path_is_refused(tmp_path):
+    """gpt-6-astra on #4185: a page path resolved through a planted wiki/pages
+    link lands outside the wiki, where the plain reader would follow it into
+    another universe. Inside a universe-scoped operation that is refused."""
+    universe = _universe(tmp_path)
+    foreign = tmp_path / "data" / "u-bravo"
+    foreign.mkdir()
+    (foreign / "founder.md").write_text("FOREIGN", encoding="utf-8")
     with _scoped_wiki_root(universe / "wiki"):
-        assert _read_text(log) == "line\n"
-        assert _read_text(universe / "missing.log", "none") == "none"
+        with pytest.raises(universe_files.UniverseFileError):
+            _read_text((foreign / "founder.md").resolve())
