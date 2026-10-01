@@ -63,6 +63,17 @@ RUN_STATUS_FAILED = "failed"
 RUN_STATUS_CANCELLED = "cancelled"
 RUN_STATUS_INTERRUPTED = "interrupted"
 
+#: The statuses a run never leaves. ONE definition: it used to be written
+#: twice in this module (once as string literals, once from the constants),
+#: and the later binding silently won. A long-poll ends on these, a sweep
+#: skips them, and a status write onto one of them is a terminal transition.
+_TERMINAL_STATUSES = frozenset({
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
+    RUN_STATUS_CANCELLED,
+    RUN_STATUS_INTERRUPTED,
+})
+
 #: When this process could first have created a run: every run it creates
 #: starts after this. A recovery sweep uses it so a process never interrupts a
 #: run it is executing itself.
@@ -3129,12 +3140,10 @@ def list_events(
     return [_row_to_event(r) for r in rows]
 
 
-# Terminal run statuses end a long-poll immediately regardless of
-# whether new events have landed. Callers don't need to wait the full
-# max_wait_s once the run has resolved.
-_TERMINAL_STATUSES = frozenset({
-    "completed", "failed", "cancelled", "interrupted",
-})
+# Terminal run statuses (_TERMINAL_STATUSES, defined with the status
+# constants) end a long-poll immediately regardless of whether new events
+# have landed. Callers don't need to wait the full max_wait_s once the run
+# has resolved.
 
 
 def await_run_events(
@@ -7070,13 +7079,6 @@ def query_runs(
 #: universe instead. Only a BLOCKING version invoke, which waits on this pool
 #: while holding one of its threads, is bounded -- by the pool's size.
 MAX_INVOKE_BRANCH_DEPTH = 5
-
-_TERMINAL_STATUSES = frozenset({
-    RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_CANCELLED,
-    RUN_STATUS_INTERRUPTED,
-})
 
 
 def poll_child_run_status(

@@ -76,6 +76,25 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     # body reads -- both added by earlier Codex reviews specifically to bound an
     # HTTP body instead of buffering it whole. Neither touches a compiled graph
     # stream. Registered so the real graph-stream boundary stays detectable.
+    # Reviewed 2026-10-01 (test-hygiene lane; the inventory test is heavy-listed,
+    # so these entered unregistered and nothing failed a merge).
+    # `recover_dead_owner_runs_now` (#4133) is the watcher/respawn twin of
+    # `_ensure_runs_recovery`, and is covered by the same `recovery` root in
+    # REQUIRED_BACKGROUND_ROOTS. It runs only in the process holding
+    # `_RUNS_RECOVERY_LOCK`. It is NOT inert: started runs of a dead owner end
+    # `interrupted` (never resumed), but never-started workspace waiters stay
+    # queued and recovery kicks their dispatcher, which rebinds provider
+    # authority from the stored owner; and terminal delivery emits
+    # `run_completed`, which can wake another branch's automation under the
+    # run's cause principal and that automation's owner (Codex 2026-10-01).
+    # Tokenless legacy rows are judged by start time, not proven owner death.
+    CallSite("tinyassets/api/runs.py", "recover_dead_owner_runs_now", "recover_in_flight_runs"),
+    # Name collisions, like `_read_bounded_body` above: the billing webhook reads
+    # its HTTP body through `request.stream()` to bound it (Codex 2026-08-28),
+    # and hosted key exchange reads an httpx response with `client.stream()`.
+    # Neither touches a compiled graph stream or grants execution authority.
+    CallSite("tinyassets/onboarding/__init__.py", "_handle_billing_webhook", "request.stream"),
+    CallSite("tinyassets/onboarding/hosted_model_auth.py", "exchange_key", "client.stream"),
     CallSite("tinyassets/onboarding/__init__.py", "_read_bounded_body", "request.stream"),
     CallSite(
         "tinyassets/universe_server.py",
@@ -176,31 +195,30 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "execute_branch_version_async",
         count=2,
     ),
-    CallSite(
-        "tinyassets/graph_compiler.py",
-        "_node_enqueue_branch_run",
-        "append_task_capped",
-    ),
     CallSite("tinyassets/runs.py", "execute_branch_async", "_execute_branch_core"),
     CallSite(
         "tinyassets/runs.py",
         "execute_branch_version_async",
         "_execute_branch_core",
     ),
+    # Two calls, one subscription path (count 2 since 2026-10-01): the
+    # principal-aware call forwards `event.owner_principal_id`; the
+    # compatibility call forwards none. Both share the subscription's actor
+    # mapping, revocation check and inputs. Production installs
+    # `_inbound_event_run_fn`, which takes the principal and refuses a
+    # non-universe actor or an empty principal, so the no-principal call is
+    # reachable only with a test double (Codex 2026-10-01).
     CallSite(
         "tinyassets/scheduler.py",
         "Scheduler._dispatch_event",
         "_run_fn",
+        count=2,
     ),
 )
 
 
 REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
     "schedule_and_event": (
-        SourceReference(
-            "tinyassets/scheduler.py",
-            'self._run_fn(row["branch_def_id"], actor, inputs, run_name)',
-        ),
         SourceReference(
             "tinyassets/scheduler.py",
             'self._run_fn(sub["branch_def_id"], actor, inputs, run_name)',
