@@ -592,6 +592,48 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
     idx_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _charge_commons_write(content: str, path: Path) -> None:
+    """Gate a user-driven wiki page write on the account that will hold it.
+
+    A page under the global commons wiki is charged to the WRITER (founder Q3);
+    a page under a universe's own wiki (``_scoped_wiki_root``) lives in that
+    universe, so it is charged to the universe's OWNER -- a collaborator writing
+    there spends the owner's storage, exactly as their files would. Raises
+    `storage_accounting.StorageRefused` at the quota BEFORE the page is written;
+    `wiki()` returns its record. No account: not gated.
+    """
+    from tinyassets import storage_accounting
+    from tinyassets.api.permissions import current_actor_id
+    from tinyassets.storage import data_dir, wiki_path
+    from tinyassets.universe_owner import owner_of
+
+    base = data_dir()
+    nbytes = len(content.encode("utf-8"))
+    target = Path(path).resolve()
+    try:
+        target.relative_to(wiki_path().resolve())
+    except ValueError:
+        try:
+            uid = target.relative_to(base.resolve()).parts[0]
+        except (ValueError, IndexError):
+            return  # neither commons nor a universe: not a user store
+        account = owner_of(base, uid)
+        if account:
+            # Committed, so the next measurement of the universe (which sees the
+            # page itself) retires it -- counted once, never twice.
+            storage_accounting.commit(storage_accounting.reserve(
+                base, account_id=account, scope_id=uid, store="universe_files",
+                nbytes=nbytes,
+            ))
+        return
+    storage_accounting.charge_now(
+        base,
+        account_id=storage_accounting.account_for_actor(base, current_actor_id()),
+        store="commons_pages",
+        nbytes=nbytes,
+    )
+
+
 def _record_commons_writer(path: Path, content: str) -> None:
     """Charge this commons page's bytes to the account that last wrote it.
 
@@ -1157,6 +1199,7 @@ def _wiki_write(
 
     if promoted_path.exists():
         try:
+            _charge_commons_write(content, promoted_path)
             promoted_path.write_text(content, encoding="utf-8")
             _record_commons_writer(promoted_path, content)
             _append_wiki_log(
@@ -1175,6 +1218,7 @@ def _wiki_write(
     try:
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         is_new = not draft_path.exists()
+        _charge_commons_write(content, draft_path)
         draft_path.write_text(content, encoding="utf-8")
         _record_commons_writer(draft_path, content)
         action_word = "draft" if is_new else "draft-update"
@@ -1250,6 +1294,7 @@ def _wiki_patch(
         return json.dumps(response)
 
     try:
+        _charge_commons_write(patched, resolved)
         resolved.write_text(patched, encoding="utf-8")
         _record_commons_writer(resolved, patched)
         _append_wiki_log(f"patch | {rel} | {log_entry or 'exact replacement'}")
@@ -1426,6 +1471,7 @@ def _wiki_consolidate(
                 except OSError:
                     pass
             try:
+                _charge_commons_write("".join(sections), primary["path"])
                 primary["path"].write_text("".join(sections), encoding="utf-8")
                 _record_commons_writer(primary["path"], "".join(sections))
             except OSError:
@@ -1498,6 +1544,7 @@ def _wiki_promote(
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if "updated:" in content:
             content = re.sub(r"updated:.*", f"updated: {today}", content)
+        _charge_commons_write(content, dest_path)
         dest_path.write_text(content, encoding="utf-8")
         _record_commons_writer(dest_path, content)
         draft_path.unlink()
@@ -1526,6 +1573,7 @@ def _wiki_ingest(
     try:
         raw_dir.mkdir(parents=True, exist_ok=True)
         target = raw_dir / Path(filename).name
+        _charge_commons_write(content, target)
         target.write_text(content, encoding="utf-8")
         _record_commons_writer(target, content)
         url_note = f" ({source_url})" if source_url else ""
@@ -1609,6 +1657,7 @@ def _wiki_supersede(
             body = re.sub(r"^> \*\*Superseded\*\*.*\n\n", "", fm_match.group(2))
             old_content = fm_match.group(1) + notice + body
 
+        _charge_commons_write(old_content, old_path)
         old_path.write_text(old_content, encoding="utf-8")
         _record_commons_writer(old_path, old_content)
         _append_wiki_log(
@@ -2286,6 +2335,7 @@ def _wiki_cosign_bug(
         raw = raw.rstrip() + f"\n\n## Cosigns\n{cosign_entry}\n"
 
     try:
+        _charge_commons_write(raw, target)
         target.write_text(raw, encoding="utf-8")
         _record_commons_writer(target, raw)
     except OSError as exc:
@@ -2458,6 +2508,7 @@ def _wiki_file_bug(
             effort_classification=effort_classification,
         )
         try:
+            _charge_commons_write(body, target)
             with open(target, "x", encoding="utf-8") as fh:
                 fh.write(body)
             _record_commons_writer(target, body)
@@ -2780,4 +2831,12 @@ def wiki(
             "universe_id": target_universe_id,
         }
 
-        return _stamp_universe_id(handler(**kwargs), target_universe_id)
+        from tinyassets.storage_accounting import StorageRefused
+
+        try:
+            result = handler(**kwargs)
+        except StorageRefused as refused:
+            # At the account's storage quota: the visible refusal, numbers and
+            # inline Upgrade link. Nothing was written.
+            result = json.dumps(refused.record)
+        return _stamp_universe_id(result, target_universe_id)

@@ -16,8 +16,14 @@ logger = logging.getLogger(__name__)
 
 
 def _result(call):
+    from tinyassets.storage_accounting import StorageRefused
+
     try:
         return json.dumps(call(), ensure_ascii=False)
+    except StorageRefused as refused:
+        # At the account's storage quota: the visible refusal with its inline
+        # Upgrade link, never a generic "unavailable".
+        return json.dumps(refused.record, ensure_ascii=False)
     except (PermissionError, ValueError) as exc:
         return json.dumps({"error": str(exc), "failure_class": "run_file_refused"})
     except Exception:

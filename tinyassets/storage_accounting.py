@@ -267,6 +267,14 @@ def _daemon_memory(base: Path, account_id: str) -> int:
     return total + wikis
 
 
+def _workspaces(base: Path, universe_id: str) -> int:
+    """A universe's permanent workspace generations (published, and any being
+    built or awaiting discard): ``<uid>/workspaces``."""
+    if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
+        raise ValueError(f"not a universe id: {universe_id!r}")
+    return _walk_bytes(base / universe_id / "workspaces")
+
+
 def _blob_sum(columns: tuple[str, ...]) -> str:
     return " + ".join(f"COALESCE(length(CAST({c} AS BLOB)), 0)" for c in columns)
 
@@ -371,7 +379,10 @@ def _branches(base: Path, account_id: str) -> int:
 
     actors = _account_actors(base, account_id)
     marks = ",".join("?" * len(actors))
-    definition_columns = ("graph_json", "description", "name", "tags_json", "skills_json")
+    definition_columns = (
+        "graph_json", "node_defs_json", "state_schema_json", "stats_json",
+        "description", "name", "tags_json", "skills_json", "entry_point",
+    )
     definitions = _sum_sql(
         author_db_path(base),
         f"SELECT SUM({_blob_sum(definition_columns)}) "
@@ -485,6 +496,7 @@ STORES: dict[str, Store] = {
         Store("branches", SCOPE_ACCOUNT, _branches),
         Store("commons_pages", SCOPE_ACCOUNT, _commons_pages),
         Store("automations", SCOPE_ACCOUNT, _automations),
+        Store("workspaces", SCOPE_UNIVERSE, _workspaces),
     )
 }
 
@@ -703,6 +715,77 @@ def measure(base_path: str | Path, scope_id: str, store: str, *, now: float | No
             (scope_id, store, started - RESERVED_TTL_S),
         )
     return size
+
+
+#: Below this, a permanent workspace is refused up front: smaller than any
+#: useful checkout, and a reservation of a few bytes would only fail mid-transfer.
+MIN_WORKSPACE_BYTES = 64 * _MIB
+
+
+def reserve_fitted(
+    base_path: str | Path,
+    *,
+    account_id: str | None,
+    scope_id: str,
+    store: str,
+    cap: int,
+    credit: int = 0,
+    minimum: int = MIN_WORKSPACE_BYTES,
+) -> tuple[Reservation, int]:
+    """Reserve a write whose size is unknown up front, sized to what FITS.
+
+    Returns ``(reservation, bound)``: the caller must not let the write exceed
+    ``bound`` = min(``cap``, headroom + ``credit``). ``credit`` is bytes the
+    write replaces and that are already owed deletion (a published workspace
+    generation this checkout supersedes), so a re-checkout of the same repo
+    fits the quota it already occupies. Raises `StorageRefused` when the bound
+    is below ``minimum`` -- before any bytes move. (account-storage-quota D6:
+    a fixed 4 GiB reservation refused every permanent workspace on a 2 GiB
+    free account, empty or not.) No account: the cap, ungated.
+    """
+    base = Path(base_path)
+    account = named_principal(account_id or "")
+    if not account:
+        return Reservation(base, None, None, 0), int(cap)
+    quota, tier = _quota(base, account)
+    pairs = _scopes(base, account)
+    try:
+        stale = _stale_pairs(base, pairs)
+        if stale:
+            _measure_many(base, stale)
+        conn = _connect(base)
+        try:
+            current = _usage_in(conn, account, pairs, quota, tier)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        _log.exception("storage ledger unavailable for a fitted reservation")
+        raise StorageRefused(_unavailable_record(minimum)) from None
+    bound = min(int(cap), quota - current.used_bytes + max(0, int(credit)))
+    if bound < minimum:
+        universes = len({scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE})
+        raise StorageRefused(refusal_record(current, minimum, universes=universes))
+    # The replaced bytes are still measured until their discard lands, so only
+    # the part beyond them is new pending.
+    reservation = reserve(
+        base, account_id=account, scope_id=scope_id, store=store,
+        nbytes=max(0, bound - max(0, int(credit))),
+    )
+    return reservation, bound
+
+
+def charge_now(
+    base_path: str | Path, *, account_id: str | None, store: str, nbytes: int,
+) -> None:
+    """Admit-and-commit for an ACCOUNT-scoped write whose size is known up front
+    and that lands immediately after (a page, a branch row). Raises
+    `StorageRefused` at the quota, before the caller writes anything. If the
+    write then fails, the committed bytes are an over-count the next measurement
+    clears -- never an under-count."""
+    commit(reserve(
+        base_path, account_id=account_id, scope_id=account_id or "", store=store,
+        nbytes=nbytes,
+    ))
 
 
 def record_commons_log(base_path: str | Path, writer: str, nbytes: int) -> None:

@@ -195,7 +195,7 @@ def copy_owned_custody_file(
         ):
             raise store.FileCustodyRefused("run_file_access_denied")
 
-    return _capture_files(
+    return _capture_into_receiver(
         base,
         owner_id=receiver_owner_id,
         universe_id=receiver_universe_id,
@@ -207,6 +207,20 @@ def copy_owned_custody_file(
         publication_check=publication_check,
         should_cancel=should_cancel,
     )
+
+
+def _capture_into_receiver(base, **kwargs):
+    """Copy into the RECEIVER's custody, charged to the receiver's account.
+
+    At the receiver's quota the SENDER learns only that the recipient is full
+    -- never the receiver's numbers, universes or link (founder 2026-09-30, Q4).
+    """
+    from tinyassets.storage_accounting import StorageRefused
+
+    try:
+        return _capture_files(base, **kwargs)
+    except StorageRefused:
+        raise store.FileCustodyRefused("recipient_storage_full") from None
 
 
 def receiver_reference(conn, *, run_id, owner_id, universe_id, file_id):

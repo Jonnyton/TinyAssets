@@ -265,12 +265,24 @@ def _capture_files(base, *, owner_id, universe_id, operation, request, metadata_
                     )
             transferred = 0
             reserved = accepted = False
+            storage_reservation = None
 
             def cancelled():
                 with authority():
                     return should_cancel is not None and should_cancel()
 
             try:
+                # The OWNER's account storage gates the copy -- for a cross-owner
+                # delivery that is the RECEIVER (founder 2026-09-30, Q4). A refusal
+                # here runs the cleanup below, so the custody allocation is
+                # released and nothing is copied.
+                from tinyassets import storage_accounting
+
+                account = owner_id if storage_accounting.is_account(base, owner_id) else None
+                storage_reservation = storage_accounting.reserve(
+                    base, account_id=account, scope_id=account or "", store="uploads",
+                    nbytes=maximum,
+                )
                 workspace_pool.reserve_transfer_bytes(
                     runs.runs_db_path(base),
                     universe_id=universe_id,
@@ -326,6 +338,13 @@ def _capture_files(base, *, owner_id, universe_id, operation, request, metadata_
                 accepted = True
                 return result
             finally:
+                if storage_reservation is not None:
+                    from tinyassets import storage_accounting
+
+                    if accepted:
+                        storage_accounting.commit(storage_reservation)
+                    else:
+                        storage_accounting.release(storage_reservation)
                 if not accepted:
                     # Visibility revocation/debt only; no guessed file deletion or
                     # retained-capacity refund before verified physical cleanup.

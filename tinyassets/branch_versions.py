@@ -393,6 +393,19 @@ def publish_branch_version(
     content_hash = compute_content_hash(snapshot)
     resolved_watch_window = _resolve_watch_window(branch_dict, watch_window_seconds)
 
+    # A published version is charged to its PUBLISHER's account storage
+    # (account-storage-quota D7). Refused at the quota before anything is
+    # written; a re-publish of identical content is an over-count the next
+    # measurement clears.
+    from tinyassets import storage_accounting
+
+    storage_accounting.charge_now(
+        base_path,
+        account_id=storage_accounting.account_for_actor(base_path, publisher),
+        store="branches",
+        nbytes=len(str(snapshot).encode("utf-8")) + len(str(notes or "").encode("utf-8")),
+    )
+
     with _connect(base_path) as conn:
         # Deterministic: same content_hash for same branch_def_id returns existing.
         existing = conn.execute(
