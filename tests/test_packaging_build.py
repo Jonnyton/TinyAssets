@@ -253,15 +253,36 @@ def _build_plugin(runtime_root: Path, *extra: str) -> subprocess.CompletedProces
     return _run(PLUGIN_BUILD, ["--runtime-root", str(runtime_root), *extra])
 
 
+#: The runtime files the build must leave alone (venv bootstrap, launcher).
+_SCAFFOLDING = ("server.py", "bootstrap.py", "requirements.txt", "pyproject.toml")
+
+
+def _seeded_runtime(root: Path) -> Path:
+    """A runtime dir holding the tracked scaffolding, as the real one does."""
+    root.mkdir(parents=True, exist_ok=True)
+    for name in _SCAFFOLDING:
+        shutil.copy2(PLUGIN_RUNTIME / name, root / name)
+    return root
+
+
+def _entries(root: Path) -> list[str]:
+    """What is in a runtime dir, minus the build's own lock file."""
+    return sorted(p.name for p in root.iterdir() if p.name != ".build.lock")
+
+
 def test_build_plugin_stages_tinyassets_package(tmp_path):
-    """Plugin build re-stages tinyassets/ next to runtime/server.py."""
-    result = _build_plugin(tmp_path)
+    """Plugin build re-stages tinyassets/ next to runtime/server.py, and leaves
+    the scaffolding beside it byte-for-byte."""
+    runtime = _seeded_runtime(tmp_path / "runtime")
+    result = _build_plugin(runtime)
     assert result.returncode == 0, (
         f"build_plugin.py failed:\nstdout={result.stdout}\n"
         f"stderr={result.stderr}"
     )
-    assert (tmp_path / "tinyassets" / "universe_server.py").is_file()
-    assert (PLUGIN_RUNTIME / "server.py").is_file()
+    assert (runtime / "tinyassets" / "universe_server.py").is_file()
+    for name in _SCAFFOLDING:
+        assert (runtime / name).read_bytes() == (PLUGIN_RUNTIME / name).read_bytes()
+    assert _entries(runtime) == sorted([*_SCAFFOLDING, "models", "tinyassets"])
     assert "probe-ok" in result.stdout
 
 
@@ -305,7 +326,15 @@ def test_concurrent_plugin_builds_never_leave_a_partial_tree(tmp_path):
         for path in (tmp_path / "tinyassets").rglob("*") if path.is_file()
     }
     assert staged == expected
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["models", "tinyassets"]
+    assert _entries(tmp_path) == ["models", "tinyassets"]
+    models = {
+        path.relative_to(REPO_ROOT / "models"): path.read_bytes()
+        for path in (REPO_ROOT / "models").rglob("*") if path.is_file()
+    }
+    assert {
+        path.relative_to(tmp_path / "models"): path.read_bytes()
+        for path in (tmp_path / "models").rglob("*") if path.is_file()
+    } == models
 
 
 def test_a_failed_copy_keeps_the_previous_tree(tmp_path, monkeypatch):
@@ -324,7 +353,44 @@ def test_a_failed_copy_keeps_the_previous_tree(tmp_path, monkeypatch):
         build._stage_runtime(tmp_path)
 
     assert (old / "kept.py").read_text() == "# previous build\n"
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["tinyassets"]
+    assert _entries(tmp_path) == ["tinyassets"]
+
+
+def test_a_refused_publish_puts_the_previous_tree_back(tmp_path, monkeypatch):
+    """Windows refuses a rename while a scanner holds a handle in staging. The
+    old tree has already moved aside by then; it must come back."""
+    build = _load_module("tinyassets_plugin_build_swap_test", PLUGIN_BUILD)
+    old = tmp_path / "tinyassets"
+    old.mkdir()
+    (old / "kept.py").write_text("# previous build\n")
+    real_rename = Path.rename
+
+    def refuse_publish(self, target):
+        if ".staging-" in self.name and Path(target).name == "tinyassets":
+            raise PermissionError(32, "The process cannot access the file")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", refuse_publish)
+    with pytest.raises(PermissionError):
+        build._stage_runtime(tmp_path)
+
+    assert (old / "kept.py").read_text() == "# previous build\n"
+    assert _entries(tmp_path) == ["tinyassets"]
+    assert not [p for p in tmp_path.iterdir() if ".old-" in p.name or ".staging-" in p.name]
+
+
+def test_a_build_killed_between_renames_is_recovered(tmp_path):
+    """Killed after moving the old tree aside: the next build finds no
+    destination and an ``.old-*`` beside it, and ends with a complete tree."""
+    retired = tmp_path / ".tinyassets.old-4242"
+    retired.mkdir()
+    (retired / "kept.py").write_text("# previous build\n")
+    (tmp_path / ".tinyassets.staging-dead").mkdir()
+
+    assert _build_plugin(tmp_path, "--skip-probe").returncode == 0
+
+    assert (tmp_path / "tinyassets" / "universe_server.py").is_file()
+    assert _entries(tmp_path) == ["models", "tinyassets"]
 
 
 def test_plugin_server_imports_tinyassets_package(tmp_path):
@@ -334,10 +400,12 @@ def test_plugin_server_imports_tinyassets_package(tmp_path):
             sys.executable, "-c",
             f"import sys; sys.path.insert(0, {str(tmp_path)!r}); "
             "import tinyassets.universe_server as us; "
-            "assert callable(us.main); print('ok')",
+            "assert callable(us.main); print(us.__file__)",
         ],
         capture_output=True, text=True, check=False,
     )
+    # Provenance: the STAGED copy imported, not the canonical package.
+    assert Path(probe.stdout.strip().splitlines()[-1]).is_relative_to(tmp_path), probe
     assert probe.returncode == 0, (
         f"Plugin import probe failed:\nstdout={probe.stdout}\n"
         f"stderr={probe.stderr}"

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
+import errno
 import os
 import shutil
 import subprocess
@@ -78,12 +78,13 @@ def _exclusive_build(runtime_root: Path):
     at once) interleaved one's rmtree with the other's copy and left 247-302
     tracked mirror files deleted (reproduced 2026-10-01). An OS file lock, not a
     marker file, so a killed build never strands the next one.
+
+    The lock lives AT the runtime root (``.build.lock``, gitignored), so every
+    process that builds this root contends for the same file whatever its
+    ``TEMP`` says.
     """
-    # In the temp dir, keyed by the runtime it guards: a lock file inside the
-    # tracked runtime would itself show up as an untracked file.
-    key = hashlib.sha256(str(runtime_root.resolve()).encode("utf-8")).hexdigest()[:16]
-    with open(Path(tempfile.gettempdir()) / f"tinyassets-plugin-build-{key}.lock",
-              "a+b") as handle:
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    with open(runtime_root / LOCK_NAME, "a+b") as handle:
         if os.name == "nt":
             import msvcrt
 
@@ -92,8 +93,11 @@ def _exclusive_build(runtime_root: Path):
                 try:
                     msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
                     break
-                except OSError:  # LK_LOCK gives up after ~10s; keep waiting
-                    continue
+                except OSError as exc:
+                    # LK_LOCK gives up after ~10 s of contention (EDEADLOCK);
+                    # keep waiting for the holder. Anything else is a real error.
+                    if exc.errno not in (errno.EDEADLK, errno.EACCES):
+                        raise
         else:
             import fcntl
 
@@ -108,31 +112,43 @@ def _exclusive_build(runtime_root: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _replace_tree(source: Path, destination: Path) -> int:
-    """Stage ``source`` beside ``destination``, then swap it in whole.
+#: The lock file at a runtime root. Gitignored for the tracked runtime.
+LOCK_NAME = ".build.lock"
 
-    Copying into a fresh sibling first means a copy that fails part-way (a full
-    disk, a locked file) raises with the old tree still in place, rather than
-    after an rmtree has already deleted it.
+
+def _sweep_debris(destination: Path) -> None:
+    """Remove a previous build's leftovers beside ``destination``.
+
+    Only ever called under the build lock, so nothing here belongs to a live
+    build. A killed build can leave ``.<name>.staging-*`` or ``.<name>.old-*``;
+    an ``.old-*`` with no ``destination`` is the published tree of a build that
+    died between its two renames, so it is restored rather than deleted.
     """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.staging-",
-                                    dir=destination.parent))
-    try:
-        count = _copy_tree(source, staging)
-        if destination.exists():
-            retired = Path(tempfile.mkdtemp(prefix=f".{destination.name}.old-",
-                                            dir=destination.parent))
-            retired.rmdir()
-            destination.rename(retired)
-            staging.rename(destination)
-            shutil.rmtree(retired)
+    parent = destination.parent
+    for leftover in sorted(parent.glob(f".{destination.name}.old-*")):
+        if not destination.exists():
+            leftover.rename(destination)
         else:
-            staging.rename(destination)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
-    return count
+            shutil.rmtree(leftover)
+    for leftover in parent.glob(f".{destination.name}.staging-*"):
+        shutil.rmtree(leftover)
+
+
+def _swap_in(staging: Path, destination: Path) -> None:
+    """Publish ``staging`` as ``destination``; on failure, put the old tree back."""
+    if not destination.exists():
+        staging.rename(destination)
+        return
+    retired = destination.parent / f".{destination.name}.old-{os.getpid()}"
+    destination.rename(retired)
+    try:
+        staging.rename(destination)
+    except BaseException:
+        # Windows refuses the rename while anything holds a handle in staging
+        # (a scanner, an indexer): never leave the runtime with no tree at all.
+        retired.rename(destination)
+        raise
+    shutil.rmtree(retired)
 
 
 def _stage_runtime(runtime_root: Path = RUNTIME_ROOT) -> int:
@@ -143,26 +159,42 @@ def _stage_runtime(runtime_root: Path = RUNTIME_ROOT) -> int:
     logic the build script does not regenerate. Only the
     ``tinyassets/`` subtree (and the now-retired ``fantasy_author/``
     snapshot, if present) is purged + re-staged.
+
+    Every tree is copied into a sibling staging directory BEFORE anything
+    published is touched, so a copy that fails part-way (a full disk) raises with
+    the previous trees intact; then each is swapped in with rollback.
     """
+    # The public model lists are DATA the runtime reads, resolved relative to
+    # the package (`public_model_lists.lists_directory()` -> parents[2]/"models"),
+    # which in this layout is the runtime root. Without them every source kind
+    # reads as unlisted and the picker silently loses its shared models -- Codex
+    # found the same omission in the Docker image on #4028, where the feature
+    # would have shipped dead.
+    trees = [(TINYASSETS_SRC, runtime_root / "tinyassets")]
+    if (REPO_ROOT / "models").is_dir():
+        trees.append((REPO_ROOT / "models", runtime_root / "models"))
+
     with _exclusive_build(runtime_root):
+        staged, count = [], 0
+        try:
+            for source, destination in trees:
+                _sweep_debris(destination)
+                staging = Path(tempfile.mkdtemp(
+                    prefix=f".{destination.name}.staging-", dir=runtime_root))
+                staged.append((staging, destination))
+                count += _copy_tree(source, staging)
+            for staging, destination in staged:
+                _swap_in(staging, destination)
+        finally:
+            for staging, _destination in staged:
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
         for retired in ("workflow", "fantasy_author"):
             # Pre-Option-1 snapshots. Remove so the runtime imports the
             # auto-staged ``tinyassets.universe_server`` and never a frozen copy.
             if (runtime_root / retired).exists():
                 shutil.rmtree(runtime_root / retired)
-
-        staged = _replace_tree(TINYASSETS_SRC, runtime_root / "tinyassets")
-
-        # The public model lists are DATA the runtime reads, resolved relative to
-        # the package (`public_model_lists.lists_directory()` ->
-        # parents[2]/"models"), which in this layout is the runtime root. Without
-        # them every source kind reads as unlisted and the picker silently loses
-        # its shared models -- Codex found the same omission in the Docker image
-        # on #4028, where the feature would have shipped dead.
-        lists_src = REPO_ROOT / "models"
-        if lists_src.is_dir():
-            staged += _replace_tree(lists_src, runtime_root / "models")
-    return staged
+    return count
 
 
 def _probe_import(runtime_root: Path = RUNTIME_ROOT) -> None:
