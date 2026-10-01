@@ -1,57 +1,17 @@
 # Known-failing tests on main. See docs/decisions/ADR-003-required-test-aggregator.md
 #
-# 2026-08-03: -111 entries, DELETED because they now pass (the ratchet's own
-# prescribed action). Measured, not assumed: junit from the passing run
-# (30840921840) vs the failing one (30841832328) on trees differing by TWO test
-# functions gave 111 fail->pass and **0 newly failing**. So nothing regressed;
-# execution order shifted and 111 tests stopped being poisoned.
+# One node id per line; `flaky <node id>` is exempt from the stale check in
+# both directions. One-way ratchet: an entry that runs and passes fails the
+# gate until it is deleted, and an addition needs an exact-head review receipt
+# (pr-scope-guard). History of the entries that used to be here: git log.
 #
-# The poisoning is real and visible in the messages those tests carried while
-# failing -- `ValueError: invalid literal for int(): 'https://github.com/x/x/pull/99'`
-# and `FileNotFoundError: /tmp/pytest-of-runner/pytest-0/test_exact_decision_ap...`
-# are one test receiving ANOTHER test's stubbed subprocess result and tmpdir.
-# The suite leaks state in SERIAL, not only under xdist as previously recorded.
-#
-# They are deleted rather than marked `flaky`. `flaky` exempts an entry from the
-# ratchet in BOTH directions, which would hide any genuine future regression in
-# all 111; deletion keeps them protected and states the truth, which is that they
-# pass on main today. The cost is that a future PR which shifts collection order
-# again may see some of them fail and be blocked for something it did not cause.
-# That cost is accepted only because the isolation fix is the next lane -- it is
-# not a stable end state. Root cause and fix: the process-global state leak
-# tracked in scripts/ci_required_tests.py's SERIAL ON PURPOSE note.
-# Baseline captured 2026-08-02 from CI run 30767266528 (12,747 ran / 483 failing).
-# One-way ratchet: entries that pass get DELETED by the gate; additions to this
-# file require an exact-head review receipt (pr-scope-guard).
-# 2026-08-03: +1 entry — tests/load/test_agent_runtime_cloud_load.py arrived on
-# main after the baseline capture, already failing. Pre-existing debt, recorded
-# honestly so it is counted; owner lane is the cloud-drain load work.
-# code change. `flaky` exempts them from the stale ratchet in BOTH
-#
-# 2026-08-03: +141 entries from CI run 30780762657 (first push:main run).
-# These are REAL regressions carried in by code that landed on main, not
-# ordering artifacts -- verified: every failure the 53-file-exclusion run
-# reported was ALSO failing in the same-tree full run, so the exclusion
-# caused none of them. Recorded as ordinary ratcheted entries so a later
-# fix shows up as a stale line that must be deleted.
-tests/desktop_install/test_packaged_runtime.py::tests.desktop_install.test_packaged_runtime
-tests/test_anonymous_write_challenge.py::test_scoped_canary_token_is_off_when_absent_short_or_mismatched[\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800-cccccccccccccccccccccccccccccccc]
-tests/test_backup_script.py::test_local_backup_file_rejects_symlink_source
-tests/test_community_loop_watch_workflow.py::test_alarm_sink_dispatches_only_stale_uptime_canary_workflow
-tests/test_host_uptime_installers.py::test_active_service_timeout_reactivates_timers_before_file_mutation[activating]
-tests/test_host_uptime_installers.py::test_active_service_timeout_reactivates_timers_before_file_mutation[active]
-tests/test_host_uptime_installers.py::test_active_service_timeout_reactivates_timers_before_file_mutation[deactivating]
-tests/test_host_uptime_installers.py::test_active_service_timeout_reactivates_timers_before_file_mutation[reloading]
-tests/test_host_uptime_installers.py::test_backup_state_classifier_is_fail_closed[BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/workflow-backups\n-symlink-600-0-partial_or_invalid]
-tests/test_host_uptime_installers.py::test_bounded_distinct_target_burst_is_isolated
-tests/test_host_uptime_installers.py::test_fresh_install_converges_exact_manifest
-tests/test_host_uptime_installers.py::test_post_mutation_failure_rolls_back_units_and_runtime
-tests/test_host_uptime_installers.py::test_repeat_install_repairs_corrupt_content_addressed_release
-tests/test_host_uptime_installers.py::test_unknown_service_state_fails_closed_before_file_mutation
-tests/test_integration.py::TestOrientRetrievalIntegration::test_orient_passes_provider_call_to_router
-tests/test_integration.py::TestTunnelManagement::test_start_tunnel_windows_creationflags
-tests/test_mcp_instruction_surfaces.py::test_runtime_response_payloads_claim_only_live_advertised_handles
-tests/test_public_goal_visibility.py::test_universe_ledger_rejects_global_ledger_alias[.\\]
-tests/test_scoped_identity_reset.py::test_operator_cli_loads_private_roster_and_emits_redacted_plan
-tests/test_scoped_identity_reset.py::test_roster_rejects_credentials_and_unexpected_fields
-tests/test_tinyassets_tray.py::tests.test_tinyassets_tray
+# 2026-10-01: emptied. Every one of the 21 entries passed or no longer existed.
+# Twelve had been passing or deleted for weeks without the ratchet noticing,
+# because their files are in .github/heavy-test-files.txt and the heavy job is
+# red at baseline, so its stale report was never read. Five of those had
+# meanwhile started failing again behind the ledger: the install idempotence
+# gate (#3989) made a repeat install of identical content exit before the
+# service-state check those tests drive. The rest were tests that were wrong
+# about the code, not the reverse: a rename sweep's `createTinyAssetsDispatch`,
+# a symlink test that resolve()d its own symlink away, and two tray files that
+# died at collection on a headless runner (now pystray's dummy backend).
