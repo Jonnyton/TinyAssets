@@ -36,7 +36,9 @@ if (selected is None or selected["binding_id"] != intent["binding_id"]
 
 So `consumer_request` is a *receipt* for the one selection the universe already
 has, not a chooser. A universe has exactly one selected conversation at a time
-(`configuration.turn_consumer`), changed through the App design dialog.
+(`configuration.turn_consumer`). A custom UI can ask to change it
+(`set_conversation_design`, approved by the person in the app's own prompt), and
+the Switch UI dialog restores the default; there is no other chooser.
 
 An office-building UI can therefore render rooms and read who is in them, but
 "click room B while room A is selected" cannot become a turn.
@@ -44,8 +46,8 @@ An office-building UI can therefore render rooms and read who is in them, but
 ## What shipped instead
 
 `AppUI.sendMessage` resolves the named agent against the viewer's own bindings and
-refuses by name — `"this universe sends turns to its selected conversation only;
-select <name> in App design first"` — rather than quietly sending to whichever
+refuses by name — `"this universe sends turns to its selected conversation only,
+and <name> is not it; change the conversation design first"` — rather than quietly sending to whichever
 agent happens to be selected. Silently retargeting a message the user aimed at one
 agent is the failure this avoids; the UI can act on the refusal.
 

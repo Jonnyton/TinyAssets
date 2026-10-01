@@ -116,7 +116,7 @@ const ModelPicker={ reset(){} };
 // Deliberately does NOT clear anything: the page's hosted reset used to be the
 // only thing clearing a credential on sign-out, and relying on it is the defect.
 const HostedModelConnect={ reset(){} };
-const AppLayout={ reset(){} };
+const AppUI={ reset(){} };
 const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; } };
 """
 
