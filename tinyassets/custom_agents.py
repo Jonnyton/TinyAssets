@@ -1784,6 +1784,18 @@ def change_app_ui_entry(
         )
     if not isinstance(payload, dict):
         raise AgentValidationError("app UI payload must be a JSON object")
+    # The library's bytes are the saver's account storage, on this path as on
+    # `save_app_ui`: the change can add at most its payload, so that is charged
+    # before anything is written (`StorageRefused` at the quota). An edit that
+    # replaces bytes is an over-count the next measurement clears.
+    from tinyassets import storage_accounting
+
+    storage_accounting.charge_now(
+        base_path,
+        account_id=owner if storage_accounting.is_account(base_path, owner) else None,
+        store="ui_library",
+        nbytes=len(_canonical_json(payload).encode("utf-8")),
+    )
     with _agent_connect(base_path) as conn:
         for _attempt in range(_APP_UI_ENTRY_ATTEMPTS):
             row = conn.execute(

@@ -16,8 +16,14 @@ logger = logging.getLogger(__name__)
 
 
 def _result(call):
+    from tinyassets.storage_accounting import StorageRefused
+
     try:
         return json.dumps(call(), ensure_ascii=False)
+    except StorageRefused as refused:
+        # At the account's storage quota: the visible refusal with its inline
+        # Upgrade link, never a generic "unavailable".
+        return json.dumps(_visible_refusal(refused), ensure_ascii=False)
     except (PermissionError, ValueError) as exc:
         return json.dumps({"error": str(exc), "failure_class": "run_file_refused"})
     except Exception:
@@ -113,3 +119,10 @@ def dispatch_file_branch(branch, inputs, *, universe_id, run_name, recursion_lim
             "Recovery uses this same accepted run."
         )
     return runs.RunOutcome(run_id=run_id, status="queued", output={}, error=error)
+
+def _visible_refusal(refused):
+    """The refusal the CALLER may see: the charged account's full record only
+    if the caller is that account (storage_accounting.visible_record)."""
+    from tinyassets.storage_accounting import visible_record
+
+    return visible_record(refused)
