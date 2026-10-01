@@ -17,6 +17,7 @@ import sys
 import time
 from pathlib import Path
 
+from tinyassets import agent_sessions
 from tinyassets.exceptions import (
     InteractiveDeadlineError,
     ProviderAuthenticationError,
@@ -219,6 +220,19 @@ def _terminal_auth_failure(excerpt: str) -> bool:
     """
     lower = excerpt.lower()
     return any(phrase in lower for phrase in _TERMINAL_AUTH_PHRASES)
+
+
+_THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{0,127}")
+
+
+def _codex_session_exists(store: Path, thread_id: str) -> bool:
+    """Whether ``store`` still holds the rollout file for ``thread_id``."""
+    if not _THREAD_ID.fullmatch(thread_id or ""):
+        return False
+    try:
+        return any(store.rglob(f"rollout-*{thread_id}.jsonl"))
+    except OSError:
+        return False
 
 
 def _codex_home_file_mounts(codex_home: Path) -> list[JailMount]:
@@ -734,6 +748,8 @@ class CodexProvider(BaseProvider):
     """Calls GPT via the ``codex exec`` CLI binary."""
 
     agent_execution_kind = "native_agent"
+    #: Continues a stored native session by its thread id (``agent_sessions``).
+    native_resume = True
 
     name = "codex"
     family = "openai"
@@ -868,12 +884,42 @@ class CodexProvider(BaseProvider):
             "--disable",
             "remote_plugin",
             "--skip-git-repo-check",
-            "--ephemeral",
         ]
+
+        # A served turn that names a session continues it (change
+        # `universe-agent-harness`, S1): its native session files persist under
+        # the universe's `.runtime/`, and a resumable one is resumed with only
+        # the input it has not seen. Anything else stays `--ephemeral`, as every
+        # launch was before. The session is held for the whole launch, so a
+        # second concurrent turn of the same key runs unrecorded instead of
+        # interleaving one native history.
+        session_ref = getattr(config, "agent_session", None) if config.sandbox_workspace else None
+        session_hold = contextlib.ExitStack()
+        persist = False
+        resume_record: dict | None = None
+        session_store: Path | None = None
+        if session_ref is not None:
+            persist = session_hold.enter_context(agent_sessions.exclusive(session_ref))
+        if persist:
+            session_store = agent_sessions.native_store(universe_root, self.name)
+            resume_record = agent_sessions.resumable(
+                session_ref, adapter=self.name, model=model or "", prompt=prompt,
+            )
+            if resume_record is not None and not _codex_session_exists(
+                session_store, str(resume_record["handle"]),
+            ):
+                logger.warning("codex session for %s is gone; starting a new one", session_ref.key)
+                resume_record = None
+            if resume_record is not None:
+                full_input = agent_sessions.resume_input(session_ref, resume_record, system)
+        if not persist:
+            cmd.append("--ephemeral")
 
         universe_view: UniverseView | None = None
         if config.sandbox_workspace:
             launch_cmd = [*cmd, "-C", "/workspace"]
+            if resume_record is not None:
+                launch_cmd += ["resume", str(resume_record["handle"]), "-"]
             # A converse/chat turn is NOT a coding task: give codex an EMPTY
             # scratch /workspace (tmpfs) inside the same jail instead of the
             # universe, so it answers as a chat model rather than acting as a
@@ -905,6 +951,10 @@ class CodexProvider(BaseProvider):
                     # stay immutable; only scratch files can be created beside them.
                     JailMount("tmpfs", "/codex-home"),
                     *_codex_home_file_mounts(codex_home),
+                    *(
+                        (JailMount("bind", "/codex-home/sessions", session_store),)
+                        if session_store is not None else ()
+                    ),
                 ),
                 chdir="/workspace",
                 setenv=(("CODEX_HOME", "/codex-home"), ("HOME", "/tmp")),
@@ -922,17 +972,22 @@ class CodexProvider(BaseProvider):
         # The shared spawn point jails every launch made for a universe; this
         # adapter only names where its own install lives (the wrapper script
         # execs a binary the generic command lookup cannot see).
-        proc = await aspawn_owned(
-            launch_cmd,
-            shell=use_shell,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_STDOUT_READER_LIMIT,
-            env=proc_env,
-            universe_view=universe_view,
-            install_mounts=lambda: _codex_sandbox_mounts(base_cmd),
-        )
+        try:
+            proc = await aspawn_owned(
+                launch_cmd,
+                shell=use_shell,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_STDOUT_READER_LIMIT,
+                env=proc_env,
+                universe_view=universe_view,
+                install_mounts=lambda: _codex_sandbox_mounts(base_cmd),
+            )
+        except BaseException:
+            session_hold.close()
+            raise
+        session_saved = False
 
         # EVERY exit -- success, classified raise, cancellation -- ends the
         # owned family. The clean-exit path never reaped anything before, so
@@ -1027,6 +1082,7 @@ class CodexProvider(BaseProvider):
             if machine_accounting:
                 messages: list[str] = []
                 usage: dict[str, object] | None = None
+                thread_id = ""
                 try:
                     events = [json.loads(line) for line in stdout_text.splitlines() if line.strip()]
                 except (json.JSONDecodeError, TypeError) as exc:
@@ -1034,6 +1090,10 @@ class CodexProvider(BaseProvider):
                 for event in events:
                     if not isinstance(event, dict):
                         raise ProviderError("codex returned invalid accounting output")
+                    if event.get("type") == "thread.started" and isinstance(
+                        event.get("thread_id"), str
+                    ):
+                        thread_id = event["thread_id"]
                     item = event.get("item")
                     if (
                         event.get("type") == "item.completed"
@@ -1059,6 +1119,12 @@ class CodexProvider(BaseProvider):
                     raise ProviderError("codex accounting output contained invalid usage")
                 cost_microunits = (input_tokens + output_tokens) * 100
                 text = messages[-1].strip()
+                if persist and thread_id:
+                    agent_sessions.save(
+                        session_ref, adapter=self.name, model=model or "",
+                        handle=thread_id, system=system,
+                    )
+                    session_saved = True
             else:
                 text = stdout_text
 
@@ -1105,3 +1171,11 @@ class CodexProvider(BaseProvider):
             )
         finally:
             kill_owned_tree(proc)
+            if resume_record is not None and not session_saved:
+                # A resumed launch that did not finish leaves no claim that the
+                # session is healthy: the next turn starts a new one rather than
+                # resuming into the same failure.
+                logger.warning("codex session %s did not complete; next turn starts fresh",
+                               session_ref.key)
+                agent_sessions.clear(session_ref)
+            session_hold.close()

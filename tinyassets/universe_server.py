@@ -2976,6 +2976,7 @@ def converse(
                 input_method=input_method,
                 response_observer=execution_receipt.observe,
                 learning_observer=lesson_settled.append,
+                session_key=f"thread:{memory_session}",
                 **({} if model_choice is None else {"model_choice": model_choice}),
             )
     except TurnInterrupted as exc:
