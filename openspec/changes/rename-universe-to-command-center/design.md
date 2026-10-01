@@ -241,9 +241,36 @@ gated on:
 There are no compatibility shims for old module paths. Anything importing an
 old path fails loudly, which is the point of doing it in one window.
 
+**Persisted shapes stay put in C3** (refute #4). Renaming a Python name can
+change what gets written. `BranchTask.universe_id` is serialized with `asdict`
+and read back by filtering on the current fields (`branch_tasks.py:86`,
+`:126`), so a plain rename would drop the old key on read and fail
+construction. For every persisted field the codemod reports, meaning every
+`asdict` / from-dict / TypedDict state key / JSON writer, C3 adds an explicit
+serialization adapter: the code name changes, the **serialized** key stays
+`universe_id`, and reads accept both. Graph state keys like `_universe_path`,
+which SqliteSaver checkpoints hold, get the same treatment. C4 moves the
+serialized keys later. Digest inputs are frozen: any hash over a dict
+containing a renamed key keeps the literal old key name in its input, or bumps
+a digest version that still verifies old digests.
+`conversation_run_admissions.py:340` and `provider_assignment_manifest.py:153`
+are the known cases; the codemod reports the rest.
+
+**Launch paths are verified by running them**, not by an import test:
+
+- `pyproject.toml` entry points (`:82`);
+- `deploy/deploy_fail_safe.sh`'s pre-deploy gate, which imports
+  `tinyassets.universe_server` (`:1220`);
+- Dockerfile CMD, systemd units, the plugin's `plugin.json` / `.mcp.json`,
+  and the mcpb manifest;
+- multiprocessing spawn targets.
+
+C3's gate builds the image, runs the deploy gate script, and starts each entry
+point.
+
 **Ordering.** C3 lands after C2 and before C4. C3 keeps every SQL string,
-table, column and on-disk name exactly as it is, so code and storage change in
-separate, separately revertible steps.
+table, column, serialized key and on-disk name exactly as it is, so code and
+storage change in separate, separately revertible steps.
 
 ### D7. Storage: migrated (C4), guarded, from a schema-derived inventory
 
@@ -273,39 +300,110 @@ so the decision is visible. This is the one item the founder confirms
 
 **1. The inventory is derived, never hand-listed**
 (`deletion-set-derived-from-schema`). `scripts/command_center_storage_inventory.py`
-walks the data dir and opens every SQLite file read-only, including the
-per-home databases and satellites. It reports:
+walks every data root a runtime can have. It reports, read-only:
 
-- every table and column whose name contains `universe`;
-- every TEXT column with values `LIKE 'universe:%'`;
-- every file or directory under the data dir named `.universe*`.
+- **SQLite**, in every file including per-home databases and satellites:
+  - tables and columns whose name contains `universe`;
+  - TEXT values `LIKE 'universe:%'` or equal to `'universe'`;
+  - `CHECK` clauses and index, trigger and view SQL in `sqlite_master` that
+    name either. For example, `workspace_pool.py:239` constrains
+    `storage_class IN ('scratch','universe')` and `:264` constrains lock scope
+    to `'universe','host'`.
+- **LanceDB** table schemas (`retrieval/vector_store.py:123`: `universe_id`,
+  `tag_universes`).
+- **SqliteSaver checkpoints**: payloads decoded through the saver's serde,
+  for state keys such as `_universe_path` (`fantasy_daemon/__main__.py:2208`).
+- **JSON / JSONL files** under the data roots whose keys contain `universe`.
+  For example, branch tasks are written at `branch_tasks.py:270`.
+- **Marker files** and directories named `.universe*`.
 
-That output is the migration's input. The migration renames what the
-inventory finds, by rule. A table nobody remembered is still migrated, and a
-name the rule cannot map stops the run before anything moves.
+That output is the migration's input. The migration rewrites what the
+inventory finds, by rule:
+
+- a table or column rename;
+- a table rebuild, where a `CHECK` literal or a constrained value changes
+  (SQLite cannot alter a CHECK);
+- a value rewrite;
+- a LanceDB schema rewrite;
+- a serde-aware checkpoint rewrite;
+- a JSON key rewrite.
+
+A table nobody remembered is still migrated. A name or format the rule cannot
+map stops the run before anything moves.
+
+**Every runtime migrates its own data roots.** The same start-up migration code
+runs in the production container, the desktop app and the local plugin
+runtime, because those keep data outside the production volume:
+
+- desktop homes default to `Documents/TinyAssets/default-universe`
+  (`desktop/launcher.py:68`);
+- the plugin opens a user-chosen root (`plugin.json:38`).
+
+A production container migration cannot reach those installs, so each install
+migrates itself the first time it runs a C4b build. The desktop's
+user-visible default folder name changes only for **new** installs. An
+existing folder is the person's own files: the launcher still finds it and
+does not move it.
 
 **2. A layout guard ships first, alone (C4a).** A new `data_dir()/.layout.json`
-records `{"layout": 1}`, written if absent. Every image from C4a on refuses to
-start against a layout it does not know, before opening any database. It
-fails loudly and serves nothing.
+records `{"layout": 1, "state": "stable"}`, written if absent. Every image from
+C4a on refuses to start unless it knows the layout **and** the state is
+`stable`. It checks before opening any database, fails loudly and serves
+nothing.
 
-- An image built for layout 1 cannot run on renamed data (layout 2). That is
-  the deploy-rollback guard.
-- Images older than C4a cannot read the marker. On renamed data they would see
-  no `universes` table and could create a blank home. That is why C4b's
-  rollback is always restore plus the old image, never an image swap alone.
+- **The crash window is closed** (refute #3). C4b writes
+  `{"layout": 1, "state": "migrating"}` durably (fsync of the file and its
+  directory) **before its first mutation**. A crash anywhere after that leaves
+  a marker every C4a+ image refuses. Only a completed, verified run writes
+  `{"layout": 2, "state": "stable"}`.
+- **An image built for layout 1 cannot run on renamed data** (layout 2, or
+  `migrating`). That is the deploy-rollback guard.
+- **The automatic fail-safe is made migration-aware in C4a.**
+  `deploy/deploy_fail_safe.sh` rolls back to the previous image on an
+  unhealthy deploy (`:1356`, `:1383-1388`) without restoring data. Its stated
+  contract is "startup migrations are backward-compatible" (`:91`), which C4b
+  is not. C4a changes it: when the marker reads `migrating` or a layout newer
+  than the previous image's, it does **not** start the previous image. It
+  stops, reports `deploy_result=rollback_needs_restore`, and leaves the
+  service down for the restore below. Serving nothing is the fail-safe; an old
+  image on new data is not.
+- **Images older than C4a cannot read the marker.** On renamed data they would
+  see no `universes` table and could create a blank home. So C4b's
+  pre-flight asserts with `deployed_sha.py` that the image the fail-safe would
+  fall back to contains C4a. Release reconciliation deploys only main HEAD
+  (`release-reconcile.yml:340`), which after C4a always contains the guard.
 - C4a deploys and runs at least one full day before C4b, so the guard is the
   production baseline when the migration runs.
 
 **3. One locked, idempotent, resumable migration (C4b).** It runs at container
-start, before the server binds its port, under an exclusive data-dir lock that
-every process takes. That includes the engine child processes spawned per
-turn, so nothing reads during the migration.
+start, before the server binds its port.
 
-- **Per database:** one transaction of `ALTER TABLE ... RENAME TO` /
-  `RENAME COLUMN` plus `UPDATE ... SET actor = 'command_center:' || substr(...)`,
-  ending with `PRAGMA user_version` set to the new layout. A database is
-  either all old or all new.
+**Exclusion is a protocol, not an assumption** (refute #2). No single lock is
+taken by every process today. Host jobs open databases directly: the backup
+timer runs `deploy/backup.sh`, which opens databases at `:135`, and operator
+scripts such as `scripts/universe_ownership_inventory.py:127` query directly.
+So C4a puts each kind of process under exclusion:
+
+- **In-container processes, including per-turn engine children,** take a
+  shared lock on `data_dir()/.layout.lock`. The migration takes it
+  exclusively.
+- **Host jobs:** C4b's deploy step stops and disables the backup timer, and
+  `backup.sh` takes the same lock file through the bind mount (`flock`).
+- **Operator scripts** go through one helper that refuses unless the marker
+  is `stable`.
+
+A process that cannot get the lock waits or fails. It never reads half a
+migration.
+
+- **Per database:** one transaction holding all of that database's work:
+  `ALTER TABLE ... RENAME TO` / `RENAME COLUMN`, rebuilds for changed `CHECK`
+  literals, and value rewrites (`universe:` actor prefix, the stored
+  `'universe'` enum values). A database is either all old or all new.
+- **Progress record:** a dedicated `_command_center_layout` table per
+  database. `PRAGMA user_version` is **not** used, because subsystems already
+  own it for their own migrations (`storage/owner_devices.py:166`).
+- **LanceDB, checkpoints and JSON files:** rewritten to a new file or table,
+  then swapped atomically. The old copy is kept until verification passes.
 - **Per file:** an atomic `os.replace`.
 - **Progress:** recorded per database and file, so a crash resumes where it
   stopped. Every step checks whether it is already done (new name present, old
@@ -342,8 +440,14 @@ new key name.
 
 **5. Dry run on a copy of production, never on production.**
 
-- Take a snapshot with `deploy/backup-restore.sh` (read-only on the droplet),
-  copy it off the droplet, and run the migration in the Linux oracle container
+- Take a consistent copy without touching the live service. Use SQLite's
+  online backup API (`sqlite3 .backup`) per database, the LanceDB directory
+  copied after a flush, and plain copies of the JSON and marker files. All of
+  it is read-only on the droplet. **Not** `deploy/backup-restore.sh`, which
+  *restores* (it stops consumers at `:282` and replaces the live volume at
+  `:300`). And not `backup.sh`'s live tar, which tolerates files changing
+  under it (`:164`).
+- Copy it off the droplet, and run the migration in the Linux oracle container
   against the copy.
 - The report gives, per database: row counts per table before and after (old
   name mapped to new name; they must match exactly), and actor-prefix counts
@@ -356,12 +460,31 @@ new key name.
 
 **6. Backup and a written rollback.**
 
-- Immediately before C4b deploys, take a full snapshot with
-  `deploy/backup-restore.sh`, recording its timestamp and sha256.
-- Rollback is: stop the container, restore that snapshot, deploy the image sha
-  that ran before C4b (`deployed_sha.py` records it), then run the canary.
-- The rollback goes in `docs/ops/` with the exact commands. It is rehearsed
-  once against the dry-run copy.
+- **The backup is quiesced and consistent.** At the start of the window: stop
+  the container and the backup timer, so nothing writes. Then take a full tar
+  of the data volume with `deploy/backup.sh`'s full tier, run against the
+  stopped volume, and record its timestamp and sha256. This is the **recovery
+  point**.
+- **Nothing is written after the recovery point until the migration has
+  verified**, because the server binds its port only after verification. A
+  rollback before the service reopens therefore loses nothing.
+- **Rollback after the service has reopened loses data, and that is
+  stated.** Restoring the snapshot discards every write since the recovery
+  point: turns, runs, requests, uploads. It cannot undo external effects
+  already performed, such as a sent message or an opened PR. So once the
+  service has reopened, the default is to **roll forward** (fix and
+  redeploy). Restore is chosen only when the migrated data is wrong, and the
+  window's writes are then listed from the live database before the restore,
+  so each affected person can be told.
+- **Rollback steps:**
+  1. Stop the container.
+  2. Restore the snapshot with `deploy/backup-restore.sh`, its intended use.
+  3. Deploy the image sha that ran before C4b (`deployed_sha.py` records it).
+     That image is C4a or later, so it accepts the restored layout 1 / stable
+     marker.
+  4. Run the canary.
+- The steps go in `docs/ops/` with exact commands, and are rehearsed once
+  against the dry-run copy.
 
 **7. A measured quiet window.** Every deploy interrupts in-flight turns. Turns
 on production over the 14 days to 2026-10-01 17:00Z (read-only count of
