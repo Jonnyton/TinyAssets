@@ -232,23 +232,36 @@ def test_io_uring_and_symlink_are_refused_in_the_jail(world, monkeypatch):
 def test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch(
     world, monkeypatch,
 ):
-    """Design risk 8, in the real jails: the agent cannot create a CLI's project
-    settings dir (the root is read-only), and one the OWNER placed there is
-    masked from both the tool jail and the next provider launch."""
+    """Design risk 8, in the real jails. Since harness W2 the agent's ``/u`` is
+    its own workspace, so a CLI settings dir it writes lands there, never in
+    the universe root a provider launch starts in, and the provider launch
+    masks the whole workspace (a hidden root directory). One the OWNER placed
+    in the root is masked from both the tool jail and the next launch."""
     from tinyassets.providers.provider_jail import default_view, jail_argv
+    from tinyassets.universe_tools import WORKSPACE_DIR
 
     s = _engine(monkeypatch, world)
     a = world.universe_a
     hook = '{"hooks": {"SessionStart": "cat .runtime/*"}}'
-    assert _run(s.write_file(path=".claude/settings.json", content=hook)).startswith("error:")
+    assert _run(s.write_file(path=".claude/settings.json", content=hook)).startswith("wrote")
     _run(s.run_bash(command="mkdir -p .anycli && echo x > .anycli/config"))
     assert not (a / ".claude").exists() and not (a / ".anycli").exists()
+    assert (a / WORKSPACE_DIR / ".claude" / "settings.json").exists()
+    agent_probe = (f"cat {a}/{WORKSPACE_DIR}/.claude/settings.json 2>/dev/null && echo SEEN; "
+                   f"cat {a}/notes/own.txt")
+    argv = jail_argv(["/bin/sh", "-c", agent_probe], default_view(a), bwrap_path=_BWRAP)
+    launched = subprocess.run(  # noqa: S603 - fixed argv built by the shipping jail
+        argv, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert OWN_MARKER in launched.stdout, launched  # positive control
+    assert "SEEN" not in launched.stdout and "SessionStart" not in launched.stdout
 
     # An owner-placed settings dir (from outside the jail) is masked in both.
+    owner_hook = '{"hooks": {"SessionStart": "OWNER-PLACED-HOOK"}}'
     (a / ".claude").mkdir()
-    (a / ".claude" / "settings.json").write_text(hook, encoding="utf-8")
+    (a / ".claude" / "settings.json").write_text(owner_hook, encoding="utf-8")
     seen = _run(s.run_bash(command="cat .claude/settings.json; ls -A .claude"))
-    assert "SessionStart" not in seen, seen
+    assert "OWNER-PLACED-HOOK" not in seen, seen
     probe = (
         f"cat {a}/.claude/settings.json 2>/dev/null && echo LOADED; "
         f"cat {a}/notes/own.txt"
@@ -331,6 +344,43 @@ def test_the_agent_writes_its_own_wiki_but_not_the_trusted_write_back_markers(
     assert markers.name not in forge.split("[exit code")[0].split(), forge
     assert "[exit code 0]" not in forge, forge
     assert markers.read_bytes() == b"SQLite format 3\x00 synthetic markers"
+
+
+def test_the_agent_owns_its_whole_workspace_and_platform_state_stays_out(
+    world, monkeypatch,
+):
+    """Harness W2 (design #4172 §4.3): /u is the agent's own workspace. It
+    creates, renames and removes anything at the top, as on its own computer;
+    the universe root and its platform state are never bound, and the visible
+    platform files keep their read-only binds on top."""
+    from tinyassets.universe_tools import WORKSPACE_DIR
+
+    s = _engine(monkeypatch, world)
+    a = world.universe_a
+    (a / "soul.md").write_text("# Universe Soul\n", encoding="utf-8")
+    (a / ".usage_ledger.db").write_bytes(b"SYNTHETIC-PLATFORM-LEDGER")
+
+    made = _run(s.run_bash(command=(
+        "mkdir -p projects/site && echo hi > projects/site/index.html && "
+        "echo draft > TODO.md && mv TODO.md PLAN.md && "
+        "python3 -c \"print(open('/u/PLAN.md').read().strip())\" && rm -rf projects"
+    )))
+    assert "[exit code 0]" in made and "draft" in made, made
+    workspace = a / WORKSPACE_DIR
+    assert (workspace / "PLAN.md").read_text(encoding="utf-8") == "draft\n"
+    assert not (a / "PLAN.md").exists(), "a new name never lands in the universe root"
+    assert not (workspace / "projects").exists()
+
+    # Platform state: hidden root entries absent; visible platform files read-only.
+    probe = _run(s.run_bash(command=(
+        "echo pwned > soul.md; cat .usage_ledger.db; grep -r SYNTHETIC-PLATFORM . ; echo done"
+    )))
+    assert "SYNTHETIC-PLATFORM-LEDGER" not in probe, probe
+    assert (a / "soul.md").read_text(encoding="utf-8") == "# Universe Soul\n"
+    assert (a / ".usage_ledger.db").read_bytes() == b"SYNTHETIC-PLATFORM-LEDGER"
+    # Positive control: what it owns in the root stays writable through /u.
+    assert _run(s.write_file(path="notes/w2.md", content="ok")).startswith("wrote")
+    assert (a / "notes" / "w2.md").read_text(encoding="utf-8") == "ok"
 
 
 def test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt(world, monkeypatch):

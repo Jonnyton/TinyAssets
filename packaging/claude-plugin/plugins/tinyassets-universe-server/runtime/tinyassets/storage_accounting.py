@@ -577,6 +577,8 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
     ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
     ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
+    # The agent's own workspace (harness W2): user bytes, counted by the walk.
+    ".agent-workspace",
 })
 
 #: Names the code creates that are NOT under the data root at all (a git repo,

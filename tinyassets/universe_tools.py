@@ -16,12 +16,17 @@ Every call -- reads included -- runs as a process inside bubblewrap, built by
 the SAME :func:`tinyassets.providers.provider_jail.jail_argv` as a provider
 launch, with a narrower view:
 
-* the owning command center at ``/u``, and nothing else of ``/data``. ``/u`` is an
-  allowlist, not the root with holes punched in it: a read-only tmpfs holding
-  one bind per VISIBLE root entry. Only what the agent owns is bound
-  read-write (its brain files, its own ``wiki/`` and the harness directories
-  ``skills/``, ``prompts/``, ``notes/`` ...), see :data:`AGENT_BRAIN_FILES`;
-  every other visible entry is read-only;
+* the agent's OWN workspace in the owning command center, at ``/u`` (harness W2, design #4172 §4.3: "the
+  agent has its own workspace it fully owns"). ``/u`` is the universe's
+  ``.agent-workspace/`` directory, bound read-write as a whole, so the agent
+  can create, rename and delete anything at the top of its workspace like on
+  its own computer. Platform state stays where it is, in the universe root,
+  which is never bound. On top of the workspace, each VISIBLE root entry is
+  bound at its own name: what the agent owns read-write (its brain files, its
+  own ``wiki/`` and the harness directories ``skills/``, ``prompts/``,
+  ``notes/`` ...), see :data:`AGENT_BRAIN_FILES`; every other visible entry
+  read-only. A new name the agent creates lands in its workspace, which no
+  daemon code trusts or reads as platform state;
 * no hidden root entry at all -- the credential vault
   (``.credential-vault.json``, ``.credentials/``), ``.runtime/``, the consent,
   usage and receipt databases and their SQLite sidecars -- so the agent can
@@ -135,6 +140,11 @@ AGENT_BRAIN_FILES: tuple[str, ...] = (
 AGENT_HARNESS_DIRS: tuple[str, ...] = (
     "skills", "prompts", "extensions", "workflows", "bin", "notes", "wiki",
 )
+
+#: The agent's own workspace inside the universe: the tool jail's ``/u``.
+#: Hidden (a dot name), so it is never itself bound as a root entry, and it
+#: is platform-created without following a link.
+WORKSPACE_DIR = ".agent-workspace"
 
 #: Kept for callers that name the platform-owned runtime directory.
 MASKED_DIRS: tuple[str, ...] = (PLATFORM_RUNTIME_DIR,)
@@ -274,20 +284,46 @@ def _system_binary(name: str) -> str:
     return found
 
 
-def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseView:
-    """The tool jail's view of ``root``: a read-only ``/u`` holding the visible
-    entries, agent-owned paths read-write, hidden entries absent.
+def _workspace(root: Path) -> Path:
+    """The universe's ``.agent-workspace/``, created if absent, never a link."""
+    path = root / WORKSPACE_DIR
+    try:
+        path.mkdir(mode=0o755)
+    except FileExistsError:
+        pass
+    if path.is_symlink() or not path.is_dir():
+        raise UniverseToolError(
+            f"the agent workspace {WORKSPACE_DIR}/ is not a plain directory; nothing ran"
+        )
+    return path
 
-    Order is fixed: the empty tmpfs, one bind per entry, then the remount that
-    makes ``/u`` itself read-only (the binds under it keep their own flags).
-    Every bind is ``-try``: the daemon owns this folder concurrently, and an
+
+def _clear_link_mountpoint(workspace: Path, name: str) -> None:
+    """A link left where a root entry is about to be bound is removed first.
+
+    bubblewrap would follow it inside the jail when it creates the mountpoint.
+    Removing the link itself never follows it.
+    """
+    candidate = workspace / name
+    if candidate.is_symlink():
+        candidate.unlink()
+
+
+def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseView:
+    """The tool jail's view of ``root``: the agent's own workspace at ``/u``,
+    read-write, with the visible root entries bound on top at their names
+    (agent-owned read-write, the rest read-only) and hidden entries absent.
+
+    Order is fixed: the workspace, then one bind per entry over it. Every
+    entry bind is ``-try``: the daemon owns this folder concurrently, and an
     entry it removes after the scan is simply not in this call's view.
     """
     for name in AGENT_HARNESS_DIRS:
         path = root / name
         if not os.path.lexists(path):
             path.mkdir(mode=0o755)
-    mounts = [JailMount("tmpfs", MOUNT_POINT)]
+    workspace = _workspace(root)
+    mounts = [JailMount("bind", MOUNT_POINT, workspace)]
     with os.scandir(root) as entries:
         listing = sorted(entries, key=lambda entry: entry.name)
     for entry in listing:
@@ -302,8 +338,8 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
             entry.name in AGENT_HARNESS_DIRS if is_dir else entry.name in AGENT_BRAIN_FILES
         )
         op = "bind-try" if owned else "ro-bind-try"
+        _clear_link_mountpoint(workspace, entry.name)
         mounts.append(JailMount(op, f"{MOUNT_POINT}/{entry.name}", root / entry.name))
-    mounts.append(JailMount("remount-ro", MOUNT_POINT))
     setenv = _JAIL_ENV
     if egress_socket is not None:
         # The jail still has no interface but loopback; this socket is its only
