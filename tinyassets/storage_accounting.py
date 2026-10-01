@@ -532,6 +532,7 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"
     ),
+    ".universe-sidecars": "platform: per-universe daemon sockets (egress proxy)",
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",

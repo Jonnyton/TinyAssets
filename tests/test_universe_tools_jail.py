@@ -10,8 +10,10 @@ and the shipping jail end to end, with nothing about the jail re-typed here:
   planted), the data root, the platform source, ``.runtime`` (credentials, the
   engine route bearer) and the daemon's process environment;
 * writes to ``.runtime`` and a vendor-native ``.claude/`` never reach the disk;
-* bash has no network: a listener on the host loopback, reachable from the
-  host (the control), is unreachable from the jail;
+* bash has no network interface of its own: a listener on the host loopback,
+  reachable from the host (the control), is unreachable from the jail; the
+  only way out is the checking proxy, which reaches a public destination and
+  refuses the host loopback and the metadata address;
 * resource limits kill a runaway: memory, processes (a fork bomb included),
   cpu time, output size and the wall clock;
 * a skill file the agent writes changes what it does on its NEXT turn, through
@@ -386,6 +388,84 @@ def test_bash_has_no_network(world, monkeypatch):
     netdev = out.split("NETDEV-BEGIN", 1)[1].splitlines()
     interfaces = {line.split(":", 1)[0].strip() for line in netdev if ":" in line}
     assert interfaces == {"lo"}, out
+
+
+_FETCH = (
+    "import sys, urllib.request\n"
+    "opener = urllib.request.build_opener(urllib.request.ProxyHandler(\n"
+    "    {'http': 'http://127.0.0.1:3128'}))\n"
+    "try:\n"
+    "    print('BODY:' + opener.open(sys.argv[1], timeout=20).read().decode())\n"
+    "except Exception as exc:\n"
+    "    body = getattr(exc, 'read', lambda: b'')()\n"
+    "    print('REFUSED:' + str(exc) + ':' + body.decode(errors='replace'))\n"
+)
+
+
+def _site(body: bytes):
+    """A one-page HTTP server on the host loopback; returns (port, hits, stop)."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    hits = []
+
+    class Page(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server's name
+            hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Page)
+    import threading
+
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server.server_address[1], hits, server.shutdown
+
+
+def test_bash_reaches_a_public_site_only_through_the_checking_proxy(world, monkeypatch):
+    """The proxy resolves the name; this test maps one synthetic public name to a
+    host page so the whole path (env, forwarder, socket, proxy) runs for real."""
+    from tinyassets import universe_egress
+
+    real = universe_egress._checked_addresses
+    monkeypatch.setattr(universe_egress, "_checked_addresses",
+                        lambda host, port: ["127.0.0.1"] if host == "public.test"
+                        else real(host, port))
+    s = _engine(monkeypatch, world)
+    port, hits, stop = _site(b"PUBLIC-PAGE")
+    try:
+        out = _run(s.run_bash(command=(
+            "env | grep -c '^HTTPS_PROXY=http://127.0.0.1:3128$'; "
+            f"python3 -c \"$(printf '%s' {_quote(_FETCH)})\" http://public.test:{port}/p"
+        )))
+    finally:
+        stop()
+    assert "BODY:PUBLIC-PAGE" in out, out
+    assert hits == ["/p"]
+
+
+def test_the_proxy_refuses_the_host_and_the_metadata_address(world, monkeypatch):
+    s = _engine(monkeypatch, world)
+    port, hits, stop = _site(b"HOST-ONLY")
+    try:
+        out = _run(s.run_bash(command=(
+            f"python3 -c \"$(printf '%s' {_quote(_FETCH)})\" http://127.0.0.1:{port}/; "
+            f"python3 -c \"$(printf '%s' {_quote(_FETCH)})\" http://169.254.169.254/latest/"
+        )))
+    finally:
+        stop()
+    assert out.count("REFUSED:") == 2 and "egress refused" in out, out
+    assert "BODY:" not in out and hits == []
+
+
+def _quote(text: str) -> str:
+    import shlex
+
+    return shlex.quote(text)
 
 
 # ── (a) resource limits kill a runaway ──────────────────────────────────────

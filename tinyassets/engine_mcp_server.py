@@ -4122,7 +4122,8 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
 # ── the universe's four tools (universe-harness S1) ─────────────────────────
 # ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN universe
 # folder, executed by the platform inside the tool jail
-# (``tinyassets.universe_tools``): no network, no credential, resource-limited,
+# (``tinyassets.universe_tools``): public network only through the checking
+# proxy (``tinyassets.universe_egress``), no credential, resource-limited,
 # the universe at ``/u`` and nothing else. The graph pin picks the folder; no
 # parameter names a universe, and a path outside ``/u`` does not exist in the
 # jail. Every call first rechecks current serving-owner authority.
@@ -4176,8 +4177,9 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
 
 @mcp.tool(name="bash")
 async def run_bash(command: str, timeout: int = 0) -> str:
-    """Run a bash command in /u. No network; memory, processes and time are
-    limited. timeout: seconds (default 120, max 600)."""
+    """Run a bash command in /u. Public internet goes through HTTP(S)_PROXY
+    (pip, npm, git, urllib); memory, processes and time are limited.
+    timeout: seconds (default 120, max 600)."""
     from tinyassets import universe_tools
 
     return await _universe_tool(universe_tools.bash, command=command, timeout=timeout)
