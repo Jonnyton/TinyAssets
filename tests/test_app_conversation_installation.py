@@ -139,6 +139,62 @@ def test_revision_conflict_and_foreign_mutation_leave_current_installation(homes
         assert current["configuration"] == configuration("new private value")
 
 
+def test_two_first_creates_race_and_exactly_one_installation_exists(homes):
+    """Two tabs that both read "no installation yet" both try to create one.
+
+    The server makes the create its own compare-and-set: one wins, the other is
+    a conflict, so turn admission is never left with two to choose between.
+    """
+    import threading
+
+    from tinyassets.custom_agents import list_bindings
+
+    with actor("alice"):
+        source = publish(definition())
+    start = threading.Barrier(2)
+    results = []
+
+    def create():
+        with actor("bob"):
+            start.wait()
+            results.append(custom_agents(
+                action="create_binding", universe_id="u-bob",
+                definition_id=source["agent_definition_id"],
+                payload=configuration("tab")))
+
+    threads = [threading.Thread(target=create) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert sorted(r.get("status") or r.get("error") for r in results) == [
+        "agent_conflict", "configured"], results
+    rows = [b for b in list_bindings(homes, universe_id="u-bob", limit=1000)
+            if b["configuration"].get("role") == "app_experience"]
+    assert len(rows) == 1, rows
+
+    # Sequentially too: a second create of the role is refused by name.
+    with actor("bob"):
+        again = custom_agents(action="create_binding", universe_id="u-bob",
+                              definition_id=source["agent_definition_id"],
+                              payload=configuration("later"))
+    assert again["error"] == "agent_conflict"
+    assert "app_experience" in again["detail"]
+
+
+def test_the_singleton_is_per_owner_and_role_not_global(homes):
+    with actor("alice"):
+        source = publish(definition())
+        mine = install("u-alice", source["agent_definition_id"], configuration("alice"))
+    with actor("bob"):
+        theirs = install("u-bob", source["agent_definition_id"], configuration("bob"))
+        other_role = {"schema_version": 1, "name": "plain"}
+        first = install("u-bob", source["agent_definition_id"], other_role)
+        second = install("u-bob", source["agent_definition_id"], other_role)
+    assert len({mine["agent_binding_id"], theirs["agent_binding_id"],
+                first["agent_binding_id"], second["agent_binding_id"]}) == 4
+
+
 def test_nonserving_installation_preserves_real_serving_authority(tmp_path, monkeypatch):
     from tests.test_open_serving_bind import _bound_and_serving
     from tinyassets.daemon_server import grant_universe_access

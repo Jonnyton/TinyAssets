@@ -1027,6 +1027,12 @@ def _require_definition(
         raise AgentNotFoundError(f"agent definition {definition_id!r} was not found")
 
 
+#: Roles of which an actor holds at most one binding per universe. The
+#: conversation-design installation is read at turn admission, where two active
+#: ones make the owner's conversation ambiguous (consumer_selection.py).
+SINGLETON_BINDING_ROLES = frozenset({"app_experience"})
+
+
 def create_binding(
     base_path: str | Path,
     *,
@@ -1035,7 +1041,15 @@ def create_binding(
     created_by: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create private universe configuration for a public definition."""
+    """Create private universe configuration for a public definition.
+
+    A binding whose ``configuration.role`` is a singleton role (see
+    ``SINGLETON_BINDING_ROLES``) is created only if this actor has none with
+    that role in this universe yet. That is the create's compare-and-set: two
+    clients that both read "none yet" cannot both create the conversation-design
+    installation, which would leave turn admission ambiguous. The check and the
+    insert are ONE statement, so it holds under concurrency.
+    """
 
     uid = (universe_id or "").strip()
     did = (definition_id or "").strip()
@@ -1049,19 +1063,27 @@ def create_binding(
     if not actor:
         raise AgentValidationError("an authenticated created_by actor is required")
     configuration = _normalize_binding_payload(payload)
+    role = configuration.get("role")
+    if not isinstance(role, str) or role not in SINGLETON_BINDING_ROLES:
+        role = None
     binding_id = f"agent_binding_{new_ulid()}"
     created_at = time.time()
 
     with _agent_connect(base_path) as conn:
         _require_definition(conn, did)
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO agent_bindings (
                 agent_binding_id, universe_id, agent_definition_id,
                 configuration_json, revision, status, created_by, updated_by,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 1, 'configured', ?, ?, ?, ?)
+            SELECT ?, ?, ?, ?, 1, 'configured', ?, ?, ?, ?
+            WHERE ? IS NULL OR NOT EXISTS (
+                SELECT 1 FROM agent_bindings
+                WHERE universe_id = ? AND created_by = ?
+                  AND json_extract(configuration_json, '$.role') = ?
+            )
             """,
             (
                 binding_id,
@@ -1072,8 +1094,17 @@ def create_binding(
                 actor,
                 created_at,
                 created_at,
+                role,
+                uid,
+                actor,
+                role,
             ),
         )
+        if cursor.rowcount != 1:
+            raise AgentConflictError(
+                f"a binding with role {role!r} already exists in this universe; "
+                "read it and update it instead"
+            )
         row = _read_binding_row(
             conn,
             universe_id=uid,
