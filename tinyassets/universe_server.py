@@ -766,6 +766,24 @@ def read_graph(
             compact_model_options(document, query=query, offset=output_offset),
             default=str,
         )
+    if normalized == "access":
+        # The same projection the engine serves: query filters, field_name /
+        # output_offset page one section, and an over-ceiling read is
+        # sectioned rather than cut. The complete document is the owner door's.
+        from tinyassets.api.agent_access import CEILING_HEADROOM_BYTES, project_access
+        from tinyassets.engine_result_bounds import resolve_ceiling
+
+        return json.dumps(project_access(
+            json.loads(_domain_read_graph(**arguments)),
+            query=query, section=field_name, offset=output_offset,
+            budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
+        ), default=str)
+    if normalized in {"automations", "automation"}:
+        return json.dumps(_model_door_automations(
+            normalized, universe_id=graph_id, automation_id=automation_id,
+            field_name=field_name, offset=output_offset,
+            max_chars=output_max_chars, max_rows=limit,
+        ), default=str)
     raw = _domain_read_graph(**arguments)
     if isinstance(raw, str) and raw.startswith('{"error": "unknown_target"'):
         # The domain names its own targets; this door adds its one synonym.
@@ -775,6 +793,40 @@ def read_graph(
             tuple(refusal.get("allowed_targets") or ()) + ("model_options_summary",),
         )
     return raw
+
+
+def _model_door_automations(
+    kind: str, *, universe_id: str, automation_id: str = "", field_name: str = "",
+    offset: int = 0, max_chars: int = 8192, max_rows: int | None = None,
+    payload: object = None,
+) -> dict:
+    """Automations as the connector's model door serves them: never cut.
+
+    Every row, paged under the result ceiling, input bodies read one at a time
+    (``api.automations.project_automations``). ``max_rows`` is the caller's own
+    page size; the ceiling may make a page smaller, never silently shorter.
+    """
+    from tinyassets.api.agent_access import CEILING_HEADROOM_BYTES
+    from tinyassets.api.automations import project_automation, project_automations
+    from tinyassets.engine_result_bounds import resolve_ceiling
+
+    budget = resolve_ceiling() - CEILING_HEADROOM_BYTES
+
+    def render(value):
+        return json.dumps(value, default=str)
+
+    if kind in {"automations", "list"}:
+        return project_automations(
+            _automations_impl(action="list", universe_id=universe_id,
+                              payload=payload, limit=None),
+            budget=budget, render=render, offset=offset, max_rows=max_rows,
+        )
+    return project_automation(
+        _automations_impl(action="get", universe_id=universe_id,
+                          automation_id=automation_id),
+        budget=budget, render=render, field_name=field_name, offset=offset,
+        max_chars=max_chars,
+    )
 
 
 _mcp_read_graph = _register_structured_tool(

@@ -861,12 +861,16 @@ def list_unmutes(universe_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
 
 
 def list_suppressions(universe_dir: Path) -> list[dict[str, Any]]:
-    """What the user has said not to be asked again — visible, so it is undoable."""
+    """What the user has said not to be asked again — visible, so it is undoable.
+
+    Every row: a 50-row cap hid the 51st decision, which the owner then could
+    not see to undo. Model doors page this (``agent_access.project_access``).
+    """
     try:
         with _db(universe_dir) as conn:
             rows = conn.execute(
                 "SELECT dedupe_key, kind, title, feedback, decision, created_at "
-                "FROM request_suppressions ORDER BY created_at DESC LIMIT 50"
+                "FROM request_suppressions ORDER BY created_at DESC"
             ).fetchall()
         return [
             {"dedupe_key": r[0], "kind": r[1], "title": r[2],

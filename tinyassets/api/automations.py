@@ -459,7 +459,7 @@ def _list(
     universe_id: str,
     actor: str,
     payload: Any,
-    limit: int,
+    limit: int | None,
 ) -> dict[str, Any]:
     document = _document(payload)
     if document is None:
@@ -471,7 +471,9 @@ def _list(
         include_retired=include_retired,
     )
     reasons = _recent_reasons(base, universe_id)
-    bound = max(1, int(limit or 30))
+    # ``limit=None`` is every row: a model door pages the whole list to fit its
+    # ceiling itself, and a page it did not choose would hide the 31st row.
+    bound = len(rows) if limit is None else max(1, int(limit or 30))
     records = [
         _with_last_wake(base, row, _projection(
             row,
@@ -485,6 +487,8 @@ def _list(
         "universe_id": universe_id,
         "automations": records,
         "count": len(records),
+        # How many automations exist, so a page smaller than that says so.
+        "total": len(rows),
         "include_retired": include_retired,
     }
 
@@ -637,7 +641,7 @@ def automations(
     automation_id: str = "",
     expected_revision: int = 0,
     payload: Any = None,
-    limit: int = 30,
+    limit: int | None = 30,
 ) -> dict[str, Any]:
     """Create, inspect and control the caller's universe automations."""
     normalized = (action or "").strip().lower()
@@ -708,4 +712,119 @@ def automations(
     )
 
 
-__all__ = ["automations", "ALLOWED_ACTIONS", "READ_ACTIONS", "WRITE_ACTIONS"]
+# -- Model-door projection ----------------------------------------------------
+#
+# Live 2026-10-01 (the founder's universe): 8 active automations projected to
+# 282,886 bytes, because every row carries its whole ``inputs`` (33-90 KB each:
+# an agent node's prompt and context). The result ceiling cut the list inside
+# the FIRST row, so the agent could not recover its own morning-note schedule id
+# and re-audited instead. The owner door keeps the complete rows; a model door
+# serves this projection, which pages itself under the ceiling and never cuts.
+
+
+def _value_text(value: Any) -> str:
+    """An input as the agent reads it: strings verbatim, the rest as JSON."""
+    return value if isinstance(value, str) else json.dumps(
+        value, ensure_ascii=False, default=str,
+    )
+
+
+def _without_input_bodies(row: dict[str, Any]) -> dict[str, Any]:
+    """A row with each input's character count instead of its value."""
+    inputs = row.get("inputs")
+    if not isinstance(inputs, dict):
+        return row
+    summarized = {key: value for key, value in row.items() if key != "inputs"}
+    summarized["input_chars"] = {key: len(_value_text(v)) for key, v in inputs.items()}
+    summarized["inputs_read_with"] = (
+        f'read_graph target="automation" automation_id="{row.get("automation_id", "")}"'
+        ' field_name="<input name>"'
+    )
+    return summarized
+
+
+def project_automations(
+    result: dict[str, Any], *, budget: int, render, offset: int = 0,
+    max_rows: int | None = None,
+) -> dict[str, Any]:
+    """A ``list`` result as a model door serves it: every id, paged to fit.
+
+    Rows carry ``input_chars`` (name -> size) instead of input bodies; read a
+    body with ``target="automation"`` and ``field_name``. ``offset`` continues
+    from the returned ``next_offset``. ``render`` is the exact text the door
+    returns, so the fit is measured on its real bytes.
+    """
+    rows = result.get("automations")
+    if not isinstance(rows, list):
+        return result
+    from tinyassets.engine_result_bounds import page_to_fit
+
+    rows = [_without_input_bodies(r) if isinstance(r, dict) else r for r in rows]
+    start = max(0, int(offset or 0))
+    head = {k: v for k, v in result.items() if k not in {"automations", "count"}}
+
+    def build(page, next_offset):
+        return {
+            **head, "automations": page, "count": len(page),
+            "total": len(rows), "offset": start,
+            "complete": next_offset is None, "next_offset": next_offset,
+            "next": (None if next_offset is None else
+                     f'read_graph target="automations" output_offset={next_offset}'),
+        }
+
+    return page_to_fit(rows, start=start, budget=budget, build=build,
+                       render=render, max_rows=max_rows)
+
+
+def project_automation(
+    result: dict[str, Any], *, budget: int, render, field_name: str = "",
+    offset: int = 0, max_chars: int = 8192,
+) -> dict[str, Any]:
+    """A ``get`` result as a model door serves it: whole, or read in parts.
+
+    With ``field_name`` it returns that input's text from ``offset``, a chunk at
+    a time (``next_offset`` until ``complete``). Without, the row is returned
+    whole when it fits ``budget``, else with ``input_chars`` in place of input
+    bodies. The result keeps the ``automation`` key and its ``owner`` so the
+    door's provenance wrapping applies to a chunk exactly as to the row.
+    """
+    row = result.get("automation")
+    if not isinstance(row, dict):
+        return result
+    name = (field_name or "").strip()
+    if not name:
+        if len(render(result).encode("utf-8")) <= budget:
+            return result
+        return {**result, "automation": _without_input_bodies(row)}
+    inputs = row.get("inputs") if isinstance(row.get("inputs"), dict) else {}
+    if name not in inputs:
+        return {"error": "unknown_automation_input", "field_name": name,
+                "inputs": sorted(inputs)}
+    text = _value_text(inputs[name])
+    start = max(0, int(offset or 0))
+    size = max(1, min(32768, int(max_chars or 8192)))
+    head = {"automation_id": row.get("automation_id"), "name": row.get("name"),
+            "owner": row.get("owner"), "input": name, "total_chars": len(text),
+            "offset": start}
+
+    def chunk(n: int) -> dict[str, Any]:
+        end = min(len(text), start + n)
+        more = end < len(text)
+        return {"automation": {
+            **head, "value": text[start:end], "complete": not more,
+            "next_offset": end if more else None,
+        }}
+
+    document = chunk(size)
+    # Escaping can grow a chunk past the ceiling (a CJK character renders as six
+    # ASCII bytes), so shrink the chunk, never the cursor's honesty.
+    while size > 1 and len(render(document).encode("utf-8")) > budget:
+        size = max(1, size * budget // len(render(document).encode("utf-8")) - 1)
+        document = chunk(size)
+    return document
+
+
+__all__ = [
+    "automations", "project_automation", "project_automations",
+    "ALLOWED_ACTIONS", "READ_ACTIONS", "WRITE_ACTIONS",
+]

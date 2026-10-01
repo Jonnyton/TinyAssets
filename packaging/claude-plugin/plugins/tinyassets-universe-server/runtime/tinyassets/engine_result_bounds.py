@@ -172,6 +172,32 @@ def resolve_ceiling(env: dict[str, str] | None = None) -> int:
         return DEFAULT_CEILING_BYTES
 
 
+def page_to_fit(rows, *, start, budget, build, render, max_rows=None):
+    """The longest page ``rows[start:end]`` whose rendering fits ``budget`` bytes.
+
+    The other half of the ceiling: a read that pages ITSELF to fit is never cut,
+    so its cursor survives. ``build(page, next_offset)`` makes the document
+    (``next_offset`` is ``None`` on the last page) and ``render`` turns it into
+    the exact text the surface returns, so "fits" is measured on real bytes.
+
+    A page always carries at least one row when one remains: a single row over
+    the budget is returned alone (the ceiling's marker then says so) rather than
+    skipped, because skipping it would hide it behind a cursor that never stops
+    on it.
+    """
+    start = max(0, int(start or 0))
+    end = min(start, len(rows))
+    cap = len(rows) if max_rows is None else start + max(1, int(max_rows))
+    document = build(rows[start:end], end if end < len(rows) else None)
+    while end < min(len(rows), cap):
+        nxt = end + 1
+        trial = build(rows[start:nxt], nxt if nxt < len(rows) else None)
+        if end > start and len(render(trial).encode("utf-8")) > budget:
+            break
+        document, end = trial, nxt
+    return document
+
+
 def _head(text: str, budget: int) -> str:
     """The first ``budget`` bytes of ``text`` as UTF-8, cut on a character."""
     if budget <= 0:

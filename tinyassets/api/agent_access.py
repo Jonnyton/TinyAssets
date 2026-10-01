@@ -23,6 +23,7 @@ secret-free: every section is a redacted view that already exists.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -139,4 +140,131 @@ def read_access(
     }
 
 
-__all__ = ["read_access"]
+#: The row lists a model door can filter with ``query`` and page by section.
+PAGED_SECTIONS = (
+    "channels", "channel_consents", "workspace_consents",
+    "waiting_requests", "standing_decisions",
+)
+
+#: Bytes a model door keeps free under its result ceiling for the transport's
+#: own framing, so a projection that fits here is never cut downstream.
+CEILING_HEADROOM_BYTES = 1_024
+
+
+def _bytes(value: Any) -> int:
+    # The engine returns ``json.dumps(..., default=str)`` verbatim; measuring the
+    # same rendering (ASCII-escaped, so never smaller) means "fits" here is
+    # "fits" on both doors.
+    return len(json.dumps(value, default=str).encode("utf-8"))
+
+
+def _matches(row: Any, needle: str) -> bool:
+    return needle in json.dumps(row, default=str, ensure_ascii=False).lower()
+
+
+def _section_call(section: str, offset: int, query: str) -> str:
+    call = f'read_graph target="access" field_name="{section}"'
+    if offset:
+        call += f" output_offset={offset}"
+    if query:
+        call += f" query={json.dumps(query, ensure_ascii=False)}"
+    return call
+
+
+def project_access(
+    document: dict[str, Any], *, query: str = "", section: str = "",
+    offset: int = 0, budget: int,
+) -> dict[str, Any]:
+    """The access read as a model door serves it: filtered, sectioned, never cut.
+
+    Live 2026-09-28..10-01 (the founder's universe): this read grew to 25,001
+    bytes, the result ceiling cut it at 21,764, and the tail -- the standing
+    decisions -- was unreadable on every wake; ``query`` changed nothing because
+    nothing read it. Data size must not change what the agent can see, so:
+
+    - ``query`` keeps only the rows (in every paged section) whose JSON contains
+      it, case-insensitive, and reports how many matched per section;
+    - ``section`` (``field_name`` on the tool) reads one section's rows from
+      ``offset``, a page at a time, with ``next_offset`` until ``complete``;
+    - with no section, a document over ``budget`` inlines the sections that fit
+      and replaces each other one with its row count and the exact call that
+      reads it. Every row stays reachable; nothing is silently dropped.
+
+    ``budget`` is bytes of rendered JSON. One row larger than the whole budget is
+    still returned alone (the ceiling's own marker then flags it), because
+    skipping it would hide it.
+    """
+    if not isinstance(document, dict) or "error" in document:
+        return document
+    needle = (query or "").strip().lower()
+    doc = dict(document)
+    matched: dict[str, int] = {}
+    if needle:
+        for name in PAGED_SECTIONS:
+            rows = doc.get(name)
+            if isinstance(rows, list):
+                doc[name] = [row for row in rows if _matches(row, needle)]
+                matched[name] = len(doc[name])
+    filters = {"query": query.strip(), "matched": matched} if needle else {}
+
+    wanted = (section or "").strip().lower()
+    if wanted:
+        if wanted not in PAGED_SECTIONS:
+            return {
+                "error": "unknown_access_section",
+                "field_name": section,
+                "sections": list(PAGED_SECTIONS),
+            }
+        rows = doc.get(wanted)
+        if not isinstance(rows, list):
+            # An unreadable section reports itself; it has no rows to page.
+            return {"universe_id": doc.get("universe_id"), "section": wanted,
+                    wanted: rows, **filters}
+        from tinyassets.engine_result_bounds import page_to_fit
+
+        start = max(0, int(offset or 0))
+        return page_to_fit(
+            rows, start=start, budget=budget,
+            render=lambda value: json.dumps(value, default=str),
+            build=lambda page, next_offset: {
+                "universe_id": doc.get("universe_id"), "section": wanted,
+                "total": len(rows), "offset": start, "rows": page, **filters,
+                "complete": next_offset is None, "next_offset": next_offset,
+                "next": (None if next_offset is None
+                         else _section_call(wanted, next_offset, query.strip())),
+            },
+        )
+
+    doc.update(filters)
+    if _bytes(doc) <= budget:
+        return doc
+    # Too big to send whole: inline sections in their usual order while they
+    # fit, point at the rest. The pointer is reserved first so the final
+    # document is measured with every pointer it will actually carry.
+    pointers = {
+        name: {"count": len(doc[name]), "read_with": _section_call(name, 0, query.strip())}
+        for name in PAGED_SECTIONS if isinstance(doc.get(name), list)
+    }
+    projected = {key: value for key, value in doc.items() if key not in pointers}
+    projected["complete"] = False
+    projected["sectioned"] = dict(pointers)
+    projected["note"] = (
+        "This access read is too large for one result. Sections under "
+        "`sectioned` are not inline: read each with its read_with call and "
+        "follow next_offset until complete, or narrow every section with query."
+    )
+    for name in PAGED_SECTIONS:
+        if name not in pointers:
+            continue
+        trial = {**projected, name: doc[name]}
+        trial["sectioned"] = {k: v for k, v in projected["sectioned"].items() if k != name}
+        if _bytes(trial) <= budget:
+            projected = trial
+    if not projected["sectioned"]:
+        for key in ("sectioned", "note"):
+            projected.pop(key)
+        projected["complete"] = True
+    return projected
+
+
+__all__ = ["read_access", "project_access", "PAGED_SECTIONS"]
