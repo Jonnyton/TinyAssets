@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
@@ -103,17 +103,19 @@ _UNAVAILABLE_DETAIL = {
     ),
     "trigger_invalid": (
         "Give exactly one trigger: a positive interval_seconds, a valid "
-        "cron_expr, or an event_type -- not two, and not none."
+        "cron_expr, a not_before (or delay_seconds) for one wake, or an "
+        "event_type -- not two, and not none."
     ),
     "event_type_unknown": (
         "That event is not one the engine emits, so the automation would never "
-        "fire. Subscribe to run_completed, pending_request_answered or app_event."
+        "fire. Subscribe to run_completed, pending_request_answered, app_event "
+        "or owner_message."
     ),
     "event_filter_invalid": (
         "event_filter must be an object of non-empty strings over the event's "
         "own fields: run_completed takes branch_def_id (required), outcome and "
         "run_id; pending_request_answered takes request_id, kind and status; "
-        "app_event takes name (required)."
+        "app_event takes name (required); owner_message takes none."
     ),
     "overlap_invalid": (
         "overlap must be queue (wait for the running one, the default), skip "
@@ -383,6 +385,8 @@ def _create(
     event_filter = document.get("event_filter", {})
     overlap = document.get("overlap", "")
     timezone_name = document.get("timezone", "")
+    not_before = document.get("not_before", "")
+    raw_delay = document.get("delay_seconds")
 
     if not isinstance(name, str) or not name.strip():
         return _payload_invalid("name must be a non-empty string")
@@ -408,6 +412,22 @@ def _create(
         interval_seconds = int(raw_interval or 0)
     except (TypeError, ValueError):
         return _payload_invalid("interval_seconds must be an integer")
+    # A one-shot wake the agent sets for itself: "run this branch once, not
+    # before then". The same row an agent node's enqueue_branch_run stores.
+    if not isinstance(not_before, str):
+        return _payload_invalid("not_before must be an ISO-8601 timestamp string")
+    if raw_delay is not None:
+        if not_before.strip():
+            return _payload_invalid("give not_before or delay_seconds, not both")
+        if (isinstance(raw_delay, bool) or not isinstance(raw_delay, (int, float))
+                or raw_delay != raw_delay or raw_delay < 0):
+            return _payload_invalid("delay_seconds must be a number >= 0")
+        try:
+            not_before = (
+                datetime.now(timezone.utc) + timedelta(seconds=float(raw_delay))
+            ).isoformat()
+        except OverflowError:
+            return _payload_invalid("delay_seconds is too large")
 
     try:
         created = register_automation(
@@ -418,6 +438,7 @@ def _create(
             branch_def_id=branch_def_id.strip(),
             interval_seconds=interval_seconds,
             cron_expr=cron_expr.strip(),
+            not_before=not_before.strip(),
             event_type=event_type.strip(),
             event_filter=event_filter,
             overlap=overlap.strip(),

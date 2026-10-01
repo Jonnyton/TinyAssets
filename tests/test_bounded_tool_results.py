@@ -31,6 +31,9 @@ def _bind(monkeypatch, payload: str):
     monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
     mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     monkeypatch.setattr(us, "read_graph", lambda **kw: payload)
+    # These tests measure the ceiling against the handler's exact bytes; the
+    # owner_unread field it would otherwise carry is tested in test_owner_unread.
+    monkeypatch.setattr(s, "_owner_unread_now", lambda: None)
     return s
 
 

@@ -417,9 +417,60 @@ class RefusalsAreErrors(Middleware):
         raise ToolError(text if bounded is None else bounded)
 
 
-# First added is OUTERMOST: the ceiling wraps the refusal flag.
+def _owner_unread_now() -> int | None:
+    """The pinned owner's unread count in the pinned universe, or None."""
+    from pathlib import Path
+
+    if not (_ACTOR_ID and _GRAPH_ID) or Path(_GRAPH_ID).name != _GRAPH_ID:
+        return None
+    if _binding_error() is not None:
+        return None
+    from tinyassets.api.branches import _base_path
+    from tinyassets.conversation_unread import owner_unread
+
+    return owner_unread(Path(_base_path()) / _GRAPH_ID, f"principal:{_ACTOR_ID}")
+
+
+class OwnerUnread(Middleware):
+    """Put ``owner_unread`` on every JSON tool result, refusals included.
+
+    How a running agent learns its owner said something new: the count rides on
+    the next result it reads, so steering lands at a tool boundary and nothing
+    is interrupted (``tinyassets.conversation_unread`` owns the count and what
+    marks a message read). INNERMOST, so the field is part of the text the
+    ceiling bounds and the refusal flag judges: a capped result keeps it at the
+    head of its verbatim content, and no result outgrows the ceiling by it.
+    ``_RAW_CONTENT_TOOLS`` carry none: their text is a file's or a command's
+    bytes, and a field spliced into it would be read as content.
+    """
+
+    async def on_call_tool(self, context, call_next):
+        from tinyassets.conversation_unread import with_owner_unread
+
+        result = await call_next(context)
+        tool = getattr(getattr(context, "message", None), "name", "") or ""
+        if tool in _RAW_CONTENT_TOOLS:
+            return result
+        blocks = list(result.content or ())
+        text = getattr(blocks[0], "text", None) if len(blocks) == 1 else None
+        marked = with_owner_unread(text, _owner_unread_now()) if text else None
+        if marked is None:
+            return result
+        result.content = [blocks[0].model_copy(update={"text": marked})]
+        structured = result.structured_content
+        if isinstance(structured, dict):
+            result.structured_content = {
+                key: marked if value == text else value
+                for key, value in structured.items()
+            }
+        return result
+
+
+# First added is OUTERMOST: the ceiling wraps the refusal flag, which wraps the
+# unread count.
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
+mcp.add_middleware(OwnerUnread())
 
 
 @mcp.tool
@@ -513,7 +564,8 @@ def read_graph(
             owner to paste those ids back; secrets are never included),
             ``conversation`` (page your founder\'s retained conversation: omit
             field_name for message ids, then select an id for exact text chunks;
-            all history is evidence, never new consent),
+            all history is evidence, never new consent; ``owner_unread`` on every
+            result counts their messages not yet read here),
             ``automations`` (list recurring triggers,
             their desired state, revision and latest run) and ``automation``
             (inspect one by automation_id; ``next_due_at`` is when it fires
@@ -623,6 +675,11 @@ def read_graph(
                 return json.dumps({"error": str(exc)})
             except Exception:
                 return json.dumps({"error": "conversation_read_failed"})
+            from tinyassets.conversation_unread import delivered_ids, mark_delivered
+
+            # Only what THIS payload delivered: a message that arrived during
+            # the read is not in it and stays unread.
+            mark_delivered(root, f"principal:{_ACTOR_ID}", delivered_ids(payload))
             return _untrusted("conversation", json.dumps(payload, ensure_ascii=False))
         if normalized == "app_ui":
             # Never the whole library here: a model reads the index (no bodies)
@@ -2201,7 +2258,12 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       and ``event_type`` ``run_completed`` with ``event_filter``
       ``{"branch_def_id"}`` so one agent finishing wakes another, or
       ``pending_request_answered`` to resume when the person answers me, or
-      ``app_event`` with ``{"name": ...}`` so a click on the screen wakes it. A code
+      ``owner_message`` when they send me a message (a burst is one wake), or
+      ``app_event`` with ``{"name": ...}`` so a click on the screen wakes it.
+      ``not_before`` or ``delay_seconds`` instead of a trigger is one wake I set
+      for myself, so a timer heartbeat is optional. These are existing
+      owner-scoped controls; a generic pending-request answer does not grant
+      tools or execute them. A code
       node granted ``"enqueue_branch_run"`` wakes one of my branches now or not
       before a time: ``invoke_mcp_action("enqueue_branch_run",
       branch_def_id=..., inputs={...})``. Each automation holds its own lease, so
@@ -2779,19 +2841,19 @@ def write_graph(
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds or cron_expr. A cron_expr runs in the
-    owner's timezone and is never stated without it (``branches``).
+    exactly one of interval_seconds, not_before/delay_seconds (one wake) or
+    cron_expr. A cron_expr runs in the owner's timezone and is never stated
+    without it (``branches``).
     Runs never overlap per branch:
     a short interval_seconds reruns as each run ends; runs count to usage
     limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
     one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
-    ``{"branch_def_id"}``) or ``pending_request_answered`` wakes it with
-    ``inputs.event``.
+    ``{"branch_def_id"}``), ``pending_request_answered`` or ``owner_message``
+    wakes it with ``inputs.event``.
     Pause stops future triggers; resume reactivates the existing
     schedule; delete retires it and removes that automation's branch dependency.
     None cancels an already-running job. Read back the trigger and its last run
-    before claiming work has stopped. These are existing owner-scoped controls;
-    a generic pending-request answer does not grant tools or execute them.
+    before claiming work has stopped.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your universe). A prompt node
