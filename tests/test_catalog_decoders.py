@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tinyassets.providers.catalog_decoders import (
+from tests.support.catalog_decoders import (
     CatalogDecodeError,
     decode_openrouter_benchmarks,
     decode_openrouter_models,

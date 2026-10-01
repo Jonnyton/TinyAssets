@@ -8,8 +8,8 @@ from datetime import timedelta
 import pytest
 
 from tests import _discovery_legacy_oracle as legacy
+from tests.support import catalog_decoders as current
 from tests.test_catalog_decoders import CONNECTION, NOW, row, score
-from tinyassets.providers import catalog_decoders as current
 from tinyassets.providers import discovery_catalogue as implementation
 
 

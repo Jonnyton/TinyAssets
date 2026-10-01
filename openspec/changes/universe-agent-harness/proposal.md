@@ -86,8 +86,8 @@ where noted:
     outside" default.
 - **Auto-review.** On by default before consequential actions, with a per-class
   off switch.
-  - It is a tool-free call on the **universe's own model**, under the
-    activity's existing seat.
+  - It is a tool-free call on the **universe's own model**, admitted like any
+    agent call (re-entering the activity's seat when it holds one).
   - It treats action content as untrusted, binds to the exact action, can only
     tighten, and fails closed.
 - **Hand-backs on by default, as editable rules.** Credential or security
