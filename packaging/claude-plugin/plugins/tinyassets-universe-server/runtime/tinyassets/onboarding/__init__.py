@@ -1188,6 +1188,83 @@ async def _handle_serving_bind(request: Any) -> Any:
 
 
 
+async def _handle_rules(request: Any) -> Any:
+    """The signed-in owner's Custom Rules for their own agent (harness D1a).
+
+    GET lists them (seeding a new universe's defaults). POST saves one rule
+    (``action_class``, ``behaviour``, optional ``connection`` / ``operation`` /
+    ``note``) or removes a narrowed one (``delete: <id>``). Only the caller's
+    OWN home universe is ever addressed -- nothing in the request names a
+    universe -- so an owner edits their agent's rules and nobody else's.
+    Loosening a hand-back needs ``confirm_handback: true``; without it the
+    answer carries the plain consequence to show before asking again.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets import agent_rules
+    from tinyassets.auth.middleware import current_identity
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+    home = await run_in_threadpool(_read_home, identity)
+    if not home:
+        return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
+
+    def _universe_dir():
+        from tinyassets.api.helpers import _universe_dir as resolve
+
+        return resolve(home)
+
+    def _listing():
+        rules = agent_rules.list_rules(_universe_dir())
+        return {
+            "universe_id": home,
+            "rules": [rule.as_dict() for rule in rules],
+            "behaviours": agent_rules.BEHAVIOUR_LABELS,
+            "classes": agent_rules.ACTION_CLASSES,
+            "handbacks": agent_rules.HANDBACK_CONSEQUENCES,
+        }
+
+    if request.method == "GET":
+        return JSONResponse(await run_in_threadpool(_listing), headers=_NO_STORE)
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+
+    def _save():
+        if "delete" in data:
+            removed = agent_rules.delete_rule(_universe_dir(), int(data["delete"]))
+            return {"deleted": removed, **_listing()}
+        rule = agent_rules.set_rule(
+            _universe_dir(), str(data.get("action_class") or ""),
+            str(data.get("behaviour") or ""),
+            connection=str(data.get("connection") or ""),
+            operation=str(data.get("operation") or ""),
+            note=str(data.get("note") or ""),
+            confirm_handback=data.get("confirm_handback") is True,
+        )
+        return {"saved": rule.as_dict(), **_listing()}
+
+    try:
+        return JSONResponse(await run_in_threadpool(_save), headers=_NO_STORE)
+    except agent_rules.RuleRefused as exc:
+        return JSONResponse(
+            {"error": "rule_refused", "detail": str(exc)}, status_code=409, headers=_NO_STORE,
+        )
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid_rule"}, status_code=400, headers=_NO_STORE)
+
+
 async def _handle_account_timezone(request: Any) -> Any:
     """Record the signed-in user's own clock, as their browser reports it.
 
@@ -1862,6 +1939,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
+        Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
         Route("/app/connections", handle_connections, methods=["GET", "POST"]),
         Route("/app/files", handle_file_upload, methods=["POST"]),
