@@ -2093,14 +2093,21 @@ def _list_output_tree(output_dir: Path, max_depth: int = 3) -> list[str]:
 def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
-    target = (udir / "output" / path).resolve()
-
-    if not target.is_relative_to((udir / "output").resolve()):
+    # Never resolve: a workflow provider jail can plant ``output -> /data/<B>/``,
+    # and a resolved target would then be "inside" the resolved output dir.
+    # The relative path is checked lexically and read with no link followed.
+    parts = path.replace("\\", "/").split("/")
+    if not path or path.startswith("/") or any(p in ("", ".", "..") for p in parts):
         return json.dumps({"error": "Path traversal not allowed."})
-    if not target.exists():
-        return json.dumps({"error": f"File not found: {path}"})
 
-    content = _read_text(target)
+    from tinyassets.universe_files import read_universe_text
+
+    try:
+        content = read_universe_text(udir, "/".join(["output", *parts]))
+    except FileNotFoundError:
+        return json.dumps({"error": f"File not found: {path}"})
+    except (OSError, UnicodeDecodeError) as exc:
+        return json.dumps({"error": f"Output file {path!r} was not read: {exc}"})
     if len(content) > 10000:
         return json.dumps({
             "universe_id": uid,
@@ -5184,6 +5191,27 @@ def _source_sidecar_meta(canon_dir: Path, filename: str) -> dict[str, Any]:
     return meta if isinstance(meta, dict) else {}
 
 
+#: Bound on one canon document read into the daemon. Over it is an error,
+#: never a truncation: uploads are preserved verbatim.
+_MAX_CANON_READ_BYTES = 64 * 1024 * 1024
+
+
+def _read_canon_bytes(udir: Path, canon_dir: Path, target: Path) -> bytes:
+    """Bytes of a contained canon file, read with no link followed from ``udir``.
+
+    ``safe_canon_path`` measures containment against the RESOLVED canon dir, so
+    a ``canon -> /data/<other>/canon`` link (a workflow provider jail binds the
+    universe read-write and allows ``symlink``) moves the root along with the
+    target and the check passes. ``target`` is already resolved, so links
+    INSIDE canon are followed as before; the walk from the universe dir
+    refuses only a link at ``canon`` itself or one swapped in since.
+    """
+    from tinyassets.universe_files import read_universe_file
+
+    rel = target.relative_to(canon_dir.resolve()).as_posix()
+    return read_universe_file(udir, f"canon/{rel}", max_bytes=_MAX_CANON_READ_BYTES)
+
+
 def _manifest_data(canon_dir: Path) -> dict[str, Any]:
     # Resolve + contain the manifest before read so a symlinked
     # ``.manifest.json`` pointing outside canon_dir is rejected.
@@ -5325,7 +5353,7 @@ def _action_read_source(
         })
 
     try:
-        raw = target.read_bytes()
+        raw = _read_canon_bytes(udir, canon_dir, target)
         content = raw.decode("utf-8")
         manifest = _manifest_data(canon_dir)
         entry = _source_file_entry(target, canon_dir, manifest, raw=raw)
@@ -5398,7 +5426,8 @@ def _action_read_canon(
         })
 
     try:
-        content = target.read_text(encoding="utf-8")
+        raw = _read_canon_bytes(udir, canon_dir, target)
+        content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         entry: dict[str, Any] = {
             "universe_id": uid,
             "filename": safe_name,

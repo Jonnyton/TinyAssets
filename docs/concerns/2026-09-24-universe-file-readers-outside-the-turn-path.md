@@ -1,8 +1,8 @@
 ---
-severity: P2
+severity: P1
 title: Universe-file readers outside the turn path
 filed: '2026-09-24'
-summary: harness S1 routes every turn-path read through `universe_files` and keeps the agent's write set small; ~20 other modules still read universe files raw, safe only while those paths stay agent read-only
+summary: a workflow provider jail binds the universe read-write and allows symlink, so the remaining raw daemon reads under a universe dir (and the dispatcher_config write-back) follow a planted link into another universe; api/helpers and the output/canon reads are link-free since 2026-10-01
 ---
 
 # Universe-file readers outside the served turn path (harness S1)
@@ -37,7 +37,22 @@ so none is reachable by an agent write today. Each still reads raw.
 
 | Module | What it reads under a universe | Agent-writable? |
 |---|---|---|
-| `api/universe.py`, `api/runs.py`, `api/branches.py`, `api/pending_requests.py`, `api/helpers.py` (`_read_json`, `_read_platform_text`) | premise, `activity.log`, `work_targets.json`, `.runtime_status.json`, `.pause`, request docs | No (read-only or masked) |
+| `api/universe.py`, `api/runs.py`, `api/branches.py`, `api/pending_requests.py` (raw reads not routed through `api/helpers.py`) | word counts under `output/`, worker heartbeats, `soul/*.yaml`, `dispatcher_config.yaml`, canon meta sidecars + manifest, founder offers, request docs | **Yes, by a workflow provider** (see below) |
+
+**The "No" column is false for a workflow provider (2026-10-01).** The tool jail
+masks or binds read-only, but a workflow provider jail binds the WHOLE universe
+read-write and allows `symlink`, so every daemon read in this file can be
+redirected by a planted link
+(`docs/concerns/2026-10-01-provider-planted-link-reads-another-universe.md`).
+Closed in `fix/daemon-link-refusing-reads`: `api/helpers.py` `_read_json` and
+`_read_platform_text` (so `activity.log` in inspect/activity/events/memory-scope
+and every `_read_json` caller) now read link-free under the data dir, and
+`read_output`, `read_canon` and `read_source` no longer measure containment
+against a resolved, linkable root. Still raw: the rest of the table. **Worse
+than a read:** the tier-config action reads `dispatcher_config.yaml` and writes
+it back with `cfg_path.write_text`, which follows a planted link and writes
+into another universe's file. Daemon WRITES under a universe dir need the same
+sweep.
 
 **Resolved for `wiki/` (harness W, 2026-10-01).** `wiki/` is now agent-writable.
 `api/wiki.py`, `api/helpers.py`, `effectors/wiki_write_back.py` and
