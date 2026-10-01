@@ -6557,8 +6557,8 @@
   // the phone, where to turn notifications on. Dismissed once, gone for good on
   // this device; Account keeps the switch either way.
   const NOTIFY_PROMPT_COPY={
-    offer:"Get a notification when your universe needs you: a question, a proposal to approve, or work that's done.",
-    blocked:"Notifications are off, so you won't hear when your universe needs you. To turn them on, allow notifications for TinyAssets in your phone's Settings, then reopen the app.",
+    offer:"Get a notification when your agent needs you: a question, a proposal to approve, or work that's done.",
+    blocked:"Notifications are off, so you won't hear when your agent needs you. To turn them on, allow notifications for TinyAssets in your phone's Settings, then reopen the app.",
   };
   function showNotifyPrompt(mode){
     if(localStorage.getItem(NOTIFY_PROMPT_DISMISSED)==="1") return;
@@ -6718,7 +6718,7 @@
       if(!settings.vapid_public_key) throw new Error("Browser notifications are not configured yet.");
       await subscribeBrowserPush(session, settings);
       if(!session.current()) return;
-      text.textContent="Notifications are on. You'll get one when your universe needs you.";
+      text.textContent="Notifications are on. You'll get one when your agent needs you.";
       button.hidden=true;
       $("btn-notify-prompt-dismiss").textContent="Done";
     }catch(error){ if(session.current()) text.textContent=error.message; }
