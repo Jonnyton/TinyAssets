@@ -528,6 +528,10 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: which native session each thread resumes (bytes per thread; "
         "the session files themselves live in the command center and count there)"
     ),
+    "rules.db": (
+        "platform: the owner's Custom Rules for their agents, inside "
+        ".agent-sessions/<universe>/ (harness D1a)"
+    ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",

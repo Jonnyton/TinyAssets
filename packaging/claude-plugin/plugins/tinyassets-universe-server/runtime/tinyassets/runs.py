@@ -7356,6 +7356,13 @@ ACTIONABLE_BY: dict[str, str] = {
     # allow-list or SSRF refusal, its soul's own limits. Only the founder can
     # change that, and the request rail is the channel.
     "external_write_refused": "user",
+    # user — the owner's own Custom Rules (harness D1a) stopped the effect:
+    # "ask first" waits for their approval, "hand off" is theirs to perform.
+    "rule_requires_approval": "user",
+    "rule_hand_off": "user",
+    # host — the rules store could not be read, so the effect was refused rather
+    # than allowed; nothing in the branch or the founder's grants is wrong.
+    "rules_unreadable": "host",
     # user — the stored key itself is finished: expired, revoked at the provider,
     # or no longer accepted. Neither a retry (same dead key) nor a widening (the
     # grant was never the problem) can change it; only a new secret can, and only
@@ -7463,6 +7470,27 @@ EXTERNAL_WRITE_REFUSED_ACTION = (
 
 # error_kind values (from the adapter's summary line) that mean the far side of
 # the refusal is AUTHORITY the founder holds, not something the universe can fix.
+RULE_REQUIRES_APPROVAL_ACTION = (
+    "Your owner's rules ask first for this action. Raise ONE request in the rail "
+    "that says exactly what you will do and where, continue other work, and run "
+    "this again once they approve. Do not retry before then."
+)
+RULE_HAND_OFF_ACTION = (
+    "Your owner's rules hand this action to them: they do it themselves. Raise a "
+    "request telling them exactly what to do and where, prepare everything else, "
+    "and do not perform or retry the action yourself."
+)
+RULES_UNREADABLE_ACTION = (
+    "Your owner's rules could not be read, so nothing was sent. Nothing in the "
+    "branch is wrong; report it and try again later."
+)
+#: error_kind -> failure class for a refusal by the owner's Custom Rules.
+_RULE_REFUSAL_CLASSES = (
+    ("rule_ask_first", "rule_requires_approval"),
+    ("rule_hand_off", "rule_hand_off"),
+    ("rules_unreadable", "rules_unreadable"),
+)
+
 _EXTERNAL_WRITE_REFUSED_KINDS = (
     "missing_consent",
     "soul_authority_denied",
@@ -7618,6 +7646,9 @@ def _classify_external_write(lower: str) -> str:
             return kind
     if "[effect_budget_exhausted]" in lower:
         return "effect_budget_exhausted"
+    for kind, failure_class in _RULE_REFUSAL_CLASSES:
+        if f"[{kind}]" in lower:
+            return failure_class
     for kind in _EXTERNAL_WRITE_REFUSED_KINDS:
         if f"[{kind}]" in lower:
             return "external_write_refused"
@@ -7647,6 +7678,12 @@ def external_write_suggested_action(failure_class: str) -> str:
         return EFFECT_BUDGET_EXHAUSTED_ACTION
     if failure_class == "external_write_refused":
         return EXTERNAL_WRITE_REFUSED_ACTION
+    if failure_class == "rule_requires_approval":
+        return RULE_REQUIRES_APPROVAL_ACTION
+    if failure_class == "rule_hand_off":
+        return RULE_HAND_OFF_ACTION
+    if failure_class == "rules_unreadable":
+        return RULES_UNREADABLE_ACTION
     if failure_class == "destination_blocked_client":
         return DESTINATION_BLOCKED_CLIENT_ACTION
     if failure_class == "credential_rejected":
@@ -7822,7 +7859,9 @@ def list_recent_runs(
                 "Wait for the child run to complete. Attaching an existing "
                 "child run is not exposed by the advertised handles."
             )
-        elif failure_class in ("external_write_failed", "external_write_refused"):
+        elif failure_class in ("external_write_failed", "external_write_refused",
+                               "rule_requires_approval", "rule_hand_off",
+                               "rules_unreadable"):
             suggested_action = external_write_suggested_action(failure_class)
         elif failure_class == "error":
             suggested_action = "Check error field for details; re-run after fixing root cause."
