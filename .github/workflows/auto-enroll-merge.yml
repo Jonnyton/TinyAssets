@@ -161,6 +161,26 @@ jobs:
             exit 0
           fi
 
+          # Queue-attempt cap: a head that already failed the merge queue twice
+          # is not re-armed (queue-handoff.yml records why). Exit 3 means
+          # capped. Any other failure of the check enrolls anyway, with a
+          # warning: the cap stops a retry loop, it must never block a merge.
+          CAP_RC=0
+          python scripts/queue_attempts.py check --repo "$REPO" --pr "$PR" || CAP_RC=$?
+          if [ "$CAP_RC" -eq 3 ]; then
+            if [ "$STATE" = "yes" ]; then
+              gh pr merge "$PR" --repo "$REPO" --disable-auto
+            fi
+            {
+              echo "### Auto-merge"
+              echo ""
+              echo "Not enrolled: this head failed the merge queue twice. Push a fix to re-arm."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          elif [ "$CAP_RC" -ne 0 ]; then
+            echo "::warning::queue-attempt cap check failed (exit ${CAP_RC}); enrolling without it."
+          fi
+
           # Idempotent: re-running on a later event is a no-op if a USER
           # already enrolled it. An enrollment by a bot (the old GITHUB_TOKEN
           # fallback) never enqueues, so it is replaced, not kept.
