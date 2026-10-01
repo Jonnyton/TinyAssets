@@ -11,7 +11,7 @@ Canonical surfaces:
 - Site: https://tinyassets.io
 - Web app (sign in, connect a subscription, talk): https://tinyassets.io/app
 - MCP connector endpoint (the only public endpoint): https://tinyassets.io/mcp
-- Android pre-release APK: https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/app-debug.apk
+- Android app (closed test on Google Play, invited accounts): https://play.google.com/apps/testing/io.tinyassets.app
 - Source repository (MIT): https://github.com/TinyAssets/TinyAssets
 - As-built specifications: https://github.com/TinyAssets/TinyAssets/tree/main/openspec/specs
 

@@ -109,8 +109,8 @@ export default function FinePrintPage() {
               </li>
               <li style={{ gridTemplateColumns: "1fr" }}>
                 <div>
-                  <h3>No signed desktop installer, no Play listing yet</h3>
-                  <p>The Android build is a pre-release APK; desktop builds are unsigned and come from the repository.</p>
+                  <h3>No signed desktop installer, no public Play listing yet</h3>
+                  <p>The Android app is in a closed test on Google Play, open to invited accounts; desktop builds are unsigned and come from the repository.</p>
                 </div>
               </li>
               <li style={{ gridTemplateColumns: "1fr" }}>

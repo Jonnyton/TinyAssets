@@ -116,12 +116,19 @@ export default function StartPage() {
               <h3>The app in your pocket</h3>
               <p>
                 The same app, with the conversation in your notification tray so it follows you.
-                This is a pre-release build signed with a stable development key; Android will ask
-                you to allow installs from your browser. A Play listing is in progress.
+                It is in a closed test on Google Play: open the test page with your Google account,
+                join, then install from Play. During the closed test only invited accounts can
+                join; write to{" "}
+                <a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a> to be added.
               </p>
-              <a className="btn btn--ghost btn--md" href={SITE.apk}>
-                Download the APK
+              <a className="btn btn--ghost btn--md" href={SITE.android} target="_blank" rel="noreferrer">
+                Join the test on Google Play
               </a>
+              <p className="note">
+                Developers: a <a href={SITE.androidDebugApk}>debug build from main</a> is published
+                as an APK. It installs separately, as “TinyAssets (debug)”, and never receives Play
+                updates.
+              </p>
             </div>
 
             <div className="sheet" id="desktop">

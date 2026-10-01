@@ -53,7 +53,8 @@ def _generated_mobile(tmp_path: Path) -> Path:
     (mobile / "android/app/build.gradle").write_text(
         """android {\n    namespace "io.tinyassets.app"\n    defaultConfig {\n"""
         """        applicationId "io.tinyassets.app"\n        versionCode 1\n"""
-        """        versionName "1.0"\n    }\n}\n""",
+        """        versionName "1.0"\n    }\n    buildTypes {\n        release {\n"""
+        """            minifyEnabled false\n        }\n    }\n}\n""",
         encoding="utf-8",
     )
     return mobile
