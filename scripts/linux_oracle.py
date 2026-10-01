@@ -31,11 +31,21 @@ cover less than it claims. It is a throwaway local container with no
 credentials and no network access to anything of ours. ``--no-bwrap`` runs
 without the relaxation, which is also how you verify the jail tests SKIP rather
 than silently pass when bubblewrap is unavailable.
+
+REAL JAILS BY DEFAULT. pytest runs as an unprivileged user (uid 1001), with
+AppArmor and Docker's masked system paths relaxed as well, and with a short
+``--basetemp``. As root, the universe tool jail refuses to start without a
+writable cgroup, so about 20 jail and egress tests went red for the oracle's
+own reasons and taught everyone to ignore them. The long default tmp root
+(``/tmp/oracle-tmp/pytest-of-root/...``) also pushed the egress proxy's unix
+socket past Linux's 108-byte limit. ``--as-root`` keeps the old root run for
+anything that needs it.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -64,12 +74,18 @@ COPY_EXCLUDES = (
 #: filesystem (a bind mount from Windows is slow and carries host permissions),
 #: gives it a real git repository so git-dependent tests have one, then hands
 #: over to the command.
-_RUN_SCRIPT = r"""
+_COPY_SCRIPT = r"""
 set -e
 mkdir -p /work
 # Do not restore host uid/gid onto /work: git would reject that copied root as
 # dubious ownership even though its newly initialized .git belongs to us.
 tar -C /src -cf - {excludes} . | tar -C /work --no-same-owner -xf -
+"""
+
+#: Runs as whoever runs the suite. In the default (unprivileged) mode it reaches
+#: the container through ``ORACLE_USER_SCRIPT`` rather than being re-quoted.
+_REPO_AND_RUN_SCRIPT = r"""
+set -e
 cd /work
 # A real repository, not the host's: the worktree's .git is a file pointing at
 # a path this container does not have. History is irrelevant to the suite; a
@@ -82,8 +98,25 @@ git commit -q -m "linux oracle snapshot" >/dev/null 2>&1 || true
 _py=$(python -V 2>&1 | cut -d' ' -f2)
 _git=$(git --version | cut -d' ' -f3)
 _bwrap=$(bwrap --version 2>/dev/null | cut -d' ' -f2 || echo absent)
-echo "[oracle] python $_py | git $_git | bwrap $_bwrap"
+echo "[oracle] python $_py | git $_git | bwrap $_bwrap | uid $(id -u)"
 exec {command}
+"""
+
+#: The old root run: copy, then repository and command, all as root.
+_RUN_SCRIPT = _COPY_SCRIPT + _REPO_AND_RUN_SCRIPT
+
+#: Unprivileged user the suite runs as by default.
+ORACLE_UID = 1001
+#: Short on purpose: an AF_UNIX path must fit in 108 bytes.
+DEFAULT_BASETEMP = "/tmp/b"
+
+#: Default run: copy as root, hand the tree to an unprivileged user, run there.
+_USER_SCRIPT = _COPY_SCRIPT + r"""
+useradd -u {uid} -m oracle
+chown -R oracle /work
+mkdir -p /tmp/t && chown oracle /tmp/t
+exec runuser -u oracle -- env HOME=/home/oracle USER=oracle TMPDIR=/tmp/t \
+    bash -c "$ORACLE_USER_SCRIPT"
 """
 
 
@@ -140,6 +173,11 @@ def main(argv: list[str] | None = None) -> int:
              "(use to prove the jail tests SKIP rather than silently pass)",
     )
     parser.add_argument(
+        "--as-root", action="store_true",
+        help="run as root, as before: the universe tool jail refuses to start, "
+             "so its tests fail for the oracle's reasons, not yours",
+    )
+    parser.add_argument(
         "pytest_args", nargs="*",
         help="passed to pytest (put them after --); default: the whole suite, quiet",
     )
@@ -162,29 +200,43 @@ def main(argv: list[str] | None = None) -> int:
     if args.build or not _image_exists(tag):
         _build(root, tag)
 
+    return subprocess.run(docker_command(args, root, tag)).returncode
+
+
+def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
+    """The ``docker run`` argv for parsed ``args``."""
     if args.shell:
         command = "bash"
     else:
-        pytest_args = args.pytest_args or ["-q", "tests"]
+        pytest_args = list(args.pytest_args or ["-q", "tests"])
+        if not any(a == "--basetemp" or a.startswith("--basetemp=") for a in pytest_args):
+            pytest_args.append(f"--basetemp={DEFAULT_BASETEMP}")
         command = "python -m pytest -p no:cacheprovider " + " ".join(
             f"'{a}'" for a in pytest_args
         )
-    script = _RUN_SCRIPT.format(
-        excludes=" ".join(f"--exclude=./{name}" for name in COPY_EXCLUDES),
-        command=command,
-    )
-
-    run = ["docker", "run", "--rm", "-v", f"{_docker_path(root)}:/src:ro"]
+    excludes = " ".join(f"--exclude=./{name}" for name in COPY_EXCLUDES)
+    # Named, so a lane can stop its own run by name; Docker is shared across lanes.
+    run = ["docker", "run", "--rm", "--name", f"ta-oracle-{os.getpid()}",
+           "-v", f"{_docker_path(root)}:/src:ro"]
+    if args.as_root:
+        script = _RUN_SCRIPT.format(excludes=excludes, command=command)
+    else:
+        script = _USER_SCRIPT.format(excludes=excludes, uid=ORACLE_UID)
+        run += ["-e", "ORACLE_USER_SCRIPT=" + _REPO_AND_RUN_SCRIPT.format(command=command)]
     if not args.no_bwrap:
         # Docker's default seccomp profile blocks the clone flags bubblewrap
         # needs; without this every jail test skips and the oracle covers less
-        # than it says it does.
+        # than it says it does. Unprivileged, bubblewrap also needs AppArmor and
+        # the masked /proc and /sys paths out of its way to mount its own.
         run += ["--security-opt", "seccomp=unconfined"]
+        if not args.as_root:
+            run += [
+                "--security-opt", "apparmor=unconfined",
+                "--security-opt", "systempaths=unconfined",
+            ]
     if args.shell:
         run.append("-it")
-    run += [tag, "bash", "-lc", script]
-
-    return subprocess.run(run).returncode
+    return [*run, tag, "bash", "-lc", script]
 
 
 if __name__ == "__main__":
