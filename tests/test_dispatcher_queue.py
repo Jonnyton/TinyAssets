@@ -1352,7 +1352,7 @@ def test_queue_list_merges_epoch2_without_exposing_request_text(
         descriptor=heartbeat,
         expected_worker_id="worker-a",
     )
-    (base / uid / ".worker_supervisor.worker-a.json").write_text(
+    platform_path(base / uid, ".worker_supervisor.worker-a.json").write_text(
         json.dumps(heartbeat),
         encoding="utf-8",
     )
@@ -1643,7 +1643,7 @@ def test_queue_list_capacity_is_specific_to_directed_daemon(
         descriptor=heartbeat,
         expected_worker_id="worker-a",
     )
-    (base / uid / ".worker_supervisor.worker-a.json").write_text(
+    platform_path(base / uid, ".worker_supervisor.worker-a.json").write_text(
         json.dumps(heartbeat),
         encoding="utf-8",
     )

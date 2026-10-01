@@ -182,7 +182,7 @@ def _append_global_ledger(
     from tinyassets.api.engine_helpers import _append_ledger
 
     _append_ledger(
-        _base_path(), action,
+        _base_path(), action, at_data_root=True,
         actor=actor, target=target, summary=summary, payload=payload,
     )
 

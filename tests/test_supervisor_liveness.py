@@ -840,7 +840,7 @@ def test_operational_capacity_requires_live_complete_descriptor(tmp_path):
         "universe_id": "universe-a",
         "expires_at": "2026-07-24T08:01:30Z",
     }
-    heartbeat = universe / ".worker_supervisor.worker-a.json"
+    heartbeat = platform_path(universe, ".worker_supervisor.worker-a.json")
     heartbeat.write_text(json.dumps(beat), encoding="utf-8")
     descriptor_fields = (
         "queue_protocol_version",
@@ -947,7 +947,7 @@ def test_capacity_rejections_name_the_gate_that_turned_each_worker_away(
     universe = tmp_path / "universe-a"
     universe.mkdir()
     now = datetime.fromisoformat("2026-07-24T08:00:00+00:00")
-    heartbeat = universe / ".worker_supervisor.worker-a.json"
+    heartbeat = platform_path(universe, ".worker_supervisor.worker-a.json")
 
     def classify(beat, trusted):
         heartbeat.write_text(json.dumps(beat), encoding="utf-8")
@@ -1028,7 +1028,7 @@ def test_capacity_rejection_reports_the_mismatched_field_not_its_value(
     universe.mkdir()
     now = datetime.fromisoformat("2026-07-24T08:00:00+00:00")
     beat = _capacity_beat()
-    (universe / ".worker_supervisor.worker-a.json").write_text(
+    platform_path(universe, ".worker_supervisor.worker-a.json").write_text(
         json.dumps(beat), encoding="utf-8"
     )
 
@@ -1062,7 +1062,7 @@ def test_capacity_rejection_flags_a_beat_with_no_provisioned_runtime_row(
     universe = tmp_path / "universe-a"
     universe.mkdir()
     now = datetime.fromisoformat("2026-07-24T08:00:00+00:00")
-    (universe / ".worker_supervisor.worker-a.json").write_text(
+    platform_path(universe, ".worker_supervisor.worker-a.json").write_text(
         json.dumps(_capacity_beat()), encoding="utf-8"
     )
 

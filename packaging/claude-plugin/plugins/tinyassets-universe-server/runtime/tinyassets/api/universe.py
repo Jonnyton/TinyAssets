@@ -74,6 +74,7 @@ from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
 from tinyassets.storage_accounting import StorageRefused
 from tinyassets.universe_bundle import seed_okf_bundle
+from tinyassets.universe_paths import platform_path
 from tinyassets.universe_soul import (
     NO_LOOP_DECLARED,
     SOUL_FILENAME,
@@ -84,7 +85,6 @@ from tinyassets.universe_soul import (
     read_universe_soul,
     write_universe_soul,
 )
-from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger("universe_server.universe")
 
@@ -4612,7 +4612,7 @@ def _query_world_db(
         })
 
     dbname, table = chosen or fallback_empty  # type: ignore[misc]
-    db_path = udir / dbname
+    db_path = platform_path(udir, dbname)
 
     try:
         conn = sqlite3.connect(str(db_path))

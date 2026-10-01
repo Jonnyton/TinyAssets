@@ -19,6 +19,7 @@ from tinyassets.runtime.assigned_queue_consumer import (
     supervisor_heartbeat_filename,
 )
 from tinyassets.storage import db_path
+from tinyassets.universe_paths import platform_path
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
@@ -64,7 +65,7 @@ def test_flag_off_poll_leaves_no_beat_or_refusal_side_effect(
     finally:
         consumer.stop()
 
-    assert list((tmp_path / SERVING_UNIVERSE).glob(".worker_supervisor*.json")) == []
+    assert list((tmp_path / SERVING_UNIVERSE).rglob(".worker_supervisor*.json")) == []
     with sqlite3.connect(db_path(tmp_path)) as conn:
         refusal_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' "
@@ -98,7 +99,9 @@ def test_flag_on_poll_publishes_the_beat_but_registers_no_fleet_worker(
 
     assert workers == []
     assert (
-        tmp_path / SERVING_UNIVERSE / supervisor_heartbeat_filename(consumer.consumer_id)
+        platform_path(
+            tmp_path / SERVING_UNIVERSE, supervisor_heartbeat_filename(consumer.consumer_id)
+        )
     ).is_file()
 
 

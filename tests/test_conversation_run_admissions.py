@@ -2,6 +2,7 @@
 
 import json
 import multiprocessing
+import os
 import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -481,8 +482,12 @@ def test_existing_home_conversation_database_keeps_baseline_reset_refusal(store)
     complete(store, row["run_id"])
     project(store, row["admission_id"])
     _, plan = reset_plan(store)
+    # The store now lives in the home's platform state (change
+    # universe-runtime-state); it still blocks a scoped reset, classified by
+    # the platform registry.
     assert plan["blockers"] == [
-        "home operational store has no scoped-reset adapter: .conversation_memory.db"]
+        "home platform state is operational and blocks a scoped reset: "
+        f"{os.path.join('.runtime', 'state', '.conversation_memory.db')}"]
 
 
 def test_scoped_reset_still_refuses_active_canonical_run(store):

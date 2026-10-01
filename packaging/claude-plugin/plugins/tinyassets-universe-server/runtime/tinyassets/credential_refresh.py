@@ -40,6 +40,7 @@ import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
+
 from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)

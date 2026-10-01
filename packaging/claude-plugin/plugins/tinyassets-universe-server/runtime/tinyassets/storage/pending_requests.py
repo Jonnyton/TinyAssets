@@ -41,6 +41,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+
 from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)

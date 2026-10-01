@@ -8,8 +8,8 @@ import pytest
 
 from tinyassets.auth.provider import Identity
 from tinyassets.daemon_server import grant_universe_access
-from tinyassets.universe_soul import read_pinned_universe_soul
 from tinyassets.universe_paths import platform_path
+from tinyassets.universe_soul import read_pinned_universe_soul
 
 
 @pytest.fixture

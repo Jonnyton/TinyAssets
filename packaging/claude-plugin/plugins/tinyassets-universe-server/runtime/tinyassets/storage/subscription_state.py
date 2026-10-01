@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+
 from tinyassets.universe_paths import platform_path
 
 _DB_FILENAME = ".subscription_state.db"

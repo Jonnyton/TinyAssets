@@ -1,9 +1,8 @@
 """Focused shared-self checks; runnable with stdlib unittest in the workspace."""
 import contextlib
 import dataclasses
-import tinyassets
-import json
 import importlib.util
+import json
 import sqlite3
 import sys
 import tempfile
@@ -12,9 +11,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import tinyassets
 from tinyassets.conversation_retrieval import read_conversation_page
 from tinyassets.shared_self import (
-    agent_node, agent_node_key, prepare_shared_self_turn, require_founder_home,
+    agent_node,
+    agent_node_key,
+    prepare_shared_self_turn,
+    require_founder_home,
     shared_self_requested,
 )
 from tinyassets.universe_paths import platform_path
@@ -70,7 +73,13 @@ class ConversationPagingTests(unittest.TestCase):
         path = self.root / "empty"
         path.mkdir()
         self.assertFalse(read_conversation_page(path, "principal:owner")["available"])
-        self.assertEqual(list(path.iterdir()), [])
+        # No store is created; the only thing on disk is the universe's
+        # platform-state home and its migration marker (universe-runtime-state).
+        created = sorted(p.relative_to(path).as_posix() for p in path.rglob("*") if p.is_file())
+        self.assertNotIn(".runtime/state/.conversation_memory.db", created)
+        self.assertEqual(
+            created, [".runtime/state/.migrate.lock", ".runtime/state/.migrated-v1"],
+        )
 
     def test_invalid_selectors_and_symlink_refuse(self):
         for kwargs in ({"offset": -1}, {"offset": True}, {"max_chars": 32769},
@@ -87,6 +96,7 @@ class ConversationPagingTests(unittest.TestCase):
                          "engine dependencies are not installed in this workspace")
     def test_engine_route_pins_owner_and_returns_untrusted_history(self):
         from unittest.mock import Mock
+
         from tinyassets import engine_mcp_server as engine
         self.assertIn("conversation", engine._PINNED_READ_TARGETS)
         reset = Mock()

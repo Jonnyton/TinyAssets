@@ -9,6 +9,7 @@ from tinyassets import engine_admissions as ea
 from tinyassets import workspace_pool as wp
 from tinyassets.api import permissions
 from tinyassets.api import resource_usage as usage
+from tinyassets.runs import universe_runs_db_path
 from tinyassets.storage import DB_FILENAME
 
 NOW = 10_000.0
@@ -33,7 +34,8 @@ def meters(tmp_path, monkeypatch):
              (UID, NOW - 3601, ea.KIND_WRITE), (UID, NOW + 1, ea.KIND_WRITE)],
         )
     conn.close()
-    with sqlite3.connect(tmp_path / UID / ".runs.db") as conn:
+    # The universe's own workspace ledger, at its post-migration home.
+    with sqlite3.connect(universe_runs_db_path(tmp_path / UID)) as conn:
         wp.ensure_schema(conn)
         conn.executemany(
             "INSERT INTO workspace_ledger "
@@ -113,7 +115,7 @@ def test_cached_storage_does_not_bypass_current_admin_gate(meters, monkeypatch):
     assert calls == [1]
 
 
-@pytest.mark.parametrize("name", [DB_FILENAME, f"{UID}/.runs.db"])
+@pytest.mark.parametrize("name", [DB_FILENAME, f"{UID}/.runtime/state/.runs.db"])
 @pytest.mark.parametrize("damage", ["missing", "corrupt", "legacy"])
 def test_unavailable_data_is_not_created_repaired_or_reported_as_zero(meters, name, damage):
     path = meters / name
@@ -140,7 +142,7 @@ def test_escaped_or_invalid_universe_has_no_usage(meters, uid):
     assert usage.for_authorized_status(meters, uid, now=NOW) is None
 
 
-@pytest.mark.parametrize("name", [DB_FILENAME, f"{UID}/.runs.db"])
+@pytest.mark.parametrize("name", [DB_FILENAME, f"{UID}/.runtime/state/.runs.db"])
 def test_symlinked_database_is_not_read(meters, name):
     path = meters / name
     target = path.with_name(path.name + ".target")

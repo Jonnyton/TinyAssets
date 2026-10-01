@@ -37,8 +37,8 @@ from tinyassets.universe_files import (
     load_untrusted_yaml,
     read_universe_text,
 )
-from tinyassets.universe_soul import SOUL_FILENAME, SOUL_VERSIONS_DIR
 from tinyassets.universe_paths import platform_path
+from tinyassets.universe_soul import SOUL_FILENAME, SOUL_VERSIONS_DIR
 
 _logger = logging.getLogger(__name__)
 

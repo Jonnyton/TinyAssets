@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+
 from tinyassets.universe_paths import platform_path
 
 spec = importlib.util.spec_from_file_location(

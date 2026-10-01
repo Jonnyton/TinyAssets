@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from tinyassets.universe_paths import platform_path
 
 _HOME_A = "u-01aaaaaaaaaaaaaaaaaaaaaaaa"

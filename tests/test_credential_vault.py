@@ -12,11 +12,11 @@ from pathlib import Path
 import pytest
 
 from tinyassets.credential_vault import (
-    credential_vault_path,
     VAULT_FILENAME,
     apply_provider_auth_env,
     claude_subscription_auth_available,
     codex_subscription_auth_available,
+    credential_vault_path,
     ensure_claude_config_dir_from_vault,
     ensure_codex_home_from_vault,
     load_credential_vault,

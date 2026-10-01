@@ -564,8 +564,18 @@ def migrated_platform_path(universe_dir: str | Path, name: str) -> Path | None:
     if platform_name_for(name) is None or "/" in name or "\\" in name:
         raise PlatformPathError(f"not a platform name of a universe: {name!r}")
     root = _universe_root(universe_dir)
-    if not is_migrated(root):
+    if not os.path.isdir(root) or os.path.islink(root):
         return None
+    if not is_migrated(root):
+        if not os.path.isdir(root / STATE_DIR):
+            return None
+        # The platform already made this directory's state home (a store was
+        # created before the universe folder existed, so nothing marked it):
+        # it is a universe, and finishing its migration is safe.
+        try:
+            ensure_migrated(root)
+        except PlatformPathError:
+            return None
     _state_dir(root, create=False)
     return root / STATE_DIR / name
 

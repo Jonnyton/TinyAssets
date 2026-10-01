@@ -22,8 +22,8 @@ from tests.engine_authority_helpers import mock_engine_admission, seed_engine_au
 from tinyassets import universe_tools
 from tinyassets.providers import provider_jail
 from tinyassets.providers.provider_jail import ProviderConfinementError, default_view, jail_argv
-from tinyassets.universe_tools import ToolRun, UniverseToolError
 from tinyassets.universe_paths import platform_path
+from tinyassets.universe_tools import ToolRun, UniverseToolError
 
 posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX descriptors and signals")
 

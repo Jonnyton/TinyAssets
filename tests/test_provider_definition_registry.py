@@ -59,8 +59,16 @@ def test_register_creates_candidate_only(base: Path) -> None:
     # Candidate-only: the ONLY file written under the universe dir is the registry
     # store — no enrollment, serving-binding, credential, or authority artifact.
     udir = base / "u-cand"
-    written = sorted(p.name for p in udir.iterdir())
-    assert written == ["provider_definitions.json"]
+    written = sorted(
+        p.relative_to(udir).as_posix() for p in udir.rglob("*") if p.is_file()
+    )
+    # The registry store lives in the universe's platform state (change
+    # universe-runtime-state); the migration marker and lock are its own.
+    assert written == [
+        ".runtime/state/.migrate.lock",
+        ".runtime/state/.migrated-v1",
+        ".runtime/state/provider_definitions.json",
+    ]
 
 
 def test_registration_is_idempotent(base: Path) -> None:

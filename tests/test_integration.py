@@ -714,7 +714,7 @@ class TestDaemonController:
             no_tray=True,
         )
         assert controller._no_tray is True
-        assert controller._db_path == str(Path(universe) / "story.db")
+        assert controller._db_path == str(platform_path(universe, "story.db"))
 
     def test_build_provider_router(self):
         """_build_provider_router should return a configured router."""

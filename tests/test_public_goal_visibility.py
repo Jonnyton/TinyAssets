@@ -20,6 +20,7 @@ from tinyassets.daemon_server import (
 )
 from tinyassets.gate_events import attest_gate_event
 from tinyassets.subscriptions import subscribe
+from tinyassets.universe_paths import platform_path
 from tinyassets.universe_server import (
     extensions,
     gates,
@@ -27,7 +28,6 @@ from tinyassets.universe_server import (
     read_graph,
     universe,
 )
-from tinyassets.universe_paths import platform_path
 
 
 def _read_as(actor_id: str) -> None:

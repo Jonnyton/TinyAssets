@@ -2321,9 +2321,9 @@ def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
     )
     consumer, _inline = _consumer_with_inline_executor(tmp_path)
     before = datetime.now(timezone.utc).replace(microsecond=0)
-    beat_path = tmp_path / UNIVERSE / supervisor_heartbeat_filename(
+    beat_path = platform_path(tmp_path / UNIVERSE, supervisor_heartbeat_filename(
         consumer.consumer_id
-    )
+    ))
 
     try:
         consumer.poll_once()
@@ -2381,7 +2381,7 @@ def test_a_paused_universe_still_beats(
         consumer.stop()
 
     assert (
-        tmp_path / UNIVERSE / supervisor_heartbeat_filename(consumer.consumer_id)
+        platform_path(tmp_path / UNIVERSE, supervisor_heartbeat_filename(consumer.consumer_id))
     ).is_file()
 
 
