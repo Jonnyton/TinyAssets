@@ -181,6 +181,8 @@ _SERVED_ACCESS_VERBS = {
 _PINNED_READ_TARGETS = frozenset({
     "status", "graph", "branches", "branch", "runs", "run", "run_output",
     "compute", "connections", "automations", "automation", "conversation",
+    # Your background activities (harness D2): every one, paged by cursor.
+    "activities", "activity",
     "model_options", "agent_bindings", "agent_binding", "run_file", "run_file_limits",
     # The founder's own UI library and choice (their row only, keyed by who
     # they are): what the interfaces chapter reads before it edits a library.
@@ -476,6 +478,11 @@ def read_graph(
             or model_options. It selects only inside your pinned command center.
         automation_id: For ``target="automation"`` only, the identifier returned
             by ``target="automations"``.
+            ``target="activities"`` lists your background activities, newest
+            change first: pass ``query`` = the ``next_cursor`` it returned for the
+            next page and ``field_name`` = a status to filter. ``target="activity"``
+            with ``query`` = an activity id returns it with its status lines
+            (``output_offset`` = the ``next_after`` it returned for more).
         run_id: For ``target="run"`` or ``target="run_output"`` - the id
             ``run_graph`` returned. Ignored for every other target.
         field_name: For conversation, a message id from its catalog. For run_output,
@@ -658,6 +665,20 @@ def read_graph(
                 read_access(universe_id=_GRAPH_ID, how_to_change=_SERVED_ACCESS_VERBS),
                 query=query, section=field_name, offset=output_offset,
                 budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
+            ), default=str)
+        if normalized in {"activities", "activity"}:
+            from tinyassets.api.activities import read as read_activities
+            from tinyassets.storage import data_dir
+
+            one = normalized == "activity"
+            # The owner's own records, written by the platform from the owner's
+            # and the agent's requests: not another user's content.
+            return json.dumps(read_activities(
+                data_dir(), universe_id=_GRAPH_ID,
+                activity_id=(query or "").strip() if one else "",
+                status="" if one else (field_name or "").strip(),
+                cursor="" if one else (query or "").strip(),
+                after=int(output_offset or 0) if one else 0,
             ), default=str)
         if normalized in {"automations", "automation"}:
             from tinyassets.api.automations import automations
@@ -2814,6 +2835,13 @@ def write_graph(
     revoke takes ``payload_json`` ``{"token_prefix": "..."}``. Triggered runs
     appear in ``read_graph target="runs"`` with run_name ``webhook``.
 
+    **Background work (activities):** ``target="activity"`` with
+    ``operation="start"`` and ``payload_json`` ``{"title": "...", "brief": "..."}``
+    starts work that runs on its own, with no chat open, several at once; its
+    status reaches you as it changes. ``operation="stop"``, ``"pause"`` and
+    ``"resume"`` take ``{"activity_id": "..."}``; stop keeps the result so far.
+    Read them with ``read_graph target="activities"``.
+
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
@@ -2977,6 +3005,23 @@ def write_graph(
         return _write_served_webhook(
             operation=operation, branch_id=branch_id, payload_json=payload_json,
         )
+    if t == "activity":
+        from tinyassets.api.activities import write as write_activity
+        from tinyassets.storage import data_dir
+
+        try:
+            document = json.loads(payload_json or "{}")
+        except (ValueError, RecursionError):
+            return json.dumps({"error": "payload_json must be a JSON object"})
+        if not isinstance(document, dict):
+            return json.dumps({"error": "payload_json must be a JSON object"})
+        if not _ACTOR_ID:
+            return json.dumps({"error": "authentication_required"})
+        return json.dumps(write_activity(
+            data_dir(), universe_id=_GRAPH_ID, actor_id=_ACTOR_ID, operation=operation,
+            payload=document,
+            inside_activity=bool(os.environ.get("TINYASSETS_ENGINE_ACTIVITY_ID")),
+        ), default=str)
     if t == "automation":
         return _write_served_automation(
             operation=operation,

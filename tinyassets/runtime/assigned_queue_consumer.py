@@ -412,6 +412,14 @@ class AssignedQueueConsumer:
         automation_submitted, _automation_universes = self._submit_due_automations(
             serving_universes, prep_store
         )
+        # Activities (harness D2): settle ended runs and start queued ones on
+        # the same cadence, so nothing waits for a restart to be picked up.
+        try:
+            from tinyassets.activity_dispatcher import dispatch_all
+
+            dispatch_all(self.base_path)
+        except Exception:  # noqa: BLE001 - activities never stop the pump
+            logger.exception("activity dispatch tick failed")
         for universe_id in serving_universes:
             try:
                 self._publish_heartbeat(universe_id)

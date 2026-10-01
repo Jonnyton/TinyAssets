@@ -556,6 +556,23 @@ def note_waiting_for_seat(universe_dir: Path, activity_id: str) -> None:
             _event(conn, record, "waiting_for_seat")
 
 
+@_when_absent(lambda: None)
+def activity_for_run(universe_dir: Path, run_id: str) -> dict | None:
+    """The in-progress activity whose record names ``run_id``, or None.
+
+    Linkage comes from the record alone, never from the run's inputs: a run the
+    agent starts itself, whatever it claims to be, finds nothing here.
+    """
+    if not run_id:
+        return None
+    with closing(_connect(universe_dir)) as conn:
+        row = conn.execute(
+            f"SELECT {', '.join(_COLUMNS)} FROM activities WHERE status = ? "
+            "AND runner_token = ?", (IN_PROGRESS, run_id),
+        ).fetchone()
+    return _row(row) if row else None
+
+
 @_when_absent(list)
 def needing_a_runner(universe_dir: Path, *, replaceable: Callable[[str], bool]) -> list[str]:
     """Queued activities, and running ones with no run bound or a replaceable
