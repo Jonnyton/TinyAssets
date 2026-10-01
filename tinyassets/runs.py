@@ -7407,7 +7407,7 @@ WORKSPACE_SUGGESTED_ACTIONS: dict[str, str] = {
     ),
     "workspace_push_refused": (
         "The push was refused: the default branch is never a target, the ref "
-        "must be tiny/<universe>/<slug> and fast-forward, and the bundle must "
+        "must be tiny/<command-center-id>/<slug> and fast-forward, and the bundle must "
         "verify. Commit on a fresh tiny/ branch from the checked-out ref and "
         "push again; host branch protection is the repository owner's to change."
     ),

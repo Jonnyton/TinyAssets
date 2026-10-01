@@ -585,7 +585,7 @@ def test_collaborator_tampered_binding_is_reset_not_adopted(tmp_path):
     assert again["agent_binding_id"] != bid
     served = _serving_binding(tmp_path)
     assert served["agent_binding_id"] == again["agent_binding_id"]
-    assert served["configuration"].get("name") == "Your universe"
+    assert served["configuration"].get("name") == "Your agent"
     assert "instructions" not in served["configuration"]
     # and the tampered one is no longer serving
     statuses = {
@@ -614,7 +614,7 @@ def test_drifted_config_on_platform_definition_is_reset_at_exact_revision(tmp_pa
         binding_id=bid,
         expected_revision=int(cur["revision"]),
         updated_by="collab",
-        payload={"schema_version": 1, "name": "Your universe", "role": "writer", "persona": "evil"},
+        payload={"schema_version": 1, "name": "Your agent", "role": "writer", "persona": "evil"},
     )
     again = sv.ensure_founder_serving(
         base_path=tmp_path,
@@ -625,4 +625,4 @@ def test_drifted_config_on_platform_definition_is_reset_at_exact_revision(tmp_pa
     )
     assert again["status"] == "serving" and again["agent_binding_id"] == bid
     cfg = _serving_binding(tmp_path)["configuration"]
-    assert "persona" not in cfg and cfg["name"] == "Your universe"
+    assert "persona" not in cfg and cfg["name"] == "Your agent"

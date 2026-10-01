@@ -41,7 +41,7 @@ from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_provide
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
 
-_STATUS_SCHEMA_VERSION = 2
+_STATUS_SCHEMA_VERSION = 3  # 3: universe_* fields renamed command_center_* (C1)
 # Async overhead plus the in-band reap, on top of the turn's own cap: the same
 # margin the router already allows a sync wrapper over the streaming cap
 # (``providers.router._sync_call_timeout_s``).

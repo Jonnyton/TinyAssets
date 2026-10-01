@@ -11,7 +11,7 @@ This provisions the minimal chain for the founder's OWN command center, exactly 
 the served-router tests do:
 
     platform definition (published once, idempotent)
-      -> one agent binding created by the founder ("Your universe", writer)
+      -> one agent binding created by the founder ("Your agent", writer)
         -> bind_serving_provider(provider of the deposited service)
           -> set_serving(enabled=True)
 
@@ -32,20 +32,30 @@ import threading
 from pathlib import Path
 from typing import Any
 
-PLATFORM_DEFINITION_AUTHOR = "platform:universe-default"
-PLATFORM_DEFINITION_KEY = "universe-default-v1"
+#: The platform's default agent. A published definition is immutable and
+#: fingerprinted under its idempotency key, so the universe -> command center
+#: rename (2026-10-01) publishes a NEW one rather than editing the old: changing
+#: the old payload would raise AgentConflictError at every onboarding.
+PLATFORM_DEFINITION_AUTHOR = "platform:command-center-default"
+PLATFORM_DEFINITION_KEY = "command-center-default-v1"
 _PLATFORM_DEFINITION = {
     "schema_version": 1,
-    "name": "Your universe",
+    "name": "Your agent",
     "description": (
-        "The default voice of a founder's own universe: it speaks on the "
+        "The default agent in a founder's own command center: it speaks on the "
         "subscription the founder connected. Published once by the platform; "
         "every founder's home binds to it."
     ),
     "tags": ["platform", "default"],
     "components": {"identity": {"kind": "soul", "config": {}}},
 }
-_BINDING_PAYLOAD = {"schema_version": 1, "name": "Your universe", "role": "writer"}
+_BINDING_PAYLOAD = {"schema_version": 1, "name": "Your agent", "role": "writer"}
+#: The definition every home bound to before the rename. Existing bindings on it
+#: are still the founder's platform binding: the next serving gesture re-points
+#: one to the current definition at its exact revision (`_founder_binding`), and
+#: the storage migration (C4) re-points the rest. Read-only: never re-published.
+RETIRED_PLATFORM_DEFINITION_AUTHOR = "platform:universe-default"
+RETIRED_BINDING_PAYLOAD = {"schema_version": 1, "name": "Your universe", "role": "writer"}
 #: Friendly ALIASES for the two subscription CLIs, not an allowlist. Anything
 #: else is passed straight through as a compute-connection id, because
 #: `bind_serving_provider` already resolves one and `_open_serving_context`
@@ -72,6 +82,16 @@ def _gesture_lock(universe_id: str) -> threading.RLock:
         if lock is None:
             lock = _GESTURE_LOCKS[universe_id] = threading.RLock()
         return lock
+
+
+def _retired_platform_definition_ids(base: Path) -> frozenset[str]:
+    """Ids of the pre-rename default definition, looked up, never created."""
+    from tinyassets.custom_agents import list_definitions
+
+    return frozenset(
+        str(d["agent_definition_id"])
+        for d in list_definitions(base, author_id=RETIRED_PLATFORM_DEFINITION_AUTHOR, limit=100)
+    )
 
 
 def _platform_definition(base: Path) -> dict[str, Any]:
@@ -118,10 +138,11 @@ def _platform_binding(base: Path, *, universe_id: str, owner: str) -> dict[str, 
 
     definition = _platform_definition(base)
     did = definition["agent_definition_id"]
+    platform_ids = {did} | _retired_platform_definition_ids(base)
     mine = [
         b
         for b in list_bindings(base, universe_id=universe_id, limit=100)
-        if b.get("created_by") == owner and b.get("agent_definition_id") == did
+        if b.get("created_by") == owner and b.get("agent_definition_id") in platform_ids
     ]
     if len(mine) > 1:
         raise ValueError("ambiguous platform bindings; refusing to guess")
@@ -137,10 +158,11 @@ def _platform_binding(base: Path, *, universe_id: str, owner: str) -> dict[str, 
     config = binding.get("configuration") or {}
     canonical = {k: config.get(k) for k in _BINDING_PAYLOAD} == _BINDING_PAYLOAD
     extra = set(config) - set(_BINDING_PAYLOAD) - {"provider_ref"}
-    if canonical and not extra:
+    if canonical and not extra and binding.get("agent_definition_id") == did:
         return binding
-    # Drifted (possibly collaborator-edited): reset to canonical content at the
-    # exact current revision; a concurrent edit makes this fail closed.
+    # Drifted (possibly collaborator-edited) or still on the retired definition:
+    # reset to canonical content on the current definition at the exact current
+    # revision; a concurrent edit makes this fail closed.
     return update_binding(
         base,
         universe_id=universe_id,

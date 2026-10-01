@@ -41,6 +41,7 @@ import os
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 
+from tinyassets.command_center_names import CommandCenterNames
 from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 
@@ -423,6 +424,9 @@ class RefusalsAreErrors(Middleware):
 mcp.add_middleware(ConversationAttention())
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
+# Innermost: the rename's public edge -- a retired name is refused naming its
+# replacement, and every result is respelled before the ceiling measures it.
+mcp.add_middleware(CommandCenterNames())
 
 
 @mcp.tool
@@ -1882,7 +1886,7 @@ _WRITE_GRAPH_WORKSPACES_CHAPTER = """\
     GitLab, Gitea, self-hosted - not a fixed one. To publish, a node returns
     ``{"sink": "workspace", "op": "push", "workspace": "<checkout node>",
     "commit_sha": "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands
-    as ``tiny/<universe>/<slug>`` (never the default branch; open the PR with
+    as ``tiny/<command-center-id>/<slug>`` (never the default branch; open the PR with
     the generic call), and a push against a created workspace is refused
     because it has no remote. ``{"sink": "workspace", "op": "discard",
     "workspace": "<node>"}`` drops any workspace early (no consent needed).
@@ -1985,7 +1989,7 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     capability is these calls on a ``tinyassets`` object, acting as whoever is
     LOOKING at it, inside their own command center:
 
-        await tinyassets.whoami()                  -> {universe_id, universe_name}
+        await tinyassets.whoami()                  -> {command_center_id, command_center_name}
         await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
         await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
         await tinyassets.readConversation(limit, before) -> {turns:[{speaker,text,at}],
