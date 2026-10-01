@@ -149,22 +149,63 @@ def test_branches_are_charged_to_author_and_publisher(base):
 def test_commons_pages_are_charged_to_their_last_writer(base):
     page = base / "wiki" / "pages" / "notes" / "p.md"
     page.parent.mkdir(parents=True)
-    page.write_text("w" * (8 * KIB), encoding="utf-8")
-
-    sa.record_commons_writer(base, page, A)
+    a_text = "a" * (8 * KIB)
+    page.write_text(a_text, encoding="utf-8")
+    sa.record_commons_writer(base, page, A, a_text)
     assert _measured(base, A, "commons_pages") == 8 * KIB
 
-    sa.record_commons_writer(base, page, B)  # B edits it: B owns it now
+    b_text = "b" * (9 * KIB)
+    page.write_text(b_text, encoding="utf-8")  # B edits it: B owns it now
+    sa.record_commons_writer(base, page, B, b_text)
     assert _measured(base, A, "commons_pages") == 0
-    assert _measured(base, B, "commons_pages") == 8 * KIB
+    assert _measured(base, B, "commons_pages") == 9 * KIB
+
+
+def test_an_interleaved_write_never_bills_someone_who_did_not_write_it(base):
+    """gpt-6-astra PR #4166: B writes, A writes, A records, B records. The page
+    holds A's bytes; B's record names B's content, so B is NOT charged."""
+    page = base / "wiki" / "pages" / "notes" / "race.md"
+    page.parent.mkdir(parents=True)
+    a_text, b_text = "a" * (8 * KIB), "b" * (8 * KIB)
+    page.write_text(a_text, encoding="utf-8")  # A's write landed last
+    sa.record_commons_writer(base, page, A, a_text)
+    sa.record_commons_writer(base, page, B, b_text)  # B's record arrives late
+
+    assert _measured(base, B, "commons_pages") == 0
 
 
 def test_a_page_outside_the_wiki_or_without_a_writer_records_nothing(base):
     outside = base / "u-a" / "x.md"
     outside.write_text("x", encoding="utf-8")
-    sa.record_commons_writer(base, outside, A)
-    sa.record_commons_writer(base, base / "wiki" / "p.md", "")
+    sa.record_commons_writer(base, outside, A, "x")
+    sa.record_commons_writer(base, base / "wiki" / "p.md", "", "x")
     assert _measured(base, A, "commons_pages") == 0
+
+
+def test_commons_log_lines_are_charged_to_their_writer(base):
+    sa.record_commons_log(base, A, 3 * KIB)
+    sa.record_commons_log(base, A, 2 * KIB)
+    sa.record_commons_log(base, "", 50 * KIB)  # no actor: the platform's
+    assert _measured(base, A, "commons_pages") == 5 * KIB
+    assert _measured(base, B, "commons_pages") == 0
+
+
+def test_automation_inputs_are_charged_to_their_owner(base):
+    from tinyassets.automations import automations_db_path
+
+    db = automations_db_path(base)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE automations (automation_id TEXT, owner_principal_id TEXT, "
+        "name TEXT, cron_expr TEXT, inputs_json TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO automations VALUES ('a1', ?, 'n', '', ?)", (A, "i" * (20 * KIB)),
+    )
+    conn.commit()
+    conn.close()
+    assert _measured(base, A, "automations") >= 20 * KIB
+    assert _measured(base, B, "automations") == 0
 
 
 def test_the_wiki_write_records_its_writer(base, signed_in, monkeypatch):

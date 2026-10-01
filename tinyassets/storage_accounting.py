@@ -45,6 +45,7 @@ lock the owner out of fixing it, or lose work already admitted.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import sqlite3
@@ -402,7 +403,7 @@ def _commons_pages(base: Path, account_id: str) -> int:
         conn.execute("PRAGMA busy_timeout = 30000")
         try:
             rows = conn.execute(
-                f"SELECT rel_path FROM commons_writers WHERE writer IN ({marks})",
+                f"SELECT rel_path, digest FROM commons_writers WHERE writer IN ({marks})",
                 tuple(actors),
             ).fetchall()
         except sqlite3.OperationalError as exc:
@@ -413,14 +414,59 @@ def _commons_pages(base: Path, account_id: str) -> int:
         conn.close()
     root = wiki_path()
     total = 0
-    for (rel,) in rows:
+    for rel, digest in rows:
         try:
             st = os.lstat(root / rel)
         except FileNotFoundError:
             continue  # deleted: no longer anyone's bytes
-        if stat.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        # Charged only while the page still holds what THIS writer wrote: a race
+        # where two writes interleave and the later record names the earlier
+        # content leaves the page uncharged until its next write -- never
+        # charged to someone who did not write it (gpt-6-astra, PR #4166).
+        try:
+            current = _content_digest((root / rel).read_bytes())
+        except OSError:
+            continue
+        if current == digest:
             total += st.st_size
-    return total
+    conn = sqlite3.connect(f"file:{ledger.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        try:
+            row = conn.execute(
+                f"SELECT SUM(bytes) FROM commons_log_bytes WHERE writer IN ({marks})",
+                tuple(actors),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            row = None
+    finally:
+        conn.close()
+    return total + int((row or [0])[0] or 0)
+
+
+def _content_digest(data: bytes | str) -> str:
+    """Line-ending-insensitive digest: text written on Windows gains CRLF."""
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    return hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _automations(base: Path, account_id: str) -> int:
+    """Automations' user-supplied fields (``inputs`` has no byte bound), by their
+    recorded ``owner_principal_id``. Schedules' bookkeeping columns are not
+    user-sized and are not charged (gpt-6-astra, PR #4166)."""
+    from tinyassets.automations import automations_db_path
+
+    actors = _account_actors(base, account_id)
+    marks = ",".join("?" * len(actors))
+    return _sum_sql(
+        automations_db_path(base),
+        f"SELECT SUM({_blob_sum(('inputs_json', 'name', 'cron_expr'))}) "
+        f"FROM automations WHERE owner_principal_id IN ({marks})",
+        tuple(actors),
+    )
 
 
 #: THE registry. Every place user bytes live is either here, or named in
@@ -438,6 +484,7 @@ STORES: dict[str, Store] = {
         Store("uploads", SCOPE_ACCOUNT, _uploads),
         Store("branches", SCOPE_ACCOUNT, _branches),
         Store("commons_pages", SCOPE_ACCOUNT, _commons_pages),
+        Store("automations", SCOPE_ACCOUNT, _automations),
     )
 }
 
@@ -462,7 +509,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".runtime": "platform: provider runtime",
     ".universe_seats.db": "platform: seat leases",
     ".engine_run_admissions.db": "platform: admission ledger",
-    ".automations.db": "platform: automation schedules (bounded per automation)",
+    ".automations.db": "automations (user inputs by owner; schedule bookkeeping is platform)",
     ".universe-tool-slots": "platform: tool jail slots",
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
@@ -545,9 +592,15 @@ CREATE INDEX IF NOT EXISTS idx_pending_scope ON pending(scope_id, store);
 CREATE TABLE IF NOT EXISTS commons_writers (
     rel_path    TEXT PRIMARY KEY,
     writer      TEXT NOT NULL,
+    digest      TEXT NOT NULL,
     recorded_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_commons_writers_writer ON commons_writers(writer);
+-- Bytes each writer appended to the commons wiki log (append-only).
+CREATE TABLE IF NOT EXISTS commons_log_bytes (
+    writer TEXT PRIMARY KEY,
+    bytes  INTEGER NOT NULL CHECK (bytes >= 0)
+);
 CREATE TABLE IF NOT EXISTS counter (
     id  INTEGER PRIMARY KEY CHECK (id = 1),
     seq INTEGER NOT NULL
@@ -651,12 +704,34 @@ def measure(base_path: str | Path, scope_id: str, store: str, *, now: float | No
     return size
 
 
-def record_commons_writer(base_path: str | Path, page: str | Path, writer: str) -> None:
+def record_commons_log(base_path: str | Path, writer: str, nbytes: int) -> None:
+    """Charge ``nbytes`` appended to the commons wiki log to ``writer``. The log
+    is append-only, so the running total is its measure. Never raises."""
+    person = named_principal(writer or "")
+    if not person or nbytes <= 0:
+        return
+    try:
+        with _txn(base_path) as conn:
+            conn.execute(
+                "INSERT INTO commons_log_bytes (writer, bytes) VALUES (?, ?) "
+                "ON CONFLICT (writer) DO UPDATE SET bytes = bytes + excluded.bytes",
+                (person, int(nbytes)),
+            )
+    except Exception:  # noqa: BLE001 -- the log line is already written
+        _log.exception("could not record commons log bytes for a writer")
+
+
+def record_commons_writer(
+    base_path: str | Path, page: str | Path, writer: str, content: str | bytes,
+) -> None:
     """Record ``writer`` as the account charged for commons page ``page``.
 
-    The last writer owns a page's bytes. A page outside the wiki root, or a write
-    with no named writer, records nothing. Never raises: the page is already
-    written, and a lost record leaves its bytes the platform's -- logged loudly.
+    The last writer owns a page's bytes -- but only while the page still holds
+    ``content``, the exact text THIS writer wrote (its digest is stored), so an
+    interleaved write can never move the bill onto someone who did not write the
+    bytes. A page outside the wiki root, or a write with no named writer,
+    records nothing. Never raises: the page is already written, and a lost
+    record leaves its bytes the platform's -- logged loudly.
     """
     from tinyassets.storage import wiki_path
 
@@ -670,10 +745,11 @@ def record_commons_writer(base_path: str | Path, page: str | Path, writer: str) 
     try:
         with _txn(base_path) as conn:
             conn.execute(
-                "INSERT INTO commons_writers (rel_path, writer, recorded_at) VALUES (?, ?, ?) "
-                "ON CONFLICT (rel_path) DO UPDATE SET writer = excluded.writer, "
+                "INSERT INTO commons_writers (rel_path, writer, digest, recorded_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT (rel_path) DO UPDATE SET "
+                "writer = excluded.writer, digest = excluded.digest, "
                 "recorded_at = excluded.recorded_at",
-                (rel, person, time.time()),
+                (rel, person, _content_digest(content), time.time()),
             )
     except Exception:  # noqa: BLE001 -- see docstring
         _log.exception("could not record the writer of commons page %s", rel)

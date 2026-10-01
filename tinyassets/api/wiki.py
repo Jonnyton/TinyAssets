@@ -592,7 +592,7 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
     idx_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _record_commons_writer(path: Path) -> None:
+def _record_commons_writer(path: Path, content: str) -> None:
     """Charge this commons page's bytes to the account that last wrote it.
 
     Commons pages carry no author, so the writer is recorded by the write
@@ -604,18 +604,28 @@ def _record_commons_writer(path: Path) -> None:
     from tinyassets.api.permissions import current_actor_id
     from tinyassets.storage import data_dir
 
-    storage_accounting.record_commons_writer(data_dir(), path, current_actor_id())
+    storage_accounting.record_commons_writer(data_dir(), path, current_actor_id(), content)
 
 
 def _append_wiki_log(msg: str) -> None:
     """Append an entry to the wiki log."""
     log_path = _wiki_log_path()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    line = f"\n## [{today}] {msg}\n"
     try:
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"\n## [{today}] {msg}\n")
+            f.write(line)
     except OSError:
-        pass
+        return
+    # The log grows with user-supplied log entries: charge each appended line to
+    # the authenticated writer (gpt-6-astra, PR #4166). No actor: platform's.
+    from tinyassets import storage_accounting
+    from tinyassets.api.permissions import current_actor_id
+    from tinyassets.storage import data_dir
+
+    storage_accounting.record_commons_log(
+        data_dir(), current_actor_id(), len(line.encode("utf-8")),
+    )
 
 
 def _sanitize_slug(name: str) -> str:
@@ -1148,7 +1158,7 @@ def _wiki_write(
     if promoted_path.exists():
         try:
             promoted_path.write_text(content, encoding="utf-8")
-            _record_commons_writer(promoted_path)
+            _record_commons_writer(promoted_path, content)
             _append_wiki_log(
                 f"update | {promoted_rel_path.removesuffix('.md')} | "
                 f"{log_entry or 'in-place update'}"
@@ -1166,7 +1176,7 @@ def _wiki_write(
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         is_new = not draft_path.exists()
         draft_path.write_text(content, encoding="utf-8")
-        _record_commons_writer(draft_path)
+        _record_commons_writer(draft_path, content)
         action_word = "draft" if is_new else "draft-update"
         _append_wiki_log(
             f"{action_word} | drafts/{category}/{slug} | {log_entry or 'new draft'}"
@@ -1241,7 +1251,7 @@ def _wiki_patch(
 
     try:
         resolved.write_text(patched, encoding="utf-8")
-        _record_commons_writer(resolved)
+        _record_commons_writer(resolved, patched)
         _append_wiki_log(f"patch | {rel} | {log_entry or 'exact replacement'}")
         response.update({"status": "patched"})
         return json.dumps(response)
@@ -1417,7 +1427,7 @@ def _wiki_consolidate(
                     pass
             try:
                 primary["path"].write_text("".join(sections), encoding="utf-8")
-                _record_commons_writer(primary["path"])
+                _record_commons_writer(primary["path"], "".join(sections))
             except OSError:
                 pass
             report.append(
@@ -1489,7 +1499,7 @@ def _wiki_promote(
         if "updated:" in content:
             content = re.sub(r"updated:.*", f"updated: {today}", content)
         dest_path.write_text(content, encoding="utf-8")
-        _record_commons_writer(dest_path)
+        _record_commons_writer(dest_path, content)
         draft_path.unlink()
         _add_to_index(found_category, slug, meta.get("title", slug))
         _append_wiki_log(
@@ -1517,7 +1527,7 @@ def _wiki_ingest(
         raw_dir.mkdir(parents=True, exist_ok=True)
         target = raw_dir / Path(filename).name
         target.write_text(content, encoding="utf-8")
-        _record_commons_writer(target)
+        _record_commons_writer(target, content)
         url_note = f" ({source_url})" if source_url else ""
         _append_wiki_log(f"ingest | {filename}{url_note}")
         return json.dumps({
@@ -1600,7 +1610,7 @@ def _wiki_supersede(
             old_content = fm_match.group(1) + notice + body
 
         old_path.write_text(old_content, encoding="utf-8")
-        _record_commons_writer(old_path)
+        _record_commons_writer(old_path, old_content)
         _append_wiki_log(
             f"supersede | {old_category}/{old_slug} -> {new_slug} | {reason}"
         )
@@ -2277,7 +2287,7 @@ def _wiki_cosign_bug(
 
     try:
         target.write_text(raw, encoding="utf-8")
-        _record_commons_writer(target)
+        _record_commons_writer(target, raw)
     except OSError as exc:
         return json.dumps({"error": f"Cannot write bug file: {exc}"})
 
@@ -2450,7 +2460,7 @@ def _wiki_file_bug(
         try:
             with open(target, "x", encoding="utf-8") as fh:
                 fh.write(body)
-            _record_commons_writer(target)
+            _record_commons_writer(target, body)
             break
         except FileExistsError:
             if attempt == 2:
