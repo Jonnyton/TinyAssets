@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from tinyassets.docview import (
+from scripts.docview import (
     extract_markdown_section,
     extract_text_lines,
     list_markdown_headings,

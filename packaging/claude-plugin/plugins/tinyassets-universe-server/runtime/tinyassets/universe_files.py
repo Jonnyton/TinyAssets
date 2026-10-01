@@ -40,6 +40,7 @@ __all__ = [
     "UniverseFileError",
     "list_universe_dir",
     "load_untrusted_yaml",
+    "open_runtime_dir",
     "read_universe_file",
     "read_universe_text",
 ]
@@ -162,6 +163,33 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
     if not directory.is_dir():
         raise UniverseFileError("not a directory")
     return sorted(entry.name for entry in os.scandir(directory))
+
+
+def open_runtime_dir(universe_dir: Path | str, *parts: str) -> int:
+    """A descriptor for ``universe_dir/.runtime/<parts>``, created if missing.
+
+    The daemon creates platform state inside a folder other processes of the
+    same universe can write (a workflow provider jail binds it read-write), so
+    every component is created and then opened through the parent descriptor
+    with ``O_NOFOLLOW``: a link planted anywhere on the path refuses rather
+    than redirecting the daemon into another universe. POSIX only; the caller
+    closes the descriptor.
+    """
+    current = fs.open_dir_nofollow(Path(universe_dir).resolve(strict=False))
+    try:
+        for part in (".runtime", *parts):
+            _check_component(part)
+            try:
+                os.mkdir(part, 0o700, dir_fd=current)
+            except FileExistsError:
+                pass
+            child = fs.open_subdir_nofollow(current, part)
+            os.close(current)
+            current = child
+    except BaseException:
+        os.close(current)
+        raise
+    return current
 
 
 def load_untrusted_yaml(text: str, *, max_bytes: int = MAX_CONFIG_BYTES) -> object:

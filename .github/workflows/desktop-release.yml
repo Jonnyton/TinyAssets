@@ -186,7 +186,7 @@ jobs:
         run: |
           $stage = "packaging/release-stage/windows"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          $artifact = Get-ChildItem "packaging/dist/windows/TinyAssetsSetup-*.exe"
+          $artifact = Get-ChildItem "packaging/dist/windows/TinyAssetsServerSetup-*.exe"
           if ($artifact.Count -ne 1) { throw "expected exactly one Windows installer" }
           Copy-Item -LiteralPath $artifact.FullName -Destination $stage
           $staged = Join-Path $stage $artifact.Name
@@ -303,7 +303,7 @@ jobs:
       - name: Install, probe, repair, and uninstall exact CI artifact
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "packaging/dist/windows/TinyAssetsSetup-*.exe"
+          $installer = Get-ChildItem "packaging/dist/windows/TinyAssetsServerSetup-*.exe"
           if ($installer.Count -ne 1) {
             throw "expected exactly one Windows installer"
           }
@@ -409,7 +409,7 @@ jobs:
           WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_IDENTITY: ${{ secrets.WINDOWS_SIGNING_IDENTITY }}
         run: |
-          $artifact = Get-ChildItem "packaging/dist/windows/TinyAssetsSetup-*.exe"
+          $artifact = Get-ChildItem "packaging/dist/windows/TinyAssetsServerSetup-*.exe"
           if ($artifact.Count -ne 1) { throw "expected exactly one Windows installer" }
           ./packaging/windows/sign.ps1 -Artifact $artifact.FullName
           signtool.exe verify /pa /all $artifact.FullName
@@ -494,7 +494,7 @@ jobs:
             windows)
               identity="$WINDOWS_IDENTITY"
               status=signed
-              patterns=("packaging/dist/windows/TinyAssetsSetup-"*.exe)
+              patterns=("packaging/dist/windows/TinyAssetsServerSetup-"*.exe)
               ;;
             macos)
               identity="$APPLE_IDENTITY"

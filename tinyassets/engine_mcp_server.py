@@ -642,17 +642,40 @@ def read_graph(
             ))
         if normalized == "access":
             from tinyassets.api.agent_access import read_access
+            from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_access
+            from tinyassets.engine_result_bounds import resolve_ceiling
 
-            return json.dumps(read_access(
-                universe_id=_GRAPH_ID, how_to_change=_SERVED_ACCESS_VERBS,
+            # Filtered by query, paged by field_name/output_offset, and sectioned
+            # under the ceiling, so the ceiling never cuts its tail (live
+            # 2026-10-01: standing decisions unreadable past 21,764 bytes).
+            return json.dumps(project_access(
+                read_access(universe_id=_GRAPH_ID, how_to_change=_SERVED_ACCESS_VERBS),
+                query=query, section=field_name, offset=output_offset,
+                budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
             ), default=str)
         if normalized in {"automations", "automation"}:
             from tinyassets.api.automations import automations
+            from tinyassets.engine_read_views import (
+                CEILING_HEADROOM_BYTES,
+                project_automation,
+                project_automations,
+            )
+            from tinyassets.engine_result_bounds import resolve_ceiling
 
-            return _automation_response(automations(
-                action="list" if normalized == "automations" else "get",
-                universe_id=_GRAPH_ID,
-                automation_id=(automation_id or "").strip(),
+            # Every row, paged to fit under the ceiling; input bodies are read
+            # one at a time (live 2026-10-01: 8 rows were 282,886 bytes).
+            budget = resolve_ceiling() - CEILING_HEADROOM_BYTES
+            if normalized == "automations":
+                return _automation_response(project_automations(
+                    automations(action="list", universe_id=_GRAPH_ID, limit=None),
+                    budget=budget, render=_automation_response,
+                    offset=output_offset,
+                ))
+            return _automation_response(project_automation(
+                automations(action="get", universe_id=_GRAPH_ID,
+                            automation_id=(automation_id or "").strip()),
+                budget=budget, render=_automation_response, field_name=field_name,
+                offset=output_offset, max_chars=output_max_chars,
             ))
         # graph_id is PINNED, never caller-supplied: the agent cannot address
         # another universe. ``branch`` is the one target that also needs a
@@ -4122,7 +4145,8 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
 # ── the universe's four tools (universe-harness S1) ─────────────────────────
 # ``read`` / ``write`` / ``edit`` / ``bash`` over the agent's OWN universe
 # folder, executed by the platform inside the tool jail
-# (``tinyassets.universe_tools``): no network, no credential, resource-limited,
+# (``tinyassets.universe_tools``): public network only through the checking
+# proxy (``tinyassets.universe_egress``), no credential, resource-limited,
 # the universe at ``/u`` and nothing else. The graph pin picks the folder; no
 # parameter names a universe, and a path outside ``/u`` does not exist in the
 # jail. Every call first rechecks current serving-owner authority.
@@ -4176,8 +4200,9 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
 
 @mcp.tool(name="bash")
 async def run_bash(command: str, timeout: int = 0) -> str:
-    """Run a bash command in /u. No network; memory, processes and time are
-    limited. timeout: seconds (default 120, max 600)."""
+    """Run a bash command in /u. Public internet goes through HTTP(S)_PROXY
+    (pip, npm, git, urllib); memory, processes and time are limited.
+    timeout: seconds (default 120, max 600)."""
     from tinyassets import universe_tools
 
     return await _universe_tool(universe_tools.bash, command=command, timeout=timeout)

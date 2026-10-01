@@ -532,6 +532,7 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"
     ),
+    ".universe-sidecars": "platform: per-universe daemon sockets (egress proxy)",
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
@@ -640,11 +641,47 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
     if path.is_symlink():
         raise RuntimeError(f"refusing a symlinked storage ledger: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 30000")
-    conn.executescript(_SCHEMA)
+    conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_S, isolation_level=None)
+    try:
+        _enable_wal(conn)
+        conn.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_S * 1000)}")
+        conn.executescript(_SCHEMA)
+    except BaseException:
+        conn.close()
+        raise
     return conn
+
+
+_BUSY_TIMEOUT_S = 30.0
+
+
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """Switch a ledger to WAL, waiting out a concurrent first switch.
+
+    On a fresh file the switch reads, then upgrades to a write; SQLite never runs
+    the busy handler for that upgrade, so the loser of two first contacts got
+    "database is locked" in under a millisecond despite the 30 s timeout. Every
+    admission caught it as sqlite3.Error and refused the write as unmeasurable
+    -- the concurrent branch-create test failed about 1 run in 10. Wait here for
+    the same timeout the busy handler would have given. Once the file is WAL the
+    pragma is a no-op and this returns on the first try.
+
+    SQLite's own busy handler is off while this loop runs, so the one deadline
+    here bounds the whole wait; the caller sets the busy timeout afterwards.
+    """
+    conn.execute("PRAGMA busy_timeout = 0")
+    deadline = time.monotonic() + _BUSY_TIMEOUT_S
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            # Primary code: an extended one (SQLITE_BUSY_RECOVERY, ...) is still busy.
+            code = (getattr(exc, "sqlite_errorcode", 0) or 0) & 0xFF
+            remaining = deadline - time.monotonic()
+            if code != sqlite3.SQLITE_BUSY or remaining <= 0:
+                raise
+        time.sleep(min(0.005, remaining))
 
 
 @contextlib.contextmanager

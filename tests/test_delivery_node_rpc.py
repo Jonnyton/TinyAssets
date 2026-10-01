@@ -297,6 +297,7 @@ def test_actual_rpc_cancellation_is_checked_inside_handler_after_read(node_env):
     assert _rows(base) == []
 
 
+@pytest.mark.real_jail
 @pytest.mark.skipif(not shutil.which("bwrap"), reason="requires Linux bubblewrap")
 def test_real_linux_jail_transports_delivery_rpc(node_env, monkeypatch):
     from tinyassets import node_sandbox

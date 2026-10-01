@@ -51,11 +51,10 @@
     "mobile/resources/android/mipmap-xxxhdpi/ic_launcher_round.png": "b611cb359fbab713c891e135f76d3dbc9295df6f63312dec286f03653380d301",
     "mobile/resources/icon.png": "577b2b1a2266c07ceabdcb14c32c9da4f3c2d1ae589b74c033cc1df8081926bb",
     "mobile/resources/splash.png": "54fb65163cee6f349e19d8b62b1302c8a2d2fe6bc79f36c7aeb58a4947d06b4d",
-    "tinyassets/desktop/app.ico": "cfbe78e2719ed6543b87d9ea2767ec7493b8d78199855724452ccbf105a6fc87",
-    "tinyassets/onboarding/app.html": "23ed6b6b8c67f0e296e204249d985e7281a4ab024bca4dbd91b1af6ce4640c43"
+    "tinyassets/desktop/app.ico": "cfbe78e2719ed6543b87d9ea2767ec7493b8d78199855724452ccbf105a6fc87"
   },
   "generators": {
-    "WebSite/brand/render_marks.py": "b2594d35921f9ba7c7d61ab38bad9ec089fd7604eb6ae77d73884c876a76833b",
+    "WebSite/brand/render_marks.py": "2d7c104a94b6d118e0c969885aa6ce43b8885c872d72bb53697762df16a16202",
     "mobile/scripts/render_app_icons.py": "b8cb6182bfab40a762fbc764bcb1af6dc704fd4e8eccc9849c4926f3aed7f5fd",
     "tinyassets/desktop/icon_gen.py": "4ad87af4b04892726b001951fc623799d31ae865e659883b5b325d5877379fbb"
   },

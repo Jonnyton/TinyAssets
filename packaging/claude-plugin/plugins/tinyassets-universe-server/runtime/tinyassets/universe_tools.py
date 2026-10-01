@@ -272,7 +272,7 @@ def _system_binary(name: str) -> str:
     return found
 
 
-def _universe_view(root: Path) -> UniverseView:
+def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseView:
     """The tool jail's view of ``root``: a read-only ``/u`` holding the visible
     entries, agent-owned paths read-write, hidden entries absent.
 
@@ -302,16 +302,25 @@ def _universe_view(root: Path) -> UniverseView:
         op = "bind-try" if owned else "ro-bind-try"
         mounts.append(JailMount(op, f"{MOUNT_POINT}/{entry.name}", root / entry.name))
     mounts.append(JailMount("remount-ro", MOUNT_POINT))
+    setenv = _JAIL_ENV
+    if egress_socket is not None:
+        # The jail still has no interface but loopback; this socket is its only
+        # way out, to the checking proxy in the daemon (universe_egress).
+        from tinyassets import universe_egress
+
+        mounts.append(JailMount("bind", universe_egress.JAIL_SOCKET, egress_socket))
+        setenv = _JAIL_ENV + universe_egress.PROXY_ENV
     return UniverseView(
         universe_dir=root,
         mounts=tuple(mounts),
         chdir=MOUNT_POINT,
-        setenv=_JAIL_ENV,
+        setenv=setenv,
     )
 
 
 def tool_jail_argv(
     universe_dir: Path, inner: Sequence[str], *, seccomp_fd: int | None = None,
+    egress_socket: Path | None = None,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
     try:
@@ -321,7 +330,7 @@ def tool_jail_argv(
     if not root.is_dir():
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
-    view = _universe_view(root)
+    view = _universe_view(root, egress_socket)
     return jail_argv(
         list(inner), view, bwrap_path=bwrap, share_net=False, clearenv=True,
         seccomp_fd=seccomp_fd,
@@ -597,6 +606,7 @@ def run_jailed(
     wall_seconds: float | None = None,
     output_bytes: int | None = None,
     on_wait: Callable[[float], None] | None = None,
+    egress_socket: Path | None = None,
 ) -> ToolRun:
     """Run ``inner`` in the command center's tool jail under ``limits``.
 
@@ -622,7 +632,8 @@ def run_jailed(
     # refusal ordering these tests pin, which is a worse trade than 40 pipes.
     filter_fd = _seccomp_fd()
     try:
-        argv = TOOL_JAIL_ARGV(root, limited, seccomp_fd=filter_fd)
+        egress = {} if egress_socket is None else {"egress_socket": egress_socket}
+        argv = TOOL_JAIL_ARGV(root, limited, seccomp_fd=filter_fd, **egress)
         with _slot(root, on_wait=on_wait, waited=queued):
             free = _free_disk(root)
             if 0 <= free < limits.min_free_disk_bytes:
@@ -979,6 +990,17 @@ def edit_file(
     return note + f"edited {target}"
 
 
+def _egress_socket(universe_dir: Path) -> Path | None:
+    """This universe's proxy socket, or ``None`` when network cannot be offered."""
+    from tinyassets import universe_egress
+
+    try:
+        return universe_egress.ensure_proxy(universe_dir)
+    except OSError:
+        logger.warning("egress proxy unavailable for %s", universe_dir, exc_info=True)
+        return None
+
+
 def bash(
     universe_dir: Path, command: str, timeout: float = 0,
     *, limits: ToolLimits = DEFAULT_LIMITS,
@@ -989,7 +1011,15 @@ def bash(
     wall = float(timeout) if timeout and float(timeout) > 0 else limits.wall_seconds
     wall = min(max(wall, 1.0), MAX_BASH_SECONDS)
     shell = _system_binary("bash")
-    run = RUNNER(universe_dir, [shell, "-c", command], limits=limits, wall_seconds=wall)
+    inner, egress = [shell, "-c", command], {}
+    socket_path = _egress_socket(universe_dir)
+    python = shutil.which("python3", path="/usr/bin:/bin")
+    if socket_path is not None and python:
+        from tinyassets import universe_egress
+
+        inner = [python, "-c", universe_egress.FORWARDER, *inner]
+        egress = {"egress_socket": socket_path}
+    run = RUNNER(universe_dir, inner, limits=limits, wall_seconds=wall, **egress)
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"
@@ -1071,7 +1101,9 @@ _HARNESS_HEAD = (
     "My command center is a folder, mounted at /u, and I work in it with four tools: "
     "`read` (a file, or a range of its lines), `write` (create or replace a "
     "file), `edit` (replace one exact passage in a file) and `bash` (a shell in "
-    "/u with no network and bounded memory, processes and time, so long-running "
+    "/u with public internet through a proxy that HTTP(S)_PROXY already points "
+    "at, so pip, npm, git and urllib work, and bounded memory, processes and "
+    "time, so long-running "
     "work does not belong there: it is workflows and automations in this "
     "command center, never a service hosted elsewhere -- handbook chapter "
     "write_graph.systems). Relative paths are under /u. Nothing outside "

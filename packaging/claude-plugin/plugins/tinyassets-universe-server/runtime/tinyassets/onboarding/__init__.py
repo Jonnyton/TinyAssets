@@ -1228,6 +1228,8 @@ async def _handle_rules(request: Any) -> Any:
             "behaviours": agent_rules.BEHAVIOUR_LABELS,
             "classes": agent_rules.ACTION_CLASSES,
             "handbacks": agent_rules.HANDBACK_CONSEQUENCES,
+            "operation_kinds": [k.as_dict() for k in agent_rules.list_kinds(_universe_dir())],
+            "kinds": agent_rules.OPERATION_KINDS,
         }
 
     if request.method == "GET":
@@ -1242,6 +1244,24 @@ async def _handle_rules(request: Any) -> Any:
         return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
 
     def _save():
+        if "declare" in data:
+            spec = data["declare"]
+            if not isinstance(spec, dict):
+                raise ValueError("declare must be an object")
+            declared = agent_rules.declare_kind(
+                _universe_dir(), str(spec.get("connection") or ""),
+                str(spec.get("kind") or ""), method=str(spec.get("method") or ""),
+                path_prefix=str(spec.get("path_prefix") or "/"),
+                confirm=data.get("confirm") is True,
+            )
+            return {"declared": declared.as_dict(), **_listing()}
+        if "undeclare" in data:
+            kind_id = data["undeclare"]
+            if type(kind_id) is not int or kind_id <= 0 or kind_id > 9_223_372_036_854_775_807:
+                raise ValueError("undeclare must be a declaration id")
+            return {"undeclared": agent_rules.delete_kind(
+                        _universe_dir(), kind_id, confirm=data.get("confirm") is True),
+                    **_listing()}
         if "delete" in data:
             rule_id = data["delete"]
             # A positive JSON integer only: no float truncation, no bool, no
