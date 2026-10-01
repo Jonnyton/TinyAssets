@@ -293,3 +293,49 @@ def test_an_ambiguous_pin_refuses_with_the_choices():
     with pytest.raises(ModelPinError) as caught:
         resolve_pin_source("openrouter", "vendor/one:free", sources)
     assert all(ref in str(caught.value) for ref in sources)
+
+
+def test_a_background_pin_is_resolved_by_the_model_its_source_offers(tmp_path, monkeypatch):
+    """The background lane resolves a bare pin model-aware, before its snapshot.
+
+    gpt-6-astra on #4162: it passed no models, so two ``api_key_http`` sources
+    with disjoint catalogues refused a pin the model alone identified.
+    """
+    from types import SimpleNamespace
+
+    from tinyassets import provider_assignment
+    from tinyassets.background_served_provider import _BackgroundAssignedProviderSession
+    from tinyassets.providers import discovery_snapshot
+    from tinyassets.providers.model_pins import ModelPinError
+
+    offered = {"provdef_a": ("vendor/one:free",), "provdef_b": ("vendor/two:free",)}
+    assignment = SimpleNamespace(
+        owner_user_id=A_OWNER,
+        candidates=[SimpleNamespace(provider=f"api_key_http:{key}") for key in offered],
+    )
+    monkeypatch.setattr(provider_assignment, "load_provider_assignment_in_transaction",
+                        lambda _conn, universe_id: assignment)
+    asked = []
+
+    def discover(*, owner_user_id, universe_id, definition_id):
+        asked.append(definition_id)
+        models = tuple(SimpleNamespace(model_id=m) for m in offered[definition_id])
+        return SimpleNamespace(models=SimpleNamespace(models=models))
+
+    monkeypatch.setattr(discovery_snapshot, "refresh_model_discovery", discover)
+    session = _BackgroundAssignedProviderSession.__new__(_BackgroundAssignedProviderSession)
+    session._base_path = tmp_path
+    session._task = SimpleNamespace(universe_id=A_HOME)
+    (tmp_path / A_HOME).mkdir()
+
+    policy = {"preferred": {"provider": "api_key_http", "model_id": "vendor/two:free"}}
+    assert session._resolved_policy(policy)["preferred"]["provider"] == "api_key_http:provdef_b"
+    assert sorted(asked) == ["provdef_a", "provdef_b"]
+    # An exact ref is untouched and asks nothing.
+    asked.clear()
+    exact = {"preferred": {"provider": "api_key_http:provdef_a"}}
+    assert session._resolved_policy(exact) is exact and asked == []
+    with pytest.raises(ModelPinError) as caught:
+        session._resolved_policy({"preferred": {"provider": "api_key_http"}})
+    assert "api_key_http:provdef_a" in str(caught.value)
+    assert "api_key_http:provdef_b" in str(caught.value)
