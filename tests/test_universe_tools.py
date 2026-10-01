@@ -822,7 +822,7 @@ def test_agent_owned_paths_are_pinned():
     """
     assert universe_tools.AGENT_BRAIN_FILES == (
         "identity.md", "founder.md", "origin.md", "body.md", "orgchart.md",
-        "projects.md", "goals.md", "index.md", "log.md", "voice.md",
+        "projects.md", "goals.md", "index.md", "log.md", "voice.md", "AGENTS.md",
     )
     assert universe_tools.AGENT_HARNESS_DIRS == (
         "skills", "prompts", "extensions", "workflows", "bin", "notes",

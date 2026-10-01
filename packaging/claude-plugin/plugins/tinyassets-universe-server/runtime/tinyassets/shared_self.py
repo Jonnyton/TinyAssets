@@ -146,6 +146,14 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
             shared_config = replace(shared_config, absolute_cap_s=min(caps))
     if node is not None:
         shared_config = _granted_config(shared_config, node)
+    # An agent node continues its own session from wake to wake (change
+    # `universe-agent-harness`): a resumable adapter resumes it and is sent only
+    # the conversation that arrived since its last wake, then this wake's prompt.
+    node_key = getattr(config, "agent_node_key", "") if config is not None else ""
+    if node_key:
+        shared_config = replace(shared_config, agent_session=intelligence.session_ref(
+            root, f"node:{node_key}", history_block + prompt, prompt, history,
+        ))
     return history_block + prompt, system, shared_config
 
 

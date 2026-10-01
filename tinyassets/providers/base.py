@@ -288,6 +288,12 @@ class ModelConfig:
     """``shared_self.agent_node_key`` of the compiled node and its branch. The run
     session refuses unless its admitted snapshot's node has the same key."""
 
+    agent_session: object | None = field(default=None, repr=False, compare=False)
+    """``agent_sessions.AgentSessionRef`` naming the thread or agent node this
+    turn continues. An adapter that declares ``native_resume`` resumes that
+    key's native session instead of starting a fresh one; every other adapter
+    ignores it."""
+
     credential_snapshot_dir: Path | None = field(
         default=None,
         repr=False,

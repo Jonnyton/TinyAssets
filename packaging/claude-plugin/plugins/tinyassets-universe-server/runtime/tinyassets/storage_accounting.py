@@ -524,6 +524,10 @@ ROOT_ENTRIES: dict[str, str] = {
     ".engine_run_admissions.db": "platform: admission ledger",
     ".automations.db": "automations (user inputs by owner; schedule bookkeeping is platform)",
     ".universe-tool-slots": "platform: tool jail slots",
+    ".agent-sessions": (
+        "platform: which native session each thread resumes (bytes per thread; "
+        "the session files themselves live in the universe and count there)"
+    ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
