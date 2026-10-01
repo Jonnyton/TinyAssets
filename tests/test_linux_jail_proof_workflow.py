@@ -16,20 +16,23 @@ back into decoration or widen it past "cloud-only test infrastructure":
     daemon: the only escalation is `sudo -n` on the same bwrap/pytest argv;
   - it runs ONLY the named jail-proof modules, never the suite or the required
     gate;
-  - its verdict is the named-case JUnit assertion over EVERY guarded case, run
-    `always()`, so pytest's exit 0 on a skip cannot pass the job;
+  - its verdict is the named-case JUnit assertion over EVERY case marked
+    `@pytest.mark.real_jail`, run `always()`, so pytest's exit 0 on a skip
+    cannot pass the job. The marker is the single definition of the case set;
+    there is no list here or in the workflow to keep in step;
   - no `run:` block interpolates a `${{ }}` expression (values reach the shell
     through `env:` only).
 
 The assertion helper is exercised on synthetic xunit1 reports for every state
-it must distinguish, and every guarded nodeid is checked against the test source
-so a rename cannot leave the workflow asserting a case that no longer exists.
+it must distinguish, and every marked case is checked to be bwrap-gated and to
+retrigger the proof.
 
 PyYAML is imported hard: skipping this file is how the invariants would go quiet.
 """
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import re
 from pathlib import Path
@@ -41,35 +44,6 @@ _REPO = Path(__file__).resolve().parent.parent
 _WORKFLOW = _REPO / ".github" / "workflows" / "linux-jail-proof.yml"
 _SCRIPT = _REPO / "scripts" / "ci_assert_junit_case.py"
 _NODEID = "tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc"
-_FILES = (
-    "tests/test_delivery_node_rpc.py",
-    "tests/test_native_refresh_jail.py",
-    "tests/test_provider_universe_jail.py",
-    "tests/test_universe_tools_jail.py",
-)
-_NODEIDS = (
-    _NODEID,
-    "tests/test_native_refresh_jail.py::test_jail_reads_workspace_but_not_launch_credentials",
-    "tests/test_native_refresh_jail.py::test_removing_the_launch_mask_exposes_the_snapshot",
-    "tests/test_provider_universe_jail.py::test_claude_node_call_reads_only_its_own_universe",
-    "tests/test_provider_universe_jail.py::test_codex_node_call_reads_only_its_own_universe",
-    "tests/test_provider_universe_jail.py::test_router_jails_a_new_command_adapter_with_no_jail_code",
-    "tests/test_universe_tools_jail.py::test_tools_reach_their_own_universe_and_nothing_else",
-    "tests/test_universe_tools_jail.py::test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch",
-    "tests/test_universe_tools_jail.py::test_io_uring_and_symlink_are_refused_in_the_jail",
-    "tests/test_universe_tools_jail.py::test_the_owners_credentials_and_authority_state_are_out_of_reach",
-    "tests/test_universe_tools_jail.py::test_the_agent_writes_its_own_wiki_but_not_the_trusted_write_back_markers",
-    "tests/test_universe_tools_jail.py::test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt",
-    "tests/test_universe_tools_jail.py::test_an_engine_pinned_to_another_universe_cannot_reach_it",
-    "tests/test_universe_tools_jail.py::test_bash_has_no_network",
-    "tests/test_universe_tools_jail.py::test_the_limits_are_applied_inside_the_jail",
-    "tests/test_universe_tools_jail.py::test_memory_limit_stops_a_runaway_allocation",
-    "tests/test_universe_tools_jail.py::test_process_limit_holds_and_a_fork_bomb_is_contained",
-    "tests/test_universe_tools_jail.py::test_cpu_output_and_wall_clock_limits_kill",
-    "tests/test_universe_tools_jail.py::test_a_jail_that_fills_the_shared_disk_is_killed",
-    "tests/test_universe_tools_jail.py::test_a_skill_the_agent_writes_changes_its_next_turn",
-    "tests/test_universe_tools_jail.py::test_a_background_run_reads_and_writes_its_notes_while_a_database_closes",
-)
 _RUN_STEP = "Run the jail proof modules"
 _JOB = "linux-jail-proof"
 
@@ -77,6 +51,15 @@ _spec = importlib.util.spec_from_file_location("ci_assert_junit_case", _SCRIPT)
 assert _spec and _spec.loader
 _assert = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_assert)
+
+# The guarded cases, derived the same way the job derives them: every test
+# carrying @pytest.mark.real_jail. Not a hand-pinned list -- that list had to
+# mirror the workflow's and drifted three times.
+@functools.cache
+def _marked() -> list[str]:
+    # Called inside tests only, never at import: collecting the marked cases
+    # imports this module too, and an import-time call would recurse.
+    return _assert.marked_cases(_REPO, "real_jail")
 
 
 def _load() -> dict:
@@ -210,31 +193,125 @@ def test_run_blocks_never_interpolate_expressions():
 
 # --- what it runs -----------------------------------------------------------
 
-def test_env_pins_the_test_files_and_every_named_case():
-    env = _load()["env"]
-    assert "JAIL_TEST_FILE" not in env and "JAIL_TEST_NODEID" not in env
-    assert tuple(env["JAIL_TEST_FILES"].split()) == _FILES
-    assert tuple(env["JAIL_TEST_NODEIDS"].split()) == _NODEIDS
-
-
-def test_every_guarded_file_runs_and_retriggers_the_proof():
+def test_no_hand_pinned_case_list_remains_in_the_workflow():
+    """The marker is the list. A second copy is what kept drifting."""
     wf = _load()
-    files = set(wf["env"]["JAIL_TEST_FILES"].split())
-    paths = set(_triggers(wf)["pull_request"]["paths"])
-    for nodeid in wf["env"]["JAIL_TEST_NODEIDS"].split():
-        path = nodeid.split("::")[0]
-        assert path in files, f"{nodeid} is asserted but its file is never run"
-        assert path in paths, f"{path} must retrigger the proof"
+    assert "env" not in wf, "the case set must come from the marker, not workflow env"
+    assert "--nodeid" not in _code_text()
 
 
-@pytest.mark.parametrize("nodeid", _NODEIDS)
-def test_guarded_nodeid_resolves_to_a_bwrap_gated_test(nodeid):
-    path, name = nodeid.split("::")[0], nodeid.split("::")[-1]
+def test_the_marker_is_registered_and_guards_every_jail_module():
+    pyproject = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"real_jail:' in pyproject, "register the marker so a typo is not silent"
+    files = {n.split("::")[0] for n in _marked()}
+    # The four slices this job exists for (see the workflow header). Losing a
+    # whole file's marker would drop its cases without any red.
+    assert files >= {
+        "tests/test_delivery_node_rpc.py",
+        "tests/test_native_refresh_jail.py",
+        "tests/test_provider_universe_jail.py",
+        "tests/test_universe_tools_jail.py",
+    }, files
+
+
+def test_every_marked_file_retriggers_the_proof():
+    paths = set(_triggers(_load())["pull_request"]["paths"])
+    for path in sorted({n.split("::")[0] for n in _marked()}):
+        assert path in paths, f"{path} carries real_jail but does not retrigger the proof"
+
+
+def test_marked_cases_follows_pytest_collection_not_spelling(tmp_path):
+    """Aliases, class marks, nested classes and parameters count as pytest runs them."""
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_forms.py").write_text(
+        "import pytest\n"
+        "import pytest as pt\n"
+        "mark = pytest.mark\n"
+        "@mark.real_jail\n"
+        "def test_alias(): pass\n"
+        "@pt.mark.real_jail\n"
+        "async def test_async(): pass\n"
+        "class TestA:\n"
+        "    pytestmark = pytest.mark.real_jail\n"
+        "    def test_in_class(self): pass\n"
+        "    class TestB:\n"
+        "        def test_nested(self): pass\n"
+        "@pytest.mark.real_jail\n"
+        "@pytest.mark.parametrize('v', [1, 2])\n"
+        "def test_param(v): pass\n"
+        "def test_unmarked(): pass\n",
+        encoding="utf-8",
+    )
+    (tests / "test_silent.py").write_text("def test_x(): pass\n", encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nmarkers =\n    real_jail: test\n", encoding="utf-8"
+    )
+    assert _assert.marked_cases(tmp_path, "real_jail") == [
+        "tests/test_forms.py::test_alias",
+        "tests/test_forms.py::test_async",
+        "tests/test_forms.py::TestA::test_in_class",
+        "tests/test_forms.py::TestA::TestB::test_nested",
+        "tests/test_forms.py::test_param[1]",
+        "tests/test_forms.py::test_param[2]",
+    ]
+
+
+def test_a_file_that_cannot_be_collected_refuses_rather_than_guessing(tmp_path):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_broken.py").write_text(
+        "import pytest\nraise ImportError('boom')\n@pytest.mark.real_jail\ndef test_a(): pass\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="refusing"):
+        _assert.marked_cases(tmp_path, "real_jail")
+
+
+def test_list_files_and_an_unused_marker(tmp_path, capsys):
+    assert _assert.main(["--marker", "real_jail", "--list-files"]) == 0
+    listed = capsys.readouterr().out.split()
+    assert listed == sorted({n.split("::")[0] for n in _marked()})
+    # A marker nobody carries must not read as an all-clear.
+    assert _assert.main(["--marker", "no_such_marker", "--list-files"]) == 2
+    assert _assert.main(["--marker", "no_such_marker", "--junit", str(tmp_path / "j")]) == 2
+
+
+def test_assertion_helper_marker_mode_checks_every_marked_case(tmp_path):
+    clean = "".join(
+        '<testcase classname="{}" name="{}"/>'.format(
+            n.split("::")[0][:-3].replace("/", "."), n.split("::")[-1]
+        )
+        for n in _marked()
+    )
+    assert _assert.main(["--junit", str(_junit(tmp_path, clean)), "--marker", "real_jail"]) == 0
+    dropped = clean.replace(f'name="{_marked()[-1].split("::")[-1]}"', 'name="test_renamed"')
+    assert _assert.main(["--junit", str(_junit(tmp_path, dropped)), "--marker", "real_jail"]) == 1
+
+
+def test_an_explicit_nodeid_still_matches_exactly(tmp_path):
+    """A base name is not satisfied by one of its parameters: that hides the rest."""
+    case = ('<testcase classname="tests.test_delivery_node_rpc" '
+            'name="test_real_linux_jail_transports_delivery_rpc[a]"/>')
+    assert _assert.check(_junit(tmp_path, case), _NODEID)[0] == 1
+
+
+def test_every_marked_case_is_a_bwrap_gated_test():
+    for nodeid in _marked():
+        _assert_bwrap_gated(nodeid)
+
+
+def _assert_bwrap_gated(nodeid: str) -> None:
+    path, name = nodeid.split("::")[0], nodeid.split("::")[-1].split("[")[0]
     src = (_REPO / path).read_text(encoding="utf-8")
-    assert re.search(rf"^def {re.escape(name)}\(", src, re.M), f"{name} must exist"
+    assert re.search(rf"^\s*(async\s+)?def {re.escape(name)}\(", src, re.M), (
+        f"{name} must exist"
+    )
     decorated = re.search(rf'@pytest\.mark\.skipif\(not shutil\.which\("bwrap"\)[^\n]*\n'
                           rf'def {re.escape(name)}\(', src)
-    module_gate = re.search(r"^pytestmark = pytest\.mark\.skipif\(\n[^)]*_BWRAP", src, re.M)
+    module_gate = re.search(
+        r"^pytestmark = \[?\s*pytest\.mark\.skipif\(\n[^)]*_BWRAP", src, re.M
+    )
     assert decorated or module_gate, f"{name} must be skipif-gated on bwrap"
 
 
@@ -257,8 +334,10 @@ def test_pytest_step_is_focused_and_off_repo():
     step = _step(_load(), _RUN_STEP)
     run = step["run"]
     env = step["env"]
-    assert 'read -r -a files <<< "$JAIL_TEST_FILES"' in run
+    assert "ci_assert_junit_case.py --marker real_jail --list-files" in run
+    assert 'mapfile -t files <<< "$listed"' in run
     assert 'args=("${files[@]}"' in run
+    assert "-m real_jail" in run, "only the marked cases run, not the whole files"
     assert "ci_required_tests.py" not in run, "never the required gate"
     assert not re.search(r"pytest\s+tests(\s|$|/?\")", run), "never the whole suite"
     assert "--junitxml" in run and "--basetemp" in run
@@ -278,9 +357,7 @@ def test_assertion_step_always_runs_and_names_the_case():
     step = _step(wf, "Assert every real-jail case")
     assert step["if"] == "always()"
     assert "scripts/ci_assert_junit_case.py" in step["run"]
-    assert 'read -r -a nodeids <<< "$JAIL_TEST_NODEIDS"' in step["run"]
-    assert 'nodeid_args+=(--nodeid "$nodeid")' in step["run"]
-    assert '"${nodeid_args[@]}"' in step["run"]
+    assert "--marker real_jail" in step["run"]
     run_step = _step(wf, _RUN_STEP)
     assert step["env"]["JUNIT_PATH"] == run_step["env"]["JUNIT_PATH"]
 

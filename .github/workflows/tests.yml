@@ -141,8 +141,10 @@ jobs:
   # (`required-tests`, below) decides the gate over the union. Measured before
   # the split: ~21,900 tests serially, 19-22 min on an idle runner (runs
   # 36284043853, 36283801757), 40+ under contention. Each test FILE is owned by
-  # exactly one shard via a stable path hash (ci_required_tests.shard_of), so
-  # the split is complete and disjoint by construction.
+  # exactly one shard (ci_required_tests.shard_of: packed by the measured
+  # per-file durations in .github/test-durations.json, path hash for anything
+  # the table does not cover), so the split is complete and disjoint by
+  # construction.
   #
   # Not pytest-xdist: parallelism is across RUNNERS, so no two shards share a
   # process, temp dir or sqlite file — the in-process nondeterminism documented

@@ -199,6 +199,62 @@ def test_agent_journal_deletion_counts_cascades_and_former_home(two_users: Path)
         assert receipt["rows_deleted"][table] == 2
 
 
+def test_agent_session_records_and_rules_go_with_the_account_and_no_one_elses(
+    two_users: Path,
+):
+    """Custom Rules and review switches live in .agent-sessions/<home>/rules.db,
+    beside the universe rather than inside it, so removing the home alone left
+    them behind after deletion."""
+    from tinyassets import agent_rules
+    from tinyassets.agent_sessions import RECORDS_DIR
+
+    for home in (HOME_A, HOME_B):
+        agent_rules.set_rule(two_users / home, "app.read", agent_rules.ASK_FIRST)
+    records_a = two_users / RECORDS_DIR / HOME_A
+    records_b = two_users / RECORDS_DIR / HOME_B
+    assert (records_a / "rules.db").is_file() and (records_b / "rules.db").is_file()
+
+    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                             delete_identity=lambda sub: "deleted")
+
+    assert not records_a.exists()
+    assert receipt["unfinished_phases"] == []
+    assert [r.behaviour for r in agent_rules.list_rules(two_users / HOME_B)
+            if r.action_class == "app.read"] == [agent_rules.ASK_FIRST]
+
+
+def test_a_symlinked_records_root_is_refused_and_reported_not_followed(
+    two_users: Path, tmp_path: Path,
+):
+    from tinyassets.agent_sessions import RECORDS_DIR
+
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / HOME_A).mkdir(parents=True)
+    (elsewhere / HOME_A / "keep.txt").write_text("not the account's", encoding="utf-8")
+    try:
+        (two_users / RECORDS_DIR).symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("this host cannot create symlinks")
+
+    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                             delete_identity=lambda sub: "deleted")
+
+    assert (elsewhere / HOME_A / "keep.txt").is_file()
+    assert "agent_session_records" in receipt["unfinished_phases"]
+
+
+def test_records_that_are_not_a_directory_are_reported_not_skipped(two_users: Path):
+    from tinyassets.agent_sessions import RECORDS_DIR
+
+    (two_users / RECORDS_DIR).mkdir()
+    (two_users / RECORDS_DIR / HOME_A).write_text("odd", encoding="utf-8")
+
+    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                             delete_identity=lambda sub: "deleted")
+
+    assert "agent_session_records" in receipt["unfinished_phases"]
+
+
 def test_deleting_a_removes_all_of_a_and_none_of_b(two_users: Path):
     base = two_users
     root_db = base / ".tinyassets.db"

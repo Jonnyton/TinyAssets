@@ -163,4 +163,5 @@ select = ["E", "F", "W", "I"]
 testpaths = ["tests"]
 markers = [
     "slow: stress/race tests; opt-in via `pytest -m slow`",
+    "real_jail: needs a real bubblewrap jail; run by .github/workflows/linux-jail-proof.yml, which fails on any skip",
 ]

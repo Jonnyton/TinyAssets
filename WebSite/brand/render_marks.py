@@ -39,6 +39,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
+from scripts.invariants.brand_parity import app_badge_data_uri  # noqa: E402
 from tinyassets.desktop import icon_gen  # noqa: E402
 from tinyassets.desktop.icon_gen import draw_mark, generate_icon, mark_svg  # noqa: E402
 
@@ -176,18 +177,20 @@ def _write_site_manifest(mark_version: str) -> None:
     )
 
 
-def _write_app_html() -> None:
+def _write_app_html(tile_svg: str) -> None:
     """Point the served web app's favicon and brand glyph at the same badge.
 
     This was hand-patched once and then went stale the moment the mark changed:
     the app was still showing a retired monogram while every other surface had
     moved on (Codex review, 2026-09-02). Generating it closes that gap.
+
+    Only the badge is owned here, so app.html is NOT in the receipt: brand
+    parity checks the badge against mark-tile.svg instead of hashing a file
+    every feature edits.
     """
     import re
-    from urllib.parse import quote
 
-    data_uri = "data:image/svg+xml," + quote(icon_gen.mark_svg(tile=True).strip(),
-                                             safe="/:=,;'#")
+    data_uri = app_badge_data_uri(tile_svg)
     html = APP_HTML.read_text(encoding="utf-8")
     before = html
     html = re.sub(r'<link rel="icon" href="data:image/svg\+xml,[^"]*" />',
@@ -263,7 +266,6 @@ def _generated_paths() -> list[Path]:
         ASSETS / "brand" / "tinyassets-logo-mark.svg",
         ASSETS / "brand" / "tinyassets-app.ico",
         ASSETS / "brand" / "tinyassets-app.icns",
-        APP_HTML,
         TRAY_ICO,
         REPO / "mobile" / "resources" / "icon.png",
         REPO / "mobile" / "resources" / "splash.png",
@@ -346,7 +348,7 @@ def main() -> int:
     _icns(ASSETS / "brand" / "tinyassets-app.icns")
 
     # The served web app.
-    _write_app_html()
+    _write_app_html(tile_svg)
 
     # Tray.
     generate_icon(TRAY_ICO)

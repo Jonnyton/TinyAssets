@@ -4685,6 +4685,10 @@ def _invoke_graph(
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         invocation_depth=int(invocation_depth or 0),
         universe_id=_eff_universe_hint or run_universe,
+        # The run's own model reviews a consequential action before it fires
+        # (harness D1d), admitted like any agent call.
+        review_provider=provider_call,
+        review_active=True,
     )
     register_effect_chain(effect_chain)
     try:
@@ -6582,6 +6586,8 @@ def _invoke_graph_resume(
         base_path=_resolve_effector_base(base_path, run_id),
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         universe_id=_resume_universe,
+        review_provider=provider_call,
+        review_active=True,
     )
     # What the interrupted segment already fired and spent, so "at most once
     # per run" and the RPC cap hold across the resume, and the nested depth
@@ -7363,6 +7369,9 @@ ACTIONABLE_BY: dict[str, str] = {
     # host — the rules store could not be read, so the effect was refused rather
     # than allowed; nothing in the branch or the founder's grants is wrong.
     "rules_unreadable": "host",
+    # user — the check before a consequential action could not run (no model
+    # connected, or it failed), so the action was held rather than sent.
+    "auto_review_unavailable": "user",
     # user — the stored key itself is finished: expired, revoked at the provider,
     # or no longer accepted. Neither a retry (same dead key) nor a widening (the
     # grant was never the problem) can change it; only a new secret can, and only
@@ -7480,12 +7489,21 @@ RULE_HAND_OFF_ACTION = (
     "request telling them exactly what to do and where, prepare everything else, "
     "and do not perform or retry the action yourself."
 )
+AUTO_REVIEW_UNAVAILABLE_ACTION = (
+    "The check before this action could not run on your owner's model, so "
+    "nothing was sent. Make sure a model is connected, then raise one request "
+    "describing the action; do not retry it blindly."
+)
 RULES_UNREADABLE_ACTION = (
     "Your owner's rules could not be read, so nothing was sent. Nothing in the "
     "branch is wrong; report it and try again later."
 )
 #: error_kind -> failure class for a refusal by the owner's Custom Rules.
 _RULE_REFUSAL_CLASSES = (
+    # The auto-review (harness D1d) asked for the owner's approval: the same
+    # remedy as an ask-first rule.
+    ("auto_review_needs_approval", "rule_requires_approval"),
+    ("auto_review_unavailable", "auto_review_unavailable"),
     ("rule_ask_first", "rule_requires_approval"),
     ("rule_hand_off", "rule_hand_off"),
     ("rules_unreadable", "rules_unreadable"),
@@ -7684,6 +7702,8 @@ def external_write_suggested_action(failure_class: str) -> str:
         return RULE_HAND_OFF_ACTION
     if failure_class == "rules_unreadable":
         return RULES_UNREADABLE_ACTION
+    if failure_class == "auto_review_unavailable":
+        return AUTO_REVIEW_UNAVAILABLE_ACTION
     if failure_class == "destination_blocked_client":
         return DESTINATION_BLOCKED_CLIENT_ACTION
     if failure_class == "credential_rejected":
@@ -7860,7 +7880,7 @@ def list_recent_runs(
             )
         elif failure_class in ("external_write_failed", "external_write_refused",
                                "rule_requires_approval", "rule_hand_off",
-                               "rules_unreadable"):
+                               "rules_unreadable", "auto_review_unavailable"):
             suggested_action = external_write_suggested_action(failure_class)
         elif failure_class == "error":
             suggested_action = "Check error field for details; re-run after fixing root cause."

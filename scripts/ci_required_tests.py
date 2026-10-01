@@ -31,6 +31,7 @@ regression riding in on a green check.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -74,22 +75,90 @@ MIN_RAN_FLOORS = {
 # ---- sharding ---------------------------------------------------------------
 #
 # The required gate runs as N parallel jobs. Each test FILE belongs to exactly
-# one shard, decided by a stable hash of its repo-relative path, so the
-# partition is complete and disjoint by construction: every collected file maps
-# to some index in 1..N, and the workflow runs every index. Hashing rather than
-# a committed durations table: nothing to regenerate, and a new file lands in a
-# shard without anyone touching this code. Measured imbalance at 6 shards on
-# 2026-09-27 junit: max shard 220-254s against a 187-201s mean.
+# one shard, so the partition is complete and disjoint by construction: every
+# collected file maps to some index in 1..N, and the workflow runs every index.
+#
+# Files are packed by measured duration (.github/test-durations.json, per-file
+# seconds from a merge-group junit; scripts/refresh_test_durations.py rewrites
+# it). Every test_*.py under tests/ is packed longest-first onto the
+# least-loaded shard; a file the table does not know yet counts as the median,
+# and anything outside that set falls back to a stable path hash. A stale
+# table only costs balance, never coverage. The pure hash it replaced left
+# shard 3 slowest in 27 of 57 merge-group runs (2026-10-01; 289s of tests
+# against 197-261s for the others).
 #
 # Enforced through `pytest_ignore_collect` (this module is loaded with `-p`), so
 # a shard never IMPORTS another shard's files: a collection error is reported
 # once, by the shard that owns the file, not six times.
 
 
+DURATIONS = REPO_ROOT / ".github" / "test-durations.json"
+
+
+def _hash_shard(relpath: str, total: int) -> int:
+    digest = hashlib.sha256(relpath.encode("utf-8")).hexdigest()
+    return int(digest, 16) % total + 1
+
+
+def load_durations(path: Path = DURATIONS) -> dict[str, float]:
+    """Per-file seconds. A missing or unreadable table means "no data", loudly."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return {str(k): float(v) for k, v in raw.items()}
+    except (OSError, ValueError, AttributeError) as exc:
+        print(f"WARNING: no usable test durations at {path} ({exc}); "
+              "every file counts as equal", flush=True)
+        return {}
+
+
+def pack(files: list[str], durations: dict[str, float], total: int) -> dict[str, int]:
+    """Longest-first onto the least-loaded shard; deterministic for equal inputs.
+
+    Every shard job computes this independently, so it may depend only on the
+    checkout: ties break on path and on the lowest shard index.
+    """
+    known = sorted(durations[f] for f in files if f in durations)
+    default = known[len(known) // 2] if known else 1.0
+    weight = {f: durations.get(f, default) for f in files}
+    loads = [0.0] * total
+    owner: dict[str, int] = {}
+    for f in sorted(files, key=lambda f: (-weight[f], f)):
+        index = min(range(total), key=lambda i: (loads[i], i))
+        loads[index] += weight[f]
+        owner[f] = index + 1
+    return owner
+
+
+@functools.lru_cache(maxsize=None)
+def _packed(total: int) -> dict[str, int]:
+    """The packing over TRACKED test files.
+
+    Tracked, not whatever is on disk: one generated test_*.py present in one
+    shard job and not another would reshuffle hundreds of owners between them
+    (Codex review 2026-10-01 measured 561 for one added file). Without git the
+    disk scan is the fallback, said out loud.
+    """
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "tests"],
+            cwd=REPO_ROOT, capture_output=True, check=True,
+        ).stdout.decode("utf-8").split("\0")
+        files = [
+            f for f in listed if f.rsplit("/", 1)[-1].startswith("test_") and f.endswith(".py")
+        ]
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"WARNING: git ls-files failed ({exc}); packing the files on disk", flush=True)
+        files = [
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "tests").rglob("test_*.py")
+        ]
+    return pack(sorted(files), load_durations(), total)
+
+
 def shard_of(relpath: str, total: int) -> int:
     """1-based shard index owning a repo-relative test file path."""
-    digest = hashlib.sha256(relpath.replace("\\", "/").encode("utf-8")).hexdigest()
-    return int(digest, 16) % total + 1
+    rel = relpath.replace("\\", "/")
+    return _packed(total).get(rel) or _hash_shard(rel, total)
 
 
 def parse_shard(raw: str) -> tuple[int, int]:
@@ -540,7 +609,7 @@ def main() -> int:
         type=parse_shard,
         metavar="I/N",
         help=(
-            "Run only the test files hashed to shard I of N (see shard_of), and "
+            "Run only the test files packed into shard I of N (see shard_of), and "
             "write a manifest beside --junit recording the shard and pytest's "
             "exit code for --aggregate. Requires --profile shard."
         ),

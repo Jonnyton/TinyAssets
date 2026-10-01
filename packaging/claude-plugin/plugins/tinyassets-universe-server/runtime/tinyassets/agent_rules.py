@@ -99,7 +99,29 @@ SEED_RULES = (
 #: The agent a rule is for. D8 adds a roster; until then every rule is the main agent's.
 MAIN_AGENT = "main"
 
+#: What an operation on a connection MEANS, as its owner declares it (harness
+#: D1b), and the action class each meaning is decided under. Nothing in a raw
+#: HTTP method or URL establishes "payment" or "message", so a meaning exists
+#: only where the owner declared it; an undeclared operation is a write.
+OPERATION_KINDS = {
+    "read": "app.read",
+    "write": "app.write",
+    "delete": "app.write",
+    "message": "people.message",
+    "payment": "money.move",
+    "security": "security.change",
+    "access": "access.grant",
+}
+
 _FILE = "rules.db"
+_KINDS_SCHEMA = """CREATE TABLE IF NOT EXISTS operation_kinds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection TEXT NOT NULL,
+    method TEXT NOT NULL DEFAULT '',
+    path_prefix TEXT NOT NULL DEFAULT '/',
+    kind TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(connection, method, path_prefix))"""
 _SCHEMA = """CREATE TABLE IF NOT EXISTS rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     agent TEXT NOT NULL,
@@ -155,6 +177,7 @@ def _connect(universe_dir: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=10.0, isolation_level=None)
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute(_SCHEMA)
+    conn.execute(_KINDS_SCHEMA)
     return conn
 
 
@@ -297,3 +320,155 @@ def delete_rule(universe_dir: Path, rule_id: int, *, agent: str = MAIN_AGENT,
         conn.execute("DELETE FROM rules WHERE id = ?", (int(rule_id),))
         conn.execute("COMMIT")
     return True
+
+
+# -- declared operation kinds (D1b) ----------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OperationKind:
+    id: int
+    connection: str
+    method: str
+    path_prefix: str
+    kind: str
+
+    def as_dict(self) -> dict:
+        return {"id": self.id, "connection": self.connection, "method": self.method,
+                "path_prefix": self.path_prefix, "kind": self.kind,
+                "decided_as": OPERATION_KINDS[self.kind]}
+
+
+def _normal_prefix(path_prefix: str) -> str:
+    prefix = str(path_prefix or "/").strip() or "/"
+    if not prefix.startswith("/") or any(c in prefix for c in "?#\\\x00"):
+        raise RuleRefused("a path prefix starts with / and has no query or fragment")
+    return _canonical_path(prefix)
+
+
+def _canonical_path(path: str) -> str:
+    """One spelling per path: no trailing slash except the root itself, so
+    ``/v1/charges/`` and ``/v1/charges`` are one declaration and rank alike
+    (gpt-6-astra on #4199)."""
+    path = str(path or "/") or "/"
+    return path.rstrip("/") or "/"
+
+
+def _scope_decision(universe_dir: Path, connection: str, method: str, prefix: str) -> Decision:
+    action_class, operation = classify(universe_dir, connection, method or "POST", prefix)
+    return decide(universe_dir, action_class, connection=connection, operation=operation)
+
+
+def _loosening(before: Decision, after: Decision) -> bool:
+    return BEHAVIOURS.index(after.behaviour) < BEHAVIOURS.index(before.behaviour)
+
+
+def _loosening_words(scope: str, before: Decision, after: Decision) -> str:
+    return (f"Calls to {scope} will be decided as {after.reason} instead of "
+            f"{before.reason}. Confirm to save this.")
+
+
+def declare_kind(universe_dir: Path, connection: str, kind: str, *,
+                 method: str = "", path_prefix: str = "/",
+                 confirm: bool = False) -> OperationKind:
+    """The owner says what operations on one connection mean.
+
+    A declaration that makes its calls decided more permissively than before
+    (``read`` over a path that asked first as a write, or replacing a payment)
+    needs the owner to confirm the server's own description of the change.
+    """
+    connection = str(connection or "").strip()
+    if not connection:
+        raise RuleRefused("a declaration names its connection")
+    if kind not in OPERATION_KINDS:
+        raise RuleRefused(f"unknown operation kind {kind!r}")
+    method, prefix = str(method or "").strip().upper(), _normal_prefix(path_prefix)
+    if not confirm:
+        before = _scope_decision(universe_dir, connection, method, prefix)
+        after = decide(universe_dir, OPERATION_KINDS[kind], connection=connection,
+                       operation=method or "POST")
+        if _loosening(before, after):
+            raise RuleRefused(_loosening_words(
+                f"{connection} {method or 'any method'} {prefix}", before, after))
+    with closing(_connect(universe_dir)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO operation_kinds (connection, method, path_prefix, kind, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(connection, method, path_prefix) DO UPDATE "
+            "SET kind = excluded.kind, updated_at = excluded.updated_at",
+            (connection, method, prefix, kind, time.time()),
+        )
+        row = conn.execute(
+            "SELECT id, connection, method, path_prefix, kind FROM operation_kinds "
+            "WHERE connection = ? AND method = ? AND path_prefix = ?",
+            (connection, method, prefix),
+        ).fetchone()
+        conn.execute("COMMIT")
+    return OperationKind(int(row[0]), row[1], row[2], row[3], row[4])
+
+
+def _kind_rows(conn: sqlite3.Connection) -> list[OperationKind]:
+    rows = conn.execute(
+        "SELECT id, connection, method, path_prefix, kind FROM operation_kinds "
+        "ORDER BY connection, path_prefix, method",
+    ).fetchall()
+    return [OperationKind(int(r[0]), r[1], r[2], r[3], r[4]) for r in rows]
+
+
+def list_kinds(universe_dir: Path) -> list[OperationKind]:
+    with closing(_connect(universe_dir)) as conn:
+        return _kind_rows(conn)
+
+
+def delete_kind(universe_dir: Path, kind_id: int, *, confirm: bool = False) -> bool:
+    """Remove one declaration; a removal that loosens its calls needs confirming."""
+    target = next((k for k in list_kinds(universe_dir) if k.id == int(kind_id)), None)
+    if target is None:
+        return False
+    if not confirm:
+        before = _scope_decision(universe_dir, target.connection, target.method,
+                                 target.path_prefix)
+        with closing(_connect(universe_dir)) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM operation_kinds WHERE id = ?", (target.id,))
+            after_class, operation = _classify_rows(
+                _kind_rows(conn), target.connection, target.method or "POST",
+                target.path_prefix)
+            conn.execute("ROLLBACK")
+        after = decide(universe_dir, after_class, connection=target.connection,
+                       operation=operation)
+        if _loosening(before, after):
+            raise RuleRefused(_loosening_words(
+                f"{target.connection} {target.method or 'any method'} {target.path_prefix}",
+                before, after))
+    with closing(_connect(universe_dir)) as conn:
+        cursor = conn.execute("DELETE FROM operation_kinds WHERE id = ?", (target.id,))
+    return cursor.rowcount > 0
+
+
+def classify(universe_dir: Path, connection: str, method: str, path: str) -> tuple[str, str]:
+    """``(action_class, operation)`` for one call, from the owner's declarations.
+
+    The longest matching path prefix wins, a method-specific declaration over
+    an any-method one. No declaration: a consequential write.
+    """
+    return _classify_rows(list_kinds(universe_dir), connection, method, path)
+
+
+def _classify_rows(rows: list[OperationKind], connection: str, method: str,
+                   path: str) -> tuple[str, str]:
+    method = str(method or "").upper()
+    path = _canonical_path(path)
+    best: OperationKind | None = None
+    for item in rows:
+        if item.connection != connection or item.method not in ("", method):
+            continue
+        if not (path == item.path_prefix or path.startswith(item.path_prefix.rstrip("/") + "/")
+                or item.path_prefix == "/"):
+            continue
+        rank = (len(item.path_prefix), 1 if item.method else 0)
+        if best is None or rank > (len(best.path_prefix), 1 if best.method else 0):
+            best = item
+    if best is None:
+        return "app.write", method
+    return OPERATION_KINDS[best.kind], method

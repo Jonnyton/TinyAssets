@@ -13,7 +13,7 @@
 - [ ] 2.5 D3 Read-only proactive research by capability, proposals and grantable blocks; D4 onboarding, the profile shell and push.
 - [ ] 2.6 D5 The computer: restricted browser broker, a context per activity, live view, Take over / Return control.
 - [ ] 2.7 D6 Exactly four tools behind `ta search`/`describe`; D7 memory items, the Harness tab, history and Undo.
-- [ ] 2.8 D8 Roster and command center; D9 shareable bundles with owner-activated quarantine; D10 starter template everywhere, chat-app channel extensions, old surface deleted.
+- [ ] 2.8 D8 Roster and command center; D9 shareable bundles with owner-activated quarantine; D11 export to a runnable, publish-ready folder (design §4.17); D10 starter template everywhere, chat-app channel extensions, old surface deleted.
 
 ## 3. Close
 

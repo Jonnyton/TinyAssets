@@ -24,10 +24,14 @@
     ],
     "win": {
       "icon": "../assets/brand/tinyassets-app.ico",
+      "artifactName": "TinyAssetsChat-${version}-${arch}-win.${ext}",
       "target": [
         "nsis",
         "zip"
       ]
+    },
+    "nsis": {
+      "artifactName": "TinyAssetsChatSetup-${version}-${arch}.${ext}"
     },
     "mac": {
       "icon": "../assets/brand/tinyassets-app.icns",
