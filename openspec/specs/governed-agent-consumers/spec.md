@@ -12,14 +12,22 @@ capability is separate from arbitrary UI, foreign harness and whole-setup portab
 The platform SHALL select an executable agent consumer only from an explicit,
 revision-guarded installation owned and last updated by the current receiver,
 bound to one exact public definition/component and supported adapter contract.
-Discovery, import, preview, public publication and layout-only application SHALL
-NOT activate a turn handler or grant provider/effect authority.
+Discovery, import, preview, public publication and installing a custom UI SHALL
+NOT activate a turn handler or grant provider/effect authority. A custom UI MAY
+ask, through its bridge, to change the selection; the change SHALL happen only
+when the person approves it in the app's own prompt, outside the custom UI.
 
 #### Scenario: Another creator's composition is selected
 - **WHEN** owner B explicitly installs a supported component published by A
 - **THEN** selection is stored only in B's existing private binding
 - **AND** A's bindings, credentials, grants and private resources are not copied
 - **AND** the serving provider binding and saved model preferences are unchanged
+
+#### Scenario: A custom UI asks to change the selection
+- **WHEN** a running custom UI calls `set_conversation_design` naming a published definition and component
+- **THEN** an unsupported component is refused before the person is asked
+- **AND** the app's own prompt names the UI, the design and its workflow version, and a declined prompt writes nothing
+- **AND** an approved change is one revision-guarded write to the receiver's own installation in the viewer's current home, read back before it is reported
 
 #### Scenario: A collaborator changes the selected installation
 - **WHEN** current owner/home, latest updater, exact component pin or unique installation cannot be verified
@@ -120,4 +128,4 @@ loading or whole-setup migration merely because their components round-trip.
 #### Scenario: A design requires a renderer the platform does not have
 - **WHEN** the receiver inspects that design
 - **THEN** the UI identifies the missing governed renderer requirement
-- **AND** ordinary layout and turn-consumer support are reported separately
+- **AND** custom-UI and turn-consumer support are reported separately

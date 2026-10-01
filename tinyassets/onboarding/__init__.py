@@ -225,7 +225,6 @@ def render_app_html() -> tuple[str, str]:
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
         _HTML_PATH.read_text("utf-8")
-        .replace("__TA_APP_LAYOUT__", _HTML_PATH.with_name("app_layout.js").read_text("utf-8"))
         .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)

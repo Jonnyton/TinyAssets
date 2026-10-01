@@ -166,8 +166,8 @@ scopes the first slice that actually ships. Everything the proposal defers
 
 ### What already exists, and what it cannot do
 
-`tinyassets/onboarding/app_layout.js` reads one `tinyassets.app-layout.v1`
-component and *moves the app's own nodes*. It deliberately carries no HTML, CSS,
+`tinyassets/onboarding/app_layout.js` (deleted 2026-10-01, see "One system, not
+two") read one `tinyassets.app-layout.v1` component and *moved the app's own nodes*. It deliberately carries no HTML, CSS,
 script or URL, because nothing in the app can safely execute imported code.
 `openspec/specs/governed-agent-consumers/spec.md` states that limitation as a
 requirement: the first adapter "SHALL NOT claim arbitrary executable UI".
@@ -233,7 +233,7 @@ work. One `send_message` in flight at a time.
   public connector and the engine surface, so the universe's own agent can write
   it. Private by default: publishing is a separate, explicit act.
 - **Shared:** a `tinyassets.app-ui.v1` component inside a public agent
-  definition, via the `publish`/`remix` path `app_layout.js` already uses. A
+  definition, via the generic agent `publish`/`remix` path. A
   remix copies the component into the remixer's *own* row, where it runs against
   the remixer's bridge. The author's universe is never addressed.
 
@@ -279,9 +279,18 @@ save never sees the other field.
 
 ### One system, not two
 
-The switcher is the existing "App design" surface; the layout editor and its
-`app_experience` binding are unchanged. The UI controller owns its own read and
-its one CAS write path. A user with no bundle sees exactly what they see today.
+**Superseded 2026-10-01 (founder, live):** "there should only be switch ui",
+and the App design controls "are better as things that should be part of the
+custom ui". The App design dialog, its four-surface layout component and
+`app_layout.js` are deleted (production held zero layout definitions and zero
+installations). What it did moved as follows: arranging and spacing are what a
+custom UI is; searching, installing and publishing designs is the universe's own
+`app_ui` writes plus the consented `publish` ask; conversation behaviour is two
+bridge actions, `conversation_design` and `set_conversation_design`, where the
+bundle asks and the person approves in the app's own prompt. Trusted recovery
+(restore default / previous conversation) lives in the Switch UI dialog. The
+`app_experience` binding is unchanged: it is the server's turn-consumer
+installation. The UI controller owns its own read and its one CAS write path.
 
 ### Deferred, and named so it is not mistaken for shipped
 

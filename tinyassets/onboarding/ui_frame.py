@@ -161,7 +161,13 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     readRunOutput: function (runId, field, offset) { return call("read_run_output", {run_id: runId, field: field, offset: offset || 0}); },
     listFiles: function (path) { return call("list_files", {path: path || ""}); },
     readFile: function (path, offset) { return call("read_file", {path: path, offset: offset || 0}); },
-    emit: function (name, data) { return call("emit", {name: name, data: data || {}}); }
+    emit: function (name, data) { return call("emit", {name: name, data: data || {}}); },
+    conversationDesign: function () { return call("conversation_design", {}); },
+    setConversationDesign: function (definitionId, componentKey) {
+      return call("set_conversation_design", definitionId
+        ? {agent_definition_id: definitionId, component_key: componentKey || ""}
+        : {state: "default"});
+    }
   });
 
   parentWindow.postMessage({ta_ui: PROTOCOL, type: "ready"}, "*");
