@@ -122,6 +122,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         return
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # Re-read under the write lock: another process may have just migrated.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(review_off)")}
+        if "agent" in columns:
+            conn.execute("COMMIT")
+            return
         conn.execute("ALTER TABLE review_off RENAME TO review_off_unkeyed")
         conn.execute(_SCHEMA)
         conn.execute("INSERT OR IGNORE INTO review_off (agent, action_class, updated_at) "
