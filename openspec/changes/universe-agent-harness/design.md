@@ -778,6 +778,149 @@ jails, extension processes and the browser sandbox. The records are:
 Agents see them only through read-only owner-door projections. Registering a
 path with a resolver is not enough.
 
+### 4.17 Export: a runnable, publish-ready folder (founder, 2026-10-01)
+
+> "the exportability module likely needs refactoring to present but the
+> principle that users exportability is supported remains. that becomes more
+> relevant now that users can build and share entire command centers, they
+> should also be able to export them easily to a folder on their computer so if
+> they wanted to plug a local model into it they would be good to go able to run
+> their command center locally without our platform at all"
+>
+> "also export relates to if someone wanted to publish their command center to
+> github or another platform"
+
+**One action, one folder.** The owner exports a command center in one action,
+from the profile ••• menu or by asking the agent, which calls the same door.
+The result is a folder, also offered as a zip download. It contains:
+
+| Path | What |
+|---|---|
+| `command-center.json` | The bundle manifest (§4.15): format version, agents, the roster, and per-agent model and schedule config as references |
+| `agents/<agent>/` | Each agent's harness: `AGENTS.md`, persona, `skills/`, `extensions/`, prompts, and rules as an editable `rules.json` (the D1 table, the hand-backs included) |
+| `workspace/` | The agent's own workspace: the files it built (§4.3, W) |
+| `wiki/` and `brain/` | The wiki as an OKF bundle, and the brain files |
+| `workflows/` and `automations.json` | Branch definitions, and schedules as data (the Activities branch included) |
+| `memory/` | Memory items, only the ones the owner selected (§4.13) |
+| `ui/` | The command-center and profile layouts (custom-UI layer) |
+| `run/` | The local runner (below) |
+| `README.md`, `LICENSE`, `.gitignore`, `.env.example` | What makes it publish-ready |
+
+**One manifest, two profiles.** Export, share (§4.15, D9) and import use the
+same manifest and path rules. The manifest declares a profile:
+- **`share`** is the harness subset, published through the public
+  agent-definition carrier. The 256 KiB limit applies to this profile only.
+  Contact details are always scrubbed.
+- **`export`** is the whole folder, kept as private local output with no
+  carrier.
+- **Import** accepts either profile: a shared bundle, an exported folder or
+  zip, or a cloned repository with that layout. It lands in quarantine (§4.15)
+  through the ingestion boundary below.
+
+**No secrets, and arbitrary content is opt-in.** A scrub cannot sanitize
+arbitrary files, so the export does not claim to.
+- **Structured fields are serialized schema-aware.** Connections become named
+  references with `.env.example` lines (`GITHUB_TOKEN=`, …). Workflow effect
+  configs, automation inputs and layouts are written field by field, and
+  credential-shaped and identifier fields are replaced with references.
+- **Arbitrary content starts excluded:** workspace files, wiki and brain prose,
+  binaries. The owner includes it after a content preview. Every file is
+  scanned with the same credential parser the platform redacts with. A file
+  with a detected credential stays excluded, and owner approval cannot override
+  a detected credential. An uninspectable file (binary, archive) is excluded
+  until the owner includes it by name.
+- **Every output is covered.** These exclusions apply to all output, including
+  the generated README and manifest.
+- **Limits are stated honestly.** The preview says plainly that detection
+  cannot prove a file is free of personal data.
+- **Never exported:** session logs and browser state.
+- **Contact details** are scrubbed by default. In the private `export` profile
+  only, the owner may include them item by item.
+
+**Publish-ready as a repository.**
+- `README.md` is generated from the responsibility and the roster. It covers:
+  - what the command center does;
+  - how to run it locally with a local model, as three commands;
+  - which keys it needs;
+  - what works without the platform and what does not.
+- `LICENSE` is a placeholder the owner picks; the export names the choice and
+  does not decide it.
+- `.gitignore` excludes `.env`, keys, runtime state and the runner's local
+  session files.
+- The layout above is stable and versioned (`command-center.json`
+  `format_version`), so anyone who clones it can run it.
+- **Publish-ready does not mean safe to publish.** The export is private local
+  output. Publishing is a separate act with its own owner approval: it is a
+  consequential action under the owner's rules, and it re-runs the preview
+  without any personal-data inclusions.
+
+**Publishing stays user-built.** There is no platform GitHub effector. The agent
+publishes with its own tools: `bash` and `git` over the egress proxy, on the
+owner's own GitHub or other connection, under the owner's rules (`app.write`
+and `commons.publish`). Alternatively, the owner adds a shareable publish skill
+or workflow. The platform supplies only the format and the folder.
+
+**Runnable standalone: the local runner.** `run/` holds a small,
+dependency-free runner shaped like pi. It runs with the user's own host
+privileges, with no platform jail, so its defaults are conservative:
+- `bash` asks for confirmation before each command by default. Unattended
+  operation is an explicit opt-in, and a missing approval blocks rather than
+  proceeds.
+- File tools are confined to the folder. A path that resolves outside it is
+  refused.
+- The runner's policy (`rules.json`, the runner config) is read-only to the
+  agent's tools, so the agent cannot loosen its own rules locally.
+- Schedules run only after a separate `run/schedule --enable`.
+- The README discloses that the runner has host privileges, and states which
+  platform guarantees (jail, egress checks, auto-review) are absent locally.
+- A cloned command center's `run/` code is third-party code. Review it before
+  running; its own prompts cannot establish that it is trustworthy.
+
+The runner's features:
+- **Tools:** `read`, `write`, `edit` and `bash` over the folder.
+- **Context:** the same `AGENTS.md` and `skills/<name>/SKILL.md` format.
+- **Rules:** `rules.json` is honoured for ask-first and hand-off as terminal
+  prompts.
+- **Model:** any OpenAI-compatible endpoint, set in `.env` (`MODEL_BASE_URL`,
+  `MODEL_NAME`), for example Ollama at `http://localhost:11434/v1`.
+- **Platform:** no account and no network to TinyAssets.
+- **Schedules:** `automations.json` runs from a `run/schedule` loop while the
+  machine is on.
+
+| Works fully without the platform | Degrades or is absent |
+|---|---|
+| Chat with each agent, its four tools, skills, `AGENTS.md`, rules prompts, workspace, wiki and brain files, workflows the runner can execute, schedules while the machine is on | Delivery between users and the commons; hosted channels (Slack and Telegram webhooks need a public endpoint); phone push; the hosted browser broker; always-on while the machine sleeps; auto-review unless a model is configured for it; quota and usage accounting |
+
+**The import ingestion boundary.** Quarantine blocks activation, but not the
+damage extraction can do, so import runs a boundary first:
+- **Bounds:** compressed and expanded bytes, file count, depth and processing
+  time.
+- **Rejected:** absolute and traversal paths, links and reparse points, special
+  files, and case or Unicode path collisions.
+- **Copy:** only validated regular files, into a fresh quarantine directory.
+  `.git` is excluded.
+- **Never executed during import:** hooks, filters, installers, or the
+  supplied `run/` code.
+- **No unlimited import.** An export with no size limit does not imply import
+  without resource limits.
+
+**`okf_export` is refactored, not kept beside it.** `tinyassets/wiki/okf_export.py`
+becomes the `wiki/` writer inside the export. It is the only OKF writer, so
+there are not two definitions of one fact.
+- Its curated source set and privacy exclusions (`soul.md`, `drafts/`, `raw/`,
+  `daemon-wiki`) are preserved.
+- Wiki content outside `pages/` is exported only if the owner includes it in
+  the content preview.
+- Brain and workspace copying cannot route around those exclusions.
+- A delta to `knowledge-retrieval-and-memory` permits orchestration through the
+  export door. That door is the owner door, not a new MCP action. `docs/concerns/2026-10-01-okf-export-is-unwired.md`
+closes when the export ships.
+
+**Order.** D11 comes right after D9 (it reuses D9's manifest, path rules, scrub
+and quarantine) and before D10. It could not usefully come earlier, because
+until D9 there is no manifest to share. The local runner is independent of D9
+and can be built in parallel with it.
+
 ## 5. What already shipped, mapped onto the dot
 
 | Shipped or in flight | Kept | Changed |
@@ -942,6 +1085,15 @@ is authority, and its proposal, design and spec deltas are this change.
 6. Exclude quarantine from the index and loading.
 7. Activate only as written or stricter.
 8. Live proof: a second account imports, and nothing runs until it activates.
+
+**D11: Export to a runnable, publish-ready folder** (after D9, before D10; §4.17)
+1. The export door and the folder layout over D9's manifest (`format_version`).
+2. Fold `okf_export` in as the `wiki/` writer; close the okf concern.
+3. Scrub and preview shared with D9; credentials as references plus `.env.example`.
+4. README, LICENSE placeholder and `.gitignore` generation.
+5. The local runner: four tools, `AGENTS.md` and skills, `rules.json` prompts, any OpenAI-compatible endpoint, the schedule loop.
+6. Import accepts an exported folder, a zip or a cloned repository into quarantine.
+7. Live proof: export the founder's command center, run it against a local Ollama model with no account, publish it with the agent's own git, and import the clone on a second account.
 
 **D10: Everywhere, and delete the old surface**
 1. Seed every new universe from the published starter template.
