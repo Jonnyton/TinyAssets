@@ -143,6 +143,45 @@ def test_a_python_file_no_test_reaches_runs_everything(tmp_path):
     assert "no test reaches" in reasons[0]
 
 
+def test_a_deleted_source_module_runs_everything(tmp_path):
+    """Its importers are invisible: the graph is built from the tree without it."""
+    root = _repo(tmp_path, {"tests/test_a.py": "import json\n"})
+    selected, reasons = at.select(["tinyassets/gone.py"], root)
+    assert selected is None
+    assert "deleted or moved" in reasons[0]
+
+
+def test_a_module_only_a_conftest_fixture_imports_runs_everything(tmp_path):
+    """Autouse fixture bodies run for every test; module-body probing misses them."""
+    root = _repo(
+        tmp_path,
+        {
+            "tests/conftest.py": (
+                "import pytest\n\n@pytest.fixture(autouse=True)\n"
+                "def _f():\n    import tinyassets.fixture_only\n"
+            ),
+            "tinyassets/fixture_only.py": "",
+            "tests/test_a.py": "import json\n",
+        },
+    )
+    selected, reasons = at.select(["tinyassets/fixture_only.py"], root)
+    assert selected is None
+    assert "conftest" in reasons[0]
+
+
+def test_a_tree_walker_naming_a_top_level_root_is_selected(tmp_path):
+    root = _repo(
+        tmp_path,
+        {
+            "mobile/package.json": "{}",
+            "tests/test_walk.py": 'for p in (ROOT / "mobile").rglob("*"):\n    pass\n',
+            "tests/test_named_only.py": 'X = "mobile"\n',
+        },
+    )
+    # The bare root alone is too common to match a non-walking test on.
+    assert at.select(["mobile/package.json"], root)[0] == ["tests/test_walk.py"]
+
+
 def test_cli_writes_all_for_a_full_suite_trigger(tmp_path, monkeypatch):
     out = tmp_path / "sel.txt"
     monkeypatch.setattr(

@@ -25,7 +25,12 @@ When unsure it selects EVERYTHING (output ``ALL``):
   machinery changed;
 - a changed module is in a conftest's import closure (every test loads it);
 - a changed .py file outside ``tests/`` is selected by nothing, since an
-  unmapped module means the static graph cannot see who loads it.
+  unmapped module means the static graph cannot see who loads it;
+- a non-test .py file was deleted or moved: the graph is built from the new
+  tree, where nothing imports it any more.
+
+A test that walks a tree (``rglob``, ``os.walk``...) is also selected for any
+change under a top-level root it names as a string, e.g. ``"tinyassets"``.
 
 Over-selection is the safe direction throughout: it costs runner minutes,
 while under-selection only defers a failure to the queue, which runs anyway.
@@ -66,6 +71,11 @@ GENERIC_BASENAMES = {
     "spec.md", "proposal.md", "design.md", "tasks.md", "index.html",
     "index.ts", "index.js", "package.json", "config.py", "utils.py",
 }
+
+# A test that walks a tree. Such a test reads every file under the roots it
+# names, including a bare top-level root like "tinyassets" or "mobile", which
+# is too common a string to match on for any other test.
+_WALKS = re.compile(r"\.rglob\(|\.glob\(|\.iterdir\(|os\.walk\(|os\.listdir\(|glob\.glob\(")
 
 # `"docs" / "concerns"` (pathlib) reads as `"docs/concerns"` after this.
 _PATHLIB_JOIN = re.compile(r"""["']\s*/\s*["']""")
@@ -145,8 +155,8 @@ class Graph:
     def _imports(self, rel: str, src: str) -> set[str]:
         """Modules `rel` imports.
 
-        A test file counts every import anywhere in it, plus dotted string
-        constants (``mock.patch("tinyassets.x.y")``): that is what the test
+        A test file or conftest counts every import anywhere in it, plus dotted
+        string constants (``mock.patch("tinyassets.x.y")``): that is what the test
         exercises. Any other file counts only what runs when it is IMPORTED --
         module-level statements, including class bodies and ``try``/``if``
         blocks, but not function bodies or ``if TYPE_CHECKING:``. Following
@@ -161,7 +171,9 @@ class Graph:
         pkg = _module_name(rel).split(".")
         if not rel.endswith("__init__.py"):
             pkg = pkg[:-1]
-        test = is_test_file(rel)
+        # A conftest's fixtures (autouse ones included) run for every test,
+        # so its function bodies count as much as a test file's do.
+        test = is_test_file(rel) or rel.endswith("conftest.py")
         nodes = ast.walk(tree) if test else _import_time_nodes(tree.body)
         names: set[str] = set()
         for node in nodes:
@@ -275,14 +287,24 @@ def select(
 
     closures = {t: graph.closure(t) for t in tests}
     texts = {t: _PATHLIB_JOIN.sub("/", graph.files[t]) for t in tests}
+    walkers = [t for t in tests if _WALKS.search(texts[t])]
     selected: set[str] = set()
     for rel in changed:
+        if rel.endswith(".py") and not is_test_file(rel) and not (root / rel).exists():
+            # Its importers still import it (or were edited away in the same
+            # diff), but the graph is built from the tree that no longer has
+            # it, so nothing would select them.
+            return None, [f"{rel}: deleted or moved Python module"]
         hit: set[str] = set()
         if is_test_file(rel) and (root / rel).exists():
             hit.add(rel)
         hit.update(t for t in tests if rel in closures[t])
         keys = _mention_keys(rel)
         hit.update(t for t in tests if any(k in texts[t] for k in keys))
+        top = rel.split("/", 1)[0]
+        if "/" in rel:
+            roots = (f'"{top}"', f"'{top}'", f'"{top}/', f"'{top}/")
+            hit.update(t for t in walkers if any(r in texts[t] for r in roots))
         source = rel.endswith(".py") and not rel.startswith("tests/")
         if not hit and source and (root / rel).exists():
             return None, [f"{rel}: Python file no test reaches statically"]
