@@ -164,7 +164,7 @@ def test_default_view_binds_the_universe_masks_launches_and_rebinds_its_own(tmp_
 def test_an_install_path_reaching_universe_data_is_refused(tmp_path):
     universe = _universe(tmp_path).resolve()
     view = default_view(universe)
-    with pytest.raises(ProviderConfinementError, match="overlaps universe data"):
+    with pytest.raises(ProviderConfinementError, match="overlaps command center data"):
         jail_argv(["cli"], view, bwrap_path="/usr/bin/bwrap", install_paths=[universe.parent])
 
 
