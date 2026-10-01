@@ -552,7 +552,7 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
     idx_path = _wiki_index_path()
     if not idx_path.exists():
         return
-    idx = idx_path.read_text(encoding="utf-8")
+    idx = _read_text(idx_path)
     if f"[[{slug}]]" in idx:
         return
     header_map = {
@@ -1629,7 +1629,7 @@ def _wiki_supersede(
         })
 
     try:
-        old_content = old_path.read_text(encoding="utf-8")
+        old_content = _read_text(old_path)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         if "confidence:" in old_content:
@@ -1955,7 +1955,7 @@ def _wiki_sync_projects(**_kwargs: Any) -> str:
             dp = pp / df
             if dp.exists():
                 try:
-                    file_content = dp.read_text(encoding="utf-8")
+                    file_content = _read_text(dp)
                     for line in file_content.split("\n"):
                         tr = line.strip()
                         if (
@@ -2217,7 +2217,7 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
         if not m:
             continue
         try:
-            raw = p.read_text(encoding="utf-8", errors="replace")
+            raw = _read_text(p, errors="replace")
         except OSError:
             continue
         fm_title = ""
@@ -2303,7 +2303,7 @@ def _wiki_cosign_bug(
 
     target = matches[0]
     try:
-        raw = target.read_text(encoding="utf-8")
+        raw = _read_text(target)
     except OSError as exc:
         return json.dumps({"error": f"Cannot read bug file: {exc}"})
 
