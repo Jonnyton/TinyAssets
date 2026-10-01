@@ -275,21 +275,16 @@ jobs:
           # Deliberately narrow: ~7% of recent commits touch these paths. A
           # blanket receipt requirement across tinyassets/ would be the process
           # bloat this repo just removed.
-          # Matched case-INSENSITIVELY (-i) and anchored at either the repo root
-          # or the packaging runtime mirror. Three bypasses this closes, all
-          # confirmed by regex probe before the fix:
+          # Matched case-INSENSITIVELY (-i) and anchored at the repo root.
+          # Bypasses this closes, confirmed by regex probe before the fix:
           #   - `TinyAssets/Auth/...` differing only in case
-          #   - the shipped mirror at packaging/claude-plugin/plugins/
-          #     tinyassets-universe-server/runtime/tinyassets/auth/, which
-          #     contains the same authority code and was unprotected
           #   - renames, handled by the previous_filename projection above
-          # ANCHORED to the two real roots. `(^|/)tinyassets/` was permissive so
-          # the packaging mirror would match, but it also matched ANY nested
-          # copy: `docs/audits/harness-reset-preserved/.../tinyassets/api/
+          # ANCHORED to the real root. `(^|/)tinyassets/` also matched ANY
+          # nested copy: `docs/audits/harness-reset-preserved/.../tinyassets/api/
           # permissions.py` is an archived snapshot, not the authority surface,
           # and DELETING four such copies is what blocked PR #2561 for six review
-          # rounds. Naming both roots keeps the mirror covered and stops the
-          # guard policing docs.
+          # rounds. The packaged plugin runtime used to be a committed second
+          # root here; since 2026-10-01 it is built at release, never committed.
           # WIDENED 2026-08-27, because the narrow list let an authority change
           # ship unreviewed. PR #2559 changed WHEN foreground runs mint provider
           # authority -- splitting admission into prepare()/lazy _admit() -- and
@@ -314,7 +309,7 @@ jobs:
           # owner-binding, credential and consent modules. Measured against the
           # 60 most recently merged PRs: 8 needed a receipt before, 9 after, and
           # the one added is #4073 itself.
-          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|providers/router\.py$|storage/provider_work_authority\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$|([a-z_]+/)*[a-z_]*(authority|custody)[a-z_]*\.py$|providers/owner_binding\.py$|agent_runtime_(grants|principal)\.py$|principals\.py$|credential_refresh\.py$|connection_oauth/tokens\.py$|desktop/credentials\.py$|storage/effector_consents\.py$)'
+          AUTHORITY_RE='^tinyassets/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|providers/router\.py$|storage/provider_work_authority\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$|([a-z_]+/)*[a-z_]*(authority|custody)[a-z_]*\.py$|providers/owner_binding\.py$|agent_runtime_(grants|principal)\.py$|principals\.py$|credential_refresh\.py$|connection_oauth/tokens\.py$|desktop/credentials\.py$|storage/effector_consents\.py$)'
           AUTHORITY_HITS="$(classify "$AUTHORITY_RE" "-i")" || exit 1
 
           # GROUNDED, not regex-only. A path match says WHERE an edit landed,

@@ -3,7 +3,6 @@
 Covers:
 - Base Invariant class contracts (check/heal exception trapping, auto_heal gate).
 - CheckResult/HealResult dataclass shape.
-- MirrorParity check on synthetic fixtures.
 - Mojibake invariant scan behavior.
 - ConcernsStaleness: proposal-only contract, STATUS.md untouched.
 - Runner CLI: --list prints every invariant; --check NAME routes correctly;
@@ -135,96 +134,6 @@ def test_heal_exception_surfaces_as_failed():
 
 
 # -------------------------------------------------------------------
-# MirrorParity — synthetic scan
-# -------------------------------------------------------------------
-
-
-def test_mirror_parity_detects_mismatch(tmp_path, monkeypatch):
-    from scripts.invariants import mirror_parity as mp
-
-    canon = tmp_path / "workflow"
-    mirror = (
-        tmp_path / "packaging" / "claude-plugin" / "plugins"
-        / "tinyassets-universe-server" / "runtime" / "workflow"
-    )
-    canon.mkdir(parents=True)
-    mirror.mkdir(parents=True)
-    (canon / "a.py").write_text("x = 1\n", encoding="utf-8")
-    (mirror / "a.py").write_text("x = 2\n", encoding="utf-8")
-
-    monkeypatch.setattr(mp, "CANONICAL_ROOT", canon)
-    monkeypatch.setattr(mp, "MIRROR_ROOT", mirror)
-
-    result = mp.MirrorParityInvariant().check()
-
-    assert result.status == Status.VIOLATED
-    assert "a.py" in result.evidence["mismatches"]
-
-
-def test_mirror_parity_clean_passes(tmp_path, monkeypatch):
-    from scripts.invariants import mirror_parity as mp
-
-    canon = tmp_path / "workflow"
-    mirror = (
-        tmp_path / "packaging" / "claude-plugin" / "plugins"
-        / "tinyassets-universe-server" / "runtime" / "workflow"
-    )
-    canon.mkdir(parents=True)
-    mirror.mkdir(parents=True)
-    (canon / "a.py").write_text("x = 1\n", encoding="utf-8")
-    (mirror / "a.py").write_text("x = 1\n", encoding="utf-8")
-
-    monkeypatch.setattr(mp, "CANONICAL_ROOT", canon)
-    monkeypatch.setattr(mp, "MIRROR_ROOT", mirror)
-
-    result = mp.MirrorParityInvariant().check()
-
-    assert result.status == Status.OK
-    assert result.evidence["checked"] == 1
-
-
-def test_mirror_parity_skipped_when_roots_missing(tmp_path, monkeypatch):
-    from scripts.invariants import mirror_parity as mp
-
-    monkeypatch.setattr(mp, "CANONICAL_ROOT", tmp_path / "nope")
-    monkeypatch.setattr(mp, "MIRROR_ROOT", tmp_path / "nope2")
-
-    result = mp.MirrorParityInvariant().check()
-
-    assert result.status == Status.SKIPPED
-
-
-def test_mirror_parity_fails_on_a_canonical_file_the_mirror_does_not_have(
-    tmp_path, monkeypatch
-):
-    """Inverted 2026-08-30. This used to assert that a canonical file with no
-    mirror counterpart is ALLOWED ("the build has not picked it up yet"), which
-    is the same sentence as "the mirror does not ship this module":
-    ``workspace_pool.py`` and ``workspace_fs.py`` stayed outside the mirror
-    across three commits with the gate reporting clean. Missing is drift."""
-    from scripts.invariants import mirror_parity as mp
-
-    canon = tmp_path / "workflow"
-    mirror = (
-        tmp_path / "packaging" / "claude-plugin" / "plugins"
-        / "tinyassets-universe-server" / "runtime" / "workflow"
-    )
-    canon.mkdir(parents=True)
-    mirror.mkdir(parents=True)
-    (canon / "new.py").write_text("brand new\n", encoding="utf-8")
-    # No mirror file.
-
-    monkeypatch.setattr(mp, "CANONICAL_ROOT", canon)
-    monkeypatch.setattr(mp, "MIRROR_ROOT", mirror)
-
-    result = mp.MirrorParityInvariant().check()
-
-    assert result.status == Status.VIOLATED
-    assert result.evidence["missing"] == ["new.py"]
-    assert result.evidence["checked"] == 1
-
-
-# -------------------------------------------------------------------
 # ConcernsStaleness — proposal-only contract
 # -------------------------------------------------------------------
 
@@ -279,7 +188,7 @@ def test_cli_list_includes_every_invariant():
     result = _run_cli("--list")
 
     assert result.returncode == 0, result.stderr
-    for name in ("brand-parity", "mirror-parity", "mojibake", "tab-single", "context-budget",
+    for name in ("brand-parity", "mojibake", "tab-single", "context-budget",
                  "cross-provider-drift", "skills-valid"):
         assert name in result.stdout
 
@@ -303,10 +212,9 @@ def test_cli_pre_commit_runs_only_pre_commit_scope():
     """--pre-commit should only invoke invariants with pre_commit_scope=True."""
     result = _run_cli("--pre-commit")
 
-    # Output must include brand-parity + mirror-parity + mojibake, must NOT include
+    # Output must include brand-parity + mojibake, must NOT include
     # tab-single (poll-only) or concerns-staleness (on-demand).
     assert "brand-parity" in result.stdout
-    assert "mirror-parity" in result.stdout
     assert "mojibake" in result.stdout
     assert "tab-single" not in result.stdout
     assert "concerns-staleness" not in result.stdout

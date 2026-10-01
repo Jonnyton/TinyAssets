@@ -1213,15 +1213,11 @@ def test_authority_paths_still_demand_a_receipt() -> None:
         "tinyassets/credential_vault.py",
         "tinyassets/providers/router.py",
         "tinyassets/api/permissions.py",
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/auth/x.py",
     ):
         assert authority.match(path), f"{path} lost its receipt requirement"
 
 
-MIRROR = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
-
-
-@pytest.mark.parametrize("root", ["", MIRROR])
+@pytest.mark.parametrize("root", [""])
 @pytest.mark.parametrize(
     "module",
     [

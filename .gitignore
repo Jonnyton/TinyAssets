@@ -108,5 +108,8 @@ data-room/
 pitch-deck/
 investor-list/
 
+# The plugin runtime's tinyassets/ is BUILT (packaging/claude-plugin/build_plugin.py),
+# never committed: CI probes the build on PRs and the release job publishes it.
+packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/
 # build_plugin.py serializes builds on this lock file (it never holds content).
 packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/.build.lock
