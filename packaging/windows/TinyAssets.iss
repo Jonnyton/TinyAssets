@@ -7,17 +7,17 @@
 
 [Setup]
 AppId={{AE29C5AB-4807-4DE9-919A-53AF37E793C1}
-AppName=TinyAssets
+AppName=TinyAssets Server
 AppVersion={#AppVersion}
 AppPublisher=TinyAssets
-DefaultDirName={localappdata}\Programs\TinyAssets
-DefaultGroupName=TinyAssets
+DefaultDirName={localappdata}\Programs\TinyAssetsServer
+DefaultGroupName=TinyAssets Server
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible arm64
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist\windows
-OutputBaseFilename=TinyAssetsSetup-{#AppVersion}-{#Architecture}
+OutputBaseFilename=TinyAssetsServerSetup-{#AppVersion}-{#Architecture}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -25,19 +25,19 @@ SetupIconFile=..\..\tinyassets\desktop\app.ico
 UninstallDisplayIcon={app}\TinyAssets.exe
 
 [Tasks]
-Name: "autostart"; Description: "Start TinyAssets when I sign in"; GroupDescription: "Startup:"; Flags: checkedonce
+Name: "autostart"; Description: "Start TinyAssets Server when I sign in"; GroupDescription: "Startup:"; Flags: checkedonce
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 
 [Files]
 Source: "..\dist\windows\TinyAssets.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\TinyAssets"; Filename: "{app}\TinyAssets.exe"
-Name: "{userdesktop}\TinyAssets"; Filename: "{app}\TinyAssets.exe"; Tasks: desktopicon
-Name: "{userstartup}\TinyAssets"; Filename: "{app}\TinyAssets.exe"; Tasks: autostart
+Name: "{group}\TinyAssets Server"; Filename: "{app}\TinyAssets.exe"
+Name: "{userdesktop}\TinyAssets Server"; Filename: "{app}\TinyAssets.exe"; Tasks: desktopicon
+Name: "{userstartup}\TinyAssets Server"; Filename: "{app}\TinyAssets.exe"; Tasks: autostart
 
 [Run]
-Filename: "{app}\TinyAssets.exe"; Description: "Launch TinyAssets"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\TinyAssets.exe"; Description: "Launch TinyAssets Server"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{userappdata}\TinyAssets\updates"
@@ -53,7 +53,7 @@ begin
   if CurStep <> ssPostInstall then
     exit;
   UpdateRoot := ExpandConstant('{userappdata}\TinyAssets\updates');
-  InstallerName := 'TinyAssetsSetup-{#AppVersion}-{#Architecture}.exe';
+  InstallerName := 'TinyAssetsServerSetup-{#AppVersion}-{#Architecture}.exe';
   ReleaseRoot := UpdateRoot + '\releases\{#AppVersion}';
   ForceDirectories(ReleaseRoot);
   if CompareText(
