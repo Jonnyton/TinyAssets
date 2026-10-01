@@ -115,7 +115,8 @@ def _proxy(tmp_path: Path, monkeypatch, *, allow: str | None = None) -> Path:
 
         monkeypatch.setattr(egress, "_checked_addresses", checked)
     path = egress.ensure_proxy(universe)
-    assert path is not None and path.is_relative_to(universe / ".runtime")
+    assert path is not None
+    assert path.parent == Path(tmp_path) / egress.UNIVERSE_SIDECARS_DIR / "u-one"
     return path
 
 
@@ -151,15 +152,60 @@ def test_a_refusal_says_why_and_never_connects(tmp_path, monkeypatch, upstream):
 
 
 @posix_only
-def test_a_planted_link_never_moves_the_proxy_socket(tmp_path):
+def test_the_socket_lives_outside_every_universe_folder(tmp_path, monkeypatch):
+    """A workflow provider jail binds the universe read-write, and bubblewrap
+    resolves a bind source again at launch, so a socket inside the universe
+    could be swapped for a link to another universe (gpt-6-astra refute)."""
+    path = _proxy(tmp_path, monkeypatch)
+    assert not path.is_relative_to(tmp_path / "u-one")
+
+
+def test_the_jail_binds_its_own_sidecar_and_nothing_else_outside(tmp_path):
+    from tinyassets.providers import provider_jail as jail
+
     universe = tmp_path / "u-one"
-    (universe / ".runtime").mkdir(parents=True)
-    victim = tmp_path / "u-other"
-    victim.mkdir()
-    (universe / ".runtime" / "egress").symlink_to(victim)
-    with pytest.raises(OSError):
-        egress.ensure_proxy(universe)
-    assert not list(victim.iterdir())
+    universe.mkdir()
+    own = tmp_path / jail.UNIVERSE_SIDECARS_DIR / "u-one"
+    other = tmp_path / jail.UNIVERSE_SIDECARS_DIR / "u-two"
+    own.mkdir(parents=True)
+    other.mkdir(parents=True)
+    ok = jail.UniverseView(universe, (jail.JailMount("bind", "/tmp/s", own),))
+    assert jail._validated_view(ok).mounts[0].source == own.resolve()
+    for source in (other, tmp_path):
+        bad = jail.UniverseView(universe, (jail.JailMount("bind", "/tmp/s", source),))
+        with pytest.raises(jail.ProviderConfinementError):
+            jail._validated_view(bad)
+
+
+@posix_only
+def test_a_trickled_head_is_cut_off_at_one_deadline(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(egress, "_HEAD_TIMEOUT_S", 0.5)
+    path = _proxy(tmp_path, monkeypatch)
+    client = socket.socket(socket.AF_UNIX)
+    client.settimeout(10)
+    client.connect(str(path))
+    started = time.monotonic()
+    for _ in range(8):  # one byte every 0.2 s: each recv is quick, the head never ends
+        try:
+            client.sendall(b"C")
+        except OSError:
+            break
+        time.sleep(0.2)
+    reply = client.recv(4096)
+    client.close()
+    assert b"took too long" in reply
+    assert time.monotonic() - started < 5
+
+
+@posix_only
+def test_a_new_proxy_generation_shares_the_universe_budget(tmp_path, monkeypatch):
+    first = _proxy(tmp_path, monkeypatch)
+    budget = egress._UNIVERSE_SLOTS["u-one"]
+    first.unlink()
+    egress.ensure_proxy(tmp_path / "u-one")
+    assert egress._UNIVERSE_SLOTS["u-one"] is budget
 
 
 @posix_only

@@ -7,7 +7,10 @@ FastMCP/pytest/Ruff/browser capabilities remain absent"): no ``pip install``, no
 
 The jail still has NO network interface of its own: it keeps its empty network
 namespace. What it gets is one unix socket, bound in at :data:`JAIL_SOCKET`,
-served by this module in the daemon. Inside the jail a tiny forwarder
+served by this module in the daemon. The socket lives in the data root's
+``.universe-sidecars/<universe>/``, outside the universe: a workflow provider
+jail binds the universe read-write, so a socket inside it could be swapped for
+a link that bubblewrap would follow at launch. Inside the jail a tiny forwarder
 (:data:`FORWARDER`) listens on ``127.0.0.1:3128`` and passes each connection to
 that socket, and ``HTTP(S)_PROXY`` point standard clients at it. So the jail can
 reach exactly what this proxy agrees to connect, and nothing else -- there is
@@ -32,10 +35,12 @@ import logging
 import os
 import select
 import socket
-import stat
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -175,10 +180,22 @@ def _open(addresses: list[str], port: int) -> socket.socket:
 
 
 def _read_head(conn: socket.socket) -> bytes:
-    conn.settimeout(_HEAD_TIMEOUT_S)
+    """The request head, read under ONE deadline for the whole head.
+
+    A per-``recv`` timeout lets a client that trickles a byte at a time hold a
+    daemon thread forever (gpt-6-astra refute of S3a).
+    """
+    deadline = time.monotonic() + _HEAD_TIMEOUT_S
     data = b""
     while b"\r\n\r\n" not in data:
-        chunk = conn.recv(4096)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise EgressRefused("the request head took too long")
+        conn.settimeout(remaining)
+        try:
+            chunk = conn.recv(4096)
+        except TimeoutError:
+            raise EgressRefused("the request head took too long") from None
         if not chunk:
             raise EgressRefused("the request ended before its head")
         data += chunk
@@ -187,19 +204,44 @@ def _read_head(conn: socket.socket) -> bytes:
     return data
 
 
+def _send_within(sock: socket.socket, data: bytes) -> bool:
+    """Send all of ``data`` on a non-blocking socket, or give up after the idle bound."""
+    view = memoryview(data)
+    while view:
+        _, writable, _ = select.select([], [sock], [], _IDLE_TIMEOUT_S)
+        if not writable:
+            return False
+        try:
+            sent = sock.send(view)
+        except (BlockingIOError, InterruptedError):
+            continue
+        except OSError:
+            return False
+        view = view[sent:]
+    return True
+
+
 def _relay(a: socket.socket, b: socket.socket) -> None:
-    """Copy both ways until both sides finish, or nothing moves for the idle bound."""
-    a.settimeout(None)
-    b.settimeout(None)
+    """Copy both ways until both sides finish or nothing moves for the idle bound.
+
+    Both sockets are non-blocking and every write is deadline-bound, so a peer
+    that stops reading cannot pin a daemon thread past the idle bound.
+    """
+    a.setblocking(False)
+    b.setblocking(False)
     reading = {a: b, b: a}
     while reading:
         readable, _, _ = select.select(list(reading), [], [], _IDLE_TIMEOUT_S)
         if not readable:
             return
         for sock in readable:
-            target = reading[sock]
+            target = reading.get(sock)
+            if target is None:
+                continue
             try:
                 data = sock.recv(65536)
+            except (BlockingIOError, InterruptedError):
+                continue
             except OSError:
                 return
             if not data:
@@ -207,9 +249,7 @@ def _relay(a: socket.socket, b: socket.socket) -> None:
                 with contextlib.suppress(OSError):
                     target.shutdown(socket.SHUT_WR)
                 continue
-            try:
-                target.sendall(data)
-            except OSError:
+            if not _send_within(target, data):
                 return
 
 
@@ -223,39 +263,37 @@ def _refuse(conn: socket.socket, status: str, reason: str) -> None:
         )
 
 
+#: Open connections across every universe in this process: the floor that
+#: keeps one universe's traffic from taking the shared daemon's threads.
+MAX_HOST_CONNECTIONS = 128
+_HOST_SLOTS = threading.BoundedSemaphore(MAX_HOST_CONNECTIONS)
+#: One budget per universe for the life of the process, shared by every
+#: generation of its proxy, so restarting a proxy never mints a fresh budget.
+_UNIVERSE_SLOTS: dict[str, threading.BoundedSemaphore] = {}
+
+
+
 class EgressProxy:
     """One universe's proxy in this process, listening on a unix socket."""
 
-    def __init__(self, socket_path: Path, universe: str, dir_fd: int) -> None:
+    def __init__(self, socket_path: Path, universe: str) -> None:
         self.socket_path = socket_path
         self.universe = universe
-        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
-        name = socket_path.name
+        self._slots = _UNIVERSE_SLOTS.setdefault(
+            universe, threading.BoundedSemaphore(MAX_CONNECTIONS),
+        )
         with contextlib.suppress(FileNotFoundError):
-            os.unlink(name, dir_fd=dir_fd)
+            socket_path.unlink()
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        # Bound through the directory descriptor, never the path: the folder is
-        # writable by the universe's own workflow processes, so a component
-        # swapped for a link after the descriptor was opened changes nothing.
-        server.bind(f"/proc/self/fd/{dir_fd}/{name}")
-        os.chmod(name, 0o600, dir_fd=dir_fd, follow_symlinks=False)
+        server.bind(str(socket_path))
+        os.chmod(socket_path, 0o600)
         server.listen(64)
         self._server = server
-        self._inode = os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_ino
         thread = threading.Thread(target=self._accept, name=f"egress-{universe}", daemon=True)
         thread.start()
 
     def alive(self) -> bool:
-        """Whether the socket file this proxy listens on is still the one in place."""
-        try:
-            on_disk = os.lstat(self.socket_path)
-        except OSError:
-            return False
-        return stat.S_ISSOCK(on_disk.st_mode) and on_disk.st_ino == self._inode
-
-    def close(self) -> None:
-        with contextlib.suppress(OSError):
-            self._server.close()
+        return self.socket_path.is_socket()
 
     def _accept(self) -> None:
         while True:
@@ -263,7 +301,13 @@ class EgressProxy:
                 conn, _ = self._server.accept()
             except OSError:
                 return
+            if not _HOST_SLOTS.acquire(blocking=False):
+                _refuse(conn, "503 Service Unavailable",
+                        "the host is at its connection limit; retry shortly")
+                conn.close()
+                continue
             if not self._slots.acquire(blocking=False):
+                _HOST_SLOTS.release()
                 _refuse(conn, "503 Service Unavailable",
                         f"this universe already has {MAX_CONNECTIONS} open connections")
                 conn.close()
@@ -277,10 +321,11 @@ class EgressProxy:
             host, port, first = _destination(head)
             upstream = _open(_checked_addresses(host, port), port)
             if first is None:
-                conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                ok = _send_within(conn, b"HTTP/1.1 200 Connection established\r\n\r\n")
             else:
-                upstream.sendall(first)
-            _relay(conn, upstream)
+                ok = _send_within(upstream, first)
+            if ok:
+                _relay(conn, upstream)
         except EgressRefused as exc:
             logger.info("egress refused for %s: %s", self.universe, exc)
             _refuse(conn, "403 Forbidden", str(exc))
@@ -292,6 +337,7 @@ class EgressProxy:
                     with contextlib.suppress(OSError):
                         sock.close()
             self._slots.release()
+            _HOST_SLOTS.release()
 
 
 _PROXIES: dict[str, EgressProxy] = {}
@@ -301,26 +347,20 @@ _LOCK = threading.Lock()
 def ensure_proxy(universe_dir: Path) -> Path | None:
     """The proxy socket for ``universe_dir`` in this process, started on first use.
 
-    Returns ``None`` where unix sockets or no-follow directory creation are
-    unavailable (a Windows tray): the jail then has no network, as before.
+    Returns ``None`` where unix sockets are unavailable (a Windows tray): the
+    jail then has no network, as before.
     """
-    if not hasattr(socket, "AF_UNIX") or not hasattr(os, "O_NOFOLLOW"):
+    if not hasattr(socket, "AF_UNIX"):
         return None
-    from tinyassets.universe_files import open_runtime_dir
-
     root = Path(universe_dir).resolve()
     key = str(root)
     with _LOCK:
         proxy = _PROXIES.get(key)
         if proxy is not None and proxy.alive():
             return proxy.socket_path
-        if proxy is not None:
-            proxy.close()
-        dir_fd = open_runtime_dir(root, "egress")
-        try:
-            path = root / ".runtime" / "egress" / f"{os.getpid()}.sock"
-            proxy = EgressProxy(path, root.name, dir_fd)
-        finally:
-            os.close(dir_fd)
+        directory = root.parent / UNIVERSE_SIDECARS_DIR / root.name
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / f"egress-{os.getpid()}.sock"
+        proxy = EgressProxy(path, root.name)
         _PROXIES[key] = proxy
         return path

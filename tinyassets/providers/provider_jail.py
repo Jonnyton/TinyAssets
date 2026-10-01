@@ -276,6 +276,16 @@ def hidden_dir_masks(universe_dir: Path) -> list[JailMount]:
     return masks
 
 
+#: Daemon-owned files that belong to one universe but must not live inside
+#: it (its egress proxy socket): ``<data root>/.universe-sidecars/<universe>``.
+#: No jail binds that directory, so nothing a universe runs can replace them.
+UNIVERSE_SIDECARS_DIR = ".universe-sidecars"
+
+
+def _sidecars(root: Path) -> Path:
+    return root.parent / UNIVERSE_SIDECARS_DIR / root.name
+
+
 def _validated_view(view: UniverseView) -> UniverseView:
     """``view`` with every bind source resolved ONCE and checked, or refuse.
 
@@ -299,7 +309,7 @@ def _validated_view(view: UniverseView) -> UniverseView:
             source = mount.source.resolve(strict=not mount.op.endswith("-try"))
         except OSError:
             raise _refuse("a bind source does not exist") from None
-        if not _within(source, root):
+        if not (_within(source, root) or _within(source, _sidecars(root))):
             raise _refuse("a view may only bind paths inside its own universe")
         checked.append(JailMount(mount.op, dest, source))
     for name, _value in view.setenv:
