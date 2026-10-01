@@ -873,6 +873,10 @@ privileges, with no platform jail, so its defaults are conservative:
 - `bash` asks for confirmation before each command by default. Unattended
   operation is an explicit opt-in, and a missing approval blocks rather than
   proceeds.
+  This is a default, not a lock (stamp note, 2026-10-01): the harness is the
+  owner's, and pi itself runs without asking, so the owner may loosen it for
+  their own command center. It stays enforced for an imported or shared
+  command center until its owner activates and configures it.
 - File tools are confined to the folder. A path that resolves outside it is
   refused.
 - The runner's policy (`rules.json`, the runner config) is read-only to the
@@ -927,6 +931,77 @@ closes when the export ships.
 and quarantine) and before D10. It could not usefully come earlier, because
 until D9 there is no manifest to share. The local runner is independent of D9
 and can be built in parallel with it.
+
+### 4.18 Many agents, one universe: the multi-agent invariant (founder, 2026-10-01)
+
+> "depending on command center build the user might talk to more agents than
+> just the main dot one we are designing. users can design any kind of agent and
+> configure it in any command center orchestrations"
+>
+> "by default the dot like agent that comes with your universe is aware of all
+> the activity happening in that universe … and in general the universe brain is
+> usually shared so all saved feedback from the user gets all reconciled in the
+> same brain memory files no matter which agent you talk to"
+
+**The invariant.** Every per-agent record is keyed by `agent_id` from day one.
+`main` is only the seeded default, never a special case in code. The roster UI
+is D8. Nothing before D8 may assume there is one agent.
+
+**What is per agent, and what is shared**
+
+| Per agent (keyed by `agent_id`) | Shared by the whole universe |
+|---|---|
+| Sessions: one per (agent, thread) | The brain and memory files: one information layer about the owner, their projects and their goals |
+| Steering: a steer goes to the agent the owner is talking to in that thread | The workspace files (§4.3) |
+| The tool journal and status lines, which name the acting agent | Workflows and automations, attributed to the agent that made them |
+| Custom Rules and auto-review switches | |
+| Activities and their effect intents | |
+| Profile, Activity and Rules pages; pending requests and push, which carry the agent's name | |
+
+**Visibility is a harness capability, not a code path.** Each agent's harness
+config has a `visibility` scope, editable by the owner:
+- `universe`: the default for the seeded main agent. It can read every agent's
+  conversations with the owner, and every agent's activities, status lines and
+  effects, within this universe only.
+- `own`: the default for other agents. It reads its own threads and activities,
+  plus the shared brain.
+
+The platform applies the scope when it builds an agent's context and when it
+serves `read_graph` reads. There is no `if main` anywhere. The cross-user floor
+is unchanged: "all activity" never leaves the universe.
+
+**One brain, many writers: the reconcile rule.** Several agents can save
+feedback into the same brain at once. Silent last-writer-wins would lose it, so
+the rule is:
+1. **Capture is append-only.** Saving a piece of owner feedback appends one
+   dated entry to the brain's `log.md`, naming the agent. Each entry is a
+   single atomic append, so concurrent captures never collide.
+2. **Edits are compare-and-swap.** An edit to a brain topic file applies only
+   to the content it was based on:
+   - `edit` already requires its exact old text;
+   - a whole-file `write` to a brain file carries the digest of the version it
+     read.
+
+   On a conflict the write is refused, and the refusal returns the current
+   content. The agent re-reads and merges, and nothing is overwritten unseen.
+3. **One reconciler folds the log into the topic files.** This is the main
+   agent by default (owner-changeable), during its idle research turn (D3). It
+   marks each entry it reconciled. File history (§4.15) keeps every version, so
+   any merge can be undone.
+
+**Slices this changes**
+
+| Slice | State | Change |
+|---|---|---|
+| S1 sessions | Merged | The main thread keeps `thread:principal:<owner>`. Other agents use `agent:<agent_id>:thread:<principal>`. No migration |
+| S2 steering (#4188) | Merging | Keyed by session key, so it follows S1. The app sends the addressed agent with the steer (D8 UI) |
+| S4 journal (#4190) | Open | Rows carry the session key, which names the agent. The status line shows the agent's name (D8 roster name, "Your agent" until then) |
+| D1a rules | Merged | Already per agent (`rules.agent`, `MAIN_AGENT` is the seed) |
+| D1d review (#4200) | Merged | `review_off` lacks `agent_id`. Follow-up: rebuild it with `(agent_id, action_class)`, existing rows becoming `main` |
+| D2 activities | In build | Already `agent_id` on every record. Status lines go to the owning agent's main session, and also to any agent whose visibility covers it |
+| Pending requests and push | Shipped | Add the asking agent's id and name ("Your agent asks" becomes "<name> asks") |
+| converse and the app | Shipped | Accept an addressed `agent_id` on a thread. The command center decides which agents are exposed (D8) |
+| Brain writes | Shipped | Append-only capture to `log.md`, digest compare-and-swap on whole-file brain writes, and the reconciler pass (D3 or D7) |
 
 ## 5. What already shipped, mapped onto the dot
 
