@@ -179,9 +179,11 @@ def test_no_kernel_or_apparmor_relaxation():
     assert "apparmor_restrict_unprivileged_userns=0" not in text
     assert "aa-" not in text  # aa-complain / aa-disable / aa-teardown
     assert "/etc/apparmor" not in text
-    # No root anywhere: production runs the jail as uid 1001, and root inside
-    # bwrap's user namespace is what made 18 proofs fail for a non-prod reason.
-    assert not re.search(r"^\s*(elif\s+|if\s+!?\s*)?sudo\s", text, re.M), "no sudo"
+    # No test runs as root: production runs the jail as uid 1001, and root
+    # inside bwrap's user namespace is what made 18 proofs fail for a non-prod
+    # reason. The only sudo loads the container's named AppArmor profile.
+    sudo_lines = [ln.strip() for ln in text.splitlines() if re.match(r"\s*sudo\s", ln)]
+    assert sudo_lines == ['sudo apparmor_parser -r "$PROFILE"'], sudo_lines
 
 
 def test_run_blocks_never_interpolate_expressions():
@@ -317,7 +319,7 @@ def _assert_bwrap_gated(nodeid: str) -> None:
 _CONTAINER_FLAGS = (
     "--user 1001:1001",
     "--security-opt seccomp=unconfined",
-    "--security-opt apparmor=unconfined",
+    "--security-opt apparmor=ta-jail-userns",
     "--security-opt systempaths=unconfined",
 )
 
@@ -335,7 +337,12 @@ def test_the_jail_runs_as_uid_1001_in_the_oracle_image_like_production():
     assert "--unshare-all" in probe["run"], "smoke must exercise the real userns flag"
     assert "--die-with-parent" in probe["run"]
     assert "exit 1" in probe["run"], "an unjailable runner must fail, not skip"
+    profile = _step(wf, "Allow user namespaces for the jail container only")["run"]
+    assert "profile ta-jail-userns flags=(unconfined)" in profile
+    assert "'  userns,'" in profile, "the one permission the kernel withholds"
+    assert "sudo apparmor_parser -r" in profile
     assert (_step_index(wf, "Build the jail image")
+            < _step_index(wf, "Allow user namespaces for the jail container only")
             < _step_index(wf, "Probe the jail as uid 1001")
             < _step_index(wf, _RUN_STEP))
     paths = _triggers(wf)["pull_request"]["paths"]

@@ -47,10 +47,17 @@ name: linux-jail-proof
 # workspace-provisioning proofs failed for a reason production never has. The
 # proof therefore runs in the oracle image (docker/linux-oracle.Dockerfile:
 # python:3.11-slim + bubblewrap, the same base as production) at --user
-# 1001:1001, with seccomp, AppArmor and systempaths unconfined for that one
-# container (Docker's defaults block bubblewrap's clone flags and /proc
-# mounts). No host sysctl is changed, no privileged container, no daemon edits.
-# If the jail cannot be created there, the job is red, not skipped.
+# 1001:1001, with seccomp and systempaths unconfined for that one container
+# (Docker's defaults block bubblewrap's clone flags and /proc mounts).
+# The hosted kernel restricts unprivileged user namespaces through AppArmor
+# (kernel.apparmor_restrict_unprivileged_userns=1): with plain
+# `apparmor=unconfined` the namespace is created but its capabilities are
+# denied (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`,
+# measured 2026-10-01). So the container gets ONE named profile,
+# `ta-jail-userns` (unconfined plus `userns,`), loaded for this run only. No
+# host sysctl is changed, no privileged container, no daemon edits, and no
+# other process gains user namespaces. If the jail cannot be created, the job
+# is red, not skipped.
 
 on:
   pull_request:
@@ -154,6 +161,22 @@ jobs:
       - name: Build the jail image
         run: docker build -q -f docker/linux-oracle.Dockerfile -t ta-jail-proof .
 
+      - name: Allow user namespaces for the jail container only
+        env:
+          PROFILE: ${{ runner.temp }}/ta-jail-userns
+        run: |
+          set -euo pipefail
+          # Unconfined like Docker's apparmor=unconfined, plus the one permission
+          # the kernel's userns restriction withholds. Applied only to the
+          # containers below, by name.
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            'profile ta-jail-userns flags=(unconfined) {' \
+            '  userns,' \
+            '}' > "$PROFILE"
+          sudo apparmor_parser -r "$PROFILE"
+
       - name: Probe the jail as uid 1001
         run: |
           set -euo pipefail
@@ -161,7 +184,7 @@ jobs:
           # clear message, instead of inside pytest.
           if ! docker run --rm --user 1001:1001 \
               --security-opt seccomp=unconfined \
-              --security-opt apparmor=unconfined \
+              --security-opt apparmor=ta-jail-userns \
               --security-opt systempaths=unconfined \
               ta-jail-proof \
               bwrap --die-with-parent --new-session --unshare-all \
@@ -192,7 +215,7 @@ jobs:
           # short paths outside it (AF_UNIX paths have a 108-byte limit).
           docker run --rm --user 1001:1001 \
             --security-opt seccomp=unconfined \
-            --security-opt apparmor=unconfined \
+            --security-opt apparmor=ta-jail-userns \
             --security-opt systempaths=unconfined \
             -e HOME=/tmp/home -e TINYASSETS_DATA_DIR=/tmp/ta-data \
             -v "$GITHUB_WORKSPACE:/src:ro" -v "$OUT_DIR:/out" \
