@@ -501,7 +501,10 @@ class ProviderRouter:
     # Shared health
     # ------------------------------------------------------------------
 
-    def _cool(self, cfg: Any, provider_name: str, seconds: int, *, daily_detail: str = "") -> bool:
+    def _cool(
+        self, cfg: Any, provider_name: str, seconds: int, *, daily_detail: str = "",
+        reason: str = "",
+    ) -> bool:
         """The ONE place an in-flight attempt writes the shared cooldown map.
 
         Returns whether it was written. A ``ModelConfig.secondary_call`` is
@@ -525,7 +528,15 @@ class ProviderRouter:
         # cooldowns keep their original call shape.
         extra = {"daily_detail": daily_detail} if daily_detail else {}
         self._quota.cooldown(provider_name, seconds, **extra)
+        # Why, kept beside the map: a later call skipped by this cooldown says
+        # what it is waiting out. Live 2026-10-01 a run skipped a cooled source
+        # and reported only "account scope", which read as a spent allowance.
+        self.__dict__.setdefault("_cool_reasons", {})[provider_name] = reason
         return True
+
+    def cooldown_reason(self, provider_name: str) -> str:
+        """The failure class that put ``provider_name`` in cooldown, or ``""``."""
+        return self.__dict__.get("_cool_reasons", {}).get(provider_name, "")
 
     # ------------------------------------------------------------------
     # Registration helpers
@@ -583,7 +594,7 @@ class ProviderRouter:
             return chain
         return [p for p in chain if p in allowlist]
 
-    def cool_source(self, provider: str, *, retry_after_s=None) -> int:
+    def cool_source(self, provider: str, *, retry_after_s=None, reason: str = "") -> int:
         """Put a source in cooldown after the fact. Restrictive only.
 
         Cooling can only ever make this router try a source LESS, so this is
@@ -604,7 +615,7 @@ class ProviderRouter:
         # turn coordinator, which only ever follows a founder-facing turn, so it
         # is never secondary -- and saying so beats leaving a second unguarded
         # write of the shared map.
-        self._cool(None, provider, seconds)
+        self._cool(None, provider, seconds, reason=reason or "capacity refusal")
         return seconds
 
     def selected_agent_execution_kind(self, selection) -> str:
@@ -1100,7 +1111,10 @@ class ProviderRouter:
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="skipped",
                     skip_class="quota_or_cooldown",
-                    detail=daily or "provider cooldown gate",
+                    detail=daily or (
+                        f"provider cooldown gate (after {self.cooldown_reason(provider_name)})"
+                        if self.cooldown_reason(provider_name) else "provider cooldown gate"
+                    ),
                     failure_class="provider_daily_quota" if daily else None,
                     capacity_scope="account" if daily else None,
                     cooldown_remaining_s=cd if cd > 0 else None,
@@ -1383,7 +1397,7 @@ class ProviderRouter:
                 else:
                     # Preserve legacy host routing. Owned serving failures must
                     # not quarantine another owner's credential on this host.
-                    self._cool(cfg, provider_name, COOLDOWN_OTHER)
+                    self._cool(cfg, provider_name, COOLDOWN_OTHER, reason="auth_invalid")
                 proof = getattr(exc, "native_evidence", None)
                 if type(proof) is NativeCompletionEvidence and proof.provider == provider_name:
                     native_proofs[len(attempts)] = proof
@@ -1440,6 +1454,7 @@ class ProviderRouter:
                         (_retry_after_cooldown_s(exc.retry_after) if exc.retry_after is not None
                          else MAX_COOLDOWN_S) if daily else _rate_limit_cooldown_s(exc),
                         daily_detail=redacted_failure_detail(str(exc)) if daily else "",
+                        reason=exc.failure_class,
                     )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
@@ -1484,7 +1499,7 @@ class ProviderRouter:
                 # provider until its own retry-after (+margin), keeping fallback
                 # forbidden for the sole served writer.
                 cd = _rate_limit_cooldown_s(exc)
-                if self._cool(cfg, provider_name, cd):
+                if self._cool(cfg, provider_name, cd, reason=exc.failure_class or ""):
                     logger.warning(
                         "Provider %s rate-limited/overloaded (%s), cooldown %ds",
                         provider_name, exc.failure_class, cd,
@@ -1519,7 +1534,8 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderProtocolError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                if self._cool(cfg, provider_name, COOLDOWN_OTHER,
+                              reason="provider_protocol_error"):
                     logger.warning(
                         "Provider %s protocol error, cooldown %ds",
                         provider_name, COOLDOWN_OTHER,
@@ -1534,7 +1550,8 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderUnavailableError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_UNAVAILABLE):
+                if self._cool(cfg, provider_name, COOLDOWN_UNAVAILABLE,
+                              reason="provider_unavailable"):
                     logger.warning(
                         "Provider %s unavailable, cooldown %ds",
                         provider_name, COOLDOWN_UNAVAILABLE,
@@ -1546,7 +1563,7 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderTimeoutError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_TIMEOUT):
+                if self._cool(cfg, provider_name, COOLDOWN_TIMEOUT, reason="timed_out"):
                     logger.warning(
                         "Provider %s timed out, cooldown %ds",
                         provider_name, COOLDOWN_TIMEOUT,
@@ -1558,7 +1575,7 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                if self._cool(cfg, provider_name, COOLDOWN_OTHER, reason="provider_error"):
                     logger.warning(
                         "Provider %s error, cooldown %ds: %s",
                         provider_name, COOLDOWN_OTHER, exc,
@@ -1579,7 +1596,7 @@ class ProviderRouter:
                 # this outer classifier.
                 raise
             except Exception as exc:
-                self._cool(cfg, provider_name, COOLDOWN_OTHER)
+                self._cool(cfg, provider_name, COOLDOWN_OTHER, reason="unknown")
                 logger.exception("Unexpected error from %s", provider_name)
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",

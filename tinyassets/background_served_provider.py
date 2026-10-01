@@ -1567,12 +1567,21 @@ class _BackgroundAssignedProviderSession:
                 raise PermissionError("background model assignment changed")
             if set(roles) <= set(binding.allowed_roles):
                 current[member.provider] = (member, binding, custody)
-        if not current or declared_providers - current.keys():
+        if not current:
             raise PermissionError("background workflow requests an unavailable accepted provider")
+        from tinyassets.providers.model_pins import resolve_pin_source
+
+        # A bare access method (``api_key_http``) names this universe's single
+        # source of that method; anything unresolvable refuses with the refs.
+        sources = dict.fromkeys(current)
+        for declared in declared_providers:
+            resolve_pin_source(declared, "", sources)
         preferred = (policy or {}).get("preferred", {})
         if not isinstance(preferred, dict):
             raise PermissionError("background model preference is invalid")
-        provider = preferred.get("provider") or (
+        provider = (
+            resolve_pin_source(preferred["provider"], "", sources)
+            if preferred.get("provider") else
             assignment.provider if assignment.provider in current else next(iter(current))
         )
         if provider not in current:
