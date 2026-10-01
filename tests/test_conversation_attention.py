@@ -14,6 +14,7 @@ from tinyassets.conversation_attention import (
     returned_page,
     unread_count,
 )
+from tinyassets.universe_paths import platform_path
 
 SESSION = "principal:founder"
 
@@ -29,7 +30,7 @@ def chunk(ident, text, offset=0, count=32768):
 def say(root, text, session=SESSION, ts=None):
     """The owner's message plus the universe's reply; returns the owner row id."""
     assert store.record_exchange(root, session, text, "reply", ts=ts)
-    with closing(sqlite3.connect(root / ".conversation_memory.db")) as conn:
+    with closing(sqlite3.connect(platform_path(root, ".conversation_memory.db"))) as conn:
         return conn.execute(
             "SELECT max(id) FROM conversation_turns WHERE session_id=? AND speaker='founder'",
             (session,),
@@ -93,12 +94,12 @@ def test_another_threads_message_cannot_be_acknowledged(tmp_path: Path):
     acknowledge(tmp_path, SESSION, chunk(theirs, "theirs"))
     assert unread(tmp_path) == 1
     assert unread(tmp_path, "principal:other") == 1
-    assert not (tmp_path / ".conversation_attention.db").exists()
+    assert not (platform_path(tmp_path, ".conversation_attention.db")).exists()
 
 
 def test_deleted_history_not_in_count(tmp_path: Path):
     say(tmp_path, "gone")
-    with closing(sqlite3.connect(tmp_path / ".conversation_memory.db")) as conn:
+    with closing(sqlite3.connect(platform_path(tmp_path, ".conversation_memory.db"))) as conn:
         conn.execute("DELETE FROM conversation_turns")
         conn.commit()
     assert unread(tmp_path) == 0
@@ -107,9 +108,9 @@ def test_deleted_history_not_in_count(tmp_path: Path):
 def test_symlink_store_refused(tmp_path: Path):
     say(tmp_path, "x")
     target = tmp_path / "outside.db"
-    (tmp_path / ".conversation_memory.db").rename(target)
+    (platform_path(tmp_path, ".conversation_memory.db")).rename(target)
     try:
-        (tmp_path / ".conversation_memory.db").symlink_to(target)
+        (platform_path(tmp_path, ".conversation_memory.db")).symlink_to(target)
     except OSError:
         pytest.skip("this host cannot create symlinks; CI exercises the guard")
     with pytest.raises(PermissionError):
@@ -150,4 +151,4 @@ def test_a_call_that_reads_no_message_writes_nothing(tmp_path: Path):
     for _ in range(3):
         acknowledge(tmp_path, SESSION, None)
         assert unread(tmp_path) == 1
-    assert not (tmp_path / ".conversation_attention.db").exists()
+    assert not (platform_path(tmp_path, ".conversation_attention.db")).exists()

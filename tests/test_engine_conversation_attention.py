@@ -15,6 +15,7 @@ import pytest
 
 from tests.engine_authority_helpers import mock_engine_admission
 from tinyassets import conversation_store as store
+from tinyassets.universe_paths import platform_path
 
 ALICE = "acct_alice"
 BOB = "acct_bob"
@@ -59,7 +60,7 @@ def say(base: Path, actor: str, text: str, universe: str = UNIVERSE) -> int:
 
     session = f"principal:{actor}"
     assert store.record_exchange(base / universe, session, text, "reply")
-    with closing(sqlite3.connect(base / universe / ".conversation_memory.db")) as conn:
+    with closing(sqlite3.connect(platform_path(base / universe, ".conversation_memory.db"))) as conn:
         return conn.execute(
             "SELECT max(id) FROM conversation_turns WHERE session_id=? AND speaker='founder'",
             (session,),
