@@ -128,3 +128,11 @@ def test_env_without_a_value_is_refused():
 
     with pytest.raises(SystemExit, match="KEY=VALUE"):
         _command("--env", "NOVALUE", "-q")
+
+
+def test_a_jail_that_cannot_be_made_fails_the_run_instead_of_skipping():
+    user = _user_script(_command("-q"))
+    assert user.index("bwrap --die-with-parent") < user.index("python -m pytest")
+    assert "exit 3" in user
+    # --no-bwrap exists to prove the jail tests SKIP; it must not probe.
+    assert "bwrap --die-with-parent" not in _user_script(_command("--no-bwrap", "-q"))

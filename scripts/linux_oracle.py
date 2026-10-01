@@ -46,8 +46,9 @@ so the jail recipe has one definition. The contract it relies on:
 ``--out DIR`` binds DIR at ``/out``, writable by the suite (pass
 ``-- --junitxml /out/x.xml``); ``--apparmor PROFILE`` swaps the AppArmor
 profile on runners that restrict user namespaces; ``--env KEY=VALUE`` sets
-suite environment; the exit code is pytest's; stdout is one ``[oracle] ...``
-banner line, then pytest's output.
+suite environment; the exit code is pytest's, or 3 when bubblewrap cannot
+make a jail as the suite's user (a skip is not a pass); stdout is one
+``[oracle] ...`` banner line, then pytest's output.
 """
 from __future__ import annotations
 
@@ -112,6 +113,17 @@ exec {command}
 
 #: The old root run: copy, then repository and command, all as root.
 _RUN_SCRIPT = _COPY_SCRIPT + _REPO_AND_RUN_SCRIPT
+
+#: Prepended to the unprivileged run unless --no-bwrap: if bubblewrap cannot make
+#: a jail as this user, every jail test would SKIP and the run would look green.
+#: The flags are the ones node_sandbox.BwrapLauncher uses.
+JAIL_PROBE = r"""
+if ! bwrap --die-with-parent --new-session --unshare-all \
+        --ro-bind / / --proc /proc --dev /dev -- /bin/true; then
+    echo "[oracle] bubblewrap cannot create a jail as uid $(id -u); refusing to run" >&2
+    exit 3
+fi
+"""
 
 #: Unprivileged user the suite runs as by default.
 ORACLE_UID = 1001
@@ -260,7 +272,10 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
         script = _RUN_SCRIPT.format(excludes=excludes, command=command)
     else:
         script = _USER_SCRIPT.format(excludes=excludes, uid=ORACLE_UID)
-        run += ["-e", "ORACLE_USER_SCRIPT=" + _REPO_AND_RUN_SCRIPT.format(command=command)]
+        user_script = _REPO_AND_RUN_SCRIPT.format(command=command)
+        if not args.no_bwrap:
+            user_script = JAIL_PROBE + user_script
+        run += ["-e", "ORACLE_USER_SCRIPT=" + user_script]
     if not args.no_bwrap:
         # Docker's default seccomp profile blocks the clone flags bubblewrap
         # needs; without this every jail test skips and the oracle covers less
