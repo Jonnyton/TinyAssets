@@ -641,8 +641,12 @@
   // Native opens every OAuth page in an in-app Chrome tab and the callback
   // bounces back into the app through the tinyassets:// scheme.
   const NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform==="function" && window.Capacitor.isNativePlatform());
-  const APP_STATE_PREFIX = "app.";
-  const ANDROID_PACKAGE = "io.tinyassets.app";
+  // An app-initiated sign-in marks `state` with the install it came from, and
+  // the callback bounces ONLY to that entry's fixed package — never one named by
+  // the URL. The debug/sideload build is a separate install
+  // (io.tinyassets.app.debug) so it can never block a Play update, and it must
+  // sign back into itself rather than into the Play app.
+  const APP_RETURN_PACKAGES = {"app.": "io.tinyassets.app", "appdebug.": "io.tinyassets.app.debug"};
   function nativePlugin(name){ const P=window.Capacitor&&window.Capacitor.Plugins; return (P&&P[name])||null; }
   // PKCE state lives in localStorage on native (survives the WebView being
   // backgrounded behind the tab) and sessionStorage on the web.
@@ -665,7 +669,14 @@
     const verifier = randToken(48);
     // An app-initiated sign-in is marked in `state` so the callback page (which
     // lands in the in-app tab, NOT the WebView) knows to bounce the code back.
-    const state = (NATIVE ? APP_STATE_PREFIX : "") + randToken(18);
+    let statePrefix = "";
+    if(NATIVE){
+      statePrefix = "app.";
+      const A = nativePlugin("App");
+      try{ const info = A && typeof A.getInfo==="function" ? await A.getInfo() : null;
+        if(info && info.id === APP_RETURN_PACKAGES["appdebug."]) statePrefix = "appdebug."; }catch(_e){}
+    }
+    const state = statePrefix + randToken(18);
     pkceStore.setItem(PKCE_KEY, JSON.stringify({verifier, state}));
     const challenge = await challengeFor(verifier);
     const p = new URLSearchParams({
@@ -693,9 +704,9 @@
   // to harvest the (verifier-less, but still) code + state. Android's Chrome
   // honours an intent:// navigation from the redirect chain; the button is the
   // fallback when it wants a tap first.
-  function bounceToApp(code, state){
+  function bounceToApp(code, state, androidPackage){
     const qs = "code=" + encodeURIComponent(code) + "&state=" + encodeURIComponent(state);
-    const intent = "intent://auth?" + qs + "#Intent;scheme=tinyassets;package=" + ANDROID_PACKAGE + ";end";
+    const intent = "intent://auth?" + qs + "#Intent;scheme=tinyassets;package=" + androidPackage + ";end";
     const notice = document.getElementById("signin-notice");
     notice.textContent = "";
     const p = document.createElement("p"); p.textContent = "Signed in. Returning you to the TinyAssets app…";
@@ -757,7 +768,8 @@
     if(!code) return false;
     const state = q.get("state") || "";
     history.replaceState({}, "", redirectUri());   // strip code/state from the URL
-    if(!NATIVE && state.startsWith(APP_STATE_PREFIX)){ bounceToApp(code, state); return false; }
+    const appPrefix = Object.keys(APP_RETURN_PACKAGES).find((prefix)=>state.startsWith(prefix));
+    if(!NATIVE && appPrefix){ bounceToApp(code, state, APP_RETURN_PACKAGES[appPrefix]); return false; }
     const saved = JSON.parse(pkceStore.getItem(PKCE_KEY) || "{}");
     if(!saved.verifier || saved.state !== state){
       document.getElementById("signin-notice").textContent = "Sign-in state expired. Try again.";

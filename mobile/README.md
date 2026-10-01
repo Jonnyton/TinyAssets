@@ -78,6 +78,18 @@ cd android && ./gradlew assembleDebug
 # → android/app/build/outputs/apk/debug/app-debug.apk  (sideload to test)
 ```
 
+The debug build installs as **`io.tinyassets.app.debug`**, labelled
+"TinyAssets (debug)", next to (never over) the Play app.
+`scripts/configure_android_release.py` writes that suffix into the debug
+buildType, and `verify_android_release.py` fails on any other `applicationIdSuffix`.
+The reason: a debug APK is signed with a development key, and when it shared
+`io.tinyassets.app` every Play update failed with "Can't install" on a phone
+that had sideloaded it. CI publishes the same build as
+`releases/download/android-latest/app-debug.apk` for developers; people install
+from Google Play. Debug builds have no phone notifications: the published APK is
+built without `google-services.json`, and a local file without an
+`io.tinyassets.app.debug` client fails `assembleDebug` (the materialise step says so).
+
 Verify the full loop on the device: **sign in (WorkOS)** → **connect your AI
 subscription** → **chat with your universe**.
 

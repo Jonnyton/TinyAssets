@@ -121,7 +121,12 @@ data, and SHALL NOT offer an unsigned `Refresh MCP` control.
 
 ### Requirement: Start, Surfaces, And Availability Copy Are Truthful
 
-`/start` SHALL present three steps (sign in; connect a subscription; say what real thing to finish) and the four surfaces with their real addresses: the web app at `https://tinyassets.io/app`, the chatbot connector URL `https://tinyassets.io/mcp` for Claude.ai and ChatGPT, the Android pre-release APK at the `android-latest` release asset, and the desktop app as unsigned builds from `desktop-app/` in the repository. `/fine-print` SHALL state plainly what does not exist: no platform model, no list of integrations, no signed desktop installer and no Play listing yet, no paid work market. `/developers` SHALL name `https://tinyassets.io/mcp` as the only public endpoint and list the seven canonical handles (`converse`, `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `get_status`) with the source-install path (Python 3.11+, clone, editable install, `tinyassets-mcp` / `tinyassets-cli`).
+`/start` SHALL present three steps (sign in; connect a subscription; say what real thing to finish) and the four surfaces with their real addresses: the web app at `https://tinyassets.io/app`, the chatbot connector URL `https://tinyassets.io/mcp` for Claude.ai and ChatGPT, the Android app as Google Play's closed-test opt-in page `https://play.google.com/apps/testing/io.tinyassets.app` (with the `android-latest` debug APK at most a developer link, labelled as a separate install that never receives Play updates), and the desktop app as unsigned builds from `desktop-app/` in the repository. `/fine-print` SHALL state plainly what does not exist: no platform model, no list of integrations, no signed desktop installer and no public Play listing yet, no paid work market. `/developers` SHALL name `https://tinyassets.io/mcp` as the only public endpoint and list the seven canonical handles (`converse`, `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `get_status`) with the source-install path (Python 3.11+, clone, editable install, `tinyassets-mcp` / `tinyassets-cli`).
+
+#### Scenario: Visitor wants the Android app
+
+- **WHEN** a visitor follows "Get the Android app" or reads `llms.txt`
+- **THEN** the install path is Google Play's closed-test opt-in for `io.tinyassets.app`, the copy says only invited accounts can join, and the debug APK (which installs as `io.tinyassets.app.debug`) is never presented as the way to install the app
 
 #### Scenario: Visitor asks for a desktop installer
 

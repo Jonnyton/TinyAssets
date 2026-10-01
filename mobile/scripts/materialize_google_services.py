@@ -56,6 +56,14 @@ def _source(env: dict[str, str]) -> tuple[str, bytes | None]:
     return "", None
 
 
+def _packages(document: dict) -> set:
+    return {
+        ((client.get("client_info") or {}).get("android_client_info") or {}).get("package_name")
+        for client in document.get("client") or []
+        if isinstance(client, dict)
+    }
+
+
 def validate(raw: bytes, app_id: str) -> dict:
     """The parsed document, or ValueError. Checks the package it is FOR."""
     if len(raw) > MAX_BYTES:
@@ -69,11 +77,7 @@ def validate(raw: bytes, app_id: str) -> dict:
     info = document.get("project_info")
     if not isinstance(info, dict) or not str(info.get("project_id") or "").strip():
         raise ValueError("google-services.json has no project_info.project_id")
-    packages = {
-        ((client.get("client_info") or {}).get("android_client_info") or {}).get("package_name")
-        for client in document.get("client") or []
-        if isinstance(client, dict)
-    }
+    packages = _packages(document)
     if app_id not in packages:
         # Firebase's own Gradle plugin fails on this too, but later and with a
         # message about a missing client. Say which app the file is for.
@@ -84,9 +88,10 @@ def validate(raw: bytes, app_id: str) -> dict:
 
 def materialize(mobile: Path, env: dict[str, str]) -> bool:
     """Write the file if one is configured. Returns whether push is enabled."""
-    from configure_android_release import load_release
+    from configure_android_release import debug_application_id, load_release
 
-    app_id = load_release(mobile).app_id
+    release = load_release(mobile)
+    app_id = release.app_id
     origin, raw = _source(env)
     if raw is None:
         print(
@@ -105,6 +110,17 @@ def materialize(mobile: Path, env: dict[str, str]) -> bool:
         f"push ENABLED: google-services.json from {origin} "
         f"(project {document['project_info']['project_id']}, package {app_id})"
     )
+    debug_id = debug_application_id(release)
+    if debug_id not in _packages(document):
+        # The debug build is a separate install (configure_android_release.py).
+        # Firebase's plugin refuses a variant whose package has no client, so say
+        # so here rather than leave a Gradle error to explain it.
+        print(
+            f"debug builds: this file has no {debug_id} client, so `assembleDebug` fails "
+            "at processDebugGoogleServices; build release, or register the debug app in "
+            "Firebase. The published debug APK is built without this file: push is "
+            "disabled there by design."
+        )
     return True
 
 

@@ -1,10 +1,16 @@
 name: Android debug APK
 
 # Builds a sideloadable debug APK on GitHub's runners (JDK 17 + Android SDK
-# pre-installed) and, on main, publishes it to the latest GitHub release - the
-# asset the website's "Get the Android app" button downloads
-# (releases/download/android-latest/app-debug.apk). (The Play-store .aab is a separate,
-# release-keystore-signed build - see mobile/README.md.)
+# pre-installed) and, on main, publishes it to the android-latest GitHub release
+# as a DEVELOPER build (releases/download/android-latest/app-debug.apk). The
+# website sends people to Google Play, not here. (The Play-store .aab is a
+# separate, release-keystore-signed build - see mobile/README.md.)
+#
+# Identity: this APK installs as io.tinyassets.app.debug, "TinyAssets (debug)"
+# (configure_android_release.py). It is signed with a development key, so if it
+# shared the Play package every Play update would fail with "Can't install" on
+# any phone that sideloaded it (2026-10-01). The badging step below fails the
+# build if the APK ever carries the Play package again.
 #
 # Shape (Codex review 2026-08-21): the build job is READ-ONLY - no git
 # credentials persist into the checkout, dependencies come from the lockfile
@@ -109,6 +115,16 @@ jobs:
         working-directory: mobile/android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
+      - name: Verify the APK is a separate install from the Play app
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          aapt2="$(find "$ANDROID_HOME/build-tools" -name aapt2 -type f | sort -V | tail -n 1)"
+          [ -n "$aapt2" ] || { echo "::error::no aapt2 under $ANDROID_HOME/build-tools"; exit 1; }
+          "$aapt2" dump badging android/app/build/outputs/apk/debug/app-debug.apk > "$RUNNER_TEMP/badging.txt"
+          grep -E "^(package|application-label):" "$RUNNER_TEMP/badging.txt"
+          python3 scripts/verify_android_release.py --apk-badging "$RUNNER_TEMP/badging.txt" --variant debug
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -136,10 +152,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          NOTES: >-
+            Developer build from main: installs as io.tinyassets.app.debug ("TinyAssets (debug)"),
+            separately from the Google Play app. To use TinyAssets on Android, install it from
+            Google Play: https://play.google.com/apps/testing/io.tinyassets.app
         run: |
+          set -euo pipefail
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "TinyAssets Android (debug)" \
-              --notes "Sideloadable debug build from main. The website's Get-the-Android-app button downloads this asset."
+            gh release create "$RELEASE_TAG" --title "TinyAssets Android (debug)" --notes "$NOTES"
           fi
+          # Notes only: the release also carries the Play foreground-service
+          # evidence video, which Play's declaration links - never touch assets
+          # other than app-debug.apk here.
+          gh release edit "$RELEASE_TAG" --notes "$NOTES"
           gh release upload "$RELEASE_TAG" dist/app-debug.apk --clobber
           echo "published app-debug.apk to release $RELEASE_TAG"
