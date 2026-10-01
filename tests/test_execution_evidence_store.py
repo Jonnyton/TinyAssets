@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import hmac
 import json
@@ -1034,23 +1035,43 @@ def test_failed_second_construction_preserves_lock_without_fd_leak(
     first = evidence_api.ExecutionEvidenceStore(database, initialize=True)
     original_connect = evidence_api.sqlite3.connect
     fd_root = Path("/proc/self/fd")
-    before_fds = len(tuple(fd_root.iterdir())) if fd_root.is_dir() else None
+
+    def open_fds() -> set[tuple[str, str]] | None:
+        if not fd_root.is_dir():
+            return None
+        found = set()
+        for entry in fd_root.iterdir():
+            try:
+                found.add((entry.name, os.readlink(entry)))
+            except OSError:  # closed between listing and reading
+                continue
+        return found
 
     def failing_connect(*args: Any, **kwargs: Any):
         raise sqlite3.OperationalError("injected construction failure")
 
+    # The fd table is process-wide. A raw count also moved when the garbage
+    # collector finalized an earlier test's object inside this window (CI:
+    # "85 == 86", one FEWER fd, four times on 2026-10-01). A leak is an fd that
+    # is open afterwards and was not before, so compare (fd, target) pairs, with
+    # pending garbage collected first and the collector held off meanwhile.
+    gc.collect()
+    gc.disable()
     try:
+        before_fds = open_fds()
         with first.transaction():
             monkeypatch.setattr(evidence_api.sqlite3, "connect", failing_connect)
             with pytest.raises(sqlite3.OperationalError, match="injected"):
                 evidence_api.ExecutionEvidenceStore(database)
             monkeypatch.setattr(evidence_api.sqlite3, "connect", original_connect)
             if before_fds is not None:
-                assert len(tuple(fd_root.iterdir())) == before_fds
+                leaked = open_fds() - before_fds
+                assert not leaked, f"construction failure leaked {sorted(leaked)}"
             external = _external_begin_immediate(database)
             assert external.returncode == 73, external.stderr
             assert "locked" in external.stderr
     finally:
+        gc.enable()
         first.close()
 
 
