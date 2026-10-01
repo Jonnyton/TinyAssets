@@ -185,8 +185,11 @@ def account_type_of(base_path: str | Path, owner_id: str) -> AccountType:
     That is where Stripe checkout already writes it. No home, no account, or an
     unreadable record all resolve to FREE -- never to the subscription.
     """
+    # read_tier, not get_tier: get_tier creates the database and leaves its
+    # connection to the GC, which on Windows held a handle in the universe dir
+    # and blocked account deletion's rename (#4158).
     from tinyassets.daemon_server import get_founder_home
-    from tinyassets.storage.subscription_state import get_tier
+    from tinyassets.storage.subscription_state import read_tier
 
     owner = named_principal(owner_id)
     if not owner:
@@ -198,7 +201,7 @@ def account_type_of(base_path: str | Path, owner_id: str) -> AccountType:
         return AccountType.FREE
     if not home or Path(home).name != home or home.startswith("."):
         return AccountType.FREE
-    return account_type(get_tier(Path(base_path) / home))
+    return account_type(read_tier(Path(base_path) / home))
 
 
 def account_type_for_universe(universe_dir: str | Path) -> AccountType:
