@@ -99,7 +99,9 @@ def test_the_owner_lists_and_pages_their_own_files(home: Path) -> None:
     # every chunk decodes: the pages concatenate to the file exactly.
     pieces, offset = [], 0
     while offset is not None:
-        page = _read("command_center_file", "/u/notes/board.md", file_offset=offset, file_max_bytes=3)
+        page = _read(
+            "command_center_file", "/u/notes/board.md", file_offset=offset, file_max_bytes=3,
+        )
         assert page["encoding"] == "text", page
         pieces.append(page["text"])
         offset = page["next_offset"]
