@@ -1367,10 +1367,23 @@ class Payload:
 
 def preservation_payload(worktree: Path) -> Payload:
     """What the preserve step must capture. Raises Undecidable on any shape it
-    cannot preserve faithfully: a submodule, an embedded repository, a link."""
+    cannot preserve faithfully: a submodule, an embedded repository, a link, or a
+    tracked file whose local bytes ``git status`` would not report -- an
+    assume-unchanged / skip-worktree entry, or a path under a clean filter that
+    may rewrite what gets compared (Codex round 2, F1)."""
     staged = git_ok(["ls-files", "--stage"], worktree, timeout=120)
     if any(line.startswith("160000 ") for line in staged.splitlines()):
         raise Undecidable("the lane has a submodule; its contents cannot be snapshotted")
+    flagged = [
+        line[2:]
+        for line in git_ok(["ls-files", "-v"], worktree, timeout=120).splitlines()
+        if line[:1].islower() or line[:1] == "S"
+    ]
+    if flagged:
+        raise Undecidable(f"assume-unchanged/skip-worktree entries hide bytes: {flagged[:3]}")
+    filtered = _filtered_paths(worktree)
+    if filtered:
+        raise Undecidable(f"paths under a clean filter: {filtered[:3]}")
     raw = git_ok(
         [
             "status",
@@ -1728,22 +1741,100 @@ def copy_with_manifest(worktree: Path, files: list[str], dest: Path) -> int:
     return len(manifest)
 
 
+def _filtered_paths(worktree: Path) -> list[str]:
+    """Tracked paths with a ``filter`` attribute set. Raises Undecidable."""
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=str(worktree), capture_output=True, timeout=120
+    )
+    if listed.returncode != 0:
+        raise Undecidable("git ls-files failed")
+    proc = subprocess.run(
+        ["git", "check-attr", "-z", "--stdin", "filter"],
+        cwd=str(worktree),
+        input=listed.stdout,
+        capture_output=True,
+        timeout=300,
+    )
+    if proc.returncode != 0:
+        raise Undecidable(f"git check-attr -> rc={proc.returncode}")
+    fields = proc.stdout.decode("utf-8", "surrogateescape").split("\0")
+    out = []
+    for index in range(0, len(fields) - 2, 3):
+        path, _attr, value = fields[index : index + 3]
+        if value not in {"unspecified", "unset"}:
+            out.append(path)
+    return out
+
+
+def payload_digests(worktree: Path, payload: Payload) -> dict[str, str]:
+    """Content digest of every byte the preserve step captures. Compared before
+    and after the quarantine rename: equal size and mtime is not equal content
+    (Codex round 2, F2). Raises Undecidable."""
+    out: dict[str, str] = {}
+    try:
+        for rel in dict.fromkeys(payload.changed):
+            target = worktree / rel
+            out["c:" + rel] = (
+                _git_blob_id(target.read_bytes()) if os.path.lexists(target) else "deleted"
+            )
+        for rel in payload.ignored:
+            out["i:" + rel] = _sha256(worktree / rel)
+    except OSError as exc:
+        raise Undecidable(f"cannot read the payload: {exc}") from exc
+    return out
+
+
+def _admin_dir(worktree: Path, common: Path) -> Path:
+    """This worktree's administrative directory under ``common/worktrees``."""
+    text = (worktree / ".git").read_text(encoding="utf-8").strip()
+    if not text.startswith("gitdir:"):
+        raise Undecidable(f"{worktree}/.git is not a worktree link")
+    admin = Path(text[len("gitdir:") :].strip())
+    if admin.parent.resolve() != (common / "worktrees").resolve() or not admin.is_dir():
+        raise Undecidable(f"{admin} is not an administrative directory of this repository")
+    return admin
+
+
+def _lane_state(worktree: Path, admin: Path) -> tuple:
+    """Everything the final check compares: HEAD, the real index's tree, the lock,
+    the captured payload's content, and the whole tree's fingerprint."""
+    payload = preservation_payload(worktree)
+    return (
+        git_ok(["rev-parse", "HEAD"], worktree).strip(),
+        git_ok(["write-tree"], worktree).strip(),  # the real index; fails on conflicts
+        (admin / "locked").exists(),
+        sorted(payload.changed),
+        sorted(payload.ignored),
+        payload_digests(worktree, payload),
+        fingerprint(worktree),
+    )
+
+
 def preserve_and_remove(repo: Path, item: Item, policy: PreservePolicy) -> tuple[bool, str]:
     """Preserve one finished lane, verify the preservation, then remove the worktree.
 
-    Inventory and apply are minutes apart, so everything is re-proved here: HEAD
-    has not moved, the tree is still idle, and -- after the worktree is renamed to
-    a quarantine name nobody is writing to -- its fingerprint and HEAD match what
-    was preserved. The branch ref is never deleted.
+    Inventory and apply are minutes apart, so everything is re-proved here. The
+    lane's state -- HEAD, real-index tree, lock, payload CONTENT digests, whole-tree
+    fingerprint -- is read before preserving and again after the worktree is
+    renamed to a quarantine name (Windows refuses that rename while any process
+    holds a handle inside, and no writer knows the new name). Only an identical,
+    unlocked lane is deleted; anything else is renamed back and kept. The branch
+    ref is never deleted.
     """
     path = Path(item.path)
     quarantine = path.with_name(path.name + ".hygiene-removing")
     try:
+        common = Path(
+            git_ok(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo).strip()
+        )
+        admin = _admin_dir(path, common)
+        if (admin / "locked").exists():
+            return False, "changed since inventory: the worktree is locked"
         head = git_ok(["rev-parse", "HEAD"], path).strip()
         if item.head and head != item.head:
             return False, "changed since inventory: HEAD moved"
-        before = fingerprint(path)
-        newest = max((m for _s, m in before.values()), default=0) / 1e9
+        before = _lane_state(path, admin)
+        newest = max((m for _s, m in before[-1].values()), default=0) / 1e9
         if (time.time() - newest) / 3600.0 < policy.idle_hours:
             return False, "changed since inventory: the worktree is active again"
         payload = preservation_payload(path)
@@ -1754,13 +1845,9 @@ def preserve_and_remove(repo: Path, item: Item, policy: PreservePolicy) -> tuple
 
             wt._archive_purpose(repo, path, item.branch, "dev_hygiene: preserve_then_remove")
         commit = snapshot_commit(path, head, payload.changed)
-        common = Path(
-            git_ok(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo).strip()
-        )
         root = policy.root or common / "tinyassets-preserved"
         ref, dest = reserve(repo, preserved_name(repo, path), commit, root, bool(payload.ignored))
         copied = copy_with_manifest(path, payload.ignored, dest) if payload.ignored else 0
-        admin = (path / ".git").read_text(encoding="utf-8").strip()
     except Undecidable as exc:
         return False, f"not preserved, so not removed: {exc}"
     except Exception as exc:  # noqa: BLE001 -- any failure before removal keeps the lane
@@ -1771,11 +1858,10 @@ def preserve_and_remove(repo: Path, item: Item, policy: PreservePolicy) -> tuple
     except OSError as exc:
         return False, f"preserved as {ref}; kept: the folder is in use ({exc})"
     try:
-        after = fingerprint(quarantine)
-        head_after = git_ok(["rev-parse", "HEAD"], quarantine).strip()
+        after = _lane_state(quarantine, admin)
     except Undecidable as exc:
-        after, head_after = {}, f"undecidable: {exc}"
-    if after != before or head_after != head:
+        after = (f"undecidable: {exc}",)
+    if after != before:
         try:
             os.rename(quarantine, path)
         except OSError as exc:
@@ -1788,10 +1874,7 @@ def preserve_and_remove(repo: Path, item: Item, policy: PreservePolicy) -> tuple
     ok, detail = remove_path(quarantine)
     if not ok:
         return False, f"preserved as {ref}; removal failed: {detail}"
-    if admin.startswith("gitdir:"):
-        admin_dir = Path(admin[len("gitdir:") :].strip())
-        if admin_dir.parent.resolve() == (common / "worktrees").resolve() and admin_dir.is_dir():
-            remove_path(admin_dir)
+    remove_path(admin)
     where = f"; {copied} ignored file(s) copied to {dest}" if copied else ""
     return True, f"preserved as {ref} @ {commit[:12]}{where}; branch ref kept"
 

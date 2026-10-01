@@ -1453,6 +1453,79 @@ def test_a_write_during_preservation_keeps_the_worktree(
     assert "changed during preservation" in item.detail
 
 
+def test_a_same_size_same_mtime_rewrite_keeps_the_worktree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex round 2, F2: equal size and mtime is not equal content."""
+    lane, item = merged_dirty_lane(repo)
+    real = dh.snapshot_commit
+
+    def swap(worktree, head, changed):
+        sha = real(worktree, head, changed)
+        target = Path(worktree) / "wip.txt"
+        info = target.stat()
+        target.write_bytes(b"WIP\n")  # same length, different bytes
+        os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+        return sha
+
+    monkeypatch.setattr(dh, "snapshot_commit", swap)
+    apply_one(repo, item)
+    assert (lane / "wip.txt").read_bytes() == b"WIP\n", "the unpreserved bytes were deleted"
+    assert "changed during preservation" in item.detail
+
+
+def test_an_index_change_during_preservation_keeps_the_worktree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex round 2, F3: the real index lives outside the worktree directory."""
+    lane, item = merged_dirty_lane(repo)
+    real = dh.snapshot_commit
+
+    def stage(worktree, head, changed):
+        sha = real(worktree, head, changed)
+        git(Path(worktree), "add", "wip.txt")
+        return sha
+
+    monkeypatch.setattr(dh, "snapshot_commit", stage)
+    apply_one(repo, item)
+    assert lane.exists()
+    assert "changed during preservation" in item.detail
+
+
+def test_a_lock_taken_after_inventory_keeps_the_worktree(repo: Path) -> None:
+    """Codex round 2, F4: the lock is re-read at apply, not trusted from inventory."""
+    lane, item = merged_dirty_lane(repo)
+    git(repo, "worktree", "lock", "--reason", "another agent", str(lane))
+    apply_one(repo, item)
+    assert lane.exists()
+    assert "locked" in item.detail
+
+
+def test_hidden_tracked_bytes_keep_the_lane(repo: Path) -> None:
+    """Codex round 2, F1: assume-unchanged hides a local edit from git status."""
+    lane = add_lane(repo, "landed", merged=True)
+    git(lane, "update-index", "--assume-unchanged", "a.txt")
+    (lane / "a.txt").write_bytes(b"local edit status cannot see\n")
+    (lane / "wip.txt").write_bytes(b"wip\n")
+    stale(lane)
+    item = by_path(preserve_items(repo, prs={"landed": ["MERGED"]}), lane)
+    assert item.verdict == "KEEP"
+    assert "assume-unchanged" in item.detail
+
+
+def test_a_clean_filter_keeps_the_lane(repo: Path) -> None:
+    lane = add_lane(repo, "landed", merged=True)
+    (lane / ".gitattributes").write_bytes(b"*.txt filter=strip\n")
+    git(lane, "add", ".gitattributes")
+    git(lane, "commit", "-q", "-m", "filter")
+    git(lane, "push", "-q", "origin", "landed")
+    (lane / "wip.md").write_bytes(b"wip\n")
+    stale(lane)
+    item = by_path(preserve_items(repo, prs={"landed": ["MERGED"]}), lane)
+    assert item.verdict == "KEEP"
+    assert "clean filter" in item.detail
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows refuses to rename a folder in use")
 def test_a_folder_in_use_is_kept(repo: Path) -> None:
     lane, item = merged_dirty_lane(repo)
