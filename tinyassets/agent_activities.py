@@ -8,11 +8,12 @@ session of the universe's agent, keyed ``activity:<id>``, with a durable record:
 * **Where.** ``.agent-sessions/<universe>/agent-activities.db`` in the data
   root, beside ``rules.db`` and outside every universe folder, so nothing the
   agent runs can forge a status, a runner claim or an effect intent (design D1).
-* **One live runner.** A runner claims an activity by compare-and-set, stamping
-  its process-liveness token and the next generation. Another runner may take
-  it over only when that token's owner is provably dead -- the rule run
-  recovery uses -- never because a lease timed out, and every runner write
-  names its generation, so a superseded runner's writes change nothing.
+* **One live run.** An activity executes as runs of the universe's
+  *Activities* branch (design D3). The dispatcher claims it (the next
+  generation), reserves a run, binds that run's id to the record, and only
+  then releases it; the run executes only if the record still names it. A run
+  is replaced only once it ended or was interrupted, and every runner write
+  names its generation, so a superseded run's writes change nothing.
 * **Reads never truncate.** Listing is keyset-paged by ``(updated_at, id)``;
   every field is bounded when it is written, so a page cannot grow without
   limit and nothing is cut to fit.
@@ -456,35 +457,63 @@ def answered(universe_dir: Path, activity_id: str, request_id: str) -> bool:
 
 
 @_when_absent(lambda: None)
-def claim(universe_dir: Path, activity_id: str, runner_token: str, *,
-          is_dead: Callable[[str], bool]) -> int | None:
-    """Claim the run of an activity; the new generation, or None.
+def claim(universe_dir: Path, activity_id: str, *,
+          replaceable: Callable[[str], bool]) -> int | None:
+    """Claim an activity for a new run; the new generation, or None.
 
-    A queued activity is claimable. An ``in_progress`` one is claimable only
-    when ``is_dead(previous token)`` -- its runner's owner is provably dead --
-    so a stalled but live runner is never overlapped.
+    Step 1 of reserve, bind, release (design D4). A queued activity is
+    claimable. An ``in_progress`` one is claimable when it names no run (a
+    dispatcher died between claiming and binding) or when
+    ``replaceable(run_id)`` -- its run ended without settling the record, or
+    was interrupted -- so a live run is never replaced.
     """
-    if not runner_token:
-        raise ValueError("a runner claims with its liveness token")
     with _txn(universe_dir) as conn:
         record = _get(conn, activity_id)
         if record is None:
             return None
         resumed = record["status"] == IN_PROGRESS
         if resumed:
-            previous = record["runner_token"]
-            if not previous or previous == runner_token or not is_dead(previous):
+            current = record["runner_token"]
+            if current and not replaceable(current):
                 return None
         elif record["status"] != SCHEDULED:
             return None
         generation = record["runner_generation"] + 1
         conn.execute(
-            "UPDATE activities SET status = ?, runner_token = ?, runner_generation = ?, "
+            "UPDATE activities SET status = ?, runner_token = '', runner_generation = ?, "
             "revision = revision + 1, updated_at = ? WHERE activity_id = ?",
-            (IN_PROGRESS, runner_token, generation, _bump(record), activity_id),
+            (IN_PROGRESS, generation, _bump(record), activity_id),
         )
-        _event(conn, record, "resumed" if resumed else IN_PROGRESS)
+        _event(conn, record, "resumed" if resumed and record["last_tool_seq"] else IN_PROGRESS)
     return generation
+
+
+@_when_absent(lambda: False)
+def bind_run(universe_dir: Path, activity_id: str, generation: int, run_id: str) -> bool:
+    """Step 3: name the reserved run on the record, under the claim's generation."""
+    if not run_id:
+        raise ValueError("bind a reserved run id")
+    with closing(_connect(universe_dir)) as conn:
+        cur = conn.execute(
+            "UPDATE activities SET runner_token = ? WHERE activity_id = ? AND status = ? "
+            "AND runner_generation = ? AND runner_token = ''",
+            (run_id, activity_id, IN_PROGRESS, int(generation)),
+        )
+        return cur.rowcount == 1
+
+
+@_when_absent(lambda: None)
+def linked_generation(universe_dir: Path, activity_id: str, run_id: str) -> int | None:
+    """The start barrier (step 4): the generation under which the record names
+    ``run_id``, or None -- an unlinked run must not execute."""
+    if not _ID.match(str(activity_id or "")) or not run_id:
+        return None
+    with closing(_connect(universe_dir)) as conn:
+        row = conn.execute(
+            "SELECT runner_generation FROM activities WHERE activity_id = ? AND status = ? "
+            "AND runner_token = ?", (activity_id, IN_PROGRESS, run_id),
+        ).fetchone()
+    return int(row[0]) if row else None
 
 
 @_when_absent(lambda: False)
@@ -528,8 +557,9 @@ def note_waiting_for_seat(universe_dir: Path, activity_id: str) -> None:
 
 
 @_when_absent(list)
-def needing_a_runner(universe_dir: Path, *, is_dead: Callable[[str], bool]) -> list[str]:
-    """Queued activities, and running ones whose runner is provably dead, oldest first."""
+def needing_a_runner(universe_dir: Path, *, replaceable: Callable[[str], bool]) -> list[str]:
+    """Queued activities, and running ones with no run bound or a replaceable
+    run, oldest first."""
     with closing(_connect(universe_dir)) as conn:
         rows = conn.execute(
             "SELECT activity_id, status, runner_token FROM activities "
@@ -537,12 +567,12 @@ def needing_a_runner(universe_dir: Path, *, is_dead: Callable[[str], bool]) -> l
             (SCHEDULED, IN_PROGRESS),
         ).fetchall()
     return [aid for aid, status, token in rows
-            if status == SCHEDULED or (token and is_dead(token))]
+            if status == SCHEDULED or not token or replaceable(token)]
 
 
 @_when_absent(set)
 def runner_tokens(universe_dir: Path) -> set[str]:
-    """Every liveness token a running activity names: its proof must be kept."""
+    """Every run a running activity names."""
     with closing(_connect(universe_dir)) as conn:
         return {row[0] for row in conn.execute(
             "SELECT runner_token FROM activities WHERE status = ? AND runner_token != ''",
