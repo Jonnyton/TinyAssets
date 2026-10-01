@@ -103,6 +103,12 @@ CHAPTER_ORDER = (
 #: resident text and the served descriptions sit at their 30,000-char ratchet;
 #: this sentence paid for it. The create checks it describes still refuse by name.
 #:
+#: 2026-10-01: telling the agent an ask IS the notification (live: it searched
+#: for a notification sender instead) costs resident text at the same ratchet.
+#: Two sentences paid for it, each already said elsewhere in the docstring: the
+#: run_graph step closes it ("Actually RUNNING it ... via run_graph"), and
+#: "File delivery ... not supported here" sits one line above the other.
+#:
 #: Each entry is ``(passage, marker)``: the verbatim passage the allowance is
 #: derived from, and a word that occurs ONLY in it, so its absence is a cheap,
 #: direct check that the passage went rather than merely being rephrased.
@@ -116,6 +122,14 @@ REMOVED_PASSAGES = (
         "It schedules your own workflow using existing creation checks and the "
         "universe's current serving provider.",
         "creation",
+    ),
+    (
+        "The build half of build+run parity (run it afterward with run_graph).",
+        "build+run",
+    ),
+    (
+        "Exact file delivery is not implemented.",
+        "implemented.",
     ),
 )
 DELIBERATELY_REMOVED: Counter = sum(
@@ -141,6 +155,17 @@ def _parameter_descriptions(handle: str) -> list[str]:
         raise AssertionError(f"no served handle named {handle!r}")
 
     return asyncio.run(_read())
+
+
+def _resident(handle: str) -> str:
+    """The advertised description plus every parameter description, flattened.
+
+    What a served turn reads about ``handle`` without fetching a chapter. Both
+    fields, because FastMCP 3.2.0 leaves a docstring's ``Args:`` block in the
+    description while 3.4.x (CI, production) moves it into the parameter schema.
+    """
+    text = " ".join([_description(handle), *_parameter_descriptions(handle)])
+    return " ".join(text.split())
 
 
 def _description(handle: str) -> str:
@@ -483,3 +508,20 @@ def test_the_public_connector_description_is_untouched_and_uncoupled():
     # The public manual is still whole: it never carried the engine's chapters,
     # and the relocation did not shrink it (measured 16,623 chars on 2026-09-25).
     assert len(public) > 16_000
+
+
+def test_the_agent_is_told_a_request_is_the_notification():
+    """Live 2026-10-01: asked to send the morning note as a notification, the
+    universe searched for a notification sender, found none, and raised a request
+    for one. Requests ARE the notification channel; that fact must stay resident."""
+    assert "An ask IS the only notification" in _resident("write_graph")
+
+
+def test_the_agent_is_told_an_ask_is_only_for_what_the_owner_can_grant():
+    """Live 2026-10-01: refused a trigger type the engine lacked, the universe
+    asked its owner to approve "Enable new-message wakes" -- an approval that
+    could not create the missing capability, so the owner approved and nothing
+    happened. A platform gap goes to the patch request, never to the owner."""
+    resident = _resident("write_graph")
+    assert "what the owner can grant or decide" in resident
+    assert "a platform gap is a patch request" in resident

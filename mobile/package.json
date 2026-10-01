@@ -7,8 +7,8 @@
     "add:android": "cap add android",
     "sync": "cap sync android",
     "open:android": "cap open android",
-    "build:debug": "cap sync android && cd android && gradlew.bat assembleDebug",
-    "build:release": "cap sync android && cd android && gradlew.bat bundleRelease",
+    "build:debug": "cap sync android && python scripts/configure_android_release.py && cd android && gradlew.bat assembleDebug",
+    "build:release": "cap sync android && python scripts/configure_android_release.py && cd android && gradlew.bat bundleRelease",
     "add:ios": "cap add ios",
     "sync:ios": "cap sync ios",
     "open:ios": "cap open ios"

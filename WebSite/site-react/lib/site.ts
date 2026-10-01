@@ -9,8 +9,18 @@ export const SITE = {
   /** The one public MCP endpoint (Claude.ai / ChatGPT connector URL). */
   mcp: "https://tinyassets.io/mcp",
   repo: "https://github.com/TinyAssets/TinyAssets",
-  /** Android pre-release build, republished by CI on every merge to main. */
-  apk: "https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/app-debug.apk",
+  /**
+   * The Android app: Google Play's opt-in page for the closed test. This is the
+   * only install path the site offers people -- a Play install keeps updating.
+   */
+  android: "https://play.google.com/apps/testing/io.tinyassets.app",
+  /**
+   * Developer debug build from main. It installs separately, as
+   * io.tinyassets.app.debug ("TinyAssets (debug)"), because it is signed with a
+   * development key: sharing the Play package made every Play update fail.
+   */
+  androidDebugApk:
+    "https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/app-debug.apk",
   desktopSource: "https://github.com/TinyAssets/TinyAssets/tree/main/desktop-app",
   specs: "https://github.com/TinyAssets/TinyAssets/tree/main/openspec/specs",
   connectorSpec:

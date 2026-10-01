@@ -149,6 +149,7 @@ PLATFORM_NAMES: dict[str, PlatformName] = _entries(
     # Conversations, asks, sign-ins, grants, usage.
     PlatformName(".conversation_memory.db", _SQLITE, RESET_OPERATIONAL),
     PlatformName(".conversation_memory.db.bak-premigrate-", _PREFIX, RESET_OPERATIONAL),
+    PlatformName(".conversation_attention.db", _SQLITE, RESET_OPERATIONAL),
     PlatformName(".pending_requests.db", _SQLITE, RESET_OPERATIONAL),
     PlatformName(".subscription_state.db", _SQLITE, RESET_OPERATIONAL),
     PlatformName(".effector_consents.db", _SQLITE, RESET_OPERATIONAL),

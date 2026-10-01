@@ -30,13 +30,13 @@ from pathlib import Path
 
 import yaml
 
+from tinyassets.universe_paths import ensure_migrated
 from tinyassets.universe_soul import (
     SOUL_FILENAME,
     SOUL_VERSIONS_DIR,
     UniverseSoul,
     read_universe_soul,
 )
-from tinyassets.universe_paths import ensure_migrated
 
 OKF_VERSION = "0.1"
 OKF_SPEC_URL = (
