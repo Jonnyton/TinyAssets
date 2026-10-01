@@ -653,7 +653,9 @@ class _ForegroundRunProviderSession:
         sources = {ref: offered.get(ref) for ref in accepted}
         for node in nodes:
             for provider, model_id in _declared_policy_pins(node.get("llm_policy")):
-                resolve_pin_source(provider, model_id, sources)
+                if resolve_pin_source(provider, model_id, sources) not in sources:
+                    # An exact ref this run did not admit: the existing refusal.
+                    raise PermissionError("workflow requests an unavailable accepted provider")
 
     def _admit_manifest(self, conn, store, agent, assignment, nodes, roles):
         """One aggregate receipt for all nodes, not one full allowance per source."""

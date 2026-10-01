@@ -1634,7 +1634,10 @@ class _BackgroundAssignedProviderSession:
         # preferred pin model-aware (`_resolved_policy`), and the caller's set
         # still carries the bare name it was given.
         for declared in self._declared_policy_providers(policy):
-            resolve_pin_source(declared, "", sources)
+            if resolve_pin_source(declared, "", sources) not in sources:
+                raise PermissionError(
+                    "background workflow requests an unavailable accepted provider"
+                )
         preferred = (policy or {}).get("preferred", {})
         if not isinstance(preferred, dict):
             raise PermissionError("background model preference is invalid")

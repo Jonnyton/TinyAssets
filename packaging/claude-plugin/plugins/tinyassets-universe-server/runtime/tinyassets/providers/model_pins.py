@@ -47,13 +47,17 @@ def resolve_pin_source(
     """The exact source ref ``provider`` names among ``sources``.
 
     ``sources`` maps each admitted source ref to the model ids it offers, or to
-    ``None`` when the caller does not know them. An exact ref is returned as is.
+    ``None`` when the caller does not know them. An exact ref (``kind:id``) is
+    returned as is, admitted or not: the caller's own check refuses it.
     A bare access method resolves to its single source, or -- when several share
     it -- to the single one known to offer ``model_id``. Raises
     :class:`ModelPinError` naming the accepted refs otherwise.
     """
     provider = str(provider or "").strip()
-    if provider in sources:
+    if provider in sources or ":" in provider:
+        # An exact ref -- held or not -- is the caller's own boundary to judge,
+        # with its existing refusal: listing this universe's refs in answer to
+        # a ref it does not hold would say more than that refusal does.
         return provider
     model_id = str(model_id or "").strip()
     same_method = [ref for ref in sources if ":" in ref and _method(ref) == provider]

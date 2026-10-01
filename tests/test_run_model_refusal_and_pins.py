@@ -339,3 +339,12 @@ def test_a_background_pin_is_resolved_by_the_model_its_source_offers(tmp_path, m
         session._resolved_policy({"preferred": {"provider": "api_key_http"}})
     assert "api_key_http:provdef_a" in str(caught.value)
     assert "api_key_http:provdef_b" in str(caught.value)
+
+
+def test_an_exact_ref_the_owner_does_not_hold_keeps_the_existing_refusal():
+    """No list of this universe's refs in answer to a ref it does not hold."""
+    from tinyassets.providers.model_pins import resolve_pin_source
+
+    sources = {"api_key_http:provdef_mine": ("vendor/one:free",)}
+    foreign = "api_key_http:provdef_someone_else"
+    assert resolve_pin_source(foreign, "vendor/one:free", sources) == foreign
