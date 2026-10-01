@@ -601,6 +601,16 @@ def _auth_challenge_path(path: str) -> bool:
         # identity — so serving it openly grants nothing. Exactly one path, by
         # equality; no deeper /app/... route is opened.
         return False
+    if path == "/app/ui-frame":
+        # The custom-UI bootstrap. It is loaded as an <iframe src>, and a browser
+        # attaches no bearer to an iframe navigation, so challenging it rendered
+        # every installed UI as `{"error":"authentication_required"}` (live
+        # 2026-10-01: the founder's GTM Village showed an empty panel; regression
+        # from the 2026-09-30 /mcp/app -> /app move). It is a fixed static page
+        # that sandboxes itself to an opaque origin from its own response header
+        # and holds no identity: the bundle and every read reach it by
+        # postMessage from the authenticated page. Exactly one path, by equality.
+        return False
     # Billing webhook: Stripe POSTs here with no MCP bearer, so like /app and
     # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires
     # both Stripe provenance (signed, replay-bounded payload) and entitlement
