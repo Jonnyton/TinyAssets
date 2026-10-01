@@ -640,6 +640,45 @@ def _ledger_db_path(base_path: str | Path | None) -> Path | None:
         return None
 
 
+def _rule_refusal(universe_dir: Path, connection_id: str, verb: str) -> dict[str, Any] | None:
+    """``None`` when the owner's rules let this call proceed, else a refusal."""
+    from tinyassets import agent_rules
+
+    try:
+        decision = agent_rules.decide(
+            universe_dir, "app.write", connection=connection_id, operation=verb,
+        )
+    except Exception:
+        logger.exception("authenticated_external_call rule lookup crashed")
+        return {
+            "dry_run": True,
+            "reason": "rules_unreadable",
+            "error_kind": "rules_unreadable",
+            "hint": "Your rules could not be read, so nothing was sent.",
+        }
+    if decision.proceeds:
+        return None
+    if decision.behaviour == agent_rules.HAND_OFF:
+        return {
+            "dry_run": True,
+            "reason": "rule_hand_off",
+            "error_kind": "rule_hand_off",
+            "rule": decision.reason,
+            "hint": ("Your owner's rules hand this action to them: ask them to do it "
+                     "themselves; do not perform it."),
+        }
+    # Ask first, and "if pre-approved" until approvals are bound to the exact
+    # action (D1c): the owner is asked before anything is sent.
+    return {
+        "dry_run": True,
+        "reason": "rule_ask_first",
+        "error_kind": "rule_ask_first",
+        "rule": decision.reason,
+        "hint": ("Your owner's rules ask first for this action: raise one request "
+                 "describing it and continue other work until they answer."),
+    }
+
+
 def _check_consent(universe_dir: Path, destination: str) -> bool:
     """Whether an active effector-consent grant exists for this destination.
 
@@ -989,6 +1028,19 @@ def _run(
             "dry_run": True,
             "reason": "soul_authority_denied",
             "error_kind": "soul_authority_denied",
+            "destination": destination,
+            "connection_id": connection_id,
+            "matched_output_key": matched_key,
+        }
+    # The owner's Custom Rules (harness D1a) decide before the standing grant is
+    # consulted, and can only tighten it: "ask first" and "hand off" stop a call
+    # its grant would allow. Every call here counts as a write until connections
+    # declare their operation kinds (D1b). A rule store that cannot be read
+    # refuses the call; it never falls back to allowing it.
+    rule_refusal = _rule_refusal(universe_dir, connection_id, verb)
+    if rule_refusal is not None:
+        return {
+            **rule_refusal,
             "destination": destination,
             "connection_id": connection_id,
             "matched_output_key": matched_key,

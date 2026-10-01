@@ -5,7 +5,8 @@ later.
 
 ## C0. Copy
 
-- [ ] 0.1 App: rename every user-visible "universe" in `app.html` and
+- [ ] 0.1 (Partly shipped in #4182: Switch command center, Welcome, commander.,
+      header, sign-in and connections copy.) App: rename every user-visible "universe" in `app.html` and
       `app_ui.js`. "Switch UI" becomes "Switch command center", and the empty
       thread becomes "Welcome, commander.". Keys and ids stay.
 - [ ] 0.2 Agent voice: served guidance, `api/prompts.py` server instructions and
@@ -50,5 +51,6 @@ later.
 - [ ] 3.1 Once production shows 14 consecutive days with zero alias hits,
       remove the input aliases and the old response keys and bump
       `schema_version`. Bridge aliases are kept.
-- [ ] 3.2 Record the founder's D6/D7 decision. If either is overruled, open its
-      own change.
+- [ ] 3.2 Founder decided D6/D7 on 2026-10-01: rename both. Run C3, the codemod,
+      in a freeze window the lead opens. Open the `migrate-storage-to-command-center`
+      change for C4 (D7): guard, inventory, dry run, backup, migration, rollback.

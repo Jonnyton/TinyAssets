@@ -78,10 +78,14 @@ proposal. It is part of this program so the vocabulary is decided once.
 - **C2. Living docs.** Update PLAN.md, README, `openspec/specs` (including
   renaming the two `universe-*` capability dirs), skills, `docs/reference`, and
   the active changes this program touches. Dated records are not rewritten.
-- **C3. Code identifiers.** Mechanical, scripted rename of identifiers and
-  modules, in one quiet-window PR. **Recommended to be cut**; see design D6.
-- **C4. Storage.** **Recommended: do not rename on-disk names.** See design D7.
-  If the founder overrules this, it lands as its own migration change.
+- **C3. Code identifiers.** The founder decided (2026-10-01) to rename them.
+  It is a scripted codemod plus review of the non-mechanical sites, run in one
+  freeze window that the lead coordinates (design D6).
+- **C4. Storage.** The founder decided (2026-10-01) to rename them too. A
+  layout guard ships first. Then one locked, idempotent, resumable migration
+  runs with a schema-derived inventory, a production-copy dry run, a backup
+  and a written rollback, in a measured quiet window (design D7). C4 gets its
+  own change directory, because migrations are spec-first.
 
 ## Capabilities
 
@@ -101,4 +105,4 @@ proposal. It is part of this program so the vocabulary is decided once.
 - The first-party clients (app, website, desktop and Android shells, all of
   which wrap the live SPA) move in the same slice. Stored custom UI bundles keep
   the old bridge keys permanently.
-- No storage migration.
+- A storage migration (C4), in its own change and after C3.
