@@ -175,22 +175,31 @@ def _rule(row) -> Rule:
     return Rule(int(row[0]), row[1], row[2], row[3], row[4], row[5], row[6], bool(row[7]))
 
 
+_SELECT = ("SELECT id, agent, action_class, connection, operation, behaviour, note, seeded "
+           "FROM rules WHERE agent = ? ORDER BY action_class, connection, operation")
+
+
 def list_rules(universe_dir: Path, agent: str = MAIN_AGENT) -> list[Rule]:
-    """Every rule of ``agent``, seeding a new universe's defaults first."""
+    """Every rule of ``agent``, seeding a new universe's defaults first.
+
+    An ordinary read once seeded; only the first read takes the write lock (and
+    rechecks inside it), so decisions never queue behind each other.
+    """
     with closing(_connect(universe_dir)) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        _seed(conn, agent)
-        rows = conn.execute(
-            "SELECT id, agent, action_class, connection, operation, behaviour, note, seeded "
-            "FROM rules WHERE agent = ? ORDER BY action_class, connection, operation",
-            (agent,),
-        ).fetchall()
-        conn.execute("COMMIT")
+        rows = conn.execute(_SELECT, (agent,)).fetchall()
+        if not rows:
+            conn.execute("BEGIN IMMEDIATE")
+            _seed(conn, agent)
+            rows = conn.execute(_SELECT, (agent,)).fetchall()
+            conn.execute("COMMIT")
     return [_rule(row) for row in rows]
 
 
 def _specificity(rule: Rule) -> int:
-    return (2 if rule.connection else 0) + (1 if rule.operation else 0)
+    """How many dimensions a rule narrows. Connection and operation count the
+    same: neither outranks the other, so overlapping narrow rules go to the
+    stricter (gpt-6-astra on #4193)."""
+    return (1 if rule.connection else 0) + (1 if rule.operation else 0)
 
 
 def decide(universe_dir: Path, action_class: str, *, connection: str = "",
@@ -252,18 +261,39 @@ def set_rule(universe_dir: Path, action_class: str, behaviour: str, *, connectio
     return _rule(row)
 
 
-def delete_rule(universe_dir: Path, rule_id: int, *, agent: str = MAIN_AGENT) -> bool:
+def delete_rule(universe_dir: Path, rule_id: int, *, agent: str = MAIN_AGENT,
+                confirm_handback: bool = False) -> bool:
     """Remove one narrowed rule. A class-wide rule is changed, never removed, so
-    every class keeps a visible behaviour."""
+    every class keeps a visible behaviour.
+
+    Removing a hand-back rule that leaves a weaker behaviour in its place needs
+    the same confirmation as setting one (gpt-6-astra on #4193).
+    """
     with closing(_connect(universe_dir)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT connection, operation FROM rules WHERE id = ? AND agent = ?",
+            "SELECT action_class, connection, operation, behaviour FROM rules "
+            "WHERE id = ? AND agent = ?",
             (int(rule_id), agent),
         ).fetchone()
-        if row is None or not (row[0] or row[1]):
+        if row is None or not (row[1] or row[2]):
             conn.execute("ROLLBACK")
             return False
+        action_class, connection, operation, behaviour = row
+        if (action_class in HANDBACK_CONSEQUENCES and behaviour == HAND_OFF
+                and not confirm_handback):
+            remaining = [
+                _rule(r) for r in conn.execute(_SELECT, (agent,)).fetchall()
+                if r[0] != int(rule_id) and r[2] == action_class
+                and r[3] in ("", connection) and r[4] in ("", operation)
+            ]
+            after = max(remaining, key=lambda r: (_specificity(r),
+                                                  BEHAVIOURS.index(r.behaviour)),
+                        default=None)
+            if after is None or after.behaviour != HAND_OFF:
+                conn.execute("ROLLBACK")
+                raise RuleRefused(HANDBACK_CONSEQUENCES[action_class]
+                                  + " Confirm to remove this rule.")
         conn.execute("DELETE FROM rules WHERE id = ?", (int(rule_id),))
         conn.execute("COMMIT")
     return True

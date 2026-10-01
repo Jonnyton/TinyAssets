@@ -202,3 +202,64 @@ def test_the_owner_door_reads_and_edits_only_the_callers_own_home(monkeypatch, t
     monkeypatch.setattr(middleware, "current_identity",
                         lambda: SimpleNamespace(user_id="stranger"))
     assert call("GET")[0] == 404
+
+
+# -- gpt-6-astra on #4193 ------------------------------------------------------------
+
+
+def test_overlapping_narrow_rules_go_to_the_stricter(tmp_path):
+    """Connection does not outrank operation: DELETE on the bank hands off."""
+    universe = _universe(tmp_path)
+    agent_rules.set_rule(universe, "app.write", DO, connection="bank")
+    agent_rules.set_rule(universe, "app.write", HAND_OFF, operation="DELETE")
+    assert agent_rules.decide(universe, "app.write", connection="bank",
+                              operation="DELETE").behaviour == HAND_OFF
+
+
+def test_removing_a_handback_restriction_needs_confirmation(tmp_path):
+    universe = _universe(tmp_path)
+    agent_rules.set_rule(universe, "money.move", DO, confirm_handback=True)
+    narrowed = agent_rules.set_rule(universe, "money.move", HAND_OFF, connection="bank")
+    with pytest.raises(agent_rules.RuleRefused):
+        agent_rules.delete_rule(universe, narrowed.id)
+    assert agent_rules.decide(universe, "money.move", connection="bank").behaviour == HAND_OFF
+    assert agent_rules.delete_rule(universe, narrowed.id, confirm_handback=True)
+
+
+def test_removing_a_handback_rule_under_a_handback_default_needs_nothing(tmp_path):
+    universe = _universe(tmp_path)
+    narrowed = agent_rules.set_rule(universe, "money.move", HAND_OFF, connection="bank")
+    assert agent_rules.delete_rule(universe, narrowed.id) is True
+
+
+@pytest.mark.parametrize("bad", [15.9, True, "3", -1, 2 ** 70])
+def test_the_owner_door_takes_only_a_rule_id_to_delete(monkeypatch, tmp_path, bad):
+    from tinyassets import onboarding
+    from tinyassets.api import helpers
+    from tinyassets.auth import middleware
+
+    _universe(tmp_path)
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path / "data")
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(onboarding, "app_config",
+                        lambda: {"resource": "https://tinyassets.io"})
+    monkeypatch.setattr(middleware, "current_identity",
+                        lambda: SimpleNamespace(user_id="owner-1"))
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity, **_kw: "u-alpha")
+    response = asyncio.run(onboarding._handle_rules(_Request("POST", {"delete": bad})))
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("kind, failure_class", [
+    ("rule_ask_first", "rule_requires_approval"),
+    ("rule_hand_off", "rule_hand_off"),
+    ("rules_unreadable", "rules_unreadable"),
+])
+def test_a_rule_refusal_gets_its_own_class_and_advice(kind, failure_class):
+    from tinyassets import runs
+
+    line = f"external write failed - authenticated_external_call [{kind}] refused"
+    assert runs._classify_external_write(line.lower()) == failure_class
+    advice = runs.external_write_suggested_action(failure_class)
+    assert advice and "yours to fix" not in advice

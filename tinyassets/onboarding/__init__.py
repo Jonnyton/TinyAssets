@@ -1243,7 +1243,16 @@ async def _handle_rules(request: Any) -> Any:
 
     def _save():
         if "delete" in data:
-            removed = agent_rules.delete_rule(_universe_dir(), int(data["delete"]))
+            rule_id = data["delete"]
+            # A positive JSON integer only: no float truncation, no bool, no
+            # value outside SQLite's integer range (gpt-6-astra on #4193).
+            if (type(rule_id) is not int or rule_id <= 0
+                    or rule_id > 9_223_372_036_854_775_807):
+                raise ValueError("delete must be a rule id")
+            removed = agent_rules.delete_rule(
+                _universe_dir(), rule_id,
+                confirm_handback=data.get("confirm_handback") is True,
+            )
             return {"deleted": removed, **_listing()}
         rule = agent_rules.set_rule(
             _universe_dir(), str(data.get("action_class") or ""),
