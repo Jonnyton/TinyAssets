@@ -48,6 +48,7 @@ TURN_PATH = (
     "tinyassets/api/helpers.py",
     "tinyassets/api/wiki.py",
     "tinyassets/effectors/wiki_write_back.py",
+    "tinyassets/wiki/okf_export.py",
 )
 
 #: (module, enclosing function) -> why this read can never be of an
@@ -75,6 +76,9 @@ ALLOWED = {
         "opens log.md in append mode to WRITE one line; it never reads it",
     ("tinyassets/api/wiki.py", "_wiki_file_bug"):
         "opens a new bug page with mode 'x' to WRITE it; it never reads it",
+    ("tinyassets/wiki/okf_export.py", "_conformance_report"):
+        "reads the bundle this export just wrote into target_dir, which is refused "
+        "when inside the wiki root; not an agent-written file",
 }
 
 _READ_ATTRS = {"read_text", "read_bytes", "open"}
