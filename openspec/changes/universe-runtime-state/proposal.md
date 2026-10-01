@@ -33,8 +33,9 @@ forged grants.
   under `.runtime/state/`. The function creates the directories with
   no-follow descriptors.
 - A one-time migration moves each legacy root entry into `.runtime/state/`.
-  - It runs under the universe's lock, before the universe serves its first
-    tool call after deploy, and refuses on a link.
+  - It runs lazily inside the resolver, under a per-universe migration lock
+    that every reader waits on, so nothing reads a half-moved universe. A
+    link is moved aside as a link and never followed.
   - After it has run, the old root location is **never read**. There is no
     fallback.
 - A source gate fails the build on any platform name joined onto a universe
@@ -59,9 +60,12 @@ forged grants.
 
 ## Impact
 
-- **Storage:** about 25 names move, each with a single resolver and a gate.
-  Byte accounting is unchanged because `.runtime/` is inside the universe
-  walk.
+- **Storage:** about 35 names move (design.md's inventory plus every name in
+  `storage_accounting.UNIVERSE_ENTRIES`), each through a single resolver and a
+  gate. `.runtime/` is excluded from the universe byte walk
+  (`storage_accounting._NOT_USER_BYTES`), so the walk is changed to count
+  `.runtime/state/` by the registry's `counted` flag: per-universe totals are
+  identical before and after, and that equality is a test.
 - **Migration:** one-way and idempotent. Rollback means reading the new
   location, so an old image must not serve a migrated universe. The deploy
   is single-direction, and this is recorded in the deploy notes.

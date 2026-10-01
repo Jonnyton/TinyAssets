@@ -13,4 +13,12 @@ Every platform-owned file or directory of a universe SHALL be resolved through o
 
 #### Scenario: migration refuses a link
 - **WHEN** a legacy platform entry at the universe root is a symbolic link
-- **THEN** migration removes the link without following it, and nothing outside the universe is read or moved
+- **THEN** migration moves the link itself aside without following it, and nothing outside the universe is read or moved
+
+#### Scenario: a crash mid-migration loses nothing
+- **WHEN** migration stops after moving some platform entries and before writing its completion marker
+- **THEN** no reader opens any platform store of that universe until a later migration has moved the rest and written the marker
+
+#### Scenario: storage totals survive the move
+- **WHEN** a universe migrates
+- **THEN** the bytes charged to its owner are the same before and after
