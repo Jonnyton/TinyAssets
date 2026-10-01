@@ -126,11 +126,28 @@ def pack(files: list[str], durations: dict[str, float], total: int) -> dict[str,
 
 @functools.lru_cache(maxsize=None)
 def _packed(total: int) -> dict[str, int]:
-    files = sorted(
-        path.relative_to(REPO_ROOT).as_posix()
-        for path in (REPO_ROOT / "tests").rglob("test_*.py")
-    )
-    return pack(files, load_durations(), total)
+    """The packing over TRACKED test files.
+
+    Tracked, not whatever is on disk: one generated test_*.py present in one
+    shard job and not another would reshuffle hundreds of owners between them
+    (Codex review 2026-10-01 measured 561 for one added file). Without git the
+    disk scan is the fallback, said out loud.
+    """
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "tests"],
+            cwd=REPO_ROOT, capture_output=True, check=True,
+        ).stdout.decode("utf-8").split("\0")
+        files = [
+            f for f in listed if f.rsplit("/", 1)[-1].startswith("test_") and f.endswith(".py")
+        ]
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"WARNING: git ls-files failed ({exc}); packing the files on disk", flush=True)
+        files = [
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "tests").rglob("test_*.py")
+        ]
+    return pack(sorted(files), load_durations(), total)
 
 
 def shard_of(relpath: str, total: int) -> int:

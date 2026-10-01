@@ -461,3 +461,23 @@ def test_the_committed_table_packs_the_required_surface_within_tolerance():
             loads[gate.shard_of(rel, 6) - 1] += durations.get(rel, 0.0)
     ordered = sorted(loads)
     assert ordered[-1] <= 1.5 * ((ordered[2] + ordered[3]) / 2), loads
+
+
+def test_an_untracked_test_file_does_not_reshuffle_the_packing(tmp_path, monkeypatch):
+    """Owners come from tracked files, so a file generated in one job moves nothing."""
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    for i in range(30):
+        (repo / "tests" / f"test_{i:02d}.py").write_text("", encoding="utf-8")
+    for args in (["init", "-q"], ["add", "tests"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    monkeypatch.setattr(gate, "REPO_ROOT", repo)
+    gate._packed.cache_clear()
+    try:
+        before = dict(gate._packed(6))
+        assert len(before) == 30
+        (repo / "tests" / "test_00_generated.py").write_text("", encoding="utf-8")
+        gate._packed.cache_clear()
+        assert gate._packed(6) == before
+    finally:
+        gate._packed.cache_clear()
