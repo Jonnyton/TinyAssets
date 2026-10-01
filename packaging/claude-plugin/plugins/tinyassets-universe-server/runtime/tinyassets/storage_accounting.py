@@ -508,6 +508,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".consumer_liveness": "platform: process liveness locks",
     ".runtime": "platform: provider runtime",
     ".universe_seats.db": "platform: seat leases",
+    ".account_seats.db": "platform: per-account seat leases",
     ".engine_run_admissions.db": "platform: admission ledger",
     ".automations.db": "automations (user inputs by owner; schedule bookkeeping is platform)",
     ".universe-tool-slots": "platform: tool jail slots",
@@ -515,7 +516,6 @@ ROOT_ENTRIES: dict[str, str] = {
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
     ".effector_consents.db": "platform: consent records",
-    ".source_channel_policy.db": "platform: channel policy",
     ".outbound-proxy": "platform: egress proxy state",
     ".run-execution-locks": "platform: locks",
     ".run-file-operation-locks": "platform: locks",
@@ -553,11 +553,12 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
 })
 
-#: Names the code creates that are NOT under the data root at all (a process
-#: HOME, a provider runtime's home, a git repo, a legacy DB filename).
+#: Names the code creates that are NOT under the data root at all (a git repo,
+#: a repo-side log, legacy DB filenames). Anything joined onto a HOME directory
+#: is recognized by that shape in the completeness test, so no tool's home
+#: directory is named here.
 ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
-    ".tinyassets", ".cache", ".config", ".local", ".claude", ".codex", ".git",
-    ".agents", ".author_server.db", ".workflow.db",
+    ".git", ".agents", ".author_server.db", ".workflow.db",
 })
 
 

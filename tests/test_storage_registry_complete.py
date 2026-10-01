@@ -17,17 +17,23 @@ from tinyassets import storage_accounting as sa
 
 SOURCE = Path(sa.__file__).resolve().parent
 
-_JOINED = re.compile(r'/ "(\.[A-Za-z0-9_.-]+)"')
+_JOINED = re.compile(r'(\S+) / "(\.[A-Za-z0-9_.-]+)"')
 _DB_NAME = re.compile(r'"(\.?[A-Za-z0-9_-]+\.db)"')
+#: A name joined onto a HOME directory (``Path.home() / ".x"``, ``home / ".x"``,
+#: ``... / "home" / ".x"``) is a process or tool home, never the data root --
+#: recognized by that shape, so no tool or channel needs naming here.
+_HOME_OPERAND = re.compile(r'(home\(\)|\bhome|"home")\)*$', re.IGNORECASE)
 
 
 def _names_in_source() -> dict[str, str]:
     found: dict[str, str] = {}
     for path in SOURCE.rglob("*.py"):
         text = path.read_text(encoding="utf-8", errors="replace")
-        for pattern in (_JOINED, _DB_NAME):
-            for name in pattern.findall(text):
+        for operand, name in _JOINED.findall(text):
+            if not _HOME_OPERAND.search(operand):
                 found.setdefault(name, str(path.relative_to(SOURCE)))
+        for name in _DB_NAME.findall(text):
+            found.setdefault(name, str(path.relative_to(SOURCE)))
     return found
 
 
@@ -61,7 +67,7 @@ def test_the_production_root_listing_is_classified():
         ".hosted-model-auth.db", ".langgraph_runs.db", ".outbound-proxy",
         ".owner_devices.db", ".run-execution-locks", ".run-file-custody",
         ".run-file-operation-locks", ".run_recovery.lock", ".run_recovery.lock.pid",
-        ".runs.db", ".runtime", ".source_channel_policy.db", ".tinyassets.db",
+        ".runs.db", ".runtime", ".tinyassets.db",
         ".universe-tool-slots", ".active_universe", ".scoped-reset.barrier",
     }
     assert production <= set(sa.ROOT_ENTRIES), production - set(sa.ROOT_ENTRIES)
