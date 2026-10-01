@@ -44,7 +44,8 @@ async function fetch(url, init){
   const body=init.body?JSON.parse(init.body):null;
   if(body) posts.push(body);
   if(body&&body.undeclare&&!body.confirm)
-    return {ok:false,status:409,json:async()=>({detail:"Calls to stripe will be decided as a write."})};
+    return {ok:false,status:409,
+      json:async()=>({detail:"Calls to stripe will be decided as a write."})};
   if(body&&body.action_class==="money.move"&&!body.confirm_handback)
     return {ok:false,status:409,json:async()=>({detail:"Your agent will be able to move money."})};
   return {ok:true,status:200,json:async()=>LISTING};
