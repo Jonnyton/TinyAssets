@@ -151,3 +151,26 @@ def test_the_edge_respells_a_handlers_response_and_leaves_content_alone():
     assert output["universe_id"] == "u-1"  # a run's output is the person's content
     raw = json.loads(asyncio.run(_call(server, "read", {})).content[0].text)
     assert raw == {"universe_id": "file bytes, verbatim"}
+
+
+def test_a_branch_definitions_own_fields_survive_the_round_trip():
+    """A user's state field named ``universe`` is data (gpt-6-astra repro on C1)."""
+    definition = {
+        "universe_id": "u-1",
+        "state_schema": [{"name": "universe", "type": "str"}],
+        "graph_nodes": [{"id": "n", "output_mapping": {"universe": "answer"}}],
+    }
+    out = names.public_response({"branch": definition})
+    assert out["branch"]["command_center_id"] == "u-1"
+    assert out["branch"]["state_schema"] == definition["state_schema"]
+    assert out["branch"]["graph_nodes"] == definition["graph_nodes"]
+
+
+def test_the_engines_status_reaches_the_renamed_connector_parameter(monkeypatch):
+    """The engine binds its get_status to the connector's; a missed caller was a
+    TypeError (gpt-6-astra, C1)."""
+    import inspect
+
+    source = inspect.getsource(engine_mcp_server.get_status)
+    assert "command_center_id=" in source and "universe_id=" not in source
+    assert "command_center_id" in inspect.signature(universe_server.get_status).parameters

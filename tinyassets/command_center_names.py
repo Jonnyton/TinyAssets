@@ -52,6 +52,20 @@ _ERROR_KEYS = ("error", "code", "error_code")
 _ACTOR_KEY = re.compile(
     r"(?:^|_)(?:actor|actor_id|author|author_id|owner_actor|created_by|run_actor)$")
 
+#: Keys whose VALUE is something a person (or their agent) authored -- a branch's
+#: graph, mappings and state schema, a payload, UI bundles, page content. Their
+#: subtree is passed through untouched: a user's state field named ``universe``
+#: is data, and respelling it would break the definition on its round trip
+#: (gpt-6-astra repro: ``output_mapping={"universe": ...}`` stopped validating).
+USER_CONTENT_KEYS = frozenset({
+    "graph_nodes", "node_defs", "edges", "conditional_edges", "conditions",
+    "state_schema", "io_manifest", "input_keys", "output_keys", "output_mapping",
+    "input_mapping", "config", "configuration", "payload", "inputs", "outputs",
+    "inputs_json", "content", "components", "ui_library", "ui_selection", "library",
+    "source_code", "skills", "metadata", "shape", "definition", "state", "values",
+    "fields", "output", "result_value", "text", "body", "message", "reply",
+})
+
 #: Reads whose payload is the person's own content, returned verbatim.
 VERBATIM_TARGETS = frozenset({
     "run_output", "run_file", "command_center_file", "conversation", "conversation_turn",
@@ -130,6 +144,9 @@ def public_response(node: Any) -> Any:
         return node
     out: dict[str, Any] = {}
     for key, value in node.items():
+        if isinstance(key, str) and key in USER_CONTENT_KEYS:
+            out[key] = value
+            continue
         value = public_response(value)
         if isinstance(key, str):
             if _ACTOR_KEY.search(key):

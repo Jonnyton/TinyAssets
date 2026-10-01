@@ -69,7 +69,12 @@ from tinyassets.auth.wiki_canary import (
     set_wiki_canary_authority,
     wiki_canary_token_matches,
 )
-from tinyassets.command_center_names import CommandCenterNames, internal_value
+from tinyassets.command_center_names import (
+    CommandCenterNames,
+    internal_value,
+    public_response,
+    verbatim,
+)
 from tinyassets.engine_read_views import compact_model_options
 from tinyassets.mcp_schema_utils import describe_signature
 
@@ -296,6 +301,11 @@ def _structured_return(raw, *, tool: str = "", arguments: object = None):
             structured = {"result": parsed}
     else:
         structured = {"result": raw}
+
+    # The rename's public spelling is applied BEFORE the ceiling measures the
+    # reply, so a respelled reply can never exceed what was measured.
+    if not verbatim(tool, arguments or {}):
+        structured = public_response(structured)
 
     if tool in _CEILING_TOOLS and not ceiling_exempt(
         tool, arguments, _connector_ceiling_exempt(),

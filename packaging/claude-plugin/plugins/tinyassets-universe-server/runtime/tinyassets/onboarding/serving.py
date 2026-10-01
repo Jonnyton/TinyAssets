@@ -50,10 +50,9 @@ _PLATFORM_DEFINITION = {
     "components": {"identity": {"kind": "soul", "config": {}}},
 }
 _BINDING_PAYLOAD = {"schema_version": 1, "name": "Your agent", "role": "writer"}
-#: The definition every home bound to before the rename. Existing bindings on it
-#: are still the founder's platform binding: the next serving gesture re-points
-#: one to the current definition at its exact revision (`_founder_binding`), and
-#: the storage migration (C4) re-points the rest. Read-only: never re-published.
+#: The definition every home bound to before the rename. An existing binding on
+#: it is still the founder's platform binding, used as is; the cutover migration
+#: re-points every one in place (design D10). Read-only: never re-published.
 RETIRED_PLATFORM_DEFINITION_AUTHOR = "platform:universe-default"
 RETIRED_BINDING_PAYLOAD = {"schema_version": 1, "name": "Your universe", "role": "writer"}
 #: Friendly ALIASES for the two subscription CLIs, not an allowlist. Anything
@@ -156,13 +155,20 @@ def _platform_binding(base: Path, *, universe_id: str, owner: str) -> dict[str, 
         )
     binding = mine[0]
     config = binding.get("configuration") or {}
-    canonical = {k: config.get(k) for k in _BINDING_PAYLOAD} == _BINDING_PAYLOAD
-    extra = set(config) - set(_BINDING_PAYLOAD) - {"provider_ref"}
-    if canonical and not extra and binding.get("agent_definition_id") == did:
+    # A binding still on the retired definition, untouched since it was made, is
+    # the founder's platform binding as it stands: it is returned as is, its
+    # provider_ref intact. The cutover migration re-points it in place
+    # (design D10); re-pointing it here would replace its configuration and drop
+    # the provider_ref before the new provider is validated (gpt-6-astra, C1).
+    expected = (_BINDING_PAYLOAD if binding.get("agent_definition_id") == did
+                else RETIRED_BINDING_PAYLOAD)
+    canonical = {k: config.get(k) for k in expected} == expected
+    extra = set(config) - set(expected) - {"provider_ref"}
+    if canonical and not extra:
         return binding
-    # Drifted (possibly collaborator-edited) or still on the retired definition:
-    # reset to canonical content on the current definition at the exact current
-    # revision; a concurrent edit makes this fail closed.
+    # Drifted (possibly collaborator-edited): reset to canonical content on the
+    # current definition at the exact current revision; a concurrent edit makes
+    # this fail closed.
     return update_binding(
         base,
         universe_id=universe_id,

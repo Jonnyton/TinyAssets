@@ -75,81 +75,101 @@ Center", and the old prompt is removed rather than aliased. People pick prompts
 from a list, so nothing calls the old name, and the spec's catalog is exact. The
 delta spec updates the catalog.
 
-### D3. Retired input names are refused, naming the replacement (clean cutover)
+### D3. Old input names are rewritten before validation, in one table
 
-*Founder, 2026-10-01, on this rename: "no old ids do not keep working, we are
-still early in production so we are not maintaining old systems we dont have
-old users we just have current testers that need to cleanly move to the new
-system". This replaces the alias window the first draft proposed.*
+One module, `tinyassets/command_center_aliases.py`, holds the only mapping:
 
-`tinyassets/command_center_names.py` is the one authority. Every name is
-derived by one rule (`universe` -> `command_center`), not a hand list. It does
-three things:
+- parameter names: `universe_id` → `command_center_id`;
+- `target` values: `universe` → `command_center`, `universe_files` →
+  `command_center_files`, `universe_file` → `command_center_file`;
+- any other enum value C1's generated inventory finds (e.g. a workspace
+  `storage: "universe"`).
 
-- **Refuses retired names.** A retired argument name (`universe_id`) or enum
-  value (`target=universe`, `universe_files`, `universe_file`, `scope=universe`)
-  is refused as `{"error": "renamed", "retired": ..., "current": ...}`, for
-  example "renamed: universe_id is now command_center_id". It is never
-  silently accepted. The refusal comes from a FastMCP middleware
-  (`CommandCenterNames`) registered innermost on both servers, so it runs
-  before the tool's own validation and names the replacement instead of
-  FastMCP's generic "unexpected keyword". On the connector it governs the
-  seven advertised handles only; a hidden legacy tool keeps its own schema.
-- **Maps current values to the handlers' names.** `internal_value` maps
-  `command_center` to `universe` (and so on) until the code rename (C3)
-  changes the handlers themselves. A retired value reaching a router directly
-  becomes `retired:<value>`, an unknown target, so a caller that skips the
-  edge also fails.
-- **Renames parameters with a local binding.** `read_page`, `write_page` and
-  `get_status` take `command_center_id`; inside, it is bound to the internal
-  name until C3. Direct Python callers are migrated in the same PR.
+The table is applied at **every boundary that validates arguments**, not only at
+MCP. Codex's refute found three such boundaries:
 
-The owner door (the app's private HTTP reads) passes targets through the same
-routers, so the app sends the current target names. Its response keys stay
-internal until C3, because only first-party code reads them.
+- **MCP.** A FastMCP `Middleware.on_call_tool`, the pattern already used at
+  `engine_mcp_server.py:287` and `universe_server.py:3991`, rewrites a call's
+  arguments before the tool's argument validation, on both servers. FastMCP
+  3.2.0 runs middleware ahead of tool execution under its default validation
+  setting. `strict_input_validation` must stay off, because it would add SDK
+  validation upstream of middleware, and a test pins that it is off. The
+  advertised schema carries only the new names, so aliases cost zero
+  description bytes.
+- **The owner door (HTTP).** `owner_door/routes.py:_validated` (`:61`) refuses
+  unknown argument names, and the app's `Owner.read` posts to it
+  (`app.html:1608`). It normalizes through the table **before** that check. The
+  same applies to the other app JSON routes that take `universe_id` (e.g. Stop,
+  `app.html:1852`).
+- **Direct Python callers.** Python callers of a renamed function, for example
+  `engine_mcp_server.py:725` calling the connector's
+  `get_status(universe_id=...)`, are migrated in the same PR. They do not get
+  an alias: a Python call can be changed and checked, so it needs no
+  compatibility path. A test fails if any call site still passes a retired
+  keyword to a renamed function.
 
-A workspace packet's `storage: "universe"` and a branch's declared
-`delivery_sender_universe_id` input are **not** renamed here. Both are stored
-inside people's branch definitions, so they move with the storage migration
-(C4), which rewrites the stored definitions and the code in one step.
+The rewrite rules:
 
-### D4. Responses carry current names only; every first-party reader moves in the same PR
+- If both names are sent with **different** values, the call is refused with
+  `conflicting_alias`, naming both. It never guesses.
+- If both are sent with the same value, the call is accepted.
 
-`CommandCenterNames` respells each JSON tool result before the result ceiling
-measures it:
+Every alias hit logs one structured line (`alias_used name=<old> handle=<h>`).
+A test enforces the table against the live schema: every new name must exist in
+the advertised schema, and no advertised parameter or target may still contain
+"universe".
 
-- keys (`universe_id` becomes `command_center_id`, `universes` becomes
-  `command_centers`);
-- error codes (`no_home_universe` becomes `no_home_command_center`);
-- stored actor ids in identity fields, presented as `command_center:<id>`
-  until C4 rewrites the stored value.
+**Deprecation window.** Aliases are removed in a separate small PR once
+production logs show **zero alias hits for 14 consecutive days**, measured with
+`scripts/droplet.py`. This is a measured condition, not a date. Bridge aliases
+(D4) are exempt and permanent.
 
-Responses do not carry the old keys alongside the new ones. A person's own
-content is never respelled: run output, run files, command-center files,
-conversation pages, `read_page`, and the engine's `read` / `write` / `edit` /
-`bash` (Hard Rule 9).
+Rejected alternatives:
 
-First-party readers switch in the same PR:
+- *Both names as visible parameters.* This costs schema bytes on every turn, and
+  shows the old word to the chatbot.
+- *A hard cut with no aliases.* Every open conversation would fail on its next
+  call, and the error would name a parameter the user never chose.
 
-- the website read contract and its baked snapshot (`command_centers`);
-- `scripts/mcp_tool_canary.py`;
-- the custom UI bridge, whose `whoami()` returns `command_center_id` /
-  `command_center_name`. Production on 2026-10-01 holds **zero** stored UI
-  bundles that call `whoami` or read `universe_name` (read-only count over
-  `universe_app_ui`), so the cutover breaks no stored bundle.
+### D4. Responses carry both key names during the window; the bridge keeps both permanently
 
-`get_status` bumps `schema_version` to 3, per its own contract, which now says
-a rename bumps the version with no alias window.
+*Revised after Codex's refute.* The first draft switched response keys
+outright and relied on the app's stale-asset reload, which does not hold:
 
-**The default agent definition.** A published definition is immutable and
-fingerprinted under its idempotency key, so C1 publishes a **new** one
-(`platform:command-center-default` / `command-center-default-v1`, named "Your
-agent") rather than editing the old one, which would raise `AgentConflictError`
-at every onboarding. New homes bind to it. A home bound to the retired
-definition is still recognised as the founder's platform binding: the next
-serving gesture re-points it to the new definition at its exact revision, and
-the storage migration (C4) re-points the rest. The retired definition is looked
-up, never re-published.
+- the reload checks only every ten minutes (`app.html:7598`), waits while the
+  person is typing (`:7613`), and can hold for up to three hours while a turn is
+  in flight (`:7626`);
+- already-loaded bridge code rejects a conversation or file response that has
+  no `universe_id` (`app_ui.js:425`, `:541`, `:558`);
+- `get_status` promises one release of deprecation notice before a field is
+  renamed, and a `schema_version` bump for breaking changes
+  (`universe_server.py:3923`).
+
+So, during the alias window, every response that carries a renamed key carries
+**both**: `command_center_id` and `universe_id` (and so on), holding the same
+value from the same source. One authority, two spellings. `get_status` adds a
+`deprecated_fields` note naming the old keys and keeps its `schema_version`; it
+bumps the version only when the old keys are removed.
+
+The old response keys are removed together with the input aliases (D3's 14-day
+condition), in the same PR, which also bumps `schema_version`.
+
+First-party readers switch to the new key in C1 and fall back to the old one:
+
+- `app.html` and `app_ui.js`;
+- the website read contract (`WebSite/shared/mcp/public-read-contract.js`);
+- `scripts/mcp_tool_canary.py:241`, which the uptime workflow runs;
+- the owner-door contract test (`tests/test_owner_door.py:329`).
+
+Because the server keeps emitting the old keys, deploy order does not matter.
+
+**The custom UI bridge is the exception.** Its identity object returns
+`command_center_id` and `command_center_name` **and** `universe_id` and
+`universe_name`, permanently. Every bridge method name or argument a bundle can
+send keeps accepting its old form too. Stored bundles are user-authored code
+(Hard Rule 9 applies in spirit), and nothing measures which bundles read which
+key. Removing these keys would need a scan of every stored bundle, which is out
+of scope.
 
 ### D5. Paying for the longer word inside the description budget
 

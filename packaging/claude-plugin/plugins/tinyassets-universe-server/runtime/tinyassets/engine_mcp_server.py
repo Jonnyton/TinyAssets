@@ -723,9 +723,9 @@ def get_status() -> str:
 
     token = _bind_founder_identity()
     try:
-        # get_status keys off ``universe_id`` (NOT graph_id) — pin the correct
+        # get_status keys off ``command_center_id`` (NOT graph_id) — pin the correct
         # argument (Codex #9).
-        return _projected(_impl(universe_id=_GRAPH_ID), universe_status_view)
+        return _projected(_impl(command_center_id=_GRAPH_ID), universe_status_view)
     finally:
         _current_identity.reset(token)
 

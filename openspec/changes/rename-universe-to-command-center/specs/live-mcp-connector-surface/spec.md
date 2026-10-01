@@ -29,22 +29,26 @@ Each prompt SHALL return its registered behavioral guide and SHALL expose its fu
 
 ## ADDED Requirements
 
-### Requirement: The served surface names the user's command center, and refuses the retired universe names
+### Requirement: The served surface names the user's command center, and accepts the retired universe names as aliases
 
-Every advertised tool description, parameter name, `target` value, enum value, prompt, and the server instructions SHALL use "command center" (`command_center`, `command_center_id`) for the person's workspace and SHALL NOT contain "universe", except names stored inside people's branch definitions until the storage migration renames them. The seven handle names SHALL NOT change. A call that uses a retired name (`universe_id`, `target=universe`, `universe_files`, `universe_file`, `scope=universe`) SHALL be refused as `renamed`, naming the current name, before the tool runs, and SHALL change nothing. No retired name SHALL be accepted as an alias. Every JSON tool result SHALL carry only current key and error-code spellings, and a stored actor id `universe:<id>` SHALL be presented as `command_center:<id>`, except in results that return a person's own content verbatim. `get_status` SHALL report `schema_version` 3.
+Every advertised tool description, parameter name, `target` value, enum value, error code, response key, prompt, and the server instructions SHALL use "command center" (`command_center`, `command_center_id`) for the person's workspace, and SHALL NOT contain "universe". The seven handle names SHALL NOT change. A call that uses a retired name (`universe_id`, `target=universe`, `universe_files`, `universe_file`, or any other entry in the single alias table) SHALL be rewritten to the new name before schema validation and SHALL behave exactly like the new name. A call carrying both a retired and a new name with different values SHALL be refused as `conflicting_alias`, naming both, and SHALL change nothing. The same alias table SHALL be applied before argument validation at the owner-door HTTP routes. Each accepted alias SHALL log one structured line naming the retired name and the handle. During the alias window every response carrying a renamed key SHALL carry both the new and the retired key with the same value. A stored actor id `universe:<id>` SHALL be presented as `command_center:<id>`. Input aliases and retired response keys SHALL be removed together, with a `schema_version` bump, only after production shows zero alias hits for 14 consecutive days. The custom UI bridge identity SHALL keep returning `universe_id` and `universe_name` beside `command_center_id` and `command_center_name` without a removal window.
 
-#### Scenario: A retired argument name is refused with a pointer
+#### Scenario: A cached old tool list still works
 - **WHEN** a client calls `get_status(universe_id="u-abc")`
-- **THEN** the result is an error `renamed` with `retired` `universe_id` and `current` `command_center_id`, and nothing is read
+- **THEN** the result equals the result of `get_status(command_center_id="u-abc")`, and one `alias_used name=universe_id handle=get_status` line is logged
 
-#### Scenario: A retired target is refused with a pointer
-- **WHEN** a client calls `read_graph(target="universe_files")`
-- **THEN** the result is an error `renamed` naming `target=command_center_files`
+#### Scenario: Conflicting names are refused, not guessed
+- **WHEN** a client calls `read_page(universe_id="u-abc", command_center_id="u-def")`
+- **THEN** the result is an error `conflicting_alias` naming both parameters, and nothing is read on either id's behalf
 
 #### Scenario: The advertised schema carries no retired name
 - **WHEN** a client reads `tools/list` and `prompts/list`
-- **THEN** no description, parameter, target value, or prompt name contains "universe" apart from stored branch-definition field names, and the handle set is still exactly the seven canonical handles
+- **THEN** no description, parameter, target value, or prompt name contains "universe", and the handle set is still exactly the seven canonical handles
 
-#### Scenario: Responses carry current spellings only, and a person's content is untouched
-- **WHEN** a handler returns `{"universe_id": "u-1", "actor": "universe:u-1"}`
-- **THEN** the client receives `{"command_center_id": "u-1", "actor": "command_center:u-1"}`, while a run output or file read containing the same keys is returned unchanged
+#### Scenario: A stored custom UI keeps working
+- **WHEN** a custom UI bundle saved before the rename reads `universe_id` from the bridge identity
+- **THEN** it receives the viewer's command center id, equal to `command_center_id`
+
+#### Scenario: An app window loaded before the deploy keeps reading
+- **WHEN** bridge code loaded before C1 reads a conversation response and checks `universe_id`
+- **THEN** the response still carries `universe_id`, equal to `command_center_id`, and the read succeeds
