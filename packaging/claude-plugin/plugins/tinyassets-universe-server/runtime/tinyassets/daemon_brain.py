@@ -516,6 +516,39 @@ def capture_daemon_memory(
     *,
     daemon_id: str,
     content: str,
+    metadata: dict[str, Any] | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Capture one atomic daemon memory entry (see `_capture_daemon_memory`).
+
+    Charged to the daemon owner's account storage (account-storage-quota D7):
+    at the quota this raises `StorageRefused` before anything is written. The
+    daemon wiki's own byte caps and eviction are gone; this is the bound.
+    """
+    from tinyassets import storage_accounting
+
+    # Every caller-supplied field is persisted (content, metadata, temporal
+    # bounds, source path/hash/id, ...), so all of it is reserved, not just
+    # content (gpt-6-astra, PR #4158).
+    nbytes = len(json.dumps(
+        {"content": content, "metadata": metadata, **fields}, default=str,
+    ).encode("utf-8")) + 1024
+    with storage_accounting.charged(
+        base_path,
+        account_id=storage_accounting.account_for_daemon(base_path, daemon_id),
+        store="daemon_memory",
+        nbytes=nbytes,
+    ):
+        return _capture_daemon_memory(
+            base_path, daemon_id=daemon_id, content=content, metadata=metadata, **fields,
+        )
+
+
+def _capture_daemon_memory(
+    base_path: str | Path,
+    *,
+    daemon_id: str,
+    content: str,
     memory_kind: str = DEFAULT_MEMORY_KIND,
     source_type: str = "manual",
     source_id: str = "manual",
@@ -1363,6 +1396,24 @@ def _brain_review_header() -> str:
     )
 
 
+def _entries_bytes(base_path: str | Path, daemon_id: str, entry_ids: Sequence[str]) -> int:
+    conn = _connect_existing_read_only(base_path)
+    if conn is None or not entry_ids:
+        return 0
+    try:
+        ids = [str(e).strip() for e in entry_ids if str(e).strip()]
+        row = conn.execute(
+            "SELECT COALESCE(SUM(length(CAST(content AS BLOB))), 0) FROM daemon_brain_entries "
+            f"WHERE daemon_id = ? AND entry_id IN ({','.join('?' for _ in ids)})",
+            [daemon_id, *ids],
+        ).fetchone()
+        return int(row[0] or 0)
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+
 def promote_daemon_memory_to_wiki(
     base_path: str | Path,
     *,
@@ -1372,7 +1423,44 @@ def promote_daemon_memory_to_wiki(
     target_rel_path: str = "pages/brain/review.md",
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Promote selected mini-brain entries into the daemon wiki review page."""
+    """Promote selected mini-brain entries into the daemon wiki review page.
+
+    Charged to the daemon owner's account storage (account-storage-quota D7):
+    the promotion row and the wiki lines repeat the summary and every promoted
+    entry, so those are reserved; at the quota this raises `StorageRefused`
+    before anything is written.
+    """
+    from tinyassets import storage_accounting
+
+    nbytes = (
+        2 * len(str(summary or "").encode("utf-8"))
+        + _entries_bytes(base_path, daemon_id, entry_ids)
+        + len(json.dumps(metadata or {}, default=str).encode("utf-8"))
+        + len(json.dumps(list(entry_ids), default=str).encode("utf-8"))
+        + len(str(target_rel_path or "").encode("utf-8"))
+        + 1024
+    )
+    with storage_accounting.charged(
+        base_path,
+        account_id=storage_accounting.account_for_daemon(base_path, daemon_id),
+        store="daemon_memory",
+        nbytes=nbytes,
+    ):
+        return _promote_daemon_memory_to_wiki(
+            base_path, daemon_id=daemon_id, entry_ids=entry_ids, summary=summary,
+            target_rel_path=target_rel_path, metadata=metadata,
+        )
+
+
+def _promote_daemon_memory_to_wiki(
+    base_path: str | Path,
+    *,
+    daemon_id: str,
+    entry_ids: Sequence[str],
+    summary: str,
+    target_rel_path: str,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
     _validate_daemon(base_path, daemon_id)
     clean_ids = []
     seen_ids: set[str] = set()

@@ -90,7 +90,7 @@ def resolve_selection_in_transaction(conn, *, owner, universe):
         if not isinstance(config, dict):
             raise ValueError("invalid receiver installation configuration")
         if config.get("role") != "app_experience" or "turn_consumer" not in config:
-            continue  # Layout import/application alone never selects execution.
+            continue  # A binding without a turn_consumer never selects execution.
         if (row["status"] != "configured" or row["updated_by"] != owner
                 or "provider_ref" in config):
             raise PermissionError("consumer installation is not receiver-owned non-serving data")

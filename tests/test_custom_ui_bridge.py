@@ -176,7 +176,7 @@ assert.deepEqual(u.readSelection({ui_selection:{version:1,state:'active',ui_id:'
 binding=installed();
 appUi=stored([bundleOf()],{version:1,state:'active',ui_id:'office'});
 definitions['d1']={agent_definition_id:'d1',content_fingerprint:'f'.repeat(64),components:{}};
-AppLayout.enable(HOME,PRINCIPAL); u.enable(HOME,PRINCIPAL);
+u.enable(HOME,PRINCIPAL);
 await settle();
 assert(u.active&&u.active.ui_id==='office','the remembered UI must be applied: '+$('ui-status').textContent);
 assert.equal(calls.filter(c=>c.tool==='read_graph'&&c.args.target==='app_ui').length,1);
@@ -590,10 +590,9 @@ def _run(tmp_path, name, checks, extra=""):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node required for actual JavaScript controller")
-    layout = Path("tinyassets/onboarding/app_layout.js").read_text(encoding="utf-8")
     controller = Path("tinyassets/onboarding/app_ui.js").read_text(encoding="utf-8")
     script = tmp_path / name
-    script.write_text(HARNESS + extra + layout + controller + checks, encoding="utf-8")
+    script.write_text(HARNESS + extra + controller + checks, encoding="utf-8")
     result = subprocess.run(
         [node, str(script)], capture_output=True, text=True, timeout=120
     )

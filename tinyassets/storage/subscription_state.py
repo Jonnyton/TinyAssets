@@ -99,6 +99,33 @@ def get_tier(universe_dir: str | Path, *, default: str = TIER_FREE) -> str:
     return str(row[0]) if row is not None else default
 
 
+def read_tier(universe_dir: str | Path, *, default: str = TIER_FREE) -> str:
+    """This universe's tier, READ-ONLY: never creates the database or its
+    directory, and always closes what it opens.
+
+    For callers on every write path (the account storage quota resolves a tier
+    per gated write): `get_tier` creates the database as a side effect and leaves
+    its connection to the garbage collector, which on Windows holds a handle in
+    the universe directory and blocked account deletion from renaming it. Free on
+    every failure, as with `get_tier`.
+    """
+    path = state_db_path(universe_dir)
+    if not path.is_file():
+        return default
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30.0)
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            row = conn.execute(
+                "SELECT value FROM subscription_meta WHERE key = ?", (_TIER_KEY,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return default
+    return str(row[0]) if row is not None else default
+
+
 def get_plan(universe_dir: str | Path) -> dict[str, object]:
     """This universe's tier plus, if it is ending, when.
 

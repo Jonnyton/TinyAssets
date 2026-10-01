@@ -147,13 +147,15 @@ SHALL be able to address a named agent in the viewing user's universe.
 - **THEN** the message is relayed within the viewer's own universe
 - **AND** the author's universe is not addressed
 
-### Requirement: Switching is on the fly, remembered, and does not fork the layout system
+### Requirement: Switching is on the fly, remembered, and is the only app-design control
 
 The app SHALL offer an explicit choice between the default chat experience and any
 installed bundle, SHALL apply it without reload, and SHALL persist it in the
 viewer's own UI row under a revision-guarded write. A universe with no bundle
-SHALL behave exactly as before, and the layout editor's storage SHALL be
-unaffected.
+SHALL behave exactly as before. Switch UI SHALL be the app's only design
+control: arranging, spacing and conversation behaviour belong to custom UIs the
+universe builds, and the Switch UI dialog SHALL carry the trusted conversation
+recovery (current design, restore default, restore previous).
 
 #### Scenario: Choice survives a new sign-in
 - **WHEN** a user selects an installed bundle and later signs in again

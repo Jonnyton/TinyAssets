@@ -217,7 +217,7 @@ const Uploads={ aborted:0, abort(){ this.aborted++; } };
 const Voice={ stop(){}, conversationSettled(){} };
 const ModelPicker={ reset(){} };
 const HostedModelConnect={ reset(){}, setup:"connected" };
-const AppLayout={ reset(){ LOG.push(["layoutReset"]); } };
+const AppUI={ reset(){ LOG.push(["uiReset"]); }, homeChanged(){} };
 // The credential fields the sign-out clears. Modelled so the account
 // boundary test runs the page's real `enterSignedOut` end to end; what those
 // fields hold afterwards is asserted in
@@ -530,7 +530,7 @@ const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; } };
 const Uploads={ aborted:0, abort(){ this.aborted++; } };
 const Voice={ refreshCapability(){} };
 const ModelPicker={ reset(){} };
-const AppLayout={ reset(){ LOG.push(["layoutReset"]); }, enable(u,p){ LOG.push(["layout",u,p]); } };
+const AppUI={ reset(){ LOG.push(["uiReset"]); }, enable(u,p){ LOG.push(["ui",u,p]); } };
 const HostedModelConnect={ setup:"empty", busy:false, request:null,
   async begin(){ LOG.push(["begin"]); }, paint(){}, status(t){ LOG.push(["status",t]); } };
 function token(){ return "t1"; }
@@ -576,8 +576,8 @@ def test_an_unpowered_first_session_lands_in_chat_with_the_request_first(html):
     assert ["loadHistory", "principal-a", "universe-a"] in log, \
         "the first session reached chat without asking for its own history"
     assert out["engineConnected"] is False
-    assert not any(entry[0] == "layout" for entry in log), \
-        "an unpowered universe enabled the powered layout"
+    assert not any(entry[0] == "ui" for entry in log), \
+        "an unpowered universe enabled the custom-UI switcher"
     assert ["timezone"] in log, \
         "sign-in did not report the browser's zone, so a schedule would run on " \
         "the container's clock"
@@ -593,7 +593,7 @@ def test_a_powered_session_lands_in_chat_without_opening_setup(html):
     })();
     """))
     assert ["view", "chat"] in out["log"] and ["connect"] not in out["log"]
-    assert ["layout", "universe-a", "principal-a"] in out["log"]
+    assert ["ui", "universe-a", "principal-a"] in out["log"]
     assert out["engineConnected"] is True
 
 
