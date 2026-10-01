@@ -2893,8 +2893,9 @@ def write_graph(
             pending_request ask, or withdraw (payload_json {"request_id",
             "reason"}) to take down YOUR OWN still-pending ask once you know it
             is stale - never leave a wrong tab on the owner's rail.
-            An ask IS the notification: it reaches the owner's phone, desktop
-            and browser. There is no other notification sender. For model
+            An ask IS the only notification (phone/desktop/browser). Ask
+            only for what the owner can grant or decide; a platform gap is a
+            patch request. For model
             access, ask with action type bind_model_access, agent_binding_id,
             expected_revision, provider and complete model_access. No fields:
             the owner sees the exact change and reconnect warning, and must

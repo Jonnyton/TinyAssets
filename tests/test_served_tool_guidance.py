@@ -490,5 +490,14 @@ def test_the_agent_is_told_a_request_is_the_notification():
     universe searched for a notification sender, found none, and raised a request
     for one. Requests ARE the notification channel; that fact must stay resident."""
     description = _description("write_graph")
-    assert "An ask IS the notification" in description
-    assert "no other notification sender" in description
+    assert "An ask IS the only notification" in " ".join(description.split())
+
+
+def test_the_agent_is_told_an_ask_is_only_for_what_the_owner_can_grant():
+    """Live 2026-10-01: refused a trigger type the engine lacked, the universe
+    asked its owner to approve "Enable new-message wakes" -- an approval that
+    could not create the missing capability, so the owner approved and nothing
+    happened. A platform gap goes to the patch request, never to the owner."""
+    description = _description("write_graph")
+    assert "what the owner can grant or decide" in " ".join(description.split())
+    assert "a platform gap is a patch request" in " ".join(description.split())
