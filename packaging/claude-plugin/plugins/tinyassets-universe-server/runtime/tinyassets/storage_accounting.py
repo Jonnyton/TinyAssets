@@ -561,7 +561,8 @@ ROOT_ENTRIES: dict[str, str] = {
 #: Names that live INSIDE a universe directory: every byte there is counted by
 #: `universe_files` (minus `_NOT_USER_BYTES`), so these need no store of their own.
 UNIVERSE_ENTRIES: frozenset[str] = frozenset({
-    ".conversation_memory.db", ".credentials", ".credentials.json",
+    ".conversation_memory.db", ".conversation_attention.db",
+    ".credentials", ".credentials.json",
     ".engine_mcp_config.json", ".oauth-refresh", ".pause",
     ".provider-assignment-admission.lock", ".runtime_status.json",
     ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
