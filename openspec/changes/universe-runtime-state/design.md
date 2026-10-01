@@ -16,7 +16,7 @@
 | `branch_tasks.json.lock`, `auto_ship_attempts.jsonl.lock` | platform locks | 6, 2 | `.runtime/state/` |
 | `workspaces/` | platform-managed checkouts | 12 | **Stays at the root, masked** (refute round 1: `workspace_leases.path` and `quarantine_path` are absolute and drive deletion). |
 | `wiki/` | user content (universe wiki pages) | 9 | Stays at the root as user files, read through `universe_files`. |
-| `soul_versions/`, `soul.edit.md` | soul governance | 5, 6 | Retired in harness S6 (the history store replaces it). Until then, `.runtime/state/`. |
+| `soul_versions/`, `soul.edit.md` | soul governance | 5, 6 | **Stay at the root as the user's files** (build finding): once the agent can write `soul.md` directly, a policy restricting governed edits of it constrains nothing, and the daemon already reads both through `universe_files`. Harness S6 retires them. |
 | `config.yaml`, `soul.md`, brain files, `voice.md`, `AGENTS.md` | user | many | Stay at the root, read through `universe_files` (already the case). |
 | `skills/`, `prompts/`, `extensions/`, `workflows/`, `bin/`, `notes/` | user | — | Stay. |
 
@@ -39,8 +39,8 @@ which is why the set is no longer hand-assembled (below).
 
 `universe_paths.PLATFORM_NAMES` is the only list. Each entry records the
 name, its kind (file, directory, SQLite with sidecars, or a prefix such as
-`.worker_supervisor.`), and whether its bytes are `counted` against the
-owner's storage. Four consumers derive from it and from nothing else:
+`.worker_supervisor.`), and its `reset` disposition. Four consumers derive from
+it and from nothing else:
 
 1. **The migration** moves exactly the registry's names.
 2. **The source gate** refuses any registry name joined onto a path outside
@@ -52,9 +52,9 @@ owner's storage. Four consumers derive from it and from nothing else:
    (`_NOT_USER_BYTES`). If the walk were left alone, every counted store moved
    under `.runtime/state/` would stop being charged, which would be an
    uncounted store created by a refactor. So `_universe_files` also walks
-   `.runtime/state/` and skips only the names whose `counted` flag is false.
-   Those are exactly the names that are uncounted today: `.workspace-staging`,
-   and `workspaces`, which is its own store. A test fixes the invariant: one
+   `.runtime/state/`, skipping only the migration's own lock and marker. The
+   two uncounted directories (`workspaces/`, `.workspace-staging/`) stay at
+   the root, so no per-name flag is needed. A test fixes the invariant: one
    universe's totals are identical before and after migration.
 4. **Operator reset.** `scoped_reset._walk_home_without_following` classifies
    home entries with hand-written sets (`_CREDENTIAL_NAMES`,
@@ -132,8 +132,11 @@ because a startup sweep has two holes:
   would also change meaning when moved, and a parked link would fail the
   restore script's blanket link check (refute round 1). The production
   dry-run on 2026-10-01 found no links and no conflicts in any universe.
-- **Tombstones.** After each entry moves, the migration creates an empty
-  directory with mode `000` at its old name. A reader the conversion missed
+- **Tombstones.** After each entry moves, the migration creates a read-only
+  directory at its old name holding only `.universe-runtime-state-tombstone`
+  (a mode-`000` directory cannot be recognized on Windows, where the desktop
+  host runs the same code). Prefix entries (`.worker_supervisor.*`) and SQLite
+  sidecars leave none. A reader the conversion missed
   then fails loudly (`IsADirectoryError`, or SQLite "unable to open") instead
   of creating and trusting an empty store at the root. Tombstones always
   exist, so the jails can mask them. Agents cannot remove or replace them, so
@@ -171,6 +174,29 @@ because a startup sweep has two holes:
   Both rollback paths, and `release-reconcile`, read the candidate image's
   label and refuse to start an image whose layout is below the data's
   (exit 3, manual). An image without the label counts as layout 1.
+
+## What only the build could find
+
+- **A universe's own `.runs.db` is the workspace pool.** Production's holds
+  only `workspace_leases` (514 rows), `workspace_ledger`, `workspace_outbox`
+  and `workspace_push_intents`. A lease row's absolute path drives deletion,
+  so an agent able to write this file at the root could aim cleanup at any
+  path, another user's included. `runs.universe_runs_db_path()` is now the
+  only route to it, and `runs_db_path()` names the data root's database
+  only. Every other per-universe store in production (`story.db`,
+  `knowledge.db`, `checkpoints.db`, `outbound.db`) was empty.
+- **Enumerators must never migrate.** A reader that walks the data root
+  (`providers.definition.list_commons_definitions`) would have run the
+  migration inside a backup directory, which holds `.runs.db` and
+  `outbound.db`, or inside the data root itself. Such readers use
+  `migrated_platform_path()`, which returns nothing for an unmigrated
+  directory. The migration also refuses any directory whose name starts with
+  `_` or `.`, the reserved operational names, and any directory holding a
+  data-root marker (`.tinyassets.db`, `.auth.db`, `.storage_accounting.db`).
+  Daemon start migrates exactly `daemon_server.owned_universe_ids()`.
+- **The layout is recorded before the first move**, not after the last. A
+  boot that dies halfway has already made the data unreadable to an older
+  image.
 
 ## Every jail masks the state, not only the tool jail
 

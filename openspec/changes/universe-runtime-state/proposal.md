@@ -44,12 +44,14 @@ forged grants.
 - Only after every reader moves does the tool jail bind the universe root
   read-write. `.runtime/` stays masked from the jail, and the agent sees
   `.runtime/agent-sessions` read-only only where the session log is exposed.
-- **Files that are the user's stay the user's.** `config.yaml`, `soul.md`
-  and the brain files are user configuration, so they stay at the root and
-  are read through `universe_files`. `soul.edit.md`, the `soul_versions/`
-  governance and `voice.md` are retired with the S6 history store, not moved.
-- `.worker_supervisor.*.json` files with no live owner are deleted, and new
-  ones are written under `.runtime/state/supervisors/`.
+- **Files that are the user's stay the user's.** `config.yaml`, `soul.md`,
+  the brain files, `soul.edit.md` and `soul_versions/` stay at the root and
+  are read through `universe_files`. Once the agent can write `soul.md`
+  directly, the governance files constrain nothing, so the S6 history store
+  retires them rather than this change moving them.
+- `.worker_supervisor.*.json` files move with the rest and are written under
+  `.runtime/state/` from then on. The ones with no live owner (683 in
+  production) are deleted only after every reader is verified.
 
 ## Capabilities
 
@@ -64,11 +66,12 @@ forged grants.
   `storage_accounting.UNIVERSE_ENTRIES`), each through a single resolver and a
   gate. `.runtime/` is excluded from the universe byte walk
   (`storage_accounting._NOT_USER_BYTES`), so the walk is changed to count
-  `.runtime/state/` by the registry's `counted` flag: per-universe totals are
+  `.runtime/state/` too: per-universe totals are
   identical before and after, and that equality is a test.
-- **Migration:** one-way and idempotent. Rollback means reading the new
-  location, so an old image must not serve a migrated universe. The deploy
-  is single-direction, and this is recorded in the deploy notes.
+- **Migration:** one-way and idempotent. An old image must not serve a
+  migrated universe, so the image carries a state-layout label and
+  `deploy_fail_safe.sh` refuses to converge any image, forward or rollback,
+  below the data's layout.
 - **Authority:** the agent gains write access to its root. The cross-user
   floor is unchanged.
 - **Readers:** listed per name in design.md, from a grep of

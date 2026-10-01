@@ -1,9 +1,9 @@
 ## 1. Build
 
-- [ ] 1.1 `universe_paths` registry (name, kind, counted, reset) and `platform_path` resolver; lazy + eager migration under a held lock; conflicts and links refuse; tombstones; fsync order; layout file.
+- [ ] 1.1 `universe_paths` registry (name, kind, reset) and `platform_path` resolver; lazy + eager migration under a held lock; conflicts and links refuse; tombstones; fsync order; layout file.
 - [ ] 1.2 Route every universe-scoped reader through the resolver, including `fantasy_daemon/` and `domains/`; delete each legacy root read (no fallback).
 - [ ] 1.3 Source gate over `tinyassets/`, `fantasy_daemon/`, `domains/`, `scripts/` with a reasoned data-root allowlist; fixtures run through `ensure_migrated`.
-- [ ] 1.4 Storage accounting counts `.runtime/state/` by `counted`; scoped reset classifies through `reset`; inspect_storage_utilization follows the move.
+- [ ] 1.4 Storage accounting counts `.runtime/state/`; scoped reset classifies through `reset`; inspect_storage_utilization follows the move.
 - [ ] 1.5 Provider jails mask `.runtime/state` and tombstones; tool jail binds the root read-write only for a migrated universe, masking `.runtime/`, `workspaces/`, `.workspace-staging/` and tombstones.
 - [ ] 1.6 Image label `io.tinyassets.state-layout`; `deploy_fail_safe.sh`, `deploy-prod.yml` and `release-reconcile` refuse a rollback below the data's layout.
 - [ ] 1.7 Delete ownerless `.worker_supervisor.*.json` only after 2.3 confirms every reader moved.
