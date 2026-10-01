@@ -32,6 +32,7 @@ PyYAML is imported hard: skipping this file is how the invariants would go quiet
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import re
 from pathlib import Path
@@ -54,7 +55,11 @@ _spec.loader.exec_module(_assert)
 # The guarded cases, derived the same way the job derives them: every test
 # carrying @pytest.mark.real_jail. Not a hand-pinned list -- that list had to
 # mirror the workflow's and drifted three times.
-_MARKED = _assert.marked_cases(_REPO, "real_jail")
+@functools.cache
+def _marked() -> list[str]:
+    # Called inside tests only, never at import: collecting the marked cases
+    # imports this module too, and an import-time call would recurse.
+    return _assert.marked_cases(_REPO, "real_jail")
 
 
 def _load() -> dict:
@@ -198,7 +203,7 @@ def test_no_hand_pinned_case_list_remains_in_the_workflow():
 def test_the_marker_is_registered_and_guards_every_jail_module():
     pyproject = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
     assert '"real_jail:' in pyproject, "register the marker so a typo is not silent"
-    files = {n.split("::")[0] for n in _MARKED}
+    files = {n.split("::")[0] for n in _marked()}
     # The four slices this job exists for (see the workflow header). Losing a
     # whole file's marker would drop its cases without any red.
     assert files >= {
@@ -211,42 +216,62 @@ def test_the_marker_is_registered_and_guards_every_jail_module():
 
 def test_every_marked_file_retriggers_the_proof():
     paths = set(_triggers(_load())["pull_request"]["paths"])
-    for path in sorted({n.split("::")[0] for n in _MARKED}):
+    for path in sorted({n.split("::")[0] for n in _marked()}):
         assert path in paths, f"{path} carries real_jail but does not retrigger the proof"
 
 
-def test_marked_cases_reads_decorators_module_marks_and_classes(tmp_path):
+def test_marked_cases_follows_pytest_collection_not_spelling(tmp_path):
+    """Aliases, class marks, nested classes and parameters count as pytest runs them."""
     tests = tmp_path / "tests"
     tests.mkdir()
-    (tests / "test_mod.py").write_text(
+    (tests / "test_forms.py").write_text(
         "import pytest\n"
-        "pytestmark = [pytest.mark.skipif(True, reason='x'), pytest.mark.real_jail]\n"
-        "def test_a(): pass\n"
-        "def helper(): pass\n"
-        "class TestK:\n"
-        "    def test_b(self): pass\n",
+        "import pytest as pt\n"
+        "mark = pytest.mark\n"
+        "@mark.real_jail\n"
+        "def test_alias(): pass\n"
+        "@pt.mark.real_jail\n"
+        "async def test_async(): pass\n"
+        "class TestA:\n"
+        "    pytestmark = pytest.mark.real_jail\n"
+        "    def test_in_class(self): pass\n"
+        "    class TestB:\n"
+        "        def test_nested(self): pass\n"
+        "@pytest.mark.real_jail\n"
+        "@pytest.mark.parametrize('v', [1, 2])\n"
+        "def test_param(v): pass\n"
+        "def test_unmarked(): pass\n",
         encoding="utf-8",
     )
-    (tests / "test_one.py").write_text(
-        "import pytest\n"
-        "@pytest.mark.real_jail\n"
-        "def test_c(): pass\n"
-        "def test_unmarked(): pass\n"
-        "@pytest.mark.other\n"
-        "def test_other(): pass\n",
-        encoding="utf-8",
+    (tests / "test_silent.py").write_text("def test_x(): pass\n", encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nmarkers =\n    real_jail: test\n", encoding="utf-8"
     )
     assert _assert.marked_cases(tmp_path, "real_jail") == [
-        "tests/test_mod.py::test_a",
-        "tests/test_mod.py::TestK::test_b",
-        "tests/test_one.py::test_c",
+        "tests/test_forms.py::test_alias",
+        "tests/test_forms.py::test_async",
+        "tests/test_forms.py::TestA::test_in_class",
+        "tests/test_forms.py::TestA::TestB::test_nested",
+        "tests/test_forms.py::test_param[1]",
+        "tests/test_forms.py::test_param[2]",
     ]
+
+
+def test_a_file_that_cannot_be_collected_refuses_rather_than_guessing(tmp_path):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_broken.py").write_text(
+        "import pytest\nraise ImportError('boom')\n@pytest.mark.real_jail\ndef test_a(): pass\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="refusing"):
+        _assert.marked_cases(tmp_path, "real_jail")
 
 
 def test_list_files_and_an_unused_marker(tmp_path, capsys):
     assert _assert.main(["--marker", "real_jail", "--list-files"]) == 0
     listed = capsys.readouterr().out.split()
-    assert listed == sorted({n.split("::")[0] for n in _MARKED})
+    assert listed == sorted({n.split("::")[0] for n in _marked()})
     # A marker nobody carries must not read as an all-clear.
     assert _assert.main(["--marker", "no_such_marker", "--list-files"]) == 2
     assert _assert.main(["--marker", "no_such_marker", "--junit", str(tmp_path / "j")]) == 2
@@ -257,27 +282,31 @@ def test_assertion_helper_marker_mode_checks_every_marked_case(tmp_path):
         '<testcase classname="{}" name="{}"/>'.format(
             n.split("::")[0][:-3].replace("/", "."), n.split("::")[-1]
         )
-        for n in _MARKED
+        for n in _marked()
     )
     assert _assert.main(["--junit", str(_junit(tmp_path, clean)), "--marker", "real_jail"]) == 0
-    dropped = clean.replace(f'name="{_MARKED[-1].split("::")[-1]}"', 'name="test_renamed"')
+    dropped = clean.replace(f'name="{_marked()[-1].split("::")[-1]}"', 'name="test_renamed"')
     assert _assert.main(["--junit", str(_junit(tmp_path, dropped)), "--marker", "real_jail"]) == 1
 
 
-def test_a_parametrized_case_matches_its_base_name(tmp_path):
+def test_an_explicit_nodeid_still_matches_exactly(tmp_path):
+    """A base name is not satisfied by one of its parameters: that hides the rest."""
     case = ('<testcase classname="tests.test_delivery_node_rpc" '
             'name="test_real_linux_jail_transports_delivery_rpc[a]"/>')
-    assert _assert.check(_junit(tmp_path, case), _NODEID)[0] == 0
-    near = ('<testcase classname="tests.test_delivery_node_rpc" '
-            'name="test_real_linux_jail_transports_delivery_rpc_v2"/>')
-    assert _assert.check(_junit(tmp_path, near), _NODEID)[0] == 1
+    assert _assert.check(_junit(tmp_path, case), _NODEID)[0] == 1
 
 
-@pytest.mark.parametrize("nodeid", _MARKED)
-def test_guarded_nodeid_resolves_to_a_bwrap_gated_test(nodeid):
-    path, name = nodeid.split("::")[0], nodeid.split("::")[-1]
+def test_every_marked_case_is_a_bwrap_gated_test():
+    for nodeid in _marked():
+        _assert_bwrap_gated(nodeid)
+
+
+def _assert_bwrap_gated(nodeid: str) -> None:
+    path, name = nodeid.split("::")[0], nodeid.split("::")[-1].split("[")[0]
     src = (_REPO / path).read_text(encoding="utf-8")
-    assert re.search(rf"^def {re.escape(name)}\(", src, re.M), f"{name} must exist"
+    assert re.search(rf"^\s*(async\s+)?def {re.escape(name)}\(", src, re.M), (
+        f"{name} must exist"
+    )
     decorated = re.search(rf'@pytest\.mark\.skipif\(not shutil\.which\("bwrap"\)[^\n]*\n'
                           rf'def {re.escape(name)}\(', src)
     module_gate = re.search(

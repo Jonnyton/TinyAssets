@@ -5,9 +5,9 @@ Used by `.github/workflows/linux-jail-proof.yml`. The cases it guards are
 nothing about them: pytest exits 0 when a test skips. This script is the part of
 the job that refuses to read a skip as a pass.
 
-The cases are named ONE way: ``--marker real_jail`` derives them from the test
-source, every test function carrying ``@pytest.mark.real_jail`` (directly or
-through a module ``pytestmark``). There is no second list to keep in step --
+The cases are named ONE way: ``--marker real_jail`` asks pytest which tests
+``-m real_jail`` selects (collection only, no jail needed). There is no
+second list to keep in step --
 the workflow and its shape test used to pin the same 23 node ids by hand, and
 a case added to one and not the other was dropped three times.
 ``--list-files`` prints the files that hold them, for the pytest step.
@@ -30,7 +30,7 @@ name, the first is the file, anything between is the class path.
 from __future__ import annotations
 
 import argparse
-import ast
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -45,66 +45,37 @@ def _expected_classname(nodeid: str) -> tuple[str, str]:
     return ".".join([module, *classes]), parts[-1]
 
 
-def _same_case(reported: str, name: str) -> bool:
-    """`name` itself, or one of its parametrized cases (`name[...]`)."""
-    return reported == name or (reported.startswith(name + "[") and reported.endswith("]"))
-
-
-def _is_marker(node: ast.expr, marker: str) -> bool:
-    """`pytest.mark.<marker>` or a call of it, e.g. `pytest.mark.<marker>(...)`."""
-    if isinstance(node, ast.Call):
-        node = node.func
-    return (
-        isinstance(node, ast.Attribute)
-        and node.attr == marker
-        and isinstance(node.value, ast.Attribute)
-        and node.value.attr == "mark"
-        and isinstance(node.value.value, ast.Name)
-        and node.value.value.id == "pytest"
-    )
-
-
-def _module_marked(tree: ast.Module, marker: str) -> bool:
-    for stmt in tree.body:
-        if isinstance(stmt, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "pytestmark" for t in stmt.targets
-        ):
-            values = stmt.value.elts if isinstance(stmt.value, (ast.List, ast.Tuple)) else [
-                stmt.value
-            ]
-            if any(_is_marker(v, marker) for v in values):
-                return True
-    return False
-
-
 def marked_cases(root: Path, marker: str, tests_dir: str = "tests") -> list[str]:
-    """Node ids (without parameters) of every test carrying `pytest.mark.<marker>`.
+    """Node ids of every test pytest selects with ``-m <marker>``.
 
-    Read from the source, not from pytest collection, so deriving the list
-    needs neither the test dependencies nor a jail. If the source and pytest
-    ever disagree (a generated test, say), the case reads as ABSENT in the
-    JUnit check and the job fails closed.
+    pytest's own collection decides, not a reader of decorator spellings, so a
+    marker applied through an alias, a class ``pytestmark`` or a nested class
+    counts exactly as pytest will run it, and parametrized cases come back
+    with their full ids. Only files whose text names the marker are collected:
+    a file that never mentions it cannot carry it.
+
+    A collection error raises: a file that cannot be collected might hold a
+    proof, and guessing would make the job green without it.
     """
-    cases: list[str] = []
-    for path in sorted((root / tests_dir).rglob("test_*.py")):
-        rel = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
-        whole = _module_marked(tree, marker)
-        for stmt in tree.body:
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if stmt.name.startswith("test") and (
-                    whole or any(_is_marker(d, marker) for d in stmt.decorator_list)
-                ):
-                    cases.append(f"{rel}::{stmt.name}")
-            elif isinstance(stmt, ast.ClassDef) and stmt.name.startswith("Test"):
-                in_class = whole or any(_is_marker(d, marker) for d in stmt.decorator_list)
-                for item in stmt.body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-                        item.name.startswith("test")
-                        and (in_class or any(_is_marker(d, marker) for d in item.decorator_list))
-                    ):
-                        cases.append(f"{rel}::{stmt.name}::{item.name}")
-    return cases
+    candidates = sorted(
+        path.relative_to(root).as_posix()
+        for path in (root / tests_dir).rglob("test_*.py")
+        if marker in path.read_text(encoding="utf-8", errors="replace")
+    )
+    if not candidates:
+        return []
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
+         "-m", marker, *candidates],
+        cwd=root, capture_output=True, text=True,
+    )
+    # 5 = nothing selected, which the caller reports as "no test carries it".
+    if proc.returncode not in (0, 5):
+        raise SystemExit(
+            f"collecting -m {marker} failed (pytest exit {proc.returncode}); refusing "
+            f"to guess the proof set:\n{proc.stdout[-3000:]}{proc.stderr[-2000:]}"
+        )
+    return [line.strip() for line in proc.stdout.splitlines() if "::" in line]
 
 
 def _state(testcase: ET.Element) -> str:
@@ -127,7 +98,7 @@ def check(junit: Path, nodeid: str) -> tuple[int, str]:
     states = [
         _state(tc)
         for tc in root.iter("testcase")
-        if _same_case(tc.get("name") or "", name) and tc.get("classname") == classname
+        if tc.get("name") == name and tc.get("classname") == classname
     ]
     if not states:
         return 1, f"{nodeid} is ABSENT from {junit} (not collected or never ran)"
