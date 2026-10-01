@@ -31,6 +31,13 @@ REQUIRED_SURFACES = {
 }
 
 
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+_ICON_LINK = re.compile(r"""<link\b[^>]*\brel=["']?(?:shortcut\s+)?icon\b[^>]*>""", re.I)
+_BRAND_MARK_DECL = re.compile(r"--brand-mark\s*:\s*([^;}]*)")
+_BRAND_DOT_RULE = re.compile(r"\.brand-dot\b[^{}]*\{([^}]*)\}")
+
+
 def app_badge_data_uri(tile_svg: str) -> str:
     """The data URI the served app uses for its favicon and brand glyph.
 
@@ -48,14 +55,33 @@ def app_badge_problems(app_html: str, tile_svg: str) -> list[str]:
     edit to a 7,000-line file had to re-run the brand exporter or fail
     brand-parity -- a second copy of app.html's bytes that only the badge
     needed. The badge is the only part render_marks owns, so it is the only
-    part checked: both places it appears must carry the current mark.
+    part checked, and checked as what the browser uses, not as a substring:
+
+    - comments are ignored, so a commented-out copy cannot satisfy the check;
+    - there is exactly ONE favicon link, and it is the current mark;
+    - ``--brand-mark`` is declared exactly once, as the current mark;
+    - the glyph (``.brand-dot``) paints ``var(--brand-mark)`` and nothing else.
     """
     uri = app_badge_data_uri(tile_svg)
+    live = _HTML_COMMENT.sub("", _CSS_COMMENT.sub("", app_html))
     problems = []
-    if f'<link rel="icon" href="{uri}" />' not in app_html:
-        problems.append("app.html favicon is not the current tile mark")
-    if f'--brand-mark:url("{uri}");' not in app_html:
-        problems.append("app.html --brand-mark is not the current tile mark")
+    icons = _ICON_LINK.findall(live)
+    if icons != [f'<link rel="icon" href="{uri}" />']:
+        problems.append(
+            f"app.html must have exactly one favicon link, the current tile mark "
+            f"(found {len(icons)})"
+        )
+    marks = _BRAND_MARK_DECL.findall(live)
+    if marks != [f'url("{uri}")']:
+        problems.append(
+            f"app.html must declare --brand-mark exactly once, as the current tile "
+            f"mark (found {len(marks)})"
+        )
+    glyphs = _BRAND_DOT_RULE.findall(live)
+    if not glyphs or any(
+        "var(--brand-mark)" not in rule or "url(" in rule for rule in glyphs
+    ):
+        problems.append("app.html .brand-dot must paint var(--brand-mark) and no other url()")
     return problems
 
 

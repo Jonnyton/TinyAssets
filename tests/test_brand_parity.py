@@ -22,7 +22,8 @@ TILE = (REPO / "WebSite" / "brand" / "mark-tile.svg").read_text(encoding="utf-8"
 def _app(uri: str) -> str:
     return (
         f'<head><link rel="icon" href="{uri}" /></head>'
-        f'<style>:root{{--brand-mark:url("{uri}");}}</style>'
+        f'<style>:root{{--brand-mark:url("{uri}");}}'
+        ".brand-dot{background:var(--brand-mark) center/contain no-repeat}</style>"
     )
 
 
@@ -48,8 +49,29 @@ def test_a_stale_badge_in_either_place_is_a_violation() -> None:
     favicon_stale = _app(current).replace(f'href="{current}"', f'href="{stale}"')
     glyph_stale = _app(current).replace(f'url("{current}")', f'url("{stale}")')
     assert app_badge_problems(favicon_stale, TILE) == [
-        "app.html favicon is not the current tile mark"
+        "app.html must have exactly one favicon link, the current tile mark (found 1)"
     ]
     assert app_badge_problems(glyph_stale, TILE) == [
-        "app.html --brand-mark is not the current tile mark"
+        "app.html must declare --brand-mark exactly once, as the current tile mark (found 1)"
     ]
+
+
+def test_the_badge_is_checked_as_the_browser_uses_it() -> None:
+    """Each of these kept the right substring somewhere and showed a retired mark."""
+    current = app_badge_data_uri(TILE)
+    good = _app(current)
+    retired = 'url("/retired-mark.svg")'
+    overridden = good.replace("</style>", f".brand-dot{{--brand-mark:{retired}}}</style>")
+    unused_variable = good.replace("background:var(--brand-mark)", f"background:{retired}")
+    commented_out = good.replace(
+        f'<link rel="icon" href="{current}" />',
+        f'<!-- <link rel="icon" href="{current}" /> --><link rel="icon" href="/retired.ico" />',
+    )
+    second_icon = good.replace("</head>", '<link rel="shortcut icon" href="/x.ico"></head>')
+    for name, html in [
+        ("overridden", overridden),
+        ("unused_variable", unused_variable),
+        ("commented_out", commented_out),
+        ("second_icon", second_icon),
+    ]:
+        assert app_badge_problems(html, TILE), name
