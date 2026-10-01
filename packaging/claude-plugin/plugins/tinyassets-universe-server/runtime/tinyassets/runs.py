@@ -1286,6 +1286,11 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_runs_scope_status_finished "
             "ON runs(queue_universe_id, status, finished_at)"
         )
+        # Account storage measures each account's runs by owner (storage
+        # accounting `run_records` / `checkpoints`); same placement rule.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_owner_user ON runs(owner_user_id)"
+        )
         conn.commit()
     except Exception:
         conn.rollback()

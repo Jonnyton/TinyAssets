@@ -45,6 +45,7 @@ lock the owner out of fixing it, or lose work already admitted.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import sqlite3
@@ -266,8 +267,211 @@ def _daemon_memory(base: Path, account_id: str) -> int:
     return total + wikis
 
 
-#: THE registry. A store not listed here is a place to put bytes that nobody
-#: counts; `tests/test_storage_accounting.py` fails on one.
+def _blob_sum(columns: tuple[str, ...]) -> str:
+    return " + ".join(f"COALESCE(length(CAST({c} AS BLOB)), 0)" for c in columns)
+
+
+def _mine_clause(base: Path, account_id: str) -> tuple[str, tuple]:
+    """SQL selecting this account's runs in ``.runs.db``: the recorded owner is
+    one of the account's actors, or -- for a run recorded without an owner --
+    its queue universe is one the account owns."""
+    from tinyassets.universe_owner import owned_universes
+
+    actors = _account_actors(base, account_id)
+    universes = owned_universes(base, account_id)
+    a = ",".join("?" * len(actors))
+    clause = f"owner_user_id IN ({a})"
+    params: tuple = tuple(actors)
+    if universes:
+        u = ",".join("?" * len(universes))
+        clause = f"({clause} OR (owner_user_id = '' AND queue_universe_id IN ({u})))"
+        params += tuple(universes)
+    return clause, params
+
+
+def _run_records(base: Path, account_id: str) -> int:
+    """Run rows and everything hanging off them in the shared ``<base>/.runs.db``
+    -- beside the universe directories, so a universe scan never sees it."""
+    db = base / ".runs.db"
+    mine, params = _mine_clause(base, account_id)
+    runs_sql = f"SELECT run_id FROM runs WHERE {mine}"
+    total = _sum_sql(
+        db,
+        f"SELECT SUM({_blob_sum(('inputs_json', 'output_json', 'error', 'run_name'))}) "
+        f"FROM runs WHERE {mine}",
+        params,
+    )
+    for table, columns in (
+        ("run_events", ("detail_json",)),
+        ("run_receipts", ("payload_json",)),
+    ):
+        total += _sum_sql(
+            db,
+            f"SELECT SUM({_blob_sum(columns)}) FROM {table} WHERE run_id IN ({runs_sql})",
+            params,
+        )
+    return total
+
+
+def _checkpoints(base: Path, account_id: str) -> int:
+    """LangGraph checkpoints in ``<base>/.langgraph_runs.db``, attributed through
+    the run that owns each thread."""
+    runs_db = base / ".runs.db"
+    cp_db = base / ".langgraph_runs.db"
+    if not runs_db.exists() or not cp_db.exists():
+        return 0
+    mine, params = _mine_clause(base, account_id)
+    conn = sqlite3.connect(f"file:{runs_db.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        try:
+            threads = sorted({
+                str(row[0]) for row in conn.execute(
+                    f"SELECT DISTINCT thread_id FROM runs WHERE {mine}", params,
+                ) if row[0]
+            })
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                return 0
+            raise
+    finally:
+        conn.close()
+    total = 0
+    for start in range(0, len(threads), 500):
+        chunk = tuple(threads[start:start + 500])
+        marks = ",".join("?" * len(chunk))
+        total += _sum_sql(
+            cp_db,
+            f"SELECT SUM({_blob_sum(('checkpoint', 'metadata'))}) FROM checkpoints "
+            f"WHERE thread_id IN ({marks})",
+            chunk,
+        )
+        total += _sum_sql(
+            cp_db,
+            f"SELECT SUM({_blob_sum(('value',))}) FROM writes WHERE thread_id IN ({marks})",
+            chunk,
+        )
+    return total
+
+
+def _uploads(base: Path, account_id: str) -> int:
+    """Uploaded / captured run files: the blobs live in ``.run-file-custody``,
+    and ``run_file_objects`` records their owner and exact size."""
+    return _sum_sql(
+        base / ".runs.db",
+        "SELECT SUM(size_bytes) FROM run_file_objects WHERE owner_id = ? AND state = 'ready'",
+        (account_id,),
+    )
+
+
+def _branches(base: Path, account_id: str) -> int:
+    """Branch definitions (author-server DB) by their author, and published
+    versions (``.runs.db``) by their publisher -- both stored user ids."""
+    from tinyassets.storage import db_path as author_db_path
+
+    actors = _account_actors(base, account_id)
+    marks = ",".join("?" * len(actors))
+    definition_columns = ("graph_json", "description", "name", "tags_json", "skills_json")
+    definitions = _sum_sql(
+        author_db_path(base),
+        f"SELECT SUM({_blob_sum(definition_columns)}) "
+        f"FROM branch_definitions WHERE author IN ({marks})",
+        tuple(actors),
+    )
+    versions = _sum_sql(
+        base / ".runs.db",
+        f"SELECT SUM({_blob_sum(('snapshot_json', 'notes'))}) "
+        f"FROM branch_versions WHERE publisher IN ({marks})",
+        tuple(actors),
+    )
+    return definitions + versions
+
+
+def _commons_pages(base: Path, account_id: str) -> int:
+    """Commons wiki pages, charged to the account that LAST wrote each one
+    (founder 2026-09-30, Q3). Pages record no author, so the write records it
+    (`record_commons_writer`); a page with no record is the platform's."""
+    from tinyassets.storage import wiki_path
+
+    actors = _account_actors(base, account_id)
+    marks = ",".join("?" * len(actors))
+    ledger = ledger_path(base)
+    if not ledger.exists():
+        return 0
+    conn = sqlite3.connect(f"file:{ledger.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        try:
+            rows = conn.execute(
+                f"SELECT rel_path, digest FROM commons_writers WHERE writer IN ({marks})",
+                tuple(actors),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                return 0
+            raise
+    finally:
+        conn.close()
+    root = wiki_path()
+    total = 0
+    for rel, digest in rows:
+        try:
+            st = os.lstat(root / rel)
+        except FileNotFoundError:
+            continue  # deleted: no longer anyone's bytes
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        # Charged only while the page still holds what THIS writer wrote: a race
+        # where two writes interleave and the later record names the earlier
+        # content leaves the page uncharged until its next write -- never
+        # charged to someone who did not write it (gpt-6-astra, PR #4166).
+        try:
+            current = _content_digest((root / rel).read_bytes())
+        except OSError:
+            continue
+        if current == digest:
+            total += st.st_size
+    conn = sqlite3.connect(f"file:{ledger.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        try:
+            row = conn.execute(
+                f"SELECT SUM(bytes) FROM commons_log_bytes WHERE writer IN ({marks})",
+                tuple(actors),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            row = None
+    finally:
+        conn.close()
+    return total + int((row or [0])[0] or 0)
+
+
+def _content_digest(data: bytes | str) -> str:
+    """Line-ending-insensitive digest: text written on Windows gains CRLF."""
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    return hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _automations(base: Path, account_id: str) -> int:
+    """Automations' user-supplied fields (``inputs`` has no byte bound), by their
+    recorded ``owner_principal_id``. Schedules' bookkeeping columns are not
+    user-sized and are not charged (gpt-6-astra, PR #4166)."""
+    from tinyassets.automations import automations_db_path
+
+    actors = _account_actors(base, account_id)
+    marks = ",".join("?" * len(actors))
+    return _sum_sql(
+        automations_db_path(base),
+        f"SELECT SUM({_blob_sum(('inputs_json', 'name', 'cron_expr'))}) "
+        f"FROM automations WHERE owner_principal_id IN ({marks})",
+        tuple(actors),
+    )
+
+
+#: THE registry. Every place user bytes live is either here, or named in
+#: `PLATFORM_ENTRIES` with why it is not the user's;
+#: `tests/test_storage_registry_complete.py` fails on any store that is neither.
 STORES: dict[str, Store] = {
     store.name: store
     for store in (
@@ -275,8 +479,87 @@ STORES: dict[str, Store] = {
         Store("project_memory", SCOPE_ACCOUNT, _project_memory),
         Store("ui_library", SCOPE_ACCOUNT, _ui_library),
         Store("daemon_memory", SCOPE_ACCOUNT, _daemon_memory),
+        Store("run_records", SCOPE_ACCOUNT, _run_records),
+        Store("checkpoints", SCOPE_ACCOUNT, _checkpoints),
+        Store("uploads", SCOPE_ACCOUNT, _uploads),
+        Store("branches", SCOPE_ACCOUNT, _branches),
+        Store("commons_pages", SCOPE_ACCOUNT, _commons_pages),
+        Store("automations", SCOPE_ACCOUNT, _automations),
     )
 }
+
+#: Where each DATA-ROOT entry's bytes are counted. Value: the store that charges
+#: them to an account, or ``platform: <why>`` for the platform's own bytes.
+#: Universe directories themselves are `universe_files`. Every on-disk name the
+#: code creates at the data root must appear here -- the completeness test reads
+#: the source for them.
+ROOT_ENTRIES: dict[str, str] = {
+    ".runs.db": "run_records, uploads, branches (rows attributed per table)",
+    ".langgraph_runs.db": "checkpoints",
+    ".run-file-custody": "uploads (blobs; sized from run_file_objects)",
+    ".project_memory.db": "project_memory",
+    ".tinyassets.db": "branches (branch_definitions); the rest is platform: accounts, grants, ACLs",
+    "daemon_brain.db": "daemon_memory",
+    "daemon_wikis": "daemon_memory",
+    "wiki": "commons_pages",
+    ".storage_accounting.db": "platform: this ledger",
+    "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
+    ".workspace-staging": "platform: transient checkout staging, swept by liveness",
+    ".consumer_liveness": "platform: process liveness locks",
+    ".runtime": "platform: provider runtime",
+    ".universe_seats.db": "platform: seat leases",
+    ".account_seats.db": "platform: per-account seat leases",
+    ".engine_run_admissions.db": "platform: admission ledger",
+    ".automations.db": "automations (user inputs by owner; schedule bookkeeping is platform)",
+    ".universe-tool-slots": "platform: tool jail slots",
+    ".auth.db": "platform: sessions (never gated)",
+    ".hosted-model-auth.db": "platform: credential vault (never gated)",
+    ".owner_devices.db": "platform: device registrations",
+    ".effector_consents.db": "platform: consent records",
+    ".outbound-proxy": "platform: egress proxy state",
+    ".run-execution-locks": "platform: locks",
+    ".run-file-operation-locks": "platform: locks",
+    ".connect": "platform: connection handshakes",
+    ".executors": "platform: executor registry",
+    ".external_write_receipts.db": "platform: effect receipts (also per-universe, counted there)",
+    ".idempotency.db": "platform: idempotency keys (also per-universe, counted there)",
+    ".node_eval.db": "platform: node evaluation scores",
+    ".node_registry.json": "platform: node registry",
+    ".active_universe": "platform: legacy default-universe pointer",
+    ".run_recovery.lock": "platform: lock",
+    ".run_recovery.lock.pid": "platform: lock",
+    ".scoped-reset.barrier": "platform: operator reset barrier",
+    ".scoped-reset-journal": "platform: operator reset journal",
+    ".scoped-reset-staging": "platform: operator reset staging",
+    ".delivery-locks": "platform: locks beside a database",
+    ".workspace-family-locks": "platform: locks beside a database",
+    "checkpoints.db": "platform: legacy single-tenant domain store",
+    "knowledge.db": "platform: legacy single-tenant domain store",
+    "story.db": "platform: legacy single-tenant domain store",
+    "wiki_trigger_attempts.db": "platform: trigger bookkeeping",
+    "ledger.json": "platform: legacy ledger",
+    "outbound.db": "platform: outbound connection ledger -- credential-adjacent, "
+                   "never gated (a per-universe copy is counted by universe_files)",
+}
+
+#: Names that live INSIDE a universe directory: every byte there is counted by
+#: `universe_files` (minus `_NOT_USER_BYTES`), so these need no store of their own.
+UNIVERSE_ENTRIES: frozenset[str] = frozenset({
+    ".conversation_memory.db", ".credentials", ".credentials.json",
+    ".engine_mcp_config.json", ".oauth-refresh", ".pause",
+    ".provider-assignment-admission.lock", ".runtime_status.json",
+    ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
+    ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
+    ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
+})
+
+#: Names the code creates that are NOT under the data root at all (a git repo,
+#: a repo-side log, legacy DB filenames). Anything joined onto a HOME directory
+#: is recognized by that shape in the completeness test, so no tool's home
+#: directory is named here.
+ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
+    ".git", ".agents", ".author_server.db", ".workflow.db",
+})
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +588,20 @@ CREATE TABLE IF NOT EXISTS pending (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_account ON pending(account_id);
 CREATE INDEX IF NOT EXISTS idx_pending_scope ON pending(scope_id, store);
+-- Who last wrote each commons wiki page (relative to the wiki root): pages
+-- carry no author, so the write records it, and its bytes are charged there.
+CREATE TABLE IF NOT EXISTS commons_writers (
+    rel_path    TEXT PRIMARY KEY,
+    writer      TEXT NOT NULL,
+    digest      TEXT NOT NULL,
+    recorded_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_commons_writers_writer ON commons_writers(writer);
+-- Bytes each writer appended to the commons wiki log (append-only).
+CREATE TABLE IF NOT EXISTS commons_log_bytes (
+    writer TEXT PRIMARY KEY,
+    bytes  INTEGER NOT NULL CHECK (bytes >= 0)
+);
 CREATE TABLE IF NOT EXISTS counter (
     id  INTEGER PRIMARY KEY CHECK (id = 1),
     seq INTEGER NOT NULL
@@ -406,6 +703,57 @@ def measure(base_path: str | Path, scope_id: str, store: str, *, now: float | No
             (scope_id, store, started - RESERVED_TTL_S),
         )
     return size
+
+
+def record_commons_log(base_path: str | Path, writer: str, nbytes: int) -> None:
+    """Charge ``nbytes`` appended to the commons wiki log to ``writer``. The log
+    is append-only, so the running total is its measure. Never raises."""
+    person = named_principal(writer or "")
+    if not person or nbytes <= 0:
+        return
+    try:
+        with _txn(base_path) as conn:
+            conn.execute(
+                "INSERT INTO commons_log_bytes (writer, bytes) VALUES (?, ?) "
+                "ON CONFLICT (writer) DO UPDATE SET bytes = bytes + excluded.bytes",
+                (person, int(nbytes)),
+            )
+    except Exception:  # noqa: BLE001 -- the log line is already written
+        _log.exception("could not record commons log bytes for a writer")
+
+
+def record_commons_writer(
+    base_path: str | Path, page: str | Path, writer: str, content: str | bytes,
+) -> None:
+    """Record ``writer`` as the account charged for commons page ``page``.
+
+    The last writer owns a page's bytes -- but only while the page still holds
+    ``content``, the exact text THIS writer wrote (its digest is stored), so an
+    interleaved write can never move the bill onto someone who did not write the
+    bytes. A page outside the wiki root, or a write with no named writer,
+    records nothing. Never raises: the page is already written, and a lost
+    record leaves its bytes the platform's -- logged loudly.
+    """
+    from tinyassets.storage import wiki_path
+
+    person = named_principal(writer or "")
+    if not person:
+        return
+    try:
+        rel = Path(page).resolve().relative_to(wiki_path().resolve()).as_posix()
+    except (ValueError, OSError):
+        return
+    try:
+        with _txn(base_path) as conn:
+            conn.execute(
+                "INSERT INTO commons_writers (rel_path, writer, digest, recorded_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT (rel_path) DO UPDATE SET "
+                "writer = excluded.writer, digest = excluded.digest, "
+                "recorded_at = excluded.recorded_at",
+                (rel, person, _content_digest(content), time.time()),
+            )
+    except Exception:  # noqa: BLE001 -- see docstring
+        _log.exception("could not record the writer of commons page %s", rel)
 
 
 def touch(base_path: str | Path, scope_id: str, store: str) -> None:
