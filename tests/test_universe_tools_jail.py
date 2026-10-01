@@ -809,7 +809,11 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
     listing = seen["listing"].split("[exit code")[0].split()
     assert "notes" in listing and not [name for name in listing if name.startswith(".")], listing
     assert "No such file" in seen["consents"], seen["consents"]
-    # /u itself is read-only: a root write is refused, not accepted into a
-    # tmpfs and silently lost when the call ends.
-    assert not seen["root_write"].startswith("wrote"), seen["root_write"]
-    assert "root-note.md" not in listing
+    # Since harness W2 /u is the agent's own workspace: a new top-level file is
+    # kept there durably, never in the universe root and never in a tmpfs that
+    # is lost when the call ends.
+    from tinyassets.universe_tools import WORKSPACE_DIR
+
+    assert seen["root_write"].startswith("wrote"), seen["root_write"]
+    assert (a / WORKSPACE_DIR / "root-note.md").read_text(encoding="utf-8") == "lost?\n"
+    assert not (a / "root-note.md").exists()

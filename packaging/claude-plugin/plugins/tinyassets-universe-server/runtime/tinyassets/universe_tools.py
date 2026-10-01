@@ -142,9 +142,9 @@ AGENT_HARNESS_DIRS: tuple[str, ...] = (
 )
 
 #: The agent's own workspace inside the universe: the tool jail's ``/u``.
-#: Hidden (a dot name), so it is never itself bound as a root entry, and it
-#: is platform-created without following a link.
-WORKSPACE_DIR = ".agent-workspace"
+#: Hidden (a dot name), so it is never itself bound as a root entry, every
+#: provider launch masks it, and it is platform-created without following a link.
+WORKSPACE_DIR = provider_jail.AGENT_WORKSPACE_DIR
 
 #: Kept for callers that name the platform-owned runtime directory.
 MASKED_DIRS: tuple[str, ...] = (PLATFORM_RUNTIME_DIR,)
@@ -286,16 +286,28 @@ def _system_binary(name: str) -> str:
 
 def _workspace(root: Path) -> Path:
     """The universe's ``.agent-workspace/``, created if absent, never a link."""
-    path = root / WORKSPACE_DIR
     try:
-        path.mkdir(mode=0o755)
-    except FileExistsError:
-        pass
-    if path.is_symlink() or not path.is_dir():
+        return provider_jail.ensure_agent_workspace(root)
+    except provider_jail.ProviderConfinementError:
         raise UniverseToolError(
             f"the agent workspace {WORKSPACE_DIR}/ is not a plain directory; nothing ran"
-        )
-    return path
+        ) from None
+
+
+def _promote_brain_files(root: Path, workspace: Path) -> None:
+    """A brain file the agent wrote while the root had none moves to the root.
+
+    Brain files are bound only when they exist at the root (an empty one would
+    read as "learned"), so writing an absent ``identity.md`` landed in the
+    workspace, where the daemon's grounding never looks (gpt-6-astra on #4194).
+    The root copy is agent-writable anyway, so moving a plain regular file
+    there grants nothing new.
+    """
+    for name in AGENT_BRAIN_FILES:
+        source, target = workspace / name, root / name
+        if os.path.lexists(target) or source.is_symlink() or not source.is_file():
+            continue
+        os.replace(source, target)
 
 
 def _clear_link_mountpoint(workspace: Path, name: str) -> None:
@@ -323,6 +335,7 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
         if not os.path.lexists(path):
             path.mkdir(mode=0o755)
     workspace = _workspace(root)
+    _promote_brain_files(root, workspace)
     mounts = [JailMount("bind", MOUNT_POINT, workspace)]
     with os.scandir(root) as entries:
         listing = sorted(entries, key=lambda entry: entry.name)
@@ -1098,11 +1111,12 @@ _HARNESS_HEAD = (
     "work does not belong there: it is workflows and automations in this "
     "command center, never a service hosted elsewhere -- handbook chapter "
     "write_graph.systems). Relative paths are under /u. Nothing outside "
-    "/u is mine or reachable. I can write my brain files (identity.md, "
-    "founder.md, origin.md, body.md, orgchart.md, projects.md, goals.md, "
-    "index.md, log.md, voice.md) and anything under skills/, prompts/, "
-    "extensions/, workflows/, bin/ and notes/; the rest of /u is the "
-    "platform's and read-only.\n"
+    "/u is mine or reachable. /u is my own workspace: I can create, change and "
+    "delete anything in it, including new folders at the top. My brain files "
+    "(identity.md, founder.md, origin.md, body.md, orgchart.md, projects.md, "
+    "goals.md, index.md, log.md, voice.md), my wiki/ and skills/, prompts/, "
+    "extensions/, workflows/, bin/ and notes/ are mine too; a few platform "
+    "files such as soul.md and config.yaml are read-only.\n"
     "A skill is `skills/<name>/SKILL.md`, starting with frontmatter that has a "
     "`name:` and a one-line `description:` of when to use it. Only the list "
     "below is in this prompt: when a request matches a skill, I `read` its "

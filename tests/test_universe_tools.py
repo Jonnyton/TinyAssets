@@ -167,8 +167,11 @@ def test_the_owners_credentials_and_authority_state_are_absent_from_the_jail(
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
 
+    workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
     for arg in argv:
-        assert "/." not in arg, f"a hidden root entry reached the jail argv: {arg}"
+        # The one hidden name allowed is the agent's own workspace, as /u's source.
+        assert "/." not in arg or arg == workspace, (
+            f"a hidden root entry reached the jail argv: {arg}")
     ro = {dest for _src, dest in _pairs(argv, "--ro-bind-try")}
     assert {"/u/soul.md", "/u/config.yaml"} <= ro
     rw = {dest for _src, dest in _pairs(argv, "--bind-try")}
