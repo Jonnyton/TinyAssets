@@ -228,7 +228,7 @@
        i preferred only the original one at the bottom" (2026-09-26). The banner is
        gone; what it knew (server-reported turn state) now drives that one line. */
     /* A line waiting behind an in-flight turn. It is the founder's own message
-       and stays their bubble; the mark says the command center has not seen it yet. */
+       and stays their bubble; the mark says the agent has not seen it yet. */
     .msg--queued{opacity:.72;border:1px dashed var(--accent-ink)}
     .msg-queued-note{display:block;margin-top:.35rem;font-size:.72rem;opacity:.9}
     /* connect */
@@ -312,7 +312,7 @@
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
             <div class="waking">Welcome, commander.</div>
-            <div class="waking-sub">Say hello to begin.</div>
+            <div class="waking-sub">Your command center is waking up. Say hello to begin.</div>
           </div>
         </div>
         <aside id="request-rail" class="rail" hidden>
@@ -328,7 +328,7 @@
           <div id="api-key-connection" class="add-key-card">
             <div class="provider-head"><strong id="api-key-title">Any API service</strong></div>
             <p id="api-key-description">Paste whatever the service gave you &mdash; a key, a page of values, all
-            four OAuth values, extra things it doesn't need. Your command center works out
+            four OAuth values, extra things it doesn't need. Your agent works out
             what the service is and what it may call. The key goes straight to the
             secure vault over TLS, <strong>never through chat</strong>.</p>
             <div id="paste-anything">
@@ -461,13 +461,13 @@
           <option value="">System voice</option>
         </select>
         <textarea id="composer-input" class="composer-input" rows="1"
-                  placeholder="Message your command center" autocomplete="off"></textarea>
+                  placeholder="Message your agent" autocomplete="off"></textarea>
         <button id="btn-send" class="btn btn--primary btn--send" type="submit">Send</button>
-        <!-- Stop: shown in Send's place while the command center is working (Escape does
+        <!-- Stop: shown in Send's place while the agent is working (Escape does
              the same on a keyboard). Messages typed meanwhile queue, and after a
              stop they go out together as the next turn. -->
         <button id="btn-stop" class="btn btn--stop" type="button" hidden
-                aria-label="Stop your command center's current turn"
+                aria-label="Stop your agent's current turn"
                 title="Stop this turn (Esc). Anything you queued is sent next.">Stop</button>
       </form>
       <div id="status-line" class="status-line" role="status" aria-live="polite"
@@ -483,7 +483,7 @@
     <dialog id="ui-dialog" class="ui-dialog" aria-labelledby="ui-title">
       <h2 id="ui-title">Switch command center</h2>
       <p>Switch between the default chat and any UI installed in this command center.
-      Ask your command center for any screen you like and it builds one. A custom UI
+      Ask your agent for any screen you like and it builds one. A custom UI
       runs isolated: it cannot read your sign-in, your other tabs, or anything
       outside this command center. It acts as you, in this command center only: it can read
       your command center's name, your agents, this conversation, your automations,
@@ -538,10 +538,10 @@
         <p id="voice-disclosure-bridge">Voice will use <strong id="voice-service-name">the voice connection</strong>
         that you bound to this command center. Your microphone audio goes directly to that service,
         and any use belongs to that resource's account. TinyAssets never substitutes a shared
-        credential. TinyAssets keeps the words you send and your command center's text reply in this
+        credential. TinyAssets keeps the words you send and your agent's text reply in this
         conversation, but does not store the raw audio.</p>
         <p id="voice-disclosure-browser" hidden>Your browser or device speech service will turn
-        your microphone audio into text and read your command center's reply aloud. Depending on your
+        your microphone audio into text and read your agent's reply aloud. Depending on your
         browser, speech recognition may send audio to the browser vendor and may not work offline.
         TinyAssets sends the recognized text through the same conversation as typed chat and keeps
         that text exchange, but TinyAssets does not receive or store the raw audio.</p>
@@ -574,7 +574,7 @@
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
         <h3>Request notifications</h3>
-        <p>Get notified when your command center is waiting on you. Turning this off stops notifications on all your devices.</p>
+        <p>Get notified when your agent is waiting on you. Turning this off stops notifications on all your devices.</p>
         <button id="btn-notifications" class="btn btn--ghost" type="button" disabled>Loading notifications...</button>
         <button id="btn-browser-notifications" class="btn btn--ghost" type="button">Enable in this browser</button>
         <div id="notification-status" class="notice" role="status"></div>
@@ -1132,7 +1132,7 @@
     // only somebody else's frames - equally unconfirmed either way.
     _noTerminal(empty){
       if(empty) throw transportError("stream_empty",
-        "the connection closed before your command center replied", false);
+        "the connection closed before your agent replied", false);
       throw transportError("stream_truncated",
         "the reply was cut off in transit", false);
     },
@@ -1151,7 +1151,7 @@
       const body=resp.body;
       const jsonBody=/application\/json/i.test(resp.headers.get("content-type")||"");
       const silence=()=>[this.SILENCE_MS, "stream_silent",
-        "your command center stopped sending anything back; it may still be working on this"];
+        "your agent stopped sending anything back; it may still be working on this"];
       if(!body || typeof body.getReader!=="function"){
         // No readable stream (an ordinary JSON body, or a transport shim).
         const text=await this._bound(Promise.resolve(resp.text()), ...silence());
@@ -1252,7 +1252,7 @@
         // (the shape that left a tab thinking with nothing to time it out)
         // without saying anything about how long the work may take.
         resp=await this._bound(Promise.resolve(fetch("/mcp",init)), this.HEADERS_MS,
-          "no_response", "your command center never answered this request");
+          "no_response", "your agent never answered this request");
       }catch(netErr){
         if(netErr && netErr.transport==="no_response"){
           if(ctl){ try{ ctl.abort(); }catch(_e){} }
@@ -1335,7 +1335,7 @@
         if(streaming) streamedDoc=await this._readTerminal(resp, wantId);
         else bodyText=await this._bound(Promise.resolve(resp.text()), this.SILENCE_MS,
           "stream_silent",
-          "your command center stopped sending anything back; it may still be working on this");
+          "your agent stopped sending anything back; it may still be working on this");
       }
       catch(_readErr){
         if(_readErr && _readErr.transport==="stream_silent"){
@@ -1435,7 +1435,7 @@
           resp, bodyText, method);
       }
       if(!resp.ok){
-        throw this._httpFailure("http_error", "your command center answered with an unexpected error",
+        throw this._httpFailure("http_error", "your agent answered with an unexpected error",
           resp, bodyText, method);
       }
 
@@ -1619,7 +1619,7 @@
         }
         const e=transportError(resp.ok ? "unreadable" : "http_error",
           (doc && typeof doc.error==="string" && doc.error) ||
-          ("your command center answered "+resp.status), false);
+          ("your agent answered "+resp.status), false);
         e.status=resp.status; e.doc=doc;
         throw e;
       }
@@ -1694,7 +1694,7 @@
     el.className=String(el.className||"")+" msg--queued";
     const note=document.createElement("span");
     note.className="msg-queued-note";
-    note.textContent="Queued — your command center sees this when its current turn ends.";
+    note.textContent="Queued — your agent sees this when its current turn ends.";
     el.appendChild(note); el.queuedNote=note;
     return el;
   }
@@ -1735,7 +1735,7 @@
     if(extra) el.appendChild(extra);
     if(queued) markQueued(el);
     // The thread is ordered the way the AGENT will see it, not the order the
-    // clicks happened in: anything the command center has not seen yet stays at the
+    // clicks happened in: anything the agent has not seen yet stays at the
     // bottom. The founder answered a rail card while an earlier turn was still
     // running; that "Approved:" bubble was appended at click time and the
     // earlier turn's reply — composed before the click arrived — landed BELOW
@@ -1751,7 +1751,7 @@
   function setVoiceStatusLine(t){ $("voice-status-line").textContent=t||""; }
   // ---- The working indicator -------------------------------------------
   //
-  // Whether the command center is working is a fact about the COMMAND CENTER, not about this
+  // Whether the agent is working is a fact about the COMMAND CENTER, not about this
   // page. It used to be a fact about this page: `sendTurn` set a 0.78rem grey
   // line and its `finally` cleared it, and nothing else ever set it. So a turn
   // started by answering a request, by a queued line, from another window or
@@ -1818,7 +1818,7 @@
   // whoever wrote it and is never touched here.
   let serverStatusLine=false;
   // ---- Stop (founder 2026-09-30: "just like it works in claude code") --------
-  // While the command center is working, Send gives its place to Stop; Escape does the
+  // While the agent is working, Send gives its place to Stop; Escape does the
   // same. The server stops the turn at its next safe point (a tool call already
   // running finishes and is recorded), the in-flight reply comes back marked
   // "Interrupted", and THEN everything queued behind it goes out as ONE message,
@@ -1863,7 +1863,7 @@
     const stillMine=()=>activeTurn===mine&&sameAccount();
     interruptRequested=true; flushAfterInterrupt=true; renderStop();
     const waiting=sendQueue.length;
-    setStatusLine("Stopping your command center's turn..."+(waiting
+    setStatusLine("Stopping your agent's turn..."+(waiting
       ? " then sending the "+waiting+" waiting message"+(waiting===1?"":"s")+" together."
       : ""));
     const abort=typeof AbortController==="function"?new AbortController():null;
@@ -1909,7 +1909,7 @@
       interruptRequested=false;
       if(!turnStartedAt) flushAfterInterrupt=false;
       setStatusLine(turnStartedAt
-        ? "Your command center's reply is already on its way; anything queued goes out together when it lands."
+        ? "Your agent's reply is already on its way; anything queued goes out together when it lands."
         : "Nothing you can stop is running: the work shown is not a conversation turn.");
     }else if(!turnStartedAt){
       // A turn another window started ends on the server's word; stop painting
@@ -1940,7 +1940,7 @@
     if(seatLineShown){
       // The seat came: the turn is running now, so the waiting line must not stay.
       seatLineShown=false;
-      setStatusLine(turnStartedAt?"Your command center is thinking...":"");
+      setStatusLine(turnStartedAt?"Your agent is thinking...":"");
     }
     // ONE indicator, and it is the original line under the composer. #4020 added a
     // second, louder banner alongside it and the founder had both at once: "there
@@ -1970,7 +1970,7 @@
     // at a turn they have no other evidence of.
     const detail=[elapsed,"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
-    setStatusLine("Your command center is thinking... " + detail);
+    setStatusLine("Your agent is thinking... " + detail);
   }
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The command center's actual
@@ -1978,11 +1978,11 @@
   const VOICE_LABELS={
     unavailable:"Voice transport is temporarily unavailable. Typed chat still works.",
     checking:"Checking this command center's voice capability...",
-    unpowered:"Voice needs the provider connection your command center will use.",
+    unpowered:"Voice needs the provider connection your agent will use.",
     incompatible:"Speech input is not supported in this browser or device.",
     idle:"Voice is off. Start it when you want to talk.", requesting_permission:"Voice is waiting for microphone permission...",
     connecting:"Connecting voice...", listening:"Listening...",
-    thinking:"Your command center is thinking...", speaking:"Your command center is speaking...",
+    thinking:"Your agent is thinking...", speaking:"Your agent is speaking...",
     reconnecting:"Reconnecting voice...", error:"Voice stopped. Typed chat still works."
   };
   const VOICE_TRANSITIONS={
@@ -2031,7 +2031,7 @@
   }
   function voiceFriendlyError(code){
     const messages={
-      provider_not_configured:"Voice needs the same provider connection your command center uses for conversation.",
+      provider_not_configured:"Voice needs the same provider connection your agent uses for conversation.",
       provider_voice_unsupported:"Your current provider can power typed conversation but does not expose compatible realtime Voice.",
       capability_not_declared:"Your current provider connection has not declared a compatible realtime Voice capability.",
       voice_capability_invalid:"Your current provider's Voice capability is invalid or no longer authorized.",
@@ -2345,7 +2345,7 @@
           this.browserPendingLastSegment=pendingKey;
           this.browserPendingUtterance=[this.browserPendingUtterance,pendingSegment]
             .filter(Boolean).join(" ");
-          this._render("Your command center is thinking — I’ll take that next.");return;
+          this._render("Your agent is thinking — I’ll take that next.");return;
         }
         if(this.browserSubmitting&&this.state!=="speaking")return;
         if(this.state==="speaking"){
@@ -2703,7 +2703,7 @@
       if(announce){
         const stopped=detail||"Voice is off.";
         this._render(replyPending
-          ?stopped+" Your command center is still thinking; its text reply will still appear here, but it will not be spoken."
+          ?stopped+" Your agent is still thinking; its text reply will still appear here, but it will not be spoken."
           :stopped+" No pending reply was canceled.");
       }else this._render("");
     },
@@ -2715,13 +2715,13 @@
       this._teardownTransport();this.state="error";this.stoppedWithPending=replyPending;
       const detail=voiceFriendlyError(error&&error.message);
       this._render(replyPending
-        ?detail+" Your command center is still thinking; its text reply will still appear here, but it will not be spoken."
+        ?detail+" Your agent is still thinking; its text reply will still appear here, but it will not be spoken."
         :detail);
     },
     conversationSettled(delivered,record){
       if(!this.stoppedWithPending)return;
       if($("btn-send").disabled&&turnStartedAt>0){
-        setVoiceStatusLine("Voice is off. Your command center is still thinking; its text reply will still appear here, but it will not be spoken.");
+        setVoiceStatusLine("Voice is off. Your agent is still thinking; its text reply will still appear here, but it will not be spoken.");
         return;
       }
       this.stoppedWithPending=false;
@@ -2845,7 +2845,7 @@
     // Older servers lack durable-failure metadata. Keep their local recovery
     // path; a rendered error is not evidence of either storage or no effects.
     if(payload&&payload.error)throw servedFailureError(payload);
-    appendMessage("system","Your command center returned an unexpected response.");
+    appendMessage("system","Your agent returned an unexpected response.");
   }
 
   // A turn is saved after an answer or admitted terminal failure. A reload
@@ -3581,7 +3581,7 @@
       // Say so where the founder is looking, instead of a status line that
       // claims the line is waiting when a refresh would lose it.
       queuePersisted=false;
-      setStatusLine("Your command center is thinking... " + sendQueue.length +
+      setStatusLine("Your agent is thinking... " + sendQueue.length +
         " waiting (could not be saved in this browser \u2014 do not refresh)");
     }
   }
@@ -3752,7 +3752,7 @@
     if(last && last.message===message && !opts.relay &&
       JSON.stringify(last.opts.modelChoice)===JSON.stringify(opts.modelChoice)){
       if(opts.keepComposer)
-        setStatusLine("Your command center is thinking... that message is already waiting to be sent.");
+        setStatusLine("Your agent is thinking... that message is already waiting to be sent.");
       return;
     }
     const input=$("composer-input");
@@ -3760,7 +3760,7 @@
       // ...and never over a draft the founder is typing: put it below it.
       const draft=input.value.trim();
       input.value=draft ? draft + "\n" + message : message; autoGrow(input);
-      setStatusLine("Your command center is thinking... too many messages waiting; send this one when it replies.");
+      setStatusLine("Your agent is thinking... too many messages waiting; send this one when it replies.");
       return;
     }
     // From the founder's side the message IS sent: it shows in the thread now
@@ -3768,7 +3768,7 @@
     // on the wire and is not drawn again when it goes out.
     const queuedAt=Date.now();
     // Drawn as QUEUED: the founder's own bubble, at the bottom of the thread,
-    // saying the command center has not seen it yet. The in-flight turn's reply is
+    // saying the agent has not seen it yet. The in-flight turn's reply is
     // still to come and lands ABOVE it (appendMessage), which is the order the
     // agent will actually read them in.
     const bubble=opts.echoed
@@ -3781,7 +3781,7 @@
     // the one that wrote it.
     sendQueue.push({message, display, owner:queueOwner, scope:queueScope, bubble,
       opts: Object.assign({}, opts, {echoed:true,sentAt:queuedAt}), ts: queuedAt});
-    setStatusLine("Your command center is thinking... " + sendQueue.length + " waiting");
+    setStatusLine("Your agent is thinking... " + sendQueue.length + " waiting");
     renderWorking();
     saveQueue();   // last: a failed save replaces the status line with why
   }
@@ -3807,7 +3807,7 @@
     if(!opts.keepComposer){ input.value=""; input.style.height="auto"; }
     const myTurn={}; activeTurn=myTurn;
     $("btn-send").disabled=true; turnStartedAt=Date.now();
-    setStatusLine("Your command center is thinking...");
+    setStatusLine("Your agent is thinking...");
     renderWorking();
     let delivered=false;
     // An outcome the transport could not confirm: the turn may be running right
@@ -3912,7 +3912,7 @@
     // see that it is no longer the one holding it.
     const myTurn={}; activeTurn=myTurn;
     $("btn-send").disabled=true; turnStartedAt=Date.now();
-    setStatusLine("Your command center is thinking...");
+    setStatusLine("Your agent is thinking...");
     renderWorking();
     let delivered=false, unconfirmed=false;
     const voiceSentAt=Date.now();
@@ -4883,7 +4883,7 @@
   const SERVICE_LABELS={claude:"Claude",codex:"OpenAI"};
   function serviceLabel(service){ return SERVICE_LABELS[service] || service; }
   function servingSentence(service, sv){
-    if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your command center thinks and works on it from the next turn.";
+    if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your agent thinks and works on it from the next turn.";
     const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
     return serviceLabel(service)+" credential saved, but your command center is not running on it yet"+why+".";
   }
@@ -6098,7 +6098,7 @@
         // and reported "i think i deposited it" twice while the connection did not
         // exist (2026-08-27). The model setup does this too.
         if(r&&r.error){ out.textContent="Couldn't add it: "+(r.detail||r.error); }
-        else{ out.textContent="Added — your command center can now use "+host+". Ask it to use this in a workflow or wire a channel with it.";
+        else{ out.textContent="Added — your agent can now use "+host+". Ask it to use this in a workflow or wire a channel with it.";
               $("http-destination").value=""; $("http-host").value=""; $("http-path").value=""; }
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } out.textContent="Couldn't add it: "+err.message; }
       finally{ btn.disabled=false; }
@@ -6971,7 +6971,7 @@
         }
         this.reset();
         if(doc.status==="connected"){
-          this.status("Signed in. Your command center can use this connection again.");
+          this.status("Signed in. Your agent can use this connection again.");
           // The card is derived from the stored rejection, which the deposit just
           // cleared, so refreshing the rail is what makes it disappear.
           if(typeof refreshRail==="function") refreshRail();
@@ -7080,7 +7080,7 @@
   function railFieldLink(raw, lab){
     const note = document.createElement("span");
     note.className = "rtab-suggest";
-    note.textContent = "Suggested by your command center:";
+    note.textContent = "Suggested by your agent:";
     lab.appendChild(note);
     let url = null;
     try { url = new URL(String(raw)); } catch (_e) { url = null; }
@@ -7172,7 +7172,7 @@
     note.className = "rtab-note"; note.id = "note_" + req.request_id;
 
     // Four verbs, the founder's (2026-09-02, after an approval that failed was
-    // read back as a decline): Accept and Deny are decisions the command center reads;
+    // read back as a decline): Accept and Deny are decisions the agent reads;
     // Clear closes the tab with nothing decided; Send reply talks back and
     // leaves the ask open.
     const row = document.createElement("div"); row.className = "rtab-row";
@@ -7282,7 +7282,7 @@
           note.textContent = "Setup is not confirmed: " + (r.detail || r.error)
             + ". This request stays open. You can retry it after checking the problem.";
         } else if(mode === "accept" && actionAsk){
-          note.textContent = "This ask can't be granted as written. Your command center has been told why.";
+          note.textContent = "This ask can't be granted as written. Your agent has been told why.";
           sendTurn(refusedGrantLine(req, r.detail || r.error), undefined,
             {relay:true, keepComposer:true, inputMethod:"app_action"});
         } else {
@@ -7300,7 +7300,7 @@
         // goes out when the turn ends - never dropped, never overlapping.
         const busy = $("btn-send").disabled;
         note.textContent = (r.receipt || (mode === "clear" ? "Cleared." : mode === "deny" ? "Denied." : "Sent."))
-          + (busy ? " Your command center will see it when its current turn ends." : "");
+          + (busy ? " Your agent will see it when its current turn ends." : "");
         if(!req.item_id || r.request_status !== "pending") railOpen = null;
         await refreshRail();
         sendTurn(answerLine(req, mode, payload), undefined,

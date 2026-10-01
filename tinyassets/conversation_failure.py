@@ -33,7 +33,7 @@ _STAGE_WORDS = {
     "tool": "Running one of your command center's tools",
     "platform": "Inside TinyAssets",
 }
-_NO_STAGE = "Your command center's turn stopped"
+_NO_STAGE = "Your agent's turn stopped"
 
 #: The class in words: one clause per class, composed -- never a whole notice.
 _CLASS_WORDS = {

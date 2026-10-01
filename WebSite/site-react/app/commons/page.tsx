@@ -59,7 +59,7 @@ export default function CommonsPage() {
             <div className="col">
               <span className="num">02</span>
               <h3>Copy it into your command center</h3>
-              <p>Tell your command center to remix it. The copy is yours: it runs on your subscription, with your connections, under your control.</p>
+              <p>Tell your agent to remix it. The copy is yours: it runs on your subscription, with your connections, under your control.</p>
             </div>
             <div className="col">
               <span className="num">03</span>

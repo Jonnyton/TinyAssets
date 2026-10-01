@@ -61,7 +61,7 @@ export default function StartPage() {
                 <h3>Say what real thing you want finished</h3>
                 <p>
                   Not a demo. A paper, an invoice pile, a repository, a contract, a feed you want
-                  watched. The command center asks for exactly what it is missing, with links, and builds
+                  watched. The agent asks for exactly what it is missing, with links, and builds
                   the rest while you talk.
                 </p>
               </div>
@@ -98,7 +98,7 @@ export default function StartPage() {
               <span className="eyebrow">Claude.ai or ChatGPT</span>
               <h3>Add the connector</h3>
               <p>
-                Your chatbot relays what you say to your command center, and the command center answers in its
+                Your chatbot relays what you say to your command center, and the agent answers in its
                 own voice. One URL:
               </p>
               <p>

@@ -1096,7 +1096,7 @@ let connectCalls=[]; function openConnectRequest(guidance){connectCalls.push({gu
     commitTimer:Voice.browserCommitTimer,aborted:draftRecognition.aborted,
     staleCommitSuppressed:turns.length===turnsBeforeDraftStop};
   Voice.capability={available:true,state:"ready",mode:"browser"};
-  conversationStatus="Your command center is thinking...";
+  conversationStatus="Your agent is thinking...";
   Voice.state="listening";Voice._render();
   out.statusIndependence={conversationStatus,voiceStatus:status,active:Voice.isActive()};
   els["btn-send"].disabled=true;turnStartedAt=123;
@@ -1476,14 +1476,14 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "staleCommitSuppressed": True,
     }
     assert out["statusIndependence"] == {
-        "conversationStatus": "Your command center is thinking...",
+        "conversationStatus": "Your agent is thinking...",
         "voiceStatus": "Listening...",
         "active": True,
     }
     assert out["stopDuringPending"] == {
-        "conversationStatus": "Your command center is thinking...",
+        "conversationStatus": "Your agent is thinking...",
         "voiceStatus": (
-            "Voice is off. Your command center is still thinking; its text reply will "
+            "Voice is off. Your agent is still thinking; its text reply will "
             "still appear here, but it will not be spoken."
         ),
         "state": "idle",
@@ -2467,7 +2467,7 @@ def test_enter_mashing_during_a_turn_queues_one_message(tmp_path):
                               "secondMessage": "and this", "repeatSecond": 25, "slowFirst": True})
     assert out["composerWhileQueued"] == ""
     assert out["queuedWhileInFlight"] == 1
-    assert out["statusWhileQueued"] == "Your command center is thinking... 1 waiting"
+    assert out["statusWhileQueued"] == "Your agent is thinking... 1 waiting"
     assert out["converseCalls"] == ["hi", "and this"]
     assert out["maxActive"] == 1
     # the queued line is drawn once, when queued, and not again when it goes out
@@ -2820,7 +2820,7 @@ def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
 
     page, _csp = render_app_html()
     assert "railFieldLink" in page, "the rail no longer renders a field's link"
-    assert "Suggested by your command center:" in page, \
+    assert "Suggested by your agent:" in page, \
         "an agent-chosen link is presented without saying who chose it"
     assert "rtab-link--agent" in page, "an agent's link is styled as platform chrome"
     assert "noopener noreferrer nofollow" in page

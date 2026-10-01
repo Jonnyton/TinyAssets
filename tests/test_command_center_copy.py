@@ -47,6 +47,7 @@ def _visible_app_text() -> str:
 def test_the_app_greets_a_new_commander_and_switches_command_centers():
     text = _visible_app_text()
     assert "Welcome, commander." in text
+    assert "Your command center is waking up." in text
     assert "Switch command center" in text
     assert "Switch UI" not in text
     assert _copy_words(text) == []
@@ -120,3 +121,10 @@ def test_the_old_identity_boilerplate_is_still_not_learned():
 
     assert _is_generic_identity_boilerplate("I am a personified universe.")
     assert _is_generic_identity_boilerplate("I am a personified command center.")
+
+
+def test_a_new_agent_opens_its_first_reply_by_welcoming_its_commander():
+    """Seeded operating instructions: the first reply opens "Welcome, commander."."""
+    from tinyassets.universe_intelligence import DEFAULT_OPERATING_INSTRUCTIONS
+
+    assert 'my reply opens with "Welcome, commander."' in DEFAULT_OPERATING_INSTRUCTIONS

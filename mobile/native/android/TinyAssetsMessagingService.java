@@ -224,7 +224,7 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
         // copy changes reach installed apps.
         NotificationChannel channel = new NotificationChannel(
             CHANNEL_ID, "Waiting on you", NotificationManager.IMPORTANCE_HIGH);
-        channel.setDescription("Requests your command center is waiting on you for");
+        channel.setDescription("Requests your agent is waiting on you for");
         manager.createNotificationChannel(channel);
     }
 }

@@ -1741,7 +1741,7 @@ def _sign_in_sentence(row: dict[str, Any]) -> str:
     return (f" Sign in at {host} to connect it - no key to copy.{asks} Tokens come "
             f"from {token_host}; sign-in talks only to {', '.join(offer_hosts(offer))}, "
             "found from the connection's own host. Its access renews itself, and "
-            "only your command center can use it." + paste)
+            "only your agent can use it." + paste)
 
 
 def _git_host_clause(value: Any) -> str:
@@ -1871,7 +1871,7 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
         "body": (
             "Add another model source. Your command center keeps running on the one it has."
             if connected else
-            "Your command center needs a model to think with. It only ever uses "
+            "Your agent needs a model to think with. It only ever uses "
             "connections you authorize."
         ),
         "fields": [],
@@ -2489,7 +2489,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "error": "not_answerable",
             "detail": (
                 "connect a model to clear this; it is not a question with an "
-                "answer, it is the thing your command center needs in order to think"
+                "answer, it is the thing your agent needs in order to think"
             ),
         }
     row = get_request(udir, request_id) if request_id else None

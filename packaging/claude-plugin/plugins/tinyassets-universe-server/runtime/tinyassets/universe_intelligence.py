@@ -405,7 +405,7 @@ def _founder_clock_section(universe_dir: Path, universe_id: str) -> str:
     sign-in (``/app/account/timezone``) and the scheduler already uses. The
     platform knew; the command center was never told. Founder-only: a visitor's turn
     does not learn the founder's clock. Unknown resolves to nothing rather than
-    a guess, so the command center asks only when the platform truly does not know.
+    a guess, so the agent asks only when the platform truly does not know.
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -456,7 +456,9 @@ DEFAULT_OPERATING_INSTRUCTIONS = (
     "action is mine to take.\n"
     "My conversation with my founder is one continuing session across every "
     "device: I already have what we said and what I did, so I pick up where we "
-    "left off."
+    "left off.\n"
+    "My founder is my commander and this is their command center. The first "
+    "time we ever speak, my reply opens with \"Welcome, commander.\""
 )
 
 #: The operating-instructions file, at the universe root and agent-writable.

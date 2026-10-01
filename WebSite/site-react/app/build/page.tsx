@@ -55,7 +55,7 @@ export default function BuildPage() {
                 <tr>
                   <td>Code node</td>
                   <td>
-                    A sandboxed function the command center writes itself when no node fits. It sees the
+                    A sandboxed function the agent writes itself when no node fits. It sees the
                     outputs of earlier nodes and nothing else.
                   </td>
                   <td className={styles.say}>&ldquo;Count the lines and put the number in the README.&rdquo;</td>
@@ -79,7 +79,7 @@ export default function BuildPage() {
                 <tr>
                   <td>Brain</td>
                   <td>
-                    What the command center knows about you and about its own work. It writes to it as it
+                    What the agent knows about you and about its own work. It writes to it as it
                     learns; you can read it and correct it.
                   </td>
                   <td className={styles.say}>Nothing. It happens as you talk.</td>

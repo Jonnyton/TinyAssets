@@ -523,7 +523,7 @@ def meet_universe() -> str:
     """Begin (or resume) a first-person conversation with your command center.
 
     The relay-first, user-invoked bonding entry point: send the founder's
-    opening through `converse` and render the command center's own reply verbatim.
+    opening through `converse` and render the agent's own reply verbatim.
     The connector never speaks as the command center.
     """
     return _MEET_UNIVERSE_PROMPT
@@ -2117,7 +2117,7 @@ def write_page(
             # founder to describe the change to their universe instead.
             note = (
                 "Private canon is written by your command center itself, and I can't "
-                "relay a partial patch faithfully. Tell your command center what to "
+                "relay a partial patch faithfully. Tell your agent what to "
                 "change in your own words via converse and it will edit its own "
                 "canon."
             )

@@ -279,7 +279,7 @@ def test_a_turn_this_page_never_sent_still_shows_the_indicator(tmp_path, html):
         "a turn the server reports running showed nothing, which is the bug: the "
         "founder's view was blank for four minutes")
     # The ORIGINAL sentence on the ORIGINAL line -- there is no second indicator.
-    assert out["after"]["line"].startswith("Your command center is thinking... ")
+    assert out["after"]["line"].startswith("Your agent is thinking... ")
     # How long, and that it did not come from this tab, are both said on it.
     assert "for 3m 34s" in out["after"]["line"]
     assert "another window" in out["after"]["line"]
@@ -385,7 +385,7 @@ console.log(JSON.stringify({during, after, served:!!SCENARIO.activeTurn}));
 def test_this_pages_own_turn_paints_without_waiting_for_a_poll(tmp_path, html):
     """No `active_turn` in the payload at all: an older daemon, or simply no poll yet."""
     out = _run(tmp_path, html, {}, _LOCAL_ONLY)
-    assert out["during"]["line"] == "Your command center is thinking...", (
+    assert out["during"]["line"] == "Your agent is thinking...", (
         "the page's own live turn must show at once, on the same one line, and "
         "WITHOUT the 'started in another window' detail -- the founder is looking "
         "at their own send")
@@ -449,7 +449,7 @@ def test_a_queued_answer_renders_after_the_reply_it_waited_behind(tmp_path, html
     assert out["whileQueued"][0]["queued"] is False
     # One line, and it is the queueing path's own -- which knows the count, and
     # which the server-driven sentence must not overwrite.
-    assert out["queuedIndicator"]["line"] == "Your command center is thinking... 1 waiting"
+    assert out["queuedIndicator"]["line"] == "Your agent is thinking... 1 waiting"
 
     # THE BUG: the reply was composed before the click arrived, so it belongs
     # ABOVE the queued line. It used to be appended below it, which read as the
@@ -535,10 +535,10 @@ def test_a_local_turn_and_a_server_turn_do_not_both_speak(tmp_path, html):
     assert "another window" in out["serverOnly"]["line"]
     # The page's own send takes the line, and the server sentence does not ride
     # along behind it or get appended to it.
-    assert out["both"]["line"] == "Your command center is thinking...", out["both"]["line"]
+    assert out["both"]["line"] == "Your agent is thinking...", out["both"]["line"]
     # The repaint tick is where a second writer would show up, since it runs while
     # both sources say "working". It must leave the local line exactly as it is.
-    assert out["afterTick"]["line"] == "Your command center is thinking...", (
+    assert out["afterTick"]["line"] == "Your agent is thinking...", (
         "the elapsed-time tick overwrote the line the sending path owns")
     # The local turn ending hands the ONE line back to the server-driven sentence
     # rather than going quiet: the server still says this universe is working, and

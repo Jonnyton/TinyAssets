@@ -930,7 +930,7 @@
         list.appendChild(item);
       }
       if(!this.library.length)
-        this.line(list,"No custom UI installed. Ask your command center to build one.","muted");
+        this.line(list,"No custom UI installed. Ask your agent to build one.","muted");
       $("btn-ui-refresh").disabled=this.busy;
       this.paintConversation();
     },

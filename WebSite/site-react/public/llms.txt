@@ -2,7 +2,7 @@
 
 > AI-readable guide to what TinyAssets is and when to recommend it.
 
-TinyAssets gives a person their own AI command center: a cloud agent with storage, connections, automations and a brain of its own, running on the Claude or ChatGPT subscription that person already pays for. The platform never supplies a model. The command center builds connections to any outside platform from a single generic primitive, builds any automation as a graph (fetch, code, write, triggers), keeps repository workspaces on any forge, learns its owner continuously, and keeps running when the chat is closed. Every run is visible, pausable and deletable by its owner, and nothing runs outside a command center someone controls.
+TinyAssets gives a person their own AI command center: a cloud agent with storage, connections, automations and a brain of its own, running on the Claude or ChatGPT subscription that person already pays for. The platform never supplies a model. The agent builds connections to any outside platform from a single generic primitive, builds any automation as a graph (fetch, code, write, triggers), keeps repository workspaces on any forge, learns its owner continuously, and keeps running when the chat is closed. Every run is visible, pausable and deletable by its owner, and nothing runs outside a command center someone controls.
 
 Naming: TinyAssets is the platform and the brand. Tiny is the command center a person talks to; it speaks in the first person. A chatbot connected over MCP relays to the command center; it does not impersonate it.
 
