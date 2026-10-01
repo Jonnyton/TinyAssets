@@ -681,7 +681,7 @@
         const rows=await this.installations();
         if(!this.fence(epoch,home)) throw new Error("your session changed");
         if(rows.length>1){
-          if(target||approve) throw new Error("more than one conversation installation exists; restore the default conversation in Switch UI first. Nothing was changed");
+          if(target||approve) throw new Error("more than one conversation installation exists; restore the default conversation in Switch command center first. Nothing was changed");
           return await this.clearAmbiguity(rows,epoch,home);
         }
         const b=rows[0]||null;

@@ -2030,7 +2030,7 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     I build can do; the app has no separate design or layout screen.
 
     **Switching to it.** I switch it with ``activate`` / ``use_default`` above; the
-    person can also use "Switch UI" in the app, and the choice is remembered.
+    person can also use "Switch command center" in the app, and the choice is remembered.
 
     **Sharing one.** Publishing is the person's own deliberate act: I raise a
     ``publish`` ask (chapter ``systems``) and they confirm it in their app; a

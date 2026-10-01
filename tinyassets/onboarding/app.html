@@ -277,7 +277,7 @@
     <section id="view-signin" class="view view--signin" hidden>
       <div class="card">
         <div class="brand"><span class="brand-dot"></span> TinyAssets</div>
-        <p class="lede">Your universe lives here. Sign in and meet the mind you're raising.</p>
+        <p class="lede">Your command center lives here. Sign in and meet the mind you're raising.</p>
         <button id="btn-signin" class="btn btn--primary">Sign in</button>
         <div id="signin-notice" class="notice" role="alert"></div>
         <!-- Google Play's User Data policy requires a privacy policy link "within
@@ -297,11 +297,11 @@
       <header class="chat-header">
         <div class="chat-title">
           <span id="dot" class="dot" title="checking..."></span>
-          <span id="universe-name" class="universe-name">Your universe</span>
+          <span id="universe-name" class="universe-name">Your command center</span>
         </div>
         <nav class="chat-actions">
           <span id="ui-mode" hidden></span>
-          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch UI</button>
+          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
           <button id="btn-account" class="btn btn--link">Account</button>
           <button id="btn-signout" class="btn btn--link">Sign out</button>
@@ -311,8 +311,8 @@
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
-            <div class="waking">Your universe is waking up.</div>
-            <div class="waking-sub">Say hello to begin.</div>
+            <div class="waking">Welcome, commander.</div>
+            <div class="waking-sub">Your command center is waking up. Say hello to begin.</div>
           </div>
         </div>
         <aside id="request-rail" class="rail" hidden>
@@ -566,7 +566,7 @@
       <div class="connect-body">
         <p>Your account is your sign-in plus the one universe bound to it. There is nothing
         else to sign into here — no separate website account, no profile.</p>
-        <h3>Your universe's connections</h3>
+        <h3>Your command center's connections</h3>
         <p>Disconnect removes this universe's access and its saved key in TinyAssets.
         Your history and designs stay. Your provider account is not deleted.
         Requests already sent may still finish.</p>
@@ -4832,7 +4832,7 @@
       if(epoch!==this.epoch) return;
       if(this.setup==="connected"){
         this.request=null;this.status("");this.paint();
-        appendMessage("system","Your universe is connected. Say hello.");
+        appendMessage("system","Your command center is connected. Say hello.");
         return;
       }
       this.status(answered
