@@ -407,6 +407,81 @@ def test_shard_floor_sits_below_one_shard_of_the_full_floor():
     assert 500 <= gate.MIN_RAN_FLOORS["shard"] < gate.MIN_RAN_FLOOR // 6
 
 
+# ---- PR-time affected selection --------------------------------------------
+
+
+def _selection_args(tmp_path, entries, shard=None, exclude=None):
+    sel = tmp_path / "affected.txt"
+    sel.write_text("".join(f"{e}\n" for e in entries), encoding="utf-8")
+    excl = None
+    if exclude is not None:
+        excl = tmp_path / "heavy.txt"
+        excl.write_text("# heavy\n" + "".join(f"{e}\n" for e in exclude), encoding="utf-8")
+    return argparse.Namespace(
+        affected=str(sel), shard=shard, exclude_from=str(excl) if excl else None
+    )
+
+
+def test_affected_all_means_the_whole_surface(tmp_path):
+    assert gate._read_selection(_selection_args(tmp_path, ["ALL"])) is None
+    with pytest.raises(SystemExit):
+        gate._read_selection(_selection_args(tmp_path, ["ALL", "tests/test_x.py"]))
+
+
+def test_affected_slices_cover_the_selection_exactly_once_minus_heavy(tmp_path):
+    real = sorted(
+        p.relative_to(gate.REPO_ROOT).as_posix()
+        for p in (gate.REPO_ROOT / "tests").glob("test_*.py")
+    )[:40]
+    heavy = real[:3]
+    slices = [
+        gate._read_selection(_selection_args(tmp_path, real, (i, 4), heavy))
+        for i in range(1, 5)
+    ]
+    flat = [f for s in slices for f in s]
+    assert sorted(flat) == sorted(set(real) - set(heavy))
+    assert len(flat) == len(set(flat))
+
+
+def test_affected_drops_a_missing_path_with_a_warning(tmp_path, capsys):
+    picked = gate._read_selection(_selection_args(tmp_path, ["tests/test_no_such_file.py"]))
+    assert picked == []
+    assert "missing path" in capsys.readouterr().out
+
+
+def test_affected_empty_slice_is_a_green_no_op_without_pytest(tmp_path):
+    sel = tmp_path / "affected.txt"
+    sel.write_text("", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--affected", str(sel), "--profile", "affected",
+         "--shard", "1/4", "--junit", str(tmp_path / "j.xml")],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "nothing to run" in proc.stdout
+    assert "+ " not in proc.stdout, "pytest must not start for an empty slice"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--affected", "x.txt"],
+        ["--profile", "affected"],
+        ["--affected", "x.txt", "--profile", "affected", "--include-from", "y.txt"],
+    ],
+)
+def test_affected_flags_are_refused_out_of_pairing(argv):
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT), *argv], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode != 0
+    assert "affected" in proc.stderr
+
+
+def test_affected_floor_is_zero_and_only_reachable_through_affected():
+    assert gate.MIN_RAN_FLOORS["affected"] == 0
+
+
 # ---- sharding: packing by measured duration ---------------------------------
 
 
