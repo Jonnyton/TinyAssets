@@ -920,7 +920,9 @@ def write_graph(
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update/bind_serving_provider/set_serving.
             With target=app_ui, save: payload_json sets ui_library and/or
-            ui_selection, expected_revision is the revision read (0 when none).
+            ui_selection, expected_revision is the revision read (0 when none);
+            or one UI, no revision: activate/use_default/add_ui/replace_ui/
+            edit_ui/remove_ui.
             With target=automation, create/list/get/pause/resume/delete — one
             recurring run of one of YOUR workflows, owned by you, in your own
             universe. It runs on whichever provider that universe is serving on
@@ -1497,9 +1499,14 @@ def write_graph(
             )
         )
     if normalized == "app_ui":
-        if (operation or "save").strip().lower() != "save":
-            return json.dumps({"error": "unknown_app_ui_operation", "target": "app_ui",
-                               "operation": operation, "allowed_operations": ["save"]})
+        app_ui_op = (operation or "save").strip().lower()
+        if app_ui_op != "save":
+            # One UI or only the choice, no revision (custom_agents.change_app_ui_entry).
+            from tinyassets.api.app_ui import change_app_ui
+
+            return json.dumps(change_app_ui(
+                universe_id=graph_id, operation=app_ui_op, payload=payload_json,
+            ))
         from tinyassets.api.app_ui import write_app_ui
 
         return json.dumps(write_app_ui(

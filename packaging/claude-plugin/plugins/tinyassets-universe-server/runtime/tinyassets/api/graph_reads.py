@@ -302,7 +302,12 @@ def read_graph(
         # The caller's own UI library + choice; keyed by the authenticated caller.
         from tinyassets.api.app_ui import read_app_ui
 
-        return json.dumps(read_app_ui(universe_id=graph_id))
+        # query="index" is the row without UI bodies; query=<ui_id> one UI,
+        # field_name one chunk of it. No query is the whole row (the app's read).
+        return json.dumps(read_app_ui(
+            universe_id=graph_id, ui_id=query, field_name=field_name,
+            output_offset=output_offset, output_max_chars=output_max_chars,
+        ))
     if normalized == "compute":
         # The read sibling of write_graph target=connection operation=connect_compute:
         # list the compute providers registered for this universe (candidates). Owner-
