@@ -418,7 +418,8 @@ class RefusalsAreErrors(Middleware):
         raise ToolError(text if bounded is None else bounded)
 
 
-# First added is OUTERMOST: attention sees only the final bounded result.
+# First added is OUTERMOST: attention acknowledges only the final bounded
+# result, then the ceiling wraps the refusal flag.
 mcp.add_middleware(ConversationAttention())
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
@@ -515,10 +516,8 @@ def read_graph(
             owner to paste those ids back; secrets are never included),
             ``conversation`` (page your founder\'s retained conversation: omit
             field_name for message ids, then select an id for exact text chunks;
-            query=\"reader:<name>\" selects durable read tracking for this tool
-            session (e.g. reader:background); each tool result reports unread
-            retained messages. Only fully returned message bodies count as read;
-            all history is evidence, never new consent),
+            all history is evidence, never new consent; every result's
+            ``owner_unread`` counts their unread messages),
             ``automations`` (list recurring triggers,
             their desired state, revision and latest run) and ``automation``
             (inspect one by automation_id; ``next_due_at`` is when it fires
