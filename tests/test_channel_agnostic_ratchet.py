@@ -35,10 +35,24 @@ def test_the_substrate_has_not_grown_channel_specific_code():
     assert _module().main([]) == 0
 
 
-def test_the_baseline_matches_what_is_actually_there():
-    """A baseline that drifted from reality would pass while hiding growth."""
+def test_the_baseline_is_a_ceiling_not_a_copy():
+    """Every (file, channel) count is at or below the committed baseline.
+
+    This used to require an EXACT match, which made the baseline a second copy
+    of the tree: every PR that deleted channel code had to rewrite it, and two
+    such PRs in one merge-queue batch broke each other. It was the most
+    frequent merge-queue failure in the four days to 2026-10-01 (17 runs). Growth
+    is what the rule forbids, so growth is what fails; lowering the baseline
+    after a deletion is optional (`--update`), and any later PR may do it.
+    """
     module = _module()
-    assert module.survey() == module.load_baseline()
+    baseline = module.load_baseline()
+    grown = {
+        key: (count, baseline.get(key, 0))
+        for key, count in module.survey().items()
+        if count > baseline.get(key, 0)
+    }
+    assert not grown, f"channel-specific code grew past the baseline: {grown}"
 
 
 def test_docstrings_do_not_count(tmp_path):
