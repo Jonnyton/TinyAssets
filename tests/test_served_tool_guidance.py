@@ -483,3 +483,12 @@ def test_the_public_connector_description_is_untouched_and_uncoupled():
     # The public manual is still whole: it never carried the engine's chapters,
     # and the relocation did not shrink it (measured 16,623 chars on 2026-09-25).
     assert len(public) > 16_000
+
+
+def test_the_agent_is_told_a_request_is_the_notification():
+    """Live 2026-10-01: asked to send the morning note as a notification, the
+    universe searched for a notification sender, found none, and raised a request
+    for one. Requests ARE the notification channel; that fact must stay resident."""
+    description = _description("write_graph")
+    assert "An ask IS the notification" in description
+    assert "no other notification sender" in description
