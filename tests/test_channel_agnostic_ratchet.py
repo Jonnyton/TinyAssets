@@ -7,7 +7,10 @@ want in what ever way they want to"*
 
 A rule nobody measures is a rule nobody keeps. `scripts/check_channel_agnostic.py`
 counts channel names reaching the runtime in the user substrate and compares
-against a committed baseline, so the number can only go down.
+against a committed baseline, so no (file, channel) count can grow past it.
+Lowering the baseline after a deletion is optional: shrink-then-regrow up to
+the recorded ceiling is accepted (lead decision 2026-10-01) so that two PRs
+that each delete channel code never collide in the merge queue.
 """
 
 from __future__ import annotations

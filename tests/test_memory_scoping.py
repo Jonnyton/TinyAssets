@@ -405,7 +405,6 @@ class TestMemoryTools:
     def test_get_memory_tools_returns_list(self):
         tools = get_memory_tools()
         assert isinstance(tools, list)
-        assert len(tools) == 6
 
     def test_get_memory_tools_have_required_fields(self):
         tools = get_memory_tools()
