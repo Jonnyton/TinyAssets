@@ -282,6 +282,13 @@ RUN mkdir -p /data && \
     chmod +x /app/docker-entrypoint.sh && \
     chown -R tinyassets:tinyassets /data /app
 
+# The /data state layout this image serves (change universe-runtime-state).
+# deploy/deploy_fail_safe.sh refuses to converge an image whose layout is
+# below /data/.state-layout, so an automatic rollback can never start an
+# image older than the data. Raise it with every irreversible migration and
+# keep it equal to tinyassets.universe_paths.STATE_LAYOUT.
+LABEL io.tinyassets.state-layout="2"
+
 USER tinyassets
 
 EXPOSE 8001

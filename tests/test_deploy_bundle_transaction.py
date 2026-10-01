@@ -343,6 +343,14 @@ def main(argv):
                 return 1
             print(images[target])
             return 0
+        if "io.tinyassets.state-layout" in fmt:
+            for ref, ident in images.items():
+                if target in (ref, ident):
+                    # Real docker prints "<no value>" for an absent label.
+                    print((state.get("image_layouts") or {}).get(ref, "<no value>"))
+                    return 0
+            sys.stderr.write("Error: No such image: %s\n" % target)
+            return 1
         if "RepoDigests" in fmt:
             for ref, ident in images.items():
                 if target in (ref, ident):
@@ -351,6 +359,14 @@ def main(argv):
             sys.stderr.write("Error: No such image: %s\n" % target)
             return 1
         return 1
+
+    if argv[:2] == ["volume", "inspect"]:
+        mount = state.get("data_mountpoint")
+        if not mount:
+            sys.stderr.write("Error: no such volume\n")
+            return 1
+        print(mount)
+        return 0
 
     if argv[:1] == ["inspect"]:
         fmt = argv[argv.index("-f") + 1] if "-f" in argv else ""
@@ -1860,3 +1876,57 @@ def test_logs_that_exits_after_being_seen_running_fails_the_deploy(box: Box):
     assert completed.returncode != 0, completed.stdout
     assert _result(completed) != "deployed", "a dead log sidecar is not a green deploy"
     assert box.live() == before
+
+
+# --- the data's state layout (change universe-runtime-state) ---------------
+
+
+def _data_at_layout(box: Box, layout: int) -> None:
+    data = box.root / "volume-data"
+    data.mkdir(exist_ok=True)
+    (data / ".state-layout").write_text(f"{layout}\n", encoding="utf-8")
+    box.set_docker_state(data_mountpoint=str(data))
+
+
+def test_an_image_older_than_the_data_layout_is_never_converged(box: Box):
+    """A forward deploy of an image that predates the data's layout would find
+    its stores moved and create empty ones in their place."""
+    _data_at_layout(box, 2)
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "refused_state_layout"
+    assert box.env_image() == OLD_IMAGE
+    assert "compose" not in box.docker_calls_text()
+
+
+def test_an_image_at_the_data_layout_deploys(box: Box):
+    _data_at_layout(box, 2)
+    box.set_docker_state(image_layouts={NEW_IMAGE: "2"})
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert _result(completed) == "deployed"
+
+
+def test_a_rollback_onto_an_older_layout_is_refused(box: Box):
+    """The candidate raised the data's layout before failing health: the
+    previous image can no longer read the data, so the automatic rollback must
+    stop and ask for an operator instead of starting it."""
+    _data_at_layout(box, 2)
+    box.set_docker_state(image_layouts={NEW_IMAGE: "2"}, unhealthy_images=[NEW_IMAGE])
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "rollback_refused_state_layout"
+    assert box.env_image() == NEW_IMAGE  # never switched back to the old image
+
+
+def test_the_dockerfile_label_matches_the_code_layout():
+    from tinyassets.universe_paths import STATE_LAYOUT
+
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    assert f'LABEL io.tinyassets.state-layout="{STATE_LAYOUT}"' in dockerfile

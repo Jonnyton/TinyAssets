@@ -84,6 +84,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
+from tinyassets import universe_paths
 from tinyassets.providers import provider_jail
 from tinyassets.providers.provider_jail import (
     PLATFORM_RUNTIME_DIR,
@@ -272,15 +273,65 @@ def _system_binary(name: str) -> str:
     return found
 
 
+def _platform_masks(root: Path) -> list[Path]:
+    """What a migrated universe's agent must not see or touch: ``.runtime/``
+    (platform state and the provider runtime), the platform's checkout
+    directories, and every tombstone. Each is made to exist before the
+    launch, so its mask always has a mountpoint; a link where one should be
+    refuses the launch rather than being mounted over (and followed)."""
+    masks: list[Path] = []
+    for name in (PLATFORM_RUNTIME_DIR, *universe_paths.ROOT_PLATFORM_DIRS):
+        path = root / name
+        if not os.path.lexists(path):
+            path.mkdir(mode=0o755)
+        masks.append(path)
+    masks.extend(universe_paths.tombstones(root))
+    for path in masks:
+        if path.is_symlink() or not path.is_dir():
+            raise UniverseToolError(
+                f"the universe's {path.relative_to(root).as_posix()} is not a plain "
+                "directory, so it cannot be hidden from the tools"
+            )
+    return masks
+
+
+def _writable_universe_view(root: Path) -> UniverseView:
+    """A migrated universe (change ``universe-runtime-state``): ``/u`` is the
+    whole root, read-write. Nothing the daemon trusts is stored there any more
+    -- platform state is under ``.runtime/state`` -- so whatever the agent
+    creates at its root is its own file, read by the daemon only through
+    ``universe_files``. The platform's directories are masked by empty tmpfs.
+    """
+    for name in AGENT_HARNESS_DIRS:
+        path = root / name
+        if not os.path.lexists(path):
+            path.mkdir(mode=0o755)
+    mounts = [JailMount("bind", MOUNT_POINT, root)]
+    for path in _platform_masks(root):
+        mounts.append(
+            JailMount("tmpfs", f"{MOUNT_POINT}/{path.relative_to(root).as_posix()}")
+        )
+    return UniverseView(
+        universe_dir=root,
+        mounts=tuple(mounts),
+        chdir=MOUNT_POINT,
+        setenv=_JAIL_ENV,
+    )
+
+
 def _universe_view(root: Path) -> UniverseView:
     """The tool jail's view of ``root``: a read-only ``/u`` holding the visible
     entries, agent-owned paths read-write, hidden entries absent.
+
+    A migrated universe gets its whole root instead (:func:`_writable_universe_view`).
 
     Order is fixed: the empty tmpfs, one bind per entry, then the remount that
     makes ``/u`` itself read-only (the binds under it keep their own flags).
     Every bind is ``-try``: the daemon owns this folder concurrently, and an
     entry it removes after the scan is simply not in this call's view.
     """
+    if universe_paths.is_migrated(root):
+        return _writable_universe_view(root)
     for name in AGENT_HARNESS_DIRS:
         path = root / name
         if not os.path.lexists(path):

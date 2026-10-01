@@ -69,6 +69,7 @@ __all__ = [
     "ensure_migrated",
     "is_migrated",
     "is_tombstone",
+    "migrate_owned_universes",
     "migrated_platform_path",
     "migration_plan",
     "platform_name_for",
@@ -563,3 +564,33 @@ def migrated_platform_path(universe_dir: str | Path, name: str) -> Path | None:
         return None
     _state_dir(root, create=False)
     return root / STATE_DIR / name
+
+
+def migrate_owned_universes(data_root: str | Path) -> dict[str, str]:
+    """Daemon start: migrate every owned universe before serving, then record
+    the data layout.
+
+    Owned is THE definition of a universe (``daemon_server.owned_universe_ids``)
+    so a backup, the scratch pool or an archive is never touched. A universe
+    that refuses is reported, not fatal: it fails loudly on its own resolves,
+    and the others still serve. Returns ``{universe_id: outcome}``.
+    """
+    from tinyassets.daemon_server import owned_universe_ids
+
+    root = Path(data_root)
+    # FIRST, before any universe moves: a boot that dies halfway has already
+    # made the data unreadable to an older image, and the rollback paths read
+    # this file to refuse one.
+    record_layout(root)
+    outcomes: dict[str, str] = {}
+    for universe_id in sorted(owned_universe_ids(root)):
+        universe = root / universe_id
+        if not universe.is_dir():
+            continue
+        try:
+            ensure_migrated(universe)
+            outcomes[universe_id] = "migrated"
+        except PlatformPathError as exc:
+            logger.error("universe-runtime-state: %s did not migrate: %s", universe_id, exc)
+            outcomes[universe_id] = f"refused: {exc}"
+    return outcomes

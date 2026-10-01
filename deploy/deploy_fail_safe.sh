@@ -90,7 +90,11 @@
 #     and roll forward/back on its result (review #10).
 #   - A candidate that runs an irreversible /data migration before failing can
 #     make an image-only rollback insufficient (review #11). Startup migrations
-#     must stay additive/backward-compatible.
+#     must stay additive/backward-compatible -- or raise the data's state
+#     layout, which this script then enforces: it refuses to converge ANY image
+#     (forward or rollback) whose `io.tinyassets.state-layout` label is below
+#     /data/.state-layout. The first such migration is universe-runtime-state
+#     (layout 2: platform state moves under each universe's .runtime/state).
 #
 # Usage:
 #   sudo deploy_fail_safe.sh <new_image_ref>
@@ -280,6 +284,33 @@ tunnel_up() {
 }
 
 set_image() { printf '%s' "$1" | bash "$ENV_HELPER" set TINYASSETS_IMAGE; }
+
+# The data's state layout (written by the daemon BEFORE its first irreversible
+# migration) against the layout an image can serve (its label; an image with
+# no label predates layouts and serves 1). An image below the data must never
+# start: it would find its stores gone and create empty ones in their place.
+data_state_layout() {
+  local mount value
+  mount="$(docker volume inspect -f '{{.Mountpoint}}' tinyassets-data 2>/dev/null || true)"
+  if [ -z "$mount" ] || [ ! -f "${mount}/.state-layout" ]; then echo 0; return; fi
+  value="$(tr -dc '0-9' < "${mount}/.state-layout")"
+  echo "${value:-0}"
+}
+image_state_layout() {
+  local value
+  value="$(docker image inspect -f '{{ index .Config.Labels "io.tinyassets.state-layout" }}' "$1" 2>/dev/null || true)"
+  case "$value" in ''|*[!0-9]*) echo 1 ;; *) echo "$value" ;; esac
+}
+refuse_older_state_layout() {  # $1 = image about to be converged
+  local data image
+  data="$(data_state_layout)"
+  image="$(image_state_layout "$1")"
+  if [ "$image" -lt "$data" ]; then
+    err "image $1 serves state layout ${image} but /data is at layout ${data}; an older image would create empty stores over migrated data — refusing (manual intervention required)"
+    return 1
+  fi
+  return 0
+}
 
 # The container must actually be RUNNING the requested image. A healthy daemon
 # is not proof: when the systemd unit could not start (2026-08-21), the OLD
@@ -1215,6 +1246,12 @@ if ! docker pull "$NEW_IMAGE" >/dev/null 2>&1; then
   err "failed to pull ${NEW_IMAGE}; prod untouched"; exit 1
 fi
 
+# --- 2b. never converge an image older than the data's state layout -------
+if ! refuse_older_state_layout "$NEW_IMAGE"; then
+  echo "deploy_result=refused_state_layout"
+  exit 3
+fi
+
 # --- 3. prove the new image LOADS before touching prod --------------------
 if ! timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none \
       --entrypoint python "$NEW_IMAGE" -c 'import tinyassets.universe_server' >/dev/null 2>&1; then
@@ -1358,6 +1395,12 @@ err "new image did not become acceptable; rolling back"
 if [ -z "$PREV_IMAGE" ]; then
   err "no previous image recorded; cannot roll back automatically"
   echo "deploy_result=failed_no_rollback_target"
+  exit 3
+fi
+# The new image may have raised the data's layout before it failed health; the
+# previous image must not be started on data it can no longer read.
+if ! refuse_older_state_layout "$PREV_IMAGE"; then
+  echo "deploy_result=rollback_refused_state_layout"
   exit 3
 fi
 # Config first, then the image: converging the previous image against the NEW

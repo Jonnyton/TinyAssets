@@ -364,3 +364,45 @@ def test_reset_sets_are_the_registry_not_a_hand_list():
             assert name in scoped_reset._HOME_AUDIT_PREFIXES
         if entry.reset == up.RESET_OPERATIONAL:
             assert name in scoped_reset._HOME_OPERATIONAL_NAMES
+
+
+def test_a_migrated_universe_gets_its_whole_root_with_platform_dirs_masked(tmp_path):
+    from tinyassets import universe_tools as ut
+
+    root = _universe(tmp_path, "u-tools")
+    (root / "story.db").write_text("legacy")
+    up.ensure_migrated(root)
+
+    view = ut._universe_view(root)
+
+    ops = [(m.op, m.dest) for m in view.mounts]
+    assert ops[0] == ("bind", ut.MOUNT_POINT)
+    assert ("tmpfs", f"{ut.MOUNT_POINT}/.runtime") in ops
+    assert ("tmpfs", f"{ut.MOUNT_POINT}/workspaces") in ops
+    assert ("tmpfs", f"{ut.MOUNT_POINT}/.workspace-staging") in ops
+    assert ("tmpfs", f"{ut.MOUNT_POINT}/story.db") in ops  # its tombstone
+    assert not any(op == "remount-ro" for op, _ in ops)
+
+
+def test_an_unmigrated_universe_keeps_the_read_only_root(tmp_path):
+    from tinyassets import universe_tools as ut
+
+    root = _universe(tmp_path, "u-old")
+    view = ut._universe_view(root)
+    assert any(m.op == "remount-ro" for m in view.mounts)
+    assert not up.is_migrated(root)
+
+
+def test_every_provider_view_masks_platform_state_and_tombstones(tmp_path):
+    from tinyassets.providers import provider_jail
+
+    root = _universe(tmp_path, "u-provider")
+    (root / "ledger.json").write_text("[]")
+    up.ensure_migrated(root)
+
+    view = provider_jail.default_view(root)
+
+    resolved = root.resolve()
+    tmpfs = {m.dest for m in view.mounts if m.op == "tmpfs"}
+    assert str(resolved / ".runtime" / "state") in tmpfs
+    assert str(resolved / "ledger.json") in tmpfs
