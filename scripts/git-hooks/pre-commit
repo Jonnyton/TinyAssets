@@ -157,7 +157,7 @@ fi
 
 STAGED_TINYASSETS_PY=$(
   git diff --cached --name-only --diff-filter=ACMRD \
-    | grep -E '^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/.*\.py$' \
+    | grep -E '^tinyassets/.*\.py$' \
     || true
 )
 
@@ -208,8 +208,8 @@ fi
 
 STAGED_WF_PY=$(
   git diff --cached --name-only --diff-filter=ACMRD \
-    | grep -E '^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/.*\.py$' \
-    | grep -v -E '(tinyassets|runtime/tinyassets)/storage/__init__\.py$' \
+    | grep -E '^tinyassets/.*\.py$' \
+    | grep -v -E '^tinyassets/storage/__init__\.py$' \
     || true
 )
 

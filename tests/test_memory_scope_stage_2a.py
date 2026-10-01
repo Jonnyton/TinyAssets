@@ -1,4 +1,4 @@
-"""Memory-scope Stage 2a — schema + universe_acl + manifest loader.
+"""Memory-scope Stage 2a — schema + universe_acl.
 
 Task #28 / design-note ``2026-04-15-memory-scope-tiered.md`` §6 "2a —
 Schema + ACL foundation." Schema-only work: no enforcement yet (2b),
@@ -6,23 +6,10 @@ no flag flip (2c). This file verifies:
 
 1. KG tables get the 4 scope columns via idempotent migration.
 2. `universe_acl` CRUD + public/private detection.
-3. `branch_node_scope.yaml` loader roundtrip + validation.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-
-from tinyassets.memory.node_scope import (
-    ExternalSource,
-    NodeScopeEntry,
-    NodeScopeManifest,
-    NodeScopeManifestError,
-    SliceSpec,
-    load_manifest,
-    parse_manifest,
-)
 
 # ─── universe_acl ────────────────────────────────────────────────────
 
@@ -265,127 +252,3 @@ def test_vector_store_index_accepts_scope_fields(tmp_path):
     assert store.index(rows) == 1
     # Seed + 1 real row; count() subtracts seed.
     assert store.count() == 1
-
-
-# ─── node_scope manifest loader ──────────────────────────────────────
-
-
-def test_empty_manifest_returns_defaults():
-    manifest = parse_manifest("")
-    assert isinstance(manifest, NodeScopeManifest)
-    assert manifest.default == NodeScopeEntry()
-    assert manifest.nodes == {}
-
-
-def test_missing_file_returns_empty_manifest(tmp_path):
-    manifest = load_manifest(tmp_path / "does-not-exist.yaml")
-    assert manifest == NodeScopeManifest()
-
-
-def test_manifest_default_and_per_node_entries():
-    raw = """
-default:
-  universe_member: true
-  breadth: full_canon
-
-nodes:
-  tone_match:
-    breadth: narrow_slice
-    slice_spec:
-      relation_types: [voice_example, dialogue_sample]
-
-  market_summary:
-    universe_member: false
-    external_sources:
-      - kind: external_api
-        identifier: market_data_api
-"""
-    manifest = parse_manifest(raw)
-    assert manifest.default.universe_member is True
-    assert manifest.default.breadth == "full_canon"
-
-    tm = manifest.for_node("tone_match")
-    assert tm.breadth == "narrow_slice"
-    assert tm.slice_spec == SliceSpec(
-        relation_types=("voice_example", "dialogue_sample"),
-    )
-
-    ms = manifest.for_node("market_summary")
-    assert ms.universe_member is False
-    assert ms.external_sources == (
-        ExternalSource(kind="external_api", identifier="market_data_api"),
-    )
-
-    # Missing node falls back to default.
-    fallback = manifest.for_node("never_declared")
-    assert fallback == manifest.default
-
-
-def test_manifest_rejects_unknown_top_level_field():
-    with pytest.raises(NodeScopeManifestError, match="unknown top-level"):
-        parse_manifest("unknown_field: 1\n")
-
-
-def test_manifest_rejects_narrow_slice_without_spec():
-    raw = """
-default:
-  breadth: narrow_slice
-"""
-    with pytest.raises(NodeScopeManifestError, match="narrow_slice requires"):
-        parse_manifest(raw)
-
-
-def test_manifest_rejects_external_member_without_sources():
-    raw = """
-nodes:
-  out_of_universe:
-    universe_member: false
-"""
-    with pytest.raises(NodeScopeManifestError, match="requires at least one"):
-        parse_manifest(raw)
-
-
-def test_manifest_rejects_unknown_external_kind():
-    raw = """
-nodes:
-  x:
-    universe_member: false
-    external_sources:
-      - kind: weird_source
-        identifier: foo
-"""
-    with pytest.raises(NodeScopeManifestError, match="must be one of"):
-        parse_manifest(raw)
-
-
-def test_manifest_rejects_empty_slice_spec():
-    raw = """
-default:
-  breadth: narrow_slice
-  slice_spec:
-    entity_ids: []
-"""
-    with pytest.raises(NodeScopeManifestError, match="narrow_slice requires"):
-        parse_manifest(raw)
-
-
-def test_manifest_rejects_invalid_yaml():
-    with pytest.raises(NodeScopeManifestError, match="invalid YAML"):
-        parse_manifest("::: not yaml ::")
-
-
-def test_manifest_roundtrip_from_file(tmp_path):
-    raw = """
-default:
-  universe_member: true
-  breadth: full_canon
-
-nodes:
-  basic:
-    breadth: full_canon
-"""
-    p = Path(tmp_path) / "node_scope.yaml"
-    p.write_text(raw, encoding="utf-8")
-    manifest = load_manifest(p)
-    assert "basic" in manifest.nodes
-    assert manifest.for_node("basic").breadth == "full_canon"

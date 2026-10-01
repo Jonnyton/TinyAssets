@@ -97,9 +97,10 @@ PLATFORM_OWN = {
 #: that module. Everything else -- the same name in a function, in a class, in
 #: another file, or assigned twice -- counts.
 #:
-#: The survey walks ``tinyassets/`` only, so the packaging mirror is not surveyed
-#: today; it is listed anyway so widening the survey cannot silently start
-#: counting the mirrored copy.
+#: The survey walks ``tinyassets/`` only. The plugin runtime copy is no longer
+#: committed (2026-10-01), but build_plugin.py still writes it locally under
+#: packaging/claude-plugin/.../runtime/tinyassets/, so it stays listed: a
+#: widened survey must not start counting a developer's local build.
 _MIRROR = (
     "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
     "tinyassets/engine_mcp_server.py"
