@@ -62,6 +62,8 @@ _NODEIDS = (
     "tests/test_universe_tools_jail.py::test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt",
     "tests/test_universe_tools_jail.py::test_an_engine_pinned_to_another_universe_cannot_reach_it",
     "tests/test_universe_tools_jail.py::test_bash_has_no_network",
+    "tests/test_universe_tools_jail.py::test_bash_reaches_a_public_site_only_through_the_checking_proxy",
+    "tests/test_universe_tools_jail.py::test_the_proxy_refuses_the_host_and_the_metadata_address",
     "tests/test_universe_tools_jail.py::test_the_limits_are_applied_inside_the_jail",
     "tests/test_universe_tools_jail.py::test_memory_limit_stops_a_runaway_allocation",
     "tests/test_universe_tools_jail.py::test_process_limit_holds_and_a_fork_bomb_is_contained",
