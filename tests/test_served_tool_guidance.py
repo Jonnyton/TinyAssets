@@ -157,6 +157,17 @@ def _parameter_descriptions(handle: str) -> list[str]:
     return asyncio.run(_read())
 
 
+def _resident(handle: str) -> str:
+    """The advertised description plus every parameter description, flattened.
+
+    What a served turn reads about ``handle`` without fetching a chapter. Both
+    fields, because FastMCP 3.2.0 leaves a docstring's ``Args:`` block in the
+    description while 3.4.x (CI, production) moves it into the parameter schema.
+    """
+    text = " ".join([_description(handle), *_parameter_descriptions(handle)])
+    return " ".join(text.split())
+
+
 def _description(handle: str) -> str:
     async def _read() -> str:
         for tool in await engine.mcp.list_tools():
@@ -503,8 +514,7 @@ def test_the_agent_is_told_a_request_is_the_notification():
     """Live 2026-10-01: asked to send the morning note as a notification, the
     universe searched for a notification sender, found none, and raised a request
     for one. Requests ARE the notification channel; that fact must stay resident."""
-    description = _description("write_graph")
-    assert "An ask IS the only notification" in " ".join(description.split())
+    assert "An ask IS the only notification" in _resident("write_graph")
 
 
 def test_the_agent_is_told_an_ask_is_only_for_what_the_owner_can_grant():
@@ -512,6 +522,6 @@ def test_the_agent_is_told_an_ask_is_only_for_what_the_owner_can_grant():
     asked its owner to approve "Enable new-message wakes" -- an approval that
     could not create the missing capability, so the owner approved and nothing
     happened. A platform gap goes to the patch request, never to the owner."""
-    description = _description("write_graph")
-    assert "what the owner can grant or decide" in " ".join(description.split())
-    assert "a platform gap is a patch request" in " ".join(description.split())
+    resident = _resident("write_graph")
+    assert "what the owner can grant or decide" in resident
+    assert "a platform gap is a patch request" in resident
