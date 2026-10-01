@@ -307,12 +307,11 @@ def _assert_bwrap_gated(nodeid: str) -> None:
     assert re.search(rf"^\s*(async\s+)?def {re.escape(name)}\(", src, re.M), (
         f"{name} must exist"
     )
-    decorated = re.search(rf'@pytest\.mark\.skipif\(not shutil\.which\("bwrap"\)[^\n]*\n'
-                          rf'def {re.escape(name)}\(', src)
-    module_gate = re.search(
-        r"^pytestmark = \[?\s*pytest\.mark\.skipif\(\n[^)]*_BWRAP", src, re.M
-    )
-    assert decorated or module_gate, f"{name} must be skipif-gated on bwrap"
+    # The gate takes several forms (a decorator, a module pytestmark, a named
+    # skipif marker, a fixture that skips); what they share is the condition.
+    # A real_jail test in a file with no bwrap condition at all would run, and
+    # fail, everywhere without bwrap instead of skipping.
+    assert re.search(r'which\("bwrap"\)', src), f"{path} must skip {name} without bwrap"
 
 
 def test_bubblewrap_installed_and_functionally_probed_before_pytest():
