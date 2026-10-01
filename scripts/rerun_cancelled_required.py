@@ -9,8 +9,14 @@ noticed. This finds that state and re-runs the cancelled run.
 
 Per armed (auto-merge enabled), non-draft open PR, per required check name on
 its head commit: if the NEWEST run of that check (highest workflow-run id) is
-CANCELLED, re-run its failed/cancelled jobs. A run already on its third
-attempt is left alone, so a check that keeps getting cancelled cannot loop.
+CANCELLED, and that run was raised by the PR itself (pull_request or
+pull_request_target, on the current head SHA), the whole run is re-run once
+per tick. Immediately before re-running, the PR is read again: if its head
+moved or the check is no longer cancelled-newest, nothing happens (a stale
+re-run would cancel the new head's run through per-PR concurrency). A run on
+its third attempt is left alone; at most MAX_PER_TICK runs are re-run per
+invocation; a PR with more check contexts than one page is skipped rather
+than judged on a partial view.
 
     rerun_cancelled_required.py --repo OWNER/NAME [--dry-run]
 """
@@ -23,14 +29,17 @@ import subprocess
 import sys
 
 MAX_ATTEMPT = 3
+MAX_PER_TICK = 5
 GH_TIMEOUT = 60
+PR_EVENTS = frozenset({"pull_request", "pull_request_target"})
 
-_PRS = """query($owner:String!,$name:String!){repository(owner:$owner,name:$name){
-pullRequests(states:OPEN,first:100,orderBy:{field:UPDATED_AT,direction:DESC}){
+_PRS = """query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){
+pullRequests(states:OPEN,first:100,after:$after){pageInfo{hasNextPage endCursor}
 nodes{id number isDraft autoMergeRequest{enabledAt}}}}}"""
-_CHECKS = """query($id:ID!){node(id:$id){... on PullRequest{commits(last:1){nodes{commit{
-statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name conclusion
-isRequired(pullRequestId:$id) checkSuite{workflowRun{databaseId}}}}}}}}}}}}"""
+_CHECKS = """query($id:ID!){node(id:$id){... on PullRequest{headRefOid isDraft
+autoMergeRequest{enabledAt} commits(last:1){nodes{commit{oid
+statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{... on CheckRun{name
+conclusion isRequired(pullRequestId:$id) checkSuite{workflowRun{databaseId}}}}}}}}}}}}"""
 
 
 def cancelled_required_runs(contexts: list[dict]) -> list[tuple[str, int]]:
@@ -46,9 +55,49 @@ def cancelled_required_runs(contexts: list[dict]) -> list[tuple[str, int]]:
                   if v["conclusion"] == "CANCELLED")
 
 
+def eligible(run: dict, head: str) -> str | None:
+    """Why a run must NOT be re-run, or None when it may be."""
+    if run.get("event") not in PR_EVENTS:
+        return f"raised by {run.get('event')!r}, not by the PR"
+    if run.get("head_sha") != head:
+        return "for an older head"
+    if int(run.get("run_attempt") or 1) >= MAX_ATTEMPT:
+        return f"already on attempt {run.get('run_attempt')}"
+    return None
+
+
 def _gh(*args: str) -> str:
     return subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8",
                           errors="replace", check=True, timeout=GH_TIMEOUT).stdout
+
+
+def _armed_prs(owner: str, name: str) -> list[dict]:
+    out: list[dict] = []
+    after = None
+    while True:
+        args = ["api", "graphql", "-F", f"owner={owner}", "-F", f"name={name}",
+                "-f", f"query={_PRS}"]
+        if after:
+            args += ["-F", f"after={after}"]
+        page = json.loads(_gh(*args))["data"]["repository"]["pullRequests"]
+        out += [p for p in page["nodes"] if not p["isDraft"] and p["autoMergeRequest"]]
+        if not page["pageInfo"]["hasNextPage"]:
+            return out
+        after = page["pageInfo"]["endCursor"]
+
+
+def _state(pr_id: str) -> tuple[str, list[tuple[str, int]] | None, bool]:
+    """(head sha, cancelled required runs or None if unreadable, still armed)."""
+    node = json.loads(_gh("api", "graphql", "-F", f"id={pr_id}", "-f",
+                          f"query={_CHECKS}"))["data"]["node"]
+    armed = bool(node["autoMergeRequest"]) and not node["isDraft"]
+    commits = node["commits"]["nodes"]
+    rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
+    if not rollup:
+        return node["headRefOid"], [], armed
+    if rollup["contexts"]["pageInfo"]["hasNextPage"]:
+        return node["headRefOid"], None, armed
+    return node["headRefOid"], cancelled_required_runs(rollup["contexts"]["nodes"]), armed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,28 +106,34 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     owner, name = args.repo.split("/", 1)
-    prs = json.loads(_gh("api", "graphql", "-F", f"owner={owner}", "-F", f"name={name}",
-                         "-f", f"query={_PRS}"))["data"]["repository"]["pullRequests"]["nodes"]
-    for pr in prs:
-        if pr["isDraft"] or not pr["autoMergeRequest"]:
+    done: set[int] = set()
+    for pr in _armed_prs(owner, name):
+        head, cancelled, _ = _state(pr["id"])
+        if cancelled is None:
+            print(f"#{pr['number']}: more than one page of checks; not judging a partial view.")
             continue
-        node = json.loads(_gh("api", "graphql", "-F", f"id={pr['id']}", "-f",
-                              f"query={_CHECKS}"))["data"]["node"]
-        commits = node["commits"]["nodes"]
-        rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
-        contexts = rollup["contexts"]["nodes"] if rollup else []
-        for check, run in cancelled_required_runs(contexts):
-            attempt = int(_gh("api", f"repos/{args.repo}/actions/runs/{run}",
-                              "--jq", ".run_attempt") or 1)
-            if attempt >= MAX_ATTEMPT:
-                print(f"#{pr['number']} {check}: run {run} is on attempt {attempt}; leaving it.")
+        for check, run_id in cancelled:
+            if run_id in done or len(done) >= MAX_PER_TICK:
                 continue
-            print(f"#{pr['number']} {check}: newest run {run} was cancelled; re-running.")
+            run = json.loads(_gh("api", f"repos/{args.repo}/actions/runs/{run_id}"))
+            reason = eligible(run, head)
+            if reason:
+                print(f"#{pr['number']} {check}: run {run_id} is {reason}; leaving it.")
+                continue
+            # Re-read right before acting: a push in between must not get a
+            # stale re-run that cancels its own new run.
+            now_head, now_cancelled, armed = _state(pr["id"])
+            if not armed or now_head != head or (check, run_id) not in (now_cancelled or []):
+                print(f"#{pr['number']} {check}: changed while checking; leaving it.")
+                continue
+            print(f"#{pr['number']} {check}: newest run {run_id} was cancelled; re-running.")
+            done.add(run_id)
             if not args.dry_run:
                 try:
-                    _gh("run", "rerun", str(run), "-R", args.repo, "--failed")
+                    # The whole run: a run cancelled before any job started has
+                    # no failed job for `--failed` to pick up.
+                    _gh("run", "rerun", str(run_id), "-R", args.repo)
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-                    # One PR's refusal (already re-running, say) must not stop the rest.
                     print(f"  re-run refused: {getattr(exc, 'stderr', exc)}", file=sys.stderr)
     return 0
 

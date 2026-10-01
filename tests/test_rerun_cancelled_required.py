@@ -56,6 +56,15 @@ def test_the_workflow_never_runs_pr_code_and_can_only_rerun_actions():
                                  "pull-requests": "read"}
     steps = wf["jobs"]["rerun"]["steps"]
     checkout = next(s for s in steps if "actions/checkout" in str(s.get("uses", "")))
-    assert "ref" not in checkout.get("with", {}), "default branch only"
+    assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
     run = next(s for s in steps if "run" in s)
     assert run["run"] == 'python scripts/rerun_cancelled_required.py --repo "$REPO"'
+
+
+def test_only_the_prs_own_run_on_its_current_head_is_eligible():
+    head = "a" * 40
+    ok = {"event": "pull_request_target", "head_sha": head, "run_attempt": 1}
+    assert rr.eligible(ok, head) is None
+    assert "merge_group" in rr.eligible({**ok, "event": "merge_group"}, head)
+    assert "older head" in rr.eligible({**ok, "head_sha": "b" * 40}, head)
+    assert "attempt 3" in rr.eligible({**ok, "run_attempt": 3}, head)
