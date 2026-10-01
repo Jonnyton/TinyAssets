@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.catalog_decoders import decode_openrouter_models
 from tinyassets.exceptions import (
     ProviderOverloadedError,
     ProviderProtocolError,
@@ -16,7 +17,6 @@ from tinyassets.exceptions import (
     ProviderUnavailableError,
 )
 from tinyassets.providers import discovery_http as discovery
-from tinyassets.providers.catalog_decoders import decode_openrouter_models
 from tinyassets.providers.definition import ProviderDefinition
 from tinyassets.providers.model_policy import ConnectionModels
 from tinyassets.storage.outbound_connections import (

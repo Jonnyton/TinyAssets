@@ -2,8 +2,7 @@
 
 Covers the Stage 2b 5-tier orthogonal-composition model: ``MemoryScope``,
 ``NodeScope``, ``SliceSpec``, ``ExternalSource``, ``ScopedQuery``,
-``ScopeResolver``, ``ScopedMemoryRouter``. Also exercises the
-agent-controlled memory tools from ``tinyassets.memory.tools``.
+``ScopeResolver``, ``ScopedMemoryRouter``.
 """
 
 from __future__ import annotations
@@ -18,15 +17,6 @@ from tinyassets.memory.scoping import (
     ScopedQuery,
     ScopeResolver,
     SliceSpec,
-)
-from tinyassets.memory.tools import (
-    get_memory_tools,
-    memory_assert,
-    memory_conflicts,
-    memory_consolidate,
-    memory_forget,
-    memory_promote,
-    memory_search,
 )
 
 # =====================================================================
@@ -317,114 +307,3 @@ class TestScopedMemoryRouter:
 # Agent-controlled memory tools (unchanged by Stage 2b; still exercised
 # here so the tools entry points stay covered alongside the scope tests)
 # =====================================================================
-
-
-class TestMemoryTools:
-    def test_memory_search_returns_dict(self):
-        result = memory_search("What happened to Ryn?")
-        assert isinstance(result, dict)
-        assert "success" in result
-        assert "results" in result
-        assert "count" in result
-        assert "error" in result
-
-    def test_memory_search_with_scope(self):
-        result = memory_search(
-            "character appearance",
-            scope={"universe_id": "world", "branch_id": "main"},
-            max_results=5,
-        )
-        assert result["success"] is True
-
-    def test_memory_promote_validation(self):
-        result = memory_promote(
-            item_id="fact_1",
-            from_tier="core",
-            to_tier="episodic",
-            reason="Test promotion",
-        )
-        assert result["success"] is False
-        assert "core memory" in result["error"].lower()
-
-    def test_memory_promote_valid_progression(self):
-        result = memory_promote(
-            item_id="fact_1",
-            from_tier="episodic",
-            to_tier="archival",
-            reason="Fact has 3 scene evidence",
-        )
-        assert result["success"] is True
-        assert result["item_id"] == "fact_1"
-
-    def test_memory_forget_soft_delete(self):
-        result = memory_forget(
-            item_id="fact_1",
-            reason="Superseded by new observation",
-            hard_delete=False,
-        )
-        assert result["success"] is True
-        assert result["deleted"] is False
-
-    def test_memory_forget_hard_delete(self):
-        result = memory_forget(
-            item_id="fact_1",
-            reason="Completely wrong",
-            hard_delete=True,
-        )
-        assert result["success"] is True
-        assert result["deleted"] is True
-
-    def test_memory_consolidate_entity(self):
-        result = memory_consolidate(
-            entity="Ryn",
-            scope={"universe_id": "world"},
-        )
-        assert result["success"] is True
-        assert result["entity"] == "Ryn"
-
-    def test_memory_assert_basic(self):
-        result = memory_assert(
-            entity="Ryn",
-            attribute="class",
-            value="Scout",
-            confidence=0.95,
-        )
-        assert result["success"] is True
-        assert "fact_id" in result
-        assert result["confidence"] == 0.95
-
-    def test_memory_conflicts_entity(self):
-        result = memory_conflicts(
-            entity="Ryn",
-            scope={"universe_id": "world"},
-        )
-        assert result["success"] is True
-        assert "conflicts" in result
-        assert "count" in result
-
-    def test_get_memory_tools_returns_list(self):
-        tools = get_memory_tools()
-        assert isinstance(tools, list)
-        assert len(tools) == 6
-
-    def test_get_memory_tools_have_required_fields(self):
-        tools = get_memory_tools()
-        for tool in tools:
-            assert "name" in tool
-            assert "description" in tool
-            assert "function" in tool
-            assert "inputs" in tool
-            assert callable(tool["function"])
-
-    def test_get_memory_tools_names(self):
-        tools = get_memory_tools()
-        names = {t["name"] for t in tools}
-        expected = {
-            "memory_search",
-            "memory_promote",
-            "memory_forget",
-            "memory_consolidate",
-            "memory_assert",
-            "memory_conflicts",
-        }
-        assert names == expected

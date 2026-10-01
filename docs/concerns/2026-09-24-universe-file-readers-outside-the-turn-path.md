@@ -40,8 +40,8 @@ so none is reachable by an agent write today. Each still reads raw.
 | `api/universe.py`, `api/runs.py`, `api/branches.py`, `api/pending_requests.py`, `api/helpers.py` (`_read_json`, `_read_platform_text`) | premise, `activity.log`, `work_targets.json`, `.runtime_status.json`, `.pause`, request docs | No (read-only or masked) |
 
 **Resolved for `wiki/` (harness W, 2026-10-01).** `wiki/` is now agent-writable.
-`api/wiki.py`, `api/helpers.py`, `effectors/wiki_write_back.py` and
-`wiki/okf_export.py` are in `TURN_PATH`: a wiki page reads link-free and bounded
+`api/wiki.py`, `api/helpers.py` and `effectors/wiki_write_back.py` are in
+`TURN_PATH`: a wiki page reads link-free and bounded
 through `universe_files`, and an oversized or linked page raises instead of
 reading as empty. The trusted write-back markers moved from `wiki/` to the
 universe root.
