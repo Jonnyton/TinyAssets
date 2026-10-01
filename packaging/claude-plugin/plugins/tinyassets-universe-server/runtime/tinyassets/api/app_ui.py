@@ -140,6 +140,8 @@ def change_app_ui(
         return {"error": "app_ui_conflict", "detail": str(exc)}
     except AgentValidationError as exc:
         return {"error": "app_ui_validation_error", "detail": str(exc)}
+    except StorageRefused as refused:
+        return _visible_refusal(refused, actor)
     return {"status": "saved", "operation": op, **outcome}
 
 

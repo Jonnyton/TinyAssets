@@ -234,6 +234,20 @@ class TestUploads:
         assert "KiB" not in str(refused.value)
 
 
+def test_a_targeted_ui_change_past_the_quota_is_refused_before_it_lands(base):
+    """`change_app_ui_entry` (added on main beside `save_app_ui`) writes the same
+    UI library, so it is gated the same way -- not a way around the quota."""
+    from tinyassets.custom_agents import change_app_ui_entry, get_app_ui
+
+    _fill(base, "u-a", 95 * KIB)
+    with pytest.raises(sa.StorageRefused):
+        change_app_ui_entry(
+            base, owner_user_id=A, universe_id="u-a", operation="add_ui",
+            payload={"ui_id": "big", "html": "x" * (10 * KIB)},
+        )
+    assert get_app_ui(base, owner_user_id=A, universe_id="u-a")["revision"] == 0
+
+
 # --------------------------------------------------------------------------- #
 # Branch writes (D7)
 # --------------------------------------------------------------------------- #
