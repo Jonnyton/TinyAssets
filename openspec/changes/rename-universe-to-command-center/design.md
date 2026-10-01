@@ -32,8 +32,10 @@ What makes this more than a find-and-replace:
 - A person never reads "universe" in the app, the website, the store copy, a
   served description, the connector instructions, a prompt name, a parameter
   name, an error code, or the agent's own words.
-- No client breaks during the switch: no cached tool list, open window, website
-  build or stored custom UI.
+- Every stored reference and first-party client moves to the new names in a
+  verified cutover. A client still holding an old name or id gets a loud,
+  specific error naming the new one or saying "unknown id". It never gets a
+  silent alias (founder, 2026-10-01: clean cutover).
 - One authority for the old-to-new name mapping.
 
 **Non-Goals**
@@ -105,7 +107,8 @@ three things:
   (`CommandCenterNames`) registered innermost on both servers, so it runs
   before the tool's own validation and names the replacement instead of
   FastMCP's generic "unexpected keyword". On the connector it governs the
-  seven advertised handles only; a hidden legacy tool keeps its own schema.
+  seven advertised handles. The legacy fat tools are not registered as MCP
+  tools at all (`universe_server.py:3080`).
 - **Maps current values to the handlers' names.** `internal_value` maps
   `command_center` to `universe` (and so on) until the code rename (C3)
   changes the handlers themselves. A retired value reaching a router directly
@@ -115,9 +118,13 @@ three things:
   `get_status` take `command_center_id`; inside, it is bound to the internal
   name until C3. Direct Python callers are migrated in the same PR.
 
-The owner door (the app's private HTTP reads) passes targets through the same
-routers, so the app sends the current target names. Its response keys stay
-internal until C3, because only first-party code reads them.
+The owner door (the app's private HTTP reads, `owner_door/routes.py`) is an
+internal first-party API, not part of the public surface. Its accepted
+arguments are derived from the domain functions' signatures (`:42`, `:132`).
+Targets pass through the same routers, so the app sends the current target
+names and a retired one is refused. Its argument and response key names
+(`universe_id`) are internal names and are renamed with the code in the
+cutover (D10), in the same image as the app that calls them.
 
 A workspace packet's `storage: "universe"` and a branch's declared
 `delivery_sender_universe_id` input are **not** renamed here. Both are stored
@@ -126,8 +133,10 @@ inside people's branch definitions, so they move with the storage migration
 
 ### D4. Responses carry current names only; every first-party reader moves in the same PR
 
-`CommandCenterNames` respells each JSON tool result before the result ceiling
-measures it:
+Each JSON tool result is respelled before the result ceiling measures it. On
+the engine, `CommandCenterNames` does this innermost. On the connector it
+happens in the structured-result adapter, which is where that server bounds a
+reply. The respelling covers:
 
 - keys (`universe_id` becomes `command_center_id`, `universes` becomes
   `command_centers`);
@@ -136,9 +145,15 @@ measures it:
   until C4 rewrites the stored value.
 
 Responses do not carry the old keys alongside the new ones. A person's own
-content is never respelled: run output, run files, command-center files,
-conversation pages, `read_page`, and the engine's `read` / `write` / `edit` /
-`bash` (Hard Rule 9).
+content is never respelled:
+
+- run output, run files, command-center files and conversation pages;
+- `read_page`, and the engine's `read` / `write` / `edit` / `bash`;
+- inside any other result, every **user-authored subtree** (`USER_CONTENT_KEYS`:
+  graph nodes, edges, state schema, mappings, payloads, UI bundles, content).
+  A state field a person named `universe` is data. The C1 refute reproduced
+  `output_mapping={"universe": ...}` failing validation on its round trip
+  (Hard Rule 9).
 
 First-party readers switch in the same PR:
 
@@ -157,10 +172,11 @@ fingerprinted under its idempotency key, so C1 publishes a **new** one
 (`platform:command-center-default` / `command-center-default-v1`, named "Your
 agent") rather than editing the old one, which would raise `AgentConflictError`
 at every onboarding. New homes bind to it. A home bound to the retired
-definition is still recognised as the founder's platform binding: the next
-serving gesture re-points it to the new definition at its exact revision, and
-the storage migration (C4) re-points the rest. The retired definition is looked
-up, never re-published.
+definition is still recognised as the founder's platform binding and is used as
+is, with its `provider_ref` intact. Re-pointing it during a serving gesture would
+replace its configuration, dropping the `provider_ref` before the new provider
+is validated (C1 refute). The cutover migration re-points every one in place
+(D10). The retired definition is looked up, never re-published.
 
 ### D5. Paying for the longer word inside the description budget
 
@@ -585,35 +601,73 @@ reversible: the rollback inverse is `cc-X` back to `u-X`.
   grows by one character. The cutover's dry run on a production copy also
   reports the longest resulting path, checked against the Windows `MAX_PATH`
   guard the repo already uses for basetemps.
-- **Ambiguity.** No existing id or name starts with `cc-`. The dry run asserts
-  zero `cc-` values before migration.
+- **Ambiguity.** Other `cc-` values exist: craft cards generate
+  `cc-<chapter>-<counter>` (`learning/craft_cards.py:65`). They cannot collide
+  with `cc-<26-char ulid>`. The preflight checks the full target namespace
+  `^cc-[0-9a-hjkmnp-tv-z]{26}$` for zero existing values; it does not forbid
+  every `cc-` value. Every reader that classifies an id uses the full regex,
+  never the prefix alone.
 
 **What holds an id, and how each moves.** The inventory is derived (D7.1),
 extended to values matching `u-<ulid>`:
 
-- **Local stores**, migrated in phase 2: every TEXT value, JSON value,
-  checkpoint payload, LanceDB row and folder name, plus the FCM device rows
-  and the notification and deep-link payloads stored in our databases.
-- **Digests and tokens over an id.** For example, capability URLs and webhook
-  tokens HMACed over a universe id, `conversation_run_admissions.py:340`, and
-  `provider_assignment_manifest.py:153`. Changing the id changes the digest.
-  For each kind the cutover change lists one of two treatments, with
-  evidence:
-  - **recompute in the migration**, where only our own rows hold the digest;
-  - **re-issue**, where the token was handed to someone outside, such as a
-    webhook URL a tester pasted into another service. The tester is told,
-    through the request rail, that the URL changed, with the new one.
-- **Stripe.** Subscription metadata carries `universe_id`
-  (`billing/stripe_adapter.py:383` writes it; `:186` reads it in the webhook).
-  Phase 4 rewrites each subscription's metadata key and value through the
-  Stripe API, recording the old value for the inverse.
+- **Local stores, in every encoding**, migrated in phase 2. A prefix scan of
+  TEXT columns is not enough (cutover refute #1, #4). The inventory decodes
+  and rewrites each encoding by its own reader:
+  - TEXT values;
+  - JSON values **and JSON object keys** (`engine_mcp_http.py:308` keys a map
+    by id);
+  - **BLOB** canonical JSON. `storage/conversation_custody.py:66` stores
+    thread JSON as a BLOB containing `universe_id` (`:181`), whose reader
+    demands canonical bytes (`:200`) and equality with indexed columns
+    (`:378`). It is re-canonicalised, not string-patched;
+  - checkpoint payloads (via serde), LanceDB rows, and folder names;
+  - FCM device rows, and notification and deep-link payloads in our
+    databases.
+- **Identities derived from an id**, recomputed with every reference to them
+  in the same transaction:
+  - **length-dependent keys**: `automations.py:1872` embeds the id's length in
+    lease keys, and `:1881` slices by it. The code computes the length, but
+    every stored key changes from `28:u-...` to `29:cc-...` and is rewritten as
+    a whole key, never patched as a substring;
+  - **hashed ids**: `api/http_connection.py:495` derives connection and grant
+    ids from the id, and `:1202` recomputes them for credential rotation;
+  - **digests over content that contains an id**:
+    `conversation_run_admissions.py:340`, `provider_assignment_manifest.py:153`,
+    branch-snapshot `content_hash` and admission `snapshot_sha256`
+    (`storage/run_input_admissions.py:90`, `:182`).
+
+  Where the hash input changes, the migration recomputes the digest and
+  rewrites its references. The codemod's report lists every hash site, so
+  none is missed.
+- **Webhook tokens are not id-bound.** They are random (`storage/webhook_hooks.py:198`)
+  and stored as a hash of the token alone (`:95`), so they survive unchanged.
+  A webhook URL is affected only if its path carries the id; the inventory
+  checks the URL shape.
+- **Stripe**, in three places: subscription metadata (`billing/stripe_adapter.py:383`,
+  read at `:186`), the **signed entitlement claim** over the id (`:163`,
+  verified at `:205`), and checkout `client_reference_id` (`:378`). The cutover:
+  1. **drains checkouts first.** New checkout creation is frozen at the start
+     of the window. Open checkout sessions are expired through the API,
+     because their frozen parameters must stay byte-identical for retries
+     (`:295`) and cannot be rewritten in place;
+  2. rewrites each subscription's metadata and **re-signs** its claim with the
+     new id;
+  3. **reconciles late events by Stripe object identity.** A webhook carrying
+     an old id (an event generated before the rewrite) is resolved through the
+     migration's recorded subscription/customer -> id map, never by the id in
+     the payload. An old id that maps to nothing is **refused before any
+     storage is touched**. The settlement path's database connector creates
+     missing directories (`storage/subscription_state.py:415`, `:62`) and
+     could otherwise recreate a retired home, so the cutover makes it refuse
+     an unknown home instead.
 - **WorkOS.** A repo search on 2026-10-01 found no WorkOS metadata write that
   carries a universe id. The cutover change re-runs that search and checks a
   live WorkOS user record before the run. It is not assumed.
 - **Vault.** Credential vaults live inside the folder
-  (`credential_vault.py:154`) and move with it. A search found no key
-  derivation or associated data bound to the id. The dry run proves a vault
-  still decrypts after the move.
+  (`credential_vault.py:154`) and move with it. The vault is read as JSON
+  (`:460`), with nothing derived from the id. The dry run proves every vault
+  still reads, and resolves to the same connections, after the move.
 - **Outside our reach, and stated:**
   - graph ids cached in testers' chat clients;
   - links in notifications already delivered;
@@ -628,13 +682,44 @@ resolver, `data_dir()` / `command_center_dir(id)`. A test fails if code builds
 
 **Deletion and export across the cutover.** Both run only on the new shape:
 the server is down during the run, and the old shape no longer exists
-afterwards. The test from D7.4 gains a check: it **fails if any store still
-holds a `u-<ulid>` value or a `u-` folder after migration.**
+afterwards.
+
+Absence of old strings is necessary but not sufficient (refute #4). The proof
+uses populated fixtures built by every real schema creator and asserts four
+things:
+
+- **No surviving operational identity:** no `u-<ulid>` value or `u-` folder in
+  any operational store, in any encoding above, after migration;
+- **Decoded round trips:** every migrated record reads back through its own
+  reader (custody threads, checkpoints, LanceDB, bundles);
+- **Reference and digest integrity:** every derived id, hash and foreign
+  reference resolves;
+- **Independent deletion and export:** `delete_account` removes every row of
+  the account and none of another's, checked by direct row counts, not by
+  the same scan.
+
+**Verbatim content is exempt, by an explicit list.** A person's own content
+and agent-written brain files keep any old word or id they contain (Hard Rule
+9, D8): uploads, run outputs, conversation text, `soul.md` and notes. The
+operational-identity scan skips exactly those stores and fields, named in the
+cutover change, so that "nothing survives" never means rewriting what a person
+wrote.
 
 **Rollback.** Restore plus the previous image (D7.6). In addition, the
-recorded Stripe inverse runs, because restoring the local snapshot does not
-rewind an external API. Tokens re-issued in phase 4 are listed so that the
-original values can be restored, or the testers told.
+recorded Stripe inverse runs (metadata, claim, mapping), because restoring
+the local snapshot does not rewind an external API.
+
+**Irreversible effects, accounted for, not inverted:**
+
+- push notifications already accepted by FCM, including ones not yet
+  delivered. Delivery happens before the local receipt
+  (`owner_notifications.py:349`, `:371`) and the payload contains the id
+  (`:207`);
+- any notification the migration itself would send. The migration suppresses
+  owner notifications for its whole run, so it sends none;
+- expired Stripe checkout sessions. Testers start a new checkout.
+
+The cutover change lists each kind with its count from the dry run.
 
 ## Risks / Trade-offs
 

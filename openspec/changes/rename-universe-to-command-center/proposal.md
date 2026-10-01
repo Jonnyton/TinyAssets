@@ -102,6 +102,7 @@ proposal. It is part of this program so the vocabulary is decided once.
   the ratchet, so C0/C1 must trim at least that much. `write_graph` goes from
   11,680 to about 11,722, under its 12,000 limit.
 - The first-party clients (app, website, desktop and Android shells, all of
-  which wrap the live SPA) move in the same slice. Stored custom UI bundles keep
-  the old bridge keys permanently.
+  which wrap the live SPA) move in the same slice. Stored custom UI bundles are
+  migrated to the new bridge keys by the cutover (clean cutover; no permanent
+  old keys).
 - A storage and id migration (the cutover), in its own change, with external records (Stripe metadata) migrated too.
