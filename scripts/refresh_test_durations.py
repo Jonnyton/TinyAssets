@@ -73,7 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         table = median_table([per_file_seconds(j) for j in junits])
     if not table:
         raise SystemExit("the reports named no test file under tests/; refusing to write")
-    args.out.write_text(json.dumps(table, indent=0, sort_keys=True) + "\n", encoding="utf-8")
+    # Bytes, so a Windows run writes the same LF file a Linux one does.
+    args.out.write_bytes((json.dumps(table, indent=0, sort_keys=True) + "\n").encode("utf-8"))
     print(f"{args.out}: {len(table)} files from {len(junits)} run(s), "
           f"{sum(table.values()):.0f}s total", file=sys.stderr)
     return 0
