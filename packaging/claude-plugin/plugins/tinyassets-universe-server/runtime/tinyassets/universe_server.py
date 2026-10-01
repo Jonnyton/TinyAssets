@@ -2673,6 +2673,23 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
         return turn_failure("unknown", ref=uuid.uuid4().hex[:16])
 
 
+def _announce_owner_message(universe_dir) -> None:
+    """The owner's message is now in their thread: wake what subscribed to it.
+
+    Called only after the store confirmed the founder row, so a woken agent
+    finds the message when it reads the conversation. The principal is the
+    VERIFIED caller; ``emit`` wakes only their own subscriptions in their own
+    home. Never fails the turn.
+    """
+    try:
+        from tinyassets.api.permissions import current_actor_id
+        from tinyassets.automation_events import emit_owner_message
+
+        emit_owner_message(universe_dir, principal_id=current_actor_id())
+    except Exception:  # noqa: BLE001 - an event must never fail the turn
+        logger.warning("converse: owner_message event failed", exc_info=True)
+
+
 def _interrupted_turn_payload(uid, universe_dir, session, message, exc) -> dict:
     """What a turn the owner stopped leaves in the thread and returns.
 
@@ -2703,6 +2720,8 @@ def _interrupted_turn_payload(uid, universe_dir, session, message, exc) -> dict:
     except Exception:  # noqa: BLE001 - the stop still happened; memory is best-effort
         logger.warning("converse: interrupted-turn history could not be saved")
         saved = False
+    if saved:
+        _announce_owner_message(universe_dir)
     notice = failure_notice(record)
     logger.info("converse: owner interrupted turn %s in %s", record.ref, uid)
     return {
@@ -2976,6 +2995,7 @@ def converse(
                 input_method=input_method,
                 response_observer=execution_receipt.observe,
                 learning_observer=lesson_settled.append,
+                session_key=f"thread:{memory_session}",
                 **({} if model_choice is None else {"model_choice": model_choice}),
             )
     except TurnInterrupted as exc:
@@ -3000,6 +3020,8 @@ def converse(
         except Exception:  # Original failure remains usable even if memory fails.
             logger.warning("converse: failed-turn history could not be saved")
             saved = False
+        if saved:
+            _announce_owner_message(memory_universe_dir)
         history = {
             "turn_failure": normalize_turn_failure(record),
             "failure_notice": failure_notice(record),
@@ -3018,9 +3040,10 @@ def converse(
         from tinyassets.conversation_store import record_exchange
 
         # Both sides in ONE transaction: never a founder-only half-turn.
-        record_exchange(
+        if record_exchange(
             memory_universe_dir, memory_session, message, str(reply), execution=execution,
-        )
+        ):
+            _announce_owner_message(memory_universe_dir)
         # Only now can the cursor name this turn. Settled -> the lesson is done and
         # the next turn owes nothing for it; unsettled (a failed extraction) -> it
         # stays owed, which is the retry state the deferred path will drain.

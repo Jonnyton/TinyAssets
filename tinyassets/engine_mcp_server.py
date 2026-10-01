@@ -2201,7 +2201,14 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       and ``event_type`` ``run_completed`` with ``event_filter``
       ``{"branch_def_id"}`` so one agent finishing wakes another, or
       ``pending_request_answered`` to resume when the person answers me, or
-      ``app_event`` with ``{"name": ...}`` so a click on the screen wakes it. A code
+      ``owner_message`` when they send me a message (a burst is one wake), or
+      ``app_event`` with ``{"name": ...}`` so a click on the screen wakes it.
+      ``not_before`` or ``delay_seconds`` instead of a trigger is one wake I set
+      for myself, so a timer heartbeat is optional. These are existing
+      owner-scoped controls; a generic pending-request answer does not grant
+      tools or execute them. Pause stops future triggers; resume reactivates
+      the existing schedule; delete retires it and removes that automation's
+      branch dependency. A code
       node granted ``"enqueue_branch_run"`` wakes one of my branches now or not
       before a time: ``invoke_mcp_action("enqueue_branch_run",
       branch_def_id=..., inputs={...})``. Each automation holds its own lease, so
@@ -2779,19 +2786,17 @@ def write_graph(
     **Recurring work:** ``target="automation"`` supports ``operation="create"``,
     ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
     Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds or cron_expr. A cron_expr runs in the
-    owner's timezone and is never stated without it (``branches``).
+    exactly one of interval_seconds, not_before/delay_seconds (one wake) or
+    cron_expr. A cron_expr runs in the owner's timezone and is never stated
+    without it (``branches``).
     Runs never overlap per branch:
     a short interval_seconds reruns as each run ends; runs count to usage
     limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
     one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
-    ``{"branch_def_id"}``) or ``pending_request_answered`` wakes it with
-    ``inputs.event``.
-    Pause stops future triggers; resume reactivates the existing
-    schedule; delete retires it and removes that automation's branch dependency.
+    ``{"branch_def_id"}``), ``pending_request_answered`` or ``owner_message``
+    wakes it with ``inputs.event``.
     None cancels an already-running job. Read back the trigger and its last run
-    before claiming work has stopped. These are existing owner-scoped controls;
-    a generic pending-request answer does not grant tools or execute them.
+    before claiming work has stopped.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your universe). A prompt node

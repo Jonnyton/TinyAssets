@@ -113,7 +113,7 @@ def _action_project_memory_set(kwargs: dict[str, Any]) -> str:
     except StorageRefused as refused:
         # The account is at its storage quota: the visible refusal, numbers and
         # inline Upgrade link included. Nothing was written.
-        return json.dumps(refused.record)
+        return json.dumps(_visible_refusal(refused))
     return json.dumps(result)
 
 
@@ -462,3 +462,10 @@ _SCHEDULER_ACTIONS: dict[str, Any] = {
     "unsubscribe_branch": _action_unsubscribe_branch,
     "list_scheduler_subscriptions": _action_list_scheduler_subscriptions,
 }
+
+def _visible_refusal(refused):
+    """The refusal the CALLER may see: the charged account's full record only
+    if the caller is that account (storage_accounting.visible_record)."""
+    from tinyassets.storage_accounting import visible_record
+
+    return visible_record(refused)

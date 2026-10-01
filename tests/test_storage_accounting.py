@@ -71,7 +71,7 @@ class TestOnePoolPerAccount:
 
     def test_platform_bytes_are_not_charged(self, base):
         udir = _universe(base, "u-one", A)
-        for platform_dir in (".runtime", ".workspace-staging", "workspaces"):
+        for platform_dir in (".runtime", ".workspace-staging"):
             (udir / platform_dir).mkdir()
             _write(udir / platform_dir, "big.bin", 500 * KIB)
         _write(udir, "mine.bin", 10 * KIB)
@@ -79,6 +79,18 @@ class TestOnePoolPerAccount:
         sa.commit(_admit(base, "u-one", 1 * KIB))
 
         assert sa.usage(base, A).used_bytes == 10 * KIB + 1 * KIB
+
+    def test_permanent_workspaces_are_charged_through_their_own_store(self, base):
+        udir = _universe(base, "u-one", A)
+        (udir / "workspaces").mkdir()
+        _write(udir / "workspaces", "gen.bin", 30 * KIB)
+
+        sa.measure(base, "u-one", "workspaces")
+        sa.measure(base, "u-one", "universe_files")
+
+        measured = dict(((s, st), b) for s, st, b in sa.usage(base, A).breakdown)
+        assert measured[("u-one", "workspaces")] == 30 * KIB
+        assert ("u-one", "universe_files") not in measured  # not counted twice
 
     def test_a_hard_link_is_counted_once(self, base):
         udir = _universe(base, "u-one", A)
