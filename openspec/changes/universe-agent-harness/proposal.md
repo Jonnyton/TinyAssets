@@ -25,39 +25,90 @@ that teaches warmth, curiosity and asking. Each round also carries about 7k
 tokens of tool descriptions. Its tools have no network and no browser, and every
 outward step needs per-turn consent.
 
+
+**Revised the same day to the founder's direction:** "a new users universe
+should act like an always on dot agent from chatgpt. but with the customization
+of openclaw and the clean powerfull tool list of pi.dev and user design
+shareabliaty for harness and on ui interface command center designs for agent
+management". Then: "it should work how ever dots work for chatgpt … pi's 4
+tools, users should have full customization of the harness layer for any
+configeration of agents". ChatGPT dots, launched 2026-09-29, are always-on
+agents with their own computer and a responsibility. They research proactively
+with read-only tools, act under per-action Custom Rules with an auto-review, and
+are managed from a profile with Activity, Take over and Pause (design §1.2).
+
 ## What Changes
 
-- **Sessions.** A universe agent works in long-lived sessions, one per
-  conversation thread or agent node, persisted by the platform with automatic
-  compaction. A turn runs until the model is done. New messages steer it at tool
-  boundaries, and events wake an existing session instead of starting a fresh
-  one.
-- **Tools.** The core is pi-style: `read`/`write`/`edit`/`bash` in the jailed
-  universe workspace. Bash gets filtered public network access, the jail gets a
-  browser and a usable toolchain, and the whole user root becomes writable once
-  platform state moves to `.runtime/`. Skills follow the Agent Skills format,
-  and the agent writes and saves them itself. Extensions are hook processes. The
-  platform is one extension: the same handlers as an in-jail `ta` CLI and as
-  deferred MCP, not a resident tool block.
-- **Authority.** By default the agent may do anything inside its own universe.
-  It asks only for things outside it: a new credential or wider grant,
-  reaching other people, or spending beyond a budget the user set. Asks are app
-  requests. Approvals become standing grants, so per-turn consent replay goes.
-- **Tone.** A seed `AGENTS.md`, owned by the user and edited by the agent,
-  replaces the persona Python. Replies lead with the result and stay short and
-  honest, with no boilerplate disclaimers.
-- **Feedback loop.** Every adapter journals every tool call. Errors report the
-  real cause quickly, and oversized output spills to a file instead of
-  truncating silently.
-- **Self-improvement.** The agent edits its own `AGENTS.md`, `MEMORY.md`,
-  skills, prompts and settings. A universe-local git commit at turn end versions
-  the harness and rolls it back.
-- **BREAKING.** The following are deleted: the persona prompt assembly, the
-  separate learning-extraction call, `read_brain`/`write_brain` and soul.edit
-  governance for owner turns, the conversation-memory text block, the
-  cross-surface continuity directive, the per-turn consent line, and the
-  resident handbook guidance that the platform extension replaces. The design
-  lists every deletion.
+A new user's universe **is** a dot. Each item below copies what dots do, except
+where noted:
+
+- **Onboarding.** The universe asks for a name and one responsibility: what it
+  owns, where it learns, its quality bar, what needs approval, and how often it
+  reports. It writes the answers into its own files.
+- **Its own computer.** It has a jailed workspace, bash with public egress, and
+  its own browser.
+  - The browser runs in a sandbox whose profile the agent cannot read.
+  - The profile page has a live view, plus *Take over* / *Return control* for
+    logins and decisions.
+- **Always on, several projects at once.** Work becomes **activities**: child
+  sessions that run in parallel on the user's seats, keep going after the chat
+  closes, and report into the main thread. Scheduled activities reuse
+  user-owned automations.
+- **Proactive research while idle.** Its tools are read-only, **enforced in
+  code**:
+  - write and edit are refused;
+  - bash runs read-only with no network;
+  - the platform socket answers read verbs only;
+  - connected-app calls are limited to reads;
+  - there is no browser.
+
+  Its output is proposals only. An approved proposal becomes a pre-approved
+  activity.
+- **Custom Rules (authority).** Each action class gets one of four behaviours:
+  do without asking, do if pre-approved, ask first, or hand off. One decision
+  point is checked at every enforcement site. Rules are owner-only: the agent
+  can read them and propose changes, but cannot write them. Seed rules
+  reproduce the first version's "act inside, ask outside" default.
+- **Auto-review.** Before consequential actions, a check runs on the
+  **universe's own model** and fails closed. Fixed **reserved actions** always
+  hand back to the owner: credential or security changes, moving money, and
+  granting others access.
+- **Profile and command center.** The profile has these parts:
+  - an Activity tab: Waiting on you, In progress, Scheduled, Completed with
+    receipts;
+  - a Computer tab, plus Memory, Rules and Harness tabs;
+  - Pause, and push notifications when work is done, waiting or proposed.
+
+  A roster view across agents is the command center. Both are built on the
+  custom-UI layer, so users can redesign them.
+- **Reachable everywhere.** The app, `converse`, and chat apps through channel
+  extensions all reach one session.
+- **Exactly pi's four tools.** Every agent gets `read`/`write`/`edit`/`bash`
+  and nothing else resident. Breadth (platform verbs, connected apps,
+  extensions, attached MCP servers) sits behind `ta search` / `ta describe` in
+  bash. The deferred-MCP route for the agent is dropped.
+- **Memory item by item.** Every memory item has a stable id, and the owner can
+  edit or delete each one (dots cannot).
+- **Harness layer for any roster.** Any number of agents is supported. Each has
+  its own instructions, identity, memory, skills, extensions, settings, rules,
+  sessions and profile.
+- **Sharing.** A harness bundle and command-center layouts are exported
+  through the `universe-custom-agents` definition shape.
+  - Export is PII-scrubbed and owner-confirmed, and never includes memory,
+    sessions, credentials or browser state.
+  - Imports land in an inert quarantine until the owner activates them, only as
+    written or stricter.
+- **Kept from the first version:**
+  - sessions and compaction;
+  - steering;
+  - the truthful journal;
+  - result-first tone;
+  - self-improvement with file history and Undo;
+  - the egress floor.
+- **BREAKING.** In addition to the first version's deletions, the first
+  version's "inside acts without asking; outside asks once" requirement is
+  replaced by Custom Rules. The S1 `AGENTS.md` authority text becomes a
+  description of the user's rules.
 
 The change is designed vendor-neutral. Claude, Codex, OpenRouter and any
 OpenAI-compatible or command-adapter source drive the same assembled harness,
@@ -68,9 +119,13 @@ and adapter-specific behaviour is a declared capability (`resume`,
 
 ### New Capabilities
 
-- `universe-agent-harness`: sessions and compaction, the turn and wake loop,
-  steering, the tool surface, default authority and standing grants, the
-  harness files and their versioning, and truthful tool results.
+- `universe-agent-harness`: the dot experience. It covers:
+  - onboarding, activities, proactive research, Custom Rules, auto-review and
+    reserved actions;
+  - the profile and roster, take-over, memory items, the harness roster and
+    sharing;
+  - sessions and compaction, steering, the four-tool surface, harness files
+    with versioning, and truthful tool results.
 
 ### Modified Capabilities
 
@@ -94,12 +149,20 @@ Storage: session logs and the universe-local git repo are new storage shapes,
 and platform state moves under `.runtime/`. Each gets its slice's own storage
 proposal before code.
 
-Authority: a broader default inside the universe. The cross-user floor and
-credential blindness are unchanged.
+Authority: per-action Custom Rules with auto-review and reserved actions,
+replacing a fixed default. The rules store is owner-only. The cross-user floor,
+credential blindness and the standing-grant checks are unchanged.
+
+Storage: also new are activity records, the rules store, proposals and the
+browser profile, all under `.runtime/` (S3c). The activity store opens its own
+storage proposal in D2. The rules store is specified here as part of the
+authority design.
 
 Supersedes the S2–S8 slice plan in
 `universe-harness-four-tools/design-notes/universe-harness-design.md`. Its S1
 is built and that change is archived after its delta syncs.
 
 Owner: Claude. Branch: `universe-agent-harness`. This PR is design only. Each
-slice ships as its own PR and is proven live.
+slice ships as its own PR and is proven live. S1 (#4173) has shipped. S3a
+(#4174) and the S3c proposal (#4175) are in flight. Design §5 maps them onto
+the dot.
