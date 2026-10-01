@@ -69,7 +69,7 @@ behind codemode and deferred exposure.
   `read_commons_shape`, `read_brain`, `write_brain`, `connect_compute`,
   `source_channel`, `read`, `write`, `edit`, `bash`. Their descriptions are
   resident on every round, ratcheted at 30,000 characters (about 28.5k actual,
-  roughly 7k tokens) in `tests/test_converse_turn_cost.py:83`. pi's whole
+  roughly 7k tokens) in `tests/test_converse_turn_cost.py:79`. pi's whole
   prompt plus tools fits under 1k tokens.
 - **Jail.** `universe_tools.py` runs `read`/`write`/`edit`/`bash` inside
   bubblewrap. It has **no network** (`:1069-1082`: "a shell in /u with no
@@ -182,9 +182,11 @@ only fixed boundary.
   agent node, so it has its own session. It shares the same files (brain,
   `MEMORY.md`, notes) with chat, but not the same context window. That is how
   Claude Code sessions in one project share CLAUDE.md and memory.
-- **Storage.** `sessions/<session_id>.jsonl` in the universe. The platform
-  writes it and the agent can read it, like the design-note's `conversations/`.
-  The agent can read and grep its own history but cannot forge it. It is the
+- **Storage.** The session log lives under `.runtime/agent-sessions/`, which
+  only the platform can write. The agent sees it read-only, through a
+  read-only mount at `/u/sessions` in the tool jail, never as a writable root
+  path (Codex review finding 6). So it can read and grep its own history but
+  cannot forge it. It is the
   successor to `AgentTurnJournal` rows, which become keyed by session. Its
   bytes count to the account storage pool (`account-storage-quota`).
 - **Model context** is the last compaction summary plus every entry after it.
@@ -206,6 +208,9 @@ only fixed boundary.
   - Before compacting, one silent *flush* round lets the agent write what must
     survive to its files, as in OpenClaw's memory flush.
   - Thresholds live in `settings.yaml`, which the agent and user edit.
+  - The flush and summary calls are made by the universe's own model, on its
+    own credentials, through the same seat and accounting as any other turn.
+    There is no platform fallback model (Hard Rule 15).
 - **Native adapters.** An adapter MAY declare a `resume` capability with an
   opaque handle, which the platform stores on the session (a CLI session id,
   for example). With `resume`, the adapter continues its own native session and
@@ -215,9 +220,12 @@ only fixed boundary.
   platform log stays the truth either way. No vendor name appears in this
   contract (Hard Rule 3). The existing adapters are migration debt that
   implements it.
-- **The turn runs until done.** That is already true: there is no wall clock,
-  only idle, Stop, run-owner proof, and an optional user-set budget
-  (`turn-runs-until-finished-not-wall-clock`). A "turn" ends when the model
+- **The turn runs until done.** The founder's rule already holds in
+  practice, though the code expresses "no cap" as a 30-day sentinel
+  (`universe_intelligence.py:272`). The coordinator enforces that sentinel
+  (`agent_turn_coordinator.py:416`), and it becomes a truly absent deadline.
+  Real turns stop only on idle, Stop, run-owner proof, or a budget the user
+  set (`turn-runs-until-finished-not-wall-clock`). A "turn" ends when the model
   stops calling tools.
 - **Steering.** A message arriving mid-turn is queued. At the next tool
   boundary the platform appends the queued messages to that tool's result as a
@@ -289,9 +297,14 @@ An ask is an app request (`write_graph target=pending_request`, later
 appears as prose in chat.
 
 **An approval is a standing grant** on that destination or scope, revocable in
-the app. It is not consent for one action. The per-turn "costly action still
-needs consent recorded THIS turn" replay is deleted. The effectors check the
-grant at call time.
+the app. It is not consent for one action. The effectors already work this way:
+`_check_consent` (`effectors/authenticated_external_call.py:643`) checks a
+standing grant by destination, sink and revocation, with no turn identity
+(`storage/effector_consents.py:250`), and those guards stay as they are. What
+is wrong is the guidance. The conversation-memory footer still tells the model
+that "a costly action still needs consent recorded THIS turn"
+(`conversation_memory.py:158`), so it asks again for things it already holds.
+That line and similar prompt text are deleted (Codex review finding 3).
 
 **Unchanged floor:** other users' data, the host, credential blindness (the
 vault and the credential-blind proxy), per-tenant quota, and jail resource
@@ -313,8 +326,10 @@ user and is edited by the agent. Its core, about 300 tokens:
 > MEMORY.md current, save a skill when I solve something new or get corrected,
 > and edit this file when my founder tells me how to work.
 
-Name, voice and identity remain the agent's own files (`identity.md`,
-`voice.md`, now folded into `AGENTS.md`). The untrusted-envelope rule stays in
+Identity stays in `identity.md`: the persona name still comes from the
+learned self-model, as the existing personification spec requires. Only the
+platform-authored tone and behaviour text moves into `AGENTS.md`. `voice.md`
+keeps working until S6 folds it in. The untrusted-envelope rule stays in
 the base prompt, because it is a cross-user boundary.
 
 ### 3.7 Feedback loop
@@ -343,9 +358,20 @@ the base prompt, because it is a cross-user boundary.
   - `settings.yaml` (model preference, compaction thresholds, reserve,
     session defaults)
   - the brain files (OKF kept)
-- **Versioning.** `/u` is a universe-local git repository. At turn end the
-  platform commits changed tracked paths with the session and turn id as the
-  message. `.runtime/`, `sessions/` and package caches are ignored. Rollback
+- **Versioning.** At turn end the platform snapshots the changed tracked paths
+  into a history store under `.runtime/harness-history/`. The commit message
+  carries the session and turn id. The store is a bare git repository that the
+  agent cannot write or delete.
+  - Git never runs on the host against agent-written content. The commit runs
+    as a process inside a credential-free tool jail, with `/u` read-only and
+    only the history store writable, and with hooks, filters, `core.*` and
+    attributes all disabled.
+  - An agent-written `.git/hooks` or a filter config therefore never executes
+    outside the jail (Codex review finding 5; `workspace_git.py:3` forbids
+    host git on user-controlled repos for this reason).
+  - The agent may keep its own git repository in `/u` for its own use, which
+    is separate from the history store.
+  - Package caches are not tracked. Rollback
   uses `git` from bash, `ta harness rollback <rev>`, or an **Undo** in the app.
   This is the code-level guard against a weak model blanking a file (see open
   question 2): any loss is one revert away. A turn that empties or more than
@@ -404,9 +430,9 @@ the base prompt, because it is a cross-user boundary.
   drops to the new budget.
 - `soul_edit` governance and `soul_versions/` for owner turns, and the
   `voice.md` special case.
-- Per-turn consent replay in the effectors (`_check_consent` callers in
-  `effectors/authenticated_external_call.py`, `effectors/workspace.py`)
-  becomes standing-grant checks.
+- The prompt text that teaches per-turn consent: the `conversation_memory.py:158`
+  footer, and any similar handbook text. The effectors' standing-grant checks
+  stay.
 - The 362 `.worker_supervisor.*.json` files at the universe root move to
   `.runtime/`. Leftover epoch-1 supervisor files with no live owner are
   deleted.
@@ -417,48 +443,83 @@ the base prompt, because it is a cross-user boundary.
    git reverts them. The founder's 09-26 rule (a code guard, not obedience)
    is answered by git rather than refusal. Measure per model family in each
    slice's live test.
-2. **Egress abuse from a shared host** (spam, scraping). The bandwidth and
-   connection-rate limits are per tenant, a floor (cross-user: shared IP
-   reputation). The usage ledger records bytes.
+2. **Egress safety and abuse** (Codex review finding 7).
+   - The filter is enforced at packet level, inside the jail's own network
+     namespace. It covers every protocol and both address families, and checks
+     each translated destination (NAT64/DNS64, as `storage/outbound_connections.py:1649`
+     already documents), not only the address the agent named.
+   - The host's own services and other universes' engine ports are never
+     routable.
+   - Per-tenant connection-rate and bandwidth limits protect the shared IP and
+     the box. These are host-protection floors, not usage quotas.
+   - S3 cannot land without a jail-proof test for each refused class.
 3. **Session logs hold sensitive tool output.** They are owner-only and never
    published. A commons publish refuses `sessions/` (old design §4).
 4. **Two authorities.** `conversation_store` and the session log must not both
    be model context. The session log is the model's, and the store is the
    owner door's projection of it. Delete the old path in the same slice.
-5. **Deploys kill live turns** (`deploy-kills-in-flight-turns`). A session
+5. **Writable root before trusted readers move** (Codex review finding 6). If
+   the agent could create a legacy `.effector_consents.db` at the root, the
+   daemon would read forged grants from it.
+   - S3 moves every trusted reader to `.runtime/` and removes each legacy
+     root-path fallback before the root becomes writable, in one change.
+   - Provider-launch and tool-jail views stay separate, and hidden-settings
+     masking stays (`provider_jail.py:251`).
+6. **Deploys kill live turns** (`deploy-kills-in-flight-turns`). A session
    survives, and the next event resumes it from the log, so a deploy loses at
    most one round, not the thread.
 
 ## 4. Slices (each independently shippable and proven live in the founder's app)
 
 1. **S1: Sessions, tone, authority.**
-   - Build: the main-thread and agent-node session log, resume through
-     declared `resume`, and pi-default compaction with a flush round. Seed
-     `AGENTS.md` replaces the persona prompt, and the per-turn consent line and
-     the separate learning call go.
-   - Founder sees: tiny remembers what it did three messages ago, including tool
-     output, replies in a few lines result-first, and acts without asking
-     inside its universe.
-   - Proof: a 20-message thread with tool work across app and phone, plus the
-     before/after ask rate, disclaimer rate and tokens per turn.
+   - Build:
+     - Every resume-capable adapter continues its native session, keyed by
+       thread or agent node. The native session state, which includes the
+       adapter's own tool calls and results, persists under `.runtime/`
+       instead of tmpfs, and `--ephemeral` goes.
+     - A resumed turn sends only the new message, plus any messages from
+       other surfaces the session has not seen.
+     - An editable `AGENTS.md`, seeded on first use and writable in the tool
+       jail, carries tone and authority. The persona's warmth, curiosity,
+       ask-to-clarify and per-turn-consent text goes.
+     - Native adapters compact themselves. Platform compaction for the HTTP
+       loop and `settings.yaml` land with S4 and S6.
+   - Founder sees: tiny remembers what it did and saw three messages ago,
+     replies in a few lines result-first, and acts without asking inside its
+     universe.
+   - Proof: a multi-message thread with tool work, plus the before/after ask
+     rate, disclaimer rate and tokens per turn.
 2. **S2: Wakes are events into the session, with steering.**
    - Build: agent-node sessions are resumed by events (#4171), steering at tool
      boundaries, the unread counter (#4170), and mechanical "since your last
      turn" messages.
    - Founder sees: a message sent while the background self works changes what
-     it does within one tool call. Wakes drop from about 1,300 a day to the
-     number of real events.
-   - Proof: a measured wake count and tokens per day, plus one live mid-run
-     steer.
+     it does within one tool call.
+   - Hypothesis to measure: wakes and tokens per day fall. A self-retriggering
+     loop is the user's own design, so the platform makes each wake cheap and
+     informative but does not cap wakes (Codex review finding 9).
+   - Proof: measured wakes and tokens per day before and after, plus one live
+     mid-run steer.
 3. **S3: Network, browser, toolchain, writable root.**
-   - Build: filtered egress, Chromium with a `browse` CLI, python/node/git in
-     the jail, and the `.runtime/` move (its own storage proposal).
+   - Build:
+     - Packet-level filtered egress for both address families (risk 2).
+     - Chromium with a `browse` CLI, and python/node/git in the jail.
+     - The `.runtime/` move: trusted readers first, then the writable root, in
+       one change with its own storage proposal (risk 5).
+     - A MODIFIED delta of the `universe-harness` jail requirement, once
+       `universe-harness-four-tools` has synced.
    - Founder sees: tiny can `pip install`, run pytest, clone a repo, read a web
      page and drive a site.
-   - Proof: a live task that needs all four, plus loopback and metadata refused.
-4. **S4: Truthful tools, full journal.**
-   - Build: native tool events journaled, oversized output spilled to a file,
-     one-line real causes, and live tool activity in the app.
+   - Proof: a live task that needs all four, plus a jail-proof refusal for
+     every blocked address class.
+4. **S4: Truthful tools, full journal, platform session log.**
+   - Build:
+     - Native tool events journaled.
+     - A platform session log with compaction for the HTTP loop, run on the
+       universe's own model.
+     - Oversized output spilled to a file.
+     - One-line real causes.
+     - Live tool activity in the app.
    - Founder sees: every tool call tiny made, live and afterwards. No
      "truncated" dead ends.
    - Proof: a `read_graph` larger than the budget is read in full from its file
@@ -470,29 +531,42 @@ the base prompt, because it is a cross-user boundary.
    - Proof: input tokens per round before and after, and every engine
      capability still reachable.
 6. **S6: Self-improvement with versioning.**
-   - Build: git auto-commit, Undo in the app, `MEMORY.md`, `settings.yaml`, the
-     skill-save habit, and seed curator and review workflows. Delete
-     `read_brain`/`write_brain`/`soul_edit` for owner turns.
-   - Founder sees: tiny writes skills from its own work, and a bad
-     self-edit is one tap to undo.
+   - Build:
+     - A jailed history store with Undo in the app.
+     - `MEMORY.md` and `settings.yaml`.
+     - The skill-save habit, and seed curator and review workflows the
+       universe can edit.
+     - Delete `read_brain`/`write_brain`/`soul_edit` and the separate
+       learning call for owner turns.
+   - Founder sees: tiny writes skills from its own work, and a bad self-edit is
+     one tap to undo.
    - Proof: tiny saves a skill and reuses it in a new session, and an Undo
      restores `AGENTS.md`.
-7. **S7: Outward actions on standing grants.**
-   - Build: `ta connect call` (credential-blind), grants per destination,
-     batched asks, and per-turn consent deleted from the effectors.
+7. **S7: Outward actions without friction.**
+   - Build:
+     - `ta connect` (`call`, `ask`) on the existing credential-blind effectors
+       and standing destination grants, whose checks stay unchanged.
+     - Batched asks in the request rail.
+     - Removal of any remaining guidance that implies per-action consent.
    - Founder sees: one approval, then it keeps posting and opening PRs to that
      destination without asking again.
    - Proof: a granted repo PR from a background wake with the founder signed out.
 8. **S8: Every universe gets the harness. Delete the old surface.**
-   - Build: seed new universes with the founder's harness subtree (`AGENTS.md`,
-     skills, prompts, workflows, `settings.yaml`), and remove the replaced
-     engine handles and resident guidance.
+   - Build:
+     - New universes are seeded from an explicitly published, reviewed
+       starter template, never the founder's live private subtree (Codex
+       review finding 8).
+     - The replaced engine handles and resident guidance are removed.
    - Founder sees: a second account's agent behaves the same way.
    - Proof: `ui-test` on a fresh account and the public canary with
      `--assert-handles`.
 
 S1 and S2 are where the felt drag is. S3 removes tiny's own listed blockers.
 S5 and S8 are the efficiency payoff.
+
+**Review record.** gpt-6-astra refute review of 04983ba2, 2026-10-01: ADAPT.
+Findings 2–10 are folded in above. The production numbers in §2 are
+measurements and were not re-run by the reviewer.
 
 ## 5. Open questions for the founder
 

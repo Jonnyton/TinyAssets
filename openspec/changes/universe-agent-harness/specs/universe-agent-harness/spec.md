@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A universe agent works in a persisted session per thread or agent node
-The platform SHALL keep one durable, append-only session per conversation thread and one per agent node (keyed by branch definition and node), recording every message, tool call, tool result, compaction and event, and SHALL build each model request from that session rather than from a re-rendered text summary of recent messages. The session log SHALL be readable by the owning universe's agent and writable only by the platform.
+The platform SHALL keep one durable, append-only session per conversation thread and one per agent node (keyed by branch definition and node), recording every message, tool call, tool result, compaction and event, and SHALL build each model request from that session rather than from a re-rendered text summary of recent messages. The session log SHALL be held in platform-owned storage, exposed to the owning universe's agent only through a read-only view, and writable only by the platform.
 
 #### Scenario: a follow-up sees the agent's own earlier tool work
 - **WHEN** the founder sends a message after a turn in the same thread that called tools
@@ -17,7 +17,7 @@ The platform SHALL keep one durable, append-only session per conversation thread
 - **THEN** the write is refused and the log is unchanged
 
 ### Requirement: Sessions compact automatically with a pre-compaction flush
-When a session's projected context exceeds the model window minus a reserve, the platform SHALL first give the agent one round to write durable notes to its files, then replace older entries in model context with a structured summary that keeps tool call and result pairs together, while the original entries remain in the log. Thresholds SHALL be read from the universe's own settings file with defaults of a 16,000-token reserve and 20,000 recent tokens kept verbatim.
+When a session's projected context exceeds the model window minus a reserve, the platform SHALL first give the agent one round to write durable notes to its files, then, using the universe's own model and credentials with no platform fallback, replace older entries in model context with a structured summary that keeps tool call and result pairs together, while the original entries remain in the log. Thresholds SHALL be read from the universe's own settings file with defaults of a 16,000-token reserve and 20,000 recent tokens kept verbatim.
 
 #### Scenario: a long session keeps working past the window
 - **WHEN** a session grows beyond the model window minus the reserve
@@ -85,7 +85,7 @@ A primary agent's default authority SHALL include every action inside its own un
 - **THEN** that agent is refused the removed tools and other agents keep the default
 
 ### Requirement: The harness is files the agent edits, versioned with rollback
-Turn assembly SHALL be mechanical: a base prompt, then the universe's `AGENTS.md`, then a bounded `MEMORY.md`, then the skill index, then the session. The agent SHALL be able to edit `AGENTS.md`, `MEMORY.md`, its skills, prompts, extensions and settings file, and the platform SHALL record every turn's changes to tracked universe files as a commit in a universe-local git repository that the owner can roll back from the app.
+Turn assembly SHALL be mechanical: a base prompt, then the universe's `AGENTS.md`, then a bounded `MEMORY.md`, then the skill index, then the session. The agent SHALL be able to edit `AGENTS.md`, `MEMORY.md`, its skills, prompts, extensions and settings file, and the platform SHALL record every turn's changes to tracked universe files in a platform-owned history store the agent cannot write, with any version-control process run inside a credential-free jail rather than on the host, and the owner SHALL be able to roll back from the app.
 
 #### Scenario: a told preference changes the next turn
 - **WHEN** the founder tells the agent how to work and the agent edits `AGENTS.md`
