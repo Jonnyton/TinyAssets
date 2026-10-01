@@ -16,6 +16,8 @@ HEARTBEAT_MAX_AGE_SECONDS="${TINYASSETS_HEARTBEAT_MAX_AGE_SECONDS:-900}"
 # heartbeat is allowed to condemn it (see within_heartbeat_grace).
 HEARTBEAT_GRACE_MARGIN_SECONDS="${TINYASSETS_HEARTBEAT_GRACE_MARGIN_SECONDS:-120}"
 LOCK_FILE="${TINYASSETS_DAEMON_WATCHDOG_LOCK:-/run/tinyassets-daemon-watchdog.lock}"
+# The lock deploy/deploy_fail_safe.sh holds for its whole run (its LOCK_FILE).
+HOST_MUTATION_LOCK="${TINYASSETS_HOST_MUTATION_LOCK:-/var/lock/tinyassets-host-mutation.lock}"
 LOG_TAG="daemon-watchdog"
 
 log() {
@@ -181,6 +183,21 @@ main() {
     if ! flock -n 9; then
         log "another watchdog run is active; exiting"
         exit 0
+    fi
+
+    # Stand down while a deploy holds the host-mutation lock. A deploy's own
+    # recreate leaves the unit inactive and the container briefly absent, which
+    # reads as dead here. On 2026-10-01 this script restarted the container
+    # mid-deploy and helped kill the new image and fail the rollback
+    # (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+    # Opened for READING and never created: `<` cannot make the file, so a run
+    # here can never leave a lock file the deploy cannot open. fd 8 stays held
+    # through any restart below, so a deploy waits for us in turn.
+    if [[ -e "$HOST_MUTATION_LOCK" ]]; then
+        if exec 8<"$HOST_MUTATION_LOCK" && ! flock -n 8; then
+            log "a deploy holds ${HOST_MUTATION_LOCK}; standing down"
+            exit 0
+        fi
     fi
 
     if ! command -v docker >/dev/null 2>&1; then

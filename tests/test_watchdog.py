@@ -405,3 +405,84 @@ def test_gh_issue_failure_does_not_crash_watchdog(state_path):
     # Watchdog should still complete normally.
     assert state is not None
     assert len(gh.calls) == 1
+
+
+# ---- standing down while a deploy holds the host-mutation lock ------------
+#
+# 2026-10-01: a deploy's own recreate read as three reds, this watchdog ran
+# `systemctl restart`, and the unit's second compose run killed the new
+# container and failed the rollback
+# (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+
+
+def _lock_held():
+    import contextlib
+
+    @contextlib.contextmanager
+    def held():
+        yield False
+
+    return held
+
+
+def test_a_held_host_mutation_lock_suppresses_probe_and_restart(state_path, alarm_path):
+    recorder = _RestartRecorder()
+    probes: list[int] = []
+
+    def probe():
+        probes.append(1)
+        return (False, "connection refused")
+
+    for _ in range(5):
+        state = watchdog_tick(
+            state_file=state_path, probe_fn=probe, restart_fn=recorder,
+            alarm_log=alarm_path, host_mutation_lock=_lock_held(),
+        )
+    assert recorder.calls == []
+    assert probes == [], "a deploy in progress must not even be probed"
+    assert state["consecutive_reds"] == 0
+
+
+def test_reds_counted_before_a_deploy_do_not_carry_across_it(state_path, alarm_path):
+    """Two reds, then the deploy's lock, then one red: no restart.
+
+    Without the reset, the first red after the deploy releases the lock would be
+    red #3 and restart the daemon the deploy just brought up.
+    """
+    recorder = _RestartRecorder()
+    for _ in range(2):
+        watchdog_tick(state_file=state_path, probe_fn=_red_probe(),
+                      restart_fn=recorder, alarm_log=alarm_path)
+    watchdog_tick(state_file=state_path, probe_fn=_red_probe(), restart_fn=recorder,
+                  alarm_log=alarm_path, host_mutation_lock=_lock_held())
+    state = watchdog_tick(state_file=state_path, probe_fn=_red_probe(),
+                          restart_fn=recorder, alarm_log=alarm_path)
+    assert recorder.calls == []
+    assert state["consecutive_reds"] == 1
+
+
+def test_an_absent_lock_file_does_not_block_and_is_not_created(tmp_path):
+    lock = tmp_path / "host-mutation.lock"
+    with _watchdog_module._host_mutation_lock(lock) as free:
+        assert free is True
+    assert not lock.exists(), (
+        "the watchdog must never create the deploy's lock file: under "
+        "fs.protected_regular=2 root's `exec 9>` on a file this user owns fails")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX-only")
+def test_the_real_lock_reports_held_while_another_holder_has_it(tmp_path):
+    import fcntl
+    import os
+
+    lock = tmp_path / "host-mutation.lock"
+    lock.write_text("", encoding="utf-8")
+    holder = os.open(lock, os.O_RDONLY)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with _watchdog_module._host_mutation_lock(lock) as free:
+            assert free is False
+    finally:
+        os.close(holder)
+    with _watchdog_module._host_mutation_lock(lock) as free:
+        assert free is True
