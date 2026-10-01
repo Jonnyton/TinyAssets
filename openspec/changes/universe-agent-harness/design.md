@@ -851,6 +851,22 @@ is authority, and its proposal, design and spec deltas are this change.
 12. Live proof: approve once, then reuse. A hand-back becomes a request. A
     workflow created by a narrowed agent is refused what that agent is refused.
 
+*As built (2026-10-01, lead decision).* D1 ships as D1a, D1b and D1d:
+- **D1a:** the rules store, `decide`, the seed and the owner door.
+- **D1b:** declared operation kinds and the Rules editor.
+- **D1d:** the auto-review on the run's own model and the per-class switch.
+
+The execution context (tasks 2–3) is **folded into D8**. While "main" is the
+only agent, every action is already decided under main's rules, so it adds
+nothing earlier. Its two pieces that matter sooner land where they are first
+needed:
+- the research flag with D3;
+- the approval id with D2/D3. Until then, *if pre-approved* asks first, which
+  fails closed.
+
+Enforcement so far is at the credential-blind effector. The other points follow
+the surfaces that need them (`ta` in D6, `browse` in D5).
+
 **D2: Activities** (storage proposal first)
 1. Write the storage proposal: records, pending effects, idempotency keys,
    leases.

@@ -385,6 +385,11 @@ class EffectChain:
     #: persisted on interrupt and seeded on resume.
     rpc_calls: int = 0
     invocation_depth: int = 0
+    #: The run's own provider call, for the auto-review of a consequential
+    #: action (harness D1d), and whether this chain belongs to a runner at all.
+    #: The legacy post-run dispatcher has no runner and no run model.
+    review_provider: Any = field(default=None, repr=False)
+    review_active: bool = False
     #: Usage budgets (change `run-usage-budgets`): what this RUN has dispatched
     #: and moved; the hourly half is in the admissions ledger under
     #: ``universe_id``. Graph shape is unbounded; this is what bounds it.
@@ -875,7 +880,10 @@ def _fire_node_effects(
                 adapter_kwargs["timeout_seconds"] = float(
                     getattr(node, "timeout_seconds", 0.0) or 0.0
                 )
-            result = adapter(**adapter_kwargs)
+            from tinyassets.agent_review import bound as review_bound
+
+            with review_bound(chain.review_provider, active=chain.review_active):
+                result = adapter(**adapter_kwargs)
         except Exception as exc:  # defensive: never raise from an adapter
             if is_cancellation(exc):
                 # The owner stopped the run. Recording it as one node's crash

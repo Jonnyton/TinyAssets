@@ -660,8 +660,18 @@ def _request_path(request: dict[str, Any]) -> str:
         return "/"
 
 
+def _review_evidence(request: dict[str, Any]) -> str:
+    """The request's own body, bounded, for the auto-review (untrusted there)."""
+    body = request.get("body", request.get("json"))
+    try:
+        text = body if isinstance(body, str) else json.dumps(body, default=str)
+    except (TypeError, ValueError):
+        text = ""
+    return (text or "")[:2000]
+
+
 def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
-                  path: str = "/") -> dict[str, Any] | None:
+                  path: str = "/", *, evidence: str = "") -> dict[str, Any] | None:
     """``None`` when the owner's rules let this call proceed, else a refusal.
 
     What the call MEANS comes from the owner's declarations for this connection
@@ -684,7 +694,16 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
             "hint": "Your rules could not be read, so nothing was sent.",
         }
     if decision.proceeds:
-        return None
+        # Allowed by the rules: a consequential action is still checked on the
+        # run's own model first (harness D1d), which can only hold it.
+        from tinyassets.agent_review import review_refusal
+
+        return review_refusal(
+            universe_dir,
+            action={"action_class": action_class, "connection": connection_id,
+                    "operation": operation, "path": path},
+            rule=decision.reason, evidence=evidence,
+        )
     if decision.behaviour == agent_rules.HAND_OFF:
         return {
             "dry_run": True,
@@ -1064,7 +1083,8 @@ def _run(
     # its grant would allow. Every call here counts as a write until connections
     # declare their operation kinds (D1b). A rule store that cannot be read
     # refuses the call; it never falls back to allowing it.
-    rule_refusal = _rule_refusal(universe_dir, connection_id, verb, _request_path(request))
+    rule_refusal = _rule_refusal(universe_dir, connection_id, verb, _request_path(request),
+                                 evidence=_review_evidence(request))
     if rule_refusal is not None:
         return {
             **rule_refusal,
