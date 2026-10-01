@@ -69,6 +69,7 @@ __all__ = [
     "ensure_migrated",
     "is_migrated",
     "is_tombstone",
+    "migrated_platform_path",
     "migration_plan",
     "platform_name_for",
     "platform_path",
@@ -177,15 +178,13 @@ PLATFORM_NAMES: dict[str, PlatformName] = _entries(
     PlatformName(".engine_mcp_config.json", _FILE, RESET_RESETTABLE),
     PlatformName(".idle_cycle_stamp.json", _FILE, RESET_RESETTABLE),
     PlatformName("branch_tasks.json", _FILE, RESET_RESETTABLE),
+    PlatformName("branch_tasks_archive.json", _FILE, RESET_RESETTABLE),
     PlatformName(".pause", _FILE, RESET_OPERATIONAL),
     # Locks.
     PlatformName(".idle_cycle.lock", _FILE, RESET_OPERATIONAL),
     PlatformName(".provider-assignment-admission.lock", _FILE, RESET_OPERATIONAL),
     PlatformName(".soul.lock", _FILE, RESET_OPERATIONAL),
     PlatformName("branch_tasks.json.lock", _FILE, RESET_OPERATIONAL),
-    # Soul governance, until harness S6's history store retires it.
-    PlatformName("soul_versions", _DIR, RESET_RESETTABLE),
-    PlatformName("soul.edit.md", _FILE, RESET_RESETTABLE),
     # Supervisor heartbeats: one file per worker. No tombstones (unbounded).
     PlatformName(".worker_supervisor.", _PREFIX, RESET_RESETTABLE),
 )
@@ -266,6 +265,27 @@ def _universe_root(universe_dir: str | Path) -> Path:
     if not root.is_absolute():
         root = root.absolute()
     return root
+
+
+#: Directories under the data root that are never universes. Migrating one
+#: would move a backup's databases or a lease's files into a state directory.
+_NOT_UNIVERSES = frozenset({
+    "wiki", "scratch", "daemon_wikis", "cloud-automation-inputs",
+    "lance", "output", "runs",
+})
+#: Files only the DATA ROOT has. Their presence means "this is not a universe":
+#: a data root holds its own ``.runs.db``, ``outbound.db`` and ``ledger.json``,
+#: and migrating it would move the whole platform's stores.
+_DATA_ROOT_MARKERS = (".tinyassets.db", ".auth.db", ".storage_accounting.db")
+
+
+def _refuse_non_universe(root: Path) -> None:
+    name = root.name
+    if not name or name.startswith((".", "_")) or name in _NOT_UNIVERSES:
+        raise PlatformPathError(f"not a universe directory: {root}")
+    for marker in _DATA_ROOT_MARKERS:
+        if os.path.lexists(root / marker):
+            raise PlatformPathError(f"refusing to treat the data root as a universe: {root}")
 
 
 # --------------------------------------------------------------------------- #
@@ -448,6 +468,7 @@ def ensure_migrated(universe_dir: str | Path) -> Path:
         # that goes on to create the store makes the directories itself, and
         # the first resolve after that writes the marker.
         return root / STATE_DIR
+    _refuse_non_universe(root)
     state = _state_dir(root, create=True)
     with _exclusive(state / _LOCK_NAME):
         if not is_migrated(root):
@@ -524,3 +545,20 @@ def platform_path(universe_dir: str | Path, name: str) -> Path:
     if os.path.lexists(state.parent.parent):
         _state_dir(state.parent.parent, create=False)
     return state / name
+
+
+def migrated_platform_path(universe_dir: str | Path, name: str) -> Path | None:
+    """``name``'s location in an ALREADY-migrated universe, or ``None``.
+
+    For readers that enumerate directories under the data root: they must
+    never migrate (or create ``.runtime/state`` in) a directory just because
+    it sits there -- a backup, the wiki or the scratch pool would have its
+    contents moved. Daemon start migrates every registered universe first.
+    """
+    if platform_name_for(name) is None or "/" in name or "\\" in name:
+        raise PlatformPathError(f"not a platform name of a universe: {name!r}")
+    root = _universe_root(universe_dir)
+    if not is_migrated(root):
+        return None
+    _state_dir(root, create=False)
+    return root / STATE_DIR / name

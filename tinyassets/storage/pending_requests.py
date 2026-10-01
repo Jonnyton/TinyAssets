@@ -41,6 +41,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +269,7 @@ def _migrate_itemless_keys(conn: sqlite3.Connection) -> int:
 
 
 def _db(universe_dir: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(Path(universe_dir) / _DB_NAME), timeout=10.0)
+    conn = sqlite3.connect(str(platform_path(universe_dir, _DB_NAME)), timeout=10.0)
     conn.executescript(_SCHEMA)
     _ensure_columns(conn)
     _migrate_itemless_keys(conn)
@@ -507,7 +508,7 @@ def list_pending(universe_dir: Path) -> list[dict[str, Any]]:
     A universe that has never had a request has no store yet, and that one IS
     empty.
     """
-    if not (Path(universe_dir) / _DB_NAME).exists():
+    if not platform_path(universe_dir, _DB_NAME).exists():
         return []
     with _db(universe_dir) as conn:
         rows = conn.execute(

@@ -272,3 +272,37 @@ def test_every_registry_entry_has_a_known_reset_disposition():
         assert up.PLATFORM_NAMES[name].reset == up.RESET_CREDENTIAL
     for name in (".external_write_receipts.db", ".idempotency.db", ".runs.db"):
         assert up.PLATFORM_NAMES[name].reset == up.RESET_AUDIT
+
+
+@pytest.mark.parametrize("name", ["wiki", "scratch", "_backup_subject_migration_1", ".hidden"])
+def test_a_directory_that_is_not_a_universe_is_never_migrated(tmp_path, name):
+    root = tmp_path / name
+    root.mkdir()
+    (root / ".runs.db").write_text("a backup's runs")
+
+    with pytest.raises(up.PlatformPathError):
+        up.platform_path(root, ".runs.db")
+
+    assert (root / ".runs.db").read_text() == "a backup's runs"
+    assert not (root / ".runtime").exists()
+
+
+def test_the_data_root_is_never_migrated(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / ".tinyassets.db").write_text("root db")
+    (data / "outbound.db").write_text("the platform's ledger")
+
+    with pytest.raises(up.PlatformPathError, match="data root"):
+        up.ensure_migrated(data)
+
+    assert (data / "outbound.db").read_text() == "the platform's ledger"
+
+
+def test_an_enumerator_never_migrates(tmp_path):
+    root = _universe(tmp_path)
+    (root / "provider_definitions.json").write_text("[]")
+
+    assert up.migrated_platform_path(root, "provider_definitions.json") is None
+    assert (root / "provider_definitions.json").exists()
+    assert not (root / ".runtime").exists()

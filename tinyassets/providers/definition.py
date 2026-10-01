@@ -44,6 +44,7 @@ from typing import Any
 
 from tinyassets.api.helpers import _universe_dir
 from tinyassets.providers.wire_dialects import known_names
+from tinyassets.universe_paths import migrated_platform_path, platform_path
 
 ACCESS_METHODS = ("subscription_cli", "api_key_http")
 VISIBILITIES = ("private", "commons")
@@ -155,7 +156,7 @@ def _validate(
 
 
 def _store_path(universe_id: str) -> Path:
-    return _universe_dir(universe_id) / _STORE_FILENAME
+    return platform_path(_universe_dir(universe_id), _STORE_FILENAME)
 
 
 def _load(universe_id: str) -> list[dict[str, Any]]:
@@ -332,8 +333,8 @@ def list_commons_definitions(base: str | Path) -> list[dict[str, Any]]:
     if not root.is_dir():
         return views
     for child in sorted(root.iterdir()):
-        store = child / _STORE_FILENAME
-        if not store.is_file():
+        store = migrated_platform_path(child, _STORE_FILENAME)
+        if store is None or not store.is_file():
             continue
         try:
             rows = json.loads(store.read_text(encoding="utf-8"))

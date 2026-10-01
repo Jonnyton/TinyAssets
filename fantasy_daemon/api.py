@@ -40,6 +40,7 @@ from tinyassets.universe_soul import (
     read_universe_soul,
     write_universe_soul,
 )
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger("fantasy_daemon.api")
 
@@ -428,7 +429,7 @@ def _read_universe_info(udir: Path, uid: str) -> dict[str, Any]:
     }
 
     # Enrich with status data if available
-    status_path = udir / "status.json"
+    status_path = platform_path(udir, "status.json")
     if status_path.exists():
         try:
             data = json.loads(status_path.read_text(encoding="utf-8"))
@@ -999,7 +1000,7 @@ def get_status(uid: str, _user: str = Depends(_require_auth)) -> dict[str, Any]:
     report stale status as live activity.
     """
     udir = _validate_universe_id(uid)
-    status_path = udir / "status.json"
+    status_path = platform_path(udir, "status.json")
     if not status_path.exists():
         return {
             "daemon_state": "idle",
@@ -1145,7 +1146,7 @@ def get_overview(uid: str, _user: str = Depends(_require_auth)) -> dict[str, Any
     udir = _validate_universe_id(uid)
 
     # Status
-    status_path = udir / "status.json"
+    status_path = platform_path(udir, "status.json")
     if status_path.exists():
         try:
             status = json.loads(status_path.read_text(encoding="utf-8"))
@@ -1295,7 +1296,7 @@ def _find_db_path(udir: Path) -> str | None:
             pass
 
     # Fallback: story.db in the universe directory
-    story_db = udir / "story.db"
+    story_db = platform_path(udir, "story.db")
     if story_db.exists():
         return str(story_db)
 
@@ -2552,7 +2553,7 @@ def daemon_control(
             except Exception:
                 pass
             try:
-                pause_path = Path(_daemon._universe_path) / ".pause"
+                pause_path = platform_path(_daemon._universe_path, ".pause")
                 pause_path.write_text(
                     datetime.now(timezone.utc).isoformat(), encoding="utf-8",
                 )
@@ -2579,7 +2580,7 @@ def daemon_control(
             except Exception:
                 pass
             try:
-                pause_path = Path(_daemon._universe_path) / ".pause"
+                pause_path = platform_path(_daemon._universe_path, ".pause")
                 if pause_path.exists():
                     pause_path.unlink()
             except Exception:

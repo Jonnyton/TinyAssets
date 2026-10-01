@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tinyassets.conversation_failure import failure_column_sql, project_failure_row
+from tinyassets.universe_paths import platform_path
 
 CONTEXT_REF = {"$automation_context": "v1"}
 MAX_CONTEXT_BYTES = 1024 * 1024
@@ -46,7 +47,7 @@ def _brain(root: Path) -> dict[str, Any]:
 def _conversation(root: Path, owner_principal_id: str) -> dict[str, Any]:
     if not isinstance(owner_principal_id, str) or not owner_principal_id.strip():
         raise ValueError("automation_context_owner_required")
-    path = _contained(root, root / ".conversation_memory.db")
+    path = _contained(root, platform_path(root, ".conversation_memory.db"))
     if not path.exists():
         return {"available": False, "messages": [], "older_messages_omitted": False}
     # No schema writes, migrations, caller-selected session or foreign path.

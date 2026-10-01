@@ -51,7 +51,9 @@ def _workspace(udir: Path, uid: str, now: float) -> dict:
         "allocation_scope": "universe_local_workspace_ledger",
     }
     try:
-        with _readonly(udir / ".runs.db") as conn:
+        from tinyassets.runs import universe_runs_db_path
+
+        with _readonly(universe_runs_db_path(udir)) as conn:
             ledger = conn.execute(
                 "SELECT kind,COALESCE(SUM(amount),0),MIN(created_at) FROM workspace_ledger "
                 "WHERE universe_id=? AND created_at>=? AND created_at<=? GROUP BY kind",

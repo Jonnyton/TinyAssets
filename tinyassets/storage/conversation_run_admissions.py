@@ -24,6 +24,7 @@ from tinyassets.conversation_failure import failure_notice, normalize_turn_failu
 from tinyassets.runs import _insert_run_in_transaction, initialize_runs_db, runs_db_path
 from tinyassets.storage import db_path
 from tinyassets.storage.current_home import check_current_home
+from tinyassets.universe_paths import platform_path
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversation_run_admissions (
@@ -460,7 +461,7 @@ def _reply_execution(conn, row, content):
 def _write_pair(scope, row):
     """One conversation transaction, no runs connection or provider lock inside."""
     scope.check()
-    path = scope.home / ".conversation_memory.db"
+    path = platform_path(scope.home, ".conversation_memory.db")
     if path.exists() or path.is_symlink():
         _plain(path)
     terminal = json.loads(row["terminal_json"])

@@ -22,6 +22,7 @@ from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
 from tinyassets.platform_runtime_provenance import (
     require_process_cloud_admission,
 )
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -883,7 +884,7 @@ class AssignedQueueConsumer:
             self._automation_runs.add(run_id)
 
     def _paused(self, universe_id: str) -> bool:
-        return (self.base_path / universe_id / ".pause").exists()
+        return platform_path(self.base_path / universe_id, ".pause").exists()
 
     def _record_reason(
         self,
@@ -1007,8 +1008,8 @@ class AssignedQueueConsumer:
         universe = self.base_path / universe_id
         universe.mkdir(parents=True, exist_ok=True)
         filename = supervisor_heartbeat_filename(self.consumer_id)
-        target = universe / filename
-        temporary = universe / f"{filename}.tmp"
+        target = platform_path(universe, filename)
+        temporary = platform_path(universe, f"{filename}.tmp")
         temporary.write_text(json.dumps(beat), encoding="utf-8")
         temporary.replace(target)
 

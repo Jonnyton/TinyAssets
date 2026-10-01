@@ -37,6 +37,7 @@ from tinyassets.providers.owner_binding import (
     CONNECT_PROVIDER_MESSAGE as _CONNECT_PROVIDER_MESSAGE,
 )
 from tinyassets.storage import db_path
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -965,7 +966,7 @@ class ProviderAssignmentAdmission:
     def _file_lock(universe_dir: str | Path, *, exclusive: bool) -> Iterator[None]:
         universe = Path(universe_dir).resolve(strict=False)
         universe.mkdir(parents=True, exist_ok=True)
-        handle = (universe / ".provider-assignment-admission.lock").open("a+b")
+        handle = platform_path(universe, ".provider-assignment-admission.lock").open("a+b")
         try:
             if os.name == "nt":
                 import msvcrt

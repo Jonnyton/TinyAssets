@@ -69,6 +69,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -237,11 +238,11 @@ def try_acquire_idle_cycle_slot(
     universe_path = Path(universe_path)
     me = (worker_id or resolve_worker_identity()).strip() or "host"
     window = foreign_fresh_s if foreign_fresh_s is not None else foreign_fresh_window_s()
-    stamp_path = universe_path / STAMP_FILENAME
+    stamp_path = platform_path(universe_path, STAMP_FILENAME)
 
     try:
         universe_path.mkdir(parents=True, exist_ok=True)
-        fd, contention_reason = _try_lock_nonblocking(universe_path / LOCK_FILENAME)
+        fd, contention_reason = _try_lock_nonblocking(platform_path(universe_path, LOCK_FILENAME))
         if fd is None:
             return IdleCycleSlot(False, f"{contention_reason}; skipping as {me!r}")
     except OSError as exc:

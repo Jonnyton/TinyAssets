@@ -93,7 +93,7 @@ class PushIntent:
 def _db(base_path: str | Path) -> Path:
     from tinyassets import runs
 
-    return runs.runs_db_path(base_path)
+    return runs.universe_runs_db_path(base_path)
 
 
 def _connect(base_path: str | Path) -> sqlite3.Connection:

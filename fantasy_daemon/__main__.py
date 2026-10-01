@@ -64,6 +64,7 @@ from fantasy_daemon.providers.codex_provider import CodexProvider  # noqa: E402
 from fantasy_daemon.providers.ollama_provider import OllamaProvider  # noqa: E402
 from fantasy_daemon.providers.router import ProviderRouter  # noqa: E402
 from tinyassets.checkpointing import apply_configured_checkpoint_retention  # noqa: E402
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger("fantasy_author")
 
@@ -1723,8 +1724,10 @@ class DaemonController:
     ) -> None:
         self._universe_path = universe_path
         # Default DB paths inside the universe directory (not CWD)
-        self._db_path = db_path or str(Path(universe_path) / "story.db")
-        self._checkpoint_path = checkpoint_path or str(Path(universe_path) / "checkpoints.db")
+        self._db_path = db_path or str(platform_path(universe_path, "story.db"))
+        self._checkpoint_path = checkpoint_path or str(
+            platform_path(universe_path, "checkpoints.db")
+        )
 
         # Guard: DB paths must resolve inside the universe directory.
         # A CWD-relative path like "story.db" would silently load stale
@@ -1740,7 +1743,7 @@ class DaemonController:
                 uni_resolved,
                 uni_resolved,
             )
-            self._db_path = str(uni_resolved / "story.db")
+            self._db_path = str(platform_path(uni_resolved, "story.db"))
 
         cp_resolved = Path(self._checkpoint_path).resolve()
         if not cp_resolved.is_relative_to(uni_resolved):
@@ -1751,7 +1754,7 @@ class DaemonController:
                 uni_resolved,
                 uni_resolved,
             )
-            self._checkpoint_path = str(uni_resolved / "checkpoints.db")
+            self._checkpoint_path = str(platform_path(uni_resolved, "checkpoints.db"))
 
         self._no_tray = no_tray
         self._premise = premise
@@ -1779,7 +1782,7 @@ class DaemonController:
         self._last_status_write: float = 0.0
         self._STATUS_WRITE_COOLDOWN: float = 5.0  # seconds
         self._pinned_provider: str = pinned_provider
-        self._runtime_status_path = Path(universe_path) / ".runtime_status.json"
+        self._runtime_status_path = platform_path(universe_path, ".runtime_status.json")
         self._runtime_status_thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -1909,8 +1912,8 @@ class DaemonController:
         unowned file at whatever the process CWD happened to be).
         """
         uni_resolved = Path(self._universe_path).resolve()
-        kg_path = str(uni_resolved / "knowledge.db")
-        lance_path = str(uni_resolved / "lancedb")
+        kg_path = str(platform_path(uni_resolved, "knowledge.db"))
+        lance_path = str(platform_path(uni_resolved, "lancedb"))
 
         # Knowledge graph
         try:
@@ -2207,7 +2210,7 @@ class DaemonController:
                 # Internal config (serializable scalars only)
                 "_universe_path": str(output_dir),
                 "_db_path": self._db_path,
-                "_kg_path": str(Path(self._universe_path) / "knowledge.db"),
+                "_kg_path": str(platform_path(self._universe_path, "knowledge.db")),
             }
 
             config = {
@@ -2473,7 +2476,7 @@ class DaemonController:
                             break
 
                     # Pause support (thread event or .pause flag file)
-                    pause_file = Path(self._universe_path) / ".pause"
+                    pause_file = platform_path(self._universe_path, ".pause")
                     while (
                         self._paused.is_set() or pause_file.exists()
                     ) and not self._stop_event.is_set():
@@ -2777,7 +2780,7 @@ class DaemonController:
             "daemon_state": self.daemon_state,
             "last_updated": datetime.now(timezone.utc).isoformat(),
         }
-        status_path = Path(self._universe_path) / "status.json"
+        status_path = platform_path(self._universe_path, "status.json")
         with _status_lock:
             try:
                 status_path.write_text(

@@ -759,7 +759,7 @@ def _staging_root(base_path: Path, run_id: str, node_id: str) -> Path:
 def _pool_db(base_path: Path) -> Path:
     from tinyassets import runs
 
-    return runs.runs_db_path(base_path)
+    return runs.universe_runs_db_path(base_path)
 
 
 def _provision_checkout(
