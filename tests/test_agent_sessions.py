@@ -99,11 +99,43 @@ def test_a_record_resumes_only_on_its_own_adapter_model_and_prompt(tmp_path):
     assert agent_sessions.consumed_at(tmp_path, ref.key) == 100.0
 
 
-def test_records_live_under_runtime_where_the_tool_jail_cannot_reach(tmp_path):
-    ref = _ref(tmp_path)
+def test_records_live_outside_every_universe_folder(tmp_path):
+    """No jail binds the data root's record store, so nothing a universe runs
+    can plant a link the daemon writes through (gpt-6-astra refute of S1)."""
+    universe = tmp_path / "u-one"
+    universe.mkdir()
+    ref = _ref(universe)
     agent_sessions.save(ref, adapter="codex", model="", handle="h", system="")
-    files = [p.relative_to(tmp_path).parts[0] for p in tmp_path.rglob("*.json")]
-    assert files == [".runtime"]
+    assert not list(universe.rglob("*"))
+    records = list((tmp_path / agent_sessions.RECORDS_DIR / "u-one").glob("*.json"))
+    assert len(records) == 1
+
+
+@posix_only
+def test_a_planted_runtime_link_never_redirects_the_native_store(tmp_path):
+    """A workflow provider jail binds the universe read-write, .runtime included."""
+    universe = tmp_path / "u-one"
+    (universe / ".runtime").mkdir(parents=True)
+    victim = tmp_path / "u-other"
+    victim.mkdir()
+    (universe / ".runtime" / "agent-sessions").symlink_to(victim)
+    with pytest.raises(OSError):
+        agent_sessions.native_store(universe, "codex")
+    assert not list(victim.iterdir())
+
+
+@posix_only
+def test_the_native_file_check_never_follows_a_link(tmp_path):
+    universe = tmp_path / "u-one"
+    universe.mkdir()
+    store = agent_sessions.native_store(universe, "codex")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "rollout-x-abc.jsonl").write_text("{}")
+    (store / "linked").symlink_to(elsewhere)
+    assert not agent_sessions.native_file_exists(store, "abc.jsonl")
+    (store / "rollout-y-abc.jsonl").write_text("{}")
+    assert agent_sessions.native_file_exists(store, "abc.jsonl")
 
 
 def test_resumed_input_resends_instructions_only_when_they_changed(tmp_path):

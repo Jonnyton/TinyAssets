@@ -230,7 +230,7 @@ def _codex_session_exists(store: Path, thread_id: str) -> bool:
     if not _THREAD_ID.fullmatch(thread_id or ""):
         return False
     try:
-        return any(store.rglob(f"rollout-*{thread_id}.jsonl"))
+        return agent_sessions.native_file_exists(store, f"{thread_id}.jsonl")
     except OSError:
         return False
 

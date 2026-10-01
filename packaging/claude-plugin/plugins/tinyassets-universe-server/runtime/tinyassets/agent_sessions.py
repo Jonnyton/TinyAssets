@@ -14,9 +14,20 @@ under :func:`native_store`; this module only remembers which native session a
 key is on, so the next turn of the same key resumes it and sends just the new
 input. No vendor is named here: the handle is opaque to the platform.
 
-Everything lives under the universe's ``.runtime/`` directory, which is absent
-from the agent's tool jail, so the agent cannot forge which session it resumes
-or what that session contains.
+Two stores, kept apart on purpose:
+
+* The **record** (which native session a key is on) and its lock live in the
+  data root's ``.agent-sessions/<universe>/``, outside every universe folder.
+  No jail of any kind binds it, so no process the universe runs can plant a link
+  or a file the daemon then writes through or trusts (gpt-6-astra refute of
+  S1: a workflow provider jail binds the universe read-write, ``.runtime``
+  included).
+* The **native session files** must be visible to the adapter, so they live in
+  the universe's ``.runtime/agent-sessions/native/<adapter>/``. Every component
+  is created and opened without following a link, the daemon only ever
+  checks whether a file exists there (never following a link while walking),
+  and the provider jail refuses a bind whose source resolves outside the
+  universe.
 """
 
 from __future__ import annotations
@@ -27,6 +38,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -36,8 +48,11 @@ from tinyassets.providers.provider_jail import PLATFORM_RUNTIME_DIR
 
 logger = logging.getLogger(__name__)
 
-#: Where session records and native session files live, inside ``.runtime``.
+#: Native session files, inside the universe's ``.runtime``.
 SESSIONS_DIR = Path(PLATFORM_RUNTIME_DIR) / "agent-sessions"
+
+#: Records and locks, in the data root beside the universes, never inside one.
+RECORDS_DIR = ".agent-sessions"
 
 _ADAPTER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
@@ -66,17 +81,56 @@ class AgentSessionRef:
     built_at: float = 0.0
 
 
+def _records_dir(universe_dir: Path) -> Path:
+    root = Path(universe_dir)
+    path = root.parent / RECORDS_DIR / root.name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _record_path(universe_dir: Path, key: str) -> Path:
-    return Path(universe_dir) / SESSIONS_DIR / f"{digest(key)[:32]}.json"
+    return _records_dir(universe_dir) / f"{digest(key)[:32]}.json"
+
+
+def _nofollow_dirs(root: Path, parts: tuple[str, ...]) -> Path:
+    """Create and walk ``root/parts`` one component at a time, never following a link.
+
+    A component that already exists as a link (or as anything but a directory)
+    refuses, so a process that can write the universe cannot redirect where the
+    daemon creates directories. POSIX only: ``dir_fd`` and ``O_NOFOLLOW``.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(root, flags)
+    try:
+        for part in parts:
+            try:
+                os.mkdir(part, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    finally:
+        os.close(fd)
+    return root.joinpath(*parts)
 
 
 def native_store(universe_dir: Path, adapter: str) -> Path:
     """The persistent directory an adapter keeps its native session files in."""
     if not _ADAPTER.match(adapter or ""):
         raise ValueError(f"invalid adapter name for a session store: {adapter!r}")
-    path = Path(universe_dir) / SESSIONS_DIR / "native" / adapter
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return _nofollow_dirs(Path(universe_dir), (*SESSIONS_DIR.parts, "native", adapter))
+
+
+def native_file_exists(store: Path, name_suffix: str) -> bool:
+    """Whether a regular file ending in ``name_suffix`` is under ``store``.
+
+    Walks without following links and never opens what it finds.
+    """
+    for _dirpath, _dirs, files in os.walk(store, followlinks=False):
+        if any(name.endswith(name_suffix) for name in files):
+            return True
+    return False
 
 
 def load(universe_dir: Path, key: str) -> dict | None:
@@ -101,7 +155,6 @@ def save(ref: AgentSessionRef, *, adapter: str, model: str, handle: str, system:
     if not handle:
         return
     path = _record_path(ref.universe_dir, ref.key)
-    path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "version": 1,
         "key": ref.key,
@@ -112,9 +165,15 @@ def save(ref: AgentSessionRef, *, adapter: str, model: str, handle: str, system:
         "consumed_at": ref.built_at or time.time(),
         "updated_at": time.time(),
     }
-    tmp = path.with_suffix(f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(record), encoding="utf-8")
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".record-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record))
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
 
 
 def clear(ref: AgentSessionRef) -> None:
@@ -177,7 +236,6 @@ def exclusive(ref: AgentSessionRef | None) -> Iterator[bool]:
         yield False
         return
     lock_path = _record_path(ref.universe_dir, ref.key).with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         try:
