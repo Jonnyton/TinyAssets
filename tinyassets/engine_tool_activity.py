@@ -9,11 +9,25 @@ call's own result beyond two small local writes.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 
 from fastmcp.server.middleware import Middleware
 
 logger = logging.getLogger(__name__)
+
+#: Set by this middleware around each call. A raw tool (read/write/edit/bash)
+#: answers a refusal as plain text, so its handler records the refusal here
+#: (``note_refusal``) instead of the outcome being guessed from output text.
+_REFUSALS: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "tinyassets_tool_refusals", default=None)
+
+
+def note_refusal(message: str) -> None:
+    """A tool handler refused this call; record why for the activity log."""
+    holder = _REFUSALS.get()
+    if holder is not None:
+        holder.append(str(message))
 
 
 def _root():
@@ -67,14 +81,29 @@ class ToolActivity(Middleware):
             return await call_next(context)
         message = context.message
         tool = getattr(message, "name", "") or ""
-        handle = await asyncio.to_thread(
-            _start, session_key, tool, getattr(message, "arguments", None))
+        starting = asyncio.ensure_future(asyncio.to_thread(
+            _start, session_key, tool, getattr(message, "arguments", None)))
+        try:
+            handle = await asyncio.shield(starting)
+        except asyncio.CancelledError:
+            # Cancelled while the row was being written: finish what was started.
+            handle = await asyncio.gather(starting, return_exceptions=True)
+            _finish(handle[0] if not isinstance(handle[0], BaseException) else None,
+                    ok=False, error="cancelled")
+            raise
+        refusals: list[str] = []
+        token = _REFUSALS.set(refusals)
         try:
             result = await call_next(context)
+        except asyncio.CancelledError:
+            _finish(handle, ok=False, error="cancelled before it finished")
+            raise
         except Exception as exc:
             await asyncio.to_thread(_finish, handle, ok=False, error=str(exc))
             raise
+        finally:
+            _REFUSALS.reset(token)
         failed = bool(getattr(result, "is_error", False) or getattr(result, "isError", False))
-        await asyncio.to_thread(
-            _finish, handle, ok=not failed, error=_error_text(result) if failed else "")
+        error = refusals[0] if refusals else (_error_text(result) if failed else "")
+        await asyncio.to_thread(_finish, handle, ok=not (failed or refusals), error=error)
         return result

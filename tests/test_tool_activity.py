@@ -44,10 +44,10 @@ def test_a_failure_keeps_only_the_first_line_of_its_real_cause(tmp_path):
     universe = _universe(tmp_path)
     call = agent_activity.started(universe, THREAD, "write_graph", "target=automation")
     agent_activity.finished(universe, call, ok=False,
-                            error="refused: schedule id unknown\nTraceback ...")
+                            error="refused schedule id unknown\nTraceback ...")
     [failed] = agent_activity.recent(universe, THREAD)
     assert failed["state"] == "failed"
-    assert failed["error"] == "refused: schedule id unknown"
+    assert failed["error"] == "refused schedule id unknown"
 
 
 def test_newest_first_per_session_and_bounded(tmp_path, monkeypatch):
@@ -73,6 +73,7 @@ def test_since_drops_calls_from_an_earlier_turn(tmp_path):
 
 @pytest.mark.parametrize("tool, args, line", [
     ("bash", {"command": "pip install   rich"}, "pip install rich"),
+    ("bash", {"command": "pytest -q tests/x.py"}, "pytest -q tests/x.py"),
     ("read", {"path": "wiki/pages/a.md"}, "wiki/pages/a.md"),
     ("write_graph", {"target": "automation", "x": 1}, "target=automation"),
     ("get_status", {}, ""),
@@ -81,9 +82,42 @@ def test_the_summary_comes_from_the_calls_own_arguments(tool, args, line):
     assert agent_activity.summarize(tool, args) == line
 
 
-def test_a_long_summary_is_cut_to_one_bounded_line():
-    out = agent_activity.summarize("bash", {"command": "x" * 1000})
-    assert len(out) == agent_activity.MAX_LINE and out.endswith("…")
+def test_a_long_command_shows_its_first_words_only():
+    out = agent_activity.summarize("bash", {"command": " ".join(["echo"] * 40)})
+    assert out.endswith("…") and len(out) <= agent_activity.MAX_LINE
+
+
+# Synthetic credentials in every shape a command or an error can carry them.
+_URL_SECRET = "https://alice:example-secret@api.example.com/v1?access_token=example-token"
+_SECRETS = ("example-secret", "example-token", "alice", "sk_live_" + "Z" * 24,
+            "ghp_" + "a1" * 18)
+
+
+@pytest.mark.parametrize("command", [
+    f"curl {_URL_SECRET}",
+    "curl -H 'Authorization: Bearer sk_live_" + "Z" * 24 + "' https://api.example.com",
+    "export TOKEN=example-token && run",
+    "git clone https://ghp_" + "a1" * 18 + "@github.com/o/r.git",
+    "python tool.py --api-key=example-token",
+])
+def test_a_command_never_stores_a_credential(command):
+    out = agent_activity.summarize("bash", {"command": command})
+    assert not any(secret in out for secret in _SECRETS), out
+
+
+def test_a_url_keeps_only_its_scheme_and_host():
+    assert agent_activity.summarize("bash", {"command": f"curl {_URL_SECRET}"}) == (
+        "curl https://api.example.com")
+
+
+def test_an_error_line_never_stores_a_credential(tmp_path):
+    universe = _universe(tmp_path)
+    call = agent_activity.started(universe, THREAD, "bash", "curl")
+    agent_activity.finished(universe, call, ok=False,
+                            error=f"connect failed: {_URL_SECRET} (403)\nmore")
+    [row] = agent_activity.recent(universe, THREAD)
+    assert not any(secret in row["error"] for secret in _SECRETS), row["error"]
+    assert "https://api.example.com" in row["error"]
 
 
 def test_the_store_lives_outside_the_universe_folder(tmp_path):
@@ -114,7 +148,7 @@ def _drive(monkeypatch, tmp_path, session, call_next):
                                                       arguments={"command": "pytest -q"}))
     try:
         asyncio.run(engine_tool_activity.ToolActivity().on_call_tool(context, call_next))
-    except Exception:  # noqa: BLE001 - the case inspects what was recorded
+    except (Exception, asyncio.CancelledError):  # noqa: BLE001 - inspects what was recorded
         pass
     return agent_activity.recent(universe, session or THREAD)
 
@@ -135,6 +169,25 @@ def test_the_engine_records_a_refusal_with_its_cause(monkeypatch, tmp_path):
 
     [row] = _drive(monkeypatch, tmp_path, THREAD, refused)
     assert row["state"] == "failed" and row["error"].startswith("egress refused")
+
+
+def test_a_raw_tool_refusal_is_recorded_as_failed(monkeypatch, tmp_path):
+    """gpt-6-astra: read/write/edit/bash answer a refusal as text, so it was
+    recorded as done. The handler now reports it to the log, typed."""
+    async def refused_as_text(_context):
+        engine_tool_activity.note_refusal("path escapes the universe")
+        return _result("error: path escapes the universe")
+
+    [row] = _drive(monkeypatch, tmp_path, THREAD, refused_as_text)
+    assert row["state"] == "failed" and row["error"] == "path escapes the universe"
+
+
+def test_a_cancelled_call_is_never_left_running(monkeypatch, tmp_path):
+    async def cancelled(_context):
+        raise asyncio.CancelledError
+
+    [row] = _drive(monkeypatch, tmp_path, THREAD, cancelled)
+    assert row["state"] == "failed" and "cancelled" in row["error"]
 
 
 def test_a_call_with_no_session_is_not_recorded(monkeypatch, tmp_path):
@@ -185,7 +238,7 @@ def _page(tmp_path, tools):
 
 def test_the_status_line_says_the_running_tool(tmp_path):
     out = _page(tmp_path, [{"tool": "bash", "summary": "pytest -q", "state": "running"}])
-    assert out["line"] == "Your universe is thinking... · running bash: pytest -q"
+    assert out["line"] == "Your agent is thinking... · running bash: pytest -q"
 
 
 def test_the_status_line_says_a_failed_tool_and_why(tmp_path):

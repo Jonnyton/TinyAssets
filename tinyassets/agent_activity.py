@@ -19,10 +19,13 @@ keeps its latest :data:`KEEP_PER_SESSION` calls.
 
 from __future__ import annotations
 
+import re
+import shlex
 import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from tinyassets import agent_sessions
 
@@ -32,7 +35,8 @@ KEEP_PER_SESSION = 200
 MAX_LINE = 240
 
 _FILE = "activity.db"
-_SCHEMA = """CREATE TABLE IF NOT EXISTS tool_calls (
+_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS tool_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_key TEXT NOT NULL,
     tool TEXT NOT NULL,
@@ -40,14 +44,17 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS tool_calls (
     started_at REAL NOT NULL,
     finished_at REAL,
     ok INTEGER,
-    error TEXT)"""
+    error TEXT)""",
+    "CREATE INDEX IF NOT EXISTS tool_calls_session ON tool_calls(session_key, id)",
+)
 
 
 def _connect(universe_dir: Path) -> sqlite3.Connection:
     path = agent_sessions._records_dir(Path(universe_dir)) / _FILE
     conn = sqlite3.connect(path, timeout=5.0, isolation_level=None)
     conn.execute("PRAGMA busy_timeout = 5000")
-    conn.execute(_SCHEMA)
+    for statement in _SCHEMA:
+        conn.execute(statement)
     return conn
 
 
@@ -56,17 +63,75 @@ def _line(text: object) -> str:
     return one if len(one) <= MAX_LINE else one[: MAX_LINE - 1] + "…"
 
 
+# What a summary may keep, parsed token by token rather than pattern-matched
+# for secrets (a redactor that misses one shape leaks it): plain words, plain
+# flags, and plain relative paths. A URL keeps only its scheme and host.
+# Anything else -- a value after "=", userinfo, a long opaque string -- is
+# shown as an ellipsis, never stored.
+_WORD = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,31}")
+_FLAG = re.compile(r"--?[A-Za-z][A-Za-z0-9-]{0,31}")
+_PATH = re.compile(r"[A-Za-z0-9._/-]{1,80}")
+_OPAQUE = re.compile(r"[A-Za-z0-9_-]{24,}")
+_HIDDEN = "\u2026"
+
+
+def _safe_token(token: str) -> str:
+    # Punctuation around a word ("refused:", "(403)") is kept around its verdict.
+    core = token.strip("():,;!?\"'")
+    if core and core != token:
+        safe = _safe_token(core)
+        if safe == _HIDDEN:
+            return _HIDDEN
+        start = token.index(core)
+        return token[:start] + safe + token[start + len(core):]
+    if "://" in token:
+        try:
+            parts = urlsplit(token)
+        except ValueError:
+            return _HIDDEN
+        host = parts.hostname or ""
+        return f"{parts.scheme}://{host}" if parts.scheme and _PATH.fullmatch(host) else _HIDDEN
+    if _FLAG.fullmatch(token) or _WORD.fullmatch(token):
+        return token
+    if (_PATH.fullmatch(token) and ("/" in token or "." in token)
+            and not any(_OPAQUE.fullmatch(part) for part in token.split("/"))):
+        return token
+    return _HIDDEN
+
+
+def _safe_words(text: str, *, limit: int = 12) -> str:
+    try:
+        tokens = shlex.split(str(text or ""), posix=True)
+    except ValueError:
+        tokens = str(text or "").split()
+    shown: list[str] = []
+    for token in tokens[:limit]:
+        safe = _safe_token(token)
+        if not (safe == _HIDDEN and shown and shown[-1] == _HIDDEN):
+            shown.append(safe)
+    if len(tokens) > limit and shown[-1:] != [_HIDDEN]:
+        shown.append(_HIDDEN)
+    return _line(" ".join(shown))
+
+
 def summarize(tool: str, arguments: dict | None) -> str:
-    """One line saying what a call does, from its own arguments."""
+    """One safe line saying what a call does, from its own arguments."""
     args = arguments if isinstance(arguments, dict) else {}
     if tool == "bash":
-        return _line(args.get("command"))
+        return _safe_words(args.get("command"))
     if tool in ("read", "write", "edit"):
-        return _line(args.get("path"))
-    for key in ("target", "action", "operation", "name", "path"):
-        if args.get(key):
-            return _line(f"{key}={args.get(key)}")
+        return _safe_words(args.get("path"), limit=1)
+    for key in ("target", "action", "operation", "name"):
+        value = args.get(key)
+        if isinstance(value, str) and _WORD.fullmatch(value):
+            return f"{key}={value}"
     return ""
+
+
+def safe_error(text: str) -> str:
+    """The first line of a failure's cause, made safe the same way."""
+    first = str(text or "").strip().splitlines()
+    return _safe_words(first[0], limit=24) if first else ""
 
 
 def started(universe_dir: Path, session_key: str, tool: str, summary: str) -> int:
@@ -90,11 +155,10 @@ def started(universe_dir: Path, session_key: str, tool: str, summary: str) -> in
 
 def finished(universe_dir: Path, call_id: int, *, ok: bool, error: str = "") -> None:
     """Record how a call ended: ``ok``, or the first line of its real cause."""
-    first = str(error or "").strip().splitlines()
     with closing(_connect(universe_dir)) as conn:
         conn.execute(
             "UPDATE tool_calls SET finished_at = ?, ok = ?, error = ? WHERE id = ?",
-            (time.time(), 1 if ok else 0, _line(first[0]) if first else "", call_id),
+            (time.time(), 1 if ok else 0, safe_error(error), call_id),
         )
 
 

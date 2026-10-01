@@ -25,7 +25,6 @@ import logging
 import os
 import re
 import sqlite3
-import time
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +110,19 @@ def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001 - an unreadable journal is reported, not guessed
         _LOGGER.warning("agent turn activity unreadable: %s", type(exc).__name__)
         return {"state": "unreadable", "reason": type(exc).__name__}
+
+
+def _turn_started_epoch(turn_row: dict[str, Any]) -> float | None:
+    """The running turn's own start (``started_at``), as epoch seconds."""
+    from datetime import datetime
+
+    started = turn_row.get("started_at")
+    if not isinstance(started, str) or not started.endswith("Z"):
+        return None
+    try:
+        return datetime.fromisoformat(started[:-1] + "+00:00").timestamp()
+    except ValueError:
+        return None
 
 
 def _thread_tool_activity(
@@ -1814,8 +1826,7 @@ def get_status(
         # the owner's commands, and the owner sees their agent work live.
         turn_row = response["active_turn"]
         if isinstance(turn_row, dict) and turn_row.get("state") != "unreadable":
-            age = turn_row.get("age_s")
-            since = time.time() - float(age) if isinstance(age, (int, float)) else None
+            since = _turn_started_epoch(turn_row)
             tools = _thread_tool_activity(udir, permissions.current_actor_id(), since=since)
             if tools:
                 turn_row["tools"] = tools

@@ -66,7 +66,7 @@ _DECLS = (
     # Lines steered into a running turn (harness S2).
     r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;",
     # The tool-activity suffix on the status line (harness S4).
-    r"const TOOL_SEP=[^\n]*;",
+    r"const TOOL_SEP=[^\n]*;", r"const THINKING_LINE=[^\n]*;",
 )
 _FUNCS = (
     "formatMessageTimestamp", "appendMessage", "setStatusLine",

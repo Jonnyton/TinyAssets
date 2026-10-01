@@ -4174,6 +4174,9 @@ async def _universe_tool(op, /, **kwargs) -> str:
     try:
         return await asyncio.to_thread(op, udir, **kwargs)
     except (universe_tools.UniverseToolError, ProviderConfinementError) as exc:
+        from tinyassets.engine_tool_activity import note_refusal
+
+        note_refusal(str(exc))
         return f"error: {exc}"
 
 
