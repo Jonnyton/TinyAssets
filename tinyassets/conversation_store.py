@@ -70,6 +70,7 @@ from tinyassets.conversation_failure import (
 )
 from tinyassets.conversation_memory import DEFAULT_LIMIT, Msg
 from tinyassets.providers.execution_receipt import ExecutionReceipt, normalize_execution_receipt
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ def _lock_for(db_path: Path) -> threading.Lock:
 
 
 def _db_path(universe_dir: "str | Path") -> Path:
-    return Path(universe_dir) / _DB_NAME
+    return platform_path(universe_dir, _DB_NAME)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
