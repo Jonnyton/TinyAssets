@@ -18,27 +18,29 @@ later.
       with an always-update `ensureChannel`, iOS mic string, mobile/desktop
       loading pages, D9). Rebuild the plugin mirror.
 
-## C1. MCP surface
+## C1. MCP surface (clean cutover, D3/D4)
 
-- [ ] 1.1 Generate the exhaustive alias inventory (parameters, targets, enum
-      values, error codes, response keys) from the live schemas. Record it in
-      `command_center_aliases.py`, the single table (D3).
-- [ ] 1.2 First-party readers prefer the new key and fall back to the old one:
-      the app, the bridge, the website read contract, and
-      `mcp_tool_canary.py` (D4).
-- [ ] 1.3 Server: new names primary. Aliases at the MCP middleware (with
-      strict validation pinned off) and at the owner door / app routes before
-      validation. Migrate direct Python callers, with a test against retired
-      keywords. Dual response keys, a `deprecated_fields` note, the
-      `conflicting_alias` refusal, alias-hit logging, and `present_actor`
-      (D3/D4/D7).
+- [ ] 1.1 One authority, `tinyassets/command_center_names.py`. It derives every
+      name by rule, refuses retired names and values naming the new one, maps
+      current values to the handlers' names until the cutover, and respells
+      responses (keys, error codes, presented actor ids). A person's content
+      is left verbatim.
+- [ ] 1.2 First-party readers switch outright: the website read contract and
+      its baked snapshot, `mcp_tool_canary.py`, the app's `Owner.read` targets,
+      and the bridge's `whoami()` (production holds 0 stored bundles that use
+      it).
+- [ ] 1.3 Server: `command_center_id` on read_page / write_page / get_status,
+      the middleware innermost on both servers, direct callers migrated,
+      `get_status` at `schema_version` 3, and the default agent republished
+      under a new definition id.
 - [ ] 1.4 Rename `meet_universe` to `meet_command_center` and sync the
       `live-mcp-connector-surface` delta.
-- [ ] 1.5 Bridge identity carries both the new and the old keys permanently,
-      with a test that a stored bundle reading `universe_id` still works.
+- [ ] 1.5 Tests: every refusal names its replacement, the advertised surface
+      contains no retired name, the edge respells, content stays verbatim.
+      Each test is mutation-checked.
 - [ ] 1.6 Post-deploy evidence: `mcp_public_canary.py --assert-handles` green,
-      `deployed_sha.py --assert-contains`, and a rendered `ui-test` conversation
-      that calls with an old name and with a new one.
+      `deployed_sha.py --assert-contains`, and a rendered `ui-test`
+      conversation that calls with a retired name and gets the pointer.
 
 ## C2. Living docs
 
@@ -48,9 +50,9 @@ later.
 
 ## Later
 
-- [ ] 3.1 Once production shows 14 consecutive days with zero alias hits,
-      remove the input aliases and the old response keys and bump
-      `schema_version`. Bridge aliases are kept.
-- [ ] 3.2 Founder decided D6/D7 on 2026-10-01: rename both. Run C3, the codemod,
-      in a freeze window the lead opens. Open the `migrate-storage-to-command-center`
-      change for C4 (D7): guard, inventory, dry run, backup, migration, rollback.
+- [ ] 3.1 C4a: the layout guard and the migration-aware `deploy_fail_safe`, as
+      their own image, running in production for at least one day (D7.2).
+- [ ] 3.2 Open and run `command-center-cutover` (D10/D11): codemod, storage
+      and id migration (`u-` to `cc-`), and external records, in one freeze
+      window you open and the measured quiet window. The dry run, backup,
+      verification and rollback in D7 apply. Delete C1's edge translation after.

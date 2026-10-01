@@ -42,7 +42,7 @@ def test_docker_smoke_push_runs_only_on_main() -> None:
 
 def test_mobile_builds_do_not_run_on_pull_requests() -> None:
     """Lean pipeline: no platform builds on PRs; landed changes still build."""
-    for name in ("android-build.yml", "ios-build.yml"):
+    for name in ("android-build.yml", "ios-build.yml", "desktop-chat-app.yml"):
         triggers = _triggers(name)
         assert "pull_request" not in triggers, name
         assert "main" in triggers["push"]["branches"], name

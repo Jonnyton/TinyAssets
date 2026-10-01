@@ -459,7 +459,7 @@ def _list(
     universe_id: str,
     actor: str,
     payload: Any,
-    limit: int,
+    limit: int | None,
 ) -> dict[str, Any]:
     document = _document(payload)
     if document is None:
@@ -471,7 +471,9 @@ def _list(
         include_retired=include_retired,
     )
     reasons = _recent_reasons(base, universe_id)
-    bound = max(1, int(limit or 30))
+    # ``limit=None`` is every row: a model door pages the whole list to fit its
+    # ceiling itself, and a page it did not choose would hide the 31st row.
+    bound = len(rows) if limit is None else max(1, int(limit or 30))
     records = [
         _with_last_wake(base, row, _projection(
             row,
@@ -480,11 +482,14 @@ def _list(
         ))
         for row in rows[:bound]
     ]
-    records.extend(_legacy_rows(base, universe_id))
+    legacy = _legacy_rows(base, universe_id)
+    records.extend(legacy)
     return {
         "universe_id": universe_id,
         "automations": records,
         "count": len(records),
+        # How many automations exist, so a page smaller than that says so.
+        "total": len(rows) + len(legacy),
         "include_retired": include_retired,
     }
 
@@ -637,7 +642,7 @@ def automations(
     automation_id: str = "",
     expected_revision: int = 0,
     payload: Any = None,
-    limit: int = 30,
+    limit: int | None = 30,
 ) -> dict[str, Any]:
     """Create, inspect and control the caller's universe automations."""
     normalized = (action or "").strip().lower()

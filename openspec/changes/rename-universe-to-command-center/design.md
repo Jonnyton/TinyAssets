@@ -32,8 +32,10 @@ What makes this more than a find-and-replace:
 - A person never reads "universe" in the app, the website, the store copy, a
   served description, the connector instructions, a prompt name, a parameter
   name, an error code, or the agent's own words.
-- No client breaks during the switch: no cached tool list, open window, website
-  build or stored custom UI.
+- Every stored reference and first-party client moves to the new names in a
+  verified cutover. A client still holding an old name or id gets a loud,
+  specific error naming the new one or saying "unknown id". It never gets a
+  silent alias (founder, 2026-10-01: clean cutover).
 - One authority for the old-to-new name mapping.
 
 **Non-Goals**
@@ -86,101 +88,95 @@ Center", and the old prompt is removed rather than aliased. People pick prompts
 from a list, so nothing calls the old name, and the spec's catalog is exact. The
 delta spec updates the catalog.
 
-### D3. Old input names are rewritten before validation, in one table
+### D3. Retired input names are refused, naming the replacement (clean cutover)
 
-One module, `tinyassets/command_center_aliases.py`, holds the only mapping:
+*Founder, 2026-10-01, on this rename: "no old ids do not keep working, we are
+still early in production so we are not maintaining old systems we dont have
+old users we just have current testers that need to cleanly move to the new
+system". This replaces the alias window the first draft proposed.*
 
-- parameter names: `universe_id` → `command_center_id`;
-- `target` values: `universe` → `command_center`, `universe_files` →
-  `command_center_files`, `universe_file` → `command_center_file`;
-- any other enum value C1's generated inventory finds (e.g. a workspace
-  `storage: "universe"`).
+`tinyassets/command_center_names.py` is the one authority. Every name is
+derived by one rule (`universe` -> `command_center`), not a hand list. It does
+three things:
 
-The table is applied at **every boundary that validates arguments**, not only at
-MCP. Codex's refute found three such boundaries:
+- **Refuses retired names.** A retired argument name (`universe_id`) or enum
+  value (`target=universe`, `universe_files`, `universe_file`, `scope=universe`)
+  is refused as `{"error": "renamed", "retired": ..., "current": ...}`, for
+  example "renamed: universe_id is now command_center_id". It is never
+  silently accepted. The refusal comes from a FastMCP middleware
+  (`CommandCenterNames`) registered innermost on both servers, so it runs
+  before the tool's own validation and names the replacement instead of
+  FastMCP's generic "unexpected keyword". On the connector it governs the
+  seven advertised handles. The legacy fat tools are not registered as MCP
+  tools at all (`universe_server.py:3080`).
+- **Maps current values to the handlers' names.** `internal_value` maps
+  `command_center` to `universe` (and so on) until the code rename (C3)
+  changes the handlers themselves. A retired value reaching a router directly
+  becomes `retired:<value>`, an unknown target, so a caller that skips the
+  edge also fails.
+- **Renames parameters with a local binding.** `read_page`, `write_page` and
+  `get_status` take `command_center_id`; inside, it is bound to the internal
+  name until C3. Direct Python callers are migrated in the same PR.
 
-- **MCP.** A FastMCP `Middleware.on_call_tool`, the pattern already used at
-  `engine_mcp_server.py:287` and `universe_server.py:3991`, rewrites a call's
-  arguments before the tool's argument validation, on both servers. FastMCP
-  3.2.0 runs middleware ahead of tool execution under its default validation
-  setting. `strict_input_validation` must stay off, because it would add SDK
-  validation upstream of middleware, and a test pins that it is off. The
-  advertised schema carries only the new names, so aliases cost zero
-  description bytes.
-- **The owner door (HTTP).** `owner_door/routes.py:_validated` (`:61`) refuses
-  unknown argument names, and the app's `Owner.read` posts to it
-  (`app.html:1608`). It normalizes through the table **before** that check. The
-  same applies to the other app JSON routes that take `universe_id` (e.g. Stop,
-  `app.html:1852`).
-- **Direct Python callers.** Python callers of a renamed function, for example
-  `engine_mcp_server.py:725` calling the connector's
-  `get_status(universe_id=...)`, are migrated in the same PR. They do not get
-  an alias: a Python call can be changed and checked, so it needs no
-  compatibility path. A test fails if any call site still passes a retired
-  keyword to a renamed function.
+The owner door (the app's private HTTP reads, `owner_door/routes.py`) is an
+internal first-party API, not part of the public surface. Its accepted
+arguments are derived from the domain functions' signatures (`:42`, `:132`).
+Targets pass through the same routers, so the app sends the current target
+names and a retired one is refused. Its argument and response key names
+(`universe_id`) are internal names and are renamed with the code in the
+cutover (D10), in the same image as the app that calls them.
 
-The rewrite rules:
+A workspace packet's `storage: "universe"` and a branch's declared
+`delivery_sender_universe_id` input are **not** renamed here. Both are stored
+inside people's branch definitions, so they move with the storage migration
+(C4), which rewrites the stored definitions and the code in one step.
 
-- If both names are sent with **different** values, the call is refused with
-  `conflicting_alias`, naming both. It never guesses.
-- If both are sent with the same value, the call is accepted.
+### D4. Responses carry current names only; every first-party reader moves in the same PR
 
-Every alias hit logs one structured line (`alias_used name=<old> handle=<h>`).
-A test enforces the table against the live schema: every new name must exist in
-the advertised schema, and no advertised parameter or target may still contain
-"universe".
+Each JSON tool result is respelled before the result ceiling measures it. On
+the engine, `CommandCenterNames` does this innermost. On the connector it
+happens in the structured-result adapter, which is where that server bounds a
+reply. The respelling covers:
 
-**Deprecation window.** Aliases are removed in a separate small PR once
-production logs show **zero alias hits for 14 consecutive days**, measured with
-`scripts/droplet.py`. This is a measured condition, not a date. Bridge aliases
-(D4) are exempt and permanent.
+- keys (`universe_id` becomes `command_center_id`, `universes` becomes
+  `command_centers`);
+- error codes (`no_home_universe` becomes `no_home_command_center`);
+- stored actor ids in identity fields, presented as `command_center:<id>`
+  until C4 rewrites the stored value.
 
-Rejected alternatives:
+Responses do not carry the old keys alongside the new ones. A person's own
+content is never respelled:
 
-- *Both names as visible parameters.* This costs schema bytes on every turn, and
-  shows the old word to the chatbot.
-- *A hard cut with no aliases.* Every open conversation would fail on its next
-  call, and the error would name a parameter the user never chose.
+- run output, run files, command-center files and conversation pages;
+- `read_page`, and the engine's `read` / `write` / `edit` / `bash`;
+- inside any other result, every **user-authored subtree** (`USER_CONTENT_KEYS`:
+  graph nodes, edges, state schema, mappings, payloads, UI bundles, content).
+  A state field a person named `universe` is data. The C1 refute reproduced
+  `output_mapping={"universe": ...}` failing validation on its round trip
+  (Hard Rule 9).
 
-### D4. Responses carry both key names during the window; the bridge keeps both permanently
+First-party readers switch in the same PR:
 
-*Revised after Codex's refute.* The first draft switched response keys
-outright and relied on the app's stale-asset reload, which does not hold:
+- the website read contract and its baked snapshot (`command_centers`);
+- `scripts/mcp_tool_canary.py`;
+- the custom UI bridge, whose `whoami()` returns `command_center_id` /
+  `command_center_name`. Production on 2026-10-01 holds **zero** stored UI
+  bundles that call `whoami` or read `universe_name` (read-only count over
+  `universe_app_ui`), so the cutover breaks no stored bundle.
 
-- the reload checks only every ten minutes (`app.html:7598`), waits while the
-  person is typing (`:7613`), and can hold for up to three hours while a turn is
-  in flight (`:7626`);
-- already-loaded bridge code rejects a conversation or file response that has
-  no `universe_id` (`app_ui.js:425`, `:541`, `:558`);
-- `get_status` promises one release of deprecation notice before a field is
-  renamed, and a `schema_version` bump for breaking changes
-  (`universe_server.py:3923`).
+`get_status` bumps `schema_version` to 3, per its own contract, which now says
+a rename bumps the version with no alias window.
 
-So, during the alias window, every response that carries a renamed key carries
-**both**: `command_center_id` and `universe_id` (and so on), holding the same
-value from the same source. One authority, two spellings. `get_status` adds a
-`deprecated_fields` note naming the old keys and keeps its `schema_version`; it
-bumps the version only when the old keys are removed.
-
-The old response keys are removed together with the input aliases (D3's 14-day
-condition), in the same PR, which also bumps `schema_version`.
-
-First-party readers switch to the new key in C1 and fall back to the old one:
-
-- `app.html` and `app_ui.js`;
-- the website read contract (`WebSite/shared/mcp/public-read-contract.js`);
-- `scripts/mcp_tool_canary.py:241`, which the uptime workflow runs;
-- the owner-door contract test (`tests/test_owner_door.py:329`).
-
-Because the server keeps emitting the old keys, deploy order does not matter.
-
-**The custom UI bridge is the exception.** Its identity object returns
-`command_center_id` and `command_center_name` **and** `universe_id` and
-`universe_name`, permanently. Every bridge method name or argument a bundle can
-send keeps accepting its old form too. Stored bundles are user-authored code
-(Hard Rule 9 applies in spirit), and nothing measures which bundles read which
-key. Removing these keys would need a scan of every stored bundle, which is out
-of scope.
+**The default agent definition.** A published definition is immutable and
+fingerprinted under its idempotency key, so C1 publishes a **new** one
+(`platform:command-center-default` / `command-center-default-v1`, named "Your
+agent") rather than editing the old one, which would raise `AgentConflictError`
+at every onboarding. New homes bind to it. A home bound to the retired
+definition is still recognised as the founder's platform binding and is used as
+is, with its `provider_ref` intact. Re-pointing it during a serving gesture would
+replace its configuration, dropping the `provider_ref` before the new provider
+is validated (C1 refute). The cutover migration re-points every one in place
+(D10). The retired definition is looked up, never re-published.
 
 ### D5. Paying for the longer word inside the description budget
 
@@ -209,9 +205,9 @@ word:
 - about 17,000 test lines that import or monkeypatch them by module path;
 - the `TINYASSETS_*UNIVERSE*` env vars.
 
-The plugin id `tinyassets-universe-server` is renamed too, and the old id stays
-in the marketplace as a forwarding entry for one release, because installed
-copies update by id.
+The plugin id `tinyassets-universe-server` is renamed too, with no forwarding
+entry. Installed copies update by id, so a tester with the old plugin
+reinstalls it (clean cutover, D10).
 
 **Mechanics.**
 
@@ -223,9 +219,11 @@ copies update by id.
    person to review. That covers strings that are machine values (SQL, JSON
    keys, stored identity, which belong to C4), `getattr` / `importlib` by
    string, and fiction-domain "universe" meaning a story world.
-3. Env vars: the new name wins, and the old name is still read, with one
-   deprecation log line, until C4's verification passes. Operators' compose
-   files change in the same window (`compose-flags-inert-without-droplet-sync`).
+3. Env vars are renamed outright. A process that finds a retired
+   `TINYASSETS_*UNIVERSE*` variable set refuses to start and names the new
+   variable, so a stale setting never silently stops applying. The operator's
+   compose files change in the same window
+   (`compose-flags-inert-without-droplet-sync`).
 
 **Freeze window.** The lead pauses the other lanes, the codemod runs on a fresh
 `origin/main`, and the PR lands. Then the lead rebases the paused lanes, and the
@@ -241,20 +239,17 @@ gated on:
 There are no compatibility shims for old module paths. Anything importing an
 old path fails loudly, which is the point of doing it in one window.
 
-**Persisted shapes stay put in C3** (refute #4). Renaming a Python name can
-change what gets written. `BranchTask.universe_id` is serialized with `asdict`
-and read back by filtering on the current fields (`branch_tasks.py:86`,
-`:126`), so a plain rename would drop the old key on read and fail
-construction. For every persisted field the codemod reports, meaning every
-`asdict` / from-dict / TypedDict state key / JSON writer, C3 adds an explicit
-serialization adapter: the code name changes, the **serialized** key stays
-`universe_id`, and reads accept both. Graph state keys like `_universe_path`,
-which SqliteSaver checkpoints hold, get the same treatment. C4 moves the
-serialized keys later. Digest inputs are frozen: any hash over a dict
-containing a renamed key keeps the literal old key name in its input, or bumps
-a digest version that still verifies old digests.
-`conversation_run_admissions.py:340` and `provider_assignment_manifest.py:153`
-are the known cases; the codemod reports the rest.
+**No serialization adapters: code and storage move in one image** (D10).
+The refute (#4) found that renaming a persisted name changes what is written:
+`BranchTask.universe_id` round-trips through `asdict` and a field-filtered
+constructor (`branch_tasks.py:86`, `:126`). With the codemod and the migration
+in one image, persisted keys, graph-state keys (`_universe_path` in SqliteSaver
+checkpoints) and digest inputs move in the same run as the code that reads
+them. The codemod still **reports** every `asdict` / from-dict / TypedDict /
+JSON writer / digest site, and each is named in the migration's inventory, so
+none is missed. `conversation_run_admissions.py:340` and
+`provider_assignment_manifest.py:153` are the known digests: the migration
+recomputes them (D11).
 
 **Launch paths are verified by running them**, not by an import test:
 
@@ -268,9 +263,8 @@ are the known cases; the codemod reports the rest.
 C3's gate builds the image, runs the deploy gate script, and starts each entry
 point.
 
-**Ordering.** C3 lands after C2 and before C4. C3 keeps every SQL string,
-table, column, serialized key and on-disk name exactly as it is, so code and
-storage change in separate, separately revertible steps.
+**Ordering.** C3 ships inside the cutover (D10), in the same image as the
+storage and id migration.
 
 ### D7. Storage: migrated (C4), guarded, from a schema-derived inventory
 
@@ -291,12 +285,12 @@ section is the safety contract that change must meet.*
 - The stored actor prefix: `universe:<id>` becomes `command_center:<id>`.
 - The account-deletion key, `UNIVERSE_KEY`, follows the column.
 
-**What does not move: the `u-` id prefix and the `u-<id>` directories.** `u-`
-is not the word. It is part of an opaque id copied into hundreds of rows,
-URLs, bind mounts and the `/u` jail mount, so renaming it would be an id
-migration, not a name migration. The inventory lists these directories anyway,
-so the decision is visible. This is the one item the founder confirms
-(Open Questions).
+**The `u-` id prefix and the `u-<id>` folders move too** (founder, 2026-10-01:
+"change it also"). They become `cc-<ulid>` in the same run (D11). The `/u`
+mount point inside the tool jail is a path name, not an id, and stays.
+
+*Note: "C4b" below means the cutover's migration run (D10). It carries the
+storage, code and id changes together.*
 
 **1. The inventory is derived, never hand-listed**
 (`deletion-set-derived-from-schema`). `scripts/command_center_storage_inventory.py`
@@ -411,15 +405,12 @@ migration.
 - **Finish:** the marker flips to layout 2 only after the post-migration
   verification passes.
 
-**Readers accept both shapes until the migration is verified.** Within one
-database there is no mixed state to read, because of the transaction. Across
-databases, files and values, readers fall back:
-
-- actor-prefix comparisons match `universe:` and `command_center:`;
-- seat and slot files open the new name and fall back to the old;
-- scripts and canaries reading storage accept either name.
-
-These fallbacks come out in a cleanup PR once the 14-day verification holds.
+**No reader needs two shapes.** Within one database the transaction leaves no
+mixed state. Across databases, files and values, nothing reads during the run,
+because the server binds its port only after verification. The code in that
+image knows only the new shape (D10), so the first draft's fallbacks (old actor
+prefix, old file names) are dropped. A process or script that meets the old
+shape fails loudly.
 
 **4. Deletion and export are proven against the migrated schema.** A test
 builds a data dir with every real schema creator, migrates it, and then:
@@ -498,14 +489,6 @@ Proposed window: **18:00-20:00 UTC** (11:00-13:00 Pacific). It is re-measured
 the day before, and the founder's own planned sessions are checked, because
 the founder is the main live user.
 
-### D6/D7 shared risk: two big steps on one surface
-
-C3 and C4b each touch nearly every module. They are deliberately separate:
-C3 changes code only, so it is revertible by a plain revert. C4b changes data
-only, so it rolls back only by restore. Neither waits on the other's
-deprecation window. C4b needs only C3's code to have run in production long
-enough to be trusted.
-
 ### D8. Agent self-reference and existing brains
 
 Served guidance, the persona and seed text, and `universe_tools.py`'s
@@ -534,15 +517,220 @@ setting alone. These reach people only with the next Play and desktop
 releases. The founder runs those (`docs/host-actions.md`), and until then the
 shells show the old word on those few strings.
 
+### D10. One clean cutover after C0: code, storage and ids in one freeze window
+
+*Founder, 2026-10-01: "no old ids do not keep working, we are still early in
+production so we are not maintaining old systems we dont have old users we
+just have current testers that need to cleanly move to the new system". Also:
+"change it also" for the `u-` prefix. Together these replace every alias, dual
+key and deprecation window in the earlier drafts. The migration's safety stays,
+because the testers' data is real.*
+
+**The shape: fewer slices.**
+
+| Slice | What | Ships as |
+|---|---|---|
+| C0 | Copy | Landing (#4189) |
+| C1 | The public MCP edge: current names only, retired names refused naming the new one (D3/D4) | Its own PR; its edge translation is temporary |
+| C2 | Living docs and specs | Any time |
+| C4a | The layout guard and a migration-aware `deploy_fail_safe` (D7.2) | Its own image, at least one day before the cutover |
+| **Cutover** (C3 + C4 + C5) | Codemod-renamed code, the storage migration, and the id migration, in **one image, one freeze window, one locked migration run** | One change: `command-center-cutover` |
+
+**Why C3, C4 and C5 merge.**
+
+- Shipping code before storage would need serialization adapters (D6) and
+  digest freezes. That is compatibility machinery whose only job is the gap
+  between two deploys.
+- In one image, code and data change together and nothing serves until
+  verification passes. No reader ever sees two shapes, so D7's "readers accept
+  both shapes" fallbacks and D6's adapters are dropped.
+- The id migration touches the same rows and folders. Running it in the same
+  locked run means one backup, one marker and one rollback, instead of three.
+
+**The cutover run, in order, under D7's exclusion protocol:**
+
+1. **Names.** Tables, columns, values and `CHECK` literals; marker files;
+   serialized keys; LanceDB, checkpoint and JSON keys. Also:
+   - stored branch-definition fields (`delivery_sender_universe_id`, workspace
+     `storage: "universe"`);
+   - stored custom-UI bundles' bridge keys (`universe_id` / `universe_name`
+     become `command_center_*`). Production on 2026-10-01 has 0 bundles that
+     use them, but the rule covers any;
+   - existing bindings re-pointed from the retired default agent definition to
+     the current one (C1 published it).
+2. **Ids** (D11). Every stored `u-<ulid>` becomes `cc-<ulid>`, and every
+   `u-<ulid>` folder is renamed.
+3. **Local verification** (D7.4/D7.5). The inventory re-runs and must find
+   zero retired names and zero `u-<ulid>` ids in any store; deletion and
+   export are proven on the new shape.
+4. **External records** (D11), after local verification and before
+   reopening: idempotent, recorded per object, and reversible by a recorded
+   inverse.
+5. **The marker flips** to the new layout and the server binds its port.
+
+**After the cutover:**
+
+- C1's edge translation (`internal_value`, `public_response`) is deleted,
+  because internal names now equal public names.
+- The retired-name **refusals stay**. They are an error naming the new name
+  (Hard Rule 8), not an alias.
+- An old id, such as a connector's cached `graph_id` or an old link, gets the
+  plain "unknown id" error. Testers reconnect or re-fetch.
+
+**The freeze window.** You pause the other lanes. The cutover lands and
+deploys in the measured quiet window (D7.7). Then you rebase the paused lanes
+by running the same codemod on each branch.
+
+### D11. The `u-` prefix becomes `cc-` (C5, inside the cutover)
+
+**Mapping.** `u-<ulid>` becomes `cc-<ulid>`. The ULID body is unchanged, so an
+id stays unique and time-sortable, and the mapping is deterministic and
+reversible: the rollback inverse is `cc-X` back to `u-X`.
+
+**Is `cc-` safe? Checked on 2026-10-01:**
+
+- **Parsers.** `tinyassets/ids.py:23` and `:33` define
+  `UNIVERSE_ID_PREFIX = "u-"` and `^u-[0-9a-hjkmnp-tv-z]{26}$`.
+  `background_branch_authority.py:17` and `:190` key on that prefix. Two
+  operator scripts match `^u-` (`scripts/remove_legacy_brain_artifacts.ps1:26`,
+  `scripts/rename_live_data_universes_to_serial_ids.ps1:24`). The codemod
+  moves all of them to one `COMMAND_CENTER_ID_PREFIX = "cc-"` and a matching
+  regex. A test fails if any `"u-"` literal or `^u-` pattern survives in code.
+- **Length.** Ids grow from 28 to 29 characters. SQLite TEXT has no limit.
+  On Windows local installs, a deep path under `Documents/TinyAssets/<id>/...`
+  grows by one character. The cutover's dry run on a production copy also
+  reports the longest resulting path, checked against the Windows `MAX_PATH`
+  guard the repo already uses for basetemps.
+- **Ambiguity.** Other `cc-` values exist: craft cards generate
+  `cc-<chapter>-<counter>` (`learning/craft_cards.py:65`). They cannot collide
+  with `cc-<26-char ulid>`. The preflight checks the full target namespace
+  `^cc-[0-9a-hjkmnp-tv-z]{26}$` for zero existing values; it does not forbid
+  every `cc-` value. Every reader that classifies an id uses the full regex,
+  never the prefix alone.
+
+**What holds an id, and how each moves.** The inventory is derived (D7.1),
+extended to values matching `u-<ulid>`:
+
+- **Local stores, in every encoding**, migrated in phase 2. A prefix scan of
+  TEXT columns is not enough (cutover refute #1, #4). The inventory decodes
+  and rewrites each encoding by its own reader:
+  - TEXT values;
+  - JSON values **and JSON object keys** (`engine_mcp_http.py:308` keys a map
+    by id);
+  - **BLOB** canonical JSON. `storage/conversation_custody.py:66` stores
+    thread JSON as a BLOB containing `universe_id` (`:181`), whose reader
+    demands canonical bytes (`:200`) and equality with indexed columns
+    (`:378`). It is re-canonicalised, not string-patched;
+  - checkpoint payloads (via serde), LanceDB rows, and folder names;
+  - FCM device rows, and notification and deep-link payloads in our
+    databases.
+- **Identities derived from an id**, recomputed with every reference to them
+  in the same transaction:
+  - **length-dependent keys**: `automations.py:1872` embeds the id's length in
+    lease keys, and `:1881` slices by it. The code computes the length, but
+    every stored key changes from `28:u-...` to `29:cc-...` and is rewritten as
+    a whole key, never patched as a substring;
+  - **hashed ids**: `api/http_connection.py:495` derives connection and grant
+    ids from the id, and `:1202` recomputes them for credential rotation;
+  - **digests over content that contains an id**:
+    `conversation_run_admissions.py:340`, `provider_assignment_manifest.py:153`,
+    branch-snapshot `content_hash` and admission `snapshot_sha256`
+    (`storage/run_input_admissions.py:90`, `:182`).
+
+  Where the hash input changes, the migration recomputes the digest and
+  rewrites its references. The codemod's report lists every hash site, so
+  none is missed.
+- **Webhook tokens are not id-bound.** They are random (`storage/webhook_hooks.py:198`)
+  and stored as a hash of the token alone (`:95`), so they survive unchanged.
+  A webhook URL is affected only if its path carries the id; the inventory
+  checks the URL shape.
+- **Stripe**, in three places: subscription metadata (`billing/stripe_adapter.py:383`,
+  read at `:186`), the **signed entitlement claim** over the id (`:163`,
+  verified at `:205`), and checkout `client_reference_id` (`:378`). The cutover:
+  1. **drains checkouts first.** New checkout creation is frozen at the start
+     of the window. Open checkout sessions are expired through the API,
+     because their frozen parameters must stay byte-identical for retries
+     (`:295`) and cannot be rewritten in place;
+  2. rewrites each subscription's metadata and **re-signs** its claim with the
+     new id;
+  3. **reconciles late events by Stripe object identity.** A webhook carrying
+     an old id (an event generated before the rewrite) is resolved through the
+     migration's recorded subscription/customer -> id map, never by the id in
+     the payload. An old id that maps to nothing is **refused before any
+     storage is touched**. The settlement path's database connector creates
+     missing directories (`storage/subscription_state.py:415`, `:62`) and
+     could otherwise recreate a retired home, so the cutover makes it refuse
+     an unknown home instead.
+- **WorkOS.** A repo search on 2026-10-01 found no WorkOS metadata write that
+  carries a universe id. The cutover change re-runs that search and checks a
+  live WorkOS user record before the run. It is not assumed.
+- **Vault.** Credential vaults live inside the folder
+  (`credential_vault.py:154`) and move with it. The vault is read as JSON
+  (`:460`), with nothing derived from the id. The dry run proves every vault
+  still reads, and resolves to the same connections, after the move.
+- **Outside our reach, and stated:**
+  - graph ids cached in testers' chat clients;
+  - links in notifications already delivered;
+  - ids pasted into third-party systems.
+
+  These get the "unknown id" error, and testers reconnect or re-fetch. The
+  cutover change's inventory names each kind, with evidence.
+
+**Path builders.** Every path from an id to a folder goes through one
+resolver, `data_dir()` / `command_center_dir(id)`. A test fails if code builds
+`/data/u-...` or `/data/cc-...` by string.
+
+**Deletion and export across the cutover.** Both run only on the new shape:
+the server is down during the run, and the old shape no longer exists
+afterwards.
+
+Absence of old strings is necessary but not sufficient (refute #4). The proof
+uses populated fixtures built by every real schema creator and asserts four
+things:
+
+- **No surviving operational identity:** no `u-<ulid>` value or `u-` folder in
+  any operational store, in any encoding above, after migration;
+- **Decoded round trips:** every migrated record reads back through its own
+  reader (custody threads, checkpoints, LanceDB, bundles);
+- **Reference and digest integrity:** every derived id, hash and foreign
+  reference resolves;
+- **Independent deletion and export:** `delete_account` removes every row of
+  the account and none of another's, checked by direct row counts, not by
+  the same scan.
+
+**Verbatim content is exempt, by an explicit list.** A person's own content
+and agent-written brain files keep any old word or id they contain (Hard Rule
+9, D8): uploads, run outputs, conversation text, `soul.md` and notes. The
+operational-identity scan skips exactly those stores and fields, named in the
+cutover change, so that "nothing survives" never means rewriting what a person
+wrote.
+
+**Rollback.** Restore plus the previous image (D7.6). In addition, the
+recorded Stripe inverse runs (metadata, claim, mapping), because restoring
+the local snapshot does not rewind an external API.
+
+**Irreversible effects, accounted for, not inverted:**
+
+- push notifications already accepted by FCM, including ones not yet
+  delivered. Delivery happens before the local receipt
+  (`owner_notifications.py:349`, `:371`) and the payload contains the id
+  (`:207`);
+- any notification the migration itself would send. The migration suppresses
+  owner notifications for its whole run, so it sends none;
+- expired Stripe checkout sessions. Testers start a new checkout.
+
+The cutover change lists each kind with its count from the dry run.
+
 ## Risks / Trade-offs
 
-- **Code and product words diverge** (D6). Mitigated by the PLAN glossary line.
-  A contributor reading `universe_id` in code needs one sentence to translate.
-- **An alias lingers.** The 14-day zero-hit rule is measured. If hits never
-  reach zero (a client hard-coded `universe_id`), the aliases stay, which costs
-  nothing.
-- **Response size during the window.** Responses carry both id keys, a few
-  bytes per response, until the aliases are removed (D4).
+- **One big run.** Code, storage and ids change in one image (D10). The
+  mitigations: a layout guard already in production, a dry run on a
+  production copy, a quiesced backup, nothing served until verification, and
+  restore plus the previous image plus the recorded external inverse as the
+  rollback.
+- **Old ids held outside our reach** break with a clear "unknown id": cached
+  chat-client graph ids, delivered links, ids pasted into third parties (D11).
+  The founder accepted this: testers reconnect.
 - **Copy tests.** Many tests assert exact strings, so C0 updates them in the
   same slice. A green suite after C0 proves the tests moved, not that they were
   weakened: each changed assertion swaps the old string for the new one, and no
@@ -550,31 +738,20 @@ shells show the old word on those few strings.
 
 ## Migration Plan
 
-C0 (copy, including the native strings, which ship with the next native
-releases) → C1 (one PR covering the server and the first-party readers):
+C0 (copy; the native strings ship with the next native releases) → C1 (the
+public MCP edge as a clean cutover, D3/D4) → C2 (living docs and specs; any
+time) → C4a (layout guard plus the migration-aware fail-safe, its own image, at
+least one day of production) → **the cutover** (code, storage and ids in one
+image, one freeze window and one locked run, D10/D11), followed by deleting
+C1's edge translation.
 
-- new names primary;
-- aliases at all three boundaries (D3);
-- dual response keys (D4);
-- `present_actor` (D7);
-- the renamed prompt;
-- evidence: canary `--assert-handles` green and `deployed_sha.py
-  --assert-contains`.
+Rollback:
 
-→ C2 (living docs and specs, with the capability dir renames and every reference
-updated) → C3 (code identifiers, one freeze window, D6) → C4a (the layout
-guard ships alone, D7) → C4b (the storage migration in a measured quiet
-window, D7) → alias and old-key removal with a `schema_version` bump, once the
-14-day condition holds.
-
-Rollback: C0 and C2 are text. C1 rolls back by reverting the PR. Because
-responses carry both keys and inputs accept both names, a rollback leaves no
-client unable to call or read. C3 rolls back by reverting the one PR before
-C4b runs. C4b rolls back only by restore plus the previous image (D7), never by
-a revert alone.
+- C0, C1 and C2 roll back by revert.
+- The cutover rolls back only by restore plus the previous image plus the
+  recorded external inverse (D7.6, D11). Never by a revert alone.
 
 ## Open Questions
 
-- **The `u-` id prefix (D7).** It is kept. It is an opaque value, not the
-  word, and renaming it is an id migration. The founder confirms this or asks
-  for that migration separately.
+None open. The founder decided the `u-` prefix on 2026-10-01: it becomes `cc-`
+(D11).

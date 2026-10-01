@@ -172,6 +172,96 @@ def resolve_ceiling(env: dict[str, str] | None = None) -> int:
         return DEFAULT_CEILING_BYTES
 
 
+def page_to_fit(rows, *, start, budget, build, render, max_rows=None):
+    """The longest page ``rows[start:end]`` whose rendering fits ``budget`` bytes.
+
+    The other half of the ceiling: a read that pages ITSELF to fit is never cut,
+    so its cursor survives. ``build(page, next_offset)`` makes the document
+    (``next_offset`` is ``None`` on the last page) and ``render`` turns it into
+    the exact text the surface returns, so "fits" is measured on real bytes.
+
+    A page always carries at least one row when one remains: a single row over
+    the budget is returned alone (the ceiling's marker then says so) rather than
+    skipped, because skipping it would hide it behind a cursor that never stops
+    on it.
+    """
+    start = max(0, int(start or 0))
+    end = min(start, len(rows))
+    cap = len(rows) if max_rows is None else start + max(1, int(max_rows))
+    document = build(rows[start:end], end if end < len(rows) else None)
+    while end < min(len(rows), cap):
+        nxt = end + 1
+        trial = build(rows[start:nxt], nxt if nxt < len(rows) else None)
+        if end > start and len(render(trial).encode("utf-8")) > budget:
+            break
+        document, end = trial, nxt
+    if end == start + 1 and len(render(document).encode("utf-8")) > budget:
+        # One row bigger than the whole budget: clip its long strings so the
+        # page, and the cursor past it, still arrive intact.
+        nxt = end if end < len(rows) else None
+        document = build(
+            [clip_to_fit(rows[start], budget=budget,
+                         render=lambda row: render(build([row], nxt)))], nxt,
+        )
+    return document
+
+
+#: Key a clipped row carries: dotted path -> the string's original length.
+CLIPPED_KEY = "clipped_chars"
+
+
+def _clip(value, limit: int, path: str, clipped: dict):
+    if isinstance(value, str):
+        if len(value) > limit:
+            clipped[path] = len(value)
+            return value[:limit]
+        return value
+    if isinstance(value, dict):
+        return {k: _clip(v, limit, f"{path}.{k}" if path else str(k), clipped)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clip(v, limit, f"{path}[{i}]", clipped) for i, v in enumerate(value)]
+    return value
+
+
+def clip_to_fit(row, *, budget: int, render):
+    """``row`` with every string cut to the longest length that fits ``budget``.
+
+    Never silent: a dict row gains ``clipped_chars`` naming each cut string and
+    its full length, so the reader knows exactly what is partial (the owner's
+    app reads the complete row). A row that fits is returned unchanged.
+    """
+    if len(render(row).encode("utf-8")) <= budget:
+        return row
+    low, high, best = 0, max(_longest(row), 1), None
+    while low <= high:
+        mid = (low + high) // 2
+        clipped: dict = {}
+        trial = _clip(row, mid, "", clipped)
+        if isinstance(trial, dict):
+            trial = {**trial, CLIPPED_KEY: clipped}
+        if len(render(trial).encode("utf-8")) <= budget:
+            best, low = trial, mid + 1
+        else:
+            high = mid - 1
+    if best is None:
+        clipped = {}
+        best = _clip(row, 0, "", clipped)
+        if isinstance(best, dict):
+            best = {**best, CLIPPED_KEY: clipped}
+    return best
+
+
+def _longest(value) -> int:
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return max((_longest(v) for v in value.values()), default=0)
+    if isinstance(value, list):
+        return max((_longest(v) for v in value), default=0)
+    return 0
+
+
 def _head(text: str, budget: int) -> str:
     """The first ``budget`` bytes of ``text`` as UTF-8, cut on a character."""
     if budget <= 0:
