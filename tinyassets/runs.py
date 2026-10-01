@@ -4686,7 +4686,7 @@ def _invoke_graph(
         invocation_depth=int(invocation_depth or 0),
         universe_id=_eff_universe_hint or run_universe,
         # The run's own model reviews a consequential action before it fires
-        # (harness D1d), under this run's seat.
+        # (harness D1d), admitted like any agent call.
         review_provider=provider_call,
         review_active=True,
     )

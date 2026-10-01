@@ -569,8 +569,15 @@ unchanged. They become the data the `app.write` rules consult.
   Rules tab (decided 2026-10-01). The tab says what that means: actions of that
   kind then proceed on the rule alone.
 - **Invocation.** A separate, **tool-free** call on the universe's own model.
-  - It runs **under the activity's existing seat admission**, so it needs no
-    second seat and cannot deadlock waiting for one.
+  - It is admitted like any agent call, through the same seat-aware executor:
+    it re-enters the activity's seat when the activity holds one (an
+    automation), and otherwise queues for the account's own. The node's seat is
+    already released when its effects fire, so the review never waits behind
+    the work it reviews. It has its own deadline.
+  - A consequential action with no run model bound to review it is held at the
+    send boundary, never sent unchecked.
+  - Its answer must be exactly one JSON object with exactly the two fields; an
+    object echoed inside prose is no answer.
   - It is not itself reviewed.
   - It gets one bounded retry. After that the action becomes a request naming
     the cause, and the activity releases its seat while waiting.

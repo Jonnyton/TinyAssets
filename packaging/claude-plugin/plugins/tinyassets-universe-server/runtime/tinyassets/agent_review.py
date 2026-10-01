@@ -11,13 +11,19 @@ requires approval" (design #4172 §1.2, §4.9). Here:
   workspace and reading a connected app. A per-class off switch belongs to the
   owner; the hand-back classes keep it on.
 * **On whose model.** The run's own provider call -- the universe's model, on
-  its own credentials, under the run's existing seat. There is no platform
-  model. The runner hands it in (``bound``), so the review is never a second
-  admission that could wait forever behind the work it reviews.
+  its own credentials. There is no platform model. The runner hands it in
+  (``bound``); the call itself goes through the same seat-aware executor every
+  agent call uses, re-entering the run's seat when the run holds one, with its
+  own deadline.
+* **Only inside a run.** A consequential action with no runner bound -- no
+  model to check it with -- is held, not sent: the check is enforced where the
+  action leaves, not assumed of its caller.
 * **Tool-free and tighten-only.** A single text call that returns
   ``proceed`` or ``needs_approval``. Anything else -- an error, a timeout,
   unparseable output, no model at all -- is ``needs_approval`` with its cause:
-  the review can stop an action, never allow one the rules did not.
+  the review can stop an action, never allow one the rules did not. The answer
+  must be exactly one JSON object with exactly those two keys; an object echoed
+  inside prose (say, from the action's own content) is no answer.
 * **Untrusted content stays evidence.** The action's own body and the agent's
   editable instructions reach the reviewer inside a marked envelope; only the
   structured action, the rule that allowed it and the fixed requirements are
@@ -30,7 +36,6 @@ import contextvars
 import hashlib
 import json
 import logging
-import re
 import sqlite3
 import time
 from contextlib import closing, contextmanager
@@ -53,6 +58,9 @@ OFF_CONSEQUENCE = ("Actions of this kind will then proceed on your rule alone, "
                    "without a check against your instructions first.")
 
 _MAX_EVIDENCE = 2_000
+#: The review's own deadline (seconds), separate from the node's.
+REVIEW_TIMEOUT_S = 120.0
+_MAX_ANSWER = 2_000
 
 SAFETY_REQUIREMENTS = (
     "You review ONE planned action an AI agent is about to take for its owner. "
@@ -74,14 +82,11 @@ _CTX: contextvars.ContextVar[tuple | None] = contextvars.ContextVar(
 def bound(provider_call: Any, *, active: bool):
     """The runner's provider call, for reviews made while its effects fire.
 
-    ``active`` is False on the legacy post-run dispatcher (no runner, tests):
-    there is no run model to review with, and that path never serves a live
-    universe.
+    ``active`` is False on the legacy post-run dispatcher, which has no run
+    model: a consequential action reaching the effector from there is held
+    (``review_refusal`` refuses without a bound runner), never sent unchecked.
     """
-    if not active:
-        yield
-        return
-    token = _CTX.set((provider_call,))
+    token = _CTX.set((provider_call,) if active else None)
     try:
         yield
     finally:
@@ -149,18 +154,56 @@ def action_digest(action: dict) -> str:
     return hashlib.sha256(json.dumps(action, sort_keys=True).encode()).hexdigest()
 
 
-def _verdict(raw: str) -> tuple[str, str] | None:
-    match = re.search(r"\{.*\}", str(raw or ""), re.S)
-    if not match:
+def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict:
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def _verdict(raw: Any) -> tuple[str, str] | None:
+    """The answer, only when the whole reply is the one JSON object asked for.
+
+    A ```json fence around it is tolerated; any other text, a second object,
+    a duplicate or extra key, or a non-string reason is no answer.
+    """
+    text = raw.strip() if isinstance(raw, str) else ""
+    if not text or len(text) > _MAX_ANSWER:
         return None
+    if text.startswith("```"):
+        lines = text.splitlines()
+        fenced = lines[0].strip() in ("```", "```json") and lines[-1].strip() == "```"
+        if len(lines) < 3 or not fenced:
+            return None
+        text = "\n".join(lines[1:-1]).strip()
     try:
-        data = json.loads(match.group(0))
+        data = json.loads(text, object_pairs_hook=_no_duplicates)
     except (ValueError, TypeError):
         return None
-    verdict = data.get("verdict") if isinstance(data, dict) else None
-    if verdict not in ("proceed", "needs_approval"):
+    if not isinstance(data, dict) or set(data) != {"verdict", "reason"}:
         return None
-    return verdict, str(data.get("reason") or "")[:300]
+    verdict, reason = data["verdict"], data["reason"]
+    if verdict not in ("proceed", "needs_approval") or not isinstance(reason, str):
+        return None
+    return verdict, reason[:300]
+
+
+def _ask(universe_dir: Path, provider_call: Any, prompt: str) -> Any:
+    """One review call through the seat-aware executor every agent call uses.
+
+    It re-enters the run's seat when the run holds one (an automation) and
+    takes the account's own otherwise -- the node's seat is already released
+    when its effects fire -- and it has its own deadline.
+    """
+    from tinyassets.graph_compiler import _run_agent_with_timeout
+
+    universe_dir = Path(universe_dir)
+    return _run_agent_with_timeout(
+        lambda: provider_call(prompt, SAFETY_REQUIREMENTS, role="writer"),
+        timeout_s=REVIEW_TIMEOUT_S, node_id="auto-review",
+        universe_context=None, event_sink=None,
+        seat_scope=(universe_dir.parent, universe_dir.name),
+    )
 
 
 def _refusal(reason: str, *, kind: str, digest: str) -> dict:
@@ -183,9 +226,8 @@ def review_refusal(universe_dir: Path, *, action: dict, rule: str,
     connection, operation, path); ``evidence`` is the action's own content,
     shown to the reviewer as untrusted.
     """
-    context = _CTX.get()
     action_class = str(action.get("action_class") or "")
-    if context is None or action_class in NOT_CONSEQUENTIAL:
+    if action_class in NOT_CONSEQUENTIAL:
         return None
     if action_class not in ALWAYS_REVIEWED:
         try:
@@ -194,6 +236,10 @@ def review_refusal(universe_dir: Path, *, action: dict, rule: str,
         except (OSError, sqlite3.Error):
             pass  # an unreadable switch leaves the review on
     digest = action_digest(action)
+    context = _CTX.get()
+    if context is None:
+        return _refusal("this action came from outside a run that can check it, so "
+                        "nothing was sent.", kind="auto_review_unavailable", digest=digest)
     provider_call = context[0]
     if provider_call is None:
         return _refusal("no model is connected to run the check, so nothing was sent.",
@@ -213,7 +259,7 @@ def review_refusal(universe_dir: Path, *, action: dict, rule: str,
     cause = "the check could not be completed"
     for _attempt in range(2):
         try:
-            raw = provider_call(prompt, SAFETY_REQUIREMENTS, role="writer")
+            raw = _ask(universe_dir, provider_call, prompt)
         except Exception as exc:  # noqa: BLE001 - any failure is "ask the owner"
             cause = f"the check could not be completed ({type(exc).__name__})"
             continue

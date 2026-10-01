@@ -928,6 +928,7 @@ def run_effects_for_branch(
     run_id="",
     dry_run=None,
     cloud_effect_session=None,
+    review_provider=None,
 ):
     """Post-run dispatch of every node's effects, in branch STORAGE order.
 
@@ -936,10 +937,14 @@ def run_effects_for_branch(
     time through ``dispatch_node_effects`` and never come here - the runner
     reads the chain's evidence instead, so nothing is dispatched twice.
     Failures are structured rows, never raised.
+
+    A consequential action is checked first (harness D1d) only with an
+    explicit ``review_provider``; without one it is held, never sent.
     """
     chain = EffectChain(
         run_id=run_id, base_path=base_path, dry_run=dry_run,
         cloud_effect_session=cloud_effect_session,
+        review_provider=review_provider, review_active=review_provider is not None,
     )
     schema_defaulted = _schema_defaulted_keys(getattr(branch, "state_schema", None))
     node_defs = list(getattr(branch, "node_defs", None) or [])
