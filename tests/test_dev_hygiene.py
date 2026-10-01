@@ -1492,6 +1492,67 @@ def test_an_index_change_during_preservation_keeps_the_worktree(
     assert "changed during preservation" in item.detail
 
 
+def test_a_content_change_reverted_during_preservation_keeps_the_worktree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex round 3: A -> B while the snapshot reads, then back to A. Both samples
+    say A; the snapshot holds B. Only checking the artifact catches it."""
+    lane, item = merged_dirty_lane(repo)
+    real = dh.snapshot_commit
+
+    def flip(worktree, head, changed):
+        target = Path(worktree) / "wip.txt"
+        info = target.stat()
+        target.write_bytes(b"WIP\n")
+        sha = real(worktree, head, changed)
+        target.write_bytes(b"wip\n")
+        os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+        return sha
+
+    monkeypatch.setattr(dh, "snapshot_commit", flip)
+    apply_one(repo, item)
+    assert (lane / "wip.txt").read_bytes() == b"wip\n"
+    assert "the snapshot does not hold the final wip.txt" in item.detail
+
+
+def test_an_index_change_reverted_during_preservation_keeps_the_worktree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lane, item = merged_dirty_lane(repo)
+    real = dh.snapshot_commit
+
+    def flip(worktree, head, changed):
+        git(Path(worktree), "add", "wip.txt")
+        sha = real(worktree, head, changed)
+        git(Path(worktree), "rm", "-q", "--cached", "wip.txt")
+        return sha
+
+    monkeypatch.setattr(dh, "snapshot_commit", flip)
+    apply_one(repo, item)
+    assert lane.exists()
+    assert "the snapshot does not hold the final index" in item.detail
+
+
+def test_a_lock_taken_before_the_baseline_keeps_the_worktree(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex round 3: a lock in BOTH samples compares equal; it must be refused."""
+    lane, item = merged_dirty_lane(repo)
+    real = dh._lane_state
+    calls = []
+
+    def lock_first(worktree, admin):
+        if not calls:
+            git(repo, "worktree", "lock", "--reason", "another agent", str(lane))
+        calls.append(worktree)
+        return real(worktree, admin)
+
+    monkeypatch.setattr(dh, "_lane_state", lock_first)
+    apply_one(repo, item)
+    assert lane.exists()
+    assert "locked" in item.detail
+
+
 def test_a_lock_taken_after_inventory_keeps_the_worktree(repo: Path) -> None:
     """Codex round 2, F4: the lock is re-read at apply, not trusted from inventory."""
     lane, item = merged_dirty_lane(repo)

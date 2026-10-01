@@ -1810,6 +1810,43 @@ def _lane_state(worktree: Path, admin: Path) -> tuple:
     )
 
 
+def _artifacts_mismatch(repo: Path, head: str, commit: str, dest: Path, state: tuple) -> str:
+    """Why the preserved ref + copies do NOT hold ``state``, or "" when they do.
+
+    Checks the artifacts themselves: every changed path's blob in the snapshot
+    tree, the real-index tree against the snapshot's index parent (HEAD's tree
+    when there is none), and every copy's manifest digest. Raises Undecidable.
+    """
+    _head, index_tree, _locked, changed, ignored, digests, _fp = state
+    tree = {}
+    for rec in git_ok(["ls-tree", "-r", "-z", commit], repo, timeout=120).split("\0"):
+        meta, _, rel = rec.partition("\t")
+        if rel:
+            tree[rel] = meta.split()[2]
+    for rel in changed:
+        want = digests["c:" + rel]
+        got = tree.get(rel, "deleted")
+        if got != want:
+            return f"the snapshot does not hold the final {rel}"
+    parents = git_ok(["rev-list", "--parents", "-n", "1", commit], repo).split()[1:]
+    index_parent = parents[1] if commit != head and len(parents) > 1 else head
+    if git_ok(["rev-parse", f"{index_parent}^{{tree}}"], repo).strip() != index_tree:
+        return "the snapshot does not hold the final index"
+    if ignored:
+        try:
+            manifest = json.loads((dest / "MANIFEST.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise Undecidable(f"manifest unreadable: {exc}") from exc
+        copied = {f["path"]: f["sha256"] for f in manifest["files"]}
+        for rel in ignored:
+            if (
+                copied.get(rel) != digests["i:" + rel]
+                or _sha256(dest / "files" / rel) != copied[rel]
+            ):
+                return f"the copy does not hold the final {rel}"
+    return ""
+
+
 def preserve_and_remove(repo: Path, item: Item, policy: PreservePolicy) -> tuple[bool, str]:
     """Preserve one finished lane, verify the preservation, then remove the worktree.
 
@@ -1859,17 +1896,27 @@ def preserve_and_remove(repo: Path, item: Item, policy: PreservePolicy) -> tuple
         return False, f"preserved as {ref}; kept: the folder is in use ({exc})"
     try:
         after = _lane_state(quarantine, admin)
+        # Equal before/after does not prove the ARTIFACTS hold that state: a change
+        # and its revert during preservation leave both samples equal while the
+        # snapshot captured the intermediate (Codex round 3). So the artifacts are
+        # checked against the final state directly, and a lock is refused outright
+        # rather than compared -- one taken before the baseline is in both samples.
+        problem = "" if after == before else "changed during preservation"
+        if not problem and (before[2] or after[2]):
+            problem = "the worktree is locked"
+        if not problem:
+            problem = _artifacts_mismatch(repo, head, commit, dest, after)
     except Undecidable as exc:
-        after = (f"undecidable: {exc}",)
-    if after != before:
+        problem = f"undecidable: {exc}"
+    if problem:
         try:
             os.rename(quarantine, path)
         except OSError as exc:
             return (
                 False,
-                f"preserved as {ref}; changed during preservation and LEFT AT {quarantine}: {exc}",
+                f"preserved as {ref}; {problem}; LEFT AT {quarantine}: {exc}",
             )
-        return False, f"changed during preservation; kept (preserved anyway as {ref})"
+        return False, f"{problem}; kept (preserved anyway as {ref})"
 
     ok, detail = remove_path(quarantine)
     if not ok:
