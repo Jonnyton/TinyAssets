@@ -58,6 +58,7 @@ _NODEIDS = (
     "tests/test_universe_tools_jail.py::test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch",
     "tests/test_universe_tools_jail.py::test_io_uring_and_symlink_are_refused_in_the_jail",
     "tests/test_universe_tools_jail.py::test_the_owners_credentials_and_authority_state_are_out_of_reach",
+    "tests/test_universe_tools_jail.py::test_the_agent_writes_its_own_wiki_but_not_the_trusted_write_back_markers",
     "tests/test_universe_tools_jail.py::test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt",
     "tests/test_universe_tools_jail.py::test_an_engine_pinned_to_another_universe_cannot_reach_it",
     "tests/test_universe_tools_jail.py::test_bash_has_no_network",
