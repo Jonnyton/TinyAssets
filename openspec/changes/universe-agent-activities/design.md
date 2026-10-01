@@ -119,9 +119,10 @@ line carries is the activity's title: quoted, one line, at most 80 characters.
 - *Events.* Each activity keeps at most 200 events. Older delivered events are
   dropped and the newest are kept.
 - *Effect intents.* Kept while their activity exists. Reads of them are paged.
-- *Quota.* The bytes in `.agent-sessions/<universe>/` count against that
-  universe's quota through the same usage function that measures the universe.
-  D2a wires and tests this; the `ROOT_ENTRIES` declaration alone does not.
+- *Quota.* The activity store's bytes (`agent-activities.db` and its WAL)
+  count against that universe's quota. They are a `SCOPE_UNIVERSE` store in
+  `storage_accounting.STORES`, beside `universe_files` and `workspaces`, and are
+  not merely declared in `ROOT_ENTRIES`. D2a wires and tests this.
 - *Account deletion.* S2's removal of `.agent-sessions/<home>` is a
   prerequisite and lands first. Before that removal, deletion fences every
   activity: it advances `runner_generation` and marks them `failed:account_deleted`.
