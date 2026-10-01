@@ -2768,10 +2768,8 @@ def write_graph(
     operation=release takes {file_id}, refuses active bindings and revokes only
     that file. Export through read_graph target=run_file before releasing it.
     File delivery, arbitrary paths and remote URL capture are not supported here.
-    Accepted transfers survive revoke/disconnect. Exact file delivery is not
-    implemented. All management stays pinned to your universe and ownership.
-
-    The build half of build+run parity (run it afterward with run_graph).
+    Accepted transfers survive revoke/disconnect. All management stays pinned
+    to your universe and ownership.
 
     **Inbound webhooks:** ``target="webhook"`` supports ``operation="create"``
     and ``operation="revoke"``. Create takes ``branch_id`` (one of YOUR OWN
@@ -2892,14 +2890,13 @@ def write_graph(
             webhook create/revoke;
             pending_request ask, or withdraw (payload_json {"request_id",
             "reason"}) to take down YOUR OWN still-pending ask once you know it
-            is stale - never leave a wrong tab on the owner's rail.
-            An ask IS the only notification (phone/desktop/browser). Ask
-            only for what the owner can grant or decide; a platform gap is a
-            patch request. For model
-            access, ask with action type bind_model_access, agent_binding_id,
-            expected_revision, provider and complete model_access. No fields:
-            the owner sees the exact change and reconnect warning, and must
-            confirm in their app.
+            is stale - never leave a wrong tab on the owner's rail. An ask IS
+            the only notification (phone/desktop/browser). Ask only for what
+            the owner can grant or decide; a platform gap is a patch request.
+            For model access, ask with action type bind_model_access,
+            agent_binding_id, expected_revision, provider and complete
+            model_access. No fields: the owner sees the exact change and
+            reconnect warning, and must confirm in their app.
             Other accepted sources and spending ceilings must be preserved.
         payload_json: for create, a complete Branch spec (JSON object); for patch, a
             JSON array of edit ops. Pass the value itself, or its JSON text.

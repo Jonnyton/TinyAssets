@@ -103,6 +103,12 @@ CHAPTER_ORDER = (
 #: resident text and the served descriptions sit at their 30,000-char ratchet;
 #: this sentence paid for it. The create checks it describes still refuse by name.
 #:
+#: 2026-10-01: telling the agent an ask IS the notification (live: it searched
+#: for a notification sender instead) costs resident text at the same ratchet.
+#: Two sentences paid for it, each already said elsewhere in the docstring: the
+#: run_graph step closes it ("Actually RUNNING it ... via run_graph"), and
+#: "File delivery ... not supported here" sits one line above the other.
+#:
 #: Each entry is ``(passage, marker)``: the verbatim passage the allowance is
 #: derived from, and a word that occurs ONLY in it, so its absence is a cheap,
 #: direct check that the passage went rather than merely being rephrased.
@@ -116,6 +122,14 @@ REMOVED_PASSAGES = (
         "It schedules your own workflow using existing creation checks and the "
         "universe's current serving provider.",
         "creation",
+    ),
+    (
+        "The build half of build+run parity (run it afterward with run_graph).",
+        "build+run",
+    ),
+    (
+        "Exact file delivery is not implemented.",
+        "implemented.",
     ),
 )
 DELIBERATELY_REMOVED: Counter = sum(
