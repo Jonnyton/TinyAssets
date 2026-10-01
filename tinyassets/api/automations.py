@@ -482,13 +482,14 @@ def _list(
         ))
         for row in rows[:bound]
     ]
-    records.extend(_legacy_rows(base, universe_id))
+    legacy = _legacy_rows(base, universe_id)
+    records.extend(legacy)
     return {
         "universe_id": universe_id,
         "automations": records,
         "count": len(records),
         # How many automations exist, so a page smaller than that says so.
-        "total": len(rows),
+        "total": len(rows) + len(legacy),
         "include_retired": include_retired,
     }
 
@@ -729,7 +730,7 @@ def _value_text(value: Any) -> str:
     )
 
 
-def _without_input_bodies(row: dict[str, Any]) -> dict[str, Any]:
+def _without_input_bodies(row: dict[str, Any], scope: str = "") -> dict[str, Any]:
     """A row with each input's character count instead of its value."""
     inputs = row.get("inputs")
     if not isinstance(inputs, dict):
@@ -737,29 +738,30 @@ def _without_input_bodies(row: dict[str, Any]) -> dict[str, Any]:
     summarized = {key: value for key, value in row.items() if key != "inputs"}
     summarized["input_chars"] = {key: len(_value_text(v)) for key, v in inputs.items()}
     summarized["inputs_read_with"] = (
-        f'read_graph target="automation" automation_id="{row.get("automation_id", "")}"'
-        ' field_name="<input name>"'
+        f'read_graph target="automation"{scope} '
+        f'automation_id="{row.get("automation_id", "")}" field_name="<input name>"'
     )
     return summarized
 
 
 def project_automations(
     result: dict[str, Any], *, budget: int, render, offset: int = 0,
-    max_rows: int | None = None,
+    max_rows: int | None = None, scope: str = "",
 ) -> dict[str, Any]:
     """A ``list`` result as a model door serves it: every id, paged to fit.
 
     Rows carry ``input_chars`` (name -> size) instead of input bodies; read a
     body with ``target="automation"`` and ``field_name``. ``offset`` continues
     from the returned ``next_offset``. ``render`` is the exact text the door
-    returns, so the fit is measured on its real bytes.
+    returns, so the fit is measured on its real bytes. ``scope`` is appended to
+    every continuation call (the connector's ``graph_id``).
     """
     rows = result.get("automations")
     if not isinstance(rows, list):
         return result
     from tinyassets.engine_result_bounds import page_to_fit
 
-    rows = [_without_input_bodies(r) if isinstance(r, dict) else r for r in rows]
+    rows = [_without_input_bodies(r, scope) if isinstance(r, dict) else r for r in rows]
     start = max(0, int(offset or 0))
     head = {k: v for k, v in result.items() if k not in {"automations", "count"}}
 
@@ -769,7 +771,8 @@ def project_automations(
             "total": len(rows), "offset": start,
             "complete": next_offset is None, "next_offset": next_offset,
             "next": (None if next_offset is None else
-                     f'read_graph target="automations" output_offset={next_offset}'),
+                     f'read_graph target="automations"{scope} '
+                     f'output_offset={next_offset}'),
         }
 
     return page_to_fit(rows, start=start, budget=budget, build=build,
@@ -778,7 +781,7 @@ def project_automations(
 
 def project_automation(
     result: dict[str, Any], *, budget: int, render, field_name: str = "",
-    offset: int = 0, max_chars: int = 8192,
+    offset: int = 0, max_chars: int = 8192, scope: str = "",
 ) -> dict[str, Any]:
     """A ``get`` result as a model door serves it: whole, or read in parts.
 
@@ -788,24 +791,36 @@ def project_automation(
     bodies. The result keeps the ``automation`` key and its ``owner`` so the
     door's provenance wrapping applies to a chunk exactly as to the row.
     """
+    from tinyassets.engine_result_bounds import CLIPPED_KEY, clip_to_fit
+
     row = result.get("automation")
     if not isinstance(row, dict):
         return result
-    name = (field_name or "").strip()
-    if not name:
+    if not field_name:
         if len(render(result).encode("utf-8")) <= budget:
             return result
-        return {**result, "automation": _without_input_bodies(row)}
+        summary = {**result, "automation": _without_input_bodies(row, scope)}
+        return clip_to_fit(summary, budget=budget, render=render)
     inputs = row.get("inputs") if isinstance(row.get("inputs"), dict) else {}
+    # Exact key first: input names are arbitrary, so " prompt " is not "prompt".
+    name = field_name if field_name in inputs else field_name.strip()
     if name not in inputs:
-        return {"error": "unknown_automation_input", "field_name": name,
-                "inputs": sorted(inputs)}
+        # Under ``automation`` with its owner, so another owner's input names
+        # keep the door's provenance wrapping even in a refusal.
+        return {"error": "unknown_automation_input", "field_name": field_name,
+                "automation": {"automation_id": row.get("automation_id"),
+                               "owner": row.get("owner"), "inputs": sorted(inputs)}}
     text = _value_text(inputs[name])
     start = max(0, int(offset or 0))
     size = max(1, min(32768, int(max_chars or 8192)))
-    head = {"automation_id": row.get("automation_id"), "name": row.get("name"),
-            "owner": row.get("owner"), "input": name, "total_chars": len(text),
+    title = str(row.get("name") or "")
+    head = {"automation_id": row.get("automation_id"), "name": title[:256],
+            "owner": row.get("owner"), "input": name[:256], "total_chars": len(text),
             "offset": start}
+    if len(title) > 256 or len(name) > 256:
+        # Metadata is bounded so the chunk, not the labels, gets the budget.
+        head[CLIPPED_KEY] = {k: len(v) for k, v in (("name", title), ("input", name))
+                             if len(v) > 256}
 
     def chunk(n: int) -> dict[str, Any]:
         end = min(len(text), start + n)

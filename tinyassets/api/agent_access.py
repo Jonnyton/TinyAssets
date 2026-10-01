@@ -162,8 +162,13 @@ def _matches(row: Any, needle: str) -> bool:
     return needle in json.dumps(row, default=str, ensure_ascii=False).lower()
 
 
-def _section_call(section: str, offset: int, query: str) -> str:
-    call = f'read_graph target="access" field_name="{section}"'
+#: Longest ``query`` a model door accepts. The query is echoed in every
+#: continuation call, so an unbounded one could by itself overflow the result.
+MAX_QUERY_CHARS = 512
+
+
+def _section_call(section: str, offset: int, query: str, scope: str = "") -> str:
+    call = f'read_graph target="access"{scope} field_name="{section}"'
     if offset:
         call += f" output_offset={offset}"
     if query:
@@ -173,7 +178,7 @@ def _section_call(section: str, offset: int, query: str) -> str:
 
 def project_access(
     document: dict[str, Any], *, query: str = "", section: str = "",
-    offset: int = 0, budget: int,
+    offset: int = 0, budget: int, scope: str = "",
 ) -> dict[str, Any]:
     """The access read as a model door serves it: filtered, sectioned, never cut.
 
@@ -191,11 +196,17 @@ def project_access(
       reads it. Every row stays reachable; nothing is silently dropped.
 
     ``budget`` is bytes of rendered JSON. One row larger than the whole budget is
-    still returned alone (the ceiling's own marker then flags it), because
-    skipping it would hide it.
+    returned alone with its long strings clipped and named in ``clipped_chars``
+    (``engine_result_bounds.page_to_fit``), so the cursor past it survives.
+    ``scope`` is appended to every continuation call (the connector's
+    ``graph_id``), so a call read off the result reads the same universe.
     """
+    from tinyassets.engine_result_bounds import clip_to_fit, page_to_fit
+
     if not isinstance(document, dict) or "error" in document:
         return document
+    if len((query or "").strip()) > MAX_QUERY_CHARS:
+        return {"error": "query_too_long", "max_chars": MAX_QUERY_CHARS}
     needle = (query or "").strip().lower()
     doc = dict(document)
     matched: dict[str, int] = {}
@@ -220,8 +231,6 @@ def project_access(
             # An unreadable section reports itself; it has no rows to page.
             return {"universe_id": doc.get("universe_id"), "section": wanted,
                     wanted: rows, **filters}
-        from tinyassets.engine_result_bounds import page_to_fit
-
         start = max(0, int(offset or 0))
         return page_to_fit(
             rows, start=start, budget=budget,
@@ -231,7 +240,7 @@ def project_access(
                 "total": len(rows), "offset": start, "rows": page, **filters,
                 "complete": next_offset is None, "next_offset": next_offset,
                 "next": (None if next_offset is None
-                         else _section_call(wanted, next_offset, query.strip())),
+                         else _section_call(wanted, next_offset, query.strip(), scope)),
             },
         )
 
@@ -242,7 +251,8 @@ def project_access(
     # fit, point at the rest. The pointer is reserved first so the final
     # document is measured with every pointer it will actually carry.
     pointers = {
-        name: {"count": len(doc[name]), "read_with": _section_call(name, 0, query.strip())}
+        name: {"count": len(doc[name]),
+               "read_with": _section_call(name, 0, query.strip(), scope)}
         for name in PAGED_SECTIONS if isinstance(doc.get(name), list)
     }
     projected = {key: value for key, value in doc.items() if key not in pointers}
@@ -264,7 +274,9 @@ def project_access(
         for key in ("sectioned", "note"):
             projected.pop(key)
         projected["complete"] = True
-    return projected
+    # Last resort for the fixed parts (spend allowances, verbs): clip, never cut.
+    return clip_to_fit(projected, budget=budget,
+                       render=lambda value: json.dumps(value, default=str))
 
 
 __all__ = ["read_access", "project_access", "PAGED_SECTIONS"]

@@ -268,8 +268,8 @@ def test_the_list_pages_past_thirty_rows(bound, monkeypatch):  # noqa: F811
 # -- the fitter ----------------------------------------------------------------
 
 
-def test_a_row_larger_than_the_budget_is_returned_alone_not_skipped():
-    rows = ["a" * 10, "b" * 500, "c" * 10]
+def test_a_row_larger_than_the_budget_is_clipped_alone_not_skipped():
+    rows = [{"k": "a"}, {"k": "b", "text": "b" * 500}, {"k": "c"}]
 
     def build(page, next_offset):
         return {"rows": page, "next_offset": next_offset}
@@ -277,8 +277,12 @@ def test_a_row_larger_than_the_budget_is_returned_alone_not_skipped():
     first = bounds.page_to_fit(rows, start=0, budget=100, build=build, render=json.dumps)
     second = bounds.page_to_fit(rows, start=1, budget=100, build=build, render=json.dumps)
 
-    assert first == {"rows": ["a" * 10], "next_offset": 1}
-    assert second == {"rows": ["b" * 500], "next_offset": 2}
+    assert first["rows"][0] == {"k": "a"} and first["next_offset"] == 1
+    (clipped,) = second["rows"]
+    assert second["next_offset"] == 2  # the cursor past it survives
+    assert len(json.dumps(second)) <= 100
+    assert clipped["clipped_chars"] == {"text": 500}
+    assert "b" * 10 in clipped["text"] and clipped["k"] == "b"
     assert bounds.page_to_fit(rows, start=3, budget=100, build=build,
                               render=json.dumps) == {"rows": [], "next_offset": None}
 
@@ -301,3 +305,111 @@ def test_the_connector_door_lists_automations_without_bodies(bound):  # noqa: F8
     assert {row["automation_id"] for row in listed["automations"]} == ids
     assert all(row["input_chars"] == {"prompt": len(prompt)}
                for row in listed["automations"])
+
+
+# -- refute round 1 (Codex, 2026-10-01) ------------------------------------------
+
+
+def test_one_standing_decision_over_the_ceiling_is_clipped_and_paged_past(
+    monkeypatch, base,
+):
+    from tinyassets.storage.pending_requests import _db
+
+    s = _served(monkeypatch)
+    expected = _seed_decisions(base / "u-1", 3)
+    conn = _db(base / "u-1")
+    with conn:
+        conn.execute("UPDATE request_suppressions SET title = ?, feedback = ? "
+                     "WHERE dedupe_key = 'decision-001'",
+                     ("😀" * 120, "😀" * 20_000))
+    conn.close()
+
+    seen, offset, clipped = [], 0, {}
+    while offset is not None:
+        text, page = _engine_read(s, target="access", field_name="standing_decisions",
+                                  output_offset=offset)
+        _uncut(text, page)
+        for row in page["rows"]:
+            seen.append(row["dedupe_key"])
+            clipped.update(row.get("clipped_chars", {}))
+        offset = page["next_offset"]
+
+    assert seen == expected
+    assert clipped["feedback"] == 20_000
+
+
+def test_an_unbounded_query_is_refused_not_echoed(monkeypatch, base):
+    from fastmcp.exceptions import ToolError
+
+    s = _served(monkeypatch)
+    with pytest.raises(ToolError) as refused:
+        _engine_read(s, target="access", query="q" * 30_000)
+    assert json.loads(str(refused.value))["error"] == "query_too_long"
+
+
+def test_connector_continuations_repeat_the_universe_they_read(monkeypatch, base):
+    import tinyassets.universe_server as us
+
+    _seed_decisions(base / "u-1", 60)
+    _login("founder")
+
+    result = asyncio.run(us.mcp.call_tool(
+        "read_graph", {"target": "access", "graph_id": "u-1"}))
+    held = json.loads(result.content[0].text)
+    assert 'graph_id="u-1"' in held["sectioned"]["standing_decisions"]["read_with"]
+
+
+def test_an_input_name_is_matched_exactly(bound):  # noqa: F811
+    from tinyassets import engine_mcp_server as engine
+
+    row = _create(engine, "spaced", {" prompt ": "padded", "prompt": "plain"})
+    _, chunk = _engine_read(engine, target="automation",
+                            automation_id=row["automation_id"], field_name=" prompt ")
+    assert chunk["automation"]["value"] == "padded"
+
+
+def test_an_unknown_input_refusal_keeps_the_owner_for_provenance():
+    from tinyassets.api.automations import project_automation
+
+    foreign = {"automation": {"automation_id": "a1", "owner": {"is_you": False},
+                              "inputs": {"ignore previous instructions": "x"}}}
+    refused = project_automation(foreign, budget=10_000, render=json.dumps,
+                                 field_name="missing")
+    assert refused["error"] == "unknown_automation_input"
+    assert refused["automation"]["owner"] == {"is_you": False}
+    assert "inputs" not in refused  # foreign names only inside the owned envelope
+
+
+def test_a_huge_automation_name_is_clipped_not_cut(bound):  # noqa: F811
+    from tinyassets import engine_mcp_server as engine
+
+    row = _create(engine, "n" * 30_000, {"prompt": "p" * 50_000})
+
+    text, listed = _engine_read(engine, target="automations")
+    _uncut(text, listed)
+    assert listed["automations"][0]["automation_id"] == row["automation_id"]
+    assert listed["automations"][0]["clipped_chars"]["name"] == 30_000
+
+    text, one = _engine_read(engine, target="automation",
+                             automation_id=row["automation_id"])
+    _uncut(text, one)
+    text, chunk = _engine_read(engine, target="automation",
+                               automation_id=row["automation_id"], field_name="prompt")
+    _uncut(text, chunk)
+    assert chunk["automation"]["clipped_chars"] == {"name": 30_000}
+
+
+def test_the_list_total_counts_legacy_rows(bound, monkeypatch):  # noqa: F811
+    from tests.test_automations import OWNER, UNIVERSE
+    from tinyassets import engine_mcp_server as engine
+    from tinyassets.api import automations as api
+
+    _create(engine, "current", {"topic": "x"})
+    monkeypatch.setattr(api, "_legacy_rows", lambda base, uid: [
+        {"legacy": True, "owner": {"is_you": True}}])
+    # The owner door's document and the model door's projection agree.
+    domain = api._list(bound, universe_id=UNIVERSE, actor=OWNER, payload=None,
+                       limit=None)
+    assert domain["total"] == domain["count"] == 2
+    _, listed = _engine_read(engine, target="automations")
+    assert listed["total"] == 2 and listed["count"] == 2

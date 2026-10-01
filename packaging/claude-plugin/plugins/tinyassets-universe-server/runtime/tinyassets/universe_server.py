@@ -777,6 +777,7 @@ def read_graph(
             json.loads(_domain_read_graph(**arguments)),
             query=query, section=field_name, offset=output_offset,
             budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
+            scope=_continuation_scope(graph_id),
         ), default=str)
     if normalized in {"automations", "automation"}:
         return json.dumps(_model_door_automations(
@@ -795,6 +796,16 @@ def read_graph(
     return raw
 
 
+def _continuation_scope(graph_id: str) -> str:
+    """The ``graph_id`` a continuation call must repeat to read the same universe.
+
+    Omitted, the connector resolves the caller's default home, so a page read off
+    an explicitly named universe would continue in a different one.
+    """
+    uid = (graph_id or "").strip()
+    return f' graph_id="{uid}"' if uid else ""
+
+
 def _model_door_automations(
     kind: str, *, universe_id: str, automation_id: str = "", field_name: str = "",
     offset: int = 0, max_chars: int = 8192, max_rows: int | None = None,
@@ -811,6 +822,7 @@ def _model_door_automations(
     from tinyassets.engine_result_bounds import resolve_ceiling
 
     budget = resolve_ceiling() - CEILING_HEADROOM_BYTES
+    scope = _continuation_scope(universe_id)
 
     def render(value):
         return json.dumps(value, default=str)
@@ -820,12 +832,13 @@ def _model_door_automations(
             _automations_impl(action="list", universe_id=universe_id,
                               payload=payload, limit=None),
             budget=budget, render=render, offset=offset, max_rows=max_rows,
+            scope=scope,
         )
     return project_automation(
         _automations_impl(action="get", universe_id=universe_id,
                           automation_id=automation_id),
         budget=budget, render=render, field_name=field_name, offset=offset,
-        max_chars=max_chars,
+        max_chars=max_chars, scope=scope,
     )
 
 
