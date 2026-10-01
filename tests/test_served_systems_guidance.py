@@ -88,7 +88,7 @@ def test_the_chapter_promises_only_what_the_platform_accepts() -> None:
 
     # Every event type it names is one an automation accepts.
     named_events = set(
-        re.findall(r"``(run_completed|pending_request_answered|[a-z_]*_event)``", text))
+        re.findall(r"``(run_completed|pending_request_answered|owner_message|[a-z_]*_event)``", text))
     # Every event it names is one an automation accepts, and it names them all.
     assert named_events == set(automations.EVENT_TYPES)
 

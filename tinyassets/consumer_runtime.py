@@ -69,6 +69,29 @@ def _envelope(scope, row, conn):
     return result
 
 
+def _project(scope, row):
+    """Project a terminal pair; True when THIS call put the owner's message in the thread.
+
+    Pending or uncertain execution never acquires a second start, and missing
+    terminal evidence remains visible: neither is a new writer.
+    """
+    try:
+        after = canonical.project_terminal(scope, row["admission_id"])
+    except canonical.TerminalUnavailable:
+        return False
+    return row["projection_state"] != "committed" and after["projection_state"] == "committed"
+
+
+def _announce_owner_message(base, *, owner, universe):
+    """Outside the scope's lock: wake what subscribed to the owner's messages."""
+    try:
+        from tinyassets.automation_events import emit_owner_message
+
+        emit_owner_message(Path(base) / universe, principal_id=owner)
+    except Exception:  # noqa: BLE001 - an event must never fail the turn
+        pass
+
+
 def read_turn(base, *, owner, universe, request_key):
     """Observe and converge terminal history only; never dispatch or call providers."""
     try:
@@ -77,25 +100,25 @@ def read_turn(base, *, owner, universe, request_key):
                 row = _lookup_key(conn, scope, request_key)
             if row is None:
                 return {"error": "not_found"}
-            try:
-                canonical.project_terminal(scope, row["admission_id"])
-            except canonical.TerminalUnavailable:
-                pass  # Pending/uncertain execution never acquires a second start.
+            projected = _project(scope, row)
             with canonical.runs_transaction(scope) as conn:
-                return _envelope(scope, canonical._read(conn, scope, row["admission_id"]), conn)
+                result = _envelope(scope, canonical._read(conn, scope, row["admission_id"]), conn)
     except (PermissionError, ValueError, OSError, sqlite3.Error,
             CurrentHomeChanged, ScopedResetError):
         return {"error": "not_found"}
+    if projected:
+        _announce_owner_message(base, owner=owner, universe=universe)
+    return result
 
 
 def _observe_or_repair(base, *, owner, universe, row):
     with canonical.authorized_scope(base, owner=owner, universe=universe) as scope:
-        try:
-            canonical.project_terminal(scope, row["admission_id"])
-        except canonical.TerminalUnavailable:
-            pass  # Pending or missing terminal evidence remains visible, never a new writer.
+        projected = _project(scope, row)
         with canonical.runs_transaction(scope) as conn:
-            return _envelope(scope, canonical._read(conn, scope, row["admission_id"]), conn)
+            result = _envelope(scope, canonical._read(conn, scope, row["admission_id"]), conn)
+    if projected:
+        _announce_owner_message(base, owner=owner, universe=universe)
+    return result
 
 
 def prepare_admitted_consumer(base, envelope, *, author_conn, runs_conn):
