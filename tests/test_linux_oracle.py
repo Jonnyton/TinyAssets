@@ -41,15 +41,14 @@ def test_snapshot_preserves_container_ownership_without_trusting_host_git():
 
 
 def _command(*argv: str) -> list[str]:
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    for flag in ("--shell", "--no-bwrap", "--as-root"):
-        parser.add_argument(flag, action="store_true")
-    parser.add_argument("pytest_args", nargs="*")
-    flags = [a for a in argv if a in ("--shell", "--no-bwrap", "--as-root")]
-    rest = [a for a in argv if a not in flags]
-    args = parser.parse_args([*flags, "--", *rest])
+    """Parse with the script's own parser; pytest args go after ``--``."""
+    flags, rest = [], list(argv)
+    while rest and rest[0].startswith("--") and not rest[0].startswith("--basetemp"):
+        flag = rest.pop(0)
+        flags.append(flag)
+        if flag in ("--out", "--apparmor", "--env"):
+            flags.append(rest.pop(0))
+    args = linux_oracle.build_parser().parse_args([*flags, "--", *rest])
     return linux_oracle.docker_command(args, Path("/repo"), "img:tag")
 
 
@@ -105,3 +104,27 @@ def test_each_run_is_named_so_a_lane_stops_only_its_own():
     cmd = _command("-q")
     name = cmd[cmd.index("--name") + 1]
     assert name.startswith("ta-oracle-")
+
+
+def test_ci_mode_options_reach_the_container():
+    """CI's linux-jail-proof calls this same command: an output mount for the
+    junit, its own AppArmor profile, and environment for the suite."""
+    cmd = _command(
+        "--out", "/runner/out", "--apparmor", "ta-jail-userns",
+        "--env", "TINYASSETS_DATA_DIR=/tmp/ta-data",
+        "-m", "real_jail", "--junitxml", "/out/junit.xml", "--basetemp", "/tmp/b",
+    )
+    assert "apparmor=ta-jail-userns" in _opts(cmd)
+    assert cmd[cmd.index("-v", cmd.index("-v") + 1) + 1].endswith("/runner/out:/out")
+    assert cmd[cmd.index("TINYASSETS_DATA_DIR=/tmp/ta-data") - 1] == "-e"
+    user = _user_script(cmd)
+    assert "'--junitxml' '/out/junit.xml'" in user
+    # A space-separated --basetemp is the caller's; no second one is appended.
+    assert user.count("--basetemp") == 1
+
+
+def test_env_without_a_value_is_refused():
+    import pytest
+
+    with pytest.raises(SystemExit, match="KEY=VALUE"):
+        _command("--env", "NOVALUE", "-q")

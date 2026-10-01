@@ -40,6 +40,14 @@ own reasons and taught everyone to ignore them. The long default tmp root
 (``/tmp/oracle-tmp/pytest-of-root/...``) also pushed the egress proxy's unix
 socket past Linux's 108-byte limit. ``--as-root`` keeps the old root run for
 anything that needs it.
+
+ONE INVOCATION FOR CI AND LOCAL. CI's linux-jail-proof runs this same command,
+so the jail recipe has one definition. The contract it relies on:
+``--out DIR`` binds DIR at ``/out``, writable by the suite (pass
+``-- --junitxml /out/x.xml``); ``--apparmor PROFILE`` swaps the AppArmor
+profile on runners that restrict user namespaces; ``--env KEY=VALUE`` sets
+suite environment; the exit code is pytest's; stdout is one ``[oracle] ...``
+banner line, then pytest's output.
 """
 from __future__ import annotations
 
@@ -161,7 +169,8 @@ def _docker_path(path: Path) -> str:
     return text
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line, shared by ``main`` and its tests."""
     parser = argparse.ArgumentParser(
         description="Run the suite on Linux, in a container, against the working tree.",
     )
@@ -178,9 +187,27 @@ def main(argv: list[str] | None = None) -> int:
              "so its tests fail for the oracle's reasons, not yours",
     )
     parser.add_argument(
+        "--out", metavar="DIR",
+        help="bind DIR at /out, writable by the suite, e.g. -- --junitxml=/out/j.xml",
+    )
+    parser.add_argument(
+        "--apparmor", metavar="PROFILE", default="unconfined",
+        help="AppArmor profile for the container (default unconfined; CI runners "
+             "that restrict user namespaces load their own)",
+    )
+    parser.add_argument(
+        "--env", metavar="KEY=VALUE", action="append", default=[],
+        help="set an environment variable for the suite (repeatable)",
+    )
+    parser.add_argument(
         "pytest_args", nargs="*",
         help="passed to pytest (put them after --); default: the whole suite, quiet",
     )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     if shutil.which("docker") is None:
@@ -200,6 +227,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.build or not _image_exists(tag):
         _build(root, tag)
 
+    if args.out:
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            out.chmod(0o777)  # the suite runs as uid 1001, not the caller
     return subprocess.run(docker_command(args, root, tag)).returncode
 
 
@@ -218,6 +250,12 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
     # Named, so a lane can stop its own run by name; Docker is shared across lanes.
     run = ["docker", "run", "--rm", "--name", f"ta-oracle-{os.getpid()}",
            "-v", f"{_docker_path(root)}:/src:ro"]
+    for pair in args.env:
+        if "=" not in pair:
+            raise SystemExit(f"[oracle] --env wants KEY=VALUE, got {pair!r}")
+        run += ["-e", pair]
+    if args.out:
+        run += ["-v", f"{_docker_path(Path(args.out))}:/out"]
     if args.as_root:
         script = _RUN_SCRIPT.format(excludes=excludes, command=command)
     else:
@@ -231,7 +269,7 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
         run += ["--security-opt", "seccomp=unconfined"]
         if not args.as_root:
             run += [
-                "--security-opt", "apparmor=unconfined",
+                "--security-opt", f"apparmor={args.apparmor}",
                 "--security-opt", "systempaths=unconfined",
             ]
     if args.shell:
