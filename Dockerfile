@@ -168,14 +168,21 @@ ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329
 # Installed from GitHub's immutable release asset with a per-architecture
 # checksum. The cli.github.com apt repository retains only its newest version,
 # so an exact apt pin made every upstream release break all future deploys.
+#
+# git and ripgrep are the universe agent's own toolchain (harness W3, design
+# #4172 §4.3 "its own computer"): its tool jail binds /usr read-only, so what
+# is installed here is what `bash` in the agent's workspace can run. git was
+# present only as a transitive dependency; it is named so it cannot vanish.
 RUN set -e; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         bubblewrap \
         ca-certificates \
         curl \
+        git \
         gnupg \
         libgomp1 \
+        ripgrep \
         tini \
         util-linux; \
     mkdir -p -m 755 /etc/apt/keyrings; \
@@ -217,7 +224,8 @@ COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex
 RUN chmod 0755 /usr/local/bin/codex && \
     ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude && \
     /usr/local/bin/codex --version && \
-    /usr/local/bin/claude --version
+    /usr/local/bin/claude --version && \
+    git --version && rg --version && node --version && python3 --version
 
 # Install the drop-first wrapper root-owned 0555 under /usr/local/libexec —
 # OUTSIDE /app and /data, both of which are chowned to uid 1001 further down.
