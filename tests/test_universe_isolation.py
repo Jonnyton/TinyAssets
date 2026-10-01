@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from domains.fantasy_daemon.phases._paths import resolve_db_path, resolve_kg_path
+from tinyassets.universe_paths import platform_path
 
 
 class TestDBPathDefaults:
@@ -24,7 +25,7 @@ class TestDBPathDefaults:
         uni = tmp_path / "my-universe"
         uni.mkdir()
         ctrl = DaemonController(universe_path=str(uni), db_path="", no_tray=True)
-        assert Path(ctrl._db_path).resolve() == (uni / "story.db").resolve()
+        assert Path(ctrl._db_path).resolve() == (platform_path(uni, "story.db")).resolve()
 
     def test_none_db_path_defaults_to_universe(self, tmp_path):
         from tinyassets.__main__ import DaemonController
@@ -32,7 +33,7 @@ class TestDBPathDefaults:
         uni = tmp_path / "my-universe"
         uni.mkdir()
         ctrl = DaemonController(universe_path=str(uni), db_path=None, no_tray=True)
-        assert Path(ctrl._db_path).resolve() == (uni / "story.db").resolve()
+        assert Path(ctrl._db_path).resolve() == (platform_path(uni, "story.db")).resolve()
 
     def test_explicit_universe_relative_path_accepted(self, tmp_path):
         from tinyassets.__main__ import DaemonController
@@ -61,7 +62,7 @@ class TestDBPathIsolationGuard:
             )
 
         # Should have been corrected to universe-relative
-        assert Path(ctrl._db_path).resolve() == (uni / "story.db").resolve()
+        assert Path(ctrl._db_path).resolve() == (platform_path(uni, "story.db")).resolve()
         assert "outside universe" in caplog.text
 
     def test_checkpoint_path_corrected(self, tmp_path, caplog):
@@ -78,7 +79,7 @@ class TestDBPathIsolationGuard:
             )
 
         assert Path(ctrl._checkpoint_path).resolve() == (
-            uni / "checkpoints.db"
+            platform_path(uni, "checkpoints.db")
         ).resolve()
         assert "outside universe" in caplog.text
 
@@ -97,7 +98,7 @@ class TestKGPathDerivation:
         # The _kg_path is set in _build_initial_state which we can't
         # easily call, but we can verify the derivation pattern by
         # checking that the path formula uses _universe_path.
-        expected_kg = str(Path(ctrl._universe_path) / "knowledge.db")
+        expected_kg = str(platform_path(Path(ctrl._universe_path), "knowledge.db"))
         # This matches what _init_retrieval_backends and state dict use
         assert "knowledge.db" in expected_kg
         assert str(uni) in expected_kg

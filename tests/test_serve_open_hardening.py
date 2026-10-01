@@ -22,6 +22,7 @@ from tinyassets.providers.definition import (
     register_definition,
 )
 from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+from tinyassets.universe_paths import platform_path
 
 
 def _seed_grant(tmp_path: Path, monkeypatch) -> str:
@@ -98,7 +99,7 @@ def test_verify_open_grant_custody_rejects_foreign_owner(tmp_path, monkeypatch):
 
 def test_get_definition_rejects_tampered_ref(tmp_path, monkeypatch):
     def_id = _seed_grant(tmp_path, monkeypatch)
-    store = tmp_path / "u" / "provider_definitions.json"
+    store = platform_path(tmp_path / "u", "provider_definitions.json")
     rows = json.loads(store.read_text(encoding="utf-8"))
     # Swap the grant ref while keeping the id — the id no longer content-addresses
     # its fields, so a substituted grant could serve under a trusted id. Fail closed.

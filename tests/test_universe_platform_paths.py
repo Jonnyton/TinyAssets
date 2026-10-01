@@ -28,7 +28,10 @@ def test_a_platform_name_resolves_under_runtime_state(tmp_path):
     root = _universe(tmp_path)
     path = up.platform_path(root, ".effector_consents.db")
     assert path == root / ".runtime" / "state" / ".effector_consents.db"
+    # The first resolve marks the universe even with nothing to move, so no
+    # unmarked window exists in which a planted root file could be imported.
     assert up.is_migrated(root)
+    assert sorted(p.name for p in root.iterdir()) == [".runtime"]
 
 
 def test_an_unknown_name_is_refused(tmp_path):
@@ -97,7 +100,10 @@ def test_a_crash_mid_move_leaves_no_marker_and_the_next_resolve_finishes(tmp_pat
     assert up.is_migrated(root)
     for name in names:
         assert (state / name).read_text() == name
-        assert up.is_tombstone(root / name) if not name.endswith(("-wal", "-shm")) else not (root / name).exists()
+        if name.endswith(("-wal", "-shm")):
+            assert not (root / name).exists()  # sidecars leave no tombstone
+        else:
+            assert up.is_tombstone(root / name)
 
 
 def test_a_root_copy_beside_a_migrated_one_refuses_and_moves_nothing(tmp_path):

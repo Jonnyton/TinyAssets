@@ -25,6 +25,7 @@ import pytest
 import tinyassets.api.engine_helpers as eh
 import tinyassets.api.universe as us
 from tinyassets.enrichment_signals import load_enrichment_signals
+from tinyassets.universe_paths import platform_path
 
 
 def _call(action: str, **kwargs) -> dict:
@@ -125,7 +126,7 @@ class TestAddCanonSynthesisSignal:
             "add_canon", filename="ref.md", text="# Reference\n",
             provenance_tag="rough notes",
         )
-        ledger_path = us._base_path() / universe / "ledger.json"
+        ledger_path = platform_path(us._base_path() / universe, "ledger.json")
         entries = json.loads(ledger_path.read_text(encoding="utf-8"))
         assert len(entries) == 1
         assert entries[0]["action"] == "add_canon"
@@ -230,7 +231,7 @@ class TestAddCanonFromPathHappyPath:
         src.write_text("content", encoding="utf-8")
         _call("add_canon_from_path", path=str(src), provenance_tag="draft")
 
-        ledger_path = us._base_path() / universe / "ledger.json"
+        ledger_path = platform_path(us._base_path() / universe, "ledger.json")
         entries = json.loads(ledger_path.read_text(encoding="utf-8"))
         assert len(entries) == 1
         assert entries[0]["action"] == "add_canon_from_path"
@@ -382,7 +383,7 @@ class TestAddCanonFromPathRejections:
         self, universe: str, tmp_path: Path,
     ) -> None:
         _call("add_canon_from_path", path=str(tmp_path / "missing"))
-        ledger_path = us._base_path() / universe / "ledger.json"
+        ledger_path = platform_path(us._base_path() / universe, "ledger.json")
         assert not ledger_path.exists()
 
 
@@ -429,7 +430,7 @@ class TestAddCanonFromPathWhitelist:
         assert "error" in out
         assert "whitelist" in out["error"].lower()
         # And no ledger entry was appended.
-        assert not (us._base_path() / universe / "ledger.json").exists()
+        assert not (platform_path(us._base_path() / universe, "ledger.json")).exists()
 
     def test_whitelist_traversal_attempt_rejected(
         self, universe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

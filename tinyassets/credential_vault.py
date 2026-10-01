@@ -20,7 +20,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
-from tinyassets.universe_paths import platform_path
+
+from tinyassets.universe_paths import ensure_migrated, platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,10 @@ def _as_path(value: Any, universe_dir: Path) -> Path | None:
         return None
     candidate = Path(value.strip()).expanduser()
     if not candidate.is_absolute():
-        candidate = universe_dir / candidate
+        # A relative credential path names platform state, so it resolves
+        # under the universe's .runtime/state -- never the root, which the
+        # universe agent can write (change universe-runtime-state).
+        candidate = ensure_migrated(universe_dir) / candidate
     return candidate
 
 

@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 import tinyassets.api.universe as us
+from tinyassets.universe_paths import platform_path
 
 
 @pytest.fixture
@@ -55,7 +56,7 @@ def test_characters_routes_to_character_states_in_story_db(
     udir = universe_base / "u"
     udir.mkdir()
     _make_table(
-        udir / "story.db",
+        platform_path(udir, "story.db"),
         "character_states",
         ["name", "state"],
         [("Kaela", "tense"), ("Rin", "calm")],
@@ -75,7 +76,7 @@ def test_facts_routes_to_extracted_facts_in_story_db(
     udir = universe_base / "u"
     udir.mkdir()
     _make_table(
-        udir / "story.db",
+        platform_path(udir, "story.db"),
         "extracted_facts",
         ["fact_text"],
         [("The tower is bone.",), ("The sea is salt.",)],
@@ -97,9 +98,9 @@ def test_facts_falls_back_to_knowledge_db_when_story_db_empty(
     """
     udir = universe_base / "u"
     udir.mkdir()
-    _make_table(udir / "story.db", "extracted_facts", ["fact_text"], [])
+    _make_table(platform_path(udir, "story.db"), "extracted_facts", ["fact_text"], [])
     _make_table(
-        udir / "knowledge.db", "facts",
+        platform_path(udir, "knowledge.db"), "facts",
         ["fact_text"], [("KG fact 1",), ("KG fact 2",)],
     )
 
@@ -115,9 +116,9 @@ def test_characters_falls_back_to_knowledge_entities_when_story_empty(
 ) -> None:
     udir = universe_base / "u"
     udir.mkdir()
-    _make_table(udir / "story.db", "character_states", ["name"], [])
+    _make_table(platform_path(udir, "story.db"), "character_states", ["name"], [])
     _make_table(
-        udir / "knowledge.db", "entities",
+        platform_path(udir, "knowledge.db"), "entities",
         ["name", "type"], [("Kaela", "character")],
     )
 
@@ -137,7 +138,7 @@ def test_empty_table_returns_empty_results_not_missing_error(
     """
     udir = universe_base / "u"
     udir.mkdir()
-    _make_table(udir / "story.db", "character_states", ["name"], [])
+    _make_table(platform_path(udir, "story.db"), "character_states", ["name"], [])
 
     out = json.loads(us._action_query_world(
         universe_id="u", query_type="characters",
@@ -173,7 +174,7 @@ def test_timeline_reports_no_store_yet(universe_base: Path) -> None:
     """
     udir = universe_base / "u"
     udir.mkdir()
-    _make_table(udir / "story.db", "character_states", ["name"], [])
+    _make_table(platform_path(udir, "story.db"), "character_states", ["name"], [])
 
     out = json.loads(us._action_query_world(
         universe_id="u", query_type="timeline",
@@ -186,7 +187,7 @@ def test_unknown_query_type_defaults_to_facts(universe_base: Path) -> None:
     udir = universe_base / "u"
     udir.mkdir()
     _make_table(
-        udir / "story.db", "extracted_facts",
+        platform_path(udir, "story.db"), "extracted_facts",
         ["fact_text"], [("a fact",)],
     )
     out = json.loads(us._action_query_world(
@@ -200,7 +201,7 @@ def test_filter_text_still_works(universe_base: Path) -> None:
     udir = universe_base / "u"
     udir.mkdir()
     _make_table(
-        udir / "story.db", "character_states",
+        platform_path(udir, "story.db"), "character_states",
         ["name", "notes"],
         [("Kaela", "the tense one"), ("Rin", "the calm one")],
     )

@@ -52,6 +52,7 @@ from tinyassets.graph_compiler import (
     seed_initial_state,
 )
 from tinyassets.principals import has_named_principal, named_principal
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +98,20 @@ class BranchTaskRunReservationConflict(RuntimeError):
     """Raised when a queue BranchTask already owns a durable run reservation."""
 
 
+RUNS_DB_FILENAME = ".runs.db"
+
+
 def runs_db_path(base_path: str | Path) -> Path:
-    return Path(base_path) / ".runs.db"
+    """The DATA ROOT's runs database. A universe's own workspace ledger is
+    :func:`universe_runs_db_path`, never this."""
+    return Path(base_path) / RUNS_DB_FILENAME
+
+
+def universe_runs_db_path(universe_base: str | Path) -> Path:
+    """A universe's own runs database: its workspace pool ledger, leases and
+    outbox (``workspace_pool``). Platform state, so it lives under the
+    universe's ``.runtime/state`` (change ``universe-runtime-state``)."""
+    return platform_path(universe_base, RUNS_DB_FILENAME)
 
 
 @contextlib.contextmanager
@@ -311,7 +324,7 @@ def _workspace_terminal_base(
     if root.name == universe_id:
         return None
     universe_base = (root / universe_id).resolve()
-    if universe_base.parent != root or not runs_db_path(universe_base).is_file():
+    if universe_base.parent != root or not universe_runs_db_path(universe_base).is_file():
         return None
     return universe_base
 
@@ -497,7 +510,7 @@ def workspace_wait_state(base_path: str | Path, run: dict[str, Any]) -> dict[str
     if universe_base is None:
         return None
     try:
-        ticket = workspace_pool.wait_ticket(runs_db_path(universe_base), str(run["run_id"]))
+        ticket = workspace_pool.wait_ticket(universe_runs_db_path(universe_base), str(run["run_id"]))
     except sqlite3.Error:
         logger.exception("workspace wait read failed for run %s", run.get("run_id"))
         return None
@@ -520,7 +533,7 @@ def _never_started_waiters(base_path: str | Path, rows) -> dict[str, Path]:
         if universe_base is None:
             continue
         try:
-            ticket = workspace_pool.wait_ticket(runs_db_path(universe_base), row["run_id"])
+            ticket = workspace_pool.wait_ticket(universe_runs_db_path(universe_base), row["run_id"])
         except sqlite3.Error:
             # Unreadable is not "not waiting": leaving the row alone is the
             # recoverable choice; interrupting it would lose it.
@@ -562,7 +575,7 @@ def nominate_workspace_waiter(universe_base: str | Path) -> str | None:
     root = _waiter_root(universe_base)
     if root is None:
         return None
-    db = runs_db_path(universe_base)
+    db = universe_runs_db_path(universe_base)
     for universe_id in workspace_pool.waiting_universes(db):
         while True:
             head = workspace_pool.head_waiter(db, universe_id)
@@ -713,7 +726,7 @@ def _admit_workspace_waiter(
     universe_base = _workspace_wait_base(base_path, universe_id)
     if universe_base is None:
         return None
-    db = runs_db_path(universe_base)
+    db = universe_runs_db_path(universe_base)
     try:
         # The universe database the sweep (and so every hand-off) reads; a
         # first-ever workspace run may be queued before anything created it.
@@ -769,7 +782,7 @@ def _settle_cancelled_waiter(base_path: str | Path, run_id: str) -> None:
         return
     from tinyassets import workspace_pool
 
-    if workspace_pool.wait_ticket(runs_db_path(universe_base), run_id) is None:
+    if workspace_pool.wait_ticket(universe_runs_db_path(universe_base), run_id) is None:
         return
     if _waiter_dispatch_claimed(base_path, run_id):
         return

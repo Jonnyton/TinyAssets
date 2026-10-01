@@ -28,6 +28,7 @@ from tinyassets.universe_soul import (
     read_legacy_premise,
     write_universe_soul,
 )
+from tinyassets.universe_paths import platform_path
 
 mcp = FastMCP(
     "tinyassets",
@@ -125,7 +126,7 @@ def get_status() -> str:
 
     Call this first to orient yourself.
     """
-    status_path = _universe_dir() / "status.json"
+    status_path = platform_path(_universe_dir(), "status.json")
     if not status_path.exists():
         return "No status.json found. The daemon may not be running."
     try:
@@ -278,7 +279,7 @@ _mcp_get_work_targets = _register_structured_tool(
 
 def get_review_state() -> str:
     """Read the latest review-state snapshot including daemon phase, word count, and accept rate."""
-    status_path = _universe_dir() / "status.json"
+    status_path = platform_path(_universe_dir(), "status.json")
     if not status_path.exists():
         return "No status.json found."
     try:
@@ -352,7 +353,7 @@ def pause() -> str:
 
     The daemon checks for a pause signal between scenes.
     """
-    pause_path = _universe_dir() / ".pause"
+    pause_path = platform_path(_universe_dir(), ".pause")
     try:
         _universe_dir().mkdir(parents=True, exist_ok=True)
         pause_path.write_text(
@@ -373,7 +374,7 @@ _mcp_pause = _register_structured_tool(
 
 def resume() -> str:
     """Resume a paused daemon by removing the pause signal."""
-    pause_path = _universe_dir() / ".pause"
+    pause_path = platform_path(_universe_dir(), ".pause")
     if not pause_path.exists():
         return "Daemon is not paused (no .pause file found)."
     try:

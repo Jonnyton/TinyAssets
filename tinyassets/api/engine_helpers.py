@@ -197,6 +197,7 @@ def _append_ledger(
     udir: Path,
     action: str,
     *,
+    at_data_root: bool = False,
     actor: str | None = None,
     target: str = "",
     summary: str = "",
@@ -219,9 +220,15 @@ def _append_ledger(
     if payload:
         entry["payload"] = payload
 
-    ledger_path = platform_path(udir, "ledger.json")
+    ledger_path: Path = Path(udir)
     try:
         udir.mkdir(parents=True, exist_ok=True)
+        # A universe's ledger is platform state under its .runtime/state; the
+        # data root's global ledger (branch definitions are not scoped to a
+        # universe) stays at the data root.
+        ledger_path = (
+            Path(udir) / "ledger.json" if at_data_root else platform_path(udir, "ledger.json")
+        )
         existing = _read_json(ledger_path)
         if not isinstance(existing, list):
             existing = []

@@ -38,6 +38,7 @@ from tinyassets.universe_files import (
     read_universe_text,
 )
 from tinyassets.universe_soul import SOUL_FILENAME, SOUL_VERSIONS_DIR
+from tinyassets.universe_paths import platform_path
 
 _logger = logging.getLogger(__name__)
 
@@ -191,7 +192,7 @@ def _soul_lock(universe_dir: Path) -> Iterator[None]:
     """
     universe_dir = Path(universe_dir)
     universe_dir.mkdir(parents=True, exist_ok=True)
-    lock_file = universe_dir / SOUL_LOCK_FILENAME
+    lock_file = platform_path(universe_dir, SOUL_LOCK_FILENAME)
     fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         if sys.platform == "win32":

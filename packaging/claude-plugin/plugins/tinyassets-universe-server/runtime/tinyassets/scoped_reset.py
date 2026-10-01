@@ -26,6 +26,7 @@ from types import MappingProxyType
 from typing import AbstractSet, Callable, Mapping
 
 from tinyassets.storage import DB_FILENAME
+from tinyassets import universe_paths as _universe_paths
 
 INVENTORY_REVISION = "scoped-reset-inventory-v4-2026-07-25"
 
@@ -157,28 +158,32 @@ _ACTIVE_TASK_STATES = frozenset({
     "running",
 })
 _ACTIVE_ROLLOUT_STATES = frozenset({"canary", "enabled", "readers_only"})
-_CREDENTIAL_NAMES = frozenset({
-    ".credential-vault.json",
-    ".credentials",
-    "auth.json",
-})
-_HOME_AUDIT_PREFIXES = (
-    ".external_write_receipts.db",
-    ".idempotency.db",
-    ".runs.db",
-    "auto_ship_attempts.jsonl",
-    "bid_execution_log.json",
+# Home classifications derive from the universe's platform registry, the same
+# source the runtime-state migration moves (change universe-runtime-state), so
+# a name can never be moved by one and missed by the other. The two extras are
+# not registry names: ``auth.json`` is a provider credential file wherever it
+# sits, and ``bid_execution_log.json`` is a legacy audit file.
+_CREDENTIAL_NAMES = frozenset(
+    {
+        entry.name.casefold()
+        for entry in _universe_paths.PLATFORM_NAMES.values()
+        if entry.reset == _universe_paths.RESET_CREDENTIAL
+    }
+    | {"auth.json"}
 )
-_HOME_OPERATIONAL_NAMES = frozenset({
-    ".effector_consents.db",
-    ".external_write_receipts.db",
-    ".idempotency.db",
-    ".langgraph_runs.db",
-    ".runs.db",
-    "checkpoints.db",
-    "knowledge.db",
-    "story.db",
-})
+_HOME_AUDIT_PREFIXES = tuple(sorted(
+    {
+        entry.name.casefold()
+        for entry in _universe_paths.PLATFORM_NAMES.values()
+        if entry.reset == _universe_paths.RESET_AUDIT
+    }
+    | {"bid_execution_log.json"}
+))
+_HOME_OPERATIONAL_NAMES = frozenset(
+    entry.name.casefold()
+    for entry in _universe_paths.PLATFORM_NAMES.values()
+    if entry.reset == _universe_paths.RESET_OPERATIONAL
+)
 _HOME_OPERATIONAL_DIRECTORIES = frozenset({
     ".git",
     ".credentials",
@@ -961,6 +966,36 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                     f"home contains link or reparse point: {path.relative_to(home)}"
                 )
                 continue
+            if _universe_paths.is_tombstone(path):
+                continue  # the migration's marker of a moved name: holds nothing
+            if current == home / _universe_paths.STATE_DIR.parent:
+                if entry.name == _universe_paths.STATE_DIR.name:
+                    pending.append(path)  # platform state: classified below, by registry
+                else:
+                    blockers.append(
+                        "unclassified home operational directory: "
+                        f"{path.relative_to(home)}"
+                    )
+                continue
+            if current == home / _universe_paths.STATE_DIR:
+                if entry.name in _universe_paths.MIGRATION_FILES:
+                    continue
+                known = _universe_paths.platform_name_for(entry.name)
+                if known is None:
+                    blockers.append(
+                        "unclassified platform state: "
+                        f"{path.relative_to(home)}"
+                    )
+                    continue
+                if known.reset != _universe_paths.RESET_RESETTABLE:
+                    blockers.append(
+                        f"home platform state is {known.reset} and blocks a "
+                        f"scoped reset: {path.relative_to(home)}"
+                    )
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                continue
             if path.stat().st_dev != home_device:
                 blockers.append(
                     f"home crosses a nested mount boundary: {path.relative_to(home)}"
@@ -984,7 +1019,9 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                         f"adapter: {path.relative_to(home)}"
                     )
                     continue
-                if entry.name.startswith("."):
+                if entry.name.startswith(".") and not (
+                    current == home and entry.name == _universe_paths.STATE_DIR.parts[0]
+                ):
                     blockers.append(
                         "unclassified home operational directory: "
                         f"{path.relative_to(home)}"

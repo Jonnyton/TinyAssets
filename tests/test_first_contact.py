@@ -14,6 +14,7 @@ import pytest
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 from tinyassets.ids import is_universe_serial
+from tinyassets.universe_paths import platform_path
 
 _RESERVED = {"wiki", "output", "runs", "lance"}
 
@@ -369,7 +370,7 @@ def test_auto_birth_is_ledgered(data_dir):
 
     _login("founder-1")
     uid = ensure_founder_home(data_dir, "founder-1")
-    ledger = data_dir / uid / "ledger.json"
+    ledger = platform_path(data_dir / uid, "ledger.json")
     assert ledger.is_file()
     entries = json.loads(ledger.read_text(encoding="utf-8"))
     assert any(e.get("action") == "create_universe" for e in entries)
@@ -455,7 +456,7 @@ def test_concurrent_first_contact_births_single_home(data_dir):
     assert set(results) == {home}
     # Exactly ONE create_universe ledger row — materialization is serialized, so
     # racing workers never double-create under the shared reserved id.
-    ledger = json.loads((data_dir / home / "ledger.json").read_text(encoding="utf-8"))
+    ledger = json.loads((platform_path(data_dir / home, "ledger.json")).read_text(encoding="utf-8"))
     assert len([e for e in ledger if e.get("action") == "create_universe"]) == 1
 
 
@@ -642,7 +643,7 @@ def test_explicit_create_is_ledgered(data_dir, monkeypatch):
     # MCP dispatch.
     _login("founder-1")
     uid = _create_via_action(data_dir, monkeypatch)
-    ledger = data_dir / uid / "ledger.json"
+    ledger = platform_path(data_dir / uid, "ledger.json")
     assert ledger.is_file()
     entries = json.loads(ledger.read_text(encoding="utf-8"))
     assert any(e.get("action") == "create_universe" for e in entries)

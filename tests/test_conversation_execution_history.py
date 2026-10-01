@@ -7,6 +7,7 @@ import pytest
 
 from tinyassets import conversation_store as store
 from tinyassets.conversation_memory import Msg, format_history
+from tinyassets.universe_paths import platform_path
 
 RECEIPT = {"provider": "owned-provider", "model": "actual-model", "model_status": "reported"}
 
@@ -26,7 +27,7 @@ def test_exchange_receipt_is_paired_and_hashable(tmp_path):
 
 
 def legacy_database(tmp_path):
-    path = tmp_path / ".conversation_memory.db"
+    path = platform_path(tmp_path, ".conversation_memory.db")
     with sqlite3.connect(path) as conn:
         conn.execute(
             "CREATE TABLE conversation_turns (id INTEGER PRIMARY KEY, session_id TEXT, "
@@ -66,7 +67,7 @@ def test_writer_migrates_legacy_without_rewriting_old_turn(tmp_path):
 ])
 def test_bad_stored_receipt_cannot_drop_message_text(tmp_path, bad):
     assert store.record_exchange(tmp_path, "a", "q", "unchanged", execution=RECEIPT)
-    with sqlite3.connect(tmp_path / ".conversation_memory.db") as conn:
+    with sqlite3.connect(platform_path(tmp_path, ".conversation_memory.db")) as conn:
         conn.execute("UPDATE conversation_turns SET execution_json=?", (bad,))
     for read in (store.load_recent, store.load_recent_readonly):
         messages = read(tmp_path, "a")
@@ -104,7 +105,7 @@ def test_failed_optional_migration_still_stores_text(tmp_path, monkeypatch):
 
 
 def test_second_insert_failure_rolls_back_pair_and_receipt(tmp_path):
-    path = tmp_path / ".conversation_memory.db"
+    path = platform_path(tmp_path, ".conversation_memory.db")
     conn = store._connect(path)
     conn.execute("CREATE TRIGGER refuse_answer BEFORE INSERT ON conversation_turns "
                  "WHEN NEW.speaker = 'universe' BEGIN SELECT RAISE(ABORT, 'fixture'); END")

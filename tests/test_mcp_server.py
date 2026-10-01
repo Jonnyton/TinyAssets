@@ -28,6 +28,7 @@ from tinyassets.mcp_server import (
     set_premise,
     steer,
 )
+from tinyassets.universe_paths import platform_path
 
 
 @pytest.fixture(autouse=True)
@@ -108,7 +109,7 @@ class TestUniverseDirResolution:
 class TestGetStatus:
     def test_returns_status_json(self, universe_dir):
         status = {"current_phase": "draft", "word_count": 1200}
-        (universe_dir / "status.json").write_text(
+        (platform_path(universe_dir, "status.json")).write_text(
             json.dumps(status), encoding="utf-8",
         )
         result = get_status()
@@ -242,7 +243,7 @@ class TestNewReadSurfaces:
         assert "book-1" in result
 
     def test_get_review_state_reads_status(self, universe_dir):
-        (universe_dir / "status.json").write_text(
+        (platform_path(universe_dir, "status.json")).write_text(
             json.dumps({"review_stage": "authorial", "selected_target_id": "book-1"}),
             encoding="utf-8",
         )
@@ -316,13 +317,13 @@ class TestPauseResume:
     def test_pause_creates_flag(self, universe_dir):
         result = pause()
         assert "pause" in result.lower()
-        assert (universe_dir / ".pause").exists()
+        assert (platform_path(universe_dir, ".pause")).exists()
 
     def test_resume_removes_flag(self, universe_dir):
-        (universe_dir / ".pause").write_text("flagged", encoding="utf-8")
+        (platform_path(universe_dir, ".pause")).write_text("flagged", encoding="utf-8")
         result = resume()
         assert "resume" in result.lower()
-        assert not (universe_dir / ".pause").exists()
+        assert not (platform_path(universe_dir, ".pause")).exists()
 
     def test_resume_when_not_paused(self, universe_dir):
         result = resume()
@@ -331,7 +332,7 @@ class TestPauseResume:
     def test_pause_is_idempotent(self, universe_dir):
         pause()
         pause()
-        assert (universe_dir / ".pause").exists()
+        assert (platform_path(universe_dir, ".pause")).exists()
 
 
 # ---------------------------------------------------------------------------

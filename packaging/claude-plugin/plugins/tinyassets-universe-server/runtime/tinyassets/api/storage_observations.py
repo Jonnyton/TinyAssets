@@ -132,7 +132,9 @@ class _Walker:
 
 def _scratch(walker: _Walker, root_fd: int, root: Path, uid: str, readonly):
     try:
-        with readonly(root / uid / ".runs.db") as conn:
+        from tinyassets.runs import universe_runs_db_path
+
+        with readonly(universe_runs_db_path(root / uid)) as conn:
             rows = conn.execute(
                 "SELECT CASE WHEN length(lease_id)<=255 THEN lease_id END, "
                 "CASE WHEN length(CAST(generation AS TEXT))<=20 THEN generation END "

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tinyassets.universe_paths import platform_path
 
 _HOME_A = "u-01aaaaaaaaaaaaaaaaaaaaaaaa"
 _HOME_B = "u-01bbbbbbbbbbbbbbbbbbbbbbbb"
@@ -502,7 +503,7 @@ def test_credentials_and_reparse_points_block_without_following(
 ) -> None:
     from tinyassets.scoped_reset import inspect_reset_scope
 
-    credentials = seeded / _HOME_A / ".credential-vault.json"
+    credentials = platform_path(seeded / _HOME_A, ".credential-vault.json")
     credentials.write_text('{"sentinel":"do-not-read"}', encoding="utf-8")
     link = seeded / _HOME_A / "outside-link"
     if sys.platform == "win32":

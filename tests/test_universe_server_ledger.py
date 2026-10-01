@@ -22,6 +22,7 @@ import pytest
 import tinyassets.api.universe as us
 from tinyassets.auth.provider import Identity
 from tinyassets.daemon_server import grant_universe_access
+from tinyassets.universe_paths import platform_path
 
 
 def _call(action: str, **kwargs) -> dict:
@@ -104,7 +105,7 @@ def _authenticate_ledger_submitter(
 
 
 def _ledger(uid: str) -> list[dict]:
-    data = json.loads((us._base_path() / uid / "ledger.json").read_text(encoding="utf-8"))
+    data = json.loads((platform_path(us._base_path() / uid, "ledger.json")).read_text(encoding="utf-8"))
     assert isinstance(data, list)
     return data
 
@@ -228,7 +229,7 @@ def test_set_premise_appends_ledger(universe: str) -> None:
 def test_set_premise_empty_does_not_append(universe: str) -> None:
     out = _call("set_premise", text="  ")
     assert "error" in out
-    ledger_path = us._base_path() / universe / "ledger.json"
+    ledger_path = platform_path(us._base_path() / universe, "ledger.json")
     assert not ledger_path.exists()
 
 
@@ -338,7 +339,7 @@ def test_control_daemon_pause_and_resume_append_ledger(universe: str) -> None:
 
 def test_control_daemon_status_does_not_append(universe: str) -> None:
     _call("control_daemon", text="status")
-    ledger_path = us._base_path() / universe / "ledger.json"
+    ledger_path = platform_path(us._base_path() / universe, "ledger.json")
     assert not ledger_path.exists()
 
 
@@ -471,7 +472,7 @@ def test_the_actor_is_the_signed_in_principal_never_anonymous(
     _authenticate_ledger_submitter("u", monkeypatch)
 
     _call("set_premise", text="x")
-    entries = json.loads((base / "u" / "ledger.json").read_text(encoding="utf-8"))
+    entries = json.loads((platform_path(base / "u", "ledger.json")).read_text(encoding="utf-8"))
     assert entries[0]["actor"] == "test-user"
     assert entries[0]["actor"] != "anonymous"
 
@@ -493,7 +494,7 @@ def test_read_actions_do_not_touch_ledger(universe: str) -> None:
     _call("get_activity")
     _call("get_ledger")
 
-    ledger_path = us._base_path() / universe / "ledger.json"
+    ledger_path = platform_path(us._base_path() / universe, "ledger.json")
     assert not ledger_path.exists()
 
 
@@ -502,7 +503,7 @@ def test_handler_error_result_does_not_append(universe: str) -> None:
     out = _call("add_canon", filename="", text="x")
     assert "error" in out
 
-    ledger_path = us._base_path() / universe / "ledger.json"
+    ledger_path = platform_path(us._base_path() / universe, "ledger.json")
     assert not ledger_path.exists()
 
 
@@ -515,5 +516,5 @@ def test_bypass_path_is_documented_only(universe: str) -> None:
     callers that skip the wrapper, this test will fail and flag it.
     """
     us._action_set_premise(universe_id=universe, text="direct call bypass")
-    ledger_path = us._base_path() / universe / "ledger.json"
+    ledger_path = platform_path(us._base_path() / universe, "ledger.json")
     assert not ledger_path.exists()

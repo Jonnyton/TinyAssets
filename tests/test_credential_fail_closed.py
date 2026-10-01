@@ -31,6 +31,7 @@ from tinyassets.providers.base import (
     subprocess_env_for_provider,
     subprocess_env_without_api_keys,
 )
+from tinyassets.universe_paths import ensure_migrated, platform_path
 
 AMBIENT_CLOUD_AUTH_VARS = (
     "ANTHROPIC_AUTH_TOKEN",
@@ -131,7 +132,7 @@ def test_universe_without_credential_does_not_inherit_host_auth(host_auth, tmp_p
         Path(env["CODEX_HOME"]).as_posix()
     )
     assert claude_subscription_auth_available(universe) is False
-    assert not (universe / ".credentials").exists()
+    assert not (platform_path(universe, ".credentials")).exists()
 
 
 def test_host_local_daemon_keeps_its_own_auth(host_auth):
@@ -193,7 +194,7 @@ def test_selected_universe_vault_auth_survives_empty_base(
     """
     universe = tmp_path / "u-with-vault"
     universe.mkdir()
-    vault_config_dir = universe / ".credentials" / "claude-custom"
+    vault_config_dir = platform_path(universe, ".credentials") / "claude-custom"
 
     def fake_apply(env, provider_name, *, universe_dir=None):
         env["CLAUDE_CONFIG_DIR"] = str(vault_config_dir)
@@ -216,7 +217,7 @@ def test_partial_vault_overlay_cannot_retain_alternate_host_auth(
     """MUTATION: seed the selected overlay from the host environment -> RED."""
     universe = tmp_path / "u-partial-vault"
     universe.mkdir()
-    vault_config_dir = universe / ".credentials" / "claude-custom"
+    vault_config_dir = platform_path(universe, ".credentials") / "claude-custom"
 
     def fake_apply(env, provider_name, *, universe_dir=None):
         env["CLAUDE_CONFIG_DIR"] = str(vault_config_dir)
@@ -254,7 +255,7 @@ def test_universe_credential_resolution_failure_is_explicit(
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
     assert claude_subscription_auth_available(universe) is False
-    assert not (universe / ".credentials").exists()
+    assert not (platform_path(universe, ".credentials")).exists()
 
 
 def test_malformed_real_vault_failure_is_sanitized_without_artifact_creation(
@@ -273,8 +274,10 @@ def test_malformed_real_vault_failure_is_sanitized_without_artifact_creation(
     assert "not valid JSON" not in str(exc.value)
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
-    assert not (universe / ".credentials").exists()
-    assert not (universe / ".runtime").exists()
+    assert not (platform_path(universe, ".credentials")).exists()
+    # Nothing under .runtime but the platform state directory itself: no
+    # provider runtime, no launch credential snapshot.
+    assert sorted(p.name for p in (universe / ".runtime").iterdir()) == ["state"]
 
 
 def test_environment_bound_universe_does_not_inherit_host_auth(
@@ -365,9 +368,9 @@ def test_explicit_universe_overrides_environment_bound_universe(
     env = subprocess_env_for_provider("claude-code", universe_dir=universe_b)
 
     assert Path(env["CLAUDE_CONFIG_DIR"]).resolve() == (
-        universe_b / "auth-b"
+        ensure_migrated(universe_b) / "auth-b"
     ).resolve()
-    assert not (universe_a / "auth-a").exists()
+    assert not (ensure_migrated(universe_a) / "auth-a").exists()
 
 
 def test_host_api_provider_opt_in_does_not_leak_into_universe_cli(
@@ -600,7 +603,7 @@ def test_default_vault_materialization_target_escape_is_rejected_before_helper(
     universe.mkdir()
     outside = tmp_path / "outside-credential-root"
     outside.mkdir()
-    _make_directory_link(universe / ".credentials", outside)
+    _make_directory_link(platform_path(universe, ".credentials"), outside)
 
     with pytest.raises(ProviderUnavailableError, match="credential resolution") as exc:
         subprocess_env_for_provider("claude-code", universe_dir=universe)
@@ -608,7 +611,9 @@ def test_default_vault_materialization_target_escape_is_rejected_before_helper(
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
     assert list(outside.iterdir()) == []
-    assert not (universe / ".runtime").exists()
+    # Nothing under .runtime but the platform state directory itself: no
+    # provider runtime, no launch credential snapshot.
+    assert sorted(p.name for p in (universe / ".runtime").iterdir()) == ["state"]
 
 
 def test_vault_source_symlink_is_rejected_before_any_helper_side_effect(
@@ -627,8 +632,10 @@ def test_vault_source_symlink_is_rejected_before_any_helper_side_effect(
     assert outside_token not in str(exc.value)
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
-    assert not (universe / ".runtime").exists()
-    assert not (universe / ".credentials").exists()
+    # Nothing under .runtime but the platform state directory itself: no
+    # provider runtime, no launch credential snapshot.
+    assert sorted(p.name for p in (universe / ".runtime").iterdir()) == ["state"]
+    assert not (platform_path(universe, ".credentials")).exists()
 
 
 def test_vault_source_hardlink_is_rejected_before_any_helper_side_effect(
@@ -650,8 +657,10 @@ def test_vault_source_hardlink_is_rejected_before_any_helper_side_effect(
     assert outside_token not in str(exc.value)
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
-    assert not (universe / ".runtime").exists()
-    assert not (universe / ".credentials").exists()
+    # Nothing under .runtime but the platform state directory itself: no
+    # provider runtime, no launch credential snapshot.
+    assert sorted(p.name for p in (universe / ".runtime").iterdir()) == ["state"]
+    assert not (platform_path(universe, ".credentials")).exists()
 
 
 @pytest.mark.parametrize("provider_name", ["future-cli", "gemini", "CODEX"])
@@ -750,8 +759,10 @@ def test_real_vault_outside_path_is_rejected_before_helper_side_effects(
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
     assert not outside.exists()
-    assert not (universe / ".runtime").exists()
-    assert not (universe / ".credentials").exists()
+    # Nothing under .runtime but the platform state directory itself: no
+    # provider runtime, no launch credential snapshot.
+    assert sorted(p.name for p in (universe / ".runtime").iterdir()) == ["state"]
+    assert not (platform_path(universe, ".credentials")).exists()
 
 
 def test_helper_outside_overlay_path_is_rejected_after_helper(

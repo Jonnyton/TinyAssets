@@ -22,13 +22,13 @@ from pathlib import Path
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from tinyassets.universe_paths import platform_path
 from tinyassets.universe_soul import (
     legacy_premise_path,
     premise_from_soul,
     read_legacy_premise,
     write_universe_soul,
 )
-from tinyassets.universe_paths import platform_path
 
 mcp = FastMCP(
     "tinyassets",

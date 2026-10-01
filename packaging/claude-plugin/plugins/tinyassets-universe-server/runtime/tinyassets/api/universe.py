@@ -84,6 +84,7 @@ from tinyassets.universe_soul import (
     read_universe_soul,
     write_universe_soul,
 )
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger("universe_server.universe")
 
@@ -928,7 +929,7 @@ def _file_based_last_activity(
 
     heartbeat_candidates: list[datetime] = []
 
-    for path in (udir / "activity.log", udir / ".runtime_status.json"):
+    for path in (udir / "activity.log", platform_path(udir, ".runtime_status.json")):
         if not path.exists():
             continue
         try:
@@ -958,7 +959,7 @@ def _file_based_last_activity(
             if parsed is not None:
                 return parsed
 
-    status_path = udir / "status.json"
+    status_path = platform_path(udir, "status.json")
     if status_path.exists():
         try:
             mtime = datetime.fromtimestamp(
@@ -1129,7 +1130,7 @@ def _compute_accept_rate_from_db(
     deliberately read-time — status.json's cached `accept_rate` is never
     updated by the daemon today, so reading it is misleading.
     """
-    db_path = udir / "story.db"
+    db_path = platform_path(udir, "story.db")
     sample: dict[str, Any] = {"accepted": 0, "evaluated": 0, "source": "none"}
     if not db_path.exists():
         return None, sample
@@ -1234,7 +1235,7 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
     has_work = isinstance(targets, list) and any(
         t.get("lifecycle") == "active" for t in targets if isinstance(t, dict)
     )
-    is_paused = (udir / ".pause").exists()
+    is_paused = platform_path(udir, ".pause").exists()
     last_activity = _last_activity_at(udir, status)
     staleness = _staleness_bucket(last_activity)
 
@@ -1367,9 +1368,9 @@ def _worker_liveness(
     writes (docs/specs/daemon-liveness-watchdog.md). Consumers (the activity
     canary) use it to page on wedge and stay quiet on idle.
     """
-    legacy_path = udir / _WORKER_SUPERVISOR_FILENAME
+    legacy_path = platform_path(udir, _WORKER_SUPERVISOR_FILENAME)
     worker_paths = sorted(
-        path for path in udir.glob(
+        path for path in legacy_path.parent.glob(
             f"{_WORKER_SUPERVISOR_PREFIX}*{_WORKER_SUPERVISOR_SUFFIX}"
         )
         if path.name != _WORKER_SUPERVISOR_FILENAME
@@ -1826,7 +1827,7 @@ def _action_list_universes(**_kwargs: Any) -> str:
         if not visibility.visibility_permits(child.name, "discover_existence"):
             hidden_by_visibility += 1
             continue
-        status = _read_json(child / "status.json")
+        status = _read_json(platform_path(child, "status.json"))
         liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
         info: dict[str, Any] = {
             "id": child.name,
@@ -1959,7 +1960,7 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # Daemon liveness block — always present, so downstream readers (humans
     # and chat clients) can always tell whether the daemon is alive, why
     # it's stuck, and whether the premise and work exist.
-    status = _read_json(udir / "status.json")
+    status = _read_json(platform_path(udir, "status.json"))
     liveness = _daemon_liveness(udir, status if isinstance(status, dict) else None)
     result["daemon"] = {
         "phase": liveness["phase"],
@@ -3860,7 +3861,7 @@ def _action_daemon_overview(
 
     # Run state (status.json — best-effort).
     try:
-        status = _read_json(udir / "status.json") or {}
+        status = _read_json(platform_path(udir, "status.json")) or {}
         if isinstance(status, dict):
             response["run_state"] = {
                 "current_phase": status.get("current_phase", ""),
@@ -4570,7 +4571,7 @@ def _query_world_db(
     fallback_empty: tuple[str, str] | None = None
     checked: list[str] = []
     for dbname, table in candidates:
-        db_path = udir / dbname
+        db_path = platform_path(udir, dbname)
         checked.append(f"{dbname}::{table}")
         if not db_path.exists():
             continue
@@ -5435,7 +5436,7 @@ def _action_control_daemon(
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
 
-    pause_path = udir / ".pause"
+    pause_path = platform_path(udir, ".pause")
 
     if action == "pause":
         try:
@@ -5472,7 +5473,7 @@ def _action_control_daemon(
             return json.dumps({"error": f"Failed to remove pause: {exc}"})
 
     elif action == "status":
-        status = _read_json(udir / "status.json")
+        status = _read_json(platform_path(udir, "status.json"))
         liveness = _daemon_liveness(
             udir, status if isinstance(status, dict) else None,
         )
@@ -5672,7 +5673,7 @@ def _action_get_ledger(universe_id: str = "", limit: int = 50, **_kwargs: Any) -
             "error": "Invalid universe_id.",
         })
 
-    ledger_path = udir / "ledger.json"
+    ledger_path = platform_path(udir, "ledger.json")
     data = _read_json(ledger_path)
     if not data or not isinstance(data, list):
         return json.dumps({"universe_id": uid, "entries": [], "note": "No ledger entries yet."})

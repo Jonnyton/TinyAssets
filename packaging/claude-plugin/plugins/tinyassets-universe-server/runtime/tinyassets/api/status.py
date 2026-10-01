@@ -40,6 +40,7 @@ from tinyassets.provider_admission import (
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
+from tinyassets.universe_paths import platform_path
 
 _STATUS_SCHEMA_VERSION = 2
 # Async overhead plus the in-band reap, on top of the turn's own cap: the same
@@ -1544,10 +1545,11 @@ def get_status(
         # directory, not at data_dir() root; patch the per-subsystem byte
         # counts using the already-resolved udir.
         if "per_subsystem" in storage_utilization:
-            checkpoint_bytes = path_size_bytes(udir / "checkpoints.db")
+            checkpoint_db = platform_path(udir, "checkpoints.db")
+            checkpoint_bytes = path_size_bytes(checkpoint_db)
             storage_utilization["per_subsystem"]["checkpoint_db"] = {
                 "bytes": checkpoint_bytes,
-                "path": str(udir / "checkpoints.db"),
+                "path": str(checkpoint_db),
             }
             storage_utilization["per_subsystem"]["activity_log"] = {
                 "bytes": path_size_bytes(udir / "activity.log"),

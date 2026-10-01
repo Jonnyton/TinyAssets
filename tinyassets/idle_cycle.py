@@ -69,6 +69,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
 from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)

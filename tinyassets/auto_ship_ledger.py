@@ -44,6 +44,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+
 from tinyassets.universe_paths import platform_path
 
 LEDGER_FILENAME = "auto_ship_attempts.jsonl"

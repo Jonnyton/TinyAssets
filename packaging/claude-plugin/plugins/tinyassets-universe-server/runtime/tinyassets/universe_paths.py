@@ -459,10 +459,6 @@ def ensure_migrated(universe_dir: str | Path) -> Path:
     Blocks while another process migrates the same universe. Safe to call on
     every resolve: once confirmed, a universe is remembered for the life of
     the process, because migration is one-way.
-
-    The first resolve of any universe marks it, even with nothing to move: an
-    unmarked universe is the window in which a root file planted by a workflow
-    would be imported as platform state by a later migration.
     """
     root = _universe_root(universe_dir)
     key = os.path.normcase(str(root))

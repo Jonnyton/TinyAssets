@@ -7,8 +7,9 @@ contamination (knowledge.db and story.db loaded from the wrong universe).
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
+
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def resolve_db_path(state: dict[str, Any]) -> str:
 
     uni_path = state.get("_universe_path", "")
     if uni_path:
-        derived = str(Path(uni_path) / "story.db")
+        derived = str(platform_path(uni_path, "story.db"))
         logger.debug("_db_path missing from state; derived from universe: %s", derived)
         return derived
 
@@ -52,7 +53,7 @@ def resolve_kg_path(state: dict[str, Any]) -> str:
 
     uni_path = state.get("_universe_path", "")
     if uni_path:
-        derived = str(Path(uni_path) / "knowledge.db")
+        derived = str(platform_path(uni_path, "knowledge.db"))
         logger.debug("_kg_path missing from state; derived from universe: %s", derived)
         return derived
 

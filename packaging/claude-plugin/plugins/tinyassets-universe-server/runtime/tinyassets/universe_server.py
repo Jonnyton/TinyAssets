@@ -4292,6 +4292,13 @@ def create_streamable_http_app() -> Starlette:
             # Initialize storage before the scheduler's immediate tick can open
             # the same fresh database and race its first journal-mode switch.
             initialize_consumer(data_dir())
+            # Platform state leaves every universe root before anything serves
+            # (change universe-runtime-state). Lazy resolves still cover a
+            # universe created or restored later; this keeps the window in
+            # which a migration can overlap a backup to the seconds after boot.
+            from tinyassets.universe_paths import migrate_owned_universes
+
+            migrate_owned_universes(data_dir())
             # A deploy recreates the container mid-turn, so every progressing
             # agent turn row predates this boot and nothing is executing it.
             # Settle them before anything can read them as activity (founder,

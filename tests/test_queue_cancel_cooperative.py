@@ -24,6 +24,7 @@ from tinyassets.branch_tasks import (
     read_queue,
     request_task_cancel,
 )
+from tinyassets.universe_paths import platform_path
 
 
 @pytest.fixture
@@ -140,7 +141,7 @@ def test_request_task_cancel_missing_queue_returns_false(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     assert request_task_cancel(empty, "bt_any") is False
-    assert not (empty / "branch_tasks.json").exists()
+    assert not (platform_path(empty, "branch_tasks.json")).exists()
 
 
 def test_request_task_cancel_is_idempotent(universe_dir):
@@ -184,7 +185,7 @@ def test_is_task_cancel_requested_missing_queue_returns_false(tmp_path):
 def test_is_task_cancel_requested_does_not_mutate_queue(universe_dir):
     """Read-only — safe to call in a hot stream loop."""
     task_id = _queue_one(universe_dir)
-    qp = universe_dir / "branch_tasks.json"
+    qp = platform_path(universe_dir, "branch_tasks.json")
     before = qp.read_text(encoding="utf-8")
     is_task_cancel_requested(universe_dir, task_id)
     is_task_cancel_requested(universe_dir, task_id)

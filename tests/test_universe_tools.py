@@ -23,6 +23,7 @@ from tinyassets import universe_tools
 from tinyassets.providers import provider_jail
 from tinyassets.providers.provider_jail import ProviderConfinementError, default_view, jail_argv
 from tinyassets.universe_tools import ToolRun, UniverseToolError
+from tinyassets.universe_paths import platform_path
 
 posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX descriptors and signals")
 
@@ -148,9 +149,10 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
 def test_the_owners_credentials_and_authority_state_are_absent_from_the_jail(
     tmp_path, monkeypatch,
 ):
-    """The credential vault and the consent / usage databases live in the
-    universe ROOT, not .runtime. No hidden root entry is in the jail at all:
-    not bound, not masked. Visible platform files are read-only."""
+    """An UNMIGRATED universe (change universe-runtime-state has not run on
+    it): the credential vault and the consent / usage databases still live in
+    the universe ROOT. No hidden root entry is in the jail at all: not bound,
+    not masked. Visible platform files are read-only."""
     universe = _universe(tmp_path)
     (universe / ".credential-vault.json").write_text('{"k": "SECRET"}', encoding="utf-8")
     (universe / ".credentials").mkdir()
@@ -358,7 +360,7 @@ def test_the_engine_route_bearer_config_lives_under_masked_runtime(tmp_path, mon
     from tinyassets.providers.claude_provider import _engine_mcp_flags
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    legacy = tmp_path / ".engine_mcp_config.json"
+    legacy = platform_path(tmp_path, ".engine_mcp_config.json")
     legacy.write_text('{"stale": "bearer"}', encoding="utf-8")
     flags = _engine_mcp_flags(
         ModelConfig(engine_mcp_actor_id="a", engine_mcp_graph_id="u-a"), tmp_path,

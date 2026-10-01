@@ -19,6 +19,7 @@ import pytest
 
 from tinyassets.providers import definition as pd
 from tinyassets.providers.definition import ProviderDefinitionError
+from tinyassets.universe_paths import platform_path
 
 
 @pytest.fixture
@@ -90,7 +91,7 @@ def test_different_owners_get_separate_definitions_no_squat(base: Path) -> None:
 
 def test_corrupt_store_raises_not_clobbers(base: Path) -> None:
     d = _reg_http("u-corrupt")
-    store = base / "u-corrupt" / "provider_definitions.json"
+    store = platform_path(base / "u-corrupt", "provider_definitions.json")
     store.write_text("{ not valid json", encoding="utf-8")
     # A PRESENT-but-corrupt store must fail loud — never silently [] then overwrite,
     # which would discard `d`.

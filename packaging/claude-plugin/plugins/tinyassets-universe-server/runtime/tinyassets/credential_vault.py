@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +154,7 @@ _SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE: dict[
 
 def credential_vault_path(universe_dir: str | Path) -> Path:
     """Return the vault file path for *universe_dir*."""
-    return Path(universe_dir) / VAULT_FILENAME
+    return platform_path(universe_dir, VAULT_FILENAME)
 
 
 def vault_exists(universe_dir: str | Path | None) -> bool:
@@ -182,7 +183,7 @@ def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
         ch if ch.isalnum() or ch in {"-", "_"} else "-"
         for ch in service.strip().lower()
     ) or "credential"
-    target = universe_dir / CREDENTIAL_ARTIFACT_DIR / service_part
+    target = platform_path(universe_dir, CREDENTIAL_ARTIFACT_DIR) / service_part
     target.mkdir(parents=True, exist_ok=True)
     _chmod_best_effort(target.parent, 0o700)
     _chmod_best_effort(target, 0o700)
@@ -1097,7 +1098,7 @@ def _subscription_material(
             return _decode_codex_auth_json(encoded)
         home = _codex_home_from_record(record, universe_dir)
         if home is None:
-            home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
+            home = platform_path(universe_dir, CREDENTIAL_ARTIFACT_DIR) / "codex"
         auth_file = _contained_path(universe_dir, str(home / "auth.json"))
         if auth_file is None:
             raise PermissionError("exactly one usable subscription credential is required")
@@ -1202,7 +1203,7 @@ def _usable_subscription_record(
             return record
         home = _codex_home_from_record(record, universe_dir)
         if home is None:
-            home = universe_dir / CREDENTIAL_ARTIFACT_DIR / "codex"
+            home = platform_path(universe_dir, CREDENTIAL_ARTIFACT_DIR) / "codex"
         contained_home = _contained_path(universe_dir, str(home))
         if contained_home is None or not (contained_home / "auth.json").is_file():
             raise PermissionError("exactly one usable subscription credential is required")
@@ -2232,7 +2233,7 @@ def resolve_codex_home(universe_dir: str | Path | None) -> Path | None:
         home = _codex_home_from_record(record, universe)
         if home is not None:
             return home
-    materialized = universe / CREDENTIAL_ARTIFACT_DIR / "codex"
+    materialized = platform_path(universe, CREDENTIAL_ARTIFACT_DIR) / "codex"
     if (materialized / "auth.json").is_file():
         return materialized
     return None
@@ -2362,7 +2363,7 @@ def resolve_claude_config_dir(universe_dir: str | Path | None) -> Path | None:
         config_dir = _claude_config_dir_from_record(record, universe)
         if config_dir is not None:
             return config_dir
-    materialized = universe / CREDENTIAL_ARTIFACT_DIR / "claude"
+    materialized = platform_path(universe, CREDENTIAL_ARTIFACT_DIR) / "claude"
     if materialized.is_dir():
         return materialized
     return None

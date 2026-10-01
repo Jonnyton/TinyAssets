@@ -12,6 +12,7 @@ from tests.test_automations import (
     _pin_data_dir,  # noqa: F401 - fixture
     registered,  # noqa: F401 - fixture
 )
+from tinyassets.universe_paths import platform_path
 
 
 def test_ticks_recover_new_context_and_previous_output(tmp_path, registered, monkeypatch):
@@ -68,7 +69,7 @@ def test_corrupt_context_never_reaches_execution(tmp_path, registered, monkeypat
             (json.dumps({"context": {"$automation_context": "v1"}}),
              registered.automation_id),
         )
-    (tmp_path / UNIVERSE / ".conversation_memory.db").write_text("corrupt")
+    (platform_path(tmp_path / UNIVERSE, ".conversation_memory.db")).write_text("corrupt")
     calls = []
     monkeypatch.setattr(scheduler, "_execute", lambda *a: calls.append(a))
     reason = scheduler.run_due_automation(
@@ -116,7 +117,7 @@ def _repair_context_case(tmp_path, registered, monkeypatch, with_checkpoint):
 
     if with_checkpoint:
         assert tick(600) == "ok:ran:repair_run_1"
-    database = tmp_path / UNIVERSE / ".conversation_memory.db"
+    database = platform_path(tmp_path / UNIVERSE, ".conversation_memory.db")
     database.write_text("temporarily corrupt")
     admitted_before = len(admissions)
     assert tick(1200) == "context_unavailable"

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets.credential_vault import (
+    credential_vault_path,
     VAULT_FILENAME,
     apply_provider_auth_env,
     claude_subscription_auth_available,
@@ -25,6 +26,7 @@ from tinyassets.credential_vault import (
     resolve_codex_home,
     write_credential_vault,
 )
+from tinyassets.universe_paths import ensure_migrated, platform_path
 
 
 def _vcs_slot(universe_dir, destination: str, purpose: str) -> str:
@@ -342,7 +344,7 @@ def test_single_subscription_write_replaces_reader_alias_slots(tmp_path):
         "claude_code_oauth_token": "tok-NEW",
     }])
 
-    assert resolve_claude_config_dir(tmp_path) == tmp_path / "new-config"
+    assert resolve_claude_config_dir(tmp_path) == ensure_migrated(tmp_path) / "new-config"
     assert resolve_claude_oauth_token(tmp_path) == "tok-NEW"
     assert load_credential_vault(tmp_path) == [{
         "credential_type": "llm_subscription",
@@ -449,7 +451,7 @@ def test_codex_subscription_auth_can_materialize_from_vault(tmp_path):
     )
 
     codex_home = ensure_codex_home_from_vault(tmp_path)
-    assert codex_home == tmp_path / ".credentials" / "codex"
+    assert codex_home == platform_path(tmp_path, ".credentials") / "codex"
     assert (codex_home / "auth.json").read_text(encoding="utf-8") == "{}"
     assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
         'cli_auth_credentials_store = "file"\n'
@@ -459,7 +461,7 @@ def test_codex_subscription_auth_can_materialize_from_vault(tmp_path):
 
 
 def test_codex_subscription_auth_rotation_replaces_materialized_auth(tmp_path):
-    configured = tmp_path / "codex-home"
+    configured = ensure_migrated(tmp_path) / "codex-home"
     write_credential_vault(tmp_path, [{
         "credential_type": "llm_subscription",
         "service": "codex",
@@ -497,7 +499,7 @@ def test_codex_materialization_rejects_malformed_blob_and_preserves_auth(
     tmp_path,
     malformed_auth_b64,
 ):
-    configured = tmp_path / "codex-home"
+    configured = ensure_migrated(tmp_path) / "codex-home"
     write_credential_vault(tmp_path, [{
         "credential_type": "llm_subscription",
         "service": "codex",
@@ -507,7 +509,7 @@ def test_codex_materialization_rejects_malformed_blob_and_preserves_auth(
     assert ensure_codex_home_from_vault(tmp_path) == configured
     working_auth = (configured / "auth.json").read_bytes()
 
-    (tmp_path / VAULT_FILENAME).write_text(
+    credential_vault_path(tmp_path).write_text(
         '{"schema_version":1,"credentials":[{"credential_type":'
         '"llm_subscription","service":"codex","codex_home":"codex-home",'
         f'"auth_json_b64":"{malformed_auth_b64}"}}]}}',
@@ -521,7 +523,7 @@ def test_codex_materialization_rejects_malformed_blob_and_preserves_auth(
 
 
 def test_codex_auth_write_rejects_non_json_blob_and_preserves_vault(tmp_path):
-    configured = tmp_path / "codex-home"
+    configured = ensure_migrated(tmp_path) / "codex-home"
     existing = {
         "credential_type": "llm_subscription",
         "service": "codex",
@@ -544,7 +546,7 @@ def test_codex_auth_write_rejects_non_json_blob_and_preserves_vault(tmp_path):
 
 
 def test_codex_auth_write_rejects_utf8_bom_and_preserves_vault(tmp_path):
-    configured = tmp_path / "codex-home"
+    configured = ensure_migrated(tmp_path) / "codex-home"
     existing = {
         "credential_type": "llm_subscription",
         "service": "codex",
@@ -653,7 +655,7 @@ def test_snapshot_refuses_symlinked_root_before_writing_secret(tmp_path, link_le
     if link_level == "runtime":
         _make_directory_link(runtime_dir, outside)
     else:
-        runtime_dir.mkdir()
+        runtime_dir.mkdir(exist_ok=True)  # the vault's state dir already made it
         _make_directory_link(runtime_dir / "provider-launch-credentials", outside)
 
     with pytest.raises(PermissionError, match="snapshot directory"):

@@ -35,6 +35,7 @@ from domains.fantasy_daemon.phases.orient import orient  # noqa: E402
 from domains.fantasy_daemon.phases.plan import plan  # noqa: E402
 from tinyassets.desktop.dashboard import DashboardHandler  # noqa: E402
 from tinyassets.evaluation.structural import StructuralEvaluator, StructuralResult  # noqa: E402
+from tinyassets.universe_paths import platform_path
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -771,7 +772,7 @@ class TestDaemonController:
         from tinyassets.__main__ import DaemonController
 
         universe = tempfile.mkdtemp()
-        pause_file = Path(universe) / ".pause"
+        pause_file = platform_path(Path(universe), ".pause")
         pause_file.write_text("paused", encoding="utf-8")
 
         c = DaemonController(
@@ -812,7 +813,7 @@ class TestDaemonController:
 
         c._write_status_file()
 
-        status_path = Path(universe) / "status.json"
+        status_path = platform_path(Path(universe), "status.json")
         assert status_path.exists()
         data = json.loads(status_path.read_text(encoding="utf-8"))
         assert data["word_count"] == 5000
@@ -870,7 +871,7 @@ class TestDaemonController:
             "orient_result": {"scene_id": "s1"},
         })
 
-        status_path = Path(universe) / "status.json"
+        status_path = platform_path(Path(universe), "status.json")
         assert status_path.exists()
         data = json.loads(status_path.read_text(encoding="utf-8"))
         assert data["current_phase"] == "orient"
@@ -1351,7 +1352,7 @@ class TestProgressFile:
             "orient_result": {"scene_id": "s1"},
         })
 
-        assert (Path(universe) / "status.json").exists()
+        assert (platform_path(Path(universe), "status.json")).exists()
         assert (Path(universe) / "progress.md").exists()
 
 
@@ -1716,7 +1717,7 @@ class TestStateMismatchFix:
         c._stop_event.set()
         c._cleanup()
 
-        status_path = Path(universe) / "status.json"
+        status_path = platform_path(Path(universe), "status.json")
         assert status_path.exists()
         data = json.loads(status_path.read_text(encoding="utf-8"))
         assert data["daemon_state"] == "idle"

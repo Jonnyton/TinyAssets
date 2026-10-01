@@ -25,8 +25,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import AbstractSet, Callable, Mapping
 
-from tinyassets.storage import DB_FILENAME
 from tinyassets import universe_paths as _universe_paths
+from tinyassets.storage import DB_FILENAME
 
 INVENTORY_REVISION = "scoped-reset-inventory-v4-2026-07-25"
 

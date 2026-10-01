@@ -17,10 +17,11 @@ import sqlite3
 
 from tinyassets import conversation_store as store
 from tinyassets.conversation_memory import DEFAULT_LIMIT
+from tinyassets.universe_paths import platform_path
 
 
 def _stored_turn_count(universe_dir) -> int:
-    conn = sqlite3.connect(universe_dir / ".conversation_memory.db")
+    conn = sqlite3.connect(platform_path(universe_dir, ".conversation_memory.db"))
     try:
         return int(conn.execute("SELECT COUNT(*) FROM conversation_turns").fetchone()[0])
     finally:
@@ -63,7 +64,7 @@ def test_no_write_path_issues_a_delete(tmp_path):
     from the first one.
     """
     store.record_exchange(tmp_path, "s", "first", "reply")
-    conn = store._connect(tmp_path / ".conversation_memory.db")
+    conn = store._connect(platform_path(tmp_path, ".conversation_memory.db"))
     try:
         conn.execute(
             "CREATE TRIGGER refuse_delete BEFORE DELETE ON conversation_turns "

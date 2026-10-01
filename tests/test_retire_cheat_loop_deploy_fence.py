@@ -38,6 +38,7 @@ from scripts.retire_cheat_loop_deploy_fence import (
     restore_if_safe,
     safe_fleet_matches,
 )
+from tinyassets.universe_paths import platform_path
 
 RUN_ID = "test-run-1"
 
@@ -125,7 +126,7 @@ def test_receipt_snapshot_rejects_corrupt_or_unexpected_schema(tmp_path: Path):
 def test_queue_inventory_finds_v1_pending_and_running_only(tmp_path: Path):
     universe = tmp_path / "universes" / "one"
     universe.mkdir(parents=True)
-    (universe / "branch_tasks.json").write_text(
+    (platform_path(universe, "branch_tasks.json")).write_text(
         json.dumps(
             [
                 {
@@ -261,11 +262,11 @@ def test_queue_inventory_v2_runs_foreign_key_check(tmp_path: Path):
 
 
 def test_queue_inventory_fails_closed_on_unreadable_or_partial_store(tmp_path: Path):
-    (tmp_path / "branch_tasks.json").write_text("{", encoding="utf-8")
+    (platform_path(tmp_path, "branch_tasks.json")).write_text("{", encoding="utf-8")
     with pytest.raises(FenceError, match="v1 queue unreadable"):
         inventory_queue_risk(tmp_path)
 
-    (tmp_path / "branch_tasks.json").unlink()
+    (platform_path(tmp_path, "branch_tasks.json")).unlink()
     with sqlite3.connect(tmp_path / ".tinyassets.db") as connection:
         connection.execute("CREATE TABLE branch_tasks_v2 (branch_task_id TEXT)")
     with pytest.raises(FenceError, match="v2 queue schema incomplete"):
@@ -6351,7 +6352,7 @@ def test_recover_unsafe_refuses_unproved_fenced_snapshot(
             "tinyassets-daemon"
         ]
     elif fault == "queue":
-        (tmp_path / "branch_tasks.json").write_text(
+        (platform_path(tmp_path, "branch_tasks.json")).write_text(
             json.dumps(
                 [
                     {

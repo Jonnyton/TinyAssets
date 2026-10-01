@@ -17,6 +17,7 @@ from tinyassets.shared_self import (
     agent_node, agent_node_key, prepare_shared_self_turn, require_founder_home,
     shared_self_requested,
 )
+from tinyassets.universe_paths import platform_path
 
 
 class ConversationPagingTests(unittest.TestCase):
@@ -24,7 +25,7 @@ class ConversationPagingTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.db = self.root / ".conversation_memory.db"
+        self.db = platform_path(self.root, ".conversation_memory.db")
         with contextlib.closing(sqlite3.connect(self.db)) as conn, conn:
             conn.execute("CREATE TABLE conversation_turns "
                          "(id INTEGER PRIMARY KEY, session_id TEXT, speaker TEXT, content TEXT, ts REAL)")
@@ -78,7 +79,7 @@ class ConversationPagingTests(unittest.TestCase):
                 read_conversation_page(self.root, "principal:owner", **kwargs)
         link_root = self.root / "linked"
         link_root.mkdir()
-        (link_root / ".conversation_memory.db").symlink_to(self.db)
+        (platform_path(link_root, ".conversation_memory.db")).symlink_to(self.db)
         with self.assertRaises(PermissionError):
             read_conversation_page(link_root, "principal:owner")
 

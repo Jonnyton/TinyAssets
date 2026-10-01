@@ -273,6 +273,33 @@ def hidden_dir_masks(universe_dir: Path) -> list[JailMount]:
             raise _refuse(f"the universe's {entry.name} is a link; it cannot be masked")
         if entry.is_dir(follow_symlinks=False):
             masks.append(JailMount("tmpfs", str(Path(universe_dir) / entry.name)))
+    masks.extend(_platform_state_masks(Path(universe_dir), already=masks))
+    return masks
+
+
+def _platform_state_masks(universe_dir: Path, *, already: list[JailMount]) -> list[JailMount]:
+    """The universe's platform state, hidden from a provider launch.
+
+    A provider view binds the universe read-write and keeps ``.runtime`` for
+    the provider home and launch credential, so without these a workflow
+    shell could truncate a store under ``.runtime/state``, delete a WAL, or
+    unlink the migration lock so another process locks a replacement inode
+    (change ``universe-runtime-state``, refute round 1). Tombstones are masked
+    too, so nothing in the jail can remove one and plant a file under a name
+    the platform used to trust.
+    """
+    from tinyassets import universe_paths
+
+    taken = {mount.dest for mount in already}
+    masks: list[JailMount] = []
+    state = universe_dir / universe_paths.STATE_DIR
+    candidates = [state] if os.path.lexists(state) else []
+    candidates.extend(universe_paths.tombstones(universe_dir))
+    for path in candidates:
+        if path.is_symlink() or not path.is_dir():
+            raise _refuse(f"the universe's {path.name} is not a plain directory; it cannot be masked")
+        if str(path) not in taken:
+            masks.append(JailMount("tmpfs", str(path)))
     return masks
 
 

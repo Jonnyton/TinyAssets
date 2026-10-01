@@ -68,6 +68,7 @@ from typing import Any
 
 from tinyassets.api.helpers import _base_path, _read_json
 from tinyassets.catalog import CommitFailedError, DirtyFileError, get_backend
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger("universe_server.engine_helpers")
 
@@ -218,7 +219,7 @@ def _append_ledger(
     if payload:
         entry["payload"] = payload
 
-    ledger_path = udir / "ledger.json"
+    ledger_path = platform_path(udir, "ledger.json")
     try:
         udir.mkdir(parents=True, exist_ok=True)
         existing = _read_json(ledger_path)

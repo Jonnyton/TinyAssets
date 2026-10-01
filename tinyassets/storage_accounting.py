@@ -55,8 +55,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-from tinyassets.principals import named_principal
 from tinyassets import universe_paths as _universe_paths
+from tinyassets.principals import named_principal
 
 _log = logging.getLogger(__name__)
 
@@ -572,7 +572,12 @@ ROOT_ENTRIES: dict[str, str] = {
 #: which is the only list of them (change universe-runtime-state); the two
 #: extra names are files inside the registry's credential directories.
 UNIVERSE_ENTRIES: frozenset[str] = frozenset(
-    {*_universe_paths.PLATFORM_NAMES, *_universe_paths.MIGRATION_FILES, ".lock", ".credentials.json"}
+    {
+        *_universe_paths.PLATFORM_NAMES,
+        *_universe_paths.MIGRATION_FILES,
+        ".lock",
+        ".credentials.json",
+    }
 )
 
 #: Names the code creates that are NOT under the data root at all (a git repo,

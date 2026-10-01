@@ -31,6 +31,7 @@ from tinyassets.enrichment_signals import (
     load_enrichment_signals,
     write_enrichment_signals,
 )
+from tinyassets.universe_paths import platform_path
 from tinyassets.universe_soul import (
     ensure_universe_soul,
     has_soul,
@@ -40,7 +41,6 @@ from tinyassets.universe_soul import (
     read_universe_soul,
     write_universe_soul,
 )
-from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger("fantasy_daemon.api")
 

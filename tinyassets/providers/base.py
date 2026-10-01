@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
+from tinyassets.universe_paths import platform_path
 
 if TYPE_CHECKING:
     from tinyassets.auth.middleware import ProviderRequestCarrier
@@ -608,7 +609,7 @@ def _preflight_provider_auth_paths(
     configured_auth_path: Path | None,
 ) -> None:
     service = "claude" if provider_name == "claude-code" else "codex"
-    default_materialization = universe_root / ".credentials" / service
+    default_materialization = platform_path(universe_root, ".credentials") / service
     _resolved_universe_child(universe_root, default_materialization)
     if configured_auth_path is not None:
         _resolved_universe_child(universe_root, configured_auth_path)

@@ -77,6 +77,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+
 from tinyassets.universe_paths import platform_path
 
 _DB_FILENAME = ".external_write_receipts.db"

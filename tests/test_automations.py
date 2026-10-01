@@ -44,6 +44,7 @@ from tinyassets.branches import (
 )
 from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
 from tinyassets.storage import db_path
+from tinyassets.universe_paths import platform_path
 
 OWNER = "acct_alice"
 UNIVERSE = "universe_alice"
@@ -1039,7 +1040,7 @@ def test_poll_once_leaves_a_paused_universe_alone(
         "due_automations",
         lambda base, *, universe_id, now: scanned.append(universe_id) or [],
     )
-    (tmp_path / UNIVERSE / ".pause").write_text("owner paused", encoding="utf-8")
+    (platform_path(tmp_path / UNIVERSE, ".pause")).write_text("owner paused", encoding="utf-8")
     consumer, inline = _consumer_with_inline_executor(tmp_path)
 
     try:
@@ -2045,7 +2046,7 @@ def test_pausing_mid_batch_stops_the_remaining_rows(
 
     def running(base, automation, due_at, **_kwargs):
         ran.append(automation.automation_id)
-        (tmp_path / UNIVERSE / ".pause").write_text("owner", encoding="utf-8")
+        (platform_path(tmp_path / UNIVERSE, ".pause")).write_text("owner", encoding="utf-8")
         return "ok:ran:run_1"
 
     monkeypatch.setattr(automations_module, "run_due_automation", running)
@@ -2371,7 +2372,7 @@ def test_a_paused_universe_still_beats(
         "tinyassets.provider_serving_binding.list_serving_universes",
         lambda _base: [UNIVERSE],
     )
-    (tmp_path / UNIVERSE / ".pause").write_text("owner paused", encoding="utf-8")
+    (platform_path(tmp_path / UNIVERSE, ".pause")).write_text("owner paused", encoding="utf-8")
     consumer, _inline = _consumer_with_inline_executor(tmp_path)
 
     try:

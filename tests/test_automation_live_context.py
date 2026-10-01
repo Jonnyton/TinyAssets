@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from tinyassets.universe_paths import platform_path
 
 spec = importlib.util.spec_from_file_location(
     "automation_context", Path(__file__).parents[1] / "tinyassets/automation_context.py"
@@ -33,7 +34,7 @@ class AutomationContextTests(unittest.TestCase):
         )
 
     def record_message(self, content):
-        with sqlite3.connect(self.root / ".conversation_memory.db") as conn:
+        with sqlite3.connect(platform_path(self.root, ".conversation_memory.db")) as conn:
             self.addCleanup(conn.close)
             conn.execute("CREATE TABLE IF NOT EXISTS conversation_turns "
                          "(id INTEGER PRIMARY KEY, session_id TEXT, turn_no INTEGER, "
@@ -96,7 +97,7 @@ class AutomationContextTests(unittest.TestCase):
         self.assertFalse(snapshot["brain"]["body.md"]["available"])
 
     def test_corrupt_store_fails_loudly(self):
-        (self.root / ".conversation_memory.db").write_text("not sqlite")
+        (platform_path(self.root, ".conversation_memory.db")).write_text("not sqlite")
         with self.assertRaises(sqlite3.DatabaseError):
             self.resolve()
 

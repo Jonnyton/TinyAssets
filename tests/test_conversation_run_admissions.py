@@ -12,6 +12,7 @@ from tinyassets import account_deletion, conversation_store
 from tinyassets.daemon_server import grant_universe_access, set_founder_home
 from tinyassets.runs import runs_db_path
 from tinyassets.storage import db_path
+from tinyassets.universe_paths import platform_path
 
 OWNER, HOME = "user-consumer", "u-consumer"
 
@@ -128,7 +129,7 @@ def test_trimmed_projection_expires_details_without_reappend(store):
     row = reserve(store, str(uuid.uuid4()))
     complete(store, row["run_id"])
     project(store, row["admission_id"])
-    with sqlite3.connect(store / HOME / ".conversation_memory.db") as conn:
+    with sqlite3.connect(platform_path(store / HOME, ".conversation_memory.db")) as conn:
         conn.execute("DELETE FROM conversation_turns")
     expired = project(store, row["admission_id"])
     assert expired["projection_state"] == "expired"
@@ -149,7 +150,7 @@ def test_revoked_scope_refuses_projection(store, mutation):
         conn.execute(mutation)
     with pytest.raises((PermissionError, RuntimeError)):
         project(store, row["admission_id"])
-    assert not (store / HOME / ".conversation_memory.db").exists()
+    assert not (platform_path(store / HOME, ".conversation_memory.db")).exists()
 
 
 def test_deleted_home_is_not_recreated_by_delayed_projection(store):
@@ -229,7 +230,7 @@ def test_nonterminal_does_not_project_or_create_success(store):
     row = reserve(store, str(uuid.uuid4()))
     with pytest.raises(cr.TerminalUnavailable):
         project(store, row["admission_id"])
-    assert not (store / HOME / ".conversation_memory.db").exists()
+    assert not (platform_path(store / HOME, ".conversation_memory.db")).exists()
 
 
 def test_explicit_model_choice_change_conflicts(store):
@@ -253,7 +254,7 @@ def test_another_owner_cannot_read_or_project_a_turn(store):
     with cr.authorized_scope(store, owner="other", universe="u-other") as scope:
         with pytest.raises(PermissionError):
             cr.project_terminal(scope, row["admission_id"])
-    assert not (store / "u-other" / ".conversation_memory.db").exists()
+    assert not (platform_path(store / "u-other", ".conversation_memory.db")).exists()
 
 
 def test_changed_run_owner_refuses_private_projection(store):
@@ -565,7 +566,7 @@ def test_reset_preserves_other_owner_and_same_key_cannot_restore_old_home(store)
     assert replay["run_id"] == row["run_id"]
     assert replay["projection_state"] == "expired"
     assert project(store, row["admission_id"])["projection_state"] == "expired"
-    assert not (store / HOME / ".conversation_memory.db").exists()
+    assert not (platform_path(store / HOME, ".conversation_memory.db")).exists()
 
 
 @pytest.mark.parametrize("mutation", [

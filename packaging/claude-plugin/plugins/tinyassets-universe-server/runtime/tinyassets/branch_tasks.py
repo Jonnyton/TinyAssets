@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -134,15 +135,15 @@ class BranchTask:
 
 
 def queue_path(universe_path: Path) -> Path:
-    return Path(universe_path) / QUEUE_FILENAME
+    return platform_path(universe_path, QUEUE_FILENAME)
 
 
 def archive_path(universe_path: Path) -> Path:
-    return Path(universe_path) / ARCHIVE_FILENAME
+    return platform_path(universe_path, ARCHIVE_FILENAME)
 
 
 def _lock_path(universe_path: Path) -> Path:
-    return Path(universe_path) / LOCK_FILENAME
+    return platform_path(universe_path, LOCK_FILENAME)
 
 
 @contextlib.contextmanager

@@ -36,6 +36,7 @@ from tinyassets.universe_soul import (
     UniverseSoul,
     read_universe_soul,
 )
+from tinyassets.universe_paths import ensure_migrated
 
 OKF_VERSION = "0.1"
 OKF_SPEC_URL = (
@@ -381,6 +382,10 @@ def seed_okf_bundle(
     Does not create ``self/``, ``soul/``, ``notes.json``, or ``activity.log``.
     """
     universe_dir.mkdir(parents=True, exist_ok=True)
+    # A new universe is born migrated (change universe-runtime-state): its
+    # platform state has a home from the first moment, so nothing a workflow
+    # later writes at the root can ever be imported as platform state.
+    ensure_migrated(universe_dir)
     versions_dir = universe_dir / SOUL_VERSIONS_DIR
     versions_dir.mkdir(parents=True, exist_ok=True)
 

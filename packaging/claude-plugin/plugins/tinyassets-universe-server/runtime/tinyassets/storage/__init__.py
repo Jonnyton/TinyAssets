@@ -755,6 +755,10 @@ def _inspect_storage_utilization_uncached() -> dict[str, Any]:
             run_store_bytes += path_size_bytes(root / f"{_db}{_suffix}")
             for _child in root.glob(f"*/{_db}{_suffix}"):
                 run_store_bytes += path_size_bytes(_child)
+            # A universe's own stores live under .runtime/state once it has
+            # migrated (change universe-runtime-state).
+            for _child in root.glob(f"*/.runtime/state/{_db}{_suffix}"):
+                run_store_bytes += path_size_bytes(_child)
     per_subsystem["run_transcripts"] = {
         "bytes": run_store_bytes,
         "path": f"{root} (.langgraph_runs.db + .runs.db incl. WAL, root + per-universe)",

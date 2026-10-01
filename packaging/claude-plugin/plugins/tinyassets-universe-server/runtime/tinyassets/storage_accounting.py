@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from tinyassets.principals import named_principal
+from tinyassets import universe_paths as _universe_paths
 
 _log = logging.getLogger(__name__)
 
@@ -147,7 +148,14 @@ def _universe_files(base: Path, universe_id: str) -> int:
     workspaces, which are their own store."""
     if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
         raise ValueError(f"not a universe id: {universe_id!r}")
-    return _walk_bytes(base / universe_id, exclude_top=_NOT_USER_BYTES)
+    root = base / universe_id
+    # The platform state that left the root for `.runtime/state` (change
+    # universe-runtime-state) was charged at the root and still is: moving a
+    # store must never change what its owner pays. The rest of `.runtime` is
+    # the provider runtime and stays uncharged.
+    return _walk_bytes(root, exclude_top=_NOT_USER_BYTES) + _walk_bytes(
+        root / _universe_paths.STATE_DIR, exclude_top=_universe_paths.MIGRATION_FILES
+    )
 
 
 #: Top-level entries of a universe directory that are the PLATFORM's, not the
@@ -559,15 +567,13 @@ ROOT_ENTRIES: dict[str, str] = {
 }
 
 #: Names that live INSIDE a universe directory: every byte there is counted by
-#: `universe_files` (minus `_NOT_USER_BYTES`), so these need no store of their own.
-UNIVERSE_ENTRIES: frozenset[str] = frozenset({
-    ".conversation_memory.db", ".credentials", ".credentials.json",
-    ".engine_mcp_config.json", ".oauth-refresh", ".pause",
-    ".provider-assignment-admission.lock", ".runtime_status.json",
-    ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
-    ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
-    ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
-})
+#: `universe_files` (minus `_NOT_USER_BYTES`, plus `.runtime/state`), so these
+#: need no store of their own. Derived from the universe's platform registry,
+#: which is the only list of them (change universe-runtime-state); the two
+#: extra names are files inside the registry's credential directories.
+UNIVERSE_ENTRIES: frozenset[str] = frozenset(
+    {*_universe_paths.PLATFORM_NAMES, *_universe_paths.MIGRATION_FILES, ".lock", ".credentials.json"}
+)
 
 #: Names the code creates that are NOT under the data root at all (a git repo,
 #: a repo-side log, legacy DB filenames). Anything joined onto a HOME directory

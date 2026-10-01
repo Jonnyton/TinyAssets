@@ -297,7 +297,9 @@ def _platform_state_masks(universe_dir: Path, *, already: list[JailMount]) -> li
     candidates.extend(universe_paths.tombstones(universe_dir))
     for path in candidates:
         if path.is_symlink() or not path.is_dir():
-            raise _refuse(f"the universe's {path.name} is not a plain directory; it cannot be masked")
+            raise _refuse(
+                f"the universe's {path.name} is not a plain directory; it cannot be masked"
+            )
         if str(path) not in taken:
             masks.append(JailMount("tmpfs", str(path)))
     return masks

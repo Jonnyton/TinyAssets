@@ -27,6 +27,7 @@ from tinyassets.universe_server import (
     read_graph,
     universe,
 )
+from tinyassets.universe_paths import platform_path
 
 
 def _read_as(actor_id: str) -> None:
@@ -831,7 +832,7 @@ def test_universe_ledger_excludes_non_public_goal_records(
             "payload": {},
         },
     ]
-    (universe_dir / "ledger.json").write_text(
+    (platform_path(universe_dir, "ledger.json")).write_text(
         json.dumps(entries),
         encoding="utf-8",
     )

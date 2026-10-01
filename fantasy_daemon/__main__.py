@@ -64,7 +64,7 @@ from fantasy_daemon.providers.codex_provider import CodexProvider  # noqa: E402
 from fantasy_daemon.providers.ollama_provider import OllamaProvider  # noqa: E402
 from fantasy_daemon.providers.router import ProviderRouter  # noqa: E402
 from tinyassets.checkpointing import apply_configured_checkpoint_retention  # noqa: E402
-from tinyassets.universe_paths import platform_path
+from tinyassets.universe_paths import platform_path  # noqa: E402
 
 logger = logging.getLogger("fantasy_author")
 

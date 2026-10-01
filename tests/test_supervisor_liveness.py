@@ -19,6 +19,7 @@ from tinyassets.api.status import (
     _parse_iso_to_epoch,
 )
 from tinyassets.branch_tasks import BranchTask, append_task, claim_task
+from tinyassets.universe_paths import platform_path
 
 # ── _parse_iso_to_epoch unit ───────────────────────────────────────────────
 
@@ -194,7 +195,7 @@ def test_queue_counts_merge_epoch2_operational_states(
 
 
 def test_corrupt_v1_does_not_hide_healthy_epoch2(tmp_path, monkeypatch):
-    (tmp_path / "branch_tasks.json").write_text(
+    (platform_path(tmp_path, "branch_tasks.json")).write_text(
         "{corrupt-v1",
         encoding="utf-8",
     )
@@ -644,7 +645,7 @@ def _running_task_with_lease(
 
 def _write_raw_queue(tmp_path, tasks: list[dict]) -> None:
     import json
-    (tmp_path / "branch_tasks.json").write_text(json.dumps(tasks), encoding="utf-8")
+    (platform_path(tmp_path, "branch_tasks.json")).write_text(json.dumps(tasks), encoding="utf-8")
 
 
 def test_running_task_with_fresh_lease_not_stale(tmp_path):

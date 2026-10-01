@@ -9,6 +9,7 @@ import pytest
 from tinyassets.auth.provider import Identity
 from tinyassets.daemon_server import grant_universe_access
 from tinyassets.universe_soul import read_pinned_universe_soul
+from tinyassets.universe_paths import platform_path
 
 
 @pytest.fixture
@@ -251,7 +252,7 @@ def test_submit_request_uses_soul_declared_loop_branch(us):
         "has_soul": True,
         "branch_def_id": "workflow:review_loop",
     }
-    queue = json.loads((base / "loop-uni" / "branch_tasks.json").read_text(
+    queue = json.loads((platform_path(base / "loop-uni", "branch_tasks.json")).read_text(
         encoding="utf-8",
     ))
     assert queue[0]["branch_def_id"] == "workflow:review_loop"
@@ -271,7 +272,7 @@ def test_submit_request_rejects_souled_universe_without_declared_loop(us):
     assert result["error"] == "universe_loop_not_declared"
     assert result["loop_dispatch"]["source"] == "soul.md"
     assert not (base / "thin-uni" / "requests.json").exists()
-    assert not (base / "thin-uni" / "branch_tasks.json").exists()
+    assert not (platform_path(base / "thin-uni", "branch_tasks.json")).exists()
 
 
 def test_submit_request_rejects_soulless_universe_without_legacy_marker(us):
@@ -289,7 +290,7 @@ def test_submit_request_rejects_soulless_universe_without_legacy_marker(us):
     assert result["loop_dispatch"]["source"] == "no_soul_no_loop_declared"
     assert result["loop_dispatch"]["branch_def_id"] == ""
     assert not (empty / "requests.json").exists()
-    assert not (empty / "branch_tasks.json").exists()
+    assert not (platform_path(empty, "branch_tasks.json")).exists()
 
 
 def test_submit_request_legacy_program_no_soul_keeps_named_compat_loop(us):
@@ -313,5 +314,5 @@ def test_submit_request_legacy_program_no_soul_keeps_named_compat_loop(us):
 
     assert result["status"] == "pending"
     assert result["loop_dispatch"]["source"] == "legacy_program_fantasy_compat"
-    queue = json.loads((legacy / "branch_tasks.json").read_text(encoding="utf-8"))
+    queue = json.loads((platform_path(legacy, "branch_tasks.json")).read_text(encoding="utf-8"))
     assert queue[0]["branch_def_id"] == "fantasy_author:universe_cycle_wrapper"

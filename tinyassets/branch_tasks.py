@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
+
 from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)

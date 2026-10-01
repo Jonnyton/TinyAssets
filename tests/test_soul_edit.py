@@ -17,6 +17,7 @@ import pytest
 
 from tinyassets.soul_edit import SoulEditError, apply_soul_edit
 from tinyassets.universe_bundle import seed_okf_bundle
+from tinyassets.universe_paths import platform_path
 
 
 @pytest.fixture
@@ -407,7 +408,7 @@ def test_mcp_soul_edit_action_learns_and_ledgers(tmp_path, monkeypatch):
     assert "identity.md" in out["updated_files"]
     assert out["persona_name"] == "Orion"
     # Ledgered (WRITE_ACTIONS contract)
-    ledger = json.loads((udir / "ledger.json").read_text(encoding="utf-8"))
+    ledger = json.loads((platform_path(udir, "ledger.json")).read_text(encoding="utf-8"))
     assert any(e["action"] == "soul.edit" for e in ledger)
 
 

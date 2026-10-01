@@ -34,6 +34,7 @@ from tinyassets.daemon_server import (
 )
 from tinyassets.storage import webhook_hooks
 from tinyassets.storage.outbound_connections import ConnectionLedger
+from tinyassets.universe_paths import platform_path
 
 A, B = "user_01AAAAAAAAAAAAAAAAAAAAAAAA", "user_01BBBBBBBBBBBBBBBBBBBBBBBB"
 HOME_A, HOME_B = "u-0000000000000001", "u-0000000000000002"
@@ -43,7 +44,7 @@ def _seed_user(base: Path, sub: str, home: str) -> Path:
     universe_dir = base / home
     universe_dir.mkdir()
     (universe_dir / "soul.md").write_text("# soul\n", encoding="utf-8")
-    (universe_dir / ".credential-vault.json").write_text("[]", encoding="utf-8")
+    (platform_path(universe_dir, ".credential-vault.json")).write_text("[]", encoding="utf-8")
     (universe_dir / "memory").mkdir()
     (universe_dir / "memory" / "notes.md").write_text("private", encoding="utf-8")
     set_founder_home(base, founder_sub=sub, universe_id=home, platform_generated=True)

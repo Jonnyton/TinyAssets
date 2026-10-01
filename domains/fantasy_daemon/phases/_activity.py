@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.universe_paths import platform_path
+
 logger = logging.getLogger(__name__)
 
 # Guards all reads/writes to status.json across threads (heartbeat + nodes).
@@ -65,7 +67,7 @@ def update_phase(state: dict[str, Any], phase: str) -> None:
     universe_path = state.get("_universe_path", "")
     if not universe_path:
         return
-    status_path = Path(universe_path) / "status.json"
+    status_path = platform_path(universe_path, "status.json")
     with _status_lock:
         try:
             data: dict[str, Any] = {}

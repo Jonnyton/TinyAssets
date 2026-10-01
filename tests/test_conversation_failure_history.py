@@ -8,6 +8,7 @@ import pytest
 
 from tinyassets import conversation_store as store
 from tinyassets.conversation_memory import format_history
+from tinyassets.universe_paths import platform_path
 
 FAILURE = {"version": 1, "kind": "turn_failed", "code": "auth_invalid"}
 SECRET = "PRIVATE_PROVIDER_PAYLOAD_9b527"
@@ -47,7 +48,7 @@ def test_failure_pair_is_not_deduplicated_and_memory_is_untrusted(tmp_path):
 
 def test_failure_second_insert_rolls_back_including_retention(tmp_path):
     assert store.record_exchange(tmp_path, "a", "old", "answer")
-    conn = store._connect(tmp_path / ".conversation_memory.db")
+    conn = store._connect(platform_path(tmp_path, ".conversation_memory.db"))
     conn.execute(
         "CREATE TRIGGER refuse_failure BEFORE INSERT ON conversation_turns "
         "WHEN NEW.speaker='platform' BEGIN SELECT RAISE(ABORT, 'fixture'); END"
@@ -129,7 +130,7 @@ def test_failure_metadata_is_a_closed_v1_value(bad):
 )
 def test_bad_metadata_does_not_discard_or_relabel_platform_text(tmp_path, bad):
     assert store.record_failure(tmp_path, "a", "question", "unknown")
-    with sqlite3.connect(tmp_path / ".conversation_memory.db") as conn:
+    with sqlite3.connect(platform_path(tmp_path, ".conversation_memory.db")) as conn:
         conn.execute("UPDATE conversation_turns SET failure_json=?", (bad,))
     rows = store.load_recent_readonly(tmp_path, "a")
     assert [m.speaker for m in rows] == ["founder", "platform"]
@@ -138,7 +139,7 @@ def test_bad_metadata_does_not_discard_or_relabel_platform_text(tmp_path, bad):
 
 def test_failure_metadata_is_only_platform_owned(tmp_path):
     assert store.record_exchange(tmp_path, "a", "question", "answer")
-    with sqlite3.connect(tmp_path / ".conversation_memory.db") as conn:
+    with sqlite3.connect(platform_path(tmp_path, ".conversation_memory.db")) as conn:
         conn.execute("UPDATE conversation_turns SET failure_json=?", (json.dumps(FAILURE),))
     assert all(m.failure is None for m in store.load_recent_readonly(tmp_path, "a"))
 

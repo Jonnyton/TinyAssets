@@ -40,6 +40,7 @@ import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ def _thread_lock(key: str) -> threading.Lock:
 
 def lock_directory(universe_dir: Path) -> Path:
     """Where this universe's per-credential refresh locks live."""
-    return Path(universe_dir) / ".oauth-refresh"
+    return platform_path(universe_dir, ".oauth-refresh")
 
 
 def lock_path(universe_dir: str | Path, lock_id: str) -> Path:

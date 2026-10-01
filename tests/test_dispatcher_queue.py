@@ -61,6 +61,7 @@ from tinyassets.dispatcher import (
     soul_guided_dispatch_read,
 )
 from tinyassets.storage.request_admissions import RequestAdmissionStore
+from tinyassets.universe_paths import platform_path
 
 # ───────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -1281,7 +1282,7 @@ def test_queue_list_merges_epoch2_without_exposing_request_text(
         universe_id=uid,
         directed_daemon_instruction="PRIVATE-INSTRUCTION-SENTINEL",
     )
-    (base / uid / "branch_tasks.json").write_text(
+    (platform_path(base / uid, "branch_tasks.json")).write_text(
         "{corrupt-v1",
         encoding="utf-8",
     )

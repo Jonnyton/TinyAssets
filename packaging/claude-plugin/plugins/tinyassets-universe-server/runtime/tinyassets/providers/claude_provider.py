@@ -51,6 +51,7 @@ from tinyassets.providers.owned_process import (
     no_window_kwargs,
 )
 from tinyassets.providers.protocol_encoders import model_receipt
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -452,7 +453,7 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     # prompt or logs. Overwritten each turn. The pre-harness location at the
     # universe root is removed so no stale bearer stays readable there.
     config_path = universe_dir / ".runtime" / "engine-mcp-config.json"
-    legacy_path = universe_dir / ".engine_mcp_config.json"
+    legacy_path = platform_path(universe_dir, ".engine_mcp_config.json")
     server_env = {
         "TINYASSETS_ENGINE_ACTOR_ID": actor_id,
         "TINYASSETS_ENGINE_GRAPH_ID": graph_id,

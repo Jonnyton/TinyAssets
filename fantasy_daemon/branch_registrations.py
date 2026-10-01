@@ -35,6 +35,7 @@ from tinyassets.domain_registry import (
     register_domain_branch_slug,
     register_domain_callable,
 )
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,7 @@ def _state_universe_path(state: dict[str, Any]) -> Path | None:
 
 
 def _restartable_work_exists(universe_path: Path) -> bool:
-    if (universe_path / ".pause").exists():
+    if platform_path(universe_path, ".pause").exists():
         return False
 
     try:

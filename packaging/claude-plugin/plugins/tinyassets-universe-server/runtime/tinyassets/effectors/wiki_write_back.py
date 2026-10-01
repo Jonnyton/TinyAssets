@@ -18,6 +18,7 @@ from typing import Any
 
 from tinyassets.effectors.authority import DENIED as SOUL_AUTHORITY_DENIED
 from tinyassets.effectors.authority import resolve_soul_effect_authority
+from tinyassets.universe_paths import platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +246,7 @@ def _render_section(*, packet: dict[str, Any], idem_hint: str) -> tuple[str, str
 
 
 def _destination_marker_db_path(universe_dir: Path) -> Path:
-    return universe_dir / "wiki" / _DESTINATION_MARKER_DB
+    return platform_path(universe_dir, _DESTINATION_MARKER_DB)
 
 
 def _record_destination_marker(

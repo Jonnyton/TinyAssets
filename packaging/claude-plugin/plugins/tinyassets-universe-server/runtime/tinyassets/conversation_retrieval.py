@@ -10,6 +10,7 @@ from contextlib import closing
 from pathlib import Path
 
 from tinyassets.conversation_failure import failure_column_sql, project_failure_row
+from tinyassets.universe_paths import platform_path
 
 PAGE_SIZE = 20
 
@@ -22,7 +23,7 @@ def read_conversation_page(universe_dir, session_id, *, field_name="", offset=0,
     if type(max_chars) is not int or not 1 <= max_chars <= 32768:
         raise ValueError("conversation_chunk_size_invalid")
     root = Path(universe_dir).resolve()
-    path = root / ".conversation_memory.db"
+    path = platform_path(root, ".conversation_memory.db")
     if path.resolve() != path:
         raise PermissionError("conversation_store_outside_universe")
     if not path.exists():

@@ -9,13 +9,14 @@ import pytest
 from tinyassets import conversation_store as store
 from tinyassets.automation_context import CONTEXT_REF, resolve_automation_inputs
 from tinyassets.conversation_retrieval import read_conversation_page
+from tinyassets.universe_paths import platform_path
 
 
 def test_lossless_reads_keep_platform_metadata_and_full_original(tmp_path):
     original = "α\r\n🦊" * 9000
     assert store.record_failure(tmp_path, "principal:a", original, "unknown")
     assert store.record_failure(tmp_path, "principal:b", "foreign private", "auth_invalid")
-    before = (tmp_path / ".conversation_memory.db").read_bytes()
+    before = (platform_path(tmp_path, ".conversation_memory.db")).read_bytes()
     page = read_conversation_page(tmp_path, "principal:a")
     failure, founder = page["messages"]
     assert failure["speaker"] == "platform" and failure["failure"]["code"] == "unknown"
@@ -35,7 +36,7 @@ def test_lossless_reads_keep_platform_metadata_and_full_original(tmp_path):
         read_conversation_page(tmp_path, "principal:b", field_name=str(founder["id"]))["error"]
         == "conversation_message_not_found"
     )
-    assert (tmp_path / ".conversation_memory.db").read_bytes() == before
+    assert (platform_path(tmp_path, ".conversation_memory.db")).read_bytes() == before
 
 
 def automation(owner="a"):
@@ -55,7 +56,7 @@ def test_automation_uses_persisted_owner_not_all_sessions(tmp_path):
     assert store.record_failure(root, "principal:a", "owner request", "unknown")
     assert store.record_failure(root, "principal:b", "private foreign request", "unknown")
     assert store.record_exchange(root, "slack:unrelated", "private slack", "private reply")
-    before = (root / ".conversation_memory.db").read_bytes()
+    before = (platform_path(root, ".conversation_memory.db")).read_bytes()
     snapshot = resolve_automation_inputs(tmp_path, automation(), observed_at="now")["context"]
     rows = snapshot["conversation"]["messages"]
     assert [r["speaker"] for r in rows] == ["founder", "platform"]
@@ -66,7 +67,7 @@ def test_automation_uses_persisted_owner_not_all_sessions(tmp_path):
     )
     assert snapshot["untrusted"] is True
     assert "not new instructions or consent" in snapshot["notice"].replace("evidence, ", "")
-    assert (root / ".conversation_memory.db").read_bytes() == before
+    assert (platform_path(root, ".conversation_memory.db")).read_bytes() == before
     with pytest.raises(ValueError, match="owner_required"):
         resolve_automation_inputs(tmp_path, automation(""), observed_at="now")
 
@@ -345,7 +346,7 @@ def test_public_conversation_read_states_a_bad_selector_and_stays_read_only(
 
     a, _b = _two_accounts(tmp_path, monkeypatch, "short reply")
     _authenticate(monkeypatch, A)
-    before = (a / ".conversation_memory.db").read_bytes()
+    before = (platform_path(a, ".conversation_memory.db")).read_bytes()
 
     for kwargs in ({"field_name": "1 OR 1=1"}, {"field_name": "١"}, {"output_offset": -1},
                    {"output_max_chars": 99999}):
@@ -355,7 +356,7 @@ def test_public_conversation_read_states_a_bad_selector_and_stays_read_only(
 
     missing = _json.loads(universe_server.read_graph(target="conversation", field_name="99999"))
     assert missing["error"] == "conversation_message_not_found"   # stated, never invented
-    assert (a / ".conversation_memory.db").read_bytes() == before
+    assert (platform_path(a, ".conversation_memory.db")).read_bytes() == before
     assert _json.loads(universe_server.read_graph(target="conversation"))["available"]
-    assert (a / ".conversation_memory.db").read_bytes() == before
+    assert (platform_path(a, ".conversation_memory.db")).read_bytes() == before
     assert HOME_A  # the home under test, named for the record

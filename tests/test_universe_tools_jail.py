@@ -642,3 +642,56 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
     # tmpfs and silently lost when the call ends.
     assert not seen["root_write"].startswith("wrote"), seen["root_write"]
     assert "root-note.md" not in listing
+
+
+# ── (h) a migrated universe: the whole root is the agent's ──────────────────
+
+
+def test_a_migrated_universe_writes_its_whole_root_and_platform_state_stays_out_of_reach(
+    world, monkeypatch, tmp_path,
+):
+    """change universe-runtime-state: once platform state lives under
+    ``.runtime/state``, the agent writes anywhere at its root -- and a forged
+    platform file planted there grants nothing, because no daemon read looks
+    at the root any more."""
+    from tinyassets import universe_paths
+    from tinyassets.storage import effector_consents
+
+    s = _engine(monkeypatch, world)
+    a = world.universe_a
+    (a / ".credential-vault.json").write_text('{"k": "' + VAULT_MARKER + '"}', encoding="utf-8")
+    universe_paths.ensure_migrated(a)
+    assert universe_paths.is_tombstone(a / ".credential-vault.json")
+
+    # A real consent database granting a destination, built elsewhere, then
+    # planted at the root by the agent itself.
+    forged_home = tmp_path / "u-forger"
+    forged_home.mkdir()
+    effector_consents.grant_consent(
+        forged_home, sink="github", destination="victim/repo", granted_by="forger",
+    )
+    shutil.copy(effector_consents.consents_db_path(forged_home), a / "notes" / "forged.db")
+
+    out = _run(s.run_bash(command=(
+        "echo mine > newfile.txt && mkdir -p tools && echo x > tools/a && "
+        "cp notes/forged.db .effector_consents.db && echo planted; "
+        "rmdir .credential-vault.json; touch .runtime/state/x; "
+        "ls -A .runtime; cat .credential-vault.json; grep -r SYNTHETIC . 2>/dev/null"
+    )))
+
+    assert "planted" in out, out
+    assert (a / "newfile.txt").read_text(encoding="utf-8") == "mine\n"
+    assert (a / "tools" / "a").read_text(encoding="utf-8") == "x\n"
+    assert (a / ".effector_consents.db").is_file()  # the agent's own file now
+    # ...which no daemon decision reads.
+    assert effector_consents.list_consents(a) == []
+    assert not effector_consents.is_consent_active(
+        a, sink="github", destination="victim/repo",
+    )
+    # Platform state: invisible, unwritable, and its tombstones survive.
+    assert VAULT_MARKER not in out, out
+    assert not (a / ".runtime" / "state" / "x").exists()
+    assert universe_paths.is_tombstone(a / ".credential-vault.json")
+    assert VAULT_MARKER in (
+        universe_paths.platform_path(a, ".credential-vault.json").read_text(encoding="utf-8")
+    )

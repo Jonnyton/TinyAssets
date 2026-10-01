@@ -44,6 +44,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+from tinyassets.universe_paths import platform_path
 
 LEDGER_FILENAME = "auto_ship_attempts.jsonl"
 LOCK_FILENAME = "auto_ship_attempts.jsonl.lock"
@@ -174,11 +175,11 @@ def _now_iso() -> str:
 
 
 def ledger_path(universe_path: Path) -> Path:
-    return Path(universe_path) / LEDGER_FILENAME
+    return platform_path(universe_path, LEDGER_FILENAME)
 
 
 def _lock_path(universe_path: Path) -> Path:
-    return Path(universe_path) / LOCK_FILENAME
+    return platform_path(universe_path, LOCK_FILENAME)
 
 
 # ── File lock (mirrors tinyassets.branch_tasks._file_lock) ──────────────────
