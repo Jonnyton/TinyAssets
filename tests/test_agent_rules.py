@@ -263,3 +263,65 @@ def test_a_rule_refusal_gets_its_own_class_and_advice(kind, failure_class):
     assert runs._classify_external_write(line.lower()) == failure_class
     advice = runs.external_write_suggested_action(failure_class)
     assert advice and "yours to fix" not in advice
+
+
+# -- D1b: declared operation kinds -----------------------------------------------------
+
+
+def test_an_undeclared_operation_is_a_write(tmp_path):
+    assert agent_rules.classify(_universe(tmp_path), "stripe", "post", "/v1/charges") == (
+        "app.write", "POST")
+
+
+def test_a_declared_payment_is_handed_back_by_default(tmp_path):
+    from tinyassets.effectors.authenticated_external_call import _rule_refusal
+
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "stripe", "payment", method="POST",
+                             path_prefix="/v1/charges")
+    assert agent_rules.classify(universe, "stripe", "POST", "/v1/charges/ch_1") == (
+        "money.move", "POST")
+    refusal = _rule_refusal(universe, "stripe", "POST", "/v1/charges")
+    assert refusal["error_kind"] == "rule_hand_off"
+    # The same connection's undeclared paths are ordinary writes.
+    assert _rule_refusal(universe, "stripe", "POST", "/v1/customers") is None
+
+
+def test_the_longest_prefix_and_a_specific_method_win(tmp_path):
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "gh", "read", path_prefix="/")
+    agent_rules.declare_kind(universe, "gh", "write", method="POST", path_prefix="/repos")
+    agent_rules.declare_kind(universe, "gh", "access", method="PUT",
+                             path_prefix="/repos/o/r/collaborators")
+    assert agent_rules.classify(universe, "gh", "GET", "/user")[0] == "app.read"
+    assert agent_rules.classify(universe, "gh", "POST", "/repos/o/r/issues")[0] == "app.write"
+    assert agent_rules.classify(universe, "gh", "PUT",
+                                "/repos/o/r/collaborators/bob")[0] == "access.grant"
+    assert agent_rules.classify(universe, "gh", "GET", "/repositories")[0] == "app.read", (
+        "a prefix matches whole path segments")
+
+
+def test_a_message_kind_asks_first_by_default(tmp_path):
+    from tinyassets.effectors.authenticated_external_call import _rule_refusal
+
+    universe = _universe(tmp_path)
+    agent_rules.declare_kind(universe, "slack", "message", path_prefix="/api/chat.postMessage")
+    assert _rule_refusal(universe, "slack", "POST",
+                         "/api/chat.postMessage")["error_kind"] == "rule_ask_first"
+
+
+@pytest.mark.parametrize("prefix", ["v1", "/v1?x=1", "/v1#f"])
+def test_a_bad_prefix_or_kind_is_refused(tmp_path, prefix):
+    universe = _universe(tmp_path)
+    with pytest.raises(agent_rules.RuleRefused):
+        agent_rules.declare_kind(universe, "c", "read", path_prefix=prefix)
+    with pytest.raises(agent_rules.RuleRefused):
+        agent_rules.declare_kind(universe, "c", "steal")
+
+
+def test_the_request_path_is_read_from_a_url_or_a_path():
+    from tinyassets.effectors.authenticated_external_call import _request_path
+
+    assert _request_path({"url": "https://api.x.com/v1/a?b=1"}) == "/v1/a"
+    assert _request_path({"path": "/v1/b?c=2"}) == "/v1/b"
+    assert _request_path({}) == "/"

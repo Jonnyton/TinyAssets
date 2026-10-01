@@ -231,6 +231,9 @@
        and stays their bubble; the mark says the universe has not seen it yet. */
     .msg--queued{opacity:.72;border:1px dashed var(--accent-ink)}
     .msg-queued-note{display:block;margin-top:.35rem;font-size:.72rem;opacity:.9}
+    .rule-row{display:flex;justify-content:space-between;align-items:center;gap:.5rem;padding:.25rem 0}
+    .rules-declare{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
+    .rules-declare input{min-width:7rem;flex:1}
     /* connect */
     .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
     .provider-head{display:flex;align-items:baseline;gap:.5rem;margin-bottom:.35rem}
@@ -573,6 +576,24 @@
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
+        <h3>Your agent's rules</h3>
+        <p>What your agent may do on its own. For each kind of action, choose: take action
+        without asking, take action if you asked for exactly that, ask you first, or hand
+        it to you. Your agent can suggest a change; only you can make one.</p>
+        <div id="rules-list"></div>
+        <h4>What a connection's operations mean</h4>
+        <p class="muted">Your agent treats any call to a connected app as a change unless you
+        say what it is, so payments, messages and access changes only follow their rules
+        once you name them here.</p>
+        <div id="rules-kinds"></div>
+        <div class="rules-declare">
+          <input id="kind-connection" type="text" placeholder="connection id" autocomplete="off" />
+          <input id="kind-method" type="text" placeholder="method (any)" autocomplete="off" />
+          <input id="kind-path" type="text" placeholder="/path prefix" autocomplete="off" />
+          <select id="kind-kind"></select>
+          <button id="btn-kind-add" class="btn btn--ghost" type="button">Add</button>
+        </div>
+        <div id="rules-status" class="notice" role="status"></div>
         <h3>Request notifications</h3>
         <p>Get notified when your universe is waiting on you. Turning this off stops notifications on all your devices.</p>
         <button id="btn-notifications" class="btn btn--ghost" type="button" disabled>Loading notifications...</button>
@@ -5644,7 +5665,84 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadRules(); }
+    // ---- Your agent's rules (harness D1a/D1b) ---------------------------
+    // The owner's Custom Rules, read and written through /app/rules, which only
+    // ever addresses the signed-in owner's own home. Loosening a hand-back is
+    // confirmed against the server's own plain words before it is sent again.
+    async function rulesRequest(body){
+      const init={method:body?"POST":"GET",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders())};
+      if(body) init.body=JSON.stringify(body);
+      const r=await fetch("/app/rules",init);
+      const doc=await r.json().catch(()=>({}));
+      return {ok:r.ok,status:r.status,doc};
+    }
+    function rulesSay(text){ $("rules-status").textContent=text||""; }
+    function renderRules(doc){
+      const list=$("rules-list"); list.textContent="";
+      (doc.rules||[]).forEach(rule=>{
+        const row=document.createElement("div"); row.className="rule-row";
+        const what=document.createElement("span");
+        what.textContent=(doc.classes&&doc.classes[rule.action_class]||rule.action_class)+
+          (rule.connection?" \u2014 "+rule.connection:"")+(rule.operation?" "+rule.operation:"");
+        const pick=document.createElement("select");
+        Object.keys(doc.behaviours||{}).forEach(key=>{
+          const opt=document.createElement("option");
+          opt.value=key; opt.textContent=doc.behaviours[key];
+          if(key===rule.behaviour) opt.selected=true;
+          pick.appendChild(opt);
+        });
+        pick.addEventListener("change",()=>saveRule(rule,pick.value,false));
+        row.appendChild(what); row.appendChild(pick); list.appendChild(row);
+      });
+      const kinds=$("rules-kinds"); kinds.textContent="";
+      (doc.operation_kinds||[]).forEach(item=>{
+        const row=document.createElement("div"); row.className="rule-row";
+        const what=document.createElement("span");
+        what.textContent=item.connection+" "+(item.method||"any")+" "+item.path_prefix+
+          " \u2192 "+item.kind;
+        const drop=document.createElement("button");
+        drop.className="btn btn--link"; drop.type="button"; drop.textContent="Remove";
+        drop.addEventListener("click",async()=>{
+          const res=await rulesRequest({undeclare:item.id});
+          if(res.ok) renderRules(res.doc); else rulesSay("Could not remove that.");
+        });
+        row.appendChild(what); row.appendChild(drop); kinds.appendChild(row);
+      });
+      const kindPick=$("kind-kind"); kindPick.textContent="";
+      Object.keys(doc.kinds||{}).forEach(key=>{
+        const opt=document.createElement("option"); opt.value=key; opt.textContent=key;
+        kindPick.appendChild(opt);
+      });
+    }
+    async function loadRules(){
+      rulesSay("");
+      try{
+        const res=await rulesRequest(null);
+        if(!res.ok){ rulesSay("Your agent's rules could not be loaded."); return; }
+        renderRules(res.doc);
+      }catch(e){ rulesSay("Your agent's rules could not be loaded."); }
+    }
+    async function saveRule(rule,behaviour,confirmed){
+      const body={action_class:rule.action_class,behaviour,connection:rule.connection,
+        operation:rule.operation,note:rule.note||""};
+      if(confirmed) body.confirm_handback=true;
+      const res=await rulesRequest(body);
+      if(res.status===409&&!confirmed&&res.doc&&res.doc.detail){
+        if(window.confirm(res.doc.detail)) return saveRule(rule,behaviour,true);
+        return loadRules();
+      }
+      if(!res.ok){ rulesSay("That rule was not saved."); return loadRules(); }
+      rulesSay("Saved."); renderRules(res.doc);
+    }
+    $("btn-kind-add").addEventListener("click",async()=>{
+      const res=await rulesRequest({declare:{connection:$("kind-connection").value,
+        method:$("kind-method").value,path_prefix:$("kind-path").value||"/",
+        kind:$("kind-kind").value}});
+      if(!res.ok){ rulesSay((res.doc&&res.doc.detail)||"That was not saved."); return; }
+      rulesSay("Saved."); renderRules(res.doc);
+    });
     $("btn-notifications").addEventListener("click", ()=>toggleNotifications(false));
     $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
     // The phone app has no browser push; its one switch registers the phone.

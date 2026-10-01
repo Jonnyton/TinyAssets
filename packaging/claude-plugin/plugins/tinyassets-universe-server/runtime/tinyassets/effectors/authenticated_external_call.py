@@ -640,13 +640,32 @@ def _ledger_db_path(base_path: str | Path | None) -> Path | None:
         return None
 
 
-def _rule_refusal(universe_dir: Path, connection_id: str, verb: str) -> dict[str, Any] | None:
-    """``None`` when the owner's rules let this call proceed, else a refusal."""
+def _request_path(request: dict[str, Any]) -> str:
+    """The path a request addresses, for classifying it (never for sending)."""
+    absolute = _str_field(request, "url")
+    if absolute:
+        try:
+            return urllib.parse.urlsplit(absolute).path or "/"
+        except ValueError:
+            return "/"
+    path = request.get("path")
+    return path.split("?", 1)[0] if isinstance(path, str) and path.startswith("/") else "/"
+
+
+def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
+                  path: str = "/") -> dict[str, Any] | None:
+    """``None`` when the owner's rules let this call proceed, else a refusal.
+
+    What the call MEANS comes from the owner's declarations for this connection
+    (harness D1b); an undeclared operation is decided as a write.
+    """
     from tinyassets import agent_rules
 
     try:
+        action_class, operation = agent_rules.classify(
+            universe_dir, connection_id, verb, path)
         decision = agent_rules.decide(
-            universe_dir, "app.write", connection=connection_id, operation=verb,
+            universe_dir, action_class, connection=connection_id, operation=operation,
         )
     except Exception:
         logger.exception("authenticated_external_call rule lookup crashed")
@@ -1037,7 +1056,7 @@ def _run(
     # its grant would allow. Every call here counts as a write until connections
     # declare their operation kinds (D1b). A rule store that cannot be read
     # refuses the call; it never falls back to allowing it.
-    rule_refusal = _rule_refusal(universe_dir, connection_id, verb)
+    rule_refusal = _rule_refusal(universe_dir, connection_id, verb, _request_path(request))
     if rule_refusal is not None:
         return {
             **rule_refusal,
