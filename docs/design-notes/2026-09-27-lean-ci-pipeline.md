@@ -131,3 +131,50 @@ conflict 41.7% of the time. DORA 2025 / Faros: AI raises throughput and
 instability together. Stripe Minions: 1,300+ PRs a week with a 2-CI-round cap.
 GitHub documentation covers `merge_group`, concurrency and dismissing stale
 approvals.
+
+## 2026-10-01: merge-queue baseline, before PR-time affected tests
+
+Founder, 2026-10-01: "an hour of tests for each pr seems like a process that
+has been allowed to bloat". The lean-CI follow-ups are #4201 (PR-time affected
+tests), #4203 (jail-proof marker), #4205 (brand badge check) and #4206 (shard
+packing). The numbers below are the **before** line. Re-run the same queries
+about a week after #4201 lands and compare.
+
+**Window:** 2026-09-27 20:40Z to 2026-10-01 20:40Z, measured on 2026-10-01.
+
+| Measure | Before |
+|---|---|
+| PRs enqueued at least once | 122 |
+| PRs dropped from the queue at least once | 32 |
+| Queue drops (not counting `merged`) | 65: **39 `failed_checks`**, 20 `merge_conflict`, 6 `manual` |
+| First enqueue to merged (n=110) | median **10 min**, p90 91, max 895 |
+| `merge_group` Tests runs | 212, of which **87 failed** (41%) |
+| Shard wall time, max/median within a run (57 runs) | median 1.23x, p90 2.14x |
+
+**Where `failed_checks` comes from.** These are the test files named in the
+failed merge-group runs' new-failure lists:
+
+- **Repo-wide ratchets and boundary scans dominate:**
+  - `test_channel_agnostic_ratchet` 34, half of it from
+    `test_the_baseline_matches_what_is_actually_there`, an exact-match committed
+    count;
+  - `test_served_tool_guidance` 29;
+  - `test_source_channel_policy_is_gone` 16;
+  - `test_owner_door_import_boundary` 14;
+  - `test_storage_registry_complete` 14.
+- **Flakes:** `test_execution_evidence_store` 11 (the fd-leak test).
+- **Batch conflicts.** An exact-match baseline fails whenever two PRs in one
+  batch each move the count. No per-PR test can see that conflict, which is
+  the duplicated-truth shape again.
+
+**Will PR-time selection cover them?** Over the last 60 main commits,
+`scripts/affected_tests.py` selected each of those files (or ALL) in 25 to 52
+of the 60. Most single-PR failures should therefore show up on the PR. Batch
+conflicts will not.
+
+**Queries.**
+- Drop reasons and times: GraphQL `pullRequests { timelineItems(itemTypes:
+  [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) }`, reading
+  `reason` and `createdAt`. The proxy for "stamp" is the first enqueue.
+- Failing tests: `gh run list --workflow tests.yml --event merge_group`, then
+  `gh run view <id> --log-failed`, then the ``- `tests/...` `` lines.
