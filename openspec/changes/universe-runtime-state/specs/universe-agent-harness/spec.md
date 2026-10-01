@@ -13,7 +13,7 @@ Every platform-owned file or directory of a universe SHALL be resolved through o
 
 #### Scenario: migration refuses a link
 - **WHEN** a legacy platform entry at the universe root is a symbolic link
-- **THEN** migration moves the link itself aside without following it, and nothing outside the universe is read or moved
+- **THEN** migration refuses without following the link, moves nothing, and serves no platform store of that universe until an operator resolves it
 
 #### Scenario: a crash mid-migration loses nothing
 - **WHEN** migration stops after moving some platform entries and before writing its completion marker
@@ -22,3 +22,11 @@ Every platform-owned file or directory of a universe SHALL be resolved through o
 #### Scenario: storage totals survive the move
 - **WHEN** a universe migrates
 - **THEN** the bytes charged to its owner are the same before and after
+
+#### Scenario: a reader that still uses the old location fails loudly
+- **WHEN** code opens a platform name at the root of a migrated universe
+- **THEN** it meets a tombstone and fails, rather than creating or trusting a store there
+
+#### Scenario: an old image cannot serve migrated data
+- **WHEN** a rollback would start an image whose state layout is older than the data's
+- **THEN** the rollback refuses and asks for an operator
