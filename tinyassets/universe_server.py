@@ -770,7 +770,7 @@ def read_graph(
         # The same projection the engine serves: query filters, field_name /
         # output_offset page one section, and an over-ceiling read is
         # sectioned rather than cut. The complete document is the owner door's.
-        from tinyassets.api.agent_access import CEILING_HEADROOM_BYTES, project_access
+        from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_access
         from tinyassets.engine_result_bounds import resolve_ceiling
 
         return json.dumps(project_access(
@@ -814,11 +814,14 @@ def _model_door_automations(
     """Automations as the connector's model door serves them: never cut.
 
     Every row, paged under the result ceiling, input bodies read one at a time
-    (``api.automations.project_automations``). ``max_rows`` is the caller's own
+    (``engine_read_views.project_automations``). ``max_rows`` is the caller's own
     page size; the ceiling may make a page smaller, never silently shorter.
     """
-    from tinyassets.api.agent_access import CEILING_HEADROOM_BYTES
-    from tinyassets.api.automations import project_automation, project_automations
+    from tinyassets.engine_read_views import (
+        CEILING_HEADROOM_BYTES,
+        project_automation,
+        project_automations,
+    )
     from tinyassets.engine_result_bounds import resolve_ceiling
 
     budget = resolve_ceiling() - CEILING_HEADROOM_BYTES

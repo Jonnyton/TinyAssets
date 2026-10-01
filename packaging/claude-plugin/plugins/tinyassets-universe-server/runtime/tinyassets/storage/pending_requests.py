@@ -864,7 +864,7 @@ def list_suppressions(universe_dir: Path) -> list[dict[str, Any]]:
     """What the user has said not to be asked again — visible, so it is undoable.
 
     Every row: a 50-row cap hid the 51st decision, which the owner then could
-    not see to undo. Model doors page this (``agent_access.project_access``).
+    not see to undo. Model doors page this (``engine_read_views.project_access``).
     """
     try:
         with _db(universe_dir) as conn:

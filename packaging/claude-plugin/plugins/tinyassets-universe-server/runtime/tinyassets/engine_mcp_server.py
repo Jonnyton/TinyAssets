@@ -641,11 +641,8 @@ def read_graph(
                 output_max_chars=output_max_chars,
             ))
         if normalized == "access":
-            from tinyassets.api.agent_access import (
-                CEILING_HEADROOM_BYTES,
-                project_access,
-                read_access,
-            )
+            from tinyassets.api.agent_access import read_access
+            from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_access
             from tinyassets.engine_result_bounds import resolve_ceiling
 
             # Filtered by query, paged by field_name/output_offset, and sectioned
@@ -657,9 +654,9 @@ def read_graph(
                 budget=resolve_ceiling() - CEILING_HEADROOM_BYTES,
             ), default=str)
         if normalized in {"automations", "automation"}:
-            from tinyassets.api.agent_access import CEILING_HEADROOM_BYTES
-            from tinyassets.api.automations import (
-                automations,
+            from tinyassets.api.automations import automations
+            from tinyassets.engine_read_views import (
+                CEILING_HEADROOM_BYTES,
                 project_automation,
                 project_automations,
             )
