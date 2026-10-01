@@ -1,6 +1,6 @@
 # Cut runs.py's import-time coupling (design, 2026-10-01)
 
-**Status:** proposed, for lead review. Not built.
+**Status:** SHELVED 2026-10-01 (lead decision). R4 is rejected; R1 needs a real refactor. See "Why R1 is shelved" at the end.
 **Signal.** #4201's selector found that `tinyassets/runs.py` is reached at
 import time by **436 test files** (160 import it directly). Any change to it
 selects about 40% of the suite, so the founder's "enforcing bad architecture"
@@ -104,3 +104,46 @@ where the dependency really is conditional (dispatch by action name).
   `scripts/affected_tests.py`.
 - **R6** (separate design if wanted). Per-module registry for storage
   `ROOT_ENTRIES` and the route lists.
+
+## Why R1 is shelved (measured 2026-10-01)
+
+**R4 is rejected.** A lazy dispatch hides a test's real runtime dependence on
+`api/runs` from the selector, so failures move to the queue. That is the
+problem this lane exists to fix, and a faster selector that misses tests is a
+regression.
+
+**R1 is not a move.** The store section of `runs.py` reaches the executor
+through exactly one call: `nominate_workspace_waiter -> _dispatch_waiting_run`.
+The paths are:
+
+- `update_run_status`, `terminalize_unstarted_run` and
+  `attach_existing_child_run` go through
+  `_finish_terminal_workspace_release -> _kick_workspace_sweep ->
+  _workspace_sweep_once -> nominate_workspace_waiter -> _dispatch_waiting_run`;
+- `list_runs` goes through `_reconcile_workspace_on_read ->
+  _start_workspace_sweeper`;
+- `request_cancel` goes through `_settle_cancelled_waiter`.
+
+**The store's transitive closure is 158 top-level definitions, about 4,300
+lines,** and it includes `_invoke_graph` and so `graph_compiler`.
+
+**Splitting it means inverting that edge,** which is a design call:
+
+- explicit dispatcher registration, failing loudly when none is registered;
+- or a lazy import, which hides the dependency and is rejected for the same
+  reason as R4.
+
+It also means repointing 15 production modules and about 60 tests, all in
+concurrency-critical workspace waiting.
+
+**The payoff is unproven for selection:** the 60-commit median selection does
+not move (125).
+
+**Revisit** when the app.html split or a `runs.py` feature change makes the
+inversion cheap. Every test that drives waiter dispatch already imports
+`tinyassets.runs`, so explicit registration (option A) would not cost selection
+accuracy.
+
+**Found on the way:** `_TERMINAL_STATUSES` is defined twice in `runs.py`
+(around lines 3135 and 7074), with identical values today. Fold it into one
+definition with the next `runs.py` change.
