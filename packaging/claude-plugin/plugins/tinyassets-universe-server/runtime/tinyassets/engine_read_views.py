@@ -33,6 +33,11 @@ cannot import this module (``tests/test_owner_door_import_boundary.py``).
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
+from tinyassets.engine_result_bounds import CLIPPED_KEY, clip_to_fit, page_to_fit
+
 #: Models shown per source in the default (unfiltered, first-page) view. Enough
 #: to choose from -- the top of the platform's own ordering is where a sane
 #: choice already is -- without enumerating a whole provider's inventory.
@@ -275,3 +280,268 @@ def universe_status_view(document: object) -> object:
     view["host_blocks_omitted"] = omitted
     view["how_to_see_more"] = _STATUS_FULL_HINT
     return view
+
+
+# -- Access and automations (live 2026-10-01) ------------------------------------
+#
+# Both reads used to be cut by the ceiling instead of shaped for it. Here, in the
+# model door, they are filtered and paged so every row stays reachable; the owner
+# door keeps the complete documents and cannot import this module.
+
+#: The row lists a model door can filter with ``query`` and page by section.
+PAGED_SECTIONS = (
+    "channels", "channel_consents", "workspace_consents",
+    "waiting_requests", "standing_decisions",
+)
+
+#: Bytes a model door keeps free under its result ceiling for the transport's
+#: own framing, so a projection that fits here is never cut downstream.
+CEILING_HEADROOM_BYTES = 1_024
+
+
+def _bytes(value: Any) -> int:
+    # The engine returns ``json.dumps(..., default=str)`` verbatim; measuring the
+    # same rendering (ASCII-escaped, so never smaller) means "fits" here is
+    # "fits" on both doors.
+    return len(json.dumps(value, default=str).encode("utf-8"))
+
+
+def _row_contains(row: Any, needle: str) -> bool:
+    return needle in json.dumps(row, default=str, ensure_ascii=False).lower()
+
+
+#: Longest ``query`` a model door accepts. The query is echoed in every
+#: continuation call, so an unbounded one could by itself overflow the result.
+MAX_QUERY_CHARS = 512
+
+
+def _section_call(section: str, offset: int, query: str, scope: str = "") -> str:
+    call = f'read_graph target="access"{scope} field_name="{section}"'
+    if offset:
+        call += f" output_offset={offset}"
+    if query:
+        call += f" query={json.dumps(query, ensure_ascii=False)}"
+    return call
+
+
+def project_access(
+    document: dict[str, Any], *, query: str = "", section: str = "",
+    offset: int = 0, budget: int, scope: str = "",
+) -> dict[str, Any]:
+    """The access read as a model door serves it: filtered, sectioned, never cut.
+
+    Live 2026-09-28..10-01 (the founder's universe): this read grew to 25,001
+    bytes, the result ceiling cut it at 21,764, and the tail -- the standing
+    decisions -- was unreadable on every wake; ``query`` changed nothing because
+    nothing read it. Data size must not change what the agent can see, so:
+
+    - ``query`` keeps only the rows (in every paged section) whose JSON contains
+      it, case-insensitive, and reports how many matched per section;
+    - ``section`` (``field_name`` on the tool) reads one section's rows from
+      ``offset``, a page at a time, with ``next_offset`` until ``complete``;
+    - with no section, a document over ``budget`` inlines the sections that fit
+      and replaces each other one with its row count and the exact call that
+      reads it. Every row stays reachable; nothing is silently dropped.
+
+    ``budget`` is bytes of rendered JSON. One row larger than the whole budget is
+    returned alone with its long strings clipped and named in ``clipped_chars``
+    (``engine_result_bounds.page_to_fit``), so the cursor past it survives.
+    ``scope`` is appended to every continuation call (the connector's
+    ``graph_id``), so a call read off the result reads the same universe.
+    """
+    if not isinstance(document, dict) or "error" in document:
+        return document
+    if len((query or "").strip()) > MAX_QUERY_CHARS:
+        return {"error": "query_too_long", "max_chars": MAX_QUERY_CHARS}
+    needle = (query or "").strip().lower()
+    doc = dict(document)
+    matched: dict[str, int] = {}
+    if needle:
+        for name in PAGED_SECTIONS:
+            rows = doc.get(name)
+            if isinstance(rows, list):
+                doc[name] = [row for row in rows if _row_contains(row, needle)]
+                matched[name] = len(doc[name])
+    filters = {"query": query.strip(), "matched": matched} if needle else {}
+
+    wanted = (section or "").strip().lower()
+    if wanted:
+        if wanted not in PAGED_SECTIONS:
+            return {
+                "error": "unknown_access_section",
+                "field_name": section,
+                "sections": list(PAGED_SECTIONS),
+            }
+        rows = doc.get(wanted)
+        if not isinstance(rows, list):
+            # An unreadable section reports itself; it has no rows to page.
+            return {"universe_id": doc.get("universe_id"), "section": wanted,
+                    wanted: rows, **filters}
+        start = max(0, int(offset or 0))
+        return page_to_fit(
+            rows, start=start, budget=budget,
+            render=lambda value: json.dumps(value, default=str),
+            build=lambda page, next_offset: {
+                "universe_id": doc.get("universe_id"), "section": wanted,
+                "total": len(rows), "offset": start, "rows": page, **filters,
+                "complete": next_offset is None, "next_offset": next_offset,
+                "next": (None if next_offset is None
+                         else _section_call(wanted, next_offset, query.strip(), scope)),
+            },
+        )
+
+    doc.update(filters)
+    if _bytes(doc) <= budget:
+        return doc
+    # Too big to send whole: inline sections in their usual order while they
+    # fit, point at the rest. The pointer is reserved first so the final
+    # document is measured with every pointer it will actually carry.
+    pointers = {
+        name: {"count": len(doc[name]),
+               "read_with": _section_call(name, 0, query.strip(), scope)}
+        for name in PAGED_SECTIONS if isinstance(doc.get(name), list)
+    }
+    projected = {key: value for key, value in doc.items() if key not in pointers}
+    projected["complete"] = False
+    projected["sectioned"] = dict(pointers)
+    projected["note"] = (
+        "This access read is too large for one result. Sections under "
+        "`sectioned` are not inline: read each with its read_with call and "
+        "follow next_offset until complete, or narrow every section with query."
+    )
+    for name in PAGED_SECTIONS:
+        if name not in pointers:
+            continue
+        trial = {**projected, name: doc[name]}
+        trial["sectioned"] = {k: v for k, v in projected["sectioned"].items() if k != name}
+        if _bytes(trial) <= budget:
+            projected = trial
+    if not projected["sectioned"]:
+        for key in ("sectioned", "note"):
+            projected.pop(key)
+        projected["complete"] = True
+    # Last resort for the fixed parts (spend allowances, verbs): clip, never cut.
+    return clip_to_fit(projected, budget=budget,
+                       render=lambda value: json.dumps(value, default=str))
+
+
+# -- Model-door projection ----------------------------------------------------
+#
+# Live 2026-10-01 (the founder's universe): 8 active automations projected to
+# 282,886 bytes, because every row carries its whole ``inputs`` (33-90 KB each:
+# an agent node's prompt and context). The result ceiling cut the list inside
+# the FIRST row, so the agent could not recover its own morning-note schedule id
+# and re-audited instead. The owner door keeps the complete rows; a model door
+# serves this projection, which pages itself under the ceiling and never cuts.
+
+
+def _value_text(value: Any) -> str:
+    """An input as the agent reads it: strings verbatim, the rest as JSON."""
+    return value if isinstance(value, str) else json.dumps(
+        value, ensure_ascii=False, default=str,
+    )
+
+
+def _without_input_bodies(row: dict[str, Any], scope: str = "") -> dict[str, Any]:
+    """A row with each input's character count instead of its value."""
+    inputs = row.get("inputs")
+    if not isinstance(inputs, dict):
+        return row
+    summarized = {key: value for key, value in row.items() if key != "inputs"}
+    summarized["input_chars"] = {key: len(_value_text(v)) for key, v in inputs.items()}
+    summarized["inputs_read_with"] = (
+        f'read_graph target="automation"{scope} '
+        f'automation_id="{row.get("automation_id", "")}" field_name="<input name>"'
+    )
+    return summarized
+
+
+def project_automations(
+    result: dict[str, Any], *, budget: int, render, offset: int = 0,
+    max_rows: int | None = None, scope: str = "",
+) -> dict[str, Any]:
+    """A ``list`` result as a model door serves it: every id, paged to fit.
+
+    Rows carry ``input_chars`` (name -> size) instead of input bodies; read a
+    body with ``target="automation"`` and ``field_name``. ``offset`` continues
+    from the returned ``next_offset``. ``render`` is the exact text the door
+    returns, so the fit is measured on its real bytes. ``scope`` is appended to
+    every continuation call (the connector's ``graph_id``).
+    """
+    rows = result.get("automations")
+    if not isinstance(rows, list):
+        return result
+    rows = [_without_input_bodies(r, scope) if isinstance(r, dict) else r for r in rows]
+    start = max(0, int(offset or 0))
+    head = {k: v for k, v in result.items() if k not in {"automations", "count"}}
+
+    def build(page, next_offset):
+        return {
+            **head, "automations": page, "count": len(page),
+            "total": len(rows), "offset": start,
+            "complete": next_offset is None, "next_offset": next_offset,
+            "next": (None if next_offset is None else
+                     f'read_graph target="automations"{scope} '
+                     f'output_offset={next_offset}'),
+        }
+
+    return page_to_fit(rows, start=start, budget=budget, build=build,
+                       render=render, max_rows=max_rows)
+
+
+def project_automation(
+    result: dict[str, Any], *, budget: int, render, field_name: str = "",
+    offset: int = 0, max_chars: int = 8192, scope: str = "",
+) -> dict[str, Any]:
+    """A ``get`` result as a model door serves it: whole, or read in parts.
+
+    With ``field_name`` it returns that input's text from ``offset``, a chunk at
+    a time (``next_offset`` until ``complete``). Without, the row is returned
+    whole when it fits ``budget``, else with ``input_chars`` in place of input
+    bodies. The result keeps the ``automation`` key and its ``owner`` so the
+    door's provenance wrapping applies to a chunk exactly as to the row.
+    """
+    row = result.get("automation")
+    if not isinstance(row, dict):
+        return result
+    if not field_name:
+        if len(render(result).encode("utf-8")) <= budget:
+            return result
+        summary = {**result, "automation": _without_input_bodies(row, scope)}
+        return clip_to_fit(summary, budget=budget, render=render)
+    inputs = row.get("inputs") if isinstance(row.get("inputs"), dict) else {}
+    # Exact key first: input names are arbitrary, so " prompt " is not "prompt".
+    name = field_name if field_name in inputs else field_name.strip()
+    if name not in inputs:
+        # Under ``automation`` with its owner, so another owner's input names
+        # keep the door's provenance wrapping even in a refusal.
+        return {"error": "unknown_automation_input", "field_name": field_name,
+                "automation": {"automation_id": row.get("automation_id"),
+                               "owner": row.get("owner"), "inputs": sorted(inputs)}}
+    text = _value_text(inputs[name])
+    start = max(0, int(offset or 0))
+    size = max(1, min(32768, int(max_chars or 8192)))
+    title = str(row.get("name") or "")
+    head = {"automation_id": row.get("automation_id"), "name": title[:256],
+            "owner": row.get("owner"), "input": name[:256], "total_chars": len(text),
+            "offset": start}
+    if len(title) > 256 or len(name) > 256:
+        # Metadata is bounded so the chunk, not the labels, gets the budget.
+        head[CLIPPED_KEY] = {k: len(v) for k, v in (("name", title), ("input", name))
+                             if len(v) > 256}
+
+    def chunk(n: int) -> dict[str, Any]:
+        end = min(len(text), start + n)
+        more = end < len(text)
+        return {"automation": {
+            **head, "value": text[start:end], "complete": not more,
+            "next_offset": end if more else None,
+        }}
+
+    document = chunk(size)
+    # Escaping can grow a chunk past the ceiling (a CJK character renders as six
+    # ASCII bytes), so shrink the chunk, never the cursor's honesty.
+    while size > 1 and len(render(document).encode("utf-8")) > budget:
+        size = max(1, size * budget // len(render(document).encode("utf-8")) - 1)
+        document = chunk(size)
+    return document
