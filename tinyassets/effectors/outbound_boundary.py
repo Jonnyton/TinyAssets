@@ -31,7 +31,7 @@ from tinyassets.storage.outbound_connections import (
 # Who is paying is decided by the billing module's own state, not by a second
 # copy in the usage ledger. Two authorities for one fact is how the stale one
 # ends up being the one that is read.
-from tinyassets.storage.subscription_state import get_tier
+from tinyassets.universe_owner import account_type_for_universe
 from tinyassets.usage_policy import (
     release_effect_quota,
     reserve_effect_quota,
@@ -390,7 +390,7 @@ def execute_replay_safe_effect(
         universe_dir,
         sink=sink,
         effect_key=effect_key,
-        tier=get_tier(universe_dir),
+        tier=account_type_for_universe(universe_dir),
     )
     if refusal is not None:
         release_reservation(
@@ -453,7 +453,7 @@ def _invoke_reserved_effect(
         universe_dir,
         sink=sink,
         effect_key=effect_key,
-        tier=get_tier(universe_dir),
+        tier=account_type_for_universe(universe_dir),
     )
     if refusal is not None:
         evidence = {

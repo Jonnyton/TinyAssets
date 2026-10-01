@@ -177,7 +177,8 @@ def _has_execution_column(conn: sqlite3.Connection) -> bool:
     return any(row[1] == "execution_json" for row in columns)
 
 
-def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> list[Msg]:
+def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
+                   before: int | None = None) -> list[Msg]:
     receipt_column = "execution_json" if _has_execution_column(conn) else "''"
     failure_column = failure_column_sql(conn)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_turns)")}
@@ -187,13 +188,22 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> lis
     id_column = "id" if "id" in columns else "NULL"
     has_projections = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                                    "AND name='conversation_terminal_projections'").fetchone()
-    rows = conn.execute(
-        f"SELECT speaker, content, ts, {receipt_column}, {failure_column}, "
-        f"{identity_column}, turn_no, {id_column} "
-        "FROM conversation_turns "
-        "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
-        (session_id, max(1, int(limit))),
-    ).fetchall()
+    select = (f"SELECT speaker, content, ts, {receipt_column}, {failure_column}, "
+              f"{identity_column}, turn_no, {id_column} FROM conversation_turns ")
+    if before is None:
+        rows = conn.execute(
+            select + "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
+            (session_id, max(1, int(limit))),
+        ).fetchall()
+    else:
+        # Keyset: strictly older than the cursor turn, in the same order the
+        # first page used, so paging back returns every turn exactly once.
+        rows = conn.execute(
+            select + "WHERE session_id = ? AND (ts, turn_no) < "
+            "(SELECT ts, turn_no FROM conversation_turns WHERE id = ? AND session_id = ?) "
+            "ORDER BY ts DESC, turn_no DESC LIMIT ?",
+            (session_id, int(before), session_id, max(1, int(limit))),
+        ).fetchall()
     result = []
     for speaker, content, ts, raw, failure_raw, ext_id, turn_no, row_id in reversed(rows):
         receipt = None
@@ -220,6 +230,40 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int) -> lis
                           read_turn_failure(speaker, failure_raw), consumer_id,
                           id=row_id if isinstance(row_id, int) else None))
     return result
+
+
+def read_history_page(
+    universe_dir: "str | Path",
+    session_id: str,
+    *,
+    limit: int,
+    before: int | None = None,
+) -> tuple[list["Msg"], bool]:
+    """One page of the owner's thread, oldest first, and whether older turns exist.
+
+    The owner's history read. Unlike ``load_recent_readonly`` it does NOT fail
+    open: a read error RAISES, because "your history could not be read" and
+    "you have no history" are different things to tell an owner. ``before`` is
+    a turn id (``Msg.id``) from a previous page; the page holds the ``limit``
+    turns strictly older than it. The caller names ``limit``: there is no
+    default page, and ``has_more`` always says whether one exists.
+    """
+    if not session_id:
+        return [], False
+    if type(limit) is not int or limit < 1:
+        raise ValueError("limit must be a positive integer")
+    if before is not None and (type(before) is not int or before < 0):
+        raise ValueError("before must be a turn id")
+    db_path = _db_path(universe_dir)
+    if not db_path.exists():
+        return [], False
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+    try:
+        messages = _read_messages(conn, session_id, limit + 1, before=before)
+    finally:
+        conn.close()
+    has_more = len(messages) > limit
+    return (messages[1:] if has_more else messages), has_more
 
 
 def load_recent_readonly(
@@ -1059,6 +1103,7 @@ __all__ = [
     "latest_turn_no",
     "learned_cursor",
     "load_recent",
+    "read_history_page",
     "record_turn",
     "settle_learned_cursor",
     "start_learned_cursor",

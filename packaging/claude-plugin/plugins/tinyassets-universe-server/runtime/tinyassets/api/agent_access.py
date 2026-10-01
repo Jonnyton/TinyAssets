@@ -73,7 +73,7 @@ def _waiting(udir) -> list[dict[str, Any]]:
             "origin": row["origin"],
             "withdrawable": row["origin"] == ORIGIN_AGENT,
         }
-        for row in list_pending(udir, limit=None)
+        for row in list_pending(udir)
     ]
 
 

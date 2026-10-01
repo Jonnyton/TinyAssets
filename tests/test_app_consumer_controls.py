@@ -23,6 +23,17 @@ const binding={agent_binding_id:'b',agent_definition_id:'d',revision:1,
  created_by:'owner',updated_by:'owner',universe_id:'home',status:'configured',
  configuration:{schema_version:1,name:'Private label',role:'app_experience',private:{keep:1}}};
 rows=[binding];
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={callTool:async(tool,args)=>{
  if(tool==='write_graph'){
   writes.push(args); rows=[{...rows[0],revision:rows[0].revision+1,

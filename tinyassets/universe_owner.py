@@ -16,8 +16,11 @@ So ownership is written by exactly two things, and read by one resolver pair:
   UNATTRIBUTED -- counted on host-only surfaces, never refused -- until an owner
   is known (founder decision 2026-09-30, account-storage-quota Q2).
 
-`owner_of` / `tier_of` are the ONLY resolvers. Seats and storage both call them;
-a second pair would be a second definition of one fact.
+`owner_of` / `account_type_of` are the ONLY resolvers. Seats and storage both
+call them; a second pair would be a second definition of one fact. The account
+type is the only per-account input behaviour may depend on (`usage_policy.
+AccountType`), and this is the only module that reads it from billing storage
+(`tests/test_owner_door_import_boundary.py` pins that).
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import sqlite3
 from pathlib import Path
 
 from tinyassets.principals import named_principal
+from tinyassets.usage_policy import AccountType, account_type
 
 _log = logging.getLogger(__name__)
 
@@ -175,26 +179,43 @@ def unattributed_universes(base_path: str | Path) -> list[str]:
     return sorted(universes - charged)
 
 
-def tier_of(base_path: str | Path, owner_id: str) -> str:
-    """The account's tier: the subscription recorded on its HOME universe.
+def account_type_of(base_path: str | Path, owner_id: str) -> AccountType:
+    """The account's type: the subscription recorded on its HOME universe.
 
     That is where Stripe checkout already writes it. No home, no account, or an
-    unreadable record all resolve to FREE -- never to the paid tier.
+    unreadable record all resolve to FREE -- never to the subscription.
     """
     from tinyassets.daemon_server import get_founder_home
-    from tinyassets.storage.subscription_state import TIER_FREE, get_tier
+    from tinyassets.storage.subscription_state import get_tier
 
     owner = named_principal(owner_id)
     if not owner:
-        return TIER_FREE
+        return AccountType.FREE
     try:
         home = get_founder_home(base_path, owner)
     except Exception:  # noqa: BLE001 -- an unreadable binding is free, never paid
-        _log.warning("tier_of: founder_home unreadable for an account; using free", exc_info=True)
-        return TIER_FREE
+        _log.warning("account_type_of: founder_home unreadable; using free", exc_info=True)
+        return AccountType.FREE
     if not home or Path(home).name != home or home.startswith("."):
-        return TIER_FREE
-    return get_tier(Path(base_path) / home)
+        return AccountType.FREE
+    return account_type(get_tier(Path(base_path) / home))
+
+
+def account_type_for_universe(universe_dir: str | Path) -> AccountType:
+    """The type of the ACCOUNT that owns this universe; FREE when unattributed.
+
+    Never raises: seat admission and the upgrade line call it, and an unreadable
+    owner record must cost the least, not break the run.
+    """
+    path = Path(universe_dir)
+    try:
+        owner = owner_of(path.parent, path.name)
+    except Exception:  # noqa: BLE001 -- unresolvable ownership is free, never paid
+        _log.warning("account_type_for_universe: owner unreadable; using free", exc_info=True)
+        return AccountType.FREE
+    if not owner:
+        return AccountType.FREE
+    return account_type_of(path.parent, owner)
 
 
 __all__ = [
@@ -205,6 +226,7 @@ __all__ = [
     "owned_universes",
     "owner_of",
     "record_creation",
-    "tier_of",
+    "account_type_of",
+    "account_type_for_universe",
     "unattributed_universes",
 ]

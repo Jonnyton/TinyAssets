@@ -118,10 +118,12 @@ def narrowing_hint(tool: str) -> str:
 def ceiling_exempt(tool: str, arguments: object, exempt=EXACT_BYTE_READS) -> bool:
     """True when this exact ``(tool, target)`` read must not be bounded.
 
-    ``exempt`` is a parameter because the two surfaces owe different sets: the
-    engine exempts only the exact-byte reads, while the connector additionally
-    owes ``model_options`` its complete document (a spec requirement, for the
-    owner's model picker). Neither set is a place to put something for being big.
+    ``exempt`` is a parameter because the two model-door surfaces owe different
+    sets: the engine exempts only the exact-byte reads, while the connector also
+    exempts its caller-bounded conversation chunk and the universe's committed
+    reply (``universe_server._connector_ceiling_exempt``). Neither set is a place to
+    put something for being big, nor for an owner's screen: the owner's app reads
+    through the owner door (``tinyassets/owner_door``), which has no ceiling.
 
     A read with no ``target`` argument, or an unreadable one, is NOT exempt:
     defaulting to exempt would mean any call the middleware cannot parse escapes

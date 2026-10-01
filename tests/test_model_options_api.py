@@ -32,7 +32,13 @@ def catalogue(configured):
 
 
 def read(**kwargs):
-    return json.loads(universe_server.read_graph(target="model_options", **kwargs))
+    """The complete catalogue: the shared domain read the owner door serves.
+
+    The connector (the model door) projects it; see
+    `test_full_catalogue_survives_read_limit_and_adapter`."""
+    from tinyassets.api.graph_reads import read_graph
+
+    return json.loads(read_graph(target="model_options", **kwargs))
 
 
 def test_configured_but_unpowered_agent_can_read_without_activation(catalogue):
@@ -258,10 +264,12 @@ def test_full_catalogue_survives_read_limit_and_adapter(catalogue, reader, monke
         return result
 
     monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", many)
-    result = asyncio.run(universe_server.mcp.call_tool("read_graph", {"target": "model_options"}))
-    assert len(result.structured_content["options"]) == 71
-    assert result.content and result.content[0].type == "text"
+    # The owner door: every choice, and `limit` does not reach this target.
     assert len(read(limit=1)["options"]) == 71
+    # The model door: a projection that still counts every one of them.
+    result = asyncio.run(universe_server.mcp.call_tool("read_graph", {"target": "model_options"}))
+    assert result.structured_content["total_models"] == 71
+    assert result.content and result.content[0].type == "text"
 
 
 def test_scope_change_during_refresh_refuses_entire_result(catalogue, reader, monkeypatch):
