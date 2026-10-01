@@ -246,7 +246,6 @@ def test_app_api_subtree_is_challenged_after_the_apex_move():
         "/app/voice/session",
         "/app/voice/status",
         "/app/trace",
-        "/app/ui-frame",
         "/app/model-connect/connect",
         "/app/openai/device/start",
     ):
@@ -310,7 +309,15 @@ def test_the_app_subtree_verdict_matches_the_pre_move_mcp_app_verdict():
         "/model-callback/" + "f" * 43, "/model-callback/short",
         "/model-callback/", "/../mcp/tools", "/./me", "//me",
     ]
+    # The ONE intended divergence: the custom-UI bootstrap. It was challenged
+    # before the move too, which was itself the bug -- an <iframe src> carries
+    # no bearer, so every installed UI rendered `authentication_required` (live
+    # 2026-10-01). It is a static, self-sandboxing page that holds no identity.
+    intended_public = {"/ui-frame"}
     for suffix in suffixes:
+        if suffix in intended_public:
+            assert mw._auth_challenge_path("/app" + suffix) is False, suffix
+            continue
         assert mw._auth_challenge_path("/app" + suffix) is pre_move_verdict(
             "/mcp/app" + suffix
         ), suffix
