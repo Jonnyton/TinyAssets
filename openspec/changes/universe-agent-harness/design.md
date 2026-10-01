@@ -806,25 +806,36 @@ The result is a folder, also offered as a zip download. It contains:
 | `run/` | The local runner (below) |
 | `README.md`, `LICENSE`, `.gitignore`, `.env.example` | What makes it publish-ready |
 
-**One format three ways.** Export, share (§4.15, D9) and import use the same
-bundle manifest and the same path rules.
-- **Sharing** publishes the harness subset through the public agent-definition
-  carrier, which has a size limit.
-- **Export** writes the whole folder, with no carrier and no size limit.
-- **Import** accepts a shared bundle, an exported folder or zip, or a cloned
-  repository with that layout. It lands in quarantine (§4.15): nothing loads,
-  schedules or connects until the owner activates it.
+**One manifest, two profiles.** Export, share (§4.15, D9) and import use the
+same manifest and path rules. The manifest declares a profile:
+- **`share`** is the harness subset, published through the public
+  agent-definition carrier. The 256 KiB limit applies to this profile only.
+  Contact details are always scrubbed.
+- **`export`** is the whole folder, kept as private local output with no
+  carrier.
+- **Import** accepts either profile: a shared bundle, an exported folder or
+  zip, or a cloned repository with that layout. It lands in quarantine (§4.15)
+  through the ingestion boundary below.
 
-**No secrets, no personal data by default.** The same scrub as sharing applies:
-- Credentials are never exported. Each connection becomes a named reference
-  with a line in `.env.example` (`GITHUB_TOKEN=`, `SLACK_BOT_TOKEN=`, …), and the
-  user re-adds keys locally.
-- Contact details, connection identifiers and other personal or PII content are
-  scrubbed unless the owner explicitly includes them, item by item in the
-  preview.
-- Session logs and browser state are never exported.
-- The owner confirms a preview listing every file, with anything scrubbed or
-  excluded named.
+**No secrets, and arbitrary content is opt-in.** A scrub cannot sanitize
+arbitrary files, so the export does not claim to.
+- **Structured fields are serialized schema-aware.** Connections become named
+  references with `.env.example` lines (`GITHUB_TOKEN=`, …). Workflow effect
+  configs, automation inputs and layouts are written field by field, and
+  credential-shaped and identifier fields are replaced with references.
+- **Arbitrary content starts excluded:** workspace files, wiki and brain prose,
+  binaries. The owner includes it after a content preview. Every file is
+  scanned with the same credential parser the platform redacts with. A file
+  with a detected credential stays excluded, and owner approval cannot override
+  a detected credential. An uninspectable file (binary, archive) is excluded
+  until the owner includes it by name.
+- **Every output is covered.** These exclusions apply to all output, including
+  the generated README and manifest.
+- **Limits are stated honestly.** The preview says plainly that detection
+  cannot prove a file is free of personal data.
+- **Never exported:** session logs and browser state.
+- **Contact details** are scrubbed by default. In the private `export` profile
+  only, the owner may include them item by item.
 
 **Publish-ready as a repository.**
 - `README.md` is generated from the responsibility and the roster. It covers:
@@ -838,6 +849,10 @@ bundle manifest and the same path rules.
   session files.
 - The layout above is stable and versioned (`command-center.json`
   `format_version`), so anyone who clones it can run it.
+- **Publish-ready does not mean safe to publish.** The export is private local
+  output. Publishing is a separate act with its own owner approval: it is a
+  consequential action under the owner's rules, and it re-runs the preview
+  without any personal-data inclusions.
 
 **Publishing stays user-built.** There is no platform GitHub effector. The agent
 publishes with its own tools: `bash` and `git` over the egress proxy, on the
@@ -846,7 +861,22 @@ and `commons.publish`). Alternatively, the owner adds a shareable publish skill
 or workflow. The platform supplies only the format and the folder.
 
 **Runnable standalone: the local runner.** `run/` holds a small,
-dependency-free runner shaped like pi:
+dependency-free runner shaped like pi. It runs with the user's own host
+privileges, with no platform jail, so its defaults are conservative:
+- `bash` asks for confirmation before each command by default. Unattended
+  operation is an explicit opt-in, and a missing approval blocks rather than
+  proceeds.
+- File tools are confined to the folder. A path that resolves outside it is
+  refused.
+- The runner's policy (`rules.json`, the runner config) is read-only to the
+  agent's tools, so the agent cannot loosen its own rules locally.
+- Schedules run only after a separate `run/schedule --enable`.
+- The README discloses that the runner has host privileges, and states which
+  platform guarantees (jail, egress checks, auto-review) are absent locally.
+- A cloned command center's `run/` code is third-party code. Review it before
+  running; its own prompts cannot establish that it is trustworthy.
+
+The runner's features:
 - **Tools:** `read`, `write`, `edit` and `bash` over the folder.
 - **Context:** the same `AGENTS.md` and `skills/<name>/SKILL.md` format.
 - **Rules:** `rules.json` is honoured for ask-first and hand-off as terminal
@@ -861,9 +891,29 @@ dependency-free runner shaped like pi:
 |---|---|
 | Chat with each agent, its four tools, skills, `AGENTS.md`, rules prompts, workspace, wiki and brain files, workflows the runner can execute, schedules while the machine is on | Delivery between users and the commons; hosted channels (Slack and Telegram webhooks need a public endpoint); phone push; the hosted browser broker; always-on while the machine sleeps; auto-review unless a model is configured for it; quota and usage accounting |
 
+**The import ingestion boundary.** Quarantine blocks activation, but not the
+damage extraction can do, so import runs a boundary first:
+- **Bounds:** compressed and expanded bytes, file count, depth and processing
+  time.
+- **Rejected:** absolute and traversal paths, links and reparse points, special
+  files, and case or Unicode path collisions.
+- **Copy:** only validated regular files, into a fresh quarantine directory.
+  `.git` is excluded.
+- **Never executed during import:** hooks, filters, installers, or the
+  supplied `run/` code.
+- **No unlimited import.** An export with no size limit does not imply import
+  without resource limits.
+
 **`okf_export` is refactored, not kept beside it.** `tinyassets/wiki/okf_export.py`
 becomes the `wiki/` writer inside the export. It is the only OKF writer, so
-there are not two definitions of one fact. `docs/concerns/2026-10-01-okf-export-is-unwired.md`
+there are not two definitions of one fact.
+- Its curated source set and privacy exclusions (`soul.md`, `drafts/`, `raw/`,
+  `daemon-wiki`) are preserved.
+- Wiki content outside `pages/` is exported only if the owner includes it in
+  the content preview.
+- Brain and workspace copying cannot route around those exclusions.
+- A delta to `knowledge-retrieval-and-memory` permits orchestration through the
+  export door. That door is the owner door, not a new MCP action. `docs/concerns/2026-10-01-okf-export-is-unwired.md`
 closes when the export ships.
 
 **Order.** D11 comes right after D9 (it reuses D9's manifest, path rules, scrub
