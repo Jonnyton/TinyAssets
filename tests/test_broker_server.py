@@ -428,3 +428,76 @@ def test_an_enormous_budget_is_clamped_not_a_crash(broker):
         grant_id="grant-a", connection_id="conn-a", verb="POST",
         request={"url": "u", "body": {}, "reply_budget_s": 10**400}, op_id=new_op_id())
     assert result["status"] == 200
+
+
+# ── the async client ────────────────────────────────────────────────────────
+
+
+def _async_client(broker):
+    from tinyassets.broker.aclient import AsyncBrokerClient
+
+    return AsyncBrokerClient(broker.path, principal="alice", command_center="cc-alice",
+                             fence=lambda: (broker.state["generation"], broker.state["token"]))
+
+
+def test_the_async_client_streams_many_turns_over_one_connection(broker):
+    broker.upstreams["next"] = lambda: Script([b"data: a\n\n", b"data: b\n\n"])
+
+    async def turn(client, n):
+        async with client.stream(grant_id="grant-a", connection_id="conn-a", verb="POST",
+                                 request={"url": "u", "body": {"n": n}},
+                                 op_id=new_op_id(f"{n:016d}")) as stream:
+            head = await stream.head()
+            body = b"".join([chunk async for chunk in stream.body()])
+            return head["status"], body
+
+    async def scenario():
+        client = _async_client(broker)
+        try:
+            return await asyncio.gather(*(turn(client, n) for n in range(20)))
+        finally:
+            await client.close()
+
+    results = asyncio.run(scenario())
+    assert results == [(200, b"data: a\n\ndata: b\n\n")] * 20
+    assert len(broker.sent) == 20
+
+
+def test_leaving_a_stream_early_cancels_it_in_the_broker(broker):
+    gate = threading.Event()
+    script = Script([b"x"], gate=gate)
+    broker.upstreams["next"] = lambda: script
+
+    async def scenario():
+        client = _async_client(broker)
+        try:
+            async with client.stream(grant_id="grant-a", connection_id="conn-a", verb="POST",
+                                     request={"url": "u", "body": {}},
+                                     op_id=new_op_id()) as stream:
+                await stream.head()
+            await asyncio.sleep(1.0)
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+    deadline = time.monotonic() + 5
+    while not script.closed.is_set() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert script.closed.is_set()
+
+
+def test_the_async_client_raises_the_typed_refusal(broker):
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    async def scenario():
+        client = _async_client(broker)
+        try:
+            async with client.stream(grant_id="grant-b", connection_id="conn-a", verb="POST",
+                                     request={"url": "u", "body": {}},
+                                     op_id=new_op_id()) as stream:
+                await stream.head()
+        finally:
+            await client.close()
+
+    with pytest.raises(GrantResolutionError):
+        asyncio.run(scenario())
