@@ -99,3 +99,34 @@ S11.
 The local driver declares no bound (`bound_bytes is None`), so the bound test skips for it with a
 stated reason. Drivers that declare a bound must pass it: gVisor through an XFS project quota,
 Firecracker through the image size.
+
+## D7. Refute record and known limitations (three rounds, then escalate)
+
+**Refute history.** The gpt-6-astra refute returned REJECT in all three rounds.
+- Round 1 found 14 defects.
+- Round 2 marked 10 of those resolved and found 5 more.
+- Round 3 marked most of the rest resolved, including the exclusive host lock's normal path, the guarded registry, destroy cleanup, `BoxOperationRefused`, the cwd race, stdin, output caps, atomic writes, the fd lifetime and the restart completion fence. It then found new crash-recovery defects.
+
+Per AGENTS "three rounds, then escalate", there is no fourth round.
+
+**Folded from round 3 without a further review:**
+- recovery advances the generation of any box with an operation whose outcome is unknown;
+- a host that fails to start releases its lock;
+- shutdown refuses new work, and keeps ownership if any exec will not stop;
+- a post-spawn failure balances the pending count and the generation;
+- pre-spawn bookkeeping sits inside the launch cleanup;
+- a failed write that created directories is recorded as a partial failure;
+- `fcntl` is imported lazily, so Windows reaches the explicit refusal.
+
+Tests: 47 passed in the Linux oracle.
+
+**Known limitations, escalated rather than fixed.** Both are limits of process-group containment on a shared kernel:
+1. A host crash between spawning a child and recording its process identity leaves that child untracked.
+2. A crash that leaves a process group without its leader cannot be found by leader identity.
+
+The real containment is the next PR's job:
+- the isolating drivers (gVisor in PR 2, Firecracker in S5) run each box's execs inside the box;
+- a box-host crash, or a box restart, ends every process in it (sandbox or VM death);
+- on the host side, each box runs in its own cgroup, killed as a unit.
+
+Until then, the local driver is documented as dev/test-only with these two gaps.

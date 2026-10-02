@@ -206,6 +206,7 @@ class LocalBoxProvider:
         self._running: dict[str, _Running] = {}
         self._running_guard = threading.Lock()
         self._destroying: set[str] = set()
+        self._closing = False
         self._locks: dict[str, threading.RLock] = {}
         self._locks_guard = threading.Lock()
 
@@ -235,6 +236,8 @@ class LocalBoxProvider:
             raise StaleHandle(f"handle for {cc!r} has epoch {handle.epoch}, current is {current}")
         if cc in self._destroying:
             raise StaleHandle(f"command center {cc!r} is being destroyed")
+        if self._closing:
+            raise BoxError("the box host is shutting down")
         return cc
 
     # -- descriptors -----------------------------------------------------------------
@@ -282,11 +285,17 @@ class LocalBoxProvider:
         except OSError as exc:
             raise _path_error(exc, path) from exc
 
-    def _walk(self, box_fd: int, rel: str, path: str, *, create: bool) -> int:
+    def _walk(self, box_fd: int, rel: str, path: str, *, create: bool,
+              created_dirs: list[str] | None = None) -> int:
         """Open the directory ``rel`` beneath ``box_fd`` (``""`` is the box root)."""
         current = os.dup(box_fd)
         try:
             for part in [p for p in rel.split("/") if p]:
+                if create and created_dirs is not None:
+                    try:
+                        os.stat(part, dir_fd=current, follow_symlinks=False)
+                    except FileNotFoundError:
+                        created_dirs.append(part)
                 child = self._open_dir(current, part, path, create=create)
                 os.close(current)
                 current = child
@@ -295,13 +304,14 @@ class LocalBoxProvider:
             raise
         return current
 
-    def _parent(self, cc: str, rel: str, path: str, *, create: bool) -> tuple[int, str]:
+    def _parent(self, cc: str, rel: str, path: str, *, create: bool,
+                created_dirs: list[str] | None = None) -> tuple[int, str]:
         if not rel:
             raise BoxPathError(f"{path!r} names the box root, not a file")
         head, _, leaf = rel.rpartition("/")
         box = self._box_fd(cc)
         try:
-            return self._walk(box, head, path, create=create), leaf
+            return self._walk(box, head, path, create=create, created_dirs=created_dirs), leaf
         finally:
             os.close(box)
 
@@ -495,10 +505,15 @@ class LocalBoxProvider:
                 raise WriteConflict(f"box generation is not {expect_generation} (or is changing)")
             self._state.hold(cc)
             try:
+                created: list[str] = []
                 try:
-                    self._place(cc, rel, path, body, mode)
-                except BaseException:
-                    self._state.abandon(cc, op_id)  # _place leaves nothing visible on failure
+                    self._place(cc, rel, path, body, mode, created_dirs=created)
+                except BaseException as exc:
+                    if created:  # parent directories now exist: an effect, recorded
+                        self._state.bump_generation(cc)
+                        self._state.finish(cc, op_id, {"error": str(exc)})
+                    else:
+                        self._state.abandon(cc, op_id)  # nothing visible changed
                     raise
                 generation = self._state.bump_generation(cc)
                 self._state.finish(cc, op_id, {"size": len(body), "generation": generation})
@@ -506,13 +521,14 @@ class LocalBoxProvider:
                 self._state.release(cc)
         return FileWrite(path=path, size=len(body), generation=generation)
 
-    def _place(self, cc: str, rel: str, path: str, body: bytes, mode: WriteMode) -> None:
+    def _place(self, cc: str, rel: str, path: str, body: bytes, mode: WriteMode,
+               created_dirs: list[str] | None = None) -> None:
         """Write ``body`` to a temp file, then publish it: ``link`` (no-clobber) or ``rename``.
 
         Nothing is visible at ``path`` until the final step succeeds; on any failure the
         temp file is removed, so the caller may treat a raised error as "no effect".
         """
-        parent, leaf = self._parent(cc, rel, path, create=True)
+        parent, leaf = self._parent(cc, rel, path, create=True, created_dirs=created_dirs)
         tmp = _TMP_PREFIX + secrets.token_hex(8)
         try:
             try:
@@ -612,11 +628,11 @@ class LocalBoxProvider:
             if self._state.begin(cc, op_id, "exec", op_digest("exec", payload)) is not None:
                 return exec_id  # done, running or unknown: never run twice
             out_path = self._exec_dir / f"{exec_id}.out"
-            self._state.register_exec(cc, op_id, exec_id)
-            self._state.update(cc, op_id, {"exec_id": exec_id,
-                                           "output_bytes": limits.output_bytes})
             proc = None
             try:
+                self._state.register_exec(cc, op_id, exec_id)
+                self._state.update(cc, op_id, {"exec_id": exec_id,
+                                               "output_bytes": limits.output_bytes})
                 box = self._box_fd(cc)
                 try:
                     cwd_fd = self._walk(box, rel_cwd, cwd, create=False)
@@ -643,6 +659,7 @@ class LocalBoxProvider:
                 self._state.forget_exec(cc, exec_id)
                 self._state.abandon(cc, op_id)  # nothing ran
                 raise
+            held = False
             try:
                 self._state.update(cc, op_id, {
                     "exec_id": exec_id, "output_bytes": limits.output_bytes,
@@ -651,6 +668,7 @@ class LocalBoxProvider:
                 with self._running_guard:
                     self._running[exec_id] = running
                 self._state.hold(cc)  # a running exec may change files at any moment
+                held = True
                 threading.Thread(
                     target=self._supervise,
                     args=(cc, op_id, exec_id, running, stdin, limits, out_path),
@@ -662,6 +680,9 @@ class LocalBoxProvider:
                 proc.wait()
                 with self._running_guard:
                     self._running.pop(exec_id, None)
+                if held:
+                    self._state.release(cc)
+                self._state.bump_generation(cc)  # it ran, however briefly
                 self._state.finish(cc, op_id, {"exec_id": exec_id, "error": str(exc),
                                                "output_bytes": limits.output_bytes})
                 raise
@@ -937,13 +958,23 @@ class LocalBoxProvider:
         return DestroyReceipt(cc, op_id, removed, new_epoch)
 
     def close(self) -> None:
-        """A clean host shutdown: kill every running exec, then give up the state directory."""
+        """A clean host shutdown: refuse new work, stop every exec, then give up ownership.
+
+        Ownership of the state directory is released only once nothing is running. If an
+        exec will not stop, the host keeps its lock and raises, so no second host can start
+        beside work that is still changing files.
+        """
+        with self._locks_guard:
+            self._closing = True
         with self._running_guard:
             victims = list(self._running.values())
         for running in victims:
             running.cancel.set()
-        for running in victims:
-            running.done.wait(self._destroy_wait_s)
+        stuck = [r for r in victims if not r.done.wait(self._destroy_wait_s)]
+        with self._running_guard:
+            stuck += [r for r in self._running.values() if r not in victims]
+        if stuck:
+            raise BoxError(f"{len(stuck)} exec(s) did not stop; keeping ownership of the host")
         self._state.close()
 
 

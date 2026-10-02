@@ -31,7 +31,6 @@ Three rules:
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -82,6 +81,8 @@ class BoxHostState:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._pending: dict[str, int] = {}
+        import fcntl  # POSIX only; callers refuse non-POSIX hosts before reaching here
+
         self._owner_fd: int | None = os.open(
             self._path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600
         )
@@ -93,6 +94,13 @@ class BoxHostState:
             raise BoxError(
                 f"another box host owns {self._path.parent}; one host at a time"
             ) from None
+        try:
+            self._open_and_recover()
+        except BaseException:
+            self.close()  # never keep ownership of a host that failed to start
+            raise
+
+    def _open_and_recover(self) -> None:
         with self._conn() as conn:
             for stmt in _SCHEMA:
                 conn.execute(stmt)
@@ -109,6 +117,12 @@ class BoxHostState:
             ):
                 data = json.loads(outcome) if outcome else {}
                 _reap_survivor(data.get("pgid"), data.get("start_time"))
+            # Content may have changed under an operation whose outcome is now unknown:
+            # advance those boxes' generations so no cache or cas trusts the old one.
+            conn.execute(
+                "UPDATE boxes SET generation = generation + 1 WHERE command_center_id IN"
+                " (SELECT DISTINCT command_center_id FROM ops WHERE state = 'running')"
+            )
             conn.execute(
                 "UPDATE ops SET state = 'unknown_after_restore' WHERE state = 'running'"
             )

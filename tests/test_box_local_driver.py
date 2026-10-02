@@ -222,3 +222,53 @@ def test_an_unconsumed_download_does_not_leak_its_descriptor(tmp_path):
     for _ in range(50):
         provider.download(handle, "/cc/a.bin").close()
     assert len(os.listdir("/proc/self/fd")) <= before + 1
+
+
+def test_a_restart_advances_the_generation_of_a_box_with_an_uncertain_operation(tmp_path):
+    import subprocess
+
+    repo = Path(__file__).resolve().parent.parent
+    subprocess.run([sys.executable, "-c", _CRASHING_HOST, str(tmp_path)], check=True,
+                   cwd=repo, env={**os.environ, "PYTHONPATH": str(repo)}, timeout=60)
+    import sqlite3
+
+    from tinyassets.boxes.state import BoxHostState
+    db = tmp_path / "state" / "boxhost.db"
+    before = sqlite3.connect(db).execute(
+        "SELECT generation FROM boxes WHERE command_center_id = 'cc-a'").fetchone()[0]
+    host = _local(tmp_path)
+    try:
+        handle = host.bind("cc-a", account_id="acct-a")
+        assert host.committed_generation(handle) > before
+    finally:
+        host.close()
+    assert BoxHostState  # imported for the schema it owns
+
+
+def test_a_host_that_fails_to_start_does_not_keep_ownership(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir(parents=True)
+    (state / "boxhost.db").write_bytes(b"not a database" * 100)
+    with pytest.raises(Exception):
+        _local(tmp_path)
+    (state / "boxhost.db").unlink()
+    _local(tmp_path).close()  # the failed start released the lock
+
+
+def test_a_failed_write_that_created_directories_is_recorded(tmp_path, monkeypatch):
+    host = _local(tmp_path)
+    handle = host.bind("cc-a", account_id="acct-a")
+    g0 = host.committed_generation(handle)
+
+    def failing_fsync(fd):
+        raise OSError(28, "simulated ENOSPC")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with pytest.raises(OSError):
+        host.write(handle, "w1", "/cc/new/dir/a.txt", b"x", max_bytes=10)
+    monkeypatch.undo()
+    assert host.stat(handle, "/cc/new/dir").kind == "dir"
+    assert host.committed_generation(handle) > g0
+    with pytest.raises(BoxError):  # recorded as a partial failure: never re-run
+        host.write(handle, "w1", "/cc/new/dir/a.txt", b"x", max_bytes=10)
+    host.close()
