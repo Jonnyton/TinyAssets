@@ -333,6 +333,9 @@ TIMESTAMPS = [
     "run-2026-10-01T12-00-00.log",
     "(2026-10-01T12:00:00Z)",
     "https://example.com/runs/2026-10-01T12:00:00Z/output",
+    "2026-10-01t12:00:00z",
+    "2026-10-01T12:00:00z",
+    "2024-02-29T12:00:00Z",
 ]
 
 
@@ -361,6 +364,17 @@ STAMP_SHAPED_SECRETS = [
     # A stamp in a URL never hides the secret parameter beside it.
     ("https://example.com/r/2026-10-01T12:00:00Z?token=Zm9vYmFyYmF6cXV1eA",
      "url_secret_parameter"),
+    # A stamp cannot carry a short key under the length bar with it.
+    ("20261001T120000Z-Xq7Lm9RtAbC9", "opaque_high_entropy"),
+    ("https://example.com/20261001T120000Z-Xq7Lm9Rt", "url_path_secret"),
+    # Only ASCII digits make a stamp, and a glued non-ASCII digit is glue.
+    ("2026-10-01T12:00:00.123456789٠Z", "opaque_high_entropy"),
+    ("٢٠٢٦-10-01T12:00:00Z", "opaque_high_entropy"),
+    # The calendar decides, and offsets are bounded.
+    ("2026-02-31T12:00:00Z", "opaque_high_entropy"),
+    ("2026-02-29T12:00:00Z", "opaque_high_entropy"),
+    ("2026-10-01T12:00:00+00:99", "opaque_high_entropy"),
+    ("2026-10-01T12:00:00+15:00", "opaque_high_entropy"),
     # A UUID stays key material: some services issue API keys as bare UUIDs.
     ("550e8400-e29b-41d4-a716-446655440000", "opaque_high_entropy"),
 ]
