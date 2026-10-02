@@ -2028,7 +2028,11 @@ def onboarding_routes() -> list[Any]:
 
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
-    from tinyassets.onboarding.model_connect import handle_model_callback, handle_model_connect
+    from tinyassets.onboarding.model_connect import (
+        handle_client_metadata,
+        handle_model_callback,
+        handle_model_connect,
+    )
     from tinyassets.onboarding.model_preferences import handle_model_preferences
     from tinyassets.onboarding.notifications import (
         handle_devices,
@@ -2043,6 +2047,10 @@ def onboarding_routes() -> list[Any]:
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
         Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
+        # Public (carve-out in `_auth_challenge_path`): an authorization server
+        # fetches this client metadata document with no bearer.
+        Route("/app/oauth/client-metadata.json", handle_client_metadata,
+              methods=["GET", "HEAD"]),
         Route("/app/token", _handle_token, methods=["POST"]),
         Route("/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
         Route("/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),

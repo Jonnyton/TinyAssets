@@ -12,7 +12,8 @@
       "gemini-3.1-flash-lite"
     ],
     "daily_reset_timezone": "America/Los_Angeles",
-    "wire": "openai_chat"
+    "wire": "openai_chat",
+    "terms": "Google's free tier may use your prompts to improve its products, is for ages 18+, and is not offered to users in the EEA, UK or Switzerland."
   },
   {
     "id": "groq",
@@ -27,7 +28,8 @@
       "qwen/qwen3.8-27b"
     ],
     "daily_request_headers": true,
-    "wire": "openai_chat"
+    "wire": "openai_chat",
+    "terms": "The free plan allows about 8,000 tokens a minute per model, so long agent turns can pause at that limit."
   },
   {
     "id": "cerebras",
@@ -53,5 +55,29 @@
       "mistral-small-latest"
     ],
     "wire": "openai_chat"
+  },
+  {
+    "id": "huggingface",
+    "name": "Hugging Face",
+    "base_url": "https://router.huggingface.co/v1",
+    "help_url": "https://huggingface.co/settings/connected-applications",
+    "billing_url": "https://huggingface.co/settings/billing",
+    "offer": "A small free monthly allowance of AI requests on your own Hugging Face account. Your agent uses it as a backup when your other free requests run out.",
+    "models": [
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b"
+    ],
+    "wire": "openai_chat",
+    "sign_in": {
+      "label": "Sign in with Hugging Face",
+      "issuer_host": "huggingface.co",
+      "scopes": [
+        "openid",
+        "profile",
+        "inference-api"
+      ],
+      "client_id_env": "TINYASSETS_HUGGINGFACE_OAUTH_CLIENT_ID"
+    },
+    "billing_note": "Hugging Face gives free accounts $0.10 of requests a month (its figure, subject to change). After that, requests stop unless the account has bought Hugging Face credits or has PRO, which Hugging Face then bills to that account. TinyAssets cannot enforce your Hugging Face billing settings."
   }
 ]

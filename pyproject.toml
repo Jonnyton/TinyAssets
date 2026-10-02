@@ -164,4 +164,5 @@ testpaths = ["tests"]
 markers = [
     "slow: stress/race tests; opt-in via `pytest -m slow`",
     "real_jail: needs a real bubblewrap jail; run by .github/workflows/linux-jail-proof.yml, which fails on any skip",
+    "real_browser: drives shipped app code in a real Chromium via Playwright; skips where it is not installed",
 ]

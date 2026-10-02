@@ -1,5 +1,8 @@
 """Installed connection-card data; all sources use api_key_http / openai_chat.
 
+A source with a ``sign_in`` block is connected by OAuth (the generic
+``connect`` ask), never by a pasted key, so it is not a key card.
+
 Verified 2026-09-30. No key, account tier or runtime vendor adapter lives here.
 Models are an agent-capable allowlist intersected with the owner's /models
 response at connection time, not an invented catalogue or a claim of access.
@@ -23,15 +26,38 @@ from urllib.parse import urlsplit
 # https://docs.mistral.ai/getting-started/quickstarts/studio/activate-and-generate-api-key
 # https://docs.mistral.ai/api/endpoint/models
 # https://docs.mistral.ai/admin/billing-usage/usage-limits
+# https://huggingface.co/docs/hub/oauth (inference-api scope, PKCE, metadata docs)
+# https://huggingface.co/docs/inference-providers/pricing
 _SOURCES = json.loads(Path(__file__).with_name("free_source_presets.json").read_text("utf-8"))
+# What a provider's own free daily limit is, and what its credit buys, keyed by
+# inference host: https://openrouter.ai/docs/api/reference/limits (2026-10-01).
+_DAILY_CAPS = json.loads(Path(__file__).with_name("daily_cap_offers.json").read_text("utf-8"))
 
 
 def source_cards():
-    return deepcopy(list(_SOURCES))
+    """Key-paste cards. A source completed by signing in is never one of them."""
+    return deepcopy([row for row in _SOURCES if "sign_in" not in row])
 
 
 def source_preset(source_id):
     return next((row for row in source_cards() if row["id"] == source_id), None)
+
+
+def sign_in_cards():
+    """Display data for sources the owner connects by signing in; no endpoints."""
+    return [{"id": row["id"], "name": row["name"], "offer": row["offer"],
+             "label": row["sign_in"]["label"]}
+            for row in _SOURCES if "sign_in" in row]
+
+
+def sign_in_preset(source_id):
+    return next((deepcopy(row) for row in _SOURCES
+                 if row["id"] == source_id and "sign_in" in row), None)
+
+
+def daily_cap_offers():
+    """Installed daily-limit facts the app words its daily-cap card from."""
+    return [{"host": host, **offer} for host, offer in sorted(_DAILY_CAPS.items())]
 
 
 def source_for_host(host):

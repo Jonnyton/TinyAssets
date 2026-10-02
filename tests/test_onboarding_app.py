@@ -221,6 +221,8 @@ def test_route_is_apex_app_get(monkeypatch):
     assert set(by_path) == {
         "/app", "/app/token", "/app/me", "/app/ui-frame",
         "/app/model-connect/{operation}", "/app/model-callback/{flow}",
+        # The public OAuth client metadata document a sign-in source names.
+        "/app/oauth/client-metadata.json",
         "/app/openai/device/start", "/app/openai/device/poll",
         "/app/openai/begin", "/app/openai/exchange", "/app/trace",
         "/app/voice/status", "/app/voice/session",

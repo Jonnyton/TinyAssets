@@ -495,7 +495,9 @@ def _has_sign_in(action: dict[str, Any]) -> bool:
             and bool(offer.get("authorize_url")) and bool(offer.get("token_url")))
 
 
-def _with_sign_in_offer(action: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _with_sign_in_offer(
+    action: dict[str, Any], sign_in_hosts: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Resolve whether the provider offers OAuth for this connection.
 
     Returns the action to store (with ``oauth`` = the offer when there is one)
@@ -506,8 +508,13 @@ def _with_sign_in_offer(action: dict[str, Any]) -> tuple[dict[str, Any], dict[st
     from tinyassets.connection_oauth.flow import configured_redirect_uri
 
     requested = action.pop("oauth_request", {}) or {}
+    # ``sign_in_hosts`` are installed data from the platform's own source card
+    # (an issuer that is not the inference host), tried first. Server-set like
+    # ``origin``: never read from the payload, so a requester cannot root
+    # discovery anywhere its declared endpoints do not already reach.
     hosts = list(dict.fromkeys(
-        [str(e.get("host") or "") for e in action.get("endpoints") or []]
+        [str(h) for h in sign_in_hosts]
+        + [str(e.get("host") or "") for e in action.get("endpoints") or []]
         + [str(h) for h in action.get("hosts") or []]
     ))
     offer, reason = resolve_offer(requested, [h for h in hosts if h])
@@ -1085,11 +1092,14 @@ def _validated_items(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
 
 def request_from_user(
     *, universe_id: str = "", payload: Any = None, origin: str = "agent",
+    sign_in_hosts: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The agent raises a tab. Writes no credential.
 
     ``origin`` is server-set (keyword only, never read from ``payload``): the
     platform's own asks pass ``"platform"`` so the agent cannot withdraw them.
+    ``sign_in_hosts`` is server-set too: an installed source card's issuer host,
+    where sign-in discovery starts (see :func:`_with_sign_in_offer`).
     """
     from tinyassets.storage.pending_requests import create_request
 
@@ -1117,7 +1127,7 @@ def request_from_user(
     try:
         action = _validated_action(document.get("action"))
         if action.get("type") == "connect":
-            action, sign_in = _with_sign_in_offer(action)
+            action, sign_in = _with_sign_in_offer(action, tuple(sign_in_hosts))
     except ValueError as exc:
         return _refused(exc)
     except Exception as exc:  # noqa: BLE001 - endpoint validator
@@ -1815,6 +1825,15 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
 #: has none. A ``command`` runner joins this list when one exists to run it.
 _MODEL_CONNECT_SHAPES = ("api_key", "local")
 
+#: Subscriptions the connect screen offers "for more volume", completed by the
+#: brokered device sign-in (``onboarding.openai_device``). Words only; the
+#: service id is what the app hands back to ``/app/openai/device/start``.
+_SUBSCRIPTION_SIGN_INS = ({
+    "name": "ChatGPT",
+    "label": "Use your ChatGPT subscription",
+    "note": "For more volume: your agent runs on your ChatGPT plan's usage.",
+},)
+
 
 def _first_power_preset() -> dict[str, object] | None:
     """The bundled guided sign-in the setup request offers first, as display data.
@@ -1857,9 +1876,17 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
     entry stays -- it is the only route to a second source -- but it is
     ``optional``: offered, answerable, and outstanding to nobody.
     """
-    from tinyassets.providers.free_sources import source_cards
+    from tinyassets.onboarding import DEVICE_SIGN_IN_SERVICE
+    from tinyassets.providers.free_sources import daily_cap_offers, sign_in_cards, source_cards
 
-    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards()}
+    # One connect screen: the guided sign-in (``primary``), the sources completed
+    # by signing in, the key cards, the subscriptions, and the provider-stated daily
+    # limits the app's daily-cap card is worded from. All data, none in the page.
+    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards(),
+                                "sign_in_sources": sign_in_cards(),
+                                "subscriptions": [{**s, "service": DEVICE_SIGN_IN_SERVICE}
+                                                  for s in _SUBSCRIPTION_SIGN_INS],
+                                "daily_caps": daily_cap_offers()}
     primary = None if connected else _first_power_preset()
     if primary is not None:
         setup["primary"] = primary
