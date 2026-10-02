@@ -20,9 +20,6 @@ from tests.test_app_working_indicator import _DECLS, _FUNCS, _NEW_FUNCS, _NODE, 
 from tests.test_onboarding_app import _js_function
 from tinyassets import onboarding
 
-pytestmark = pytest.mark.skipif(
-    _NODE is None, reason="node is required to execute the page's own source")
-
 _AGENT_FUNCS = ("addressedAgentId", "resetAddressedAgent", "addressAgent",
                 "paintAddressedAgent", "openAddressedChat")
 
@@ -107,6 +104,7 @@ def _program(html: str, scenario: dict, body: str) -> str:
 
 
 def _run(tmp_path, scenario: dict, body: str) -> dict:
+    assert _NODE is not None, "node is required to execute the page's own source"
     page, _csp = onboarding.render_app_html()
     script = tmp_path / "addressed_agent_case.js"
     script.write_text(_program(page, scenario, body), encoding="utf-8")
