@@ -320,7 +320,7 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
         {
             "id": "premise",
             "label": (
-                "Save a purpose with write_graph target=\"universe\" text= "
+                "Save a purpose with write_graph target=\"command_center\" text= "
                 "when creating the command center."
             ),
             "complete": has_premise,

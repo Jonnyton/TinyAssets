@@ -27,7 +27,11 @@
     // `sessionStorage` (the access token), `localStorage` and the parent DOM.
     // The frame's own response header sandboxes it too, so this is the second of
     // two independent locks, not the only one.
-    SANDBOX:"allow-scripts",
+    // `allow-forms` lets a bundle's <form> fire its submit event, which a bundle
+    // handles in script. Without it the browser drops the submit silently and the
+    // button does nothing. The frame's `form-action 'none'` still refuses every
+    // real submission, so no form can navigate or send anything anywhere.
+    SANDBOX:"allow-scripts allow-forms",
     // Per-UI bounds only. There is NO bound on the library as a whole -- neither
     // a count of UIs nor a byte total. A 4 MiB library ceiling used to refuse an
     // install once the stored library was full; those bytes are the command center's
@@ -255,6 +259,8 @@
       host.replaceChildren(frame);
       host.hidden=false;
       $("view-chat").classList.add("ui-custom-active");
+      // The chat cloud starts small over a layout and big without one.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
       this.paintHeader();
     },
     unmount(){
@@ -262,6 +268,8 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
+      // The chat cloud starts small over a layout and big without one.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();
@@ -343,8 +351,8 @@
     // The viewer's identity, reduced to what a UI needs to greet them. No
     // principal id, no token, no provider or credential material.
     async whoami(){
-      return {protocol:this.PROTOCOL,universe_id:this.home,
-        universe_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
+      return {protocol:this.PROTOCOL,command_center_id:this.home,
+        command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
     // bundle cannot enumerate anybody else's command center.
@@ -536,7 +544,7 @@
     async listFiles(args){
       const path=this.filePath(args.path,false);
       const doc=await Owner.read(
-        {target:"universe_files",graph_id:this.home,query:path});
+        {target:"command_center_files",graph_id:this.home,query:path});
       if(!doc||doc.error||!Array.isArray(doc.entries)) throw new Error("that folder is not available");
       if(String(doc.universe_id||"")!==this.home)
         throw new Error("that folder belongs to another command center; this UI's access ended");
@@ -552,7 +560,7 @@
     async readFile(args){
       const path=this.filePath(args.path,true);
       const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
-      const doc=await Owner.read({target:"universe_file",graph_id:this.home,
+      const doc=await Owner.read({target:"command_center_file",graph_id:this.home,
         query:path,file_offset:offset,file_max_bytes:this.MAX_FILE_CHUNK});
       if(!doc||doc.error) throw new Error("that file is not available");
       if(String(doc.universe_id||"")!==this.home)

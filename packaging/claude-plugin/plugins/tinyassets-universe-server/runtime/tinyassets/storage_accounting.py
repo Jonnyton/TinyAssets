@@ -518,6 +518,7 @@ ROOT_ENTRIES: dict[str, str] = {
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".consumer_liveness": "platform: process liveness locks",
+    ".deploy-pending.json": "platform: a waiting deploy's expiring status marker",
     ".runtime": "platform: provider runtime",
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",
@@ -533,6 +534,10 @@ ROOT_ENTRIES: dict[str, str] = {
         ".agent-sessions/<universe>/ (harness D1a)"
     ),
     ".universe-sidecars": "platform: per-universe daemon sockets (egress proxy)",
+    "steering.db": (
+        "platform: the owner's mid-turn messages, inside .agent-sessions/<universe>/ "
+        "(harness S2); emptied at every turn end"
+    ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
@@ -573,6 +578,8 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
     ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
     ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
+    # The agent's own workspace (harness W2): user bytes, counted by the walk.
+    ".agent-workspace",
 })
 
 #: Names the code creates that are NOT under the data root at all (a git repo,

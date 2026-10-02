@@ -69,6 +69,12 @@ from tinyassets.auth.wiki_canary import (
     set_wiki_canary_authority,
     wiki_canary_token_matches,
 )
+from tinyassets.command_center_names import (
+    CommandCenterNames,
+    internal_value,
+    public_response,
+    verbatim,
+)
 from tinyassets.engine_read_views import compact_model_options
 from tinyassets.mcp_schema_utils import describe_signature
 
@@ -298,6 +304,11 @@ def _structured_return(raw, *, tool: str = "", arguments: object = None):
     else:
         structured = {"result": raw}
 
+    # The rename's public spelling is applied BEFORE the ceiling measures the
+    # reply, so a respelled reply can never exceed what was measured.
+    if not verbatim(tool, arguments or {}):
+        structured = public_response(structured)
+
     if tool in _CEILING_TOOLS and not ceiling_exempt(
         tool, arguments, _connector_ceiling_exempt(),
     ):
@@ -521,7 +532,7 @@ def control_station() -> str:
     title="Meet Your Command Center",
     tags={"persona", "onboarding", "first-contact", "tinyassets"},
 )
-def meet_universe() -> str:
+def meet_command_center() -> str:
     """Begin (or resume) a first-person conversation with your command center.
 
     The relay-first, user-invoked bonding entry point: send the founder's
@@ -693,7 +704,7 @@ def read_graph(
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings,
             agent_binding, app_ui (your own UI library and choice),
-            universe_files / universe_file (the owner's own command center folder:
+            command_center_files / command_center_file (the owner's own command center folder:
             query=<path under /u>; list a directory, or read a file in chunks
             with file_offset/file_max_bytes),
             model_options (your owned model choices, including unavailable
@@ -971,14 +982,14 @@ def write_graph(
     reference metadata is untrusted and grants nothing by itself.
 
     Args:
-        target: What to write: goal, request, branch, universe, automation,
+        target: What to write: goal, request, branch, command_center, automation,
             agent, agent_binding, app_ui, or connection. With target=goal, the default
             operation proposes a
             Goal; operation=set_canonical sets or unsets a canonical binding.
             The founder's home command center is auto-created on first contact; use
-            target=universe to create an additional command center (or the home when
+            target=command_center to create an additional command center (or the home when
             a create-scoped sign-in declined auto-birth).
-        operation: With target=universe, set_visibility changes who else may see
+        operation: With target=command_center, set_visibility changes who else may see
             that command center, taking `visibility` as `private` or `public` and
             `graph_id` for the command center. Everything in a command center is private until
             its owner uses this: no other user can discover, inspect or read it,
@@ -1031,10 +1042,10 @@ def write_graph(
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
         visibility: Shared-goal visibility, usually public. With
-            target=universe operation=set_visibility, the command center level to
+            target=command_center operation=set_visibility, the command center level to
             declare instead — `private` or `public`. Empty means nobody stated
             one, which is never read as a request to publish.
-        text: Request text to queue (or optional purpose with target=universe).
+        text: Request text to queue (or optional purpose with target=command_center).
         graph_id: Optional target graph/command center identifier.
         goal_id: With target=goal operation=set_canonical, the Goal identifier.
         branch_version_id: With target=goal operation=set_canonical, the active
@@ -1180,7 +1191,7 @@ def write_graph(
     rejection = write_gate_rejection("write_graph")
     if rejection:
         return rejection
-    normalized = target.strip().lower()
+    normalized = str(internal_value(target.strip().lower()))
     if normalized == "run_file":
         from tinyassets.api.run_files import write_file
 
@@ -1604,7 +1615,7 @@ def write_graph(
             "goal",
             "request",
             "branch",
-            "universe",
+            "command_center",
             "automation",
             "connection",
             "agent",
@@ -1975,7 +1986,7 @@ def read_page(
         ),
     ] = "",
     max_results: int = 10,
-    universe_id: str = "",
+    command_center_id: str = "",
 ) -> str:
     """Read or search the TinyAssets wiki/commons.
 
@@ -1987,8 +1998,9 @@ def read_page(
             With an empty page/query/category, returns pages changed after
             this timestamp.
         max_results: Maximum result count.
-        universe_id: Optional target command center page substrate.
+        command_center_id: Optional target command center page substrate.
     """
+    universe_id = command_center_id  # internal name until C3
     if page:
         return _wiki_impl(
             action="read",
@@ -2050,20 +2062,20 @@ def write_page(
     force_new: bool = False,
     reporter_context: str = "",
     dry_run: bool = True,
-    universe_id: str = "",
+    command_center_id: str = "",
     scope: str = "",
 ) -> str:
     """Write or patch a commons page, file an issue, or relay private canon.
 
     Private canon (a command center's own brain) is written by the command center itself,
     not here: a plain page write/patch that targets a command center returns a
-    ``relay_to_universe`` directive — pass that content to your command center via
+    ``relay_to_command_center`` directive — pass that content to your command center via
     ``converse`` and it records the canon in its own voice. Issue filings
     (``kind=``) and writes with no command center target land on the shared commons.
 
     Args:
-        universe_id: Optional target command center page substrate.
-        scope: Optional explicit target: commons or universe. Omit to preserve
+        command_center_id: Optional target command center page substrate.
+        scope: Optional explicit target: commons or command_center. Omit to preserve
             legacy target resolution.
         page: Wiki page slug or path for page writes.
         category: Wiki category for full page writes.
@@ -2086,6 +2098,10 @@ def write_page(
         reporter_context: Optional reporter context for filed issues.
         dry_run: Preview consolidation-style wiki writes when supported.
     """
+    universe_id = command_center_id  # internal name until C3
+    # Exact match only: ``scope`` is validated verbatim below (" COMMONS " is refused).
+    if scope == "command_center" or "universe" in scope:
+        scope = str(internal_value(scope))
     normalized_kind = kind.strip().lower()
     # Gate every path except a dry-run PATCH preview: the patch handler is
     # the only wiki path that honors dry_run (full writes ignore it and
@@ -2130,15 +2146,15 @@ def write_page(
         return _write_reserved_wiki_canary(content)
     if scope not in {"", "commons", "universe"}:
         return json.dumps({
-            "error": "scope must be one of: commons, universe",
+            "error": "scope must be one of: commons, command_center",
         })
     if scope == "commons" and universe_id.strip():
         return json.dumps({
-            "error": "scope=commons cannot be combined with universe_id",
+            "error": "scope=commons cannot be combined with command_center_id",
         })
     if scope == "universe" and normalized_kind:
         return json.dumps({
-            "error": "scope=universe cannot be combined with kind",
+            "error": "scope=command_center cannot be combined with kind",
         })
     if normalized_kind:
         # Issue filings (bug/patch_request/feature/design) are shared-commons
@@ -2177,7 +2193,7 @@ def write_page(
             target_universe = _request_universe("")
     if scope == "universe" and not target_universe:
         return json.dumps({
-            "error": "scope=universe requires universe_id or a founder home",
+            "error": "scope=command_center requires command_center_id or a founder home",
         })
     if target_universe:
         import json as _json
@@ -2205,7 +2221,7 @@ def write_page(
                 "content": content,
             }
         return _json.dumps({
-            "status": "relay_to_universe",
+            "status": "relay_to_command_center",
             "universe_id": target_universe,
             "note": note,
             "relay": relay,
@@ -2738,9 +2754,38 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
             retry_after_s=(
                 _attempt_wait_s(exc) if code in _WAITING_CLASSES else None
             ),
+            requests=_chain_attribute(exc, "turn_requests"),
+            partial_text=_stalled_partial(exc),
         )
     except Exception:  # noqa: BLE001 - a malformed diagnostic is not another failure
         return turn_failure("unknown", ref=uuid.uuid4().hex[:16])
+
+
+def _chain_attribute(exc: BaseException, name: str):
+    """The first value of ``name`` anywhere on the exception chain, or None."""
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        value = getattr(node, name, None)
+        if value is not None:
+            return value
+        node = node.__cause__ or node.__context__
+    return None
+
+
+def _stalled_partial(exc: BaseException) -> str:
+    """What the LAST failed attempt's stalled stream had written, scrubbed."""
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+
+    attempts = getattr(exc, "attempts", None)
+    if not isinstance(attempts, (list, tuple)):
+        return ""
+    failed = [a for a in attempts if getattr(a, "status", "") == "failed"]
+    partial = getattr(failed[-1], "partial_text", None) if failed else None
+    if not isinstance(partial, str) or not partial:
+        return ""
+    return redacted_failure_detail(_FS_PATH.sub("<path>", partial), limit=10**9)
 
 
 def _announce_owner_message(universe_dir) -> None:
@@ -3052,10 +3097,18 @@ def converse(
         turn_began_at = None
     from tinyassets.turn_interrupt import TurnInterrupted, interactive_turn
 
+    # Lines the owner sent into an earlier turn that its agent never received
+    # (harness S2 carryover): the page normally re-sends them as this message;
+    # any it did not (a closed or reloaded page) are folded in here.
+    message = _with_carryover(memory_universe_dir, memory_session, message)
+    live_id = ""
     try:
         # Registered under the VERIFIED caller and this universe, so the owner's
         # Stop from any of their surfaces reaches it and nobody else's can.
-        with interactive_turn(current_actor_id(), uid):
+        with interactive_turn(current_actor_id(), uid) as live_turn:
+            live_id = live_turn.live_id
+            _open_steering(memory_universe_dir, memory_session, uid, live_id,
+                           current_actor_id())
             reply = _converse_impl(
                 uid,
                 message,
@@ -3070,9 +3123,10 @@ def converse(
             )
     except TurnInterrupted as exc:
         # The owner stopped it: no provider failure to diagnose, log or cool.
-        return json.dumps(
-            _interrupted_turn_payload(uid, memory_universe_dir, memory_session, message, exc)
-        )
+        return json.dumps(_with_unsettled_steering(
+            _interrupted_turn_payload(uid, memory_universe_dir, memory_session, message, exc),
+            memory_universe_dir, memory_session, live_id,
+        ))
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot
         # speak at all, and "All providers exhausted" is a dead end for the
@@ -3098,20 +3152,26 @@ def converse(
             "history_saved": saved,
         }
         if held is not None:
-            return json.dumps({**held, **history})
+            return json.dumps(_with_unsettled_steering(
+                {**held, **history}, memory_universe_dir, memory_session, live_id,
+            ))
         _record_served_failure(uid, exc, ref=record.ref)
         return json.dumps({
             "error": _served_failure_notice(exc, record),
             **_served_failure_diagnosis(exc),
             **history,
+            **_unsettled_steering(memory_universe_dir, memory_session, live_id),
         })
     execution = execution_receipt.projection()
+    delivered, undelivered = _settle_steering(memory_universe_dir, memory_session, live_id)
     try:
         from tinyassets.conversation_store import record_exchange
 
-        # Both sides in ONE transaction: never a founder-only half-turn.
+        # Both sides in ONE transaction: never a founder-only half-turn. The
+        # owner's messages the agent received while it worked sit between them.
         if record_exchange(
             memory_universe_dir, memory_session, message, str(reply), execution=execution,
+            interjections=[(item.text, item.created_at) for item in delivered],
         ):
             _announce_owner_message(memory_universe_dir)
         # Only now can the cursor name this turn. Settled -> the lesson is done and
@@ -3128,7 +3188,77 @@ def converse(
     payload = {"reply": reply, "universe_id": uid}
     if execution is not None:
         payload["execution"] = execution
+    if delivered or undelivered:
+        payload["steering"] = _steering_receipt(delivered, undelivered)
     return json.dumps(payload)
+
+
+def _steering_receipt(delivered, undelivered):
+    """What the page needs to reconcile the lines it steered, by id."""
+    return {
+        "delivered": [item.id for item in delivered],
+        "undelivered": [{"id": item.id, "text": item.text} for item in undelivered],
+    }
+
+
+def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id):
+    """This served turn may now be steered by its owner (harness S2)."""
+    from tinyassets import agent_steering
+    from tinyassets.turn_interrupt import live_ids
+
+    try:
+        agent_steering.open_turn(
+            universe_dir, f"thread:{memory_session}", live_id,
+            live_ids=live_ids(actor_id, universe_id),
+        )
+    except Exception:  # noqa: BLE001 - steering is never worth a failed turn
+        logger.warning("converse: owner steering could not be opened", exc_info=True)
+
+
+def _with_carryover(universe_dir, memory_session, message):
+    """``message`` with any carried-over line it does not already repeat, first."""
+    from tinyassets import agent_steering
+
+    try:
+        folded = agent_steering.take_carryover(
+            universe_dir, f"thread:{memory_session}", message)
+    except Exception:  # noqa: BLE001
+        logger.warning("converse: owner steering carryover unreadable", exc_info=True)
+        return message
+    return "\n\n".join([*(item.text for item in folded), message]) if folded else message
+
+
+def _settle_steering(universe_dir, memory_session, live_id):
+    """End of a served turn: the owner's mid-turn messages, ``(delivered, undelivered)``.
+
+    Never fails the turn. Undelivered lines stay as carryover in the store, so
+    a page that never receives this answer loses nothing.
+    """
+    from tinyassets import agent_steering
+
+    if not live_id:
+        return [], []
+    try:
+        return agent_steering.settle(universe_dir, f"thread:{memory_session}", live_id)
+    except Exception:  # noqa: BLE001 - the reply is already earned
+        logger.warning("converse: owner steering could not be settled", exc_info=True)
+        return [], []
+
+
+def _unsettled_steering(universe_dir, memory_session, live_id):
+    """A turn that ended without a reply hands back EVERY mid-turn line.
+
+    Even one the agent received is returned to send again: the turn produced
+    no recorded answer to it, and a line said twice is better than one lost.
+    The fields to add to the reply: ``{"steering": ...}``, or nothing.
+    """
+    delivered, undelivered = _settle_steering(universe_dir, memory_session, live_id)
+    every = sorted((*delivered, *undelivered), key=lambda item: item.id)
+    return {"steering": _steering_receipt([], every)} if every else {}
+
+
+def _with_unsettled_steering(payload, universe_dir, memory_session, live_id):
+    return {**payload, **_unsettled_steering(universe_dir, memory_session, live_id)}
 
 
 _mcp_converse = _register_structured_tool(
@@ -3250,7 +3380,7 @@ def universe(
         import json as _json
 
         return _json.dumps({
-            "status": "relay_to_universe",
+            "status": "relay_to_command_center",
             "universe_id": universe_id,
             "action": action.strip(),
             "note": (
@@ -3979,7 +4109,7 @@ def wiki(
 
 
 def get_status(
-    universe_id: str = "",
+    command_center_id: str = "",
     include_conversation: bool = False,
     conversation_before: int | None = None,
     conversation_limit: int = 30,
@@ -3990,10 +4120,9 @@ def get_status(
     Returns concrete evidence the chatbot can narrate; does not infer
     or guess.
 
-    Versioned contract (schema_version=1): all fields are stable. Field
-    removals and renames require a deprecation notice for one release
-    before removal. New fields may be added freely. Breaking changes
-    bump schema_version.
+    Versioned contract (schema_version=3): new fields may be added freely;
+    a removal or rename bumps schema_version, as a clean cutover with no
+    alias window (3: fields renamed to their command_center_* spelling).
 
     `caveats` is load-bearing — the legacy surface does NOT yet enforce
     per-command-center sensitivity_tier (that lives in spec #79 §13). The
@@ -4004,7 +4133,7 @@ def get_status(
     provisioning.
 
     Args:
-        universe_id: Optional command center scope. Defaults to active command center.
+        command_center_id: Optional command center scope. Defaults to active command center.
         include_conversation: Founder-only opt-in (default false). When true and
             the caller is this command center's founder, the response carries a fenced,
             read-only ``recent_conversation`` peek at the shared cross-surface
@@ -4016,6 +4145,7 @@ def get_status(
             page then holds the turns just before it. Omit for the newest page.
         conversation_limit: Turns per page, 1 to 30 (default 30).
     """
+    universe_id = command_center_id  # internal name until C3
     # The model door's projection: a page a model's context can hold. get_status
     # is outside the single-result ceiling, so the page size is the bound here.
     # The owner's app pages the same thread through the owner door, unclamped.
@@ -4146,6 +4276,11 @@ class _ProviderRequestAuthority(Middleware):
 
 mcp.add_middleware(_WikiCanaryExecutionAuthority())
 mcp.add_middleware(_ProviderRequestAuthority())
+# Innermost: the rename's public edge (retired names refused, current names out).
+mcp.add_middleware(CommandCenterNames(frozenset({
+    "read_graph", "write_graph", "run_graph", "read_page", "write_page",
+    "converse", "get_status",
+})))
 
 
 # ---------------------------------------------------------------------------

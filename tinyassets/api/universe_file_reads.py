@@ -32,7 +32,7 @@ DEFAULT_READ_BYTES = 65_536
 #: One listing returns at most this many entries, sorted, with ``truncated``.
 MAX_LIST_ENTRIES = 500
 
-_NOT_FOUND = {"error": "not_found", "resource": "universe_file"}
+_NOT_FOUND = {"error": "not_found", "resource": "command_center_file"}
 
 
 def _owner_universe(universe_id: str) -> tuple[str, Path] | None:
@@ -204,12 +204,30 @@ def _relative(raw: str) -> str | None:
     return str(PurePosixPath(text))
 
 
+def _logical(folder: Path, rel: str) -> str:
+    """Where ``rel`` lives in the agent's ``/u`` (harness W2).
+
+    The agent's ``/u`` is its workspace with the universe's visible root
+    entries bound over it at their own names. So a path whose first name is a
+    root entry is the root's; any other names the workspace, where the
+    agent's new files land (gpt-6-astra on #4194: a file written to
+    ``/u/PLAN.md`` read back as missing).
+    """
+    from tinyassets.universe_tools import WORKSPACE_DIR
+
+    first = rel.split("/", 1)[0]
+    if not first or first.startswith(".") or os.path.lexists(folder / first):
+        return rel
+    return f"{WORKSPACE_DIR}/{rel}"
+
+
 def list_files(*, universe_id: str = "", path: str = "") -> dict[str, Any]:
     owned = _owner_universe(universe_id)
     rel = _relative(path)
     if owned is None or rel is None:
         return dict(_NOT_FOUND)
     uid, folder = owned
+    rel = _logical(folder, rel)
     try:
         names, entries = _list(folder.parent, uid, rel)
     except OSError:
@@ -234,6 +252,7 @@ def read_file(
     if type(count) is not int or not 1 <= count <= MAX_READ_BYTES:
         return {"error": f"file_max_bytes must be between 1 and {MAX_READ_BYTES}"}
     uid, folder = owned
+    rel = _logical(folder, rel)
     try:
         data = _read(folder.parent, uid, rel)
     except OSError:

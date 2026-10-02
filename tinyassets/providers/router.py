@@ -125,6 +125,20 @@ def _provider_invocation_carrier(
     carrier.validate_for_call(role=role, operation=operation)
     return carrier
 
+def _engine_route(cfg: ModelConfig) -> tuple[str, str] | None:
+    """The engine MCP route this call's provider jail may reach, if any.
+
+    The same three fields every adapter checks before wiring the engine server
+    (``claude_provider._engine_mcp_flags``, ``codex_provider._codex_engine_mcp_args``);
+    the route itself is re-read, owner-checked, by the jail's relay.
+    """
+    actor_id = (cfg.engine_mcp_actor_id or "").strip()
+    graph_id = (cfg.engine_mcp_graph_id or "").strip()
+    if not (cfg.engine_mcp_enabled and actor_id and graph_id):
+        return None
+    return actor_id, graph_id
+
+
 def _resolve_universe_config(
     universe_context: UniverseContext | None,
 ) -> "UniverseConfig | None":
@@ -838,7 +852,11 @@ class ProviderRouter:
             raise PermissionError("native agent cannot use HTTP inference facts")
         if _agent_execution_kind == "engine_inference" and cfg.agent_request is None:
             raise PermissionError("engine inference requires its structured request")
-        from tinyassets.providers.agent_inference import input_size, output_for_settlement
+        from tinyassets.providers.agent_inference import (
+            context_tokens,
+            input_size,
+            output_for_settlement,
+        )
 
         if cfg.agent_request is not None and (
             cfg.selected_model is None or not cfg.engine_mcp_enabled
@@ -876,7 +894,7 @@ class ProviderRouter:
                     # The chosen output limit is itself part of the encoded
                     # agent request. Measure with that field present; otherwise
                     # adding it can overflow an exactly filled context afterward.
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
@@ -908,7 +926,7 @@ class ProviderRouter:
             if cfg.max_tokens is None:
                 output_limit = invocation_carrier.max_tokens
                 if cfg.selected_model is not None:
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
@@ -948,9 +966,10 @@ class ProviderRouter:
                 cfg.max_tokens,
             ) > invocation_carrier.max_cost_microunits:
                 raise PermissionError("selected model exceeds this workflow cost allowance")
-            # Match the existing conservative input reservation measure. The
-            # selected catalogue's context limit is not a permission to truncate.
-            required_context = input_size(prompt, system, cfg)
+            # A conservative TOKEN estimate against the window (the reservation
+            # below keeps the byte measure). The selected catalogue's context
+            # limit is not a permission to truncate.
+            required_context = context_tokens(prompt, system, cfg)
             if (
                 cfg.max_tokens is None
                 or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
@@ -1209,6 +1228,7 @@ class ProviderRouter:
                         # refuses a launch with none (provider_jail).
                         with provider_launch_scope(
                             universe_dir, credential_dir=cfg.credential_snapshot_dir,
+                            engine_route=_engine_route(cfg),
                         ):
                             dispatch = provider.complete(
                                 prompt, system, cfg, universe_dir=universe_dir,
@@ -1524,7 +1544,13 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderProtocolError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                # An agent round's unreadable or in-band-error reply is about one
+                # MODEL's answer, not the connection: cooling it skipped every
+                # sibling model on the same key (live 2026-10-02, the free-only
+                # account's whole OpenRouter pool), and made the owner's very next
+                # "continue" a cooldown refusal. The turn coordinator bounds its
+                # own retries (``AgentTurnCoordinator._next_after_bad_reply``).
+                if cfg.agent_request is None and self._cool(cfg, provider_name, COOLDOWN_OTHER):
                     logger.warning(
                         "Provider %s protocol error, cooldown %ds",
                         provider_name, COOLDOWN_OTHER,
@@ -1535,6 +1561,7 @@ class ProviderRouter:
                     detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     side_effect_state=_side_effect_from(exc),
+                    partial_text=getattr(exc, "partial_text", None) or None,
                     **_tool_wait_evidence(exc),
                 ))
                 continue

@@ -120,12 +120,15 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     assert "--share-net" not in argv
     for flag in ("--unshare-all", "--clearenv", "--die-with-parent", "--new-session"):
         assert flag in argv, flag
-    # /u is a tmpfs of binds, then made READ-ONLY; only agent-owned paths are rw.
-    tmpfs_at = argv.index("--tmpfs", argv.index("--tmpfs") + 1)
-    remount_at = argv.index("--remount-ro")
-    assert argv[tmpfs_at + 1] == "/u" and argv[remount_at + 1] == "/u"
-    assert all(tmpfs_at < argv.index(dest) < remount_at for _src, dest in (
+    # /u is the agent's OWN workspace, bound read-write as a whole (harness W2);
+    # the visible root entries are bound over it, agent-owned ones read-write.
+    workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
+    assert ("--bind", workspace, "/u") == tuple(argv[argv.index(workspace) - 1:
+                                                     argv.index(workspace) + 2])
+    workspace_at = argv.index(workspace)
+    assert all(workspace_at < argv.index(dest) for _src, dest in (
         _pairs(argv, "--bind-try") + _pairs(argv, "--ro-bind-try")))
+    assert "--remount-ro" not in argv
     assert root not in argv, "the root itself is never bound"
     rw = dict((dest, src) for src, dest in _pairs(argv, "--bind-try"))
     assert rw["/u/identity.md"] == str(universe.resolve() / "identity.md")
@@ -164,8 +167,11 @@ def test_the_owners_credentials_and_authority_state_are_absent_from_the_jail(
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
 
+    workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
     for arg in argv:
-        assert "/." not in arg, f"a hidden root entry reached the jail argv: {arg}"
+        # The one hidden name allowed is the agent's own workspace, as /u's source.
+        assert "/." not in arg or arg == workspace, (
+            f"a hidden root entry reached the jail argv: {arg}")
     ro = {dest for _src, dest in _pairs(argv, "--ro-bind-try")}
     assert {"/u/soul.md", "/u/config.yaml"} <= ro
     rw = {dest for _src, dest in _pairs(argv, "--bind-try")}
@@ -226,23 +232,12 @@ def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monk
     assert argv[argv.index("--seccomp") + 1] == "7"
     assert argv.index("--seccomp") < argv.index("--")
 
-    program = universe_tools.seccomp_program()
-    insns = [struct.unpack("=HBBI", program[i:i + 8]) for i in range(0, len(program), 8)]
-    # Each arch's deny list is asserted on its OWN branch of the program, so a
-    # syscall missing from one arch cannot hide behind the other's list.
-    arm_at = next(i for i, (code, _jt, _jf, k) in enumerate(insns)
-                  if code == 0x15 and k == 0xC00000B7)
-    x86_denied = {k for code, jt, _jf, k in insns[3:arm_at] if code == 0x15 and jt > 0}
-    arm_denied = {k for code, jt, _jf, k in insns[arm_at + 1:] if code == 0x15 and jt > 0}
-    # x86_64: symlink, symlinkat, mknod, mknodat, io_uring setup/enter/register.
-    assert x86_denied == {88, 266, 133, 259, 425, 426, 427}
-    # aarch64: symlinkat, mknodat, io_uring setup/enter/register.
-    assert arm_denied == {36, 33, 425, 426, 427}
-    assert insns[-1] == (0x06, 0, 0, 0x00050001), "the deny target is EPERM"
-    # Every jump lands inside the program.
-    for pc, (code, jt, jf, _k) in enumerate(insns):
-        if code in (0x15, 0x35):
-            assert pc + 1 + max(jt, jf) < len(insns)
+    # The tool jail runs no CLI sandbox of its own, so it gets the full filter:
+    # links, special files, io_uring, new user namespaces and the kernel
+    # interfaces. What each one decides is asserted in tests/test_jail_seccomp.py.
+    from tinyassets.providers.jail_seccomp import deny_program
+
+    assert universe_tools.seccomp_program() == deny_program(nested_sandbox=False)
 
 
 def test_limits_wrap_the_command_and_prove_themselves_before_it_runs(monkeypatch):
@@ -339,8 +334,8 @@ def test_a_provider_launch_view_masks_every_hidden_root_dir(tmp_path):
         assert mask > argv.index(str(universe)), "the mask sits over the universe bind"
     assert f"{universe}/.runtime" not in argv, "the launch still needs its runtime"
     assert f"{universe}/.hidden-file" not in argv
-    # A share-net launch is unchanged: only the tool jail drops the network.
-    assert "--share-net" in argv and "--clearenv" not in argv
+    # No jail shares the host network; only the tool jail clears the env.
+    assert "--share-net" not in argv and "--clearenv" not in argv
 
 
 def test_a_provider_launch_refuses_a_symlinked_hidden_dir(tmp_path):
