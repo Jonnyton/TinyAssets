@@ -46,8 +46,10 @@ Everything below keeps those guarantees. Three things change:
   model streaming needs. It also keeps OAuth refresh-once correct: the broker
   still holds the exact body it must resend. Streamed uploads, and the
   bounded spooling they would need, are out of v1.
-- **No WebSocket upgrade.** No consumer needs it, and model streaming is SSE
-  over HTTP/1.1.
+- **No WebSocket upgrade in v1.** D5 allows WebSockets only where a
+  connection's protocol declares them. No connection declares one yet, and
+  model streaming is SSE over HTTP/1.1, so v1 refuses an upgrade. Adding it
+  later is a declared-protocol extension of this contract, not a new channel.
 
 ## Decisions
 
@@ -58,7 +60,14 @@ Everything below keeps those guarantees. Three things change:
 - **Transport.** Callers connect over a Unix socket now and mTLS when remote,
   with the same framing as `boxhostd` (D2): length-prefixed JSON control
   frames and raw byte frames, each carrying a caller-chosen `stream` id that
-  is unique per connection.
+  is unique per connection. The broker and `boxhostd` import ONE shared
+  framing module. They must not grow two lookalikes (agreed with the owner of
+  #4263).
+- **Environment.** If the broker is launched as a daemon child, it is launched
+  with `tinyassets.platform_secrets.child_env()` (#4267). That drops the
+  platform's infra, billing and identity secrets, none of which the broker
+  needs. It needs only the vault key (S6 task 1), which is not on
+  `DAEMON_FORBIDDEN_ENV` or `DAEMON_ONLY_ENV`.
 - **Duplex.** Response bytes, credit, cancel and status flow concurrently for
   any number of streams on one connection.
 - **Client.** The client is asyncio streams; a waiting stream is a coroutine
@@ -98,11 +107,17 @@ claim a future generation. Nor can the owner channel's identity, which an old
 and a new owner share (same image, same uid). So the barrier is authorized by
 the LEASE, and the barrier mints the credential streams then carry:
 
-- `FENCE{G, lease_proof}` is admitted only if the lease authority
-  (`control_plane.lease`, read by the broker itself) records G as the
-  currently held generation, and `lease_proof` matches the secret minted for
-  that acquisition (stored hashed in the lease row). An old owner holds the
-  proof of an old generation only.
+- `FENCE{G, lease_proof}` is admitted only if the lease authority records G
+  as the currently held generation and the proof matches the secret minted
+  for that acquisition. The seam is `control_plane.lease`:
+  - the holder reads `current_owner_lease().proof`, the plaintext minted at
+    this acquisition, read fresh like `.generation`;
+  - the broker calls `verify_lease_proof(G, proof)`, a read-only check that
+    delegates to the installed authority. S8a's implementation compares
+    against the hash in the lease row; the single-process lease verifies its
+    own proof.
+
+  An old owner holds the proof of an old generation only.
 - On admission the broker persists G with a fresh random **generation
   token** and returns `FENCE_ACK{G, token}`, with G the generation actually
   persisted.
@@ -343,6 +358,11 @@ replacement), redirect fields and typed errors, including
   existing caller's tests stay unchanged.
 
 ### 9. The in-box endpoint (in `boxhostd`)
+
+**Identification, not authorization.** `boxhostd` is the only party that
+knows which box a socket belongs to. It identifies the box and attaches the
+derived principal. The broker still runs the full exact-grant check on every
+stream, and `boxhostd` never holds a credential.
 
 **Selection.** The CLI is configured with base URL `http://broker.box/c/<connection_id>`.
 - `boxhostd` resolves the grant for (the box's command center,

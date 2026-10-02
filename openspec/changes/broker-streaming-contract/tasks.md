@@ -7,9 +7,11 @@
 
 ## 2. Build (S6, after review)
 
-- [ ] 2.1 Frame codec shared with `boxhostd` (D2): control frames, byte
-      frames, stream ids; property tests on framing.
-- [ ] 2.2 Broker process: socket, distinct-uid role map, supervised
+- [ ] 2.1 ONE frame codec module that both the broker and `boxhostd` import
+      (D2): control frames, byte frames, stream ids; property tests on
+      framing.
+- [ ] 2.2 Broker process (launched with `platform_secrets.child_env()`): socket,
+      distinct-uid role map, supervised
       restart; fail closed where peer credentials are unavailable.
 - [ ] 2.3 Per-stream authorization through the `resolve_exact_scoped_proxy`
       checks; box-channel principal derivation.

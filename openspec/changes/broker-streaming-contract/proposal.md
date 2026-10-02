@@ -62,8 +62,9 @@ This is a design-only change: it fixes the contract so S6 can be built.
 - Storage: one bounded outcome record per `op_id` for a retention window.
   There is no schema change to connections or the vault.
 - Public MCP surface: none.
-- Depends on: the owner lease (`control_plane.lease`, S8a) minting a secret per
-  acquisition, which the fence barrier checks; S1 (key escrow) and S4 (box
+- Depends on: the owner lease seam (`control_plane.lease`: `OwnerLease.proof`
+  and `verify_lease_proof`, #4276) and S8a's authority behind it, which the
+  fence barrier checks; S1 (key escrow) and S4 (box
   identity, for the in-box endpoint)
   only for the parts that name them. The loop-side contract here can be built
   first.
