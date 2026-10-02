@@ -12,6 +12,61 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Escrow the four host-only keys into GitHub secrets (2026-10-02)
+
+**Why:** four data-signing keys exist **only** on the production droplet. They are in no GitHub
+secret and no backup. If the droplet is lost, the off-region restore comes back with sealed
+sessions, paying users' entitlements and every push subscription unusable. The billing
+entitlement key cannot be re-issued at all
+(`docs/design-notes/2026-10-02-vault-key-escrow.md`). Agents may not read or move secret
+values, so this is yours. It takes about 10 minutes and costs $0.
+
+| GitHub secret name (exact) | Where it lives on the droplet |
+|---|---|
+| `TINYASSETS_SESSION_SEAL_KEY` | `/etc/tinyassets/env` |
+| `TINYASSETS_BILLING_ENTITLEMENT_KEY` | `/etc/tinyassets/env` |
+| `TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY` | `/etc/tinyassets/env` |
+| `TINYASSETS_APP_INGRESS_HMAC_KEY` | `/etc/tinyassets/app-ingress.env` |
+
+**For each of the four:**
+
+1. **Show the value on the droplet**, from your own terminal:
+   `ssh` in as you normally do. Then run the line for that key, **with a leading space**: the
+   space keeps the command out of shell history, though the command holds no secret anyway.
+   ```
+    sudo grep -m1 '^TINYASSETS_SESSION_SEAL_KEY=' /etc/tinyassets/env | cut -d= -f2-
+    sudo grep -m1 '^TINYASSETS_BILLING_ENTITLEMENT_KEY=' /etc/tinyassets/env | cut -d= -f2-
+    sudo grep -m1 '^TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY=' /etc/tinyassets/env | cut -d= -f2-
+    sudo grep -m1 '^TINYASSETS_APP_INGRESS_HMAC_KEY=' /etc/tinyassets/app-ingress.env | cut -d= -f2-
+   ```
+   The value is printed to your screen only. Nothing is written to a file or a log. Copy the
+   **whole single line** exactly as shown. The VAPID key is one line containing literal `\n`
+   sequences: copy those as they are, and do not turn them into real line breaks.
+2. **Paste it into GitHub:** github.com/TinyAssets/TinyAssets → **Settings → Secrets and
+   variables → Actions → New repository secret**. Name: the exact name from the table. Secret:
+   paste. **Add secret.** Use the **web form only**. `! gh secret set` from the agent session
+   stores an EMPTY value in this harness, a known trap.
+3. When all four are done, type `clear` in the ssh session, then close it.
+
+**Verify (required):** github.com/TinyAssets/TinyAssets → **Actions → Verify escrowed keys → Run
+workflow**. It compares each GitHub secret with the droplet's value **by hash** and prints only
+`match` / `MISMATCH` / `not-in-github` / `not-on-host`. You want four `match` lines. On a
+`MISMATCH`, re-copy that key: usually a missing character, or added whitespace.
+
+**Optional, recommended:** also save the four values in your password manager, one entry named
+"TinyAssets escrow keys". GitHub secrets are write-only: nobody, including you, can read them
+back. So the password manager is the only copy that survives losing the GitHub org.
+
+**What it enables:** the deploy-time install (a follow-up change in deploy-prod.yml) installs
+these four from GitHub **set-once**. A rebuilt host then gets them back automatically. A GitHub
+value that differs from the host's fails the deploy closed rather than silently replacing a
+key. Until a key is escrowed, the deploy skips it with a notice, so nothing breaks while this is
+pending.
+
+Delete this entry once the verify workflow shows four `match` lines.
+
+---
+
 ## Expose your patch intake as a receiver, so new users can be offered it (2026-09-30)
 
 **Why:** PR #4121 seeds a consent request in every new user's rail — "Let your universe

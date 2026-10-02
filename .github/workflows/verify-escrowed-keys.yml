@@ -1,0 +1,52 @@
+name: Verify escrowed keys
+
+# Proves that the four data-signing keys the founder escrowed into GitHub
+# secrets are byte-identical to the values the production host is running with
+# (docs/design-notes/2026-10-02-vault-key-escrow.md; docs/host-actions.md
+# "Escrow the four host-only keys"). Read-only: it changes nothing on the host
+# and nothing in GitHub.
+#
+# Prints ONLY match / mismatch / not-in-github / not-on-host per key. The host
+# returns a SHA-256 of each value over ssh, which is compared in-process on the
+# runner and never echoed. Neither a value nor a hash reaches the log.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+      DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Compare GitHub secrets with the host by hash
+        env:
+          TINYASSETS_SESSION_SEAL_KEY: ${{ secrets.TINYASSETS_SESSION_SEAL_KEY }}
+          TINYASSETS_BILLING_ENTITLEMENT_KEY: ${{ secrets.TINYASSETS_BILLING_ENTITLEMENT_KEY }}
+          TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY: ${{ secrets.TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY }}
+          TINYASSETS_APP_INGRESS_HMAC_KEY: ${{ secrets.TINYASSETS_APP_INGRESS_HMAC_KEY }}
+        run: |
+          set -euo pipefail
+          host_hashes="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo python3 -" < scripts/escrowed_key_hashes.py
+          )"
+          python3 scripts/compare_escrowed_keys.py <<< "${host_hashes}"
