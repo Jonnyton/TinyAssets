@@ -4655,6 +4655,13 @@
       if(frame.contentWindow) frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
     }else if($("cc-blank")) $("cc-blank").focus();
   }
+  function cloudCoversStage(){
+    const cloud=$("chat-cloud"), stage=$("chat-stage");
+    if(!cloud || !stage || !cloudState || cloudState.mode!=="open") return false;
+    if(window.matchMedia("(max-width:600px)").matches) return true;
+    const c=cloud.getBoundingClientRect(), s=stage.getBoundingClientRect();
+    return c.x===s.x && c.y===s.y && c.width===s.width && c.height===s.height;
+  }
   function forwardCommandCenterKey(event){
     const frame=$("ui-frame"), host=$("ui-frame-host");
     if(!frame || !host || host.hidden || !frame.contentWindow) return;
@@ -4742,7 +4749,7 @@
       if(typeof isTypingTarget === "function" && isTypingTarget(active)) return;
       if(active.closest("dialog[open], #cloud-menu:not([hidden])")) return;
       if(active===document.body || active===document.documentElement ||
-         active.closest("#chat-cloud-bar, #cloud-menu")){
+         active.closest("#chat-cloud")){
         if(typeof focusCommandCenter === "function") focusCommandCenter();
       }
     });
@@ -4821,6 +4828,10 @@
   function applyChatCloud(){
     const cloud=$("chat-cloud"), bubble=$("chat-cloud-bubble"), s=cloudState;
     if(!cloud || !bubble || !s) return;
+    // A default layout may arrive while the owner is still writing a draft.
+    // Leave it unsaved so the next refresh can shrink once typing focus leaves.
+    if(s.mode==="bubble" && !s.userSet && bubble.hidden &&
+       cloud.contains(document.activeElement) && isTypingTarget(document.activeElement)) s.mode="open";
     cloud.dataset.mode=s.mode;
     cloud.style.left=s.open.x+"px"; cloud.style.top=s.open.y+"px";
     cloud.style.width=s.open.w+"px"; cloud.style.height=s.open.h+"px";
@@ -4846,6 +4857,7 @@
   function setChatCloudMode(mode){
     if(!cloudState) return;
     cloudState.mode=mode;
+    cloudState.userSet=true;
     cloudState=cloudClamp(cloudState, cloudStageSize());
     applyChatCloud(); saveChatCloud();
     if(mode==="open") $("composer-input").focus();
@@ -4894,7 +4906,8 @@
         handle.removeEventListener("pointerup",end);
         handle.removeEventListener("pointercancel",end);
         $("chat-cloud").classList.remove("is-dragging");
-        if(e.type==="pointerup" && typeof focusCommandCenter === "function") focusCommandCenter();
+        if(e.type==="pointerup" && (kind!=="bubble" || moved) && !cloudCoversStage() &&
+           typeof focusCommandCenter === "function") focusCommandCenter();
         // Only a completed drag produces a click to swallow; a cancelled one does not.
         if(moved){ saveChatCloud(); if(kind==="bubble" && e.type==="pointerup") cloudSuppressClick=true; }
       };
@@ -6306,7 +6319,10 @@
       });
     }
     $("btn-attach").addEventListener("click",()=>$("file-input").click());
-    $("file-input").addEventListener("change",(e)=>{ Uploads.add(e.target.files); e.target.value=""; });
+    $("file-input").addEventListener("change",(e)=>{
+      Uploads.add(e.target.files); e.target.value="";
+      if(!isTypingTarget(document.activeElement)) focusCommandCenter();
+    });
     $("composer").addEventListener("submit",(e)=>{ e.preventDefault();
       const typed=$("composer-input").value.trim();
       const turn=Uploads.buildTurn(typed);
@@ -6316,7 +6332,8 @@
       if(!turn.send) return;            // nothing typed and no usable attachment
       Uploads.clear();
       sendTurn(turn.send, turn.display, {inputMethod:"typed"});
-      if(typeof focusCommandCenter === "function") focusCommandCenter(); });
+      if(cloudCoversStage()) $("composer-input").focus();
+      else if(typeof focusCommandCenter === "function") focusCommandCenter(); });
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
@@ -6328,14 +6345,14 @@
     document.addEventListener("keydown",(e)=>{
       if(e.key!=="Escape"||e.defaultPrevented||e.isComposing) return;
       if($("btn-stop").hidden||$("btn-stop").disabled){
-        if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && typeof focusCommandCenter === "function"){
+        if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && !cloudCoversStage() && typeof focusCommandCenter === "function"){
           e.preventDefault(); focusCommandCenter();
         }
         return;
       }
       if(document.querySelector("dialog[open]")) return;
       e.preventDefault(); interruptTurn();
-      if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && typeof focusCommandCenter === "function") focusCommandCenter();
+      if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && !cloudCoversStage() && typeof focusCommandCenter === "function") focusCommandCenter();
     });
     $("btn-rail-add").addEventListener("click",toggleAddKey);
     $("btn-rail-retry").addEventListener("click",()=>{ refreshRail(); });

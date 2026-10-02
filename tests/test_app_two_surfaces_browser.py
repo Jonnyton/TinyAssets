@@ -84,7 +84,7 @@ def _enter_chat(page, url, *, layout=False):
         if (layout) document.getElementById('view-chat').classList.add('ui-custom-active');
         showView('chat'); refreshChatCloud();
     }""", layout)
-    page.wait_for_function("cloudState !== null")
+    page.wait_for_function("() => cloudState !== null")
 
 
 def _box(page, selector):
@@ -244,6 +244,75 @@ def test_play_never_needs_a_second_click(app_url, browser):
     page.close()
 
 
+def test_picker_return_restores_native_frame_typing(app_url, browser):
+    from playwright.sync_api import expect
+
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => AppUI.mount({ui_id:'play', name:'Play',
+      markup:'<div id="hero"></div><input id="field">',
+      style:'#hero{width:20px;height:20px;background:red}',
+      script:`window.addEventListener('focus',()=>{
+        document.getElementById('field').focus();
+      });`})""")
+    field = page.frame_locator("#ui-frame").locator("#field")
+    field.wait_for()
+    page.click("#chat-cloud-bubble")
+    page.focus("#btn-attach")
+    page.evaluate("""() => {
+        window.dispatchEvent(new Event('blur'));
+        window.dispatchEvent(new Event('focus'));
+    }""")
+    expect(field).to_be_focused()
+    page.keyboard.type("ab")
+    assert field.input_value().endswith("ab")
+    page.focus("#btn-attach")
+    page.dispatch_event("#file-input", "change")
+    expect(field).to_be_focused()
+    page.keyboard.type("cd")
+    assert field.input_value().endswith("abcd")
+    page.close()
+
+
+def test_phone_send_keeps_composer_focus(app_url, browser):
+    context = browser.new_context(viewport={"width": 390, "height": 844},
+                                  is_mobile=True, has_touch=True)
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.locator("#composer-input").tap()
+    page.keyboard.type("one")
+    page.keyboard.press("Enter")
+    page.keyboard.type("two")
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    assert page.input_value("#composer-input") == "two"
+    page.keyboard.press("Escape")
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    page.locator("#btn-stop").wait_for(state="hidden")
+    page.keyboard.press("Escape")
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    context.close()
+
+
+def test_layout_arrival_preserves_typing_in_default_cloud(app_url, browser):
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    page.focus("#composer-input")
+    page.keyboard.type("x")
+    page.evaluate("""() => AppUI.mount({ui_id:'play', name:'Play',
+      markup:'<div id="hero">Hero</div>', style:'', script:''})""")
+    page.frame_locator("#ui-frame").locator("#hero").wait_for()
+    assert page.locator("#chat-cloud").is_visible()
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    assert page.input_value("#composer-input") == "x"
+    assert page.evaluate("cloudState.userSet") is False
+    assert page.evaluate("localStorage.getItem(cloudStoreKey)") is None
+    page.focus("#btn-attach")
+    page.evaluate("refreshChatCloud()")
+    assert page.locator("#chat-cloud").is_hidden()
+    assert page.locator("#chat-cloud-bubble").is_visible()
+    page.close()
+
+
 def test_phone_play(app_url, browser):
     from playwright.sync_api import expect
 
@@ -275,6 +344,9 @@ def test_phone_play(app_url, browser):
         expect(hero).to_have_attribute("data-trusted", "true")
 
     page.locator("#chat-cloud-bubble").tap()
+    assert page.locator("#chat-cloud").is_visible()
+    page.wait_for_timeout(300)
+    assert page.evaluate("document.activeElement.id") == "composer-input"
     page.locator("#btn-cloud-shrink").tap()
     assert page.locator("#chat-cloud").is_hidden()
     assert _box(page, "#ui-frame") == pytest.approx(_box(page, "#chat-stage"), abs=1)
@@ -289,7 +361,7 @@ def test_phone_play(app_url, browser):
     page.locator("#composer-input").tap()
     page.set_viewport_size({"width": 390, "height": 500})
     page.wait_for_function(
-        "document.getElementById('composer-input').getBoundingClientRect().bottom <= 500"
+        "() => document.getElementById('composer-input').getBoundingClientRect().bottom <= 500"
     )
     for selector in ("#composer-input", "#btn-send"):
         box = _box(page, selector)
@@ -298,9 +370,10 @@ def test_phone_play(app_url, browser):
     page.keyboard.type("hi")
     page.locator("#btn-send").tap()
     page.set_viewport_size({"width": 390, "height": 844})
-    walk()
+    assert page.evaluate("document.activeElement.id") == "composer-input"
     page.locator("#btn-stop").wait_for(state="hidden")
     page.locator("#btn-cloud-shrink").tap()
+    walk()
     before = _box(page, "#chat-cloud-bubble")
     page.locator("#chat-cloud-bubble").evaluate("""el => {
         const r=el.getBoundingClientRect(), x=r.x+28, y=r.y+28;
