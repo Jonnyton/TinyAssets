@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -85,6 +86,8 @@ COPY_EXCLUDES = (
 #: over to the command.
 _COPY_SCRIPT = r"""
 set -e
+# A failed source tar must stop the run, not hand pytest a partial snapshot.
+set -o pipefail
 mkdir -p /work
 # Do not restore host uid/gid onto /work: git would reject that copied root as
 # dubious ownership even though its newly initialized .git belongs to us.
@@ -255,9 +258,9 @@ def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
         pytest_args = list(args.pytest_args or ["-q", "tests"])
         if not any(a == "--basetemp" or a.startswith("--basetemp=") for a in pytest_args):
             pytest_args.append(f"--basetemp={DEFAULT_BASETEMP}")
-        command = "python -m pytest -p no:cacheprovider " + " ".join(
-            f"'{a}'" for a in pytest_args
-        )
+        # shlex.join, not hand quoting: an argument with an apostrophe in it
+        # (a path, a -k expression) must reach pytest unchanged.
+        command = shlex.join(["python", "-m", "pytest", "-p", "no:cacheprovider", *pytest_args])
     excludes = " ".join(f"--exclude=./{name}" for name in COPY_EXCLUDES)
     # Named, so a lane can stop its own run by name; Docker is shared across lanes.
     run = ["docker", "run", "--rm", "--name", f"ta-oracle-{os.getpid()}",

@@ -46,7 +46,9 @@ name: linux-jail-proof
 # file-delivery, codex coding-turn and provider-universe jail slices, read by
 # a human before a "proven live" claim.
 #
-# WHERE THE JAIL RUNS: a container as uid 1001, because that is production.
+# WHERE THE JAIL RUNS: a container as uid 1001, because that is production,
+# through scripts/linux_oracle.py -- the same invocation developers use
+# locally, so CI and the local oracle cannot drift apart.
 # The live daemon runs as uid=1001(tinyassets) inside its container with
 # unprivileged user namespaces enabled and /usr/bin/bwrap (checked 2026-10-01).
 # The hosted Ubuntu VM refuses unprivileged user namespaces to the runner, and
@@ -73,6 +75,7 @@ on:
       # This job and its assertion helper.
       - ".github/workflows/linux-jail-proof.yml"
       - "docker/linux-oracle.Dockerfile"
+      - "scripts/linux_oracle.py"
       - "scripts/ci_assert_junit_case.py"
       # The jail and the runtime that drives delivery RPC through it.
       - "tinyassets/node_sandbox.py"
@@ -123,6 +126,8 @@ on:
       - "tests/test_workspace_provision_process.py"
       - "tests/test_workspace_registry_proxy.py"
       - "tests/test_sandbox_mount_handles.py"
+      # Code nodes' bwrap jail: positive control plus the boundary proofs.
+      - "tests/test_node_sandbox.py"
       - "tinyassets/workspace_provision_process.py"
       - "tinyassets/workspace_registry_process.py"
       - "tinyassets/workspace_registry.py"
@@ -169,9 +174,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
 
-      - name: Build the jail image
-        run: docker build -q -f docker/linux-oracle.Dockerfile -t ta-jail-proof .
-
       - name: Allow user namespaces for the jail container only
         env:
           PROFILE: ${{ runner.temp }}/ta-jail-userns
@@ -188,23 +190,6 @@ jobs:
             '}' > "$PROFILE"
           sudo apparmor_parser -r "$PROFILE"
 
-      - name: Probe the jail as uid 1001
-        run: |
-          set -euo pipefail
-          # The flags node_sandbox.BwrapLauncher uses. Decided here, with a
-          # clear message, instead of inside pytest.
-          if ! docker run --rm --user 1001:1001 \
-              --security-opt seccomp=unconfined \
-              --security-opt apparmor=ta-jail-userns \
-              --security-opt systempaths=unconfined \
-              ta-jail-proof \
-              bwrap --die-with-parent --new-session --unshare-all \
-                --ro-bind / / --proc /proc --dev /dev -- /bin/true; then
-            echo "::error::bubblewrap cannot create a jail as uid 1001 in the container"
-            exit 1
-          fi
-          echo "bubblewrap jail OK as uid 1001"
-
       - name: Run the jail proof modules inside the real jail
         env:
           OUT_DIR: ${{ runner.temp }}/jail-out
@@ -220,25 +205,14 @@ jobs:
             exit 1
           fi
           mkdir -p "$OUT_DIR"
-          chmod 0777 "$OUT_DIR"
-          # The checkout is copied onto the container's own filesystem so uid
-          # 1001 owns what the tests write; the temp root and data dir are
-          # short paths outside it (AF_UNIX paths have a 108-byte limit).
-          docker run --rm --user 1001:1001 \
-            --security-opt seccomp=unconfined \
-            --security-opt apparmor=ta-jail-userns \
-            --security-opt systempaths=unconfined \
-            -e HOME=/tmp/home -e TINYASSETS_DATA_DIR=/tmp/ta-data \
-            -v "$GITHUB_WORKSPACE:/src:ro" -v "$OUT_DIR:/out" \
-            ta-jail-proof bash -c '
-              set -euo pipefail
-              mkdir -p /tmp/home /tmp/ta-data /tmp/w
-              cp -a /src/. /tmp/w
-              cd /tmp/w
-              python -m pytest "$@" -m real_jail -q -p no:cacheprovider \
-                -o junit_family=xunit1 --basetemp /tmp/b \
-                --junitxml /out/junit-linux-jail.xml
-            ' jail "${files[@]}"
+          # The SAME invocation a developer runs locally: scripts/linux_oracle.py
+          # builds the oracle image, runs as uid 1001, probes bubblewrap first
+          # (exit 3, pytest never starts, if no jail can be made) and passes
+          # pytest's exit code through. Only the profile is CI-specific.
+          python scripts/linux_oracle.py --out "$OUT_DIR" --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            -- -m real_jail -q -p no:cacheprovider -o junit_family=xunit1 \
+            --basetemp /tmp/b --junitxml /out/junit-linux-jail.xml "${files[@]}"
 
       - name: Assert every real-jail case executed (a skip is not a pass)
         # Runs even when pytest is red so the summary names each case's state.

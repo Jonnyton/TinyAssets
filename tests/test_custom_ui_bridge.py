@@ -185,7 +185,7 @@ assert.equal(u.revision,1);
 // ---- the frame is created with the isolation the boundary depends on ------
 const frame=u.frame;
 assert.equal(frame.tag,'iframe');
-assert.equal(frame.attrs.sandbox,'allow-scripts');          // no allow-same-origin, ever
+assert.equal(frame.attrs.sandbox,'allow-scripts allow-forms');   // no allow-same-origin, ever
 assert.equal(frame.attrs.src,'/app/ui-frame');
 assert.equal(frame.attrs.referrerpolicy,'no-referrer');
 assert.equal($('ui-frame-host').hidden,false);
@@ -227,9 +227,9 @@ for(const action of ['write_graph','connectHTTP','whoami ','WHOAMI','constructor
 
 // ---- the viewer's identity, and nothing else ------------------------------
 const who=(await ask('whoami',{universe_id:'u-bob'})).result;
-assert.deepEqual(Object.keys(who).sort(),['protocol','universe_id','universe_name']);
-assert.equal(who.universe_id,HOME);
-assert.equal(who.universe_name,'Alice universe');
+assert.deepEqual(Object.keys(who).sort(),['command_center_id','command_center_name','protocol']);
+assert.equal(who.command_center_id,HOME);
+assert.equal(who.command_center_name,'Alice universe');
 
 // ---- a bundle cannot name a universe: the argument is pinned -------------
 calls=[];
@@ -330,7 +330,7 @@ const remixWho=await (async()=>{const before=bobFrame.posts.length;
  emit({source:bobFrame,data:{ta_ui:1,type:'call',id:'w',action:'whoami',params:{}}});
  for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
  return bobFrame.posts[bobFrame.posts.length-1];})();
-assert.equal(remixWho.result.universe_id,HOME);
+assert.equal(remixWho.result.command_center_id,HOME);
 
 // ---- sharing produces a public component, and only that ----------------
 const published=u.publishPayload(bobs,'A tower');
@@ -542,7 +542,7 @@ const OFFICE={kind:'tinyassets.app-ui.v1',version:1,ui_id:'office-tower',
   "const mine=await tinyassets.listAgents();"+
   "const agent=mine.agents.find(a=>a.name.toLowerCase().includes(room));"+
   "await tinyassets.sendMessage('I walked into the '+room,agent&&agent.agent_id);"+
-  "document.title=who.universe_name;}"};
+  "document.title=who.command_center_name;}"};
 '''
 
 SAMPLE_CHECKS = r'''
