@@ -640,6 +640,16 @@ def needing_a_runner(universe_dir: Path, *, replaceable: Callable[[str], bool],
     return [r["activity_id"] for r in rows if _claimable(r, replaceable, now)]
 
 
+@_when_absent(lambda: False)
+def has_in_progress(universe_dir: Path, agent_id: str = "main") -> bool:
+    """Whether one of ``agent_id``'s activities is running now (platform state
+    only; the proactive scheduler's "no in-progress activity" rule)."""
+    with closing(_connect(universe_dir)) as conn:
+        return conn.execute(
+            "SELECT 1 FROM activities WHERE agent_id = ? AND status = ? LIMIT 1",
+            (agent_id, IN_PROGRESS)).fetchone() is not None
+
+
 @_when_absent(set)
 def runner_tokens(universe_dir: Path) -> set[str]:
     """Every run a running activity names."""

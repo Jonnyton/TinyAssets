@@ -354,3 +354,12 @@ def test_the_list_walk_is_complete_while_activities_change(tmp_path):
     rest = acts.list_page(universe, cursor=page["next_cursor"])
     seen = {r["activity_id"] for r in page["activities"] + rest["activities"]}
     assert seen == set(made) and later in seen
+
+
+def test_has_in_progress_is_per_agent_and_never_creates_the_store(tmp_path):
+    universe = _universe(tmp_path)
+    assert acts.has_in_progress(universe) is False
+    assert not acts.store_path(universe).exists()
+    _running(universe)
+    assert acts.has_in_progress(universe) is True
+    assert acts.has_in_progress(universe, "researcher") is False
