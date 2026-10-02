@@ -44,7 +44,7 @@ def _scan() -> set[str]:
 
     A ``while``/``for``/``async for`` whose body sleeps or waits, and every call
     that schedules a callback later (``threading.Timer``, ``loop.call_later``/
-    ``call_at``). The n-th such site in one
+    ``call_at``, ``sched.scheduler``). The n-th such site in one
     function is ``<qualname>#n``, so a second loop added beside a classified one
     is a new key.
     """
@@ -58,6 +58,11 @@ def _scan() -> set[str]:
 def _sites_in(source: str, rel: str) -> set[str]:
     found: set[str] = set()
     tree = ast.parse(source, filename=rel)
+    imports_scheduler = any(
+        isinstance(node, ast.ImportFrom) and node.module == "sched"
+        and any(alias.name == "scheduler" and alias.asname is None for alias in node.names)
+        for node in ast.walk(tree)
+    )
     stack: list[str] = []
     seen: dict[str, int] = {}
 
@@ -74,6 +79,15 @@ def _sites_in(source: str, rel: str) -> set[str]:
             record("")
         if isinstance(node, ast.Call) and _call_name(node) in _SCHEDULERS:
             record(f" [{_call_name(node)}]")
+        if isinstance(node, ast.Call):
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute) and func.attr == "scheduler"
+                and isinstance(func.value, ast.Name) and func.value.id == "sched"
+            ) or (
+                imports_scheduler and isinstance(func, ast.Name) and func.id == "scheduler"
+            ):
+                record(" [sched]")
         for child in ast.iter_child_nodes(node):
             visit(child)
         if scoped:
@@ -85,12 +99,21 @@ def _sites_in(source: str, rel: str) -> set[str]:
 
 def test_the_scan_sees_loops_without_while_and_self_rescheduling_callbacks():
     source = """
-import asyncio, itertools, threading
+import asyncio, itertools, threading, sched
+from sched import scheduler
 async def ticker():
     for _ in itertools.count():
         await asyncio.sleep(60)
 def again(loop):
     loop.call_later(60, again, loop)
+def scheduled():
+    timer = sched.scheduler()
+    def again():
+        timer.enter(60, 1, again)
+    again()
+    timer.run()
+def imported():
+    return scheduler()
 def two():
     while True:
         threading.Event().wait(1)
@@ -99,6 +122,7 @@ def two():
 """
     assert _sites_in(source, "m.py") == {
         "m.py::ticker", "m.py::again [call_later]", "m.py::two", "m.py::two#2",
+        "m.py::scheduled [sched]", "m.py::imported [sched]",
     }
 
 

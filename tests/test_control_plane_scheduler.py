@@ -551,3 +551,149 @@ def test_the_consumer_tick_runs_triggers_only_while_holding_the_lease(tmp_path, 
         set_owner_lease(SingleProcessLease())
         consumer.stop()
     assert isinstance(current_owner_lease(), SingleProcessLease)
+
+
+@pytest.mark.parametrize("minute", [55, 60, 90])
+def test_fall_back_cadence_moves_forward_without_stalling(monkeypatch, minute):
+    """Bound the walk so the old fall-back cycle fails instead of hanging pytest."""
+    policy = cadence.CadencePolicy(
+        active_start="01:30", active_end="02:00", engaged_period_s=300, idle_s=0,
+    )
+    zone = ZoneInfo("America/New_York")
+    created = datetime(2026, 11, 1, 5, 30, tzinfo=UTC)
+    previous = created + timedelta(minutes=20)
+    original = cadence._into_active_hours
+    calls = 0
+
+    def bounded(moment, policy, zone):
+        nonlocal calls
+        calls += 1
+        assert calls < 100, "cadence walk stalled across the repeated hour"
+        return original(moment, policy, zone)
+
+    monkeypatch.setattr(cadence, "_into_active_hours", bounded)
+    due, _, _ = cadence.due_instant(
+        policy, zone=zone, created_at=created, engaged_at=created,
+        last_due_at=previous, now=created.replace(minute=0) + timedelta(minutes=minute),
+    )
+    assert due >= previous
+    moment = datetime(2026, 11, 1, 6, 0, tzinfo=UTC)
+    assert original(moment, policy, zone) == moment + timedelta(minutes=30)
+
+
+def test_cadence_walk_stops_if_a_window_does_not_advance(monkeypatch):
+    calls = 0
+
+    def stuck(moment, policy, zone):
+        nonlocal calls
+        calls += 1
+        assert calls < 10, "cadence walk must require strict progress"
+        return T0
+
+    monkeypatch.setattr(cadence, "_into_active_hours", stuck)
+    due, _, collapsed = cadence.due_instant(
+        cadence.DEFAULT_POLICY, zone=ZoneInfo("UTC"), created_at=T0,
+        engaged_at=None, last_due_at=None, now=T0,
+    )
+    assert due == T0 and collapsed == 0
+
+
+@pytest.mark.parametrize("failure", ["locked", "corrupt", "connect"])
+def test_unknown_run_liveness_defers_a_second_fire(tmp_path, handler, monkeypatch, caplog,
+                                                  failure):
+    from tinyassets.control_plane.scheduler import run_is_live
+    from tinyassets.runs import runs_db_path
+
+    key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    sched = ControlPlaneScheduler(tmp_path, zone_for=_utc)
+    assert sched.tick(T0).fired == [key]
+    path = runs_db_path(tmp_path)
+    path.write_bytes(b"not a database")
+    if failure != "corrupt":
+        original = sqlite3.connect
+
+        class BrokenConnection:
+            def execute(self, *_args):
+                raise sqlite3.OperationalError("database is locked")
+
+            def close(self):
+                pass
+
+        def connect(database, *args, **kwargs):
+            if str(path.as_posix()) in str(database):
+                if failure == "connect":
+                    raise sqlite3.OperationalError("unable to open database file")
+                return BrokenConnection()
+            return original(database, *args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", connect)
+    assert run_is_live(tmp_path, "run-1") is True
+    assert sched.tick(T0 + timedelta(hours=5)).waiting_on_run == [key]
+    assert len(handler.calls) == 1
+    assert "liveness" in caplog.text and "WARNING" in caplog.text
+
+
+def test_absent_runs_store_or_table_has_no_live_run(tmp_path):
+    from tinyassets.control_plane.scheduler import run_is_live
+    from tinyassets.runs import runs_db_path
+
+    assert run_is_live(tmp_path, "missing") is False
+    sqlite3.connect(runs_db_path(tmp_path)).close()
+    assert run_is_live(tmp_path, "missing") is False
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("before_reads", [1, 2])
+def test_dispatch_rechecks_active_hours_with_a_fresh_clock(tmp_path, handler, explicit,
+                                                          before_reads):
+    for agent in ("main", "scout"):
+        ensure_proactive_trigger(tmp_path, command_center_id=CC, agent_id=agent,
+                                 owner_principal_id=OWNER, now=T0)
+    before = T0.replace(hour=21, minute=59, second=59)
+    after = T0.replace(hour=22, minute=0, second=1)
+    reads = []
+
+    def clock():
+        reads.append(True)
+        return before if len(reads) <= before_reads else after
+
+    sched = ControlPlaneScheduler(tmp_path, zone_for=_utc, clock=clock)
+    report = sched.tick(before if explicit else None)
+    expected = 2 if explicit else before_reads - 1
+    assert len(report.fired) == expected
+    assert len(handler.calls) == expected
+    assert not explicit or reads == []
+    for fire in _fires(tmp_path):
+        assert fire["claimed_at"] == "2026-10-05T21:59:59Z"
+        request = next(r for r in handler.calls if r.trigger_key == fire["trigger_key"])
+        assert request.due_at == fire["due_at"]
+        due = datetime.fromisoformat(request.due_at.replace("Z", "+00:00"))
+        assert fire["lag_s"] == (before - due).total_seconds()
+
+
+def test_generation_is_read_after_each_triggers_lease_check(tmp_path, handler, monkeypatch):
+    for agent in ("main", "scout"):
+        ensure_proactive_trigger(tmp_path, command_center_id=CC, agent_id=agent,
+                                 owner_principal_id=OWNER, now=T0 - timedelta(hours=2))
+
+    class ChangingLease(SingleProcessLease):
+        generation = 0
+
+        def check(self):
+            self.generation += 1
+
+    sched = _scheduler(tmp_path, lease=ChangingLease())
+    settled = []
+    original = sched.store.settle_lost_claims
+
+    def settle(**kwargs):
+        settled.append(kwargs["owner_generation"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(sched.store, "settle_lost_claims", settle)
+    assert len(sched.tick(T0).fired) == 2
+    assert [r.owner_generation for r in handler.calls] == [1, 2]
+    assert {f["trigger_key"]: f["owner_generation"] for f in _fires(tmp_path)} == {
+        r.trigger_key: r.owner_generation for r in handler.calls
+    }
+    assert settled == [1, 2]

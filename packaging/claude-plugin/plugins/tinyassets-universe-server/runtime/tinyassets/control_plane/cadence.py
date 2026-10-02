@@ -153,8 +153,16 @@ def _into_active_hours(moment: datetime, policy: CadencePolicy, zone: ZoneInfo) 
     if inside:
         return moment
     day = local.date() if clock < start else local.date() + timedelta(days=1)
-    opening = datetime.combine(day, start, tzinfo=zone)
-    return opening.astimezone(timezone.utc)
+    # A repeated opening has two instants; fold=0 may already be behind us.
+    while True:
+        openings = [
+            datetime.combine(day, start, tzinfo=zone).replace(fold=fold).astimezone(timezone.utc)
+            for fold in (0, 1)
+        ]
+        upcoming = [opening for opening in openings if opening >= moment]
+        if upcoming:
+            return min(upcoming)
+        day += timedelta(days=1)
 
 
 def due_instant(
@@ -185,7 +193,7 @@ def due_instant(
     # period is ~105k cheap steps, once.
     while True:
         following = _into_active_hours(due + step, policy, zone)
-        if following > now:
+        if following <= due or following > now:
             break
         due = following
         collapsed += 1

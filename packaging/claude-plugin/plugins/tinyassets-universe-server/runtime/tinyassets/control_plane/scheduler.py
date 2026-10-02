@@ -73,13 +73,19 @@ def run_is_live(base_path: Path, run_id: str) -> bool:
     path = runs_db_path(base_path)
     if not path.is_file():
         return False
-    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    conn = None
     try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30.0)
         row = conn.execute("SELECT status FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-    except sqlite3.OperationalError:
-        return False
+    except sqlite3.Error as exc:
+        if str(exc) == "no such table: runs" or not path.is_file():
+            return False
+        # Unknown liveness must preserve single flight, not authorize another run.
+        logger.warning("run liveness unknown run_id=%s: %s", run_id, exc)
+        return True
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     return row is not None and str(row[0] or "") not in _TERMINAL_STATUSES
 
 
@@ -114,12 +120,14 @@ class ControlPlaneScheduler:
         lease: OwnerLease | None = None,
         live: RunIsLive = run_is_live,
         zone_for: ZoneFor = owner_zone,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self.base_path = Path(base_path)
         self.store = TriggerStore(self.base_path)
         self._lease = lease
         self._live = live
         self._zone_for = zone_for
+        self._clock = clock
         # This instance's identity on every claim it makes; a successor settles
         # every claim that is not its own (see ``settle_lost_claims``).
         self.incarnation = uuid.uuid4().hex
@@ -130,19 +138,12 @@ class ControlPlaneScheduler:
         return self._lease or current_owner_lease()
 
     def tick(self, now: datetime | None = None) -> TickReport:
-        moment = now or datetime.now(timezone.utc)
+        moment = now if now is not None else self._clock()
         report = TickReport()
         lease = self.lease
         if not lease.held():
             report.lease_held = False
             return report
-        generation = int(lease.generation)
-        if self._settled_generation != generation:
-            # Once per owner generation, before this owner fires anything.
-            report.lost_settled = self.store.settle_lost_claims(
-                owner_generation=generation, owner_incarnation=self.incarnation,
-            )
-            self._settled_generation = generation
         base = cadence.deploy_policy()
         for trigger in self.store.list(kind=KIND_PROACTIVE, enabled_only=True):
             handler = wake_handler(trigger.kind)
@@ -150,7 +151,7 @@ class ControlPlaneScheduler:
                 report.no_handler += 1
                 continue
             try:
-                self._consider(trigger, handler, base, generation, moment, report)
+                self._consider(trigger, handler, base, moment, report, now=now)
             except LeaseLost:
                 report.lease_held = False
                 return report
@@ -164,9 +165,10 @@ class ControlPlaneScheduler:
         trigger: Trigger,
         handler: Callable[[Path, WakeRequest], WakeResult],
         base: cadence.CadencePolicy,
-        generation: int,
         moment: datetime,
         report: TickReport,
+        *,
+        now: datetime | None,
     ) -> None:
         policy = trigger.policy(base)
         zone = self._zone_for(self.base_path, trigger.owner_principal_id)
@@ -178,12 +180,27 @@ class ControlPlaneScheduler:
             last_due_at=trigger.last_due_at,
             now=moment,
         )
-        if due > moment or not cadence.in_active_hours(moment, policy, zone):
+        eligible = due <= moment and cadence.in_active_hours(moment, policy, zone)
+        waiting = eligible and trigger.last_run_id and self._live(
+            self.base_path, trigger.last_run_id,
+        )
+        lease = self.lease
+        lease.check()
+        generation = int(lease.generation)
+        if self._settled_generation != generation:
+            report.lost_settled += self.store.settle_lost_claims(
+                owner_generation=generation, owner_incarnation=self.incarnation,
+            )
+            self._settled_generation = generation
+        if not eligible:
             return
-        if trigger.last_run_id and self._live(self.base_path, trigger.last_run_id):
+        if waiting:
             report.waiting_on_run.append(trigger.trigger_key)
             return
-        self.lease.check()
+        # Earlier handlers and liveness reads can carry this tick past closing.
+        moment = now if now is not None else self._clock()
+        if due > moment or not cadence.in_active_hours(moment, policy, zone):
+            return
         if not self.store.claim_fire(
             trigger.trigger_key,
             due_at=due,

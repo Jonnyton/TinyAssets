@@ -56,7 +56,10 @@ claim voids the claim, and the next tick honours the idle wait.
 **D3b. Active hours bound when a wake runs.** A fire owed at 20:00 and noticed
 at 23:00 waits for 08:00; the missed window is counted as coalesced. The
 collapse walk applies to the first fire too, so a trigger first served late
-fires once.
+fires once. Ambiguous fall-back openings choose the earliest instant at or
+beyond the instant reached, and the collapse walk stops without strict forward
+progress. Each claim rechecks the clock and active hours after earlier handlers,
+while explicit tick timestamps remain fixed for deterministic tests.
 
 **D4. Coalescing.** Clock triggers: a due fire waits while the previous fire's
 run is live (single flight, run status from the runs store). Windows it
@@ -71,8 +74,9 @@ remain deduplicated per occurrence and serialised per agent by the agent lease.
 Refute round 1 (DISAGREE_CONCERN) argued for one pending wake consuming a
 batch or cursor of durable facts. That changes the woken branch's input
 contract (`inputs.event` becomes a batch) — a public-surface change to
-user-built loops, outside S8b. Recorded as an open question for the founder;
-not built here.
+user-built loops. **Decided (lead, 2026-10-02): no batching.** Each event keeps
+its own input, because user-built workflows depend on it; coalescing applies
+only to data-free timer wakes.
 
 **D5. The cadence is a policy object.** `CadencePolicy` fields: engaged period
 (4 h), cooling threshold (7 d) and period (24 h), dormant threshold (30 d) and
@@ -120,6 +124,10 @@ invariant).
 `runs.status` from the root `.runs.db`, read-only; `runs.get_run` would also
 resolve a queued run's workspace wait from the command center's own
 `.runs.db` (refute round 1, P1). The audit test covers that path.
+A missing store or runs table means no live run; other SQLite failures warn and
+defer the trigger because liveness is unknown. Each trigger checks the lease
+before reading its generation, settles lost claims for a changed generation,
+and carries that generation in both the claim and wake request.
 
 **D9. Harness `settings.yaml` vs platform state.** Harness §4.14 lists
 "research cadence, idle period, active hours" in the agent-editable
