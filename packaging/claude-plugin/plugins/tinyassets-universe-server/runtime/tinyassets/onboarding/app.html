@@ -93,6 +93,10 @@
     .chat-body{flex:1;min-height:0;display:flex}
     .history-error{padding:.4rem 1.1rem;color:var(--warn);border-bottom:1px solid var(--line);font-size:.85rem}
     .rail-error{color:var(--warn);font-size:.8rem;margin:.3rem 0 .5rem}
+    .notify-prompt{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .6rem;padding:.45rem 1.1rem;
+      border-bottom:1px solid var(--line);font-size:.85rem}
+    .notify-prompt[hidden]{display:none}
+    .notify-prompt-text{flex:1 1 16rem}
     .thread-earlier{align-self:center}
     .rail{width:16rem;flex:0 0 auto;border-left:1px solid var(--line);
           overflow-y:auto;padding:.6rem;display:flex;flex-direction:column;gap:.5rem;
@@ -311,6 +315,11 @@
         </nav>
       </header>
       <div id="history-error" class="muted history-error" role="status" hidden></div>
+      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
+        <span id="notify-prompt-text" class="notify-prompt-text"></span>
+        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
+        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
+      </div>
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
@@ -668,6 +677,10 @@
   // (io.tinyassets.app.debug) so it can never block a Play update, and it must
   // sign back into itself rather than into the Play app.
   const APP_RETURN_PACKAGES = {"app.": "io.tinyassets.app", "appdebug.": "io.tinyassets.app.debug"};
+  // The desktop app is Electron over this page. Its shell refuses every
+  // permission request and Electron has no push service, so web push cannot
+  // work there: nothing offers it.
+  const DESKTOP_SHELL = (navigator.userAgent||"").indexOf("Electron/")>=0;
   function nativePlugin(name){ const P=window.Capacitor&&window.Capacitor.Plugins; return (P&&P[name])||null; }
   // PKCE state lives in localStorage on native (survives the WebView being
   // backgrounded behind the tab) and sessionStorage on the web.
@@ -4338,7 +4351,13 @@
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
     // In this order: a reply left by a previous owner is discarded by the rebind
     // before this page can collect it.
-    if(typeof rebindNativeNotifications === "function") rebindNativeNotifications().then(collectNotificationReply);
+    // Then notifications come on by default: a phone that was never asked is
+    // asked now, and a browser is offered a one-tap card.
+    if(typeof rebindNativeNotifications === "function") rebindNativeNotifications().then(()=>{
+      collectNotificationReply();
+      if(typeof autoEnableNativeNotifications === "function") autoEnableNativeNotifications();
+    });
+    if(typeof offerBrowserNotifications === "function") offerBrowserNotifications();
     // Not awaited: the owner's clock is for the NEXT schedule they create, so
     // it must not sit in front of the page they are waiting for.
     reportTimezone();
@@ -4606,6 +4625,7 @@
     MCP.endLogin(); Voice.stop(false);
     if(typeof unsubscribeBrowserNotifications === "function") unsubscribeBrowserNotifications();
     if(typeof unregisterNativeNotifications === "function") unregisterNativeNotifications();
+    if(typeof hideNotifyPrompt === "function") hideNotifyPrompt();
     // Pending attachments belong to the account that picked them. They are
     // dropped, never released (release needs that same login and home) and
     // never carried into whoever signs in next.
@@ -5771,6 +5791,9 @@
     $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
     // The phone app has no browser push; its one switch registers the phone.
     if(typeof NATIVE !== "undefined" && NATIVE) $("btn-browser-notifications").hidden=true;
+    if(typeof DESKTOP_SHELL !== "undefined" && DESKTOP_SHELL) $("btn-browser-notifications").hidden=true;
+    $("btn-notify-prompt-on").addEventListener("click", ()=>enableFromPrompt());
+    $("btn-notify-prompt-dismiss").addEventListener("click", ()=>dismissNotifyPrompt());
     // ---- your command center's connections ----
     // Disconnect is a deliberate TWO-STEP, in-page confirmation. It used to
     // raise the browser's own confirm(): one string, drawn outside the page,
@@ -6372,6 +6395,9 @@
   const NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner",
         NATIVE_PUSH_RECIPIENT="app.push.recipient";
   let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
+  // The last sign-out's native teardown. A registration started after it must
+  // wait for it: its late `unregister()` would delete the new owner's token.
+  let nativeTeardown=Promise.resolve();
   function nativePush(){ return (typeof NATIVE !== "undefined" && NATIVE) ? nativePlugin("PushNotifications") : null; }
   // Tells the native message service whether the signed-in owner wants
   // notifications on this phone. It is checked on every arriving message, so
@@ -6436,6 +6462,7 @@
     let permission=await P.checkPermissions();
     if(permission.receive!=="granted") permission=await P.requestPermissions();
     if(permission.receive!=="granted") throw new Error("Notifications are blocked. Allow them in Android settings to turn them on.");
+    if(!session.current()) throw new Error("Account changed. Open Account again.");
     const value=await nativeFcmToken();
     if(!value) throw new Error("Couldn't get a notification address for this phone. Try again.");
     const created=await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
@@ -6472,6 +6499,10 @@
     }
   }
   async function unregisterNativeNotifications(){
+    let finished; nativeTeardown=new Promise(resolve=>{ finished=resolve; });
+    try{ await removeNativeRegistration(); } finally{ finished(); }
+  }
+  async function removeNativeRegistration(){
     const P=nativePush(), R=nativePlugin("NotificationReply");
     localStorage.removeItem(NATIVE_PUSH_FLAG);
     localStorage.removeItem(NATIVE_PUSH_OWNER);
@@ -6485,6 +6516,60 @@
     try{ await P.unregister(); await P.removeAllDeliveredNotifications(); }
     catch(_error){ console.warn("Could not remove this phone's push registration."); }
   }
+  // Notifications are on by default: nobody should have to find a switch to
+  // learn they exist. After sign-in, a phone that was never asked is asked once
+  // (Android 13+ shows its own dialog) and one that already allows them
+  // registers silently. A refusal is remembered, so the phone is not asked on
+  // every launch, and a dismissible line says how to turn them on later. An
+  // owner who turned notifications off chose that; it is never overridden.
+  const NATIVE_PUSH_ASKED="app.push.asked", NOTIFY_PROMPT_DISMISSED="app.push.prompt.dismissed";
+  async function autoEnableNativeNotifications(){
+    const P=nativePush();
+    if(!P || localStorage.getItem(NATIVE_PUSH_FLAG)==="1") return;   // on already: the rebind owns it
+    const session=notificationSession();
+    try{
+      await nativeTeardown;
+      const settings=await notificationAPI(session,"/app/notify");
+      if(!settings.enabled) return;
+      const permission=await P.checkPermissions();
+      // Each native step can outlast the login it started for; the next
+      // account is never asked, nor registered, on this one's behalf.
+      if(!session.current()) return;
+      if(permission.receive!=="granted"){
+        if(permission.receive==="denied" || localStorage.getItem(NATIVE_PUSH_ASKED)==="1"){
+          if(session.current()) showNotifyPrompt("blocked");
+          return;
+        }
+        localStorage.setItem(NATIVE_PUSH_ASKED,"1");
+      }
+      await registerNativeNotifications(session);
+      if(session.current()) hideNotifyPrompt();
+    }catch(_error){
+      // A "no" in the dialog lands here. Anything else (a build without
+      // Firebase, the network) is simply tried again at the next sign-in.
+      try{
+        const after=await P.checkPermissions();
+        if(after.receive!=="granted" && session.current()) showNotifyPrompt("blocked");
+      }catch(_e){ /* nothing to say */ }
+    }
+  }
+  // One line above the conversation: an offer on the web, or after a refusal on
+  // the phone, where to turn notifications on. Dismissed once, gone for good on
+  // this device; Account keeps the switch either way.
+  const NOTIFY_PROMPT_COPY={
+    offer:"Get a notification when your agent needs you: a question, a proposal to approve, or work that's done.",
+    blocked:"Notifications are off, so you won't hear when your agent needs you. To turn them on, allow notifications for TinyAssets in your phone's Settings, then reopen the app.",
+  };
+  function showNotifyPrompt(mode){
+    if(localStorage.getItem(NOTIFY_PROMPT_DISMISSED)==="1") return;
+    $("notify-prompt-text").textContent=NOTIFY_PROMPT_COPY[mode];
+    $("btn-notify-prompt-on").hidden=mode!=="offer";
+    $("btn-notify-prompt-on").disabled=false;
+    $("btn-notify-prompt-dismiss").textContent=mode==="offer" ? "No thanks" : "Dismiss";
+    $("notify-prompt").hidden=false;
+  }
+  function hideNotifyPrompt(){ $("notify-prompt").hidden=true; }
+  function dismissNotifyPrompt(){ localStorage.setItem(NOTIFY_PROMPT_DISMISSED,"1"); hideNotifyPrompt(); }
   // The text typed into a notification's inline Reply arrives natively, only
   // after MainActivity verified the intent came from this app. It is submitted
   // here, through the signed-in session, like any other answer.
@@ -6575,6 +6660,70 @@
     if(!response.ok) throw new Error(response.status===401 ? "Sign in again to change notifications." : "Notifications are unavailable. Try again.");
     return response.json();
   }
+  // Subscribes this browser and files the subscription under the session. The
+  // caller has already been granted the permission.
+  async function subscribeBrowserPush(session, settings){
+    const registration=await navigator.serviceWorker.register("/app/sw.js",{scope:"/app"});
+    await navigator.serviceWorker.ready;
+    if(!session.current()) throw new Error("Account changed. Open Account again.");
+    const key=settings.vapid_public_key.replace(/-/g,"+").replace(/_/g,"/");
+    const bytes=Uint8Array.from(atob(key + "=".repeat((4-key.length%4)%4)),c=>c.charCodeAt(0));
+    let subscription=await registration.pushManager.getSubscription(), created=false;
+    if(!subscription){
+      subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});
+      created=true;
+    }
+    // A sign-out that landed while subscribing found nothing to remove: this
+    // subscription is for nobody now, so it does not outlive the login.
+    if(!session.current()){
+      if(created){ try{ await subscription.unsubscribe(); }catch(_error){ /* best effort */ } }
+      throw new Error("Account changed. Open Account again.");
+    }
+    await notificationAPI(session,"/app/devices",{platform:"web",token:subscription.toJSON(),label:"Browser"});
+  }
+  // On by default in a browser too. A browser only shows its permission dialog
+  // from a tap, so after sign-in it gets a one-tap card instead; a browser that
+  // already allows them is subscribed silently. Never offered when the owner
+  // turned notifications off, nor in the desktop app, where push cannot work.
+  async function offerBrowserNotifications(){
+    if((typeof NATIVE !== "undefined" && NATIVE) || (typeof DESKTOP_SHELL !== "undefined" && DESKTOP_SHELL)) return;
+    if(!("Notification" in window) || !navigator.serviceWorker || !("PushManager" in window)) return;
+    if(Notification.permission==="denied") return;
+    const session=notificationSession();
+    try{
+      const registration=await navigator.serviceWorker.getRegistration("/app");
+      if(registration && await registration.pushManager.getSubscription()) return;   // the rebind owns it
+      const settings=await notificationAPI(session,"/app/notify");
+      if(!session.current() || !settings.enabled || !settings.vapid_public_key) return;
+      if(Notification.permission==="granted"){ await subscribeBrowserPush(session, settings); return; }
+      showNotifyPrompt("offer");
+    }catch(_error){ /* an offer, not a requirement: Account keeps the switch */ }
+  }
+  async function enableFromPrompt(){
+    const session=notificationSession(), button=$("btn-notify-prompt-on"), text=$("notify-prompt-text");
+    button.disabled=true;
+    try{
+      // Ask while the tap's user activation is still available.
+      const permission=await Notification.requestPermission();
+      if(permission!=="granted"){
+        button.hidden=true;
+        throw new Error("Notifications are blocked in this browser. Allow them in its site settings, then turn them on in Account.");
+      }
+      const settings=await notificationAPI(session,"/app/notify");
+      if(!settings.enabled){
+        // Turned off in Account since the card appeared: that choice stands.
+        button.hidden=true;
+        throw new Error("Notifications are off for your account. Turn them on in Account.");
+      }
+      if(!settings.vapid_public_key) throw new Error("Browser notifications are not configured yet.");
+      await subscribeBrowserPush(session, settings);
+      if(!session.current()) return;
+      text.textContent="Notifications are on. You'll get one when your agent needs you.";
+      button.hidden=true;
+      $("btn-notify-prompt-dismiss").textContent="Done";
+    }catch(error){ if(session.current()) text.textContent=error.message; }
+    finally{ button.disabled=false; }
+  }
   async function loadNotifications(){
     const session=notificationSession(), generation=++notificationLoad;
     const button=$("btn-notifications"), status=$("notification-status");
@@ -6610,17 +6759,11 @@
         if(permission!=="granted") throw new Error("Notifications are blocked. Allow them in your browser settings to turn them on.");
         const settings=await notificationAPI(session,"/app/notify");
         if(!settings.vapid_public_key) throw new Error("Browser notifications are not configured yet.");
-        const registration=await navigator.serviceWorker.register("/app/sw.js",{scope:"/app"});
-        await navigator.serviceWorker.ready;
-        if(!session.current()) return;
-        const key=settings.vapid_public_key.replace(/-/g,"+").replace(/_/g,"/");
-        const bytes=Uint8Array.from(atob(key + "=".repeat((4-key.length%4)%4)),c=>c.charCodeAt(0));
-        const subscription=await registration.pushManager.getSubscription()
-          || await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});
-        await notificationAPI(session,"/app/devices",{platform:"web",token:subscription.toJSON(),label:"Browser"});
+        await subscribeBrowserPush(session, settings);
       }
       await notificationAPI(session,"/app/notify",{enabled:enable});
       if(session.current()) status.textContent=enable ? "Notifications are on." : "Notifications are off on all devices.";
+      if(session.current() && typeof hideNotifyPrompt === "function") hideNotifyPrompt();
     }catch(error){ if(session.current()) status.textContent=error.message; }
     finally{
       notificationBusy=false;
