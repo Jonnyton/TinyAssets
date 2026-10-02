@@ -1,0 +1,475 @@
+"""Control-plane scheduler (target design D7, change control-plane-scheduler).
+
+The owner tick fires owed triggers under the owner lease, coalesces to one
+pending fire, never fires a due instant twice (restart included), decays the
+proactive cadence with engagement, and reads platform state only.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tinyassets.control_plane import cadence
+from tinyassets.control_plane.lease import (
+    LeaseLost,
+    SingleProcessLease,
+    install_owner_lease,
+    owner_lease,
+)
+from tinyassets.control_plane.scheduler import (
+    ControlPlaneScheduler,
+    ensure_proactive_trigger,
+    note_owner_engagement,
+    scheduler_metrics,
+)
+from tinyassets.control_plane.triggers import (
+    DB_FILENAME,
+    KIND_PROACTIVE,
+    TriggerOwnershipError,
+    TriggerStore,
+)
+from tinyassets.control_plane.wake import (
+    WakeResult,
+    register_wake_handler,
+    unregister_wake_handler,
+)
+
+UTC = timezone.utc
+CC = "cc-01JTESTCOMMANDCENTER0000000"
+OWNER = "user:alice"
+#: A Monday, 09:00 UTC: inside the default 08:00-22:00 active hours.
+T0 = datetime(2026, 10, 5, 9, 0, tzinfo=UTC)
+
+
+def _utc(_base: Path, _owner: str) -> ZoneInfo:
+    return ZoneInfo("UTC")
+
+
+class _Handler:
+    """A wake handler that records each fire and returns a run id."""
+
+    def __init__(self, *, declined: str = "", raises: bool = False) -> None:
+        self.calls: list = []
+        self.declined = declined
+        self.raises = raises
+
+    def __call__(self, base: Path, request):
+        self.calls.append(request)
+        if self.raises:
+            raise RuntimeError("handler broke")
+        if self.declined:
+            return WakeResult(declined=self.declined)
+        return WakeResult(run_id=f"run-{len(self.calls)}")
+
+
+@pytest.fixture
+def handler():
+    h = _Handler()
+    register_wake_handler(KIND_PROACTIVE, h, replace=True)
+    yield h
+    unregister_wake_handler(KIND_PROACTIVE)
+
+
+@pytest.fixture(autouse=True)
+def _lease_and_policy(monkeypatch):
+    monkeypatch.delenv(cadence.POLICY_ENV, raising=False)
+    previous = install_owner_lease(SingleProcessLease())
+    yield
+    install_owner_lease(previous)
+
+
+def _scheduler(base: Path, *, live=None, started_at=T0 - timedelta(days=1), lease=None):
+    return ControlPlaneScheduler(
+        base,
+        live=live or (lambda _b, _r: False),
+        zone_for=_utc,
+        started_at=started_at,
+        lease=lease,
+    )
+
+
+def _enrol(base: Path, *, at: datetime = T0) -> str:
+    return ensure_proactive_trigger(
+        base, command_center_id=CC, owner_principal_id=OWNER, now=at,
+    ).trigger_key
+
+
+def _fires(base: Path) -> list[dict]:
+    with sqlite3.connect(base / DB_FILENAME) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM trigger_fires ORDER BY due_at")]
+
+
+# -- cadence policy ---------------------------------------------------------
+
+
+def test_engaged_cadence_is_four_a_day_inside_active_hours():
+    policy = cadence.DEFAULT_POLICY
+    zone = ZoneInfo("UTC")
+    fires = []
+    last = None
+    created = datetime(2026, 10, 5, 0, 0, tzinfo=UTC)
+    moment = created
+    while moment < created + timedelta(days=1):
+        due, state, _ = cadence.due_instant(
+            policy, zone=zone, created_at=created, engaged_at=created - timedelta(hours=1),
+            last_due_at=last, now=moment,
+        )
+        if due <= moment:
+            fires.append(due)
+            last = due
+        moment += timedelta(minutes=5)
+    assert state == cadence.ENGAGED
+    assert [f.hour for f in fires] == [8, 12, 16, 20]
+
+
+def test_decay_states_follow_days_since_engagement_and_reset():
+    policy = cadence.DEFAULT_POLICY
+    engaged = T0
+    assert cadence.decay_state(policy, engaged_at=engaged, now=T0 + timedelta(days=6)) == "engaged"
+    assert cadence.decay_state(policy, engaged_at=engaged, now=T0 + timedelta(days=8)) == "cooling"
+    assert cadence.decay_state(policy, engaged_at=engaged, now=T0 + timedelta(days=31)) == "dormant"
+    # The next interaction resets to engaged.
+    later = T0 + timedelta(days=40)
+    back = cadence.decay_state(policy, engaged_at=later, now=later + timedelta(hours=1))
+    assert back == "engaged"
+
+
+def test_a_wake_waits_the_idle_period_after_the_owner_interacted():
+    policy = cadence.DEFAULT_POLICY
+    due, _, _ = cadence.due_instant(
+        policy, zone=ZoneInfo("UTC"), created_at=T0 - timedelta(days=2),
+        engaged_at=T0, last_due_at=T0 - timedelta(hours=5), now=T0,
+    )
+    assert due == T0 + timedelta(minutes=30)
+
+
+def test_a_night_outside_active_hours_is_not_counted_as_coalesced():
+    policy = cadence.DEFAULT_POLICY
+    last = datetime(2026, 10, 5, 20, 0, tzinfo=UTC)
+    morning = datetime(2026, 10, 6, 8, 0, tzinfo=UTC)
+    due, _, collapsed = cadence.due_instant(
+        policy, zone=ZoneInfo("UTC"), created_at=last - timedelta(days=1),
+        engaged_at=last - timedelta(hours=1), last_due_at=last, now=morning,
+    )
+    assert due == morning and collapsed == 0
+
+
+def test_active_hours_are_the_owners_clock():
+    policy = cadence.DEFAULT_POLICY
+    pacific = ZoneInfo("America/Los_Angeles")
+    # 09:00 UTC is 02:00 in Los Angeles: outside active hours, so the fire
+    # waits for 08:00 local (15:00 UTC in October).
+    due, _, _ = cadence.due_instant(
+        policy, zone=pacific, created_at=T0 - timedelta(days=1),
+        engaged_at=T0 - timedelta(days=1), last_due_at=T0 - timedelta(hours=5), now=T0,
+    )
+    assert due == datetime(2026, 10, 5, 15, 0, tzinfo=UTC)
+
+
+def test_the_policy_is_one_default_overridable_by_env_and_refuses_garbage(monkeypatch):
+    assert cadence.deploy_policy() == cadence.DEFAULT_POLICY
+    monkeypatch.setenv(cadence.POLICY_ENV, json.dumps({"cooling_period_s": 4 * 3600,
+                                                       "dormant_period_s": 4 * 3600}))
+    flat = cadence.deploy_policy()
+    # Equal periods turn decay off without a code change.
+    assert {flat.period_for(s) for s in cadence.DECAY_STATES} == {4 * 3600}
+    monkeypatch.setenv(cadence.POLICY_ENV, "{not json")
+    with pytest.raises(ValueError):
+        cadence.deploy_policy()
+    monkeypatch.setenv(cadence.POLICY_ENV, json.dumps({"engaged_period_s": 10}))
+    with pytest.raises(ValueError):
+        cadence.deploy_policy()
+    monkeypatch.setenv(cadence.POLICY_ENV, json.dumps({"no_such_field": 1}))
+    with pytest.raises(ValueError):
+        cadence.deploy_policy()
+
+
+# -- the owner tick ----------------------------------------------------------
+
+
+def test_a_due_trigger_fires_once_and_records_lag_and_generation(tmp_path, handler):
+    key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    report = _scheduler(tmp_path).tick(T0)
+    assert report.fired == [key]
+    assert len(handler.calls) == 1
+    request = handler.calls[0]
+    assert request.command_center_id == CC and request.owner_principal_id == OWNER
+    assert request.decay_state == "engaged"
+    (fire,) = _fires(tmp_path)
+    assert fire["outcome"] == "started" and fire["run_id"] == "run-1"
+    assert fire["owner_generation"] == 1
+    # Enrolled 07:00; the idle wait ends 07:30, outside active hours, so it was
+    # owed from 08:00 and fired at 09:00.
+    assert fire["due_at"] == "2026-10-05T08:00:00Z"
+    assert fire["lag_s"] == 3600.0
+    # Nothing more is owed until the next window.
+    assert _scheduler(tmp_path).tick(T0 + timedelta(minutes=5)).fired == []
+
+
+def test_no_double_fire_across_a_restart(tmp_path, handler):
+    """Two owner processes either side of a restart, at the same instant, derive
+    the same due_at; the (trigger_key, due_at) fence admits one fire."""
+    _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    first = _scheduler(tmp_path)
+    second = _scheduler(tmp_path)
+    assert len(first.tick(T0).fired) == 1
+    assert second.tick(T0).fired == []
+    assert len(handler.calls) == 1
+    assert len(_fires(tmp_path)) == 1
+
+
+def test_a_claim_that_never_started_is_settled_lost_not_replayed(tmp_path, handler):
+    key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    store = TriggerStore(tmp_path)
+    trigger = store.get(key)
+    due = T0 - timedelta(hours=1, minutes=30)
+    # The previous process claimed and died before calling its handler.
+    assert store.claim_fire(key, due_at=due, expected_last_due_at=trigger.last_due_at,
+                            owner_generation=1, collapsed=0, now=T0 - timedelta(hours=1))
+    restarted = _scheduler(tmp_path, started_at=T0 - timedelta(minutes=10))
+    report = restarted.tick(T0)
+    assert report.lost_settled == 1
+    assert report.fired == []  # the due instant was spent; the next is at +4 h
+    assert handler.calls == []
+    assert [f["outcome"] for f in _fires(tmp_path)] == ["lost_on_restart"]
+
+
+def test_single_flight_waits_on_a_live_run_then_collapses_missed_windows(tmp_path, handler):
+    key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    live = {"run-1"}
+    sched = _scheduler(tmp_path, live=lambda _b, run_id: run_id in live)
+    assert sched.tick(T0).fired == [key]
+    # The run outlives three windows: the trigger waits, one pending fire.
+    later = T0 + timedelta(hours=12, minutes=10)
+    assert sched.tick(later).waiting_on_run == [key]
+    assert len(handler.calls) == 1
+    live.clear()
+    assert sched.tick(later).fired == [key]
+    assert len(handler.calls) == 2
+    trigger = TriggerStore(tmp_path).get(key)
+    assert trigger.coalesced_total == 2  # windows folded into the one fire
+    assert scheduler_metrics(tmp_path, now=later)["proactive"]["coalesced_total"] == 2
+
+
+def test_no_fire_without_the_owner_lease(tmp_path, handler):
+    class _NotHeld(SingleProcessLease):
+        def held(self) -> bool:
+            return False
+
+    _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    report = _scheduler(tmp_path, lease=_NotHeld()).tick(T0)
+    assert report.lease_held is False
+    assert handler.calls == []
+    assert _fires(tmp_path) == []
+
+
+def test_a_lease_lost_before_the_claim_fires_nothing(tmp_path, handler):
+    class _LostAtCheck(SingleProcessLease):
+        def check(self) -> None:
+            raise LeaseLost("successor took over")
+
+    _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    report = _scheduler(tmp_path, lease=_LostAtCheck()).tick(T0)
+    assert report.lease_held is False
+    assert handler.calls == [] and _fires(tmp_path) == []
+
+
+def test_without_a_registered_handler_nothing_is_claimed(tmp_path):
+    unregister_wake_handler(KIND_PROACTIVE)
+    _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    report = _scheduler(tmp_path).tick(T0)
+    assert report.no_handler == 1 and _fires(tmp_path) == []
+
+
+def test_a_declined_fire_spends_its_window(tmp_path):
+    h = _Handler(declined="no_compute")
+    register_wake_handler(KIND_PROACTIVE, h, replace=True)
+    try:
+        _enrol(tmp_path, at=T0 - timedelta(hours=2))
+        sched = _scheduler(tmp_path)
+        assert sched.tick(T0).declined
+        assert sched.tick(T0 + timedelta(hours=1)).declined == []
+        assert [f["outcome"] for f in _fires(tmp_path)] == ["declined:no_compute"]
+    finally:
+        unregister_wake_handler(KIND_PROACTIVE)
+
+
+def test_a_raising_handler_is_recorded_and_does_not_stop_the_tick(tmp_path):
+    h = _Handler(raises=True)
+    register_wake_handler(KIND_PROACTIVE, h, replace=True)
+    try:
+        _enrol(tmp_path, at=T0 - timedelta(hours=2))
+        report = _scheduler(tmp_path).tick(T0)
+        assert report.failed and [f["outcome"] for f in _fires(tmp_path)] == [
+            "failed:RuntimeError"]
+    finally:
+        unregister_wake_handler(KIND_PROACTIVE)
+
+
+# -- owner controls and engagement ------------------------------------------
+
+
+def test_only_the_owner_counts_as_engagement(tmp_path):
+    key = _enrol(tmp_path, at=T0 - timedelta(days=40))
+    at = T0
+    assert note_owner_engagement(tmp_path, command_center_id=CC, principal_id="user:mallory",
+                                 at=at) == 0
+    assert TriggerStore(tmp_path).get(key).engaged_at is None
+    assert note_owner_engagement(tmp_path, command_center_id=CC, principal_id=OWNER, at=at) == 1
+    assert TriggerStore(tmp_path).get(key).engaged_at == at
+    # An older stamp never replaces a newer one.
+    note_owner_engagement(tmp_path, command_center_id=CC, principal_id=OWNER,
+                          at=at - timedelta(days=1))
+    assert TriggerStore(tmp_path).get(key).engaged_at == at
+
+
+def test_engagement_on_a_root_without_triggers_creates_nothing(tmp_path):
+    assert note_owner_engagement(tmp_path, command_center_id=CC, principal_id=OWNER) == 0
+    assert not (tmp_path / DB_FILENAME).exists()
+
+
+def test_the_owner_message_event_resets_decay(tmp_path):
+    from tinyassets.automation_events import emit_owner_message
+
+    key = _enrol(tmp_path, at=T0 - timedelta(days=40))
+    emit_owner_message(tmp_path / CC, principal_id=OWNER)
+    assert TriggerStore(tmp_path).get(key).engaged_at is not None
+
+
+def test_a_trigger_cannot_be_re_owned_and_controls_are_owner_only(tmp_path):
+    key = _enrol(tmp_path)
+    with pytest.raises(TriggerOwnershipError):
+        ensure_proactive_trigger(tmp_path, command_center_id=CC,
+                                 owner_principal_id="user:mallory", now=T0)
+    store = TriggerStore(tmp_path)
+    with pytest.raises(TriggerOwnershipError):
+        store.set_enabled(key, principal_id="user:mallory", enabled=False, now=T0)
+    with pytest.raises(TriggerOwnershipError):
+        store.set_cadence_override(key, principal_id="user:mallory",
+                                   overrides={"engaged_period_s": 3600},
+                                   base=cadence.DEFAULT_POLICY, now=T0)
+    with pytest.raises(ValueError):
+        store.set_cadence_override(key, principal_id=OWNER, overrides={"idle_s": "soon"},
+                                   base=cadence.DEFAULT_POLICY, now=T0)
+    updated = store.set_cadence_override(key, principal_id=OWNER,
+                                         overrides={"engaged_period_s": 3600},
+                                         base=cadence.DEFAULT_POLICY, now=T0)
+    assert updated.policy(cadence.DEFAULT_POLICY).engaged_period_s == 3600
+
+
+def test_an_owner_override_and_disable_change_firing(tmp_path, handler):
+    key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    store = TriggerStore(tmp_path)
+    store.set_cadence_override(key, principal_id=OWNER, overrides={"engaged_period_s": 3600},
+                               base=cadence.DEFAULT_POLICY, now=T0)
+    sched = _scheduler(tmp_path)
+    sched.tick(T0)
+    assert sched.tick(T0 + timedelta(hours=1)).fired == [key]
+    store.set_enabled(key, principal_id=OWNER, enabled=False, now=T0)
+    assert sched.tick(T0 + timedelta(hours=2)).fired == []
+
+
+def test_account_deletion_takes_the_owners_triggers_and_fires(tmp_path, handler):
+    """``.control_plane.db`` is a root store, so deletion's schema-derived rule
+    covers it: both tables carry ``owner_principal_id``."""
+    from tinyassets.account_deletion import deletion_plan
+
+    _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    _scheduler(tmp_path).tick(T0)
+    conn = sqlite3.connect(tmp_path / DB_FILENAME)
+    try:
+        plan = deletion_plan(conn, principal=OWNER, home=CC)
+    finally:
+        conn.close()
+    assert ("owner_principal_id", "principal") in plan["triggers"]
+    assert ("owner_principal_id", "principal") in plan["trigger_fires"]
+
+
+# -- platform state only -----------------------------------------------------
+
+
+_AUDIT: dict = {"on": False, "paths": []}
+
+
+def _audit_hook(event: str, args: tuple) -> None:
+    if not _AUDIT["on"]:
+        return
+    if event in {"open", "os.listdir", "os.scandir", "sqlite3.connect"} and args:
+        _AUDIT["paths"].append(str(args[0]))
+
+
+sys.addaudithook(_audit_hook)
+
+
+def test_the_tick_never_opens_a_command_center_directory(tmp_path, handler):
+    """Scheduling reads platform state only (D7/D8a): a fire must not touch the
+    command center's own files -- under the sealed box that would wake it."""
+    cc_dir = tmp_path / CC
+    (cc_dir / "notes").mkdir(parents=True)
+    (cc_dir / "settings.yaml").write_text("research: every 5 minutes\n", encoding="utf-8")
+    (cc_dir / ".pause").write_text("", encoding="utf-8")
+    _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    sched = ControlPlaneScheduler(tmp_path, live=lambda _b, _r: False,
+                                  started_at=T0 - timedelta(days=1))
+    _AUDIT["paths"].clear()
+    _AUDIT["on"] = True
+    try:
+        report = sched.tick(T0)
+        scheduler_metrics(tmp_path, now=T0)
+    finally:
+        _AUDIT["on"] = False
+    assert report.fired
+    touched = [p for p in _AUDIT["paths"] if CC in p]
+    assert touched == []
+    assert any(DB_FILENAME in p for p in _AUDIT["paths"])
+
+
+# -- consumer wiring ---------------------------------------------------------
+
+
+@pytest.mark.usefixtures("cloud_runtime")
+def test_the_consumer_tick_runs_triggers_only_while_holding_the_lease(tmp_path, monkeypatch):
+    from tests.test_background_budget_finalization_e2e import _seed_serving_assignment
+    from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+    from tinyassets.storage import db_path
+    from tinyassets.storage.request_admissions import migrate_request_admission_schema
+
+    _seed_serving_assignment(tmp_path)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        migrate_request_admission_schema(conn)
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+    calls = {"automations": 0, "triggers": 0}
+
+    def _submit(*_a, **_k):
+        calls["automations"] += 1
+        return 0, set()
+
+    monkeypatch.setattr(consumer, "_submit_due_automations", _submit)
+    monkeypatch.setattr(consumer._control_plane, "tick",
+                        lambda: calls.__setitem__("triggers", calls["triggers"] + 1))
+
+    class _NotHeld(SingleProcessLease):
+        def held(self) -> bool:
+            return False
+
+    try:
+        consumer.poll_once()
+        assert calls == {"automations": 1, "triggers": 1}
+        install_owner_lease(_NotHeld())
+        consumer.poll_once()
+        assert calls == {"automations": 1, "triggers": 1}
+    finally:
+        install_owner_lease(SingleProcessLease())
+        consumer.stop()
+    assert isinstance(owner_lease(), SingleProcessLease)

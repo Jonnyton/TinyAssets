@@ -1,0 +1,225 @@
+"""Engagement-decayed proactive cadence: a policy, not code paths (design D7).
+
+A command center's proactive wake (harness §4.5, idle research) runs often
+while its owner is engaged and decays while they are away:
+
+* **engaged** -- the owner interacted within ``cooling_after_s`` (7 days):
+  every ``engaged_period_s`` (4 h) inside active hours (08:00-22:00 in the
+  owner's clock), i.e. 4 a day;
+* **cooling** -- no interaction for 7 days: every ``cooling_period_s`` (1/day);
+* **dormant** -- no interaction for ``dormant_after_s`` (30 days): every
+  ``dormant_period_s`` (weekly).
+
+The next owner interaction resets the state to engaged. A wake also waits
+``idle_s`` (30 min) after the last interaction, so it never interrupts the
+owner.
+
+**The founder has not confirmed the decay values.** They live in exactly one
+place, :data:`DEFAULT_POLICY`, overridable for the whole deploy by
+``TINYASSETS_PROACTIVE_CADENCE`` (a JSON object of field overrides) and per
+command center by its owner (``triggers.set_cadence_override``). Setting the
+three periods equal turns decay off without a code change.
+
+Everything here is pure: the due instant is a function of the trigger row and
+``now``, so two evaluations either side of a restart derive the same
+``due_at`` and the fire fence holds.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+from dataclasses import asdict, dataclass, fields, replace
+from datetime import datetime, time, timedelta, timezone
+from typing import Any
+from zoneinfo import ZoneInfo
+
+ENGAGED = "engaged"
+COOLING = "cooling"
+DORMANT = "dormant"
+DECAY_STATES = (ENGAGED, COOLING, DORMANT)
+
+POLICY_ENV = "TINYASSETS_PROACTIVE_CADENCE"
+
+
+@dataclass(frozen=True)
+class CadencePolicy:
+    engaged_period_s: int = 4 * 3600
+    cooling_after_s: int = 7 * 86400
+    cooling_period_s: int = 86400
+    dormant_after_s: int = 30 * 86400
+    dormant_period_s: int = 7 * 86400
+    idle_s: int = 30 * 60
+    active_start: str = "08:00"
+    active_end: str = "22:00"
+
+    def validated(self) -> "CadencePolicy":
+        for name in ("engaged_period_s", "cooling_period_s", "dormant_period_s"):
+            if int(getattr(self, name)) < 300:
+                raise ValueError(f"{name} must be at least 300 seconds")
+        if int(self.idle_s) < 0:
+            raise ValueError("idle_s must not be negative")
+        if not 0 < int(self.cooling_after_s) <= int(self.dormant_after_s):
+            raise ValueError("cooling_after_s must be positive and <= dormant_after_s")
+        _clock(self.active_start)
+        _clock(self.active_end)
+        return self
+
+    def period_for(self, state: str) -> int:
+        return {
+            ENGAGED: self.engaged_period_s,
+            COOLING: self.cooling_period_s,
+            DORMANT: self.dormant_period_s,
+        }[state]
+
+
+#: The single config default (founder decision pending on the decay values).
+DEFAULT_POLICY = CadencePolicy()
+
+_INT_FIELDS = frozenset(
+    f.name for f in fields(CadencePolicy) if f.name not in {"active_start", "active_end"}
+)
+
+
+def _clock(value: str) -> time:
+    try:
+        hour, minute = str(value).split(":")
+        return time(int(hour), int(minute))
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"active hours must be HH:MM, got {value!r}") from exc
+
+
+def policy_with(base: CadencePolicy, overrides: dict[str, Any] | None) -> CadencePolicy:
+    """``base`` with ``overrides`` applied; unknown or invalid fields raise."""
+    if not overrides:
+        return base
+    if not isinstance(overrides, dict):
+        raise ValueError("cadence overrides must be an object")
+    known = {f.name for f in fields(CadencePolicy)}
+    unknown = set(overrides) - known
+    if unknown:
+        raise ValueError(f"unknown cadence fields: {sorted(unknown)}")
+    coerced: dict[str, Any] = {}
+    for key, value in overrides.items():
+        if key in _INT_FIELDS:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{key} must be a number of seconds")
+            if not math.isfinite(float(value)):
+                raise ValueError(f"{key} must be finite")
+            coerced[key] = int(value)
+        else:
+            coerced[key] = str(value)
+    return replace(base, **coerced).validated()
+
+
+def deploy_policy() -> CadencePolicy:
+    """The deploy-wide policy: the default plus ``TINYASSETS_PROACTIVE_CADENCE``.
+
+    A malformed value raises: a typo in the one cadence knob must not silently
+    run every command center on a cadence nobody chose (Hard Rule 8).
+    """
+    raw = os.environ.get(POLICY_ENV, "").strip()
+    if not raw:
+        return DEFAULT_POLICY
+    try:
+        overrides = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"{POLICY_ENV} is not JSON") from exc
+    return policy_with(DEFAULT_POLICY, overrides)
+
+
+def policy_dict(policy: CadencePolicy) -> dict[str, Any]:
+    return asdict(policy)
+
+
+def decay_state(policy: CadencePolicy, *, engaged_at: datetime, now: datetime) -> str:
+    away = (now - engaged_at).total_seconds()
+    if away < policy.cooling_after_s:
+        return ENGAGED
+    if away < policy.dormant_after_s:
+        return COOLING
+    return DORMANT
+
+
+def _into_active_hours(moment: datetime, policy: CadencePolicy, zone: ZoneInfo) -> datetime:
+    """``moment`` if it is inside active hours, else the next window start."""
+    start, end = _clock(policy.active_start), _clock(policy.active_end)
+    if start == end:  # a 24-hour window
+        return moment
+    local = moment.astimezone(zone)
+    clock = local.time().replace(tzinfo=None)
+    inside = (start <= clock < end) if start < end else (clock >= start or clock < end)
+    if inside:
+        return moment
+    day = local.date() if clock < start else local.date() + timedelta(days=1)
+    opening = datetime.combine(day, start, tzinfo=zone)
+    return opening.astimezone(timezone.utc)
+
+
+def due_instant(
+    policy: CadencePolicy,
+    *,
+    zone: ZoneInfo,
+    created_at: datetime,
+    engaged_at: datetime | None,
+    last_due_at: datetime | None,
+    now: datetime,
+) -> tuple[datetime, str, int]:
+    """``(due_at, decay_state, collapsed)`` for a proactive trigger at ``now``.
+
+    ``due_at`` may be in the future (not yet owed). When several periods were
+    missed -- the owner was down, or a run outlived its window -- the due
+    instant collapses onto the LATEST missed grid point, and ``collapsed``
+    counts the windows folded into it: one pending fire, never a backlog.
+    """
+    anchor = engaged_at or created_at
+    state = decay_state(policy, engaged_at=anchor, now=now)
+    period = policy.period_for(state)
+    step = timedelta(seconds=period)
+    collapsed = 0
+    if last_due_at is None:
+        due = _into_active_hours(created_at, policy, zone)
+    else:
+        due = _into_active_hours(last_due_at + step, policy, zone)
+        # Walk the active-hours grid, so a night outside active hours is not
+        # counted as missed windows. Bounded: a year down at the shortest
+        # allowed period is ~105k cheap steps, once.
+        while True:
+            following = _into_active_hours(due + step, policy, zone)
+            if following > now:
+                break
+            due = following
+            collapsed += 1
+    due = max(due, anchor + timedelta(seconds=policy.idle_s))
+    due = _into_active_hours(due, policy, zone).replace(microsecond=0)
+    return due, state, collapsed
+
+
+def fires_per_day(policy: CadencePolicy, state: str) -> float:
+    """Upper bound on fires per day in ``state`` (active hours clip it)."""
+    start, end = _clock(policy.active_start), _clock(policy.active_end)
+    window = 86400.0 if start == end else (
+        ((end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)) % 1440
+    ) * 60.0
+    period = policy.period_for(state)
+    if period >= 86400:
+        return 86400.0 / period
+    return float(math.ceil(window / period))
+
+
+__all__ = [
+    "COOLING",
+    "DECAY_STATES",
+    "DEFAULT_POLICY",
+    "DORMANT",
+    "ENGAGED",
+    "POLICY_ENV",
+    "CadencePolicy",
+    "decay_state",
+    "deploy_policy",
+    "due_instant",
+    "fires_per_day",
+    "policy_dict",
+    "policy_with",
+]

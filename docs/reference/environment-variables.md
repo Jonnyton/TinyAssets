@@ -103,6 +103,7 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | `TINYASSETS_RUN_MAX_CONCURRENT` | Integer cap on concurrent in-flight branch runs. | Unset = unlimited. |
 | `TINYASSETS_IDLE_CYCLE_SINGLE_FLIGHT` | Dedupe the no-claim idle heartbeat cycle across fleet workers (`tinyassets/idle_cycle.py`): the winner holds a run lock for the cycle's lifetime (long cycles exclude others; released on process death), and a worker skips when a DIFFERENT worker's stamp is fresh; own stamps never block. Falsy = `"0"`/`"false"`/`"off"`/`"no"`. | `on`. |
 | `TINYASSETS_IDLE_CYCLE_FOREIGN_FRESH_S` | Freshness window (seconds) for the idle-cycle stamp; finite positive numbers only (anything else falls back to default). Keep below the supervisor idle respawn period (~322s at backoff ceiling) and above worker phase offset; also the max heartbeat gap after a stamp-holder death. | `240`. |
+| `TINYASSETS_PROACTIVE_CADENCE` | JSON object overriding fields of the engagement-decayed proactive cadence (`tinyassets/control_plane/cadence.py` `CadencePolicy`: `engaged_period_s`, `cooling_after_s`, `cooling_period_s`, `dormant_after_s`, `dormant_period_s`, `idle_s`, `active_start`, `active_end`). Setting the three periods equal turns decay off. A malformed value raises; an owner's per-command-center override wins over it. Decay values await founder confirmation. | Unset: 4 h engaged, daily after 7 days, weekly after 30, 30 min idle, 08:00–22:00 owner clock. |
 
 ## LLM + provider routing
 
