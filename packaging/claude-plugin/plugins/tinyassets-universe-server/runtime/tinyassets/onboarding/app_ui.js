@@ -27,7 +27,11 @@
     // `sessionStorage` (the access token), `localStorage` and the parent DOM.
     // The frame's own response header sandboxes it too, so this is the second of
     // two independent locks, not the only one.
-    SANDBOX:"allow-scripts",
+    // `allow-forms` lets a bundle's <form> fire its submit event, which a bundle
+    // handles in script. Without it the browser drops the submit silently and the
+    // button does nothing. The frame's `form-action 'none'` still refuses every
+    // real submission, so no form can navigate or send anything anywhere.
+    SANDBOX:"allow-scripts allow-forms",
     // Per-UI bounds only. There is NO bound on the library as a whole -- neither
     // a count of UIs nor a byte total. A 4 MiB library ceiling used to refuse an
     // install once the stored library was full; those bytes are the command center's
