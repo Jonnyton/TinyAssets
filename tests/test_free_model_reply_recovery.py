@@ -266,8 +266,11 @@ def test_the_served_adapters_say_they_relaunch_each_round():
     assert not hasattr(WorkAgentAdapter, "relaunches_same_model")
 
 
-def test_a_reply_timeout_moves_on_without_asking_the_same_model_again(agent, monkeypatch):
-    """Turn c6ae56f9: a reply that outran the broker's ceiling would outrun it again."""
+def test_a_slow_reply_is_never_retried_or_moved_off(agent, monkeypatch):
+    """Founder, 2026-10-02: "if the model response is just slow your skipping it
+    and then that call is used up for the user". A non-streamed reply that
+    outruns the broker's ceiling ends the turn honestly; no second request is
+    spent on the same slowness, on this model or another."""
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
     from tinyassets.storage.outbound_connections import OutboundDeadlineExceeded
 
@@ -288,10 +291,13 @@ def test_a_reply_timeout_moves_on_without_asking_the_same_model_again(agent, mon
         return proxy
 
     monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", resolve)
-    assert integration.run(agent) == "finished exact answer"
-    models = _models(agent)
-    assert models[2] == "lab/answering:free" and models[1] == models[0]
-    assert len(agent.tools) == 1
+    with pytest.raises(AllProvidersExhaustedError) as error:
+        integration.run(agent)
+    assert len(agent.wires) == 2 and len(agent.tools) == 1
+    record, notice = refusal._record(error.value)
+    assert record.code == "provider_reply_timeout"
+    assert record.requests == 2
+    assert "This turn sent 2 requests to your model" in notice
 
 
 def test_a_reply_timeout_names_the_budget_that_actually_ended_it(agent):
@@ -541,3 +547,88 @@ def test_a_reply_with_something_in_it_is_not_retried_as_empty(agent, finish, mes
     with pytest.raises(Exception):  # noqa: B017 - each ends the turn its own way
         integration.run(agent)
     assert len(agent.wires) == 1
+
+
+# --------------------------------------------------------------------------
+# Streaming: judged by inactivity, never by total time (founder, 2026-10-02).
+# --------------------------------------------------------------------------
+
+#: A stream that delivered some text and then went silent past the idle window;
+#: the broker returns it as far as it got, marked ``stalled``.
+STALLED_STREAM = "\n".join([
+    'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"Here is the "}}]}',
+    "",
+    'data: {"choices":[{"index":0,"delta":{"content":"sales board layout"}}]}',
+    "",
+])
+
+
+def _stall(agent, wires):
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+
+    real_resolve = ApiKeyHttpProvider._resolve_proxy
+
+    def resolve(self, **kwargs):
+        proxy = real_resolve(self, **kwargs)
+        inner = proxy.request
+
+        def request(verb, document):
+            if len(agent.wires) + 1 in wires:
+                agent.wires.append((verb, document))
+                return {"status": 200, "headers": {}, "body": STALLED_STREAM, "stalled": True}
+            return inner(verb, document)
+
+        proxy.request = request
+        return proxy
+
+    return resolve
+
+
+def test_an_agent_request_streams_and_asks_for_an_inactivity_window(agent):
+    from tinyassets.providers.api_key_http_provider import DEFAULT_REPLY_IDLE_S
+
+    integration.run(agent)
+    for _verb, document in agent.wires:
+        assert document["body"]["stream"] is True
+        assert document["reply_idle_s"] == DEFAULT_REPLY_IDLE_S
+        assert document["reply_budget_s"] > 0
+
+
+def test_a_stalled_stream_is_asked_again_and_the_turn_finishes(agent, monkeypatch):
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", _stall(agent, {2}))
+    assert integration.run(agent) == "finished exact answer"
+    assert [r.state for r in agent.latest().rounds] == ["received", "failed", "received"]
+    assert len(agent.tools) == 1
+
+
+def test_a_persistent_stall_keeps_what_the_model_wrote_and_says_what_it_cost(
+    agent, monkeypatch,
+):
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", _stall(agent, set(range(2, 9))))
+    with pytest.raises(AllProvidersExhaustedError) as error:
+        integration.run(agent)
+    assert len(agent.wires) == 3  # one tool round, one stall, one same-model retry
+    record, notice = refusal._record(error.value)
+    assert record.code == "provider_stalled" and record.stage == "model_reply"
+    assert record.partial_text == "Here is the sales board layout"
+    assert 'had written: "Here is the sales board layout"' in notice
+    assert "This turn sent 3 requests to your model" in notice
+    assert "slow reply is never cut off" in notice
+    # The owner's model output is for the owner's notice, never a run record.
+    assert all("partial_text" not in a.to_dict() for a in error.value.attempts)
+
+
+def test_partial_text_survives_the_stored_record_round_trip(tmp_path):
+    from tinyassets import conversation_store as store
+    from tinyassets.conversation_failure import turn_failure
+
+    record = turn_failure("provider_stalled", stage="model_reply", effects="some",
+                          ref="0123abcd", requests=7, partial_text="汉字" * 2000)
+    assert store.record_failure(tmp_path, "principal:a", "build it", record)
+    row = store.load_recent_readonly(tmp_path, "principal:a")[-1]
+    assert row.failure == record and row.failure.requests == 7
+    assert row.failure.partial_text.startswith("...")

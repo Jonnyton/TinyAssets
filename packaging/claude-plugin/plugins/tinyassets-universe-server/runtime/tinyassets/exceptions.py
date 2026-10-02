@@ -179,6 +179,23 @@ class ProviderReplyError(ProviderProtocolError):
     failure_class = "provider_reply_error"
 
 
+class ProviderStalledError(ProviderProtocolError):
+    """A streamed reply STOPPED arriving partway (inactivity, not slowness).
+
+    The model sent part of its answer and then nothing for the source's
+    inactivity window. A reply that keeps arriving is never cut, however long
+    it takes (founder, 2026-10-02). ``partial_text`` is the assistant text that
+    did arrive, kept for the owner's notice rather than silently dropped; it is
+    never logged.
+    """
+
+    failure_class = "provider_stalled"
+
+    def __init__(self, *args, partial_text: str = "", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.partial_text = partial_text
+
+
 class ProviderUnreadableReplyError(ProviderProtocolError):
     """The source answered HTTP 2xx with a reply we could not decode.
 

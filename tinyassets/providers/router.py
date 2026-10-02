@@ -1556,6 +1556,7 @@ class ProviderRouter:
                     detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     side_effect_state=_side_effect_from(exc),
+                    partial_text=getattr(exc, "partial_text", None) or None,
                     **_tool_wait_evidence(exc),
                 ))
                 continue

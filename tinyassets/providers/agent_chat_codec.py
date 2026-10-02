@@ -447,6 +447,29 @@ def fold_chat_stream(body: str) -> dict[str, Any]:
     return folded
 
 
+def partial_stream_text(body: str) -> str:
+    """The assistant text a CUT event stream had delivered, best effort.
+
+    For the owner's notice when a stream stopped arriving: only ``content``
+    deltas, in order, skipping any line that does not parse. Never a tool call
+    -- a half-received call is not an action and is not offered as one.
+    """
+    pieces: list[str] = []
+    for line in body.splitlines() if isinstance(body, str) else ():
+        if not line.startswith("data:"):
+            continue
+        try:
+            chunk = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        for choice in (chunk.get("choices") or []) if isinstance(chunk, dict) else ():
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            piece = delta.get("content") if isinstance(delta, dict) else None
+            if isinstance(piece, str):
+                pieces.append(piece)
+    return "".join(pieces)
+
+
 def _fold_tool_deltas(
     deltas: Any, calls: dict[int, dict[str, Any]], order: list[int],
 ) -> None:

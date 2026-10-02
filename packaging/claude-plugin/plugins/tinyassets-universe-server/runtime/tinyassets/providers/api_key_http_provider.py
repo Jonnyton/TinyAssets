@@ -47,6 +47,7 @@ from tinyassets.exceptions import (
     ProviderRateLimitedError,
     ProviderReplyError,
     ProviderReplyTimeoutError,
+    ProviderStalledError,
     ProviderUnavailableError,
     ProviderUnreadableReplyError,
 )
@@ -56,6 +57,12 @@ from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError
 from tinyassets.providers.wire_dialects import same_dialect
 
 _LOG = logging.getLogger(__name__)
+
+#: Seconds a STREAMED agent reply may go without new bytes before it counts as
+#: stalled. A reply that keeps arriving is never cut for being slow (founder,
+#: 2026-10-02): on a capped free tier an abandoned reply is one of the day's
+#: requests gone. A source may declare its own ``reply_idle_s`` in its preset.
+DEFAULT_REPLY_IDLE_S = 120.0
 
 #: HTTP's own words for "not this model, not for you": forbidden, not found,
 #: gone. Standard status semantics, not a vendor's error envelope.
@@ -340,6 +347,12 @@ class ApiKeyHttpProvider(BaseProvider):
         # broker applies it from the connection's auth_scheme (x-api-key for Claude).
         from tinyassets.providers.protocol_encoders import static_headers_for
 
+        if agent_request is not None:
+            # Every agent wire is the chat_messages dialect, whose servers stream
+            # on request; the decoder folds events and plain JSON alike, so a
+            # server that ignores the flag still answers. Streaming is what lets
+            # the broker judge the reply by inactivity instead of total time.
+            body = {**body, "stream": True}
         wire_request: dict[str, Any] = {"url": f"https://{host}{path}", "body": body}
         # Ask for as long as the turn itself may still run. The broker grants it
         # only because this connection is a model source, and never beyond its
@@ -347,6 +360,11 @@ class ApiKeyHttpProvider(BaseProvider):
         reply_budget = _reply_budget_s(config)
         if reply_budget is not None:
             wire_request["reply_budget_s"] = reply_budget
+            if agent_request is not None:
+                from tinyassets.providers.free_sources import source_for_host
+
+                idle = source_for_host(host).get("reply_idle_s", DEFAULT_REPLY_IDLE_S)
+                wire_request["reply_idle_s"] = float(idle)
         static_headers = static_headers_for(self._definition.protocol)
         if static_headers:
             wire_request["headers"] = static_headers
@@ -478,6 +496,17 @@ class ApiKeyHttpProvider(BaseProvider):
             ProviderUnreadableReplyError if agent_request is not None else ProviderProtocolError
         )
         body_str = result.get("body")
+        if agent_request is not None and result.get("stalled") is True:
+            from tinyassets.providers.agent_chat_codec import partial_stream_text
+
+            partial = partial_stream_text(body_str) if isinstance(body_str, str) else ""
+            idle = wire_request.get("reply_idle_s")
+            raise ProviderStalledError(
+                "the model stopped sending partway through its reply"
+                + (f" (nothing for {int(idle)}s" if idle else " (")
+                + f", {len(partial)} characters of text received)",
+                partial_text=partial,
+            )
         if not isinstance(body_str, str) or not body_str:
             raise unreadable("compute response had an empty body")
         try:

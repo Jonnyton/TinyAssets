@@ -344,6 +344,14 @@ class AgentTurnCoordinator:
     def _interrupted(self):
         return self.interrupt is not None and self.interrupt.requested()
 
+    def _requests_sent(self):
+        """Model requests this turn sent, failed ones included: each one counts
+        against a free tier's daily allowance, so the owner is told the number."""
+        if self.turn is None:
+            return 0
+        return sum(1 for previous in self.turn.rounds
+                   if type(previous.candidate) is not NativeInput)
+
     def _completed_tools(self):
         """Names of the tool calls this turn's ledger proves completed, in order."""
         if self.turn is None:
@@ -381,6 +389,7 @@ class AgentTurnCoordinator:
         except BaseException as exc:
             try:
                 exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
+                exc.turn_requests = self._requests_sent()
                 if isinstance(exc, TurnInterrupted):
                     exc.completed_tools = self._completed_tools()
                 self._carry_spent_attempts(exc)
@@ -835,19 +844,21 @@ class AgentTurnCoordinator:
                 return True
         return False
 
-    #: Classes of a reply that failed IN FLIGHT: the source reported an error
-    #: in place of a reply, or sent one we could not read. Transient far more
-    #: often than not on a free model.
+    #: Classes of a reply that FAILED in flight: the source reported an error in
+    #: place of a reply, sent one we could not read, or its stream stopped
+    #: arriving. Never a reply that is merely slow: a streamed reply that keeps
+    #: arriving is not cut, and a non-streamed one that outruns the broker's
+    #: ceiling (``provider_reply_timeout``) is NOT retried or moved off -- on a
+    #: capped free tier, re-asking a slow model spends another of the day's
+    #: requests on the same slowness (founder, 2026-10-02).
     BAD_REPLY_CLASSES = frozenset({
-        "provider_reply_error", "provider_unreadable_reply", "provider_reply_timeout",
+        "provider_reply_error", "provider_unreadable_reply", "provider_stalled",
     })
-    #: Of those, the ones not worth the same model again: a reply that ran past
-    #: the broker's per-request ceiling would run past it again (live
-    #: 2026-10-02, turn c6ae56f9: qwen writing a large file on a free tier).
-    MOVE_ON_CLASSES = frozenset({"provider_reply_timeout"})
-    #: Per-turn bound on those retries, across every model: small, because each
-    #: is a fresh request under the same per-attempt ceiling.
-    MAX_BAD_REPLY_RETRIES = 3
+    #: Per-turn bound on those retries, across every model. Two -- this model
+    #: once, then at most one other accepted model -- because every request
+    #: counts against a free tier's daily allowance, and the notice says how
+    #: many the turn used.
+    MAX_BAD_REPLY_RETRIES = 2
     #: Seconds before each retry; an upstream error is usually a moment's.
     BAD_REPLY_BACKOFF_S = (2.0, 5.0, 10.0)
 
@@ -882,9 +893,7 @@ class AgentTurnCoordinator:
         if not attempts or any(a.failure_class not in self.BAD_REPLY_CLASSES for a in attempts):
             return False
         failed = self.context.model_selection
-        if failed in self.bad_reply_models or any(
-            a.failure_class in self.MOVE_ON_CLASSES for a in attempts
-        ):
+        if failed in self.bad_reply_models:
             if not self._has_candidate_order():
                 return False
             from tinyassets.providers.model_policy import Exhaustion
