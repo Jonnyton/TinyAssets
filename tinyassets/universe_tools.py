@@ -16,7 +16,8 @@ Every call -- reads included -- runs as a process inside bubblewrap, built by
 the SAME :func:`tinyassets.providers.provider_jail.jail_argv` as a provider
 launch, with a narrower view:
 
-* the agent's OWN workspace in the owning command center, at ``/u`` (harness W2, design #4172 §4.3: "the
+* the agent's OWN workspace in the owning command center, at ``/u``
+  (harness W2, design #4172 §4.3: "the
   agent has its own workspace it fully owns"). ``/u`` is the universe's
   ``.agent-workspace/`` directory, bound read-write as a whole, so the agent
   can create, rename and delete anything at the top of its workspace like on
