@@ -1,26 +1,26 @@
 ## 0. Gate
 
-- [ ] 0.1 Get a cross-family (Codex) refute of this proposal and design, covering D1/D3/D5/D6/D7 and Q1. Get the lead's and openshell-spike's decision on Q1 (single owner or per-universe ownership) before B1.
+- [x] 0.1 Q1 decided by the lead (2026-10-02): per-command-center ownership plus a platform owner. openshell-spike amends #4263 D11.
+- [ ] 0.2 Codex shape refute: round 1 was ADAPT (13 findings, design revised). Rounds 2-3 must reach SHIP-TO-BUILD before B1; past round 3 it escalates to the lead.
 
-## 1. Slice B1: lease, generation, fence, reconcile (one PR)
+## 1. B0 + B1: keyed lease, fences, generation, reconcile
 
-- [ ] 1.1 Build the lease store behind cp-scheduler's `OwnerLease` seam: acquisition proven by flock death, the restore-safe generation, the proof hash and `verify_lease_proof`. The current single process acquires it at boot.
-- [ ] 1.2 Add `agent_turns.owner_generation` (migration plus backfill to 1). Reconcile is gated on the lease and runs at `< G`, and the status projection uses `== G`. Delete BootTurns' created-at disjunct. Add the standby-start and restore-order tests.
-- [ ] 1.3 Inventory every owner database, add `owner_fence` and the `fenced()` writer, and turn the inventory into a test: every writer is fenced or listed with a reason.
+- [ ] 1.1 B0 (separate small PR, deployed first): name the columns in `AgentTurnJournal` inserts, so an added column cannot break a revert.
+- [ ] 1.2 Keyed lease store behind cp-scheduler's seam: flock-proven death, UNKNOWN blocks, liveness retention, the proof hash, and the restore tool with its offline high-water manifest (D1/D2).
+- [ ] 1.3 `owner_fence` per key, `fenced` vs `advance_fence`, migrations only under the host lock, and the `OWNER_STORES` registry with its inventory test (D3).
+- [ ] 1.4 `agent_turns.owner_generation`; reconcile per key at `< G`, after acquisition; the status projection at `== G`; standby-start and restore-order tests.
 
-## 2. Slice B2: barrier and admission (one PR)
+## 2. B2: whole-execution admission
 
-- [ ] 2.1 Add the activation barrier: advance the fences, ack each effect executor (in-process broker stream cancellation at an older G, plus a `boxhostd` stub), reconcile, then open. Inventory the effect paths (Q3).
-- [ ] 2.2 Make admission and the journal row one fenced transaction, closed by a fenced write. Test that no request is admitted without a row.
-- [ ] 2.3 Make steering and carryover read-then-acknowledge after durable persistence (D9). Add the invariant test that covers the live 2026-10-02 mid-turn loss.
+- [ ] 2.1 `cc_admission` and `cc_operations`: every start counted in its own fenced transaction, continuations carry their admission id, op-id attach/conflict, and durable background fires while closing (D5/D6a).
+- [ ] 2.2 Read-then-acknowledge steering and carryover (D9), and the explicit learned-cursor range (D8). Add the invariant tests, including tonight's mid-turn loss.
 
-## 3. Slice C1: frontend/owner split (one PR)
+## 3. C1: frontend/owner split
 
-- [ ] 3.1 Split the frontend and owner processes, with the local socket (peer creds plus a per-generation HMAC) and owner-side capability minting from the asserted identity (D6). Split the modules and add the classifier test.
-- [ ] 3.2 Add the frontend pending-request journal (persist first), the live-request queue with its bound, and the owner's notice-back drain (D7). Account deletion sweeps by owner.
+- [ ] 3.1 Process split, the local socket (peer creds plus a per-key-generation HMAC), the full Identity envelope with owner-side tier and access resolution, and owner-side capability minting (D6). Add the module classifier test.
+- [ ] 3.2 Pending journal with states, op ids, the abandonment facts, verified projection, and the deletion exclusion (D7).
 
-## 4. Slice C2: handover deploy path (one PR)
+## 4. C2: handover
 
-- [ ] 4.1 Give `deploy-prod` a frontend-only path (deploy-incident's #4272 switch) and an owner-handover path (D8). Phase 1's wait becomes the owner drain. Publish the metrics.
-- [ ] 4.2 Prove it: a scripted deploy loop with a request-level error probe shows 0 failed requests, no duplicate effects and no live turn settled. Measure interrupted turns per handover. Then the founder's long-turn live proof.
-- [ ] 4.3 Sync the `execution-owner` and `uptime-and-alarms` specs, then archive.
+- [ ] 4.1 `deploy-prod`: per-key idle moves, the frontend-only path (#4272), the operator force path, and the metrics (D4/D10).
+- [ ] 4.2 Proof: a scripted deploy loop with a request-level error probe (0 failed, 0 duplicate effects, 0 interrupted), the force path's honest notice, then the founder's long-turn live proof. Sync the specs and archive.

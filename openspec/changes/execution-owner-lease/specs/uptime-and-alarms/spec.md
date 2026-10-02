@@ -15,20 +15,13 @@ The production deploy SHALL NOT recreate the daemon while work is in flight. Wor
 - **WHEN** the probe upload is missing, partial or stale, or the sibling container cannot run
 - **THEN** the poll is unknown, and only three consecutive unknowns let the deploy proceed
 
-### Requirement: A Deploy Hands Over The Owner Or Touches Frontends Only, And Measures Both
-A deploy whose changes touch only frontend modules SHALL replace frontends blue-green and SHALL NOT touch the execution owner. A deploy that touches owner code SHALL hand the owner over in five steps:
-1. start the new owner in standby;
-2. close the old owner's admission;
-3. drain in-flight turns up to the owner drain bound;
-4. release the lease;
-5. let the new owner acquire, run the barrier, reconcile, and then open admission.
-
-Each deploy SHALL report failed requests and interrupted turns.
+### Requirement: A Deploy Hands Over Owners Per Command Center Or Touches Frontends Only, And Measures Both
+A deploy that changes only frontend modules SHALL replace frontends blue-green. Old frontends SHALL keep their open streams until those streams end, and the deploy SHALL NOT touch any owner. A deploy that changes owner code SHALL move each command center to the new owner only when that command center is idle, and SHALL NOT cut running work except by explicit operator force. Each deploy SHALL report failed requests, interrupted executions, and how long any old owner lingered.
 
 #### Scenario: A frontend-only deploy interrupts nothing
 - **WHEN** a merge changes only frontend modules while a long turn runs
-- **THEN** the turn keeps running in the owner, and the deploy reports zero failed requests and zero interrupted turns
+- **THEN** the turn keeps running in its owner, and the deploy reports zero failed requests and zero interrupted executions
 
-#### Scenario: An owner deploy reports what it cut
-- **WHEN** a turn is still running at the owner drain bound
-- **THEN** it is reconciled into a held state with the interrupted notice, never replayed, and the deploy reports it as interrupted
+#### Scenario: An owner deploy waits per command center, not for the slowest turn
+- **WHEN** an owner deploy runs while one command center has a long turn and others are idle
+- **THEN** the idle ones move at once, the busy one moves when its turn finishes, and the report shows zero interrupted executions
