@@ -1,0 +1,16 @@
+[Unit]
+Description=TinyAssets hourly brain-tier backup to the off-region store (interim ~1h RPO for platform state)
+Documentation=https://github.com/TinyAssets/TinyAssets/blob/main/docs/ops/backup-restore-runbook.md
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/tinyassets/env
+Environment=BACKUP_MODE=hourly-brain
+ExecStart=/bin/bash /opt/tinyassets-host-uptime/current/deploy/backup.sh
+TimeoutStartSec=15min
+PrivateTmp=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tinyassets-backup-hourly

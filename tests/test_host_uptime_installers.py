@@ -26,6 +26,7 @@ TIMERS = (
     "tinyassets-watchdog.timer",
     "daemon-watchdog.timer",
     "tinyassets-backup.timer",
+    "tinyassets-backup-hourly.timer",
     "tinyassets-prune.timer",
     "tinyassets-disk-watch.timer",
     "tinyassets-ship-logs.timer",

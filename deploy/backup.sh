@@ -32,6 +32,16 @@
 #                 configured for the scheme (see docs/ops/backup-restore-runbook.md).
 #
 # Optional env:
+#   BACKUP_MODE            "full" (default): both tiers, nightly. "hourly-brain": the
+#                          brain tier ONLY, to BACKUP_OFFREGION_DEST only, as
+#                          tinyassets-hourly-brain-<ts>.tar.gz, keeping the newest
+#                          BACKUP_RETAIN_HOURLY (default 48). That is the interim ~1 h
+#                          RPO for platform state while Litestream is deferred
+#                          (docs/design-notes/2026-10-02-litestream-platform-state.md).
+#                          The prefix deliberately does NOT start with
+#                          "tinyassets-brain-", so the nightly retention policy never
+#                          sees or prunes these, and vice versa.
+#   BACKUP_RETAIN_HOURLY   hourly-brain archives kept (default: 48)
 #   BACKUP_OFFREGION_DEST  rclone destination in ANOTHER REGION (target-architecture
 #                          S1a.3). BACKUP_DEST is in the droplet's own region, so it
 #                          does not survive a regional loss. When set, both tiers are
@@ -68,6 +78,8 @@ BACKUP_RETAIN_DAILY="${BACKUP_RETAIN_DAILY:-7}"
 BACKUP_RETAIN_WEEKLY="${BACKUP_RETAIN_WEEKLY:-4}"
 BACKUP_RETAIN_MONTHLY="${BACKUP_RETAIN_MONTHLY:-6}"
 DRY_RUN="${DRY_RUN:-0}"
+BACKUP_MODE="${BACKUP_MODE:-full}"
+BACKUP_RETAIN_HOURLY="${BACKUP_RETAIN_HOURLY:-48}"
 BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
 
 # Docker-internal volume mountpoint. Fall back to `docker volume inspect`
@@ -85,7 +97,16 @@ log() {
 
 # ----- 1. validate env --------------------------------------------------
 
-if [[ "${DRY_RUN}" != "1" ]]; then
+case "${BACKUP_MODE}" in
+    full|hourly-brain) ;;
+    *) log "ERROR: BACKUP_MODE must be full or hourly-brain (got: ${BACKUP_MODE})"; exit 1 ;;
+esac
+if [[ "${DRY_RUN}" != "1" && "${BACKUP_MODE}" == "hourly-brain" ]]; then
+    if [[ -z "${BACKUP_OFFREGION_DEST:-}" ]]; then
+        log "ERROR: BACKUP_MODE=hourly-brain needs BACKUP_OFFREGION_DEST (it ships off-region only)"
+        exit 1
+    fi
+elif [[ "${DRY_RUN}" != "1" ]]; then
     if [[ -z "${BACKUP_DEST:-}" ]]; then
         log "ERROR: BACKUP_DEST is not set"
         log "Set it in /etc/tinyassets/env, e.g.: BACKUP_DEST=s3://my-bucket/tinyassets-backups"
@@ -152,7 +173,11 @@ TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
 # ----- 3. brain tier — consistent archive of the irreplaceable subset ---
 
-BRAIN_NAME="tinyassets-brain-${TS}.tar.gz"
+if [[ "${BACKUP_MODE}" == "hourly-brain" ]]; then
+    BRAIN_NAME="tinyassets-hourly-brain-${TS}.tar.gz"
+else
+    BRAIN_NAME="tinyassets-brain-${TS}.tar.gz"
+fi
 BRAIN_PATH="/tmp/${BRAIN_NAME}"
 BRAIN_STAGE="$(mktemp -d /tmp/tinyassets-brain-stage.XXXXXX)"
 trap 'rm -rf "${BRAIN_STAGE}"' EXIT
@@ -194,6 +219,35 @@ if ! tar -czf "${BRAIN_PATH}" -C "${BRAIN_STAGE}" .; then
     exit 2
 fi
 log "  brain archive size: $(stat -c %s "${BRAIN_PATH}" 2>/dev/null || echo '?') bytes"
+
+# ----- 3b. hourly-brain mode: off-region only, own retention, then stop -
+if [[ "${BACKUP_MODE}" == "hourly-brain" ]]; then
+    log "uploading hourly brain tier off-region to ${BACKUP_OFFREGION_DEST}/${BRAIN_NAME}..."
+    if ! rclone copyto --contimeout 60s --timeout 900s \
+            "${BRAIN_PATH}" "${BACKUP_OFFREGION_DEST}/${BRAIN_NAME}"; then
+        log "ERROR: hourly brain off-region upload failed"
+        rm -f "${BRAIN_PATH}"
+        exit 3
+    fi
+    rm -f "${BRAIN_PATH}"
+    log "  hourly brain upload OK"
+    # Keep the newest BACKUP_RETAIN_HOURLY. Names are timestamped, so a sort
+    # is chronological; only this mode's prefix is ever listed or deleted.
+    set +e
+    rclone lsf --files-only --include 'tinyassets-hourly-brain-*.tar.gz' \
+            "${BACKUP_OFFREGION_DEST}/" 2>/dev/null \
+        | LC_ALL=C sort \
+        | head -n "-${BACKUP_RETAIN_HOURLY}" \
+        | while read -r victim; do
+            [[ "${victim}" == tinyassets-hourly-brain-*.tar.gz ]] || continue
+            log "  prune hourly: ${victim}"
+            rclone deletefile "${BACKUP_OFFREGION_DEST}/${victim}" || \
+                log "    WARN: delete failed for ${victim}"
+        done
+    set -e
+    log "hourly brain backup complete."
+    exit 0
+fi
 
 log "uploading brain tier to ${BACKUP_DEST}/${BRAIN_NAME}..."
 if ! rclone copyto --contimeout 60s --timeout 900s \

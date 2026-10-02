@@ -24,6 +24,7 @@ TIMERS=(
     tinyassets-watchdog.timer
     daemon-watchdog.timer
     tinyassets-backup.timer
+    tinyassets-backup-hourly.timer
     tinyassets-prune.timer
     tinyassets-disk-watch.timer
     tinyassets-ship-logs.timer
@@ -32,6 +33,7 @@ SERVICES=(
     tinyassets-watchdog.service
     daemon-watchdog.service
     tinyassets-backup.service
+    tinyassets-backup-hourly.service
     tinyassets-prune.service
     tinyassets-disk-watch.service
     tinyassets-ship-logs.service
@@ -40,6 +42,7 @@ UNIT_FILES=(
     tinyassets-watchdog.service tinyassets-watchdog.timer
     daemon-watchdog.service daemon-watchdog.timer
     tinyassets-backup.service tinyassets-backup.timer
+    tinyassets-backup-hourly.service tinyassets-backup-hourly.timer
     tinyassets-prune.service tinyassets-prune.timer
     tinyassets-disk-watch.service tinyassets-disk-watch.timer
     tinyassets-ship-logs.service tinyassets-ship-logs.timer

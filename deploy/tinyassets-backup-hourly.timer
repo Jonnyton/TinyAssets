@@ -1,0 +1,19 @@
+# TinyAssets hourly brain-tier backup to the off-region store.
+#
+# Interim ~1 h RPO for platform state while Litestream is deferred
+# (docs/design-notes/2026-10-02-litestream-platform-state.md).
+
+[Unit]
+Description=Timer for the TinyAssets hourly brain-tier backup (off-region)
+Requires=tinyassets-backup-hourly.service
+
+[Timer]
+# :23 past every hour except 03:xx, so it never overlaps the nightly 03:00
+# full run on this 1-vCPU box (that run already ships a brain tier).
+OnCalendar=*-*-* 00..02,04..23:23:00 UTC
+AccuracySec=2min
+Persistent=true
+Unit=tinyassets-backup-hourly.service
+
+[Install]
+WantedBy=timers.target
