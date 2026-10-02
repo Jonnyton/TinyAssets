@@ -860,6 +860,35 @@ def _workflow_regex(name: str) -> str:
     return match.group("pattern")
 
 
+def test_the_scope_declaration_set_is_what_the_label_rule_reads() -> None:
+    """SENSITIVE_RE still decides which PRs need the infra-change label and
+    which files count toward the hard caps, so its membership is pinned here
+    (Codex round 2 on #4255: deleting the narrow receipt set also deleted the
+    only tests of this regex)."""
+    sensitive = re.compile(_workflow_regex("SENSITIVE_RE"))
+    for path in (
+        ".github/workflows/tests.yml",
+        ".github/workflows/pr-scope-guard.yml",
+        ".github/workflows/deploy-prod.yml",
+        ".github/known-failing-tests.txt",
+        ".github/heavy-test-files.txt",
+        "scripts/ci_required_tests.py",
+        "scripts/drain_review_gate.py",
+        "deploy/install-host-uptime-services.sh",
+        "Dockerfile",
+        ".dockerignore",
+    ):
+        assert sensitive.match(path), f"{path} must stay release-critical"
+    for path in (
+        "scripts/check_context_budget.py",
+        "tests/test_rulebook_ratchet.py",
+        "tinyassets/auth/provider.py",
+        "docs/reference/executable-gates.md",
+        "packaging/claude-plugin/build_plugin.py",
+    ):
+        assert not sensitive.match(path), f"{path} must not newly need the label"
+
+
 def _extract(pattern: str) -> str:
     """The workflow's own lines, so this test cannot drift from what runs."""
     text = POLICY_WORKFLOW.read_text(encoding="utf-8")
