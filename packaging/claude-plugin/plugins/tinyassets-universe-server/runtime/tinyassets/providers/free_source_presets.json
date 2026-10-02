@@ -1,27 +1,5 @@
 [
   {
-    "id": "google_ai_studio",
-    "name": "Google AI Studio",
-    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "help_url": "https://aistudio.google.com/apikey",
-    "billing_url": "https://aistudio.google.com/billing",
-    "offer": "Free tier on eligible Gemini models; project and model limits apply. Daily requests reset at midnight Pacific.",
-    "models": [
-      "gemini-2.5-flash",
-      "gemini-2.5-flash-lite",
-      "gemini-3.1-flash-lite"
-    ],
-    "daily_reset_timezone": "America/Los_Angeles",
-    "wire": "openai_chat",
-    "terms": "Google's free tier may use your prompts to improve its products, is for ages 18+, and is not offered to users in the EEA, UK or Switzerland.",
-    "daily_cap": {
-      "requests_per_day": null,
-      "tokens_per_minute": null,
-      "reset_timezone": "America/Los_Angeles",
-      "source_url": "https://ai.google.dev/gemini-api/docs/rate-limits"
-    }
-  },
-  {
     "id": "groq",
     "name": "Groq",
     "base_url": "https://api.groq.com/openai/v1",
@@ -44,22 +22,25 @@
     }
   },
   {
-    "id": "cerebras",
-    "name": "Cerebras",
-    "base_url": "https://api.cerebras.ai/v1",
-    "help_url": "https://cloud.cerebras.ai/platform/api-keys",
-    "billing_url": "https://cloud.cerebras.ai",
-    "offer": "$5 trial credit expires after 30 days; a verified payment method is required. No recurring free tier. Buy credit there only if you choose.",
+    "id": "google_ai_studio",
+    "name": "Google AI Studio",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "help_url": "https://aistudio.google.com/apikey",
+    "billing_url": "https://aistudio.google.com/billing",
+    "offer": "Free tier on eligible Gemini models; project and model limits apply. Daily requests reset at midnight Pacific.",
     "models": [
-      "gpt-oss-120b",
-      "qwen-3.8-27b"
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+      "gemini-3.1-flash-lite"
     ],
+    "daily_reset_timezone": "America/Los_Angeles",
     "wire": "openai_chat",
+    "terms": "Google's free tier may use your prompts to improve its products, is for ages 18+, and is not offered to users in the EEA, UK or Switzerland.",
     "daily_cap": {
       "requests_per_day": null,
       "tokens_per_minute": null,
-      "reset_timezone": null,
-      "source_url": "https://inference-docs.cerebras.ai/support/rate-limits"
+      "reset_timezone": "America/Los_Angeles",
+      "source_url": "https://ai.google.dev/gemini-api/docs/rate-limits"
     }
   },
   {
@@ -78,6 +59,25 @@
       "tokens_per_minute": null,
       "reset_timezone": null,
       "source_url": "https://docs.mistral.ai/admin/billing-usage/usage-limits"
+    }
+  },
+  {
+    "id": "cerebras",
+    "name": "Cerebras",
+    "base_url": "https://api.cerebras.ai/v1",
+    "help_url": "https://cloud.cerebras.ai/platform/api-keys",
+    "billing_url": "https://cloud.cerebras.ai",
+    "offer": "$5 trial credit expires after 30 days; a verified payment method is required. No recurring free tier. Buy credit there only if you choose.",
+    "models": [
+      "gpt-oss-120b",
+      "qwen-3.8-27b"
+    ],
+    "wire": "openai_chat",
+    "daily_cap": {
+      "requests_per_day": null,
+      "tokens_per_minute": null,
+      "reset_timezone": null,
+      "source_url": "https://inference-docs.cerebras.ai/support/rate-limits"
     }
   },
   {

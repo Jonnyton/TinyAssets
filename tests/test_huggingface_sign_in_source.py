@@ -346,7 +346,8 @@ def test_the_connect_setup_offers_sign_in_sources_and_daily_caps(universes):
     (cap,) = setup["daily_caps"]
     assert cap == {"host": "openrouter.ai", "name": "OpenRouter", "free_requests_per_day": 50,
                    "credit_requests_per_day": 1000, "credit_amount": "$10",
-                   "credit_url": "https://openrouter.ai/settings/credits"}
+                   "credit_url": "https://openrouter.ai/settings/credits",
+                   "reset_timezone": "UTC"}
     # The credit link is the same page the daily-quota detail already names.
     from tinyassets.providers.free_sources import billing_url_for_host
 

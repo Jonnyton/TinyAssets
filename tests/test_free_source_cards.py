@@ -137,7 +137,7 @@ FreeSourceCards.render(cards);
     assert observed["count"] == 4 and observed["preserved"] and observed["cleared"]
     assert observed["type"] == "password" and observed["value"] == ""
     assert observed["sent"] == {"op": "deposit_key", "p": {
-        "preset_id": "google_ai_studio", "key": "private-own-key"}}
+        "preset_id": "groq", "key": "private-own-key"}}
     assert observed["refreshed"] == 1 and "Confirm model access" in observed["status"]
 
 
@@ -158,3 +158,18 @@ def test_authenticated_card_ingress_reuses_same_origin_gate(rig, monkeypatch):
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "confirmation_required"
     assert "my-private-key" not in response.text
+
+
+def test_key_cards_are_ordered_by_daily_allowance_and_one_reader_serves_caps():
+    """Lead 2026-10-02: Groq (largest daily count) and Gemini first; HF is not a key card."""
+    from tinyassets.providers.free_sources import daily_cap_for_host
+
+    assert [c["id"] for c in source_cards()] == ["groq", "google_ai_studio", "mistral", "cerebras"]
+    assert daily_cap_for_host("openrouter.ai") == {
+        "requests_per_day": 50, "credit_requests_per_day": 1000, "reset_timezone": "UTC",
+        "name": "OpenRouter", "credit_url": "https://openrouter.ai/settings/credits"}
+    assert daily_cap_for_host("api.groq.com") == {
+        "requests_per_day": 1000, "credit_requests_per_day": None, "reset_timezone": None,
+        "name": "Groq", "credit_url": "https://console.groq.com/settings/billing"}
+    assert daily_cap_for_host("router.huggingface.co")["requests_per_day"] is None
+    assert daily_cap_for_host("unknown.example") is None

@@ -238,9 +238,11 @@ def test_connect_screen_markup_and_entry_points():
                   'id="connect-subscriptions"', '<details id="connect-paste"',
                   'id="free-source-cards"'):
         assert piece in panel
-    # Order: guided free sign-in, backup sign-in, subscription, then pasted keys.
-    order = [panel.index(p) for p in ('id="connect-primary"', 'id="connect-sign-in-sources"',
-                                      'id="connect-subscriptions"', 'id="connect-paste"')]
+    # Lead 2026-10-02: by real usefulness -- guided sign-in, pasted keys (Groq,
+    # Gemini first), the small monthly sign-in source, then a subscription.
+    order = [panel.index(p) for p in ('id="connect-primary"', 'id="connect-paste"',
+                                      'id="connect-sign-in-sources"',
+                                      'id="connect-subscriptions"')]
     assert order == sorted(order)
     # The pasted-key cards are folded away until asked for.
     paste = panel[panel.index('<details id="connect-paste"'):]

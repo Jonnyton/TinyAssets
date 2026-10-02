@@ -56,6 +56,28 @@ def sign_in_preset(source_id):
                  if row["id"] == source_id and "sign_in" in row), None)
 
 
+def daily_cap_for_host(host):
+    """The ONE reader of a source's daily limit, by inference host, or None.
+
+    Reads both installed files: the provider-stated credit tier for hosts in
+    ``daily_cap_offers.json`` and the per-card ``daily_cap``. None values mean
+    unconfirmed, never zero.
+    """
+    offer = _DAILY_CAPS.get(host)
+    if offer is not None:
+        return {"requests_per_day": offer.get("free_requests_per_day"),
+                "credit_requests_per_day": offer.get("credit_requests_per_day"),
+                "reset_timezone": offer.get("reset_timezone"), "name": offer["name"],
+                "credit_url": offer.get("credit_url")}
+    row = source_for_host(host)
+    cap = row.get("daily_cap") if row else None
+    if not isinstance(cap, dict):
+        return None
+    return {"requests_per_day": cap.get("requests_per_day"), "credit_requests_per_day": None,
+            "reset_timezone": cap.get("reset_timezone"), "name": row["name"],
+            "credit_url": row.get("billing_url")}
+
+
 def daily_cap_offers():
     """Installed daily-limit facts the app words its daily-cap card from."""
     return [{"host": host, **offer} for host, offer in sorted(_DAILY_CAPS.items())]
