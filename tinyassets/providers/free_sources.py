@@ -39,6 +39,11 @@ def source_cards():
     return deepcopy([row for row in _SOURCES if "sign_in" not in row])
 
 
+def subscription_cards():
+    """Installed display copy for the existing device sign-in offer."""
+    return json.loads(Path(__file__).with_name("subscription_cards.json").read_text("utf-8"))
+
+
 def source_preset(source_id):
     return next((row for row in source_cards() if row["id"] == source_id), None)
 
