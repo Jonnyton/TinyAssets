@@ -57,6 +57,9 @@ permissions:
   contents: read
   packages: read
   issues: write
+  # Read-only: "Wait for in-flight turns" looks for queued host-mutating runs
+  # it must yield to.
+  actions: read
 
 jobs:
   deploy:
@@ -65,7 +68,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 min of deploy work plus up to 55 for "Wait for in-flight turns".
+    timeout-minutes: 70
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
@@ -332,6 +336,41 @@ jobs:
           echo "prepared=true" >> "$GITHUB_OUTPUT"
           echo "expected-instance state installed before candidate startup"
 
+      # A deploy recreates the daemon, and that kills every turn running in it:
+      # on 2026-10-02 it cut the founder's live village turn twice. So the swap
+      # waits until no work is in flight, polling every TURN_POLL_S and
+      # proceeding anyway at TURN_WAIT_CAP_S; deploy/wait_for_turns.sh has the
+      # rules (what counts, when it proceeds, the race it cannot close).
+      #
+      # Deliberately OUTSIDE deploy_fail_safe.sh: that script holds the
+      # host-mutation flock, and holding it for up to 45 min would stop the
+      # watchdogs restarting a daemon that falls over mid-wait.
+      #
+      # Coalescing comes from the concurrency group above: GitHub keeps ONE
+      # pending run per group, and a newer one replaces it. Merges landing during
+      # a long turn therefore queue as a single deploy of the newest sha behind
+      # this one, not twenty swaps. release-reconcile treats this in-progress run
+      # as covering its sha and dispatches nothing extra for it.
+      #
+      # The same group makes the other host-mutating workflows (p0-outage-triage,
+      # restart-daemon, install-host-services, apply-daemon-env) queue behind a
+      # waiting deploy. A P0 repair must not sit 45 min behind a polite wait, so
+      # the wait YIELDS -- proceeds to the swap now -- as soon as any of them is
+      # queued (YIELD_WORKFLOWS).
+      - name: Wait for in-flight turns
+        id: turns
+        # The cap (which includes the prefetch) + one worst-case poll + cleanup.
+        timeout-minutes: 55
+        env:
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          TURN_WAIT_CAP_S: '2700'
+          TURN_POLL_S: '15'
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YIELD_WORKFLOWS: p0-outage-triage.yml restart-daemon.yml install-host-services.yml apply-daemon-env.yml
+        run: bash deploy/wait_for_turns.sh
+
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
@@ -522,6 +561,7 @@ jobs:
             echo "## Fail-safe deploy"
             echo "- image: \`${{ steps.tag.outputs.image_ref }}\`"
             echo "- revision: \`${{ steps.tag.outputs.revision }}\`"
+            echo "- waited for in-flight turns: \`${{ steps.turns.outputs.outcome }}\` after \`${{ steps.turns.outputs.waited_s }}s\` (\`${{ steps.turns.outputs.polls }}\` polls)"
             echo "- deploy rc: \`${{ steps.deploy.outputs.rc }}\` result: \`${{ steps.deploy.outputs.result }}\`"
             echo "- deployed image: \`${{ steps.deploy.outputs.deployed_image }}\`"
             echo "- public canary: \`${{ steps.canary.outcome }}\`"

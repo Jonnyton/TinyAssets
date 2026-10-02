@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -327,6 +328,39 @@ def _load_release_state() -> dict[str, Any]:
         out["warnings"].append(
             "release_state_missing_fields: " + ", ".join(missing)
         )
+    return out
+
+
+def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
+    """Whether a deploy is waiting for in-flight work to finish before it swaps.
+
+    ``deploy-prod`` refuses to recreate the daemon while a turn is running
+    (``scripts/turns_in_flight.py``) and refreshes ``.deploy-pending.json`` in the
+    data root while it waits. Surfaced so whoever is watching a long turn can see
+    that an update is queued behind it, rather than wondering why a merge has not
+    shipped. Read-only and best-effort, like the release receipt.
+
+    A marker past its ``expires_at`` is a deploy job that died mid-wait, not a
+    waiting deploy: it reads as not pending, with the reason, rather than saying
+    "update pending" forever. An unreadable one says so; it never reads as pending.
+    """
+    path = _base_path() / ".deploy-pending.json"
+    try:
+        if not path.is_file():
+            return {"pending": False}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - status probe must survive bad I/O
+        return {"pending": False, "warning": f"deploy_pending_read_failed: {type(exc).__name__}"}
+    if not isinstance(payload, dict):
+        return {"pending": False, "warning": "deploy_pending_marker_not_object"}
+    expires = _parse_iso_to_epoch(str(payload.get("expires_at") or ""))
+    moment = time.time() if now is None else now
+    if expires is None or expires < moment:
+        return {"pending": False, "warning": "deploy_pending_marker_expired"}
+    out: dict[str, Any] = {"pending": True}
+    for field in ("target", "waiting_since", "deadline", "in_flight", "observed_at", "run_url"):
+        if field in payload:
+            out[field] = payload[field]
     return out
 
 
@@ -1312,6 +1346,7 @@ def get_status(
             "schema_version": _STATUS_SCHEMA_VERSION,
             "active_host": active_host,
             "release_state": _load_release_state(),
+            "deploy_pending": _load_deploy_pending(),
             # Present on every status shape the probes can meet, universe or
             # not: the activity probe reads these instead of inspecting a
             # universe. Both, because `last_activity_at` goes stale for a quiet
@@ -1744,6 +1779,7 @@ def get_status(
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
         "release_state": release_state,
+        "deploy_pending": _load_deploy_pending(),
         # Platform-wide, names no universe: the uptime probes read these
         # instead of inspecting a universe, which the canary principal may not
         # do (service-principal boundary D4).

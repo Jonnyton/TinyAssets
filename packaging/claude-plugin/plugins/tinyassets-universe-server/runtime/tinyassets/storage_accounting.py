@@ -518,6 +518,7 @@ ROOT_ENTRIES: dict[str, str] = {
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".consumer_liveness": "platform: process liveness locks",
+    ".deploy-pending.json": "platform: a waiting deploy's expiring status marker",
     ".runtime": "platform: provider runtime",
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",

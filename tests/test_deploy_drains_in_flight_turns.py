@@ -43,7 +43,8 @@ COMPOSE = REPO / "deploy" / "compose.yml"
 SCRIPT = REPO / "deploy" / "deploy_fail_safe.sh"
 SERVER = REPO / "tinyassets" / "universe_server.py"
 
-#: What the deploy job allows in total, from `.github/workflows/deploy-prod.yml`.
+#: What the deploy job allows for deploy work, from `.github/workflows/deploy-prod.yml`:
+#: the job's timeout less the "Wait for in-flight turns" step's.
 DEPLOY_JOB_BUDGET_S = 15 * 60
 #: How many times one run can converge, and therefore drain: the forward converge,
 #: plus the rollback converge when the new image does not become acceptable.
@@ -58,10 +59,18 @@ OUTAGE_BUDGET_S = 30
 
 
 def _workflow_job_timeout_s() -> int:
+    """What the job allows for deploy WORK: its timeout minus the turn wait.
+
+    "Wait for in-flight turns" may spend its whole step timeout before the swap
+    starts (``tests/test_turns_in_flight.py``), so that share is not available
+    to the converges and health waits this file budgets.
+    """
     text = (REPO / ".github" / "workflows" / "deploy-prod.yml").read_text(encoding="utf-8")
     match = re.search(r"^    timeout-minutes:\s*(\d+)$", text, re.M)
     assert match, "the deploy job's timeout-minutes moved; re-point this"
-    return int(match.group(1)) * 60
+    steps = yaml.safe_load(text)["jobs"]["deploy"]["steps"]
+    wait = next(s for s in steps if s.get("name") == "Wait for in-flight turns")
+    return (int(match.group(1)) - int(wait["timeout-minutes"])) * 60
 
 
 def _health_timeout_s() -> int:
