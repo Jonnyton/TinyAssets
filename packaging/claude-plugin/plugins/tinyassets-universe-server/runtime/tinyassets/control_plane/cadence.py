@@ -196,18 +196,6 @@ def due_instant(
     return due, state, collapsed
 
 
-def fires_per_day(policy: CadencePolicy, state: str) -> float:
-    """Upper bound on fires per day in ``state`` (active hours clip it)."""
-    start, end = _clock(policy.active_start), _clock(policy.active_end)
-    window = 86400.0 if start == end else (
-        ((end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)) % 1440
-    ) * 60.0
-    period = policy.period_for(state)
-    if period >= 86400:
-        return 86400.0 / period
-    return float(math.ceil(window / period))
-
-
 __all__ = [
     "COOLING",
     "DECAY_STATES",
@@ -219,7 +207,6 @@ __all__ = [
     "decay_state",
     "deploy_policy",
     "due_instant",
-    "fires_per_day",
     "policy_dict",
     "policy_with",
 ]
