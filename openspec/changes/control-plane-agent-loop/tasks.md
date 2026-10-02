@@ -20,9 +20,19 @@
       and delete the thread/slot/cancel layering it makes unnecessary.
 - [ ] 2.2 One shared loop: task-aware, non-blocking provider-assignment
       admission; journal writes off the loop; then turns as tasks on it.
-- [ ] 2.3 Configure the `BoxProvider` (S4 local driver) in the daemon; adopt
-      its module types in place of `BoxExec`; its `stream` honours an I/O
-      deadline and its image ships `flock` (design Risks).
+- [ ] 2.3 Configure the `BoxProvider` (#4274, `tinyassets.boxes`) in the
+      daemon and adopt its types in place of `BoxExec`. Its shapes differ from
+      PR 1's assumptions:
+      - events are `kind` "output"|"exit", merged in order;
+      - `offset` is the chunk START, so resume from `offset + len(data)`;
+      - exit carries `exit_code` and `killed`;
+      - `stream(timeout=)` ends without an exit event (resume, not done);
+      - the refusal class is `tinyassets.boxes.BoxOperationRefused`;
+      - the root is the constant `BOX_ROOT`, with no `handle.root`;
+      - `ensure_awake` comes before exec;
+      - `write(mode="cas", expect_generation=)` is an atomic alternative to
+        the flock script.
+      The image ships `flock` (design Risks).
 - [ ] 2.4 Model stream to the app over the S6 contract
       (`openspec/changes/broker-streaming-contract`) -> loop -> the
       frontend's SSE response, cancellation propagated both ways.
