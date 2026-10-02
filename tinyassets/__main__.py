@@ -164,6 +164,11 @@ def main() -> int:
     parser = _build_argparser()
     args = parser.parse_args()
 
+    # Before any data is opened: the layout guard (storage_layout.py).
+    from tinyassets.storage_layout import require_layout
+
+    require_layout()
+
     # Import and auto-register domains
     try:
         from tinyassets.discovery import auto_register

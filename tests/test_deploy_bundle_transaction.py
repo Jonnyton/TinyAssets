@@ -417,6 +417,11 @@ def main(argv):
             ):
                 sys.stderr.write("fake docker: compose up refused for %s\n" % ref)
                 return 1
+            # A candidate that starts migrating the data while it boots.
+            marker = (state.get("mark_migrating_on_up") or {}).get(ref)
+            if marker:
+                with open(marker, "w", encoding="utf-8") as handle:
+                    handle.write('{"layout": 1, "state": "migrating"}')
             health = state.get("daemon_health", "healthy")
             # Per-image health: a rollback test needs the CANDIDATE to stay
             # unhealthy while the previous image comes back healthy.
@@ -1257,15 +1262,33 @@ def test_unhealthy_candidate_restores_the_bundle_and_the_previous_image(box: Box
     assert box.env_image() == OLD_IMAGE
 
 
-def test_no_image_rollback_onto_data_a_migration_has_touched(box: Box):
-    """The data layout guard (design D7.2): an older image must never start on
-    data a migration marked ``migrating`` or moved to a newer layout -- it could
-    create blank homes. The fail-safe stops and asks for the restore instead."""
+def test_no_image_converges_onto_data_a_migration_has_touched(box: Box):
+    """The data layout guard (design D7.2), before anything is mutated: an image
+    must never start on data marked ``migrating`` or moved to a newer layout."""
     volume = box.root / "data-volume"
     volume.mkdir()
     (volume / ".layout.json").write_text('{"layout": 1, "state": "migrating"}', encoding="utf-8")
+    before = box.live()
     box.stage_bundle()
-    box.set_docker_state(unhealthy_images=[NEW_IMAGE])
+
+    completed = box.run(NEW_IMAGE, FAKE_DOCKER_VOLUME_DIR=str(volume))
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "layout_refused"
+    assert box.env_image() == OLD_IMAGE and box.live() == before, "prod must be untouched"
+
+
+def test_no_image_rollback_onto_data_the_failed_candidate_began_migrating(box: Box):
+    """The candidate marks the data ``migrating`` while it boots, then fails: the
+    previous image must NOT start on it, and the daemon is left down for the
+    restore (design D7.2)."""
+    volume = box.root / "data-volume"
+    volume.mkdir()
+    box.stage_bundle()
+    box.set_docker_state(
+        unhealthy_images=[NEW_IMAGE],
+        mark_migrating_on_up={NEW_IMAGE: str(volume / ".layout.json")},
+    )
 
     completed = box.run(NEW_IMAGE, FAKE_DOCKER_VOLUME_DIR=str(volume))
 

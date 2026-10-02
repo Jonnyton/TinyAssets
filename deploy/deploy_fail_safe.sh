@@ -110,14 +110,15 @@
 # Exit codes:
 #   0  deployed the new image (daemon healthy + cloudflared + logs up)
 #   1  refused, and the box is back where it started: bad args, lock, pull,
-#      import, `bundle_invalid`, `bundle_dirty`, or a post-install failure whose
+#      import, `layout_refused`, `bundle_invalid`, `bundle_dirty`, or a post-install failure whose
 #      restore COMPLETED (`bundle_install_failed`, `bundle_pointer_failed`,
 #      `failed_env_write`)
 #   2  new image unhealthy; rolled back to the previous image + bundle (healthy)
 #   3  manual intervention required — the rollback itself did not complete
 #      (`rollback_failed`, `rollback_env_write_failed`, `rollback_unhealthy`,
-#      `failed_no_rollback_target`, `rollback_needs_restore`). On `rollback_failed` the bundle-dirty
-#      marker is set and normal deploys refuse until `--restore-bundle` clears it.
+#      `failed_no_rollback_target`, `rollback_needs_restore`). On `rollback_failed` the
+#      bundle-dirty marker is set and normal deploys refuse until `--restore-bundle`
+#      clears it. On `rollback_needs_restore` the daemon is left stopped.
 set -uo pipefail
 
 RESTORE_BUNDLE=0
@@ -297,10 +298,18 @@ layout_marker_path() {
   [ -n "$dir" ] || return 1
   printf '%s/.layout.json' "$dir"
 }
-layout_allows_image_rollback() {  # $1 = marker path; 0 = an image-only rollback is safe
-  local marker="$1"
-  [ -e "$marker" ] || return 0
-  python3 - "$marker" <<'LAYOUT_PY'
+layout_allows_any_image() {  # $1 = marker path; 0 = any image may start
+  local marker="$1" dir
+  dir="$(dirname "$marker")"
+  # Fail closed: an unreadable volume is not an absent marker.
+  [ -d "$dir" ] || return 1
+  (
+    # Under the shared layout lock, never mid-migration (a migration holds it
+    # exclusively). Non-blocking: a held lock is a refusal, not a wait.
+    exec 8>>"$dir/.layout.lock" || exit 1
+    flock -s -n 8 || exit 1
+    [ -e "$marker" ] || exit 0
+    python3 - "$marker" <<'LAYOUT_PY'
 import json
 import sys
 
@@ -312,6 +321,15 @@ except (OSError, ValueError):
 ok = isinstance(doc, dict) and doc.get("layout") == 1 and doc.get("state") == "stable"
 sys.exit(0 if ok else 1)
 LAYOUT_PY
+  )
+}
+# Refuse and leave the service DOWN: the remedy is restore-from-backup, and an
+# older image serving on newer data is the failure this guard exists to stop.
+refuse_on_layout() {  # $1 = what was about to start
+  err "the data layout marker is not layout 1 / stable, cannot be read, or a migration holds the layout lock: NOT starting $1. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the image built for the restored layout"
+  docker stop "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
+  echo "deploy_result=rollback_needs_restore"
+  exit 3
 }
 
 # The container must actually be RUNNING the requested image. A healthy daemon
@@ -1255,6 +1273,16 @@ if ! timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none 
 fi
 log "candidate image loads cleanly"
 
+# --- 3a. the data layout must be one every image understands --------------
+# (tinyassets/storage_layout.py). Checked before anything is mutated, for every
+# mode: --restore-bundle converges an OLDER image too.
+LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_any_image "$LAYOUT_MARKER"; then
+  err "data layout check failed before converging ${NEW_IMAGE}: the marker is not layout 1 / stable, cannot be read, or a migration holds the layout lock; prod untouched"
+  echo "deploy_result=layout_refused"
+  exit 1
+fi
+
 # --- 3b. the runtime bundle: validate -> snapshot -> install ---------------
 if ! ensure_state_dir; then
   err "cannot prepare ${BUNDLE_STATE_DIR}; refusing (prod untouched)"
@@ -1413,11 +1441,11 @@ if [ "$INSTALLED_THIS_RUN" = "1" ]; then
 else
   log "bundle: this run installed none; leaving the runtime files untouched during the image rollback"
 fi
+# The failed candidate may have migrated (or begun migrating) the data while it
+# booted: re-check before the previous image starts on it.
 LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
-if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_image_rollback "$LAYOUT_MARKER"; then
-  err "the data layout marker is not layout 1 / stable (or cannot be read): the data may be migrated past ${PREV_IMAGE}; NOT starting it. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the previous image"
-  echo "deploy_result=rollback_needs_restore"
-  exit 3
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_any_image "$LAYOUT_MARKER"; then
+  refuse_on_layout "${PREV_IMAGE}"
 fi
 if ! set_image "$PREV_IMAGE"; then
   err "could not record rollback image ${PREV_IMAGE} in ${ENV_FILE} — manual intervention required"
