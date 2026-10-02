@@ -15,8 +15,6 @@ import shutil
 import subprocess
 import tempfile
 
-import pytest
-
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
 

@@ -60,13 +60,14 @@ let railCache=[{{request_id:"sys_connect_llm",
 @pytest.fixture
 def page():
     sync_api = pytest.importorskip(
-        "playwright.sync_api", reason="Playwright unavailable; runs-in=real-browser-proof",
+        "playwright.sync_api",
+        reason="Playwright unavailable; owner=codex runs-in=real-browser-proof",
     )
     with sync_api.sync_playwright() as runtime:
         try:
             browser = runtime.chromium.launch()
         except Exception as exc:  # noqa: BLE001 - a host without the browser build
-            pytest.skip(f"Chromium unavailable; runs-in=real-browser-proof: {exc}")
+            pytest.skip(f"Chromium unavailable; owner=codex runs-in=real-browser-proof: {exc}")
         try:
             tab = browser.new_page()
             tab.set_content(_page_html())
