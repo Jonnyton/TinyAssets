@@ -324,3 +324,137 @@ def test_the_guard_is_held_across_every_send_including_the_oauth_resend(ledger):
                              {"url": "https://models.example.com/v1/chat", "body": {}},
                              stream=True, guard=Guard)
     assert _read_all(stream) == b"ok" and entered == ["in", "out"]
+
+@pytest.mark.parametrize("operation,args", [("recv", (1,)), ("recv_into", (bytearray(1),)),
+                                           ("send", (b"x",)), ("sendall", (b"x",))])
+def test_cancel_checkpoint_precedes_every_socket_operation(operation, args):
+    from tinyassets.storage.outbound_connections import BrokerStreamStop, _DeadlineSocket
+
+    class Cancelled(BrokerStreamStop):
+        pass
+
+    def checkpoint():
+        raise Cancelled
+
+    sock = _DeadlineSocket(object(), deadline=time.monotonic() + 30,
+                           per_op_timeout=30, checkpoint=checkpoint)
+    with pytest.raises(Cancelled):
+        getattr(sock, operation)(*args)
+
+
+@pytest.mark.parametrize("phase", ["write", "read"])
+def test_transport_preserves_cancel_type(dribble, phase):
+    from tinyassets.storage.outbound_connections import BrokerStreamStop
+
+    class Cancelled(BrokerStreamStop):
+        pass
+
+    stopped = False
+
+    def checkpoint():
+        if stopped:
+            raise Cancelled
+
+    def connected(_sock):
+        nonlocal stopped
+        stopped = phase == "write"
+
+    dribble.stub.update(pieces=[None, b"x"], pause=0.3)
+    driver, port = _driver(dribble)
+    if phase == "write":
+        with pytest.raises(Cancelled):
+            driver.open_stream(bundle=ConnectionSecretBundle(token=SECRET), auth_scheme="bearer",
+                               method="POST", url=f"https://models.example:{port}/v1/chat",
+                               checkpoint=checkpoint, on_connect=connected)
+    else:
+        stream = driver.open_stream(bundle=ConnectionSecretBundle(token=SECRET),
+                                    auth_scheme="bearer", method="POST",
+                                    url=f"https://models.example:{port}/v1/chat",
+                                    checkpoint=checkpoint)
+        stopped = True
+        with pytest.raises(Cancelled):
+            _drain(stream)
+
+
+@pytest.fixture
+def oauth_broker(ledger, monkeypatch):
+    from dataclasses import replace
+
+    from tinyassets.connection_oauth.tokens import TokenBundle, encode
+
+    resource = ledger._active_resource_for_grant("grant-model")
+    monkeypatch.setattr(ledger, "_active_resource_for_grant",
+                        lambda _: replace(resource, auth_scheme="oauth2"))
+    original = TokenBundle("old-access-token", "https://auth.example/token", "client",
+                           refresh_token="old-refresh-token", expires_at=0)
+    broker, calls = _broker(ledger, [b"ok"], credential=encode(original))
+    return broker, calls, replace(original, access_token="new-access-token",
+                                  refresh_token="new-refresh-token")
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_oauth_refresh_is_guarded_and_checks_deadline(oauth_broker, monkeypatch, expired):
+    broker, calls, bundle = oauth_broker
+    entered, refreshes = [], []
+
+    class Guard:
+        def __enter__(self):
+            entered.append(True)
+
+        def __exit__(self, *args):
+            entered.pop()
+
+    def refresh(*args, **kwargs):
+        assert entered
+        refreshes.append(kwargs)
+        return bundle
+
+    monkeypatch.setattr(CredentialBlindBroker, "_oauth_bundle", refresh)
+    if expired:
+        with pytest.raises(OutboundDeadlineExceeded):
+            broker.dispatch("grant-model", "POST", {}, stream=True, guard=Guard,
+                            deadline_at=time.monotonic() - 1)
+        assert not refreshes and not calls
+    else:
+        def network(**kwargs):
+            assert kwargs["checkpoint"] is checkpoint
+            return UpstreamStream.complete({"status": 401, "body": b""}, ())
+
+        def checkpoint():
+            pass
+        broker._network_request = network
+        broker.dispatch("grant-model", "POST", {}, stream=True, guard=Guard,
+                        checkpoint=checkpoint, deadline_at=time.monotonic() + 30)
+        assert len(refreshes) == 2
+
+
+@pytest.mark.parametrize("echo", ["body", "header"])
+def test_proactive_refresh_keeps_original_tokens_held(oauth_broker, monkeypatch, echo):
+    broker, _, bundle = oauth_broker
+    monkeypatch.setattr(CredentialBlindBroker, "_oauth_bundle", lambda *args, **kwargs: bundle)
+    broker._network_request = lambda **kwargs: UpstreamStream.complete({
+        "status": 200, "body": b"old-access-token" if echo == "body" else b"ok",
+        "headers": {"x-echo": "old-refresh-token"} if echo == "header" else {},
+    }, ())
+    with pytest.raises(ProxyRequestError):
+        _read_all(broker.dispatch("grant-model", "POST", {}, stream=True))
+
+
+def test_redirect_stream_reports_each_connection():
+    from tests.test_http_redirect_chain import SOURCE, _driver, _redirect, chain
+    from tinyassets.storage.outbound_connections import _parse_allowed_endpoints
+
+    fixture = chain.__wrapped__()
+    server = next(fixture)
+    try:
+        server.state["responses"] = [_redirect("https://cdn.example.com/file"), {"body": b"ok"}]
+        connected = []
+        stream = _driver(server).open_stream(
+            bundle=ConnectionSecretBundle(token=SECRET), auth_scheme="bearer", method="GET",
+            url="https://api.example.com/download",
+            allowed_endpoints=_parse_allowed_endpoints([SOURCE]),
+            revalidate_authority=lambda deadline: None, on_connect=connected.append,
+        )
+        assert _drain(stream) == b"ok" and len(connected) == 2
+    finally:
+        fixture.close()

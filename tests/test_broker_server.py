@@ -112,6 +112,7 @@ def broker(tmp_path):
 
         def dispatch(grant, verb, request, *, stream, idle_s=None, guard=None,
                      on_connect=None, checkpoint=None, deadline_at=None):
+            upstreams["idle_s"] = idle_s
             maker = upstreams["next"]
             if getattr(maker, "raw_dispatch", False):
                 return maker(guard=guard, on_connect=on_connect, sent=sent)
@@ -501,3 +502,70 @@ def test_the_async_client_raises_the_typed_refusal(broker):
 
     with pytest.raises(GrantResolutionError):
         asyncio.run(scenario())
+
+
+def test_idle_bound_cannot_be_widened_by_the_caller(broker):
+    async def scenario():
+        client = _async_client(broker)
+        try:
+            async with client.stream(grant_id="grant-a", connection_id="conn-a", verb="POST",
+                                     request={}, op_id=new_op_id(), idle_s=600) as stream:
+                await stream.head()
+                _ = [chunk async for chunk in stream.body()]
+            assert broker.upstreams["idle_s"] == 30
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_async_client_reconnects_after_broker_eof(tmp_path):
+    from tinyassets.broker.aclient import AsyncBrokerClient
+    from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome, ProxyRequestError
+
+    async def scenario():
+        connections = []
+
+        async def serve(reader, writer):
+            connections.append(writer)
+            frame = await rf.read_frame(reader)
+            if len(connections) > 1:
+                writer.write(rf.control(frame.stream, {"op": "HEAD", "status": 200}))
+                writer.write(rf.control(frame.stream, {"op": "END", "outcome": "completed"}))
+                await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        path = tmp_path / "reconnect.sock"
+        listener = await asyncio.start_unix_server(serve, path=str(path))
+        client = AsyncBrokerClient(path, principal="alice", command_center="cc-alice",
+                                   fence=lambda: (1, "token"))
+
+        async def turn():
+            async with client.stream(grant_id="grant-a", connection_id="conn-a", verb="POST",
+                                     request={}, op_id=new_op_id()) as stream:
+                await stream.head()
+                return [chunk async for chunk in stream.body()]
+
+        try:
+            with pytest.raises(AmbiguousProxyOutcome):
+                await asyncio.wait_for(turn(), 3)
+            assert client._writer is client._reader is client._demux is None
+            assert await asyncio.wait_for(turn(), 3) == []
+            assert len(connections) == 2
+            demux = client._demux
+            if demux is not None:
+                await asyncio.wait_for(demux, 3)
+            with pytest.raises(AmbiguousProxyOutcome):
+                await client._send(b"dead connection")
+            listener.close()
+            await listener.wait_closed()
+            path.unlink(missing_ok=True)
+            with pytest.raises(ProxyRequestError):
+                await asyncio.wait_for(turn(), 3)
+        finally:
+            await client.close()
+            listener.close()
+            await listener.wait_closed()
+
+    asyncio.run(scenario())

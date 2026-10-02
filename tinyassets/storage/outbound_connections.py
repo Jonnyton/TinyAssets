@@ -1300,11 +1300,26 @@ class CredentialBlindBroker:
         ):
             secrets_held = url_secret_sensitive_values(credential)
         wire_credential = credential
+
+        def oauth_bundle(*, rejected: str = "") -> Any:
+            if guard is not None:
+                with guard():
+                    if deadline_at is not None and time.monotonic() >= deadline_at:
+                        raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
+                    return self._oauth_bundle(resource, grant_id, verb, credential,
+                                              rejected=rejected)
+            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected)
+
         if oauth:
-            bundle = self._oauth_bundle(resource, grant_id, verb, credential)
+            from tinyassets.connection_oauth.tokens import decode
+
+            bundle = oauth_bundle()
+            original = decode(credential)
             wire_credential = bundle.access_token
-            secrets_held = bundle.secret_values()
-        streaming = {"stream": True, "idle_s": idle_s, "on_connect": on_connect} if stream else {}
+            secrets_held = tuple(dict.fromkeys(
+                (*original.secret_values(), *bundle.secret_values())))
+        streaming = {"stream": True, "idle_s": idle_s, "on_connect": on_connect,
+                     "checkpoint": checkpoint} if stream else {}
         if checkpoint is not None and revalidate_authority is not None:
             # Each redirect hop re-checks the caller's cancellation and fence too.
             authority_check = revalidate_authority
@@ -1321,8 +1336,7 @@ class CredentialBlindBroker:
             # once (unless another holder already did) and send once more.
             # A stream's status is known before any body byte is read, so the
             # resend happens before anything reaches the caller.
-            bundle = self._oauth_bundle(resource, grant_id, verb, credential,
-                                        rejected=wire_credential)
+            bundle = oauth_bundle(rejected=wire_credential)
             if bundle.access_token != wire_credential:
                 wire_credential = bundle.access_token
                 secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
@@ -3216,14 +3230,18 @@ class _DeadlineSocket:
     deadline inside the stdlib parser too, not only in the body loop.
     """
 
-    __slots__ = ("_deadline", "_per_op_timeout", "_sock")
+    __slots__ = ("_deadline", "_per_op_timeout", "_sock", "_checkpoint")
 
-    def __init__(self, sock: Any, *, deadline: float, per_op_timeout: float | None) -> None:
+    def __init__(self, sock: Any, *, deadline: float, per_op_timeout: float | None,
+                 checkpoint: Callable[[], None] | None = None) -> None:
         self._sock = sock
         self._deadline = deadline
         self._per_op_timeout = per_op_timeout
+        self._checkpoint = checkpoint
 
     def _arm(self) -> None:
+        if self._checkpoint is not None:
+            self._checkpoint()
         remaining = self._deadline - time.monotonic()
         if remaining <= 0:
             raise _TotalDeadlineExceeded
@@ -3297,6 +3315,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         open_socket: Callable[..., socket.socket],
         deadline: float,
         on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(host, **kwargs)
@@ -3304,6 +3323,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._open_socket = open_socket
         self._deadline = deadline
         self._on_connect = on_connect
+        self._checkpoint = checkpoint
 
     def connect(self) -> None:  # noqa: D102 - overrides http.client
         # Bound the TCP connect by the remaining TOTAL budget, not just the per-op
@@ -3347,10 +3367,10 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             tls,
             deadline=self._deadline,
             per_op_timeout=self.timeout,
+            checkpoint=self._checkpoint,
         )
         if self._on_connect is not None:
-            # A stream's owner may need to abort this exchange from another
-            # thread (cancel, fence) before any response object exists.
+            # Record the connection before the first request write.
             self._on_connect(tls)
 
 
@@ -3365,12 +3385,14 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         open_socket: Callable[..., socket.socket],
         deadline: float,
         on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(context=context)
         self._pinned_address = pinned_address
         self._open_socket = open_socket
         self._deadline = deadline
         self._on_connect = on_connect
+        self._checkpoint = checkpoint
 
     def https_open(self, req: Any) -> Any:
         return self.do_open(self._make_connection, req)
@@ -3390,6 +3412,7 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
             open_socket=self._open_socket,
             deadline=self._deadline,
             on_connect=self._on_connect,
+            checkpoint=self._checkpoint,
         )
 
 
@@ -3517,6 +3540,7 @@ def _execute_pinned_https_request(
     absolute_deadline: float | None = None,
     hop_metadata: _HttpHopMetadata | None = None,
     on_connect: Callable[[Any], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Fire ONE request: no ambient proxies, no redirects, bounded response."""
     deadline = (
@@ -3542,6 +3566,7 @@ def _execute_pinned_https_request(
             open_socket=open_socket,
             deadline=deadline,
             on_connect=on_connect,
+            checkpoint=checkpoint,
         )
     )
 
@@ -3623,6 +3648,8 @@ def _execute_pinned_https_request(
                         },
                         "body": body_bytes.decode("utf-8", errors="replace"),
                     }
+    except BrokerStreamStop:
+        raise
     except _TotalDeadlineExceeded:
         read_deadline_exceeded = True
     except Exception as exc:
@@ -3793,6 +3820,8 @@ class UpstreamStream:
         self._reading = True
         try:
             piece = self._response.read1(min(max_bytes, _SSRF_READ_CHUNK))
+        except BrokerStreamStop as exc:
+            failure = exc
         except _TotalDeadlineExceeded:
             failure = OutboundDeadlineExceeded("outbound request exceeded the total deadline")
         except Exception as exc:
@@ -3857,6 +3886,7 @@ def _open_pinned_https_stream(
     max_header_bytes: int,
     sensitive: tuple[str, ...],
     on_connect: Callable[[Any], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> UpstreamStream:
     """``_execute_pinned_https_request`` up to the response headers, then a stream.
 
@@ -3885,6 +3915,7 @@ def _open_pinned_https_stream(
             open_socket=open_socket,
             deadline=deadline,
             on_connect=remember,
+            checkpoint=checkpoint,
         )
     )
     response = None
@@ -3925,6 +3956,8 @@ def _open_pinned_https_stream(
                 sensitive=sensitive, response=response, max_body_bytes=max_body_bytes,
                 deadline=deadline, sock=connected[-1] if connected else None,
             )
+    except BrokerStreamStop:
+        raise
     except Exception:
         stream = None
     if stream is None:
@@ -4040,6 +4073,8 @@ class _SsrfHardenedHttpDriver:
         access_mode: str = ACCESS_EXACT,
         revalidate_authority: Callable[[float], None] | None = None,
         reply_budget_s: float | None = None,
+        on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         prepared = self._prepare(
             bundle=bundle, auth_scheme=auth_scheme, method=method, url=url,
@@ -4055,6 +4090,7 @@ class _SsrfHardenedHttpDriver:
                 initial_auth=prepared.auth_headers,
                 sensitive=prepared.sensitive, allowed_endpoints=allowed_endpoints or (),
                 access_mode=access_mode, revalidate_authority=revalidate_authority,
+                on_connect=on_connect, checkpoint=checkpoint,
             )
         result = _execute_pinned_https_request(
             method=prepared.verb,
@@ -4093,6 +4129,7 @@ class _SsrfHardenedHttpDriver:
         reply_budget_s: float | None = None,
         idle_s: float | None = None,
         on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> UpstreamStream:
         """:meth:`__call__`, but the body is read as it arrives (I14).
 
@@ -4118,6 +4155,7 @@ class _SsrfHardenedHttpDriver:
                 headers=headers, body=body, header_name=header_name,
                 allowed_endpoints=allowed_endpoints, access_mode=access_mode,
                 revalidate_authority=revalidate_authority,
+                on_connect=on_connect, checkpoint=checkpoint,
             )
             return UpstreamStream.complete(result, tuple(prepared.sensitive))
         budget = self._max_total_seconds if reply_budget_s is None else reply_budget_s
@@ -4136,6 +4174,7 @@ class _SsrfHardenedHttpDriver:
             max_header_bytes=self._max_header_bytes,
             sensitive=tuple(prepared.sensitive),
             on_connect=on_connect,
+            checkpoint=checkpoint,
         )
 
     def _pin(self, canonical: _CanonicalOutboundUrl) -> str:
@@ -4256,6 +4295,8 @@ class _SsrfHardenedHttpDriver:
         initial_auth: dict[str, str],
         sensitive: list[str], allowed_endpoints: tuple[OutboundEndpoint, ...],
         access_mode: str, revalidate_authority: Callable[[float], None],
+        on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         deadline = time.monotonic() + self._max_total_seconds  # before INITIAL DNS
         initial_origin = (canonical.hostname, canonical.port)
@@ -4272,6 +4313,11 @@ class _SsrfHardenedHttpDriver:
             _remaining_redirect_seconds(deadline)
             return self._open_socket(*args)
 
+        def connected(sock: Any) -> None:
+            revalidate_authority(deadline)
+            if on_connect is not None:
+                on_connect(sock)
+
         while True:
             revalidate_authority(deadline)
             pinned = self._redirect_address(canonical, deadline)
@@ -4286,7 +4332,7 @@ class _SsrfHardenedHttpDriver:
                 absolute_deadline=deadline, hop_metadata=metadata,
                 # Connected, not yet written: authority (and a broker's
                 # cancellation and fence) re-checked once more before the request.
-                on_connect=lambda _sock: revalidate_authority(deadline),
+                on_connect=connected, checkpoint=checkpoint,
             )
             remaining_bytes -= metadata.body_bytes
             _declassify_response(result, tuple(sensitive))  # ALL raw response fields
@@ -4484,11 +4530,13 @@ class _TrustedNetworkDriver:
         stream = bool(kwargs.pop("stream", False))
         idle_s = kwargs.pop("idle_s", None)
         on_connect = kwargs.pop("on_connect", None)
+        checkpoint = kwargs.pop("checkpoint", None)
         if connection_type == "http":
             return self._dispatch_http(
                 stream=stream,
                 idle_s=idle_s,
                 on_connect=on_connect,
+                checkpoint=checkpoint,
                 auth_scheme=auth_scheme,
                 allowed_endpoints=tuple(allowed_endpoints),
                 access_mode=access_mode,
@@ -4525,6 +4573,7 @@ class _TrustedNetworkDriver:
         stream: bool = False,
         idle_s: float | None = None,
         on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> Any:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
@@ -4550,6 +4599,7 @@ class _TrustedNetworkDriver:
         extra: dict[str, Any] = {}
         if stream:
             extra["on_connect"] = on_connect
+            extra["checkpoint"] = checkpoint
             if idle_s is not None:
                 extra["idle_s"] = idle_s
         return send(

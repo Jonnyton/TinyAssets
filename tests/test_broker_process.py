@@ -95,7 +95,7 @@ def test_a_crashed_broker_is_restarted_with_the_same_owner_token(broker):
     import time
 
     _, supervisor, root = broker
-    before = read_owner(root)["token"]
+    before = read_owner(root)
     supervisor._process.kill()
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
@@ -104,5 +104,30 @@ def test_a_crashed_broker_is_restarted_with_the_same_owner_token(broker):
             break
         time.sleep(0.2)
     time.sleep(0.5)
-    assert read_owner(root)["token"] == before
+    assert read_owner(root) == before
     assert os.path.exists(supervisor.socket_path)
+
+
+def test_a_new_supervisor_rotates_generation_and_refuses_the_old_pair(broker):
+    from hashlib import sha256
+
+    from tinyassets.broker.fence import Fence
+    from tinyassets.broker.process import lease_verifier
+
+    _, supervisor, root = broker
+    before = read_owner(root)
+    supervisor.stop()
+    replacement = BrokerSupervisor(root, child_env=supervisor._child_env)
+    try:
+        replacement.start()
+        after = read_owner(root)
+        assert after["generation"] == before["generation"] + 1
+        assert after["token"] != before["token"]
+        verify = lease_verifier(sha256(replacement._proof.encode()).hexdigest(),
+                                after["generation"])
+        assert verify(after["generation"], replacement._proof)
+        assert not verify(before["generation"], replacement._proof)
+        fence = Fence(root / ".broker" / "state" / "fence.json", verify_lease_proof=verify)
+        assert not fence.admits(before["generation"], before["token"])
+    finally:
+        replacement.stop()

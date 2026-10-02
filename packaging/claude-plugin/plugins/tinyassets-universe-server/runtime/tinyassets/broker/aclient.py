@@ -93,6 +93,8 @@ class AsyncBrokerClient:
         async with self._lock:
             if self._writer is not None and not self._writer.is_closing():
                 return
+            if self._demux is not None:
+                await self._demux
             from tinyassets.storage.outbound_connections import ProxyRequestError
 
             try:
@@ -103,11 +105,16 @@ class AsyncBrokerClient:
             self._demux = asyncio.ensure_future(self._demultiplex())
 
     async def _send(self, frame: bytes) -> None:
+        from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
+
         writer = self._writer
-        if writer is None or writer.is_closing():
-            raise ConnectionResetError("the broker connection is closed")
-        writer.write(frame)
-        await writer.drain()
+        try:
+            if writer is None or writer.is_closing():
+                raise ConnectionResetError("the broker connection is closed")
+            writer.write(frame)
+            await writer.drain()
+        except OSError:
+            raise AmbiguousProxyOutcome("the broker connection failed mid-request") from None
 
     async def _demultiplex(self) -> None:
         from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
@@ -129,16 +136,22 @@ class AsyncBrokerClient:
                     stream.queue.put_nowait(document)
         except (OSError, rf.FrameError):
             pass
-        # The connection is gone: every open stream's outcome is unknown.
-        for stream in list(self._streams.values()):
-            stream.queue.put_nowait(AmbiguousProxyOutcome(
-                "the broker connection failed mid-request"))
-        self._streams.clear()
+        finally:
+            if self._writer is not None:
+                self._writer.close()
+            self._writer = self._reader = self._demux = None
+            # The connection is gone: every open stream's outcome is unknown.
+            for stream in list(self._streams.values()):
+                stream.queue.put_nowait(AmbiguousProxyOutcome(
+                    "the broker connection failed mid-request"))
+            self._streams.clear()
 
     @contextlib.asynccontextmanager
     async def stream(self, *, grant_id: str, connection_id: str, verb: str,
                      request: dict[str, Any], op_id: str,
                      idle_s: float | None = None) -> AsyncIterator[_Stream]:
+        from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
+
         await self._connect()
         generation, token = self._fence()
         stream = _Stream(self, next(self._ids))
@@ -153,21 +166,22 @@ class AsyncBrokerClient:
             document["idle_s"] = idle_s
         try:
             await self._send(rf.control(stream.id, document))
-        except OSError:
-            from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
-
+        except AmbiguousProxyOutcome:
             self._streams.pop(stream.id, None)
-            raise AmbiguousProxyOutcome("the broker connection failed mid-request") from None
+            raise
         try:
             yield stream
         finally:
             if stream.end is None and stream.id in self._streams:
                 # Left early or cancelled: the broker stops the upstream.
-                with contextlib.suppress(OSError):
+                with contextlib.suppress(AmbiguousProxyOutcome):
                     await asyncio.shield(self._send(rf.control(stream.id, {"op": "CANCEL"})))
 
     async def close(self) -> None:
         if self._writer is not None:
             self._writer.close()
         if self._demux is not None:
-            self._demux.cancel()
+            demux = self._demux
+            demux.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await demux

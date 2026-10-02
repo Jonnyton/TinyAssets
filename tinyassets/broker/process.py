@@ -11,11 +11,11 @@ Configuration is the command line, never the environment a caller could set:
 * ``--state``: the broker's own state (op records, the fence);
 * ``--data-root``: where the connection ledger and the vaults live;
 * ``--owner-uid``: the uid served as the owner channel (the daemon's);
-* ``--proof-sha256``: the hash of the owner lease proof for generation 1.
+* ``--proof-sha256``: the hash of the owner lease proof for the acquired generation.
 
 The lease: until the owner lease (S8a) holds a hashed proof per acquisition,
 the daemon mints a proof at start and hands its hash to the broker it spawns.
-That is the single-process lease's own rule (one owner, generation 1) carried
+That is the single-process lease's own rule (one owner, one proof per acquisition) carried
 across the process boundary; ``verify_lease_proof`` switches to the lease
 authority when it exists.
 """
@@ -37,11 +37,11 @@ from tinyassets.broker.ops import OpStore
 from tinyassets.broker.server import OWNER, BrokerServer
 
 
-def lease_verifier(proof_sha256: str):
+def lease_verifier(proof_sha256: str, owner_generation: int):
     expected = bytes.fromhex(proof_sha256)
 
     def verify(generation: int, proof: str) -> bool:
-        if generation != 1 or not isinstance(proof, str):
+        if generation != owner_generation or not isinstance(proof, str):
             return False
         return hmac.compare_digest(hashlib.sha256(proof.encode("utf-8")).digest(), expected)
 
@@ -93,7 +93,8 @@ async def serve(args: argparse.Namespace) -> None:
     server = BrokerServer(
         ledger_for=dispatchers.ledger_for, dispatch_for=dispatchers.dispatch_for,
         ops=OpStore(state / "ops.db"),
-        fence=Fence(state / "fence.json", verify_lease_proof=lease_verifier(args.proof_sha256)),
+        fence=Fence(state / "fence.json",
+                    verify_lease_proof=lease_verifier(args.proof_sha256, args.generation)),
         roles={int(args.owner_uid): OWNER},
     )
     socket_path = Path(args.socket)
@@ -118,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--owner-uid", required=True, type=int)
     parser.add_argument("--proof-sha256", required=True)
+    parser.add_argument("--generation", required=True, type=int)
     parser.add_argument("--allow-test-fixtures", action="store_true")
     asyncio.run(serve(parser.parse_args(argv)))
     return 0

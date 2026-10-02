@@ -447,7 +447,8 @@ class _Connection:
                       stream)
             upstream = dispatch(
                 grant_id, verb, request, stream=True,
-                idle_s=idle_s if type(idle_s) in (int, float) and idle_s > 0 else DEFAULT_IDLE_S,
+                idle_s=(min(idle_s, DEFAULT_IDLE_S)
+                        if type(idle_s) in (int, float) and idle_s > 0 else DEFAULT_IDLE_S),
                 guard=lambda: self._guard(stream),
                 on_connect=lambda sock: self._connected(stream, sock),
                 checkpoint=lambda: self._checkpoint(stream),

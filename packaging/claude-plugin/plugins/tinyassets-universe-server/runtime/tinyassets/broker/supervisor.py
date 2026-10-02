@@ -60,7 +60,7 @@ def read_owner(data_root: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(document, dict) or not {"socket", "generation", "token"} <= set(document):
         return None
-    return document
+    return document if Path(document["socket"]).exists() else None
 
 
 class BrokerSupervisor:
@@ -70,6 +70,11 @@ class BrokerSupervisor:
         self._child_env = child_env
         self._dir = broker_dir(self._root)
         self._socket = self._dir / "broker.sock"
+        try:
+            previous = json.loads((self._dir / OWNER_FILE).read_text("utf-8"))
+        except FileNotFoundError:
+            previous = {"generation": 0}
+        self._generation = int(previous["generation"]) + 1
         self._proof = secrets.token_urlsafe(32)
         self._allow_test_fixtures = allow_test_fixtures
         self._process: subprocess.Popen | None = None
@@ -90,6 +95,7 @@ class BrokerSupervisor:
             sys.executable, "-m", "tinyassets.broker.process",
             "--socket", str(self._socket), "--state", str(self._dir / "state"),
             "--data-root", str(self._root), "--owner-uid", str(os.getuid()),
+            "--generation", str(self._generation),
             "--proof-sha256", sha256(self._proof.encode("utf-8")).hexdigest(),
         ]
         if self._allow_test_fixtures:
@@ -109,7 +115,7 @@ class BrokerSupervisor:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(_START_TIMEOUT_S)
             sock.connect(str(self._socket))
-            sock.sendall(rf.control(rf.CONNECTION, {"op": "FENCE", "generation": 1,
+            sock.sendall(rf.control(rf.CONNECTION, {"op": "FENCE", "generation": self._generation,
                                                     "proof": self._proof}))
             answer = rf.read_frame_blocking(sock)
         document = answer.control() if answer is not None else {}
@@ -149,7 +155,7 @@ class BrokerSupervisor:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 process.kill()
-        (self._dir / OWNER_FILE).unlink(missing_ok=True)
+        self._socket.unlink(missing_ok=True)
 
 
 _SUPERVISOR: BrokerSupervisor | None = None
