@@ -175,3 +175,27 @@ console.log(JSON.stringify({steerPosts}));
     out = _run(tmp_path, {}, body)
     assert out["steerPosts"] == [
         {"universe_id": "u-1", "text": "also check the methods", "agent_id": "w1"}]
+
+
+def test_a_saved_line_waits_for_the_agent_it_was_queued_to(tmp_path):
+    body = r"""
+setQueueOwner("p-1"); setQueueScope("u-1");
+const realGetConversation=__GET_CONVERSATION__;
+const realConverse=__CONVERSE__;
+Owner.getConversation=(before)=>realGetConversation.call({status:async a=>(
+  {universe_id:"u-1",recent_conversation:{turns:[]}})},before);
+localStorage.setItem(QUEUE_KEY, JSON.stringify([{message:"to weaver",display:"to weaver",
+  ts:Date.now(),owner:"p-1",scope:"u-1",agent:"w1"}]));
+const deep=n=>[n.textContent||"",...(n.children||[]).map(deep)].join(" ");
+const all=()=>els.thread.children.map(deep).join(" | ");
+restoreQueue();
+const onMain=all();
+await addressAgent({agent_id:"w1",name:"Evidence Weaver"});
+await settle();
+console.log(JSON.stringify({onMain, onWeaver:all()}));
+"""
+    out = _run(tmp_path, {}, body)
+    assert "queued to another of your agents" in out["onMain"]
+    assert "to weaver" not in out["onMain"]
+    assert "Still waiting to be sent when the page reloaded" in out["onWeaver"]
+    assert "to weaver" in out["onWeaver"]

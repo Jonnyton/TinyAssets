@@ -3599,7 +3599,7 @@
       if(activeTurn||sendQueue.length||interruptPending||pendingSteers)
         throw new Error("finish or stop the current message first, then switch agents");
       addressedAgent={agent_id:id,name};
-      historyLoaded=false; inflightRestored=false;
+      historyLoaded=false; inflightRestored=false; queueRestored=false;
       renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
       clearThread(); historyFailed(null);
       paintAddressedAgent(); openAddressedChat();
@@ -3689,7 +3689,8 @@
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(q,"modelChoice")
         ? q.modelChoice : q.opts&&q.opts.modelChoice),
       owner:(q.owner!==undefined)?q.owner:queueOwner,
-      scope:(q.scope!==undefined)?q.scope:queueScope};
+      scope:(q.scope!==undefined)?q.scope:queueScope,
+      agent:String(q.agent||(q.opts&&q.opts.agentId)||"main")};
   }
   function saveQueue(){
     try{
@@ -3770,6 +3771,13 @@
           "here: this page cannot tell which account and command center saved it. "+
           "Send your message again if you still need it.",
         null, now/1000);
+      return;
+    }
+    // A line queued to another of the owner's agents waits for that agent's
+    // own thread; it is never offered, or sent, to the agent on screen.
+    if(String(item.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")){
+      appendMessage("system","A line queued to another of your agents is waiting; "+
+        "open that agent to send or discard it.", null, now/1000);
       return;
     }
     const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
