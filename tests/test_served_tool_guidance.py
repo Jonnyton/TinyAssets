@@ -231,9 +231,16 @@ def _source_docstring(name: str = "write_graph") -> str:
 _RENAMED_PROSE = re.compile(r"^(\(?)universe((?:'s|s)?[).,;:]*)$")
 
 
+#: Machine spellings C1 renamed in the advertised text (the public names).
+_RENAMED_CODE = {"``tiny/<universe>/<slug>``": "``tiny/<command-center-id>/<slug>``"}
+
+
 def _renamed(counts: Counter) -> Counter:
     out: Counter = Counter()
     for word, count in counts.items():
+        if word in _RENAMED_CODE:
+            out[_RENAMED_CODE[word]] += count
+            continue
         match = _RENAMED_PROSE.match(word)
         if match:
             out[match.group(1) + "command"] += count
