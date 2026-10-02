@@ -7,7 +7,8 @@ name: Queue freshness
 # Tests runs for 76 merges, 99 failed.
 #
 # Three jobs, three trust levels:
-# - list:  default-branch code only; picks up to 6 PRs in queue order.
+# - list:  default-branch code only; picks up to 6 PRs in queue order whose
+#   head passed "Diff scope declared" (a reviewer stamped that exact code).
 # - probe: one matrix job PER PR; runs that PR's code with NO GitHub token
 #   (job permissions are empty and checkout keeps no credentials). Its artifact
 #   is named from the trusted matrix, so it can only speak about its own PR.

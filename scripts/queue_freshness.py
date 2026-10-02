@@ -21,11 +21,17 @@ When main moves, the first few queued or armed PRs (queue order) are checked:
 
 Three commands, three trust levels (.github/workflows/queue-freshness.yml):
 
-    list   trusted: picks the candidates; its output is the matrix.
-    probe  untrusted: runs ONE PR's code with no GitHub token at all and writes
-           a verdict about that PR only. The workflow names its artifact from
-           the trusted matrix, and `act` ignores any PR number inside it, so a
-           malicious PR can at worst dequeue itself (Codex on #4293).
+    list   trusted: picks the candidates; its output is the matrix. Only a
+           head whose "Diff scope declared" check passed is a candidate: since
+           #4255 that means a reviewer stamped this exact code, which the merge
+           queue would run with its own tokens anyway. Codex (#4293 round 2)
+           showed a probe job cannot be a hard boundary: PR code runs as the
+           runner user and can rewrite the upload action that follows it. So
+           the boundary is "only reviewed code runs here"; the split below is
+           defence in depth.
+    probe  runs ONE PR's code with no GitHub token in its environment and
+           writes a verdict about that PR only. The workflow names its artifact
+           from the trusted matrix, and `act` ignores any PR number inside it.
     act    trusted: never runs PR code. Re-derives a textual conflict itself
            (`git merge-tree`), takes a semantic verdict only from that PR's own
            artifact, acts only while main and the head are both unchanged, and
@@ -55,6 +61,7 @@ LABEL = "stale-vs-main"
 MARKER = "<!-- queue-freshness:{head}:{main} -->"
 GH_TIMEOUT = 60
 STALE = ("conflict", "semantic-conflict")
+STAMP_CHECK = "Diff scope declared"
 # Never handed to PR code (Codex on #4293: the conftest import inherited them).
 _SECRET_ENV = (
     "GH_TOKEN", "GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
@@ -96,6 +103,18 @@ def probe_set(pr_selection: list[str] | None, main_selection: list[str] | None,
 def blame(first_run: list[str], merged_again: set[str], main_alone: set[str]) -> list[str]:
     """Failures the PR is responsible for: fail twice merged, pass on main alone."""
     return sorted(t for t in first_run if t in merged_again and t not in main_alone)
+
+
+def outcome(blamed: list[str], gate_ok: bool, why: str) -> dict:
+    """The probe's verdict once the shared tests have run on the merged tree."""
+    if blamed:
+        return {"verdict": "semantic-conflict", "why": why, "failures": blamed}
+    if not gate_ok:
+        # The gate failed for a reason not pinned on this PR (a stale quarantine
+        # entry, a flake, main already broken): never "fresh" (Codex, #4293 r2).
+        return {"verdict": "unchecked",
+                "why": f"{why}; the gate failed with nothing to blame on this PR"}
+    return {"verdict": "fresh", "why": f"{why} pass on the merged tree"}
 
 
 def actionable(trusted: dict, verdict: dict | None) -> dict | None:
@@ -184,6 +203,18 @@ def candidates(repo: str) -> list[dict]:
                   else len(order))
 
 
+def stamped(repo: str, head: str) -> bool:
+    """True if the newest "Diff scope declared" run on this head passed."""
+    try:
+        out = _gh("api", "-X", "GET", f"repos/{repo}/commits/{head}/check-runs",
+                  "-f", f"check_name={STAMP_CHECK}", "-f", "filter=latest",
+                  "--jq", "[.check_runs[] | {id, conclusion}]")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False  # unknown is not stamped
+    runs = sorted(json.loads(out or "[]"), key=lambda r: r["id"])
+    return bool(runs) and runs[-1]["conclusion"] == "success"
+
+
 def _selection(files: list[str], root: Path) -> list[str] | None:
     # affected_tests imports the merged tree's conftests: PR code. The probe job
     # carries no token, and _SECRET_ENV is dropped here as well.
@@ -264,11 +295,12 @@ def probe_one(number: int, head: str, main: str) -> dict:
             selection.write_text("".join(f"{f}\n" for f in run_files), encoding="utf-8")
             junit = Path(tmp) / "junit.xml"
             try:
-                _run(sys.executable, "scripts/ci_required_tests.py", "--junit", str(junit),
-                     "--exclude-from", ".github/heavy-test-files.txt",
-                     "--affected", str(selection), "--profile", "affected",
-                     "--pytest-arg", f"--basetemp={tmp}/b",
-                     cwd=tree, check=False, timeout=FIRST_RUN_TIMEOUT, untrusted=True)
+                gate_run = _run(
+                    sys.executable, "scripts/ci_required_tests.py", "--junit", str(junit),
+                    "--exclude-from", ".github/heavy-test-files.txt",
+                    "--affected", str(selection), "--profile", "affected",
+                    "--pytest-arg", f"--basetemp={tmp}/b",
+                    cwd=tree, check=False, timeout=FIRST_RUN_TIMEOUT, untrusted=True)
             except subprocess.TimeoutExpired:
                 return {**verdict, "verdict": "unchecked", "why": f"{why}; the run timed out"}
             failing = _junit_failures(junit)
@@ -282,10 +314,7 @@ def probe_one(number: int, head: str, main: str) -> dict:
                 again = _still_failing(tree, failures, tmp, "merged")
                 _run("git", "checkout", "-q", "--detach", main, cwd=tree)
                 failures = blame(failures, again, _still_failing(tree, failures, tmp, "main"))
-            if failures:
-                return {**verdict, "verdict": "semantic-conflict", "why": why,
-                        "failures": failures}
-            return {**verdict, "verdict": "fresh", "why": f"{why} pass on the merged tree"}
+            return {**verdict, **outcome(failures, gate_run.returncode == 0, why)}
         finally:
             _run("git", "worktree", "remove", "--force", str(tree), check=False)
 
@@ -306,40 +335,57 @@ def _really_conflicts(head: str, main: str, number: int) -> bool:
     return out.returncode == 1
 
 
+def _read_verdict(path: Path) -> dict | None:
+    """One artifact's verdict, or None if missing or malformed; never fatal to the rest."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _unchanged(pr: dict, head: str) -> bool:
+    return (pr["state"] == "OPEN" and not pr["isDraft"] and pr["baseRefName"] == "main"
+            and pr["headRefOid"] == head)
+
+
 def act(repo: str, main: str, matrix: list[dict], verdict_dir: Path) -> int:
     # A textual conflict is re-derived against main as it is NOW. A semantic
     # verdict holds only for the main it was probed on, so a moved main drops
-    # it; the run already pending for the new main probes again.
-    current = _main_sha(repo)
+    # it; the run already pending for the new main probes again. Main and the
+    # PR are re-read per candidate and before each mutation (Codex on #4293).
     for trusted in matrix:
         n = trusted["number"]
-        path = verdict_dir / f"verdict-{n}" / "verdict.json"
-        raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        raw = _read_verdict(verdict_dir / f"verdict-{n}" / "verdict.json")
         v = actionable(trusted, raw)
         if v is None:
-            print(f"#{n}: {(raw or {}).get('verdict', 'no verdict')}; nothing to do.")
+            print(f"#{n}: {(raw or {}).get('verdict', 'no usable verdict')}; nothing to do.")
             continue
+        current = _main_sha(repo)
         if v["verdict"] == "semantic-conflict" and current != main:
             print(f"#{n}: semantic verdict was for {main[:12]}; main moved, leaving it.")
             continue
         if v["verdict"] == "conflict" and not _really_conflicts(v["head"], current, n):
             print(f"#{n}: no textual conflict with current main {current[:12]}; leaving it.")
             continue
-        pr = _live(repo, n)
-        if (pr["state"] != "OPEN" or pr["isDraft"] or pr["baseRefName"] != "main"
-                or pr["headRefOid"] != v["head"]
-                or not (pr["isInMergeQueue"] or pr["autoMergeRequest"])):
+        before = _live(repo, n)
+        if not (_unchanged(before, v["head"])
+                and (before["isInMergeQueue"] or before["autoMergeRequest"])):
             print(f"#{n}: changed since the probe (head, state or queue); leaving it.")
             continue
-        _remove(repo, pr)
+        if not _remove(repo, n, v["head"]):
+            continue
         after = _live(repo, n)
+        if after["headRefOid"] != v["head"]:
+            print(f"#{n}: head moved during removal; not commenting.")
+            continue
         if after["isInMergeQueue"] or after["autoMergeRequest"]:
             print(f"::warning::#{n}: still queued or armed after removal; not commenting.")
             continue
         marker = MARKER.format(head=v["head"], main=current)
         comments = _gh("api", "--paginate", f"repos/{repo}/issues/{n}/comments", "--jq", ".[].body")
         if marker not in comments:
-            author = (pr.get("author") or {}).get("login", "")
+            author = (after.get("author") or {}).get("login", "")
             _gh("pr", "comment", str(n), "-R", repo, "--body", render_comment(author, v, current))
         _gh("label", "create", LABEL, "-R", repo, "--force", "--color", "FBCA04",
             "--description", "Stale against current main; rebase before re-queueing")
@@ -348,21 +394,24 @@ def act(repo: str, main: str, matrix: list[dict], verdict_dir: Path) -> int:
     return 0
 
 
-def _remove(repo: str, pr: dict) -> None:
-    for wanted, mutation in (
-        (pr["isInMergeQueue"], "dequeuePullRequest"),
-        (pr["autoMergeRequest"], "disablePullRequestAutoMerge"),
+def _remove(repo: str, number: int, head: str) -> bool:
+    """Dequeue, then disarm, re-reading the PR before each; False once it changed."""
+    for field, mutation, key in (
+        ("isInMergeQueue", "dequeuePullRequest", "id"),
+        ("autoMergeRequest", "disablePullRequestAutoMerge", "pullRequestId"),
     ):
-        if not wanted:
+        pr = _live(repo, number)
+        if not _unchanged(pr, head):
+            print(f"#{number}: changed before {mutation} (head, state or base); leaving it.")
+            return False
+        if not pr[field]:
             continue
-        query = (f"mutation($id:ID!){{{mutation}(input:{{"
-                 f"{'id' if mutation == 'dequeuePullRequest' else 'pullRequestId'}:$id}})"
-                 "{clientMutationId}}")
         try:
-            _graphql(query, id=pr["id"])
+            _graphql(f"mutation($id:ID!){{{mutation}(input:{{{key}:$id}}){{clientMutationId}}}}",
+                     id=pr["id"])
         except subprocess.CalledProcessError as exc:
-            print(f"::warning::#{pr.get('number', '?')}: {mutation} refused: "
-                  f"{exc.stderr.strip()[:200]}")
+            print(f"::warning::#{number}: {mutation} refused: {exc.stderr.strip()[:200]}")
+    return True
 
 
 def main() -> int:
@@ -383,7 +432,13 @@ def main() -> int:
     args = ap.parse_args()
     os.environ.setdefault("GIT_TERMINAL_PROMPT", "0")
     if args.command == "list":
-        print(json.dumps(candidates(args.repo)[:MAX_PROBES]))
+        picked = []
+        for cand in candidates(args.repo):
+            if len(picked) == MAX_PROBES:
+                break
+            if stamped(args.repo, cand["head"]):
+                picked.append(cand)
+        print(json.dumps(picked))
         return 0
     if args.command == "probe":
         try:
