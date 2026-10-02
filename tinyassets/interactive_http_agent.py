@@ -15,6 +15,13 @@ from tinyassets.storage.agent_turn_records import RoundInput, dump
 class ServedChatAgentAdapter:
     """Chat retains a current served request; this adapter grants no work authority."""
 
+    #: Every round admits afresh through ``router.call`` under the served
+    #: authority, so a failed round can be asked again of the SAME model. A
+    #: workflow node cannot: its failed round settles the one launch carrier it
+    #: holds (Codex, 2026-10-02), so the coordinator's same-model retries and
+    #: compaction are offered only to an adapter that says this.
+    relaunches_same_model = True
+
     def check(self, context, config):
         owner = check_served_agent_tool_authority(context)
         if (

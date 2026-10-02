@@ -80,6 +80,20 @@ def input_size(prompt, system, config) -> int:
     return len(json.dumps(body).encode("utf-8"))
 
 
+#: Encoded request bytes per token, for fitting a model's WINDOW only. Measured
+#: 2026-10-02 on production first rounds (prompt, system and the served tool
+#: schemas, as sent): 3.86-4.07 bytes per reported input token across nemotron,
+#: qwen and ling. Three keeps a quarter of margin under the lowest. Comparing
+#: raw bytes against the window made a 131k-token model "overflow" at ~37k real
+#: tokens (turn 8dc8ada5). Reservation keeps the byte measure: that is money.
+CONTEXT_BYTES_PER_TOKEN = 3
+
+
+def context_tokens(prompt, system, config) -> int:
+    """Conservative token estimate of the encoded request, for the window fit."""
+    return -(-input_size(prompt, system, config) // CONTEXT_BYTES_PER_TOKEN)
+
+
 def output_for_settlement(response) -> str:
     """Missing usage counts tool calls/reasoning too, not an empty text result."""
     if response.agent_reply is None:

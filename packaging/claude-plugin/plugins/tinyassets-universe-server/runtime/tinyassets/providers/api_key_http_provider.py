@@ -375,9 +375,15 @@ class ApiKeyHttpProvider(BaseProvider):
                 f"compute grant resolution failed: {exc}"
             ) from exc
         except OutboundDeadlineExceeded:
+            from tinyassets.storage.outbound_connections import INFERENCE_MAX_SECONDS
+
+            # The budget that actually ended it: the broker grants at most its
+            # own ceiling, so the turn's remaining time (live 2026-10-02:
+            # "2591705s") is not the number the owner should read.
             raise ProviderReplyTimeoutError(
                 "the model did not finish answering within its reply budget"
-                + (f" ({int(reply_budget)}s)" if reply_budget is not None else "")
+                + (f" ({int(min(reply_budget, INFERENCE_MAX_SECONDS))}s)"
+                   if reply_budget is not None else "")
             ) from None
         except ConnectionAuthorizationError as exc:
             # A refresh that failed is a connection/auth failure (the class
@@ -515,11 +521,12 @@ class ApiKeyHttpProvider(BaseProvider):
                 # The source said generation failed; keep its own words.
                 from tinyassets.providers.diagnostics import redacted_failure_detail
 
+                # Only the agent wire codec marks one, so this is an agent round.
                 raise ProviderReplyError(
                     "the model's source reported an error instead of a reply: "
                     + (redacted_failure_detail(words) or "no detail given")
                 ) from exc
-            raise ProviderUnreadableReplyError(str(exc)) from exc
+            raise unreadable(str(exc)) from exc
 
         return ProviderResponse(
             text=text,

@@ -847,7 +847,11 @@ class ProviderRouter:
             raise PermissionError("native agent cannot use HTTP inference facts")
         if _agent_execution_kind == "engine_inference" and cfg.agent_request is None:
             raise PermissionError("engine inference requires its structured request")
-        from tinyassets.providers.agent_inference import input_size, output_for_settlement
+        from tinyassets.providers.agent_inference import (
+            context_tokens,
+            input_size,
+            output_for_settlement,
+        )
 
         if cfg.agent_request is not None and (
             cfg.selected_model is None or not cfg.engine_mcp_enabled
@@ -885,7 +889,7 @@ class ProviderRouter:
                     # The chosen output limit is itself part of the encoded
                     # agent request. Measure with that field present; otherwise
                     # adding it can overflow an exactly filled context afterward.
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
@@ -917,7 +921,7 @@ class ProviderRouter:
             if cfg.max_tokens is None:
                 output_limit = invocation_carrier.max_tokens
                 if cfg.selected_model is not None:
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
@@ -957,9 +961,10 @@ class ProviderRouter:
                 cfg.max_tokens,
             ) > invocation_carrier.max_cost_microunits:
                 raise PermissionError("selected model exceeds this workflow cost allowance")
-            # Match the existing conservative input reservation measure. The
-            # selected catalogue's context limit is not a permission to truncate.
-            required_context = input_size(prompt, system, cfg)
+            # A conservative TOKEN estimate against the window (the reservation
+            # below keeps the byte measure). The selected catalogue's context
+            # limit is not a permission to truncate.
+            required_context = context_tokens(prompt, system, cfg)
             if (
                 cfg.max_tokens is None
                 or required_context + cfg.max_tokens > cfg.selected_model.context_tokens

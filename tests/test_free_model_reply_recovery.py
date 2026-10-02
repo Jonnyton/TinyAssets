@@ -201,6 +201,7 @@ def test_a_native_agent_round_is_never_retried_this_way():
 
     turn = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
     turn.execution_kind = "native_agent"
+    turn.adapter = SimpleNamespace(relaunches_same_model=True)
     turn.turn = SimpleNamespace(state="held_transport")
     turn.bad_reply_retries = 0
     exc = AllProvidersExhaustedError("x", attempts=[
@@ -214,6 +215,7 @@ def test_a_bad_reply_mixed_with_another_class_is_not_this_paths():
 
     turn = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
     turn.execution_kind = "engine_inference"
+    turn.adapter = SimpleNamespace(relaunches_same_model=True)
     turn.turn = SimpleNamespace(state="held_transport")
     turn.bad_reply_retries = 0
     exc = AllProvidersExhaustedError("x", attempts=[
@@ -221,6 +223,100 @@ def test_a_bad_reply_mixed_with_another_class_is_not_this_paths():
         SimpleNamespace(failure_class="auth_invalid", side_effect_state="none"),
     ])
     assert turn._next_after_bad_reply(exc) is False
+
+
+def _bare_turn(adapter):
+    from types import SimpleNamespace
+
+    turn = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
+    turn.execution_kind = "engine_inference"
+    turn.adapter = adapter
+    turn.plan = None
+    turn.turn = SimpleNamespace(state="held_transport", rounds=())
+    turn.context = SimpleNamespace(model_selection="model-a")
+    turn.bad_reply_retries, turn.bad_reply_models, turn.spent_attempts = 0, set(), []
+    turn.interrupt = None
+    return turn
+
+
+def test_a_workflow_node_is_not_retried_on_the_same_model():
+    """Its failed round settled the one launch carrier it holds (Codex, 2026-10-02)."""
+    from types import SimpleNamespace
+
+    exc = AllProvidersExhaustedError("x", attempts=[
+        SimpleNamespace(failure_class="provider_reply_error", side_effect_state="unknown"),
+    ])
+    assert _bare_turn(SimpleNamespace())._next_after_bad_reply(exc) is False
+    assert _bare_turn(SimpleNamespace())._compact_to_fit() is False
+    assert _bare_turn(SimpleNamespace(relaunches_same_model=True))._next_after_bad_reply(exc)
+
+
+def test_the_served_adapters_say_they_relaunch_each_round():
+    from tinyassets.interactive_http_agent import ServedChatAgentAdapter
+    from tinyassets.workflow_agent import WorkAgentAdapter
+
+    assert ServedChatAgentAdapter.relaunches_same_model is True
+    assert not hasattr(WorkAgentAdapter, "relaunches_same_model")
+
+
+def test_a_reply_timeout_moves_on_without_asking_the_same_model_again(agent, monkeypatch):
+    """Turn c6ae56f9: a reply that outran the broker's ceiling would outrun it again."""
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+    from tinyassets.storage.outbound_connections import OutboundDeadlineExceeded
+
+    refusal._order(agent, monkeypatch, ["lab/answering:free"])
+    real_resolve = ApiKeyHttpProvider._resolve_proxy
+
+    def resolve(self, **kwargs):
+        proxy = real_resolve(self, **kwargs)
+        inner = proxy.request
+
+        def request(verb, document):
+            if len(agent.wires) == 1:  # the second request: after the tool round
+                agent.wires.append((verb, document))
+                raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
+            return inner(verb, document)
+
+        proxy.request = request
+        return proxy
+
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", resolve)
+    assert integration.run(agent) == "finished exact answer"
+    models = _models(agent)
+    assert models[2] == "lab/answering:free" and models[1] == models[0]
+    assert len(agent.tools) == 1
+
+
+def test_a_reply_timeout_names_the_budget_that_actually_ended_it(agent):
+    """Live: "within its reply budget (2591705s)" -- the turn's remaining time, not
+    the broker's 600s ceiling that ended the request."""
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+    from tinyassets.storage.outbound_connections import (
+        INFERENCE_MAX_SECONDS,
+        OutboundDeadlineExceeded,
+    )
+
+    from dataclasses import replace
+
+    agent.config = replace(agent.config, absolute_cap_s=2_591_705)
+    real_resolve = ApiKeyHttpProvider._resolve_proxy
+
+    def resolve(self, **kwargs):
+        proxy = real_resolve(self, **kwargs)
+
+        def request(verb, document):
+            agent.wires.append((verb, document))
+            raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
+
+        proxy.request = request
+        return proxy
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ApiKeyHttpProvider, "_resolve_proxy", resolve)
+        with pytest.raises(AllProvidersExhaustedError) as error:
+            integration.run(agent)
+    detail = error.value.attempts[-1].detail
+    assert f"({int(INFERENCE_MAX_SECONDS)}s)" in detail and "2591" not in detail
 
 
 # --------------------------------------------------------------------------
@@ -334,9 +430,45 @@ def test_a_turn_too_large_even_compacted_still_reports_the_window(agent, monkeyp
     })
     with pytest.raises(PermissionError) as error:
         universe_intelligence._call_writer(
-            "x" * 60_000, system="exact system",
+            "x" * 150_000, system="exact system",
             universe_context=agent.served.context, config=agent.config,
         )
     assert not agent.wires
     record, _ = refusal._record(error.value)
     assert record.code == "context_window_exceeded"
+
+
+def test_a_request_larger_in_bytes_than_the_window_fits_by_its_tokens(agent, monkeypatch):
+    """Turn 8dc8ada5's root cause: JSON bytes compared against a TOKEN window.
+
+    Production first rounds measured 3.86-4.07 bytes per reported token; a
+    window smaller than the request's byte count still holds it and the answer.
+    """
+    selected = agent.served.context.model_selection.model_id
+    assert integration.run(agent) == "finished exact answer"
+    size = max(len(json.dumps(wire[1]["body"]).encode("utf-8")) for wire in agent.wires)
+    agent.wires.clear()
+    agent.tools.clear()
+    refusal._order(agent, monkeypatch, [], contexts={selected: size - 1})
+    assert integration.run(agent) == "finished exact answer"
+    assert max(len(json.dumps(w[1]["body"]).encode("utf-8")) for w in agent.wires) >= size
+
+
+def test_the_window_estimate_is_conservative_against_the_measured_ratio():
+    from tinyassets.providers.agent_inference import CONTEXT_BYTES_PER_TOKEN
+
+    # Below the lowest measured ratio (3.86), so the estimate over-counts tokens.
+    assert CONTEXT_BYTES_PER_TOKEN < 3.86
+
+
+def test_the_sources_words_are_scrubbed_whole_before_any_clip(agent):
+    """Clipping first cut a secret's closing quote off and let its head through."""
+    secret = "PRIVATE_TOKEN_ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    body = json.loads(CHOICE_ERROR)
+    body["choices"][0]["error"]["message"] = "x" * 265 + ' {"api_key": "' + secret + '"}'
+    _fail(agent, range(1, 20), json.dumps(body))
+    with pytest.raises(AllProvidersExhaustedError) as error:
+        integration.run(agent)
+    record, notice = refusal._record(error.value)
+    for text in [a.detail for a in error.value.attempts] + [record.provider_detail, notice]:
+        assert "PRIVATE_TOKEN" not in text

@@ -119,17 +119,14 @@ class AgentWireShape:
         )
 
 
-#: Bound on the source's own words carried off an in-band error; the failure
-#: record clips again, this only keeps a hostile body from riding along whole.
-_SOURCE_WORDS_LIMIT = 300
-
-
 def source_words(error: Any) -> str:
     """What an in-band error object says, as one line: message and code only.
 
     The OpenAI-compatible ``{"message", "code"}`` object, read generically (no
     vendor's extra fields); anything else reports its JSON shape, never values.
-    Untrusted transport text: callers scrub it before it reaches a record.
+    Untrusted transport text, returned WHOLE: the caller scrubs it and only
+    then clips, since clipping first can cut a secret's closing quote off and
+    let its head through the scrubber (Codex, 2026-10-02).
     """
     if error is _MALFORMED:
         return "malformed error field"
@@ -143,8 +140,7 @@ def source_words(error: Any) -> str:
             words += f" (code {code})"
     else:
         words = _structure(error)
-    words = " ".join(words.split())
-    return words[:_SOURCE_WORDS_LIMIT]
+    return words
 
 
 def _in_band(exc: ProtocolDecodeError, error: Any) -> ProtocolDecodeError:

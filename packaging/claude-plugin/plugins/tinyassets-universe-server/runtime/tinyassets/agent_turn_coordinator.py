@@ -822,6 +822,8 @@ class AgentTurnCoordinator:
         Live 2026-09-26 (turn 8dc8ada5) a free model's turn died after four
         tool rounds with nothing larger in the owner's order.
         """
+        if not getattr(self.adapter, "relaunches_same_model", False):
+            return False
         history = self._history()
         current = codec.compact_history(history, self.compaction)
         for level in range(self.compaction + 1, len(self.COMPACTION_LEVELS) + 1):
@@ -836,7 +838,13 @@ class AgentTurnCoordinator:
     #: Classes of a reply that failed IN FLIGHT: the source reported an error
     #: in place of a reply, or sent one we could not read. Transient far more
     #: often than not on a free model.
-    BAD_REPLY_CLASSES = frozenset({"provider_reply_error", "provider_unreadable_reply"})
+    BAD_REPLY_CLASSES = frozenset({
+        "provider_reply_error", "provider_unreadable_reply", "provider_reply_timeout",
+    })
+    #: Of those, the ones not worth the same model again: a reply that ran past
+    #: the broker's per-request ceiling would run past it again (live
+    #: 2026-10-02, turn c6ae56f9: qwen writing a large file on a free tier).
+    MOVE_ON_CLASSES = frozenset({"provider_reply_timeout"})
     #: Per-turn bound on those retries, across every model: small, because each
     #: is a fresh request under the same per-attempt ceiling.
     MAX_BAD_REPLY_RETRIES = 3
@@ -864,6 +872,7 @@ class AgentTurnCoordinator:
         """
         if (
             self.execution_kind != "engine_inference"
+            or not getattr(self.adapter, "relaunches_same_model", False)
             or not isinstance(exc, AllProvidersExhaustedError)
             or self.turn.state not in {"ready", "held_transport"}
             or self.bad_reply_retries >= self.MAX_BAD_REPLY_RETRIES
@@ -873,7 +882,9 @@ class AgentTurnCoordinator:
         if not attempts or any(a.failure_class not in self.BAD_REPLY_CLASSES for a in attempts):
             return False
         failed = self.context.model_selection
-        if failed in self.bad_reply_models:
+        if failed in self.bad_reply_models or any(
+            a.failure_class in self.MOVE_ON_CLASSES for a in attempts
+        ):
             if not self._has_candidate_order():
                 return False
             from tinyassets.providers.model_policy import Exhaustion
@@ -882,7 +893,8 @@ class AgentTurnCoordinator:
             self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
             candidate = self._next_candidate()
             if candidate is None or candidate in self.visited:
-                self._leave_hot_source(None)
+                # Ending exactly as a plain failure would: a slow or broken
+                # reply is no reason to cool a source the owner retries next.
                 return False
             self._leave_hot_source(candidate)
             self.context = replace(self.context, model_selection=candidate)
@@ -893,11 +905,17 @@ class AgentTurnCoordinator:
         return True
 
     async def _pause_before_retry(self, turn_deadline):
-        """A short, growing wait before a bad-reply retry, inside the turn's time."""
+        """A short, growing wait before a bad-reply retry, inside the turn's time.
+
+        Polled, so the owner's Stop is answered within a quarter second rather
+        than after the whole wait; the loop's own check then ends the turn.
+        """
         index = min(self.bad_reply_retries, len(self.BAD_REPLY_BACKOFF_S)) - 1
-        delay = min(self.BAD_REPLY_BACKOFF_S[index], max(turn_deadline - time.monotonic(), 0.0))
-        if delay > 0:
-            await asyncio.sleep(delay)
+        until = time.monotonic() + min(
+            self.BAD_REPLY_BACKOFF_S[index], max(turn_deadline - time.monotonic(), 0.0),
+        )
+        while not self._interrupted() and time.monotonic() < until:
+            await asyncio.sleep(min(0.25, max(until - time.monotonic(), 0.0)))
 
     def _advance_past(self, exc, failure_class, scope):
         """Exclude the failed selection at ``scope`` and take the next candidate.
