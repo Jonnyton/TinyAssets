@@ -201,7 +201,7 @@ def _put_asset(actor: str, uid: str, payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def read_app_ui_asset_bytes(*, universe_id: str, sha256: str) -> tuple[bytes, str] | dict:
+def read_app_ui_asset_bytes(*, universe_id: str, sha256: str) -> bytes | dict:
     """One of the caller's own UI blobs for the app to hand its frame.
 
     The same universe gate as reading the row; the blob is keyed by the caller,

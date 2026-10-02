@@ -52,15 +52,19 @@ the browser. `worker-src` and `frame-src` still fall back to `'none'`.
 
 ### D2. Content-addressed blobs per owner, referenced by path
 
-`universe_app_ui_asset(owner_user_id, sha256, media_type, size_bytes, content,
-created_at)`, primary key `(owner_user_id, sha256)`, in the custom-agents
-database. A component's `assets` maps a bundle path to `{sha256, size,
-media_type}`. Versioning comes free: an edit is a new hash; two UIs or two
-universes sharing a texture store it once.
+`universe_app_ui_asset(owner_user_id, sha256, size_bytes, content, created_at)`,
+primary key `(owner_user_id, sha256)`, in the custom-agents database. A
+component's `assets` maps a bundle path to `{sha256, size, media_type}`; the
+media type is the reference's (its path's extension), never the shared row's, so
+two references to the same bytes cannot disagree through it. Versioning comes
+free: an edit is a new hash; two UIs or two universes sharing a texture store it
+once.
 
 - Write-time validation: every referenced hash must be stored for the SAVING
-  owner with the same size and media type, so a row can never name bytes its
-  owner does not have (the whole-row `save` and `replace_ui` included).
+  owner with the same size, so a row can never name bytes its owner does not
+  have (the whole-row `save` and `replace_ui` included). Every row write takes
+  the write lock (`BEGIN IMMEDIATE`) before it checks, so the check and the
+  write are serial with the sweep.
 - Storage: the blobs are counted by the existing `ui_library` store (one
   measurement over row text plus blob bytes) and charged before the write
   (`StorageRefused` at the quota, the existing visible refusal).

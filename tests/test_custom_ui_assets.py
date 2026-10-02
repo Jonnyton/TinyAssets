@@ -72,7 +72,7 @@ def test_put_asset_from_a_file_the_agents_wrote_under_u(door):
     entry = _row(base)["ui_library"][0]
     assert entry["assets"] == {"img/grass.png": {"sha256": sha, "size": len(PNG),
                                                  "media_type": "image/png"}}
-    assert ca.read_app_ui_asset(base, owner_user_id=A, sha256=sha) == (PNG, "image/png")
+    assert ca.read_app_ui_asset(base, owner_user_id=A, sha256=sha) == PNG
     # The model reads paths and sizes, never bodies.
     from tinyassets.universe_server import read_graph
 
@@ -183,6 +183,64 @@ def test_a_manifest_must_match_the_stored_size_and_type(door):
     assert refused["error"] == "app_ui_validation_error"
     renamed = _write("replace_ui", {"component": _bundle(assets={"a.jpg": ref})})
     assert renamed["error"] == "app_ui_validation_error", "png bytes are not a jpeg by renaming"
+
+
+@pytest.mark.parametrize("writer", ["save", "add_ui"])
+def test_a_sweep_cannot_delete_a_blob_between_the_check_and_the_write(tmp_path, monkeypatch,
+                                                                      writer):
+    """Codex 2026-10-02 (P1): the held-check read without a lock, so a sweep
+    could commit between it and the row write, and the save returned success
+    naming a deleted blob. The writer now holds the write lock from the check to
+    the commit; a sweep racing it waits, then sees the reference."""
+    import threading
+
+    old = ca.store_app_ui_asset(tmp_path, owner_user_id=A, data=PNG, media_type="image/png")
+    with ca._agent_connect(tmp_path) as conn:  # unreferenced and past its grace
+        conn.execute("UPDATE universe_app_ui_asset SET created_at = ?",
+                     (time.time() - 2 * ca._ASSET_GC_GRACE_SECONDS,))
+    real_check = ca._check_assets_held
+    sweeper: list[threading.Thread] = []
+
+    def check_then_race(conn, owner, library):
+        real_check(conn, owner, library)
+        # Another asset write (which sweeps) starts right after the check.
+        thread = threading.Thread(target=ca.store_app_ui_asset, kwargs=dict(
+            base_path=tmp_path, owner_user_id=A, data=b"other", media_type="text/plain"))
+        thread.start()
+        sweeper.append(thread)
+        time.sleep(0.5)  # ample time for an unserialized sweep to commit
+
+    monkeypatch.setattr(ca, "_check_assets_held", check_then_race)
+    component = _bundle(assets={"a.png": old})
+    if writer == "save":
+        saved = ca.save_app_ui(tmp_path, owner_user_id=A, universe_id=HOME_A,
+                               expected_revision=0, changes={"ui_library": [component]})
+    else:
+        saved = ca.change_app_ui_entry(tmp_path, owner_user_id=A, universe_id=HOME_A,
+                                       operation="add_ui", payload={"component": component})
+    sweeper[0].join(timeout=30)
+    assert not sweeper[0].is_alive()
+    assert saved["revision"] == 1
+    assert ca.read_app_ui_asset(tmp_path, owner_user_id=A, sha256=old["sha256"]) == PNG, (
+        "the saved row names bytes that still exist")
+
+
+def test_the_same_bytes_under_two_types_change_nothing_shared(door):
+    """Codex 2026-10-02 (P2): a refused upload rewrote the shared blob's media
+    type under an existing reference. The type now lives only in each
+    reference, so both paths save and both stay valid."""
+    _, base = door
+    _write("add_ui", {"component": _bundle()})
+    for path in ("a.txt", "a.json"):
+        out = _write("put_asset", {"ui_id": "village", "path": path, "text": "{}"})
+        assert out["status"] == "saved", out
+    assets = _row(base)["ui_library"][0]["assets"]
+    assert assets["a.txt"]["media_type"] == "text/plain"
+    assert assets["a.json"]["media_type"] == "application/json"
+    assert assets["a.txt"]["sha256"] == assets["a.json"]["sha256"]
+    assert len(_blobs(base)) == 1
+    # Later edits keeping both references still validate.
+    assert _write("edit_ui", {"ui_id": "village", "set": {"name": "V2"}})["status"] == "saved"
 
 
 # --------------------------------------------------------------------------- #

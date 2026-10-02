@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A UI carries assets bounded by its owner's storage
-A `tinyassets.app-ui.v1` component SHALL accept an optional `assets` map from bundle path to `{sha256, size, media_type}`, and every referenced blob SHALL be stored for the saving owner with that size and media type, or the write is refused and nothing changes. Blob bytes SHALL count toward the owner's storage quota, and the only other bounds SHALL be 16 MiB per file, 128 MiB and 500 files per UI, and 1 MiB of component text.
+A `tinyassets.app-ui.v1` component SHALL accept an optional `assets` map from bundle path to `{sha256, size, media_type}`, and every referenced blob SHALL be stored for the saving owner with that size, checked under the same write lock as the row write, or the write is refused and nothing changes. Blob bytes SHALL count toward the owner's storage quota, and the only other bounds SHALL be 16 MiB per file, 128 MiB and 500 files per UI, and 1 MiB of component text.
 
 #### Scenario: A UI larger than the old 49 KB bound is saved
 - **WHEN** a universe adds a UI whose script is 200 KB and whose assets total 20 MB

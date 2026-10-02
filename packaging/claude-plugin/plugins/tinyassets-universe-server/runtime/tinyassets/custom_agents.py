@@ -199,12 +199,13 @@ CREATE TABLE IF NOT EXISTS universe_app_ui (
 
 -- The bytes a person's UIs load: textures, audio, fonts, models, JS/CSS files.
 -- Content-addressed per owner, so an edit is a new hash and a texture two UIs
--- share is stored once. A UI names a blob by path in its `assets` map; nothing
--- here knows which UI or universe uses it. Only the owner ever reads a row.
+-- share is stored once. A UI names a blob by path in its `assets` map, and the
+-- media type lives in that reference (from the path's extension), never here:
+-- one shared row must not carry a property two references can disagree on.
+-- Nothing here knows which UI or universe uses it. Only the owner reads a row.
 CREATE TABLE IF NOT EXISTS universe_app_ui_asset (
     owner_user_id TEXT NOT NULL,
     sha256 TEXT NOT NULL,
-    media_type TEXT NOT NULL,
     size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
     content BLOB NOT NULL,
     created_at REAL NOT NULL,
@@ -1545,6 +1546,19 @@ def _check_component(entry: dict[str, Any]) -> None:
         )
 
 
+def _begin_write(conn: sqlite3.Connection) -> None:
+    """Take the database write lock NOW, before anything is read.
+
+    A deferred transaction reads without a lock, so an asset sweep could commit
+    between a writer's check that a blob is held and its row write (Codex,
+    2026-10-02: a save returned success naming a blob already deleted). With the
+    lock taken first, the check and the write are one serial step: a sweep that
+    ran first leaves the check to refuse; one that runs after sees the reference.
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+
+
 def _referenced_assets(library: list[Any]) -> list[tuple[str, str, dict[str, Any]]]:
     refs = []
     for entry in library:
@@ -1558,23 +1572,25 @@ def _check_assets_held(conn: sqlite3.Connection, owner: str, library: list[Any])
     """Every blob ``library`` names is stored for ``owner``, as named.
 
     A row can never point at bytes its owner does not hold -- not another
-    person's blob by hash, not one swept away -- whichever path wrote it.
+    person's blob by hash, not one swept away -- whichever path wrote it. The
+    caller holds the write lock (:func:`_begin_write`), so no sweep can delete a
+    blob between this check and the row write that references it.
     """
     refs = _referenced_assets(library)
     if not refs:
         return
     hashes = sorted({ref["sha256"] for _, _, ref in refs})
-    held: dict[str, tuple[int, str]] = {}
+    held: dict[str, int] = {}
     for start in range(0, len(hashes), 500):
         chunk = hashes[start:start + 500]
         for row in conn.execute(
-            "SELECT sha256, size_bytes, media_type FROM universe_app_ui_asset "
+            "SELECT sha256, size_bytes FROM universe_app_ui_asset "
             f"WHERE owner_user_id = ? AND sha256 IN ({','.join('?' * len(chunk))})",
             (owner, *chunk),
         ):
-            held[str(row["sha256"])] = (int(row["size_bytes"]), str(row["media_type"]))
+            held[str(row["sha256"])] = int(row["size_bytes"])
     for ui_id, path, ref in refs:
-        if held.get(ref["sha256"]) != (ref["size"], ref["media_type"]):
+        if held.get(ref["sha256"]) != ref["size"]:
             raise AgentValidationError(
                 f"UI {ui_id!r}: asset {path!r} names bytes that are not in your UI storage; "
                 "write it with put_asset"
@@ -1724,6 +1740,7 @@ def _save_app_ui_row(
 ) -> dict[str, Any]:
     now = time.time()
     with _agent_connect(base_path) as conn:
+        _begin_write(conn)
         if library_doc is not None:
             _check_assets_held(conn, owner, library_doc)
         if expected_revision == 0:
@@ -2015,6 +2032,10 @@ def change_app_ui_entry(
             library, selection, outcome = _apply_app_ui_entry_operation(
                 current["ui_library"], current["ui_selection"], operation, payload,
             )
+            # The read above is lock-free and the write below is compare-and-set
+            # on the revision it read; the held-check sits between them under the
+            # write lock, so no sweep can land between the check and the write.
+            _begin_write(conn)
             if library is not None:
                 _check_assets_held(conn, owner, library)
             library_json = None if library is None else _canonical_json(library)
@@ -2054,8 +2075,8 @@ def change_app_ui_entry(
 
 def read_app_ui_asset(
     base_path: str | Path, *, owner_user_id: str, sha256: str,
-) -> tuple[bytes, str] | None:
-    """``(bytes, media_type)`` of one of the owner's own UI blobs, else None.
+) -> bytes | None:
+    """The bytes of one of the owner's own UI blobs, else None.
 
     Keyed by the owner: a hash names bytes only within one person's storage, so
     knowing another person's hash reaches nothing.
@@ -2067,11 +2088,11 @@ def read_app_ui_asset(
         return None
     with _agent_connect(base_path) as conn:
         row = conn.execute(
-            "SELECT content, media_type FROM universe_app_ui_asset "
+            "SELECT content FROM universe_app_ui_asset "
             "WHERE owner_user_id = ? AND sha256 = ?",
             (owner, sha256),
         ).fetchone()
-    return None if row is None else (bytes(row["content"]), str(row["media_type"]))
+    return None if row is None else bytes(row["content"])
 
 
 def store_app_ui_asset(
@@ -2079,9 +2100,12 @@ def store_app_ui_asset(
 ) -> dict[str, Any]:
     """Store ``data`` in the owner's UI blob storage; ``{sha256, size, media_type}``.
 
-    Charged to the owner's storage before anything is written (``StorageRefused``
-    at the quota); bytes already held are free. Unreferenced blobs past their
-    grace period are swept in the same transaction.
+    ``media_type`` is the reference's, returned for the caller's manifest; the
+    stored row is bytes only, so storing the same bytes under another type
+    changes nothing another reference depends on. Charged to the owner's storage
+    before anything is written (``StorageRefused`` at the quota); bytes already
+    held are free. Unreferenced blobs past their grace period are swept in the
+    same transaction.
     """
     from tinyassets import storage_accounting
     from tinyassets.principals import named_principal
@@ -2101,12 +2125,12 @@ def store_app_ui_asset(
     sha = hashlib.sha256(data).hexdigest()
     ref = {"sha256": sha, "size": len(data), "media_type": media_type}
     with _agent_connect(base_path) as conn:
-        # Already held as this type: free, and the grace period restarts so the
-        # reference that follows cannot lose a race with a sweep.
+        # Already held: free, and the grace period restarts so the reference
+        # that follows cannot lose a race with a sweep.
         if conn.execute(
             "UPDATE universe_app_ui_asset SET created_at = ? "
-            "WHERE owner_user_id = ? AND sha256 = ? AND media_type = ?",
-            (time.time(), owner, sha, media_type),
+            "WHERE owner_user_id = ? AND sha256 = ?",
+            (time.time(), owner, sha),
         ).rowcount == 1:
             return ref
     account = owner if storage_accounting.is_account(base_path, owner) else None
@@ -2119,12 +2143,12 @@ def store_app_ui_asset(
             conn.execute(
                 """
                 INSERT INTO universe_app_ui_asset (
-                    owner_user_id, sha256, media_type, size_bytes, content, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    owner_user_id, sha256, size_bytes, content, created_at
+                ) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(owner_user_id, sha256) DO UPDATE SET
-                    media_type = excluded.media_type, created_at = excluded.created_at
+                    created_at = excluded.created_at
                 """,
-                (owner, sha, media_type, len(data), sqlite3.Binary(data), time.time()),
+                (owner, sha, len(data), sqlite3.Binary(data), time.time()),
             )
             _sweep_app_ui_assets(conn, owner)
     except BaseException:

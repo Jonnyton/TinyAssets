@@ -211,7 +211,7 @@ async def handle_ui_asset(request):
         return JSONResponse({"error": "owner_read_failed"}, 500, headers=_HEADERS)
     if isinstance(found, dict):
         return JSONResponse(found, 404, headers=_HEADERS)
-    return Response(found[0], 200, headers=dict(_BYTE_HEADERS))
+    return Response(found, 200, headers=dict(_BYTE_HEADERS))
 
 
 def owner_door_routes() -> list[Any]:
