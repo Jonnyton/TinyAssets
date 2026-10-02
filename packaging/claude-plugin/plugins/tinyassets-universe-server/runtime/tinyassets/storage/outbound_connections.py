@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import http.client
@@ -1083,9 +1084,11 @@ class BrokerStream:
     and raises once one appears. Holds no credential itself.
     """
 
-    __slots__ = ("_scanner", "_upstream", "headers", "reason", "redirect_count", "status")
+    __slots__ = ("_on_unsafe", "_scanner", "_upstream", "headers", "reason", "redirect_count",
+                 "status")
 
-    def __init__(self, upstream: UpstreamStream, held: tuple[str, ...]) -> None:
+    def __init__(self, upstream: UpstreamStream, held: tuple[str, ...],
+                 on_unsafe: Callable[[], None] = lambda: None) -> None:
         from tinyassets.broker.scan import StreamScanner, contains_sensitive
 
         values = tuple(dict.fromkeys((*held, *upstream.sensitive)))
@@ -1095,6 +1098,7 @@ class BrokerStream:
             upstream.close()
             raise ProxyRequestError("outbound request failed: unsafe destination response")
         self._upstream = upstream
+        self._on_unsafe = on_unsafe
         self._scanner = StreamScanner(values)
         self.status = upstream.status
         self.reason = upstream.reason
@@ -1110,6 +1114,7 @@ class BrokerStream:
             released = self._scanner.feed(piece) if piece else self._scanner.finish()
         except SensitiveValueInResponse:
             self._upstream.close()
+            self._on_unsafe()
             raise ProxyRequestError(
                 "outbound request failed: unsafe destination response") from None
         if not piece and not released:
@@ -1145,7 +1150,9 @@ class CredentialBlindBroker:
         self._oauth_tokens = oauth_tokens
 
     def dispatch(self, grant_id: str, verb: str, request: object, *,
-                 stream: bool = False, idle_s: float | None = None) -> Any:
+                 stream: bool = False, idle_s: float | None = None,
+                 guard: Callable[[], Any] | None = None,
+                 on_connect: Callable[[Any], None] | None = None) -> Any:
         """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
         whose body is read as it arrives (I14); every check before the response
         is identical, and the body is scanned byte by byte instead of whole."""
@@ -1232,9 +1239,9 @@ class CredentialBlindBroker:
             bundle = self._oauth_bundle(resource, grant_id, verb, credential)
             wire_credential = bundle.access_token
             secrets_held = bundle.secret_values()
-        streaming = {"stream": True, "idle_s": idle_s} if stream else {}
+        streaming = {"stream": True, "idle_s": idle_s, "on_connect": on_connect} if stream else {}
         response = self._send(resource, grant_id, verb, request, wire_credential,
-                              revalidate_authority, reply_budget_s, **streaming)
+                              revalidate_authority, reply_budget_s, guard=guard, **streaming)
         if oauth and _status_of(response) == 401:
             # The service rejected the token before doing anything: refresh
             # once (unless another holder already did) and send once more.
@@ -1248,10 +1255,15 @@ class CredentialBlindBroker:
                 if stream:
                     response.close()
                 response = self._send(resource, grant_id, verb, request, wire_credential,
-                                      revalidate_authority, reply_budget_s, **streaming)
+                                      revalidate_authority, reply_budget_s, guard=guard,
+                                      **streaming)
         if stream:
+            def unsafe_body() -> None:
+                self._record_error(resource, grant_id, verb,
+                                   "destination response contained credential material")
+
             try:
-                return BrokerStream(response, secrets_held)
+                return BrokerStream(response, secrets_held, on_unsafe=unsafe_body)
             except ProxyRequestError:
                 self._record_error(resource, grant_id, verb,
                                    "destination response contained credential material")
@@ -1316,6 +1328,18 @@ class CredentialBlindBroker:
         return float(min(requested, INFERENCE_MAX_SECONDS)) if eligible else None
 
     def _send(
+        self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
+        credential: str, revalidate_authority: Any, reply_budget_s: float | None = None,
+        guard: Callable[[], Any] | None = None, **streaming: Any,
+    ) -> Any:
+        """One network send. ``guard`` (the broker's fence and cancellation check)
+        is held across it, so every send -- the first, an OAuth resend -- is
+        re-checked immediately before it leaves."""
+        with guard() if guard is not None else contextlib.nullcontext():
+            return self._send_unguarded(resource, grant_id, verb, request, credential,
+                                        revalidate_authority, reply_budget_s, **streaming)
+
+    def _send_unguarded(
         self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
         credential: str, revalidate_authority: Any, reply_budget_s: float | None = None,
         **streaming: Any,
@@ -3185,12 +3209,14 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         pinned_address: str,
         open_socket: Callable[..., socket.socket],
         deadline: float,
+        on_connect: Callable[[Any], None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(host, **kwargs)
         self._pinned_address = pinned_address
         self._open_socket = open_socket
         self._deadline = deadline
+        self._on_connect = on_connect
 
     def connect(self) -> None:  # noqa: D102 - overrides http.client
         # Bound the TCP connect by the remaining TOTAL budget, not just the per-op
@@ -3235,6 +3261,10 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             deadline=self._deadline,
             per_op_timeout=self.timeout,
         )
+        if self._on_connect is not None:
+            # A stream's owner may need to abort this exchange from another
+            # thread (cancel, fence) before any response object exists.
+            self._on_connect(tls)
 
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
@@ -3247,11 +3277,13 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         pinned_address: str,
         open_socket: Callable[..., socket.socket],
         deadline: float,
+        on_connect: Callable[[Any], None] | None = None,
     ) -> None:
         super().__init__(context=context)
         self._pinned_address = pinned_address
         self._open_socket = open_socket
         self._deadline = deadline
+        self._on_connect = on_connect
 
     def https_open(self, req: Any) -> Any:
         return self.do_open(self._make_connection, req)
@@ -3270,6 +3302,7 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
             pinned_address=self._pinned_address,
             open_socket=self._open_socket,
             deadline=self._deadline,
+            on_connect=self._on_connect,
         )
 
 
@@ -3618,12 +3651,14 @@ class UpstreamStream:
     destination's words.
     """
 
-    __slots__ = ("_closed", "_done", "_max_body", "_queued", "_read_bytes", "_response",
-                 "_deadline", "headers", "reason", "redirect_count", "sensitive", "status")
+    __slots__ = ("_closed", "_done", "_max_body", "_queued", "_read_bytes", "_reading",
+                 "_response", "_socket", "_deadline", "headers", "reason", "redirect_count",
+                 "sensitive", "status")
 
     def __init__(self, *, status: int, reason: str, headers: dict[str, str],
                  sensitive: tuple[str, ...], response: Any = None, max_body_bytes: int = 0,
-                 deadline: float = 0.0, queued: bytes = b"", redirect_count: int = 0) -> None:
+                 deadline: float = 0.0, queued: bytes = b"", redirect_count: int = 0,
+                 sock: Any = None) -> None:
         self.status = status
         self.reason = reason
         self.headers = headers
@@ -3636,6 +3671,8 @@ class UpstreamStream:
         self._queued = queued
         self._done = response is None
         self._closed = False
+        self._reading = False
+        self._socket = sock
 
     @classmethod
     def complete(cls, result: dict[str, Any], sensitive: tuple[str, ...]) -> UpstreamStream:
@@ -3663,6 +3700,7 @@ class UpstreamStream:
             return b""
         failure: BaseException | None = None
         piece = b""
+        self._reading = True
         try:
             piece = self._response.read1(min(max_bytes, _SSRF_READ_CHUNK))
         except _TotalDeadlineExceeded:
@@ -3673,6 +3711,11 @@ class UpstreamStream:
                     "outbound request exceeded its time budget")
             else:
                 failure = ProxyRequestError("outbound request failed at destination")
+        finally:
+            self._reading = False
+        if self._closed:
+            self._release()  # closed from another thread while this read ran
+            raise ProxyRequestError("outbound stream is closed")
         if failure is not None:
             self.close()
             raise failure
@@ -3695,20 +3738,58 @@ class UpstreamStream:
                 pass
 
     def close(self) -> None:
-        """Abort: closes the upstream socket (a blocked read in another thread returns)."""
+        """Abort without blocking: shut the upstream socket down, so a read
+        blocked in another thread returns at once; that read releases the
+        response itself. Safe to call from any thread, any number of times."""
         self._closed = True
         self._queued = b""
         self._done = True
+        abort_socket(self._socket)
         response = self._response
         if response is not None:
-            try:
-                fp = getattr(response, "fp", None)
-                raw = getattr(getattr(fp, "raw", None), "_sock", None)
-                if raw is not None:
+            # The socket object the response's file reads through (on Windows,
+            # closing it is what wakes a blocked recv); closing it takes no lock
+            # a reader holds.
+            raw = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+            if raw is not None:
+                try:
                     raw.close()
-            except Exception:
-                pass
-        self._release()
+                except Exception:
+                    pass
+        if not self._reading:
+            self._release()
+
+
+def abort_socket(sock: Any) -> None:
+    """Shut a socket down and close it; never blocks, never raises.
+
+    ``shutdown`` is what wakes a ``recv`` blocked in another thread on Linux;
+    closing the descriptor is what does it on Windows. Neither touches the
+    response object a reader may be holding a lock on.
+    """
+    if sock is None:
+        return
+    # http.client marks its socket object closed once the response holds the
+    # connection through a file object; the descriptor lives on. ``shutdown``
+    # acts on the CONNECTION, so a duplicate of the descriptor reaches it.
+    try:
+        fd = sock.fileno()
+    except Exception:
+        fd = -1
+    if fd >= 0:
+        try:
+            duplicate = socket.fromfd(fd, sock.family, sock.type)
+            try:
+                duplicate.shutdown(socket.SHUT_RDWR)
+            finally:
+                duplicate.close()
+        except Exception:
+            pass
+    for step in (lambda: sock.shutdown(socket.SHUT_RDWR), sock.close):
+        try:
+            step()
+        except Exception:
+            pass
 
 
 def _open_pinned_https_stream(
@@ -3726,6 +3807,7 @@ def _open_pinned_https_stream(
     max_header_count: int,
     max_header_bytes: int,
     sensitive: tuple[str, ...],
+    on_connect: Callable[[Any], None] | None = None,
 ) -> UpstreamStream:
     """``_execute_pinned_https_request`` up to the response headers, then a stream.
 
@@ -3740,12 +3822,20 @@ def _open_pinned_https_stream(
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
     opener = urllib.request.OpenerDirector()
     opener.add_handler(urllib.request.ProxyHandler({}))
+    connected: list[Any] = []
+
+    def remember(sock: Any) -> None:
+        connected.append(sock)
+        if on_connect is not None:
+            on_connect(sock)
+
     opener.add_handler(
         _PinnedHTTPSHandler(
             context=ssl_context,
             pinned_address=pinned_address,
             open_socket=open_socket,
             deadline=deadline,
+            on_connect=remember,
         )
     )
     response = None
@@ -3784,7 +3874,7 @@ def _open_pinned_https_stream(
                 status=status, reason=reason,
                 headers={str(name).lower(): str(value) for name, value in raw_headers},
                 sensitive=sensitive, response=response, max_body_bytes=max_body_bytes,
-                deadline=deadline,
+                deadline=deadline, sock=connected[-1] if connected else None,
             )
     except Exception:
         stream = None
@@ -3953,6 +4043,7 @@ class _SsrfHardenedHttpDriver:
         revalidate_authority: Callable[[float], None] | None = None,
         reply_budget_s: float | None = None,
         idle_s: float | None = None,
+        on_connect: Callable[[Any], None] | None = None,
     ) -> UpstreamStream:
         """:meth:`__call__`, but the body is read as it arrives (I14).
 
@@ -3962,7 +4053,10 @@ class _SsrfHardenedHttpDriver:
         returned. The body is then read incrementally under the same total
         deadline and the same cumulative size bound; ``idle_s`` bounds silence
         between reads. A redirecting download (``public_https_get``) keeps the
-        collected path and is returned as an already-complete stream.
+        collected path and is returned as an already-complete stream: held
+        whole (as request/close holds it today, within the 5 MiB bound) and in
+        request/close's decoded form. Redirecting downloads are not streamed in
+        this version.
         """
         prepared = self._prepare(
             bundle=bundle, auth_scheme=auth_scheme, method=method, url=url,
@@ -3992,6 +4086,7 @@ class _SsrfHardenedHttpDriver:
             max_header_count=self._max_header_count,
             max_header_bytes=self._max_header_bytes,
             sensitive=tuple(prepared.sensitive),
+            on_connect=on_connect,
         )
 
     def _pin(self, canonical: _CanonicalOutboundUrl) -> str:
@@ -4085,12 +4180,9 @@ class _SsrfHardenedHttpDriver:
         # Everything to scrub from the response: raw bundle members AND the exact
         # auth values placed on the wire (e.g. the base64 blob of a Basic
         # credential, which matches no raw member).
-        sensitive = list(bundle.secret_values())
-        for header_value in auth_headers.values():
-            sensitive.append(header_value)
-            scheme_split = header_value.split(" ", 1)
-            if len(scheme_split) == 2:
-                sensitive.append(scheme_split[1])
+        # `_redirect_auth_material` is the full set: each header value, its
+        # payload after the scheme, and an OAuth signature encoded and decoded.
+        sensitive = list(bundle.secret_values()) + _redirect_auth_material(auth_headers)
         encoded_body = _encode_request_body(body, request_headers)
         approved_sources = tuple(
             endpoint for endpoint in (allowed_endpoints or ())
@@ -4339,10 +4431,12 @@ class _TrustedNetworkDriver:
         reply_budget_s = kwargs.pop("reply_budget_s", None)
         stream = bool(kwargs.pop("stream", False))
         idle_s = kwargs.pop("idle_s", None)
+        on_connect = kwargs.pop("on_connect", None)
         if connection_type == "http":
             return self._dispatch_http(
                 stream=stream,
                 idle_s=idle_s,
+                on_connect=on_connect,
                 auth_scheme=auth_scheme,
                 allowed_endpoints=tuple(allowed_endpoints),
                 access_mode=access_mode,
@@ -4378,6 +4472,7 @@ class _TrustedNetworkDriver:
         reply_budget_s: float | None = None,
         stream: bool = False,
         idle_s: float | None = None,
+        on_connect: Callable[[Any], None] | None = None,
     ) -> Any:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
@@ -4400,7 +4495,11 @@ class _TrustedNetworkDriver:
         )
         bundle = _build_http_secret_bundle(auth_scheme, credential)
         send = self._http.open_stream if stream else self._http
-        extra = {"idle_s": idle_s} if stream and idle_s is not None else {}
+        extra: dict[str, Any] = {}
+        if stream:
+            extra["on_connect"] = on_connect
+            if idle_s is not None:
+                extra["idle_s"] = idle_s
         return send(
             **extra,
             bundle=bundle,

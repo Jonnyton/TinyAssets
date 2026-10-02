@@ -73,6 +73,9 @@ class Lease:
         return (generation, proof) == (self.generation, self.proof)
 
 
+REVOKED: set[str] = set()
+
+
 class Ledger:
     """authorize_exact as the real ledger would answer for one owner's grant."""
 
@@ -82,11 +85,18 @@ class Ledger:
     def authorize_exact(self, *, universe_id, grant_id, connection_id):
         from tinyassets.storage.outbound_connections import GrantResolutionError
 
-        if (self.principal, universe_id, grant_id, connection_id) != (
+        if grant_id in REVOKED or (self.principal, universe_id, grant_id, connection_id) != (
             "alice", "cc-alice", "grant-a", "conn-a",
         ):
             raise GrantResolutionError("outbound connection grant identity mismatch")
         return object(), object()
+
+
+@pytest.fixture(autouse=True)
+def _no_revocations():
+    REVOKED.clear()
+    yield
+    REVOKED.clear()
 
 
 @pytest.fixture
@@ -98,9 +108,15 @@ def broker(tmp_path):
     upstreams = {"next": lambda: Script([b"data: hello\n\n", b"data: [DONE]\n\n"])}
 
     def dispatch_for(principal, command_center, grant_id, resource):
-        def dispatch(grant, verb, request, *, stream, idle_s=None):
-            sent.append((principal, grant, verb, request))
-            return upstreams["next"]()
+        if upstreams.get("dispatch_for_fails"):
+            raise RuntimeError("thread exhaustion")
+
+        def dispatch(grant, verb, request, *, stream, idle_s=None, guard=None,
+                     on_connect=None):
+            with guard():
+                sent.append((principal, grant, verb, request))
+                maker = upstreams["next"]
+                return maker(on_connect) if getattr(maker, "wants_socket", False) else maker()
 
         return dispatch
 
@@ -281,3 +297,106 @@ def test_an_unmapped_uid_is_dropped_before_any_frame(broker):
         except ConnectionResetError:  # closed with our frame unread: also a drop
             answer = None
         assert answer is None
+
+
+def _open_raw(broker, sock, *, credit=0, op_id=None, stream_id=1):
+    sock.sendall(rf.control(stream_id, {
+        "op": "OPEN", "op_id": op_id or new_op_id(), "principal": "alice",
+        "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+        "verb": "POST", "request": {"url": "u", "body": {}}, "credit": credit,
+        **broker.state,
+    }))
+
+
+def _connect(broker):
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(5)
+    sock.connect(str(broker.path))
+    return sock
+
+
+def test_a_refusal_after_the_operation_sent_reports_unknown_not_none(broker):
+    op = new_op_id()
+    _call(broker, op_id=op)
+    REVOKED.add("grant-a")
+    with _connect(broker) as sock:
+        _open_raw(broker, sock, op_id=op)
+        end = rf.read_frame_blocking(sock).control()
+    assert end["outcome"] == "refused" and end["side_effect_state"] == "unknown"
+    assert end["stream_sent"] is False
+
+
+def test_a_finished_response_reaches_end_with_exactly_its_own_credit(broker):
+    broker.upstreams["next"] = lambda: Script([b"abc"])
+    with _connect(broker) as sock:
+        _open_raw(broker, sock, credit=0)
+        ops = []
+        while len(ops) < 2:
+            ops.append(rf.read_frame_blocking(sock).control()["op"])
+        assert ops == ["ADMITTED", "HEAD"]
+        time.sleep(0.3)  # let the response reach its end with nothing granted
+        sock.sendall(rf.control(1, {"op": "CREDIT", "n": 3}))
+        data = rf.read_frame_blocking(sock)
+        end = rf.read_frame_blocking(sock).control()
+    assert data.payload == b"abc" and end["outcome"] == "completed"
+
+
+def test_a_stream_starved_of_credit_ends_at_its_deadline(broker, monkeypatch):
+    from tinyassets.broker import server as server_module
+
+    monkeypatch.setattr(server_module, "ORDINARY_BUDGET_S", 0.3)
+    monkeypatch.setattr(server_module, "RESEND_GRACE_S", 0.2)
+    broker.upstreams["next"] = lambda: Script([b"x" * 100])
+    with _connect(broker) as sock:
+        _open_raw(broker, sock, credit=0)
+        while True:
+            doc = rf.read_frame_blocking(sock).control()
+            if doc["op"] == "END":
+                break
+    assert doc["outcome"] == "failed" and doc["error_class"] == "OutboundDeadlineExceeded"
+
+
+class _FakeSocket:
+    def __init__(self):
+        self.down = threading.Event()
+
+    def fileno(self):
+        return -1
+
+    def shutdown(self, _how):
+        self.down.set()
+
+    def close(self):
+        self.down.set()
+
+
+def test_a_cancel_while_the_request_is_in_flight_aborts_its_socket(broker):
+    fake = _FakeSocket()
+
+    def blocked(on_connect):
+        on_connect(fake)
+        if not fake.down.wait(5):
+            raise AssertionError("never aborted")
+        raise OSError("connection aborted")
+
+    blocked.wants_socket = True
+    broker.upstreams["next"] = blocked
+    with _connect(broker) as sock:
+        _open_raw(broker, sock)
+        assert rf.read_frame_blocking(sock).control()["op"] == "ADMITTED"
+        time.sleep(0.2)
+        sock.sendall(rf.control(1, {"op": "CANCEL"}))
+        end = rf.read_frame_blocking(sock).control()
+    assert fake.down.is_set()
+    assert end["outcome"] == "cancelled" and end["side_effect_state"] == "unknown"
+
+
+def test_a_stream_that_cannot_start_is_refused_and_never_sent(broker):
+    broker.upstreams["dispatch_for_fails"] = True
+    op = new_op_id()
+    with _connect(broker) as sock:
+        _open_raw(broker, sock, op_id=op)
+        end = rf.read_frame_blocking(sock).control()
+    assert end["outcome"] == "refused" and end["side_effect_state"] == "none"
+    assert broker.ops.status("alice|cc-alice", op).state == "refused"
+    assert broker.server._streams == {}

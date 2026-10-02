@@ -16,25 +16,39 @@ A stream's life, for an ``OPEN`` on an owner channel:
    command center, bound to a digest of the request). A known operation is
    never sent again: the stream ends ``refused``/``duplicate`` carrying the
    operation's recorded state;
-5. ``may_have_sent`` is written durably, ``ADMITTED`` is sent, and only then
-   does the request leave, under the fence's send lock;
+5. on the stream's thread: ``may_have_sent`` is written durably and
+   ``ADMITTED`` sent, then the request leaves -- every network send (the
+   first, an OAuth resend) under the fence's send lock with the stream's
+   cancellation re-checked immediately before it;
 6. ``HEAD``, then ``DATA`` within the caller's credit, then ``END``.
 
+``side_effect_state`` is the OPERATION's: ``none`` only when the broker can
+show no byte of it was ever sent (no record, or a record that never reached
+``may_have_sent``), ``unknown`` otherwise. ``stream_sent`` says whether THIS
+stream wrote.
+
+Bounds: credit at most ``MAX_WINDOW`` per stream, at most ``LOOKAHEAD`` read
+past it, an absolute deadline over the whole stream (admission to ``END``,
+credit waits included), and a per-connection output queue of at most
+``MAX_QUEUED_FRAMES`` frames whose producers block when it is full.
+
 The upstream exchange is the hardened synchronous driver, so each live stream
-runs it on a thread of its own (the broker's memory per stream is that thread
-plus its window; an async upstream is a later step, measured first).
+runs it on a thread of its own: a waiting stream costs that thread and its
+window in the broker (an async upstream is a later step, measured first).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import socket
 import struct
 import threading
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +64,12 @@ BOX = "box"
 MAX_WINDOW = 256 * 1024
 LOOKAHEAD = 16 * 1024
 MAX_STREAMS = 4096
+MAX_QUEUED_FRAMES = 64
+#: Ordinary and longest per-request budgets (the driver's own) plus room for
+#: the one OAuth resend; the stream's absolute deadline is drawn from these.
+ORDINARY_BUDGET_S = 30.0
+MAX_BUDGET_S = 600.0
+RESEND_GRACE_S = 30.0
 #: The fixed, secret-free error classes an END may carry.
 ERROR_CLASSES = frozenset({
     "PermissionError", "GrantResolutionError", "AmbiguousProxyOutcome",
@@ -84,21 +104,27 @@ def request_digest(*, grant_id: str, connection_id: str, verb: str, request: Any
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _stream_budget(request: dict[str, Any]) -> float:
+    asked = request.get("reply_budget_s")
+    if type(asked) in (int, float) and asked == asked and asked > ORDINARY_BUDGET_S:
+        return min(float(asked), MAX_BUDGET_S) + RESEND_GRACE_S
+    return ORDINARY_BUDGET_S + RESEND_GRACE_S
+
+
 @dataclass
 class _Stream:
     id: int
     generation: int
+    token: str
     namespace: str
     op_id: str
+    deadline: float
     credit: int = 0
     cancelled: bool = False
     sent: bool = False
     upstream: Any = None
+    sockets: list[Any] = field(default_factory=list)
     wake: threading.Condition = field(default_factory=threading.Condition)
-
-
-DispatchFor = Callable[[str, str], Callable[..., Any]]
-"""``dispatch_for(principal, universe_id, grant_id, connection_id)`` -> dispatch callable."""
 
 
 class BrokerServer:
@@ -116,8 +142,6 @@ class BrokerServer:
         self._streams_lock = threading.Lock()
         self._ops.recover()
 
-    # ── connections ─────────────────────────────────────────────────────────
-
     async def serve(self, path: Path) -> asyncio.AbstractServer:
         return await asyncio.start_unix_server(self._connection, path=str(path))
 
@@ -132,60 +156,78 @@ class BrokerServer:
             writer.close()
             return
         connection = _Connection(self, writer, role)
+        pump = asyncio.ensure_future(connection.pump())
         try:
             while (frame := await rf.read_frame(reader)) is not None:
                 await connection.handle(frame)
         except rf.FrameError:
             _LOG.warning("broker peer broke the framing; dropping it")
+        except (ConnectionError, OSError):
+            pass
         finally:
             connection.abandon()
+            pump.cancel()
             writer.close()
-
-    # ── barrier, used by the connection and by tests ────────────────────────
 
     def _cancel_older(self, generation: int) -> None:
         with self._streams_lock:
             older = [s for s in self._streams.values() if s.generation < generation]
         for stream in older:
-            self._cancel(stream)
+            self.cancel(stream)
 
     def _close_older(self, generation: int) -> None:
         self._cancel_older(generation)
 
     @staticmethod
-    def _cancel(stream: _Stream) -> None:
+    def cancel(stream: _Stream) -> None:
+        """Never blocks: marks the stream cancelled and shuts its sockets down."""
+        from tinyassets.storage.outbound_connections import abort_socket
+
         with stream.wake:
             stream.cancelled = True
             stream.wake.notify_all()
+        for sock in list(stream.sockets):
+            abort_socket(sock)
         upstream = stream.upstream
         if upstream is not None:
             upstream.close()
 
 
 class _Connection:
-    """One peer: its streams, its write queue."""
+    """One peer: its streams, and one bounded output queue drained by a pump."""
 
     def __init__(self, server: BrokerServer, writer: asyncio.StreamWriter, role: str) -> None:
         self._server = server
         self._writer = writer
         self._role = role
         self._loop = asyncio.get_running_loop()
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue(MAX_QUEUED_FRAMES)
+        self._closed = threading.Event()
         self._key = id(self)
 
+    async def pump(self) -> None:
+        while True:
+            frame = await self._queue.get()
+            self._writer.write(frame)
+            await self._writer.drain()
+
     def send(self, frame: bytes | list[bytes]) -> None:
-        """Thread-safe: queue frames for this peer on the event loop."""
-        frames = frame if isinstance(frame, list) else [frame]
+        """From a stream thread: queue frames, blocking while the queue is full."""
+        for item in frame if isinstance(frame, list) else [frame]:
+            if self._closed.is_set():
+                return
+            future = asyncio.run_coroutine_threadsafe(self._queue.put(item), self._loop)
+            while True:
+                try:
+                    future.result(timeout=1.0)
+                    break
+                except TimeoutError:
+                    if self._closed.is_set():
+                        future.cancel()
+                        return
 
-        def write() -> None:
-            if not self._writer.is_closing():
-                for item in frames:
-                    self._writer.write(item)
-
-        self._loop.call_soon_threadsafe(write)
-
-    def end(self, stream_id: int, **fields: Any) -> None:
-        fields.setdefault("side_effect_state", "unknown")
-        self.send(rf.control(stream_id, {"op": "END", **fields}))
+    async def send_async(self, frame: bytes) -> None:
+        await self._queue.put(frame)
 
     async def handle(self, frame: rf.Frame) -> None:
         if frame.kind == rf.DATA:
@@ -208,7 +250,7 @@ class _Connection:
                     stream.credit = min(stream.credit + amount, MAX_WINDOW)
                     stream.wake.notify_all()
         elif op == "CANCEL" and stream is not None:
-            self._server._cancel(stream)
+            await asyncio.to_thread(self._server.cancel, stream)
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role != OWNER:
@@ -221,45 +263,62 @@ class _Connection:
                     close_older=self._server._close_older,
                 )
             except Fenced:
-                self.send(rf.control(rf.CONNECTION, {"op": "FENCE_REFUSED"}))
+                await self.send_async(rf.control(rf.CONNECTION, {"op": "FENCE_REFUSED"}))
                 return
-            self.send(rf.control(rf.CONNECTION, {"op": "FENCE_ACK", "generation": generation,
-                                                 "token": token}))
+            await self.send_async(rf.control(rf.CONNECTION, {
+                "op": "FENCE_ACK", "generation": generation, "token": token}))
         elif op == "STATUS":
             namespace = _namespace(doc.get("principal"), doc.get("command_center"))
-            try:
-                record = self._server._ops.status(namespace, str(doc.get("op_id", "")))
-            except OpIdInvalid:
-                record = "invalid"
-            if isinstance(record, str):
-                answer = {"op": "STATUS_IS", "op_id": doc.get("op_id"), "state": record}
-            else:
-                answer = {"op": "STATUS_IS", "op_id": record.op_id, "state": record.state,
-                          "side_effect_state": "unknown" if record.sent else "none"}
-            self.send(rf.control(rf.CONNECTION, answer))
+            state, effect = await asyncio.to_thread(
+                self._operation_state, namespace, str(doc.get("op_id", "")))
+            await self.send_async(rf.control(rf.CONNECTION, {
+                "op": "STATUS_IS", "op_id": doc.get("op_id"), "state": state,
+                "side_effect_state": effect}))
+
+    def _operation_state(self, namespace: str, op_id: str) -> tuple[str, str]:
+        """``(state, side_effect_state)`` of an operation, never ``none`` on a guess."""
+        try:
+            record = self._server._ops.status(namespace, op_id)
+        except OpIdInvalid:
+            return "invalid", "none"  # never admissible, so never sent
+        if record == "not_found":
+            return "not_found", "none"
+        if record == "expired":
+            return "expired", "unknown"
+        return record.state, "unknown" if record.sent else "none"
 
     async def _open(self, stream_id: int, doc: dict[str, Any]) -> None:
-        def refuse(error_class: str, *, sent: bool = False) -> None:
-            self.end(stream_id, outcome="refused", error_class=error_class,
-                     stream_sent=False, side_effect_state="unknown" if sent else "none")
+        principal, command_center = doc.get("principal"), doc.get("command_center")
+        op_id = doc.get("op_id")
+
+        async def refuse(error_class: str) -> None:
+            effect = "unknown"
+            if self._role == OWNER and isinstance(op_id, str):
+                try:
+                    namespace = _namespace(principal, command_center)
+                    _, effect = await asyncio.to_thread(self._operation_state, namespace, op_id)
+                except rf.FrameError:
+                    effect = "none"  # no namespace: no operation it could name
+            await self.send_async(rf.control(stream_id, {
+                "op": "END", "outcome": "refused", "error_class": error_class,
+                "stream_sent": False, "side_effect_state": effect}))
 
         if self._role != OWNER:
-            refuse("refused")  # the box channel's principal derivation lands with boxhostd
+            await refuse("refused")  # the box channel's derivation lands with boxhostd
             return
         with self._server._streams_lock:
             crowded = len(self._server._streams) >= MAX_STREAMS
         if crowded:
-            refuse("refused")
+            await refuse("refused")
             return
-        principal, command_center = doc.get("principal"), doc.get("command_center")
         grant_id, connection_id = doc.get("grant_id"), doc.get("connection_id")
-        verb, request, op_id = doc.get("verb"), doc.get("request"), doc.get("op_id")
+        verb, request = doc.get("verb"), doc.get("request")
         generation, token = doc.get("generation"), doc.get("token")
         if not all(isinstance(v, str) and v for v in
                    (principal, command_center, grant_id, connection_id, verb, op_id)) \
                 or not isinstance(request, dict) or type(generation) is not int \
                 or not isinstance(token, str):
-            refuse("refused")
+            await refuse("refused")
             return
         try:
             ledger = self._server._ledger_for(principal)
@@ -268,11 +327,11 @@ class _Connection:
                 connection_id=connection_id,
             )
         except Exception as exc:  # noqa: BLE001 - mapped to a fixed class
-            refuse(type(exc).__name__ if type(exc).__name__ in ERROR_CLASSES
-                   else "GrantResolutionError")
+            name = type(exc).__name__
+            await refuse(name if name in ERROR_CLASSES else "GrantResolutionError")
             return
         if not self._server._fence.admits(generation, token):
-            refuse("fenced")
+            await refuse("fenced")
             return
         namespace = _namespace(principal, command_center)
         digest = request_digest(grant_id=grant_id, connection_id=connection_id, verb=verb,
@@ -281,107 +340,144 @@ class _Connection:
             admission = await asyncio.to_thread(self._server._ops.admit, namespace, op_id,
                                                 digest)
         except OpIdInvalid:
-            refuse("refused")
+            await refuse("refused")
             return
-        if admission.kind in ("expired", "future", "full"):
-            refuse("expired" if admission.kind == "expired" else "refused")
+        if admission.kind != "new":
+            await refuse({"expired": "expired", "existing": "duplicate",
+                          "mismatch": "duplicate"}.get(admission.kind, "refused"))
             return
-        if admission.kind in ("existing", "mismatch"):
-            refuse("duplicate", sent=admission.record.sent)
-            return
-        stream = _Stream(stream_id, generation, namespace, op_id,
+        stream = _Stream(stream_id, generation, token, namespace, op_id,
+                         deadline=time.monotonic() + _stream_budget(request),
                          credit=min(max(int(doc.get("credit") or 0), 0), MAX_WINDOW))
         with self._server._streams_lock:
             self._server._streams[(self._key, stream_id)] = stream
-        await asyncio.to_thread(self._server._ops.mark_may_have_sent, namespace, op_id)
-        stream.sent = True
-        self.send(rf.control(stream_id, {"op": "ADMITTED", "op_id": op_id}))
-        dispatch = self._server._dispatch_for(principal, command_center, grant_id, resource)
-        threading.Thread(
-            target=self._run, args=(stream, dispatch, grant_id, verb, request, token,
-                                    doc.get("idle_s")),
-            name=f"broker-stream-{stream_id}", daemon=True,
-        ).start()
+        try:
+            dispatch = self._server._dispatch_for(principal, command_center, grant_id,
+                                                  resource)
+            threading.Thread(
+                target=self._run, args=(stream, dispatch, grant_id, verb, request,
+                                        doc.get("idle_s")),
+                name=f"broker-stream-{stream_id}", daemon=True,
+            ).start()
+        except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
+            with self._server._streams_lock:
+                self._server._streams.pop((self._key, stream_id), None)
+            await asyncio.to_thread(self._server._ops.finish, namespace, op_id, "refused")
+            await refuse("refused")
+
+    @contextlib.contextmanager
+    def _guard(self, stream: _Stream) -> Iterator[None]:
+        """Held across each network send: fence and cancellation re-checked first."""
+        with self._server._fence.send(stream.generation, stream.token):
+            if stream.cancelled:
+                raise _Cancelled
+            if time.monotonic() >= stream.deadline:
+                raise _Expired
+            yield
 
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
-             request: dict[str, Any], token: str, idle_s: Any) -> None:
-        outcome, error_class = "failed", "ProxyRequestError"
+             request: dict[str, Any], idle_s: Any) -> None:
+        outcome, error_class, extra = "failed", "ProxyRequestError", {}
         try:
-            with self._server._fence.send(stream.generation, token):
-                if stream.cancelled:
-                    raise _Cancelled
-                upstream = dispatch(grant_id, verb, request, stream=True,
-                                    idle_s=idle_s if isinstance(idle_s, (int, float)) else None)
-                stream.upstream = upstream
             if stream.cancelled:
-                upstream.close()
+                raise _Cancelled
+            self._server._ops.mark_may_have_sent(stream.namespace, stream.op_id)
+            self.send(rf.control(stream.id, {"op": "ADMITTED", "op_id": stream.op_id}))
+            stream.sent = True
+            upstream = dispatch(
+                grant_id, verb, request, stream=True,
+                idle_s=idle_s if type(idle_s) in (int, float) else None,
+                guard=lambda: self._guard(stream), on_connect=stream.sockets.append,
+            )
+            stream.upstream = upstream
+            if stream.cancelled:
                 raise _Cancelled
             self.send(rf.control(stream.id, {
                 "op": "HEAD", "status": upstream.status, "reason": upstream.reason,
                 "headers": upstream.headers, "redirect_count": upstream.redirect_count,
             }))
-            buffered = bytearray()
-            finished = False
-            while True:
-                with stream.wake:
-                    while (not stream.cancelled and stream.credit <= 0
-                           and (finished or len(buffered) >= LOOKAHEAD)):
-                        stream.wake.wait()
-                    if stream.cancelled:
-                        raise _Cancelled
-                    credit = stream.credit
-                if credit > 0 and buffered:
-                    piece = bytes(buffered[:credit])
-                    del buffered[:len(piece)]
-                    with stream.wake:
-                        stream.credit -= len(piece)
-                    self.send(rf.data(stream.id, piece))
-                    continue
-                if finished:
-                    outcome, error_class = "completed", None
-                    break
-                chunk = upstream.read(max(credit, 0) + LOOKAHEAD - len(buffered) or 1)
-                if chunk is None:
-                    finished = True
-                    if not buffered:
-                        outcome, error_class = "completed", None
-                        break
-                    continue
-                buffered += chunk
+            self._pump_body(stream, upstream)
+            outcome, error_class = "completed", None
         except _Cancelled:
             outcome, error_class = "cancelled", None
+        except (_Expired, TimeoutError):
+            outcome, error_class = "failed", "OutboundDeadlineExceeded"
         except Fenced:
             outcome, error_class = "cancelled", "fenced"
         except Exception as exc:  # noqa: BLE001 - mapped to a fixed class
             if stream.cancelled:
-                # Closing the upstream is how a cancel unblocks a read; the
+                # Shutting the socket down is how a cancel unblocks a read; the
                 # read's own error is that, not a destination failure.
                 outcome, error_class = "cancelled", None
             else:
                 name = type(exc).__name__
                 error_class = name if name in ERROR_CLASSES else "ProxyRequestError"
+                failure = getattr(exc, "failure", None)
+                if name == "ConnectionAuthorizationError" and isinstance(failure, dict):
+                    extra = {"failure": failure}
         finally:
-            upstream_left = stream.upstream
-            if upstream_left is not None and outcome != "completed":
-                upstream_left.close()
+            if stream.upstream is not None and outcome != "completed":
+                stream.upstream.close()
             with self._server._streams_lock:
                 self._server._streams.pop((self._key, stream.id), None)
             try:
-                self._server._ops.finish(stream.namespace, stream.op_id, outcome)
+                self._server._ops.finish(stream.namespace, stream.op_id,
+                                         outcome if stream.sent else "refused")
             except Exception:  # noqa: BLE001 - the record keeps may_have_sent: unknown
                 _LOG.warning("could not record the end of operation %s", stream.op_id)
-            self.end(stream.id, outcome=outcome, error_class=error_class, stream_sent=True,
-                     side_effect_state="unknown")
+            self.send(rf.control(stream.id, {
+                "op": "END", "outcome": outcome, "error_class": error_class,
+                "stream_sent": stream.sent,
+                "side_effect_state": "unknown" if stream.sent else "none", **extra,
+            }))
+
+    def _pump_body(self, stream: _Stream, upstream: Any) -> None:
+        buffered = bytearray()
+        finished = False
+        while True:
+            with stream.wake:
+                while True:
+                    if stream.cancelled:
+                        raise _Cancelled
+                    if (buffered and stream.credit > 0) or (finished and not buffered) \
+                            or (not finished and len(buffered) < LOOKAHEAD + stream.credit):
+                        break
+                    remaining = stream.deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise _Expired
+                    stream.wake.wait(remaining)
+                credit = stream.credit
+            if buffered and credit > 0:
+                piece = bytes(buffered[:credit])
+                del buffered[:len(piece)]
+                with stream.wake:
+                    stream.credit -= len(piece)
+                self.send(rf.data(stream.id, piece))
+                continue
+            if finished:
+                return
+            if time.monotonic() >= stream.deadline:
+                raise _Expired
+            chunk = upstream.read(LOOKAHEAD + credit - len(buffered))
+            if chunk is None:
+                finished = True
+            else:
+                buffered += chunk
 
     def abandon(self) -> None:
-        """The peer went away: cancel every stream it owned."""
+        """The peer went away: stop queueing, cancel every stream it owned."""
+        self._closed.set()
         with self._server._streams_lock:
             mine = [s for (key, _), s in self._server._streams.items() if key == self._key]
         for stream in mine:
-            self._server._cancel(stream)
+            self._server.cancel(stream)
 
 
 class _Cancelled(Exception):
+    pass
+
+
+class _Expired(Exception):
     pass
 
 

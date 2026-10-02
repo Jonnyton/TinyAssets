@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.server
 import socket
+import sys
 import threading
 import time
 
@@ -140,6 +141,14 @@ def test_a_reason_phrase_echoing_the_credential_is_refused(dribble):
         _open(dribble)
 
 
+_linux_wake = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="waking a blocked recv from another thread is the Linux broker host's behaviour; "
+           "the broker refuses to run where peer credentials are unavailable",
+)
+
+
+@_linux_wake
 def test_close_unblocks_a_read_waiting_in_another_thread(dribble):
     dribble.stub.update(pieces=[b"x", None], pause=5, hang=True)
     stream = _open(dribble)
@@ -243,3 +252,85 @@ def test_request_close_dispatch_is_unchanged(ledger):
     result = broker.dispatch("grant-model", "POST",
                              {"url": "https://models.example.com/v1/chat", "body": {}})
     assert result == {"status": 200, "body": "ok"} and "stream" not in calls[0]
+
+
+def test_an_oauth1_signature_alone_is_held_encoded_and_decoded():
+    import re
+    import urllib.parse
+
+    driver = _SsrfHardenedHttpDriver(open_socket=lambda *a: None)
+    bundle = ConnectionSecretBundle(api_key="ck", api_secret="cs", access_token="at",
+                                    access_token_secret="ats")
+    prepared = driver._prepare(
+        bundle=bundle, auth_scheme="oauth1a", method="POST",
+        url="https://api.example.com/2/tweets", headers=None, body={"text": "hi"},
+        header_name="", allowed_endpoints=None, access_mode="exact",
+    )
+    header = prepared.auth_headers["Authorization"]
+    signature = re.search(r'oauth_signature="([^"]+)"', header).group(1)
+    assert signature in prepared.sensitive
+    assert urllib.parse.unquote(signature) in prepared.sensitive
+
+
+@_linux_wake
+def test_close_from_another_thread_never_blocks_behind_a_read(dribble):
+    dribble.stub.update(pieces=[b"x", None], pause=5, hang=True)
+    stream = _open(dribble)
+    assert stream.read(10) == b"x"
+    reading = threading.Thread(target=lambda: _swallow(stream.read, 10))
+    reading.start()
+    time.sleep(0.3)
+    started = time.monotonic()
+    stream.close()
+    assert time.monotonic() - started < 0.5
+    reading.join(3)
+    assert not reading.is_alive()
+
+
+def _swallow(fn, *args):
+    try:
+        fn(*args)
+    except Exception:  # noqa: BLE001 - the test only needs it to return
+        pass
+
+
+def test_a_body_hit_is_audited(ledger):
+    audits = []
+
+    def network(**kwargs):
+        return UpstreamStream.complete(
+            {"status": 200, "reason": "OK", "headers": {},
+             "body": b"data: held-credential-xyz\n\n"}, ())
+
+    broker = CredentialBlindBroker(ledger, resolve_credential=lambda *_: "held-credential-xyz",
+                                   network_request=network, audit=audits.append)
+    stream = broker.dispatch("grant-model", "POST",
+                             {"url": "https://models.example.com/v1/chat", "body": {}},
+                             stream=True)
+    with pytest.raises(ProxyRequestError):
+        _read_all(stream)
+    assert any("credential material" in str(record) for record in audits)
+
+
+def test_the_guard_is_held_across_every_send_including_the_oauth_resend(ledger):
+    entered = []
+
+    class Guard:
+        def __enter__(self):
+            entered.append("in")
+
+        def __exit__(self, *exc):
+            entered.append("out")
+            return False
+
+    def network(**kwargs):
+        assert entered and entered[-1] == "in"  # the send happens inside the guard
+        return UpstreamStream.complete({"status": 200, "reason": "OK", "headers": {},
+                                        "body": b"ok"}, ())
+
+    broker = CredentialBlindBroker(ledger, resolve_credential=lambda *_: "c",
+                                   network_request=network)
+    stream = broker.dispatch("grant-model", "POST",
+                             {"url": "https://models.example.com/v1/chat", "body": {}},
+                             stream=True, guard=Guard)
+    assert _read_all(stream) == b"ok" and entered == ["in", "out"]

@@ -50,7 +50,10 @@ def _raise_for(end: dict[str, Any]) -> None:
     if error_class == "OutboundDeadlineExceeded":
         raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
     if error_class == "ConnectionAuthorizationError":
-        raise ConnectionAuthorizationError("")
+        # The structured, secret-free failure travels as today's worker sent it.
+        failure = end.get("failure")
+        detail = failure.get("provider_detail", "") if isinstance(failure, dict) else ""
+        raise ConnectionAuthorizationError(str(detail))
     if error_class == "GrantResolutionError":
         raise GrantResolutionError("outbound connection authority changed")
     if error_class == "AmbiguousProxyOutcome":
@@ -85,30 +88,25 @@ class BrokerClient:
         }
         if idle_s is not None:
             open_doc["idle_s"] = idle_s
+        from tinyassets.storage.outbound_connections import (
+            AmbiguousProxyOutcome,
+            ProxyRequestError,
+        )
+
         with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
-            sock.connect(os.fspath(self._path))
-            sock.sendall(rf.control(_STREAM_ID, open_doc))
-            head: dict[str, Any] | None = None
-            body = bytearray()
-            while True:
-                frame = rf.read_frame_blocking(sock)
-                if frame is None:
-                    from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
-
-                    raise AmbiguousProxyOutcome("the broker connection closed mid-request")
-                if frame.kind == rf.DATA:
-                    body += frame.payload
-                    sock.sendall(rf.control(_STREAM_ID, {"op": "CREDIT",
-                                                         "n": len(frame.payload)}))
-                    continue
-                doc = frame.control()
-                if doc["op"] == "HEAD":
-                    head = doc
-                elif doc["op"] == "END":
-                    if doc.get("outcome") != "completed" or head is None:
-                        _raise_for(doc)
-                    break
+            try:
+                sock.connect(os.fspath(self._path))
+            except OSError:
+                # Nothing was sent: the broker never saw this request.
+                raise ProxyRequestError("the credential broker is unavailable") from None
+            try:
+                head, body = self._exchange(sock, open_doc)
+            except (ConnectionError, TimeoutError, rf.FrameError):
+                # The request may have reached the broker and left it. (Not
+                # OSError: the typed refusals below include PermissionError.)
+                raise AmbiguousProxyOutcome(
+                    "the broker connection failed mid-request") from None
         return {
             "status": head["status"], "reason": head.get("reason", ""),
             "headers": head.get("headers", {}),
@@ -116,3 +114,28 @@ class BrokerClient:
             **({"redirect_count": head["redirect_count"]}
                if head.get("redirect_count") else {}),
         }
+
+    @staticmethod
+    def _exchange(sock: socket.socket, open_doc: dict[str, Any]
+                  ) -> tuple[dict[str, Any], bytearray]:
+        from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
+
+        sock.sendall(rf.control(_STREAM_ID, open_doc))
+        head: dict[str, Any] | None = None
+        body = bytearray()
+        while True:
+            frame = rf.read_frame_blocking(sock)
+            if frame is None:
+                raise AmbiguousProxyOutcome("the broker connection closed mid-request")
+            if frame.kind == rf.DATA:
+                body += frame.payload
+                sock.sendall(rf.control(_STREAM_ID, {"op": "CREDIT",
+                                                     "n": len(frame.payload)}))
+                continue
+            doc = frame.control()
+            if doc["op"] == "HEAD":
+                head = doc
+            elif doc["op"] == "END":
+                if doc.get("outcome") != "completed" or head is None:
+                    _raise_for(doc)
+                return head, body
