@@ -73,8 +73,13 @@ def test_the_bootstrap_never_imports_a_linked_json(data):
     )
     udir = _alpha(data)
     _link(bravo_targets, udir / "work_targets.json")
-    loaded = work_targets.load_work_targets(udir)
-    assert all(t.target_id != "b-secret" for t in loaded)
+    # A refusal raises (gpt-6-astra on #4291): "nothing to import" would let the
+    # next upsert mirror one record over the refused file.
+    with pytest.raises(OSError):
+        work_targets.load_work_targets(udir)
+    with pytest.raises(OSError):
+        work_targets.upsert_work_target(udir, work_targets.WorkTarget(target_id="t9", title="x"))
+    assert "b-secret" in bravo_targets.read_text(encoding="utf-8")
 
 
 def test_soul_edit_writer_refuses_a_linked_versions_dir(data):
@@ -119,6 +124,10 @@ def test_priority_review_reports_a_refused_signal_queue(data):
     _link(bravo_signals, enrichment_signals_path(_alpha(data)))
     out = foundation_priority_review({"universe_path": str(_alpha(data))})
     assert out["quality_trace"][0]["action"] == "foundation_review_signals_unreadable"
+    # Fails closed: an unreadable queue is not "no blockers" -- stay in
+    # foundation and idle, never route on to authorial work.
+    assert out["review_stage"] == "foundation"
+    assert out["current_task"] == "idle"
     assert json.loads(bravo_signals.read_text(encoding="utf-8")) == [{"secret": FOREIGN}]
 
 
@@ -141,3 +150,36 @@ def test_non_posix_exclusive_reports_an_existing_entry_as_file_exists(data, monk
     with pytest.raises(FileExistsError):
         write_data_path(link, "mine", mode="exclusive")
     assert _bravo_founder(data) == FOREIGN
+
+
+def test_branch_task_queue_refuses_links_and_planted_temp_names(data):
+    from tinyassets import branch_tasks
+
+    udir = _alpha(data)
+    qp = branch_tasks.queue_path(udir)
+    _link(data / "u-bravo" / "founder.md", qp.with_suffix(qp.suffix + ".tmp"))
+    branch_tasks._write_raw(qp, [{"task": "mine"}])
+    assert _bravo_founder(data) == FOREIGN
+    assert branch_tasks._read_raw(qp) == [{"task": "mine"}]
+    qp.unlink()
+    _link(data / "u-bravo" / "founder.md", qp)
+    with pytest.raises(RuntimeError):
+        branch_tasks._read_raw(qp)
+
+
+def test_wiki_write_back_never_writes_through_a_swapped_parent(data, monkeypatch):
+    from tinyassets.api import helpers
+    from tinyassets.effectors import wiki_write_back
+
+    bravo_pages = data / "u-bravo" / "wiki" / "pages"
+    bravo_pages.mkdir(parents=True)
+    (bravo_pages / "page.md").write_text(FOREIGN, encoding="utf-8")
+    (_alpha(data) / "wiki").mkdir()
+    _link(bravo_pages, _alpha(data) / "wiki" / "pages")
+    # The read already happened (a page swapped after it): only the write runs.
+    monkeypatch.setattr(helpers, "_read_text", lambda _path, *a, **k: "")
+    with pytest.raises(OSError):
+        wiki_write_back._append_or_update_section(
+            _alpha(data) / "wiki" / "pages" / "page.md", "section", "hint",
+        )
+    assert (bravo_pages / "page.md").read_text(encoding="utf-8") == FOREIGN

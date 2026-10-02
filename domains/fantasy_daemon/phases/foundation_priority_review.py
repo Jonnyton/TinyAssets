@@ -42,9 +42,11 @@ def foundation_priority_review(state: dict[str, Any]) -> dict[str, Any]:
         priorities, synth_signals = sync_source_synthesis_priorities(universe_path)
     except (RuntimeError, OSError) as exc:
         # The signal queue is unreadable or refused (a link). Never rebuild it
-        # from empty; report it and leave the queue untouched.
+        # from empty, and never read that as "no blockers": stay in foundation
+        # and idle this cycle, leaving the queue untouched.
         return {
-            "review_stage": "authorial",
+            "review_stage": "foundation",
+            "current_task": "idle",
             "soft_conflicts": [],
             "quality_trace": [{
                 "node": "foundation_priority_review",

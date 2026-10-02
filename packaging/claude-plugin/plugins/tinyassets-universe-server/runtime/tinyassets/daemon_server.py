@@ -2395,14 +2395,15 @@ def _bootstrap_notes_from_json(universe_path: str | Path) -> None:
         if existing is not None:
             return
         # Link-free: a planted ``<name>.json -> /data/<other>/...`` must not
-        # import another universe's file. A refusal imports nothing; the next
-        # mirror write replaces the link with this universe's own file.
+        # import another universe's file. A REFUSED read raises: the caller is
+        # about to add a row and mirror the table back over this file, so
+        # "nothing to import" would replace its contents with one record.
+        data = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+        if data is None:
+            return
         try:
-            data = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
-            if data is None:
-                return
             raw = json.loads(data.decode("utf-8"))
-        except (OSError, ValueError) as exc:
+        except ValueError as exc:
             _logger.warning("not importing %s: %s", path.name, exc)
             return
         if not isinstance(raw, list):
@@ -2453,14 +2454,15 @@ def _bootstrap_payload_table_from_json(
         if existing is not None:
             return
         # Link-free: a planted ``<name>.json -> /data/<other>/...`` must not
-        # import another universe's file. A refusal imports nothing; the next
-        # mirror write replaces the link with this universe's own file.
+        # import another universe's file. A REFUSED read raises: the caller is
+        # about to add a row and mirror the table back over this file, so
+        # "nothing to import" would replace its contents with one record.
+        data = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+        if data is None:
+            return
         try:
-            data = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
-            if data is None:
-                return
             raw = json.loads(data.decode("utf-8"))
-        except (OSError, ValueError) as exc:
+        except ValueError as exc:
             _logger.warning("not importing %s: %s", path.name, exc)
             return
         if not isinstance(raw, list):

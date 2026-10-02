@@ -155,9 +155,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/branch_tasks.py": [
         "_file_lock: os.open()",
-        "_read_raw: .read_text()",
-        "_write_raw: .write_text()",
-        "_write_raw: os.replace()",
     ],
     "tinyassets/bug_investigation.py": [
         "attach_patch_packet_comment: .read_text()",
@@ -216,9 +213,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/dispatcher.py": [
         "load_dispatcher_config: .read_text()",
-    ],
-    "tinyassets/effectors/wiki_write_back.py": [
-        "_append_or_update_section: .write_text()",
     ],
     "tinyassets/engine_mcp_http.py": [
         "_write_routes: os.open()",

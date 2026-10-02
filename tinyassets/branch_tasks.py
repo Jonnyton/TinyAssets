@@ -215,12 +215,19 @@ def _lease_window(*, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> tuple[str, s
 
 
 def _read_raw(qp: Path) -> list[dict]:
-    if not qp.exists():
-        return []
+    from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+
     try:
-        raw = qp.read_text(encoding="utf-8")
+        # Link-free: a planted queue link refuses rather than being read.
+        data_bytes = read_data_path(qp, max_bytes=MAX_PLATFORM_FILE_BYTES)
     except OSError as exc:
         raise RuntimeError(f"Failed to read {qp}: {exc}") from exc
+    if data_bytes is None:
+        return []
+    try:
+        raw = data_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"Corrupt queue at {qp}: {exc}") from exc
     if not raw.strip():
         raise RuntimeError(
             f"Corrupt queue/history at {qp}: blank, expected a JSON list"
@@ -235,13 +242,11 @@ def _read_raw(qp: Path) -> list[dict]:
 
 
 def _write_raw(qp: Path, data: list[dict]) -> None:
-    qp.parent.mkdir(parents=True, exist_ok=True)
-    tmp = qp.with_suffix(qp.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(data, indent=2, default=str),
-        encoding="utf-8",
-    )
-    os.replace(tmp, qp)
+    from tinyassets.universe_files import write_data_path
+
+    # Link-free, with a fresh O_EXCL temp name: a fixed ``.tmp`` could be a
+    # planted link (or hardlink) that the old write truncated through.
+    write_data_path(qp, json.dumps(data, indent=2, default=str))
 
 
 def read_queue(universe_path: Path) -> list[BranchTask]:
