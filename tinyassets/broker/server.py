@@ -195,7 +195,8 @@ class _Connection:
         if frame.stream == rf.CONNECTION:
             await self._connection_op(op, doc)
             return
-        stream = self._server._streams.get((self._key, frame.stream))
+        with self._server._streams_lock:
+            stream = self._server._streams.get((self._key, frame.stream))
         if op == "OPEN":
             if stream is not None:
                 raise rf.FrameError("stream id reused while open")
@@ -245,7 +246,9 @@ class _Connection:
         if self._role != OWNER:
             refuse("refused")  # the box channel's principal derivation lands with boxhostd
             return
-        if len(self._server._streams) >= MAX_STREAMS:
+        with self._server._streams_lock:
+            crowded = len(self._server._streams) >= MAX_STREAMS
+        if crowded:
             refuse("refused")
             return
         principal, command_center = doc.get("principal"), doc.get("command_center")
@@ -288,7 +291,8 @@ class _Connection:
             return
         stream = _Stream(stream_id, generation, namespace, op_id,
                          credit=min(max(int(doc.get("credit") or 0), 0), MAX_WINDOW))
-        self._server._streams[(self._key, stream_id)] = stream
+        with self._server._streams_lock:
+            self._server._streams[(self._key, stream_id)] = stream
         await asyncio.to_thread(self._server._ops.mark_may_have_sent, namespace, op_id)
         stream.sent = True
         self.send(rf.control(stream_id, {"op": "ADMITTED", "op_id": op_id}))
