@@ -421,12 +421,6 @@ def _active_host_snapshot(
         endpoint_hint = "claude"
     elif api_key_enabled and os.environ.get("OPENAI_API_KEY") and _shutil.which("codex"):
         endpoint_hint = "codex"
-    elif api_key_enabled and os.environ.get("XAI_API_KEY"):
-        endpoint_hint = "xai"
-    elif api_key_enabled and os.environ.get("GEMINI_API_KEY"):
-        endpoint_hint = "gemini"
-    elif api_key_enabled and os.environ.get("GROQ_API_KEY"):
-        endpoint_hint = "groq"
     else:
         endpoint_hint = "unset"
 

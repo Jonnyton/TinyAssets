@@ -236,9 +236,9 @@ def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
 # only by the provider its owner's authority names. Status surfaces still use
 # this as the catalogue of executor names the host could register.
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "writer": ["claude-code", "codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "judge": ["codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "extract": ["codex", "gemini-free", "groq-free", "ollama-local"],
+    "writer": ["claude-code", "codex", "ollama-local"],
+    "judge": ["codex", "ollama-local"],
+    "extract": ["codex", "ollama-local"],
     "embed": ["ollama-local"],
 }
 
@@ -1362,7 +1362,6 @@ class ProviderRouter:
                         output_tokens=resp.output_tokens,
                         cost_microunits=resp.cost_microunits,
                     )
-                self._quota.record_success(provider_name)
                 if served_authority is not None:
                     from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
 
