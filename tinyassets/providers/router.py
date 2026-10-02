@@ -125,6 +125,20 @@ def _provider_invocation_carrier(
     carrier.validate_for_call(role=role, operation=operation)
     return carrier
 
+def _engine_route(cfg: ModelConfig) -> tuple[str, str] | None:
+    """The engine MCP route this call's provider jail may reach, if any.
+
+    The same three fields every adapter checks before wiring the engine server
+    (``claude_provider._engine_mcp_flags``, ``codex_provider._codex_engine_mcp_args``);
+    the route itself is re-read, owner-checked, by the jail's relay.
+    """
+    actor_id = (cfg.engine_mcp_actor_id or "").strip()
+    graph_id = (cfg.engine_mcp_graph_id or "").strip()
+    if not (cfg.engine_mcp_enabled and actor_id and graph_id):
+        return None
+    return actor_id, graph_id
+
+
 def _resolve_universe_config(
     universe_context: UniverseContext | None,
 ) -> "UniverseConfig | None":
@@ -1204,6 +1218,7 @@ class ProviderRouter:
                         # refuses a launch with none (provider_jail).
                         with provider_launch_scope(
                             universe_dir, credential_dir=cfg.credential_snapshot_dir,
+                            engine_route=_engine_route(cfg),
                         ):
                             dispatch = provider.complete(
                                 prompt, system, cfg, universe_dir=universe_dir,

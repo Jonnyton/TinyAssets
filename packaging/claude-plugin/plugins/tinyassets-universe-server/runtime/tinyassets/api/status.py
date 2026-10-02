@@ -42,7 +42,7 @@ from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_provide
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
 
-_STATUS_SCHEMA_VERSION = 2
+_STATUS_SCHEMA_VERSION = 3  # 3: universe_* fields renamed command_center_* (C1)
 # Async overhead plus the in-band reap, on top of the turn's own cap: the same
 # margin the router already allows a sync wrapper over the streaming cap
 # (``providers.router._sync_call_timeout_s``).
@@ -1531,10 +1531,10 @@ def get_status(
             f"Command center '{uid}' does not exist on disk. Daemon is reporting "
             "default-fallback identity, not a live command center. Use read_graph "
             'target="graphs" to see what exists; use write_graph '
-            f'target="universe" graph_id="{uid}" to bootstrap.'
+            f'target="command_center" graph_id="{uid}" to bootstrap.'
         )
         actionable_next_steps.append(
-            f"Create command center '{uid}' with write_graph target=\"universe\" "
+            f"Create command center '{uid}' with write_graph target=\"command_center\" "
             f'graph_id="{uid}", '
             'or pick an existing one with read_graph target="graphs".'
         )
