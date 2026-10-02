@@ -65,7 +65,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 min of deploy work plus up to 50 for "Wait for in-flight turns".
+    timeout-minutes: 65
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
@@ -332,6 +333,83 @@ jobs:
           echo "prepared=true" >> "$GITHUB_OUTPUT"
           echo "expected-instance state installed before candidate startup"
 
+      # A deploy recreates the daemon, and that kills every turn running in it:
+      # on 2026-10-02 it cut the founder's live village turn twice. So the swap
+      # waits until no work is in flight (scripts/turns_in_flight.py, run INSIDE
+      # the running container so it works whatever image that is), polling every
+      # TURN_POLL_S, and proceeds anyway at TURN_WAIT_CAP_S. The startup
+      # reconcile then tells the user their turn was cut off.
+      #
+      # Deliberately OUTSIDE deploy_fail_safe.sh: that script holds the
+      # host-mutation lock, and holding it for up to 45 min would stop the
+      # watchdogs restarting a daemon that falls over mid-wait.
+      #
+      # Coalescing comes from the concurrency group above: GitHub keeps ONE
+      # pending run per group, and a newer one replaces it. Merges landing during
+      # a long turn therefore queue as a single deploy of the newest sha behind
+      # this one, not twenty swaps. release-reconcile treats this in-progress run
+      # as covering its sha and dispatches nothing extra for it.
+      #
+      # A daemon that is not running, or not healthy, has no turn worth
+      # protecting, and the deploy may be its fix: proceed at once. A check that
+      # cannot answer three times in a row proceeds too, loudly; "cannot tell" is
+      # never read as idle, and it is never allowed to hold prod on an old image.
+      - name: Wait for in-flight turns
+        id: turns
+        timeout-minutes: 50
+        env:
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+          TURN_WAIT_CAP_S: '2700'
+          TURN_POLL_S: '15'
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes scripts/turns_in_flight.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/turns_in_flight.py"
+          check() {  # $@ = extra args; prints the report, returns the script's exit status
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "state=\$(sudo docker inspect -f '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{end}}' tinyassets-daemon 2>/dev/null); \
+               case \"\$state\" in running/healthy|running/) ;; *) echo \"daemon_state=\${state:-absent}\"; exit 20;; esac; \
+               sudo docker exec -i tinyassets-daemon python - $* < /tmp/turns_in_flight.py"
+          }
+          start="$(date +%s)"
+          deadline=$(( start + TURN_WAIT_CAP_S ))
+          unknown=0
+          outcome=""
+          polls=0
+          while :; do
+            polls=$(( polls + 1 ))
+            out="$(check --mark-pending --target "${TARGET_REVISION}" \
+                     --waiting-since "${start}" --deadline "${deadline}" \
+                     --ttl $(( TURN_POLL_S * 4 )) --run-url "${RUN_URL}")"
+            rc=$?
+            printf '%s\n' "${out}"
+            now="$(date +%s)"
+            case "${rc}" in
+              0)  outcome="idle"; break ;;
+              20) outcome="daemon_not_serving"; break ;;
+              10) unknown=0 ;;
+              *)  unknown=$(( unknown + 1 ))
+                  echo "::warning::in-flight check could not answer (rc=${rc}, ${unknown}/3)"
+                  if [ "${unknown}" -ge 3 ]; then outcome="check_unavailable"; break; fi ;;
+            esac
+            if [ "${now}" -ge "${deadline}" ]; then outcome="cap_reached"; break; fi
+            sleep "${TURN_POLL_S}"
+          done
+          waited=$(( $(date +%s) - start ))
+          # The marker says "an update is waiting"; the swap is about to happen,
+          # so it stops being true now. Best effort: a stale one expires by itself.
+          check --clear-pending >/dev/null 2>&1 || true
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+          echo "waited_s=${waited}" >> "$GITHUB_OUTPUT"
+          echo "polls=${polls}" >> "$GITHUB_OUTPUT"
+          case "${outcome}" in
+            idle) echo "::notice::no turn in flight after ${waited}s; deploying" ;;
+            daemon_not_serving) echo "::notice::daemon not serving; nothing to protect, deploying now" ;;
+            check_unavailable) echo "::warning::in-flight check unavailable; deploying without proof that no turn is running" ;;
+            cap_reached) echo "::warning::work still in flight after the ${TURN_WAIT_CAP_S}s cap; deploying anyway, and the turn will be reported as cut off by the restart" ;;
+          esac
+
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
@@ -522,6 +600,7 @@ jobs:
             echo "## Fail-safe deploy"
             echo "- image: \`${{ steps.tag.outputs.image_ref }}\`"
             echo "- revision: \`${{ steps.tag.outputs.revision }}\`"
+            echo "- waited for in-flight turns: \`${{ steps.turns.outputs.outcome }}\` after \`${{ steps.turns.outputs.waited_s }}s\` (\`${{ steps.turns.outputs.polls }}\` polls)"
             echo "- deploy rc: \`${{ steps.deploy.outputs.rc }}\` result: \`${{ steps.deploy.outputs.result }}\`"
             echo "- deployed image: \`${{ steps.deploy.outputs.deployed_image }}\`"
             echo "- public canary: \`${{ steps.canary.outcome }}\`"

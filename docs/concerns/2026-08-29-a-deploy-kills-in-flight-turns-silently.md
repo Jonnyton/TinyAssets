@@ -119,3 +119,25 @@ Primary dependency sources:
 
 - 02:05Z: the #2698 deploy restarted the container while another session's heartbeat-automation turn was being served; the app showed the bubble as 'never confirmed' and the session had to resend in two steps.
 - 03:46Z: the #2705 deploy restarted the container while the founder's universe was mid-way through a one-line README edit (branches `auto/tiny-docs-touch-20260830e`/`f` already created on GitHub); the app showed 'the reply was cut off in transit'. Three more PRs from other sessions were armed with auto-merge at the time, so any resend had to wait for their deploys - with several sessions landing PRs, a 5-minute served turn has no clean window. The fix is on the deploy side (drain served turns before the swap, or hand the turn to the new container), not on the founder's side.
+
+## Phase 1, 2026-10-02: the deploy waits for in-flight work
+
+`deploy-prod.yml` step "Wait for in-flight turns" now runs before the swap. It runs
+`scripts/turns_in_flight.py` inside the live container and holds the swap while any
+account seat is leased. That covers chat turns and graph agent nodes, and a dead
+holder's seat expires within 120s. The step polls every 15s and stops waiting after
+45 min. While it waits, `get_status` reports `deploy_pending`. Merges that land during
+the wait coalesce through the `production-host-mutation` concurrency group into one
+queued deploy of the newest sha.
+
+Evidence is the compose repro in `docs/audits/2026-10-02-deploy-waits-for-turns-repro/`.
+
+What this does NOT close:
+- **Past the 45 min cap, the turn is still cut.** The startup reconcile notice is what
+  the user then sees.
+- **Steady overlapping turns can hold every deploy to the cap.** There is no admission
+  hold yet.
+- **The real fix is Phase 2.** The new container serves while the old one finishes its
+  turns, which is the single-execution-owner handover in #4263 S7/S8.
+
+Keep this file until a live turn has been seen to survive a production deploy.

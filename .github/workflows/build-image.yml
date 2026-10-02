@@ -73,6 +73,9 @@ on:
       # (scripts/runtime_paths.py python_import_closure).
       - 'scripts/cloud_only_preflight.py'
       - 'scripts/deployed_sha.py'
+      # Run inside the live container before every swap (deploy-prod.yml
+      # "Wait for in-flight turns").
+      - 'scripts/turns_in_flight.py'
       - 'scripts/runtime_paths.py'
       - 'scripts/pushover_page.py'
       - 'scripts/triage_classify.py'
