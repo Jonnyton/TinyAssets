@@ -4515,11 +4515,16 @@
   // starts BIG for an owner with no command-center layout and SMALL when a
   // layout is active; once the owner moves, resizes or shrinks it, their last
   // state is restored instead. Remembered per owner, per agent and per viewport
-  // class, because a phone and a desktop want different windows. There is no
-  // server store for UI preferences, so this device remembers it.
+  // class, because a phone and a desktop want different windows. The owner's
+  // record on the server (/app/ui-prefs) follows them across devices; this
+  // device's copy is the offline fallback.
   const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
         CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
   let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
+  // The owner's record on the server follows them across devices
+  // (openspec/changes/owner-ui-prefs). It is read once per owner, agent and
+  // viewport class, and it never moves the cloud after the owner has.
+  let cloudSynced="", cloudGestured=false;
   function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
   function cloudStorageKey(owner, agentId, viewport){
     return CLOUD_KEY_PREFIX+":"+(owner||"")+":"+(agentId||"main")+":"+viewport;
@@ -4578,12 +4583,15 @@
       // live state is the truth (it may be mid-drag, or storage may be off).
       cloudState=cloudClamp(cloudState, stage);
     }else{
+      if(key!==cloudStoreKey) cloudGestured=false;
       cloudStoreKey=key;
       let saved=null;
       try{ saved=cloudParseSaved(localStorage.getItem(key)); }catch(_error){ saved=null; }
       cloudState=cloudResolveState(saved, cloudHasLayout(), stage);
     }
     applyChatCloud();
+    if(typeof syncChatCloudFromServer==="function")
+      syncChatCloudFromServer(key, cloud.dataset.agent||"main", cloudViewportClass(stage.w));
   }
   function applyChatCloud(){
     const cloud=$("chat-cloud"), bubble=$("chat-cloud-bubble"), s=cloudState;
@@ -4605,10 +4613,53 @@
   function saveChatCloud(){
     if(!cloudState || !cloudStoreKey) return;
     cloudState.userSet=true;
+    cloudGestured=true;
     try{
-      localStorage.setItem(cloudStoreKey, JSON.stringify(
-        {v:1, mode:cloudState.mode, open:cloudState.open, bubble:cloudState.bubble}));
+      localStorage.setItem(cloudStoreKey, JSON.stringify(cloudRecord(cloudState)));
     }catch(_error){ /* storage full or disabled: the cloud still works, unremembered */ }
+    if(typeof postChatCloud==="function") postChatCloud(cloudStoreKey);
+  }
+  function cloudRecord(s){ return {v:1, mode:s.mode, open:s.open, bubble:s.bubble}; }
+  function cloudPrefsQuery(key){
+    const parts=key.split(":");   // prefix:owner:agent:viewport
+    return {agent:parts[parts.length-2]||"main", viewport:parts[parts.length-1]||"wide"};
+  }
+  // Writes the owner's record after the local copy, so a failed post leaves a
+  // valid local placement. Fire and forget: the page never waits on it.
+  async function postChatCloud(key){
+    if(!cloudState || key!==cloudStoreKey) return;
+    const q=cloudPrefsQuery(key), value=cloudRecord(cloudState);
+    try{
+      await ensureFreshToken();
+      await fetch("/app/ui-prefs", {method:"POST",
+        headers:Object.assign({"Content-Type":"application/json"}, authHeaders()),
+        body:JSON.stringify({agent:q.agent, viewport:q.viewport, key:"chat_cloud", value})});
+    }catch(_error){ /* offline: the local copy holds it */ }
+  }
+  // A record wins (before the owner's first gesture here) and is cached locally;
+  // an empty answer keeps the local placement and sends it up, which is what
+  // migrates every owner's existing placement after deploy; a failed read keeps
+  // the local copy.
+  async function syncChatCloudFromServer(key, agent, viewport){
+    if(cloudSynced===key || !queueOwner) return;
+    cloudSynced=key;
+    let doc=null;
+    try{
+      await ensureFreshToken();
+      const r=await fetch("/app/ui-prefs?agent="+encodeURIComponent(agent)
+        +"&viewport="+encodeURIComponent(viewport), {headers:authHeaders()});
+      doc=r && r.ok ? await r.json() : null;
+    }catch(_error){ doc=null; }
+    if(key!==cloudStoreKey || !doc || !doc.prefs || typeof doc.prefs!=="object") return;
+    const server=doc.prefs.chat_cloud ? cloudParseSaved(JSON.stringify(doc.prefs.chat_cloud)) : null;
+    if(!server){
+      if(cloudState && cloudState.userSet) postChatCloud(key);
+      return;
+    }
+    try{ localStorage.setItem(key, JSON.stringify(cloudRecord(server))); }catch(_error){ /* cache only */ }
+    if(cloudGestured) return;
+    cloudState=cloudClamp(server, cloudStageSize());
+    applyChatCloud();
   }
   function setChatCloudMode(mode){
     if(!cloudState) return;
