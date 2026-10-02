@@ -89,3 +89,11 @@ def test_the_image_build_fails_unless_python_loads_the_pinned_library():
     assert "ldconfig" in runtime
     assert "v >= (3, 51, 3)" in runtime and "sys.exit(" in runtime
     assert "using fts5" in runtime
+
+
+def test_the_default_is_the_loaded_library_not_a_constant():
+    """Every other test passes an explicit version; this pins that a bare call
+    checks what is actually loaded (Codex on #4269)."""
+    import sqlite3
+
+    assert require_sqlite_floor.__defaults__ == (sqlite3.sqlite_version_info,)

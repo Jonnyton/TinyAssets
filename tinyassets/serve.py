@@ -18,9 +18,12 @@ not before.
 """
 
 if __name__ == "__main__":
-    # Production serving starts here and only here, so the SQLite floor is
+    # The production daemon starts here (the image CMD), so the SQLite floor is
     # asserted here (target-architecture S1a.1): before the server, its storage
-    # and Litestream's replicated WAL are ever touched by an older library.
+    # and Litestream's replicated WAL are ever touched by an older library. This
+    # guards the serving daemon only; other entry points (the console script,
+    # `python -m tinyassets.universe_server`) and processes in the node sandbox,
+    # which binds /usr without ld.so.cache, are outside this check.
     from tinyassets.sqlite_floor import require_sqlite_floor
 
     require_sqlite_floor()
