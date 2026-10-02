@@ -260,4 +260,4 @@ def test_the_status_line_says_a_failed_tool_and_why(tmp_path):
 
 def test_no_tool_activity_leaves_the_original_line(tmp_path):
     out = _page(tmp_path, [])
-    assert out["line"] == "Your universe is thinking..."
+    assert out["line"] == "Your agent is thinking..."

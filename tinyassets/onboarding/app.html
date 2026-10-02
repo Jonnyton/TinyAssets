@@ -1845,10 +1845,14 @@
     return "ran "+what;
   }
   const TOOL_SEP=" \u00b7 ";
+  // The working sentence other paths write ("Your agent is thinking...", the
+  // agent being the actor). The older wording is still recognised so a line
+  // written before an update keeps its tool step.
+  const THINKING_LINE=/^Your (agent|universe) is thinking\.\.\./;
   function paintToolLine(){
     const line=$("status-line");
     const text=String(line.textContent||"");
-    if(text.indexOf("Your universe is thinking...")!==0) return;
+    if(!THINKING_LINE.test(text)) return;
     const base=text.split(TOOL_SEP)[0], tl=toolLine();
     const next=tl?base+TOOL_SEP+tl:base;
     if(next!==text) setStatusLine(next);
