@@ -349,7 +349,6 @@ def test_a_provider_launch_view_masks_every_hidden_root_dir(tmp_path):
         (universe / name).mkdir()
         (universe / name / "settings.json").write_text('{"hooks": {}}', encoding="utf-8")
     (universe / ".runtime").mkdir()
-    (universe / ".hidden-file").write_text("x", encoding="utf-8")
     view = default_view(universe)
     argv = jail_argv(["cli", "-p"], view, bwrap_path="/usr/bin/bwrap")
     for name in (".claude", ".codex", ".some-future-cli"):
@@ -357,9 +356,41 @@ def test_a_provider_launch_view_masks_every_hidden_root_dir(tmp_path):
         assert argv[mask - 1] == "--tmpfs", name
         assert mask > argv.index(str(universe)), "the mask sits over the universe bind"
     assert f"{universe}/.runtime" not in argv, "the launch still needs its runtime"
-    assert f"{universe}/.hidden-file" not in argv
     # No jail shares the host network; only the tool jail clears the env.
     assert "--share-net" not in argv and "--clearenv" not in argv
+
+
+def test_a_provider_launch_view_masks_every_hidden_root_file(tmp_path):
+    """Per-universe platform state at the root -- the credential vault, the run,
+    consent and usage databases -- is a /dev/null bind, so the provider can
+    neither read it nor replace it with a link the daemon would follow."""
+    universe = _universe(tmp_path).resolve()
+    for name in (".credential-vault.json", ".runs.db", ".runs.db-wal",
+                 ".effector_consents.db", ".usage.db", ".some-future-cli-config"):
+        (universe / name).write_text("platform state", encoding="utf-8")
+    (universe / ".runtime").mkdir()
+    view = default_view(universe)
+    argv = jail_argv(["cli", "-p"], view, bwrap_path="/usr/bin/bwrap")
+    universe_bind = argv.index(str(universe))
+    for name in (".credential-vault.json", ".runs.db", ".runs.db-wal",
+                 ".effector_consents.db", ".usage.db", ".some-future-cli-config"):
+        mask = argv.index(f"{universe}/{name}")
+        assert argv[mask - 2] == "--ro-bind" and argv[mask - 1] == "/dev/null", name
+        assert mask > universe_bind, "the mask sits over the universe bind"
+    assert f"{universe}/.runtime" not in argv, "the launch still needs its runtime"
+
+
+def test_a_provider_launch_refuses_a_symlinked_hidden_file(tmp_path):
+    """A hidden root entry that is already a link cannot be masked over, so the
+    launch is refused rather than following it."""
+    universe = _universe(tmp_path).resolve()
+    (tmp_path / "elsewhere.db").write_text("other", encoding="utf-8")
+    try:
+        (universe / ".runs.db").symlink_to(tmp_path / "elsewhere.db")
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create a symlink")
+    with pytest.raises(ProviderConfinementError, match="is a link"):
+        default_view(universe)
 
 
 def test_a_provider_launch_refuses_a_symlinked_hidden_dir(tmp_path):
