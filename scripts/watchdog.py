@@ -74,10 +74,11 @@ DEFAULT_THRESHOLD = 3
 # being restart-looped every 30s when the underlying problem
 # (bad env, dep issue) isn't "restart will fix it."
 MIN_RESTART_INTERVAL_SECONDS = 600  # 10 min
-# Longer than tinyassets-daemon.service's TimeoutStartSec (200s), so the lock
-# outlives the restart job; tinyassets-watchdog.service's TimeoutStartSec is
-# longer again.
-RESTART_JOB_TIMEOUT_SECONDS = 230
+# Longer than tinyassets-daemon.service's TimeoutStartSec (200s) plus the stop
+# systemd runs after a failed start (TimeoutStopSec, 90s), so the lock outlives
+# the restart job and its cleanup. tinyassets-watchdog.service's
+# TimeoutStartSec is longer again.
+RESTART_JOB_TIMEOUT_SECONDS = 320
 
 # Production alarm-log path. Env-var override allows tests + dev setups
 # to redirect to a tmp path without touching the real production file.

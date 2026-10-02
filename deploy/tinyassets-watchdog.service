@@ -56,11 +56,12 @@ LogsDirectoryMode=0750
 ExecStartPre=+/usr/bin/touch /var/lock/tinyassets-host-mutation.lock
 ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/watchdog.py --canary-script /opt/tinyassets-host-uptime/current/scripts/mcp_public_canary.py
 
-# One-shot exit; timer handles cadence. Longer than watchdog.py's 230s wait
-# on a restart job, which itself outlives tinyassets-daemon.service's 200s:
+# One-shot exit; timer handles cadence. Longer than watchdog.py's 320s wait
+# on a restart job, which itself outlives tinyassets-daemon.service's 200s
+# start plus 90s stop:
 # systemd killing us mid-wait would release the host-mutation lock while the
 # restart's compose is still running.
-TimeoutStartSec=260s
+TimeoutStartSec=360s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tinyassets-watchdog

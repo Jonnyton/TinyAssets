@@ -80,7 +80,10 @@ restart_daemon() {
     if docker inspect tinyassets-daemon >/dev/null 2>&1; then
         # A hung-but-"healthy" daemon needs an actual container restart;
         # `up -d` alone would leave an unchanged container running.
-        docker restart tinyassets-daemon || true
+        # -t 20: the same drain ceiling as deploy_fail_safe.sh. A plain restart
+        # would use the container's create-time StopTimeout, which is 180s for a
+        # container a rollback recreated from a pre-2026-10-01 bundle.
+        docker restart -t 20 tinyassets-daemon || true
     fi
     # Then re-converge the unit: with no ExecStop this is a safe `up -d` of
     # the three production services, which (re)starts the tunnel/logs if they

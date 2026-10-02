@@ -90,6 +90,9 @@ RestartSec=10s
 
 # TimeoutStartSec > the up -d + healthcheck-wait budget (daemon health ~30s).
 TimeoutStartSec=200s
+# Pinned (systemd's default) because the watchdogs' lock lifetimes are derived
+# from start + stop: see tests/test_watchdog.py.
+TimeoutStopSec=90s
 
 # Hardening NOTE (2026-08-21 P0 fix): the previous ProtectHome=yes +
 # ProtectSystem=strict masked the tinyassets user's docker config + compose CLI

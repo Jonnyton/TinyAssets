@@ -2445,7 +2445,7 @@ def test_daemon_watchdog_restart_repertoire_is_same_service_only(
         line.replace("{compose}", compose_arg) for line in docker_prefix
     ] + [
         "inspect tinyassets-daemon",
-        "restart tinyassets-daemon",
+        "restart -t 20 tinyassets-daemon",
     ]
     assert docker_lines == expected_docker
 
@@ -2456,7 +2456,7 @@ def test_daemon_watchdog_restart_repertoire_is_same_service_only(
         for line in docker_lines
         if line.split()[0] not in _WATCHDOG_READ_ONLY_DOCKER_VERBS
     ]
-    assert mutations == ["restart tinyassets-daemon"]
+    assert mutations == ["restart -t 20 tinyassets-daemon"]
 
     # No second target anywhere. Path-shaped tokens are excluded because the
     # temp root is not ours to predict.
@@ -2530,7 +2530,7 @@ def test_an_old_container_with_a_stale_heartbeat_is_still_restarted(tmp_path):
         "reset-failed tinyassets-daemon.service",
         "restart tinyassets-daemon.service",
     ]
-    assert "restart tinyassets-daemon" in docker_lines
+    assert "restart -t 20 tinyassets-daemon" in docker_lines
 
 
 @pytest.mark.skipif(not _BASH, reason="bash is unavailable")
