@@ -46,7 +46,8 @@ def source_preset(source_id):
 def sign_in_cards():
     """Display data for sources the owner connects by signing in; no endpoints."""
     return [{"id": row["id"], "name": row["name"], "offer": row["offer"],
-             "label": row["sign_in"]["label"]}
+             "label": row["sign_in"]["label"], "billing_note": row["billing_note"],
+             "daily_cap": deepcopy(row.get("daily_cap"))}
             for row in _SOURCES if "sign_in" in row]
 
 

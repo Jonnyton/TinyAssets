@@ -15,6 +15,7 @@ import hashlib
 import http.server
 import json
 import secrets
+import sqlite3
 import threading
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
@@ -251,6 +252,26 @@ def test_sign_in_on_a_powered_command_center_asks_to_add_it(hf, app, monkeypatch
     assert "$0.10" in confirmation["body"]
 
 
+def test_post_sign_in_database_failure_preserves_success(hf, app, monkeypatch):
+    from tinyassets.api import connection_uses
+    from tinyassets.onboarding import source_connect
+
+    monkeypatch.setattr(connection_uses, "select_model_if_unpowered",
+                        lambda **_: {"status": "unchanged", "reason": "already_powered"})
+
+    def broken_offer(**kwargs):
+        raise sqlite3.OperationalError("private database failure detail")
+
+    monkeypatch.setattr(source_connect, "_offer_pool_access", broken_offer)
+    done = _sign_in(hf, _tap().json()["request"]["request_id"])
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "answered"
+    assert done.json()["signed_in"] is True
+    assert done.json()["confirmation_error"] == "model_confirmation_requires_review"
+    assert "private database failure detail" not in done.text
+    assert "confirmation" not in done.json()
+
+
 def test_an_agent_ask_under_the_same_name_gets_no_pool_offer(hf, app, monkeypatch):
     """Destination is agent-controllable; the offer needs the canonical platform ask."""
     from tinyassets.api import connection_uses
@@ -312,9 +333,15 @@ def test_the_connect_setup_offers_sign_in_sources_and_daily_caps(universes):
     from tinyassets.api.pending_requests import _connect_llm_request
 
     setup = _connect_llm_request(connected=True)["action"]["setup"]
+    from tinyassets.providers.free_sources import sign_in_preset
+
+    preset = sign_in_preset("huggingface")
     assert setup["sign_in_sources"] == [{
         "id": "huggingface", "name": "Hugging Face",
-        "offer": setup["sign_in_sources"][0]["offer"], "label": "Sign in with Hugging Face"}]
+        "offer": preset["offer"], "label": "Sign in with Hugging Face",
+        "billing_note": preset["billing_note"], "daily_cap": preset["daily_cap"]}]
+    assert "$0.10" in setup["sign_in_sources"][0]["billing_note"]
+    assert "cannot enforce" in setup["sign_in_sources"][0]["billing_note"]
     assert "huggingface" not in {card["id"] for card in setup["sources"]}
     (cap,) = setup["daily_caps"]
     assert cap == {"host": "openrouter.ai", "name": "OpenRouter", "free_requests_per_day": 50,

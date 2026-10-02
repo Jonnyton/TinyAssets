@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
@@ -30,6 +31,25 @@ def test_card_urls_and_generic_model_discovery(source, base, help_url):
     assert [m["id"] for m in models] == [card["models"][0]]
     with pytest.raises(ValueError, match="no supported"):
         discovered_agent_models(card, {"data": [{"id": "unknown-paid-model"}]})
+
+
+def test_every_preset_exposes_only_verified_daily_cap_numbers():
+    from tinyassets.providers import free_sources
+
+    presets = json.loads(Path(free_sources.__file__).with_name(
+        "free_source_presets.json").read_text(encoding="utf-8"))
+    cards = {row["id"]: row for row in source_cards() + free_sources.sign_in_cards()}
+    assert set(cards) == {row["id"] for row in presets}
+    for preset in presets:
+        cap = preset["daily_cap"]
+        assert set(cap) == {"requests_per_day", "tokens_per_minute", "reset_timezone", "source_url"}
+        assert urlsplit(cap["source_url"]).scheme == "https"
+        assert urlsplit(cap["source_url"]).netloc
+        assert cards[preset["id"]]["daily_cap"] == cap
+        assert (cap["requests_per_day"], cap["tokens_per_minute"]) == (
+            (1000, 8000) if preset["id"] == "groq" else (None, None))
+        assert cap["reset_timezone"] == (
+            "America/Los_Angeles" if preset["id"] == "google_ai_studio" else None)
 
 
 def test_cards_do_not_promise_cerebras_is_permanently_free():

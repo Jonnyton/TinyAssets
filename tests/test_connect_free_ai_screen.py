@@ -61,6 +61,7 @@ __STEPS__
 SETUP = {
     "sign_in_sources": [{"id": "huggingface", "name": "Hugging Face",
                          "offer": "A small free monthly allowance.",
+                         "billing_note": "Paid credits may be billed. Check your billing settings.",
                          "label": "Sign in with Hugging Face"}],
     "subscriptions": [{"service": "codex", "name": "ChatGPT",
                        "label": "Use your ChatGPT subscription",
@@ -108,13 +109,15 @@ console.log(JSON.stringify(out));
 
 def test_daily_cap_card_says_the_credit_extends_the_openrouter_daily_limit():
     out = _run(CARD.replace("__DETAIL__", json.dumps(OPENROUTER_DETAIL)))
-    assert out["head"] == "You've used today's free OpenRouter requests (50/day)."
+    assert out["head"] == "You've used today's free OpenRouter requests."
     assert out["label"] == out["head"]
     body = out["body"]
-    assert body.startswith("Your agent continues tomorrow (they reset at about ")
-    assert ("add $10 credit to your own OpenRouter account to raise your OpenRouter daily "
+    assert body.startswith("On a free OpenRouter account that is 50/day. ")
+    assert ("Adding $10 credit to your own OpenRouter account once raises your OpenRouter daily "
             "limit to 1,000 requests") in body
-    assert "The money goes to OpenRouter, not TinyAssets, and it is one-time." in body
+    assert "the money goes to OpenRouter, not TinyAssets." in body
+    assert "It can be used again after the daily reset (they reset at about " in body
+    assert "continues" not in body
     assert body.endswith("Or connect another AI: Hugging Face, your ChatGPT subscription, "
                          "or a key.")
     assert [b["text"] for b in out["buttons"]] == [
@@ -132,7 +135,7 @@ def test_another_sources_daily_cap_claims_no_openrouter_numbers():
     detail = ("Daily quota exhausted. Reset time not supplied. "
               "Add credit: https://console.groq.com/settings/billing")
     out = _run(CARD.replace("__DETAIL__", json.dumps(detail)))
-    assert out["head"] == "This AI source has used today's free requests."
+    assert out["head"] == "This AI source reached its daily limit."
     assert "50" not in out["body"] and "1,000" not in out["body"]
     assert "OpenRouter" not in json.dumps(out)
     assert "add credit at console.groq.com (the money goes to that provider" in out["body"]
@@ -144,7 +147,8 @@ def test_a_daily_cap_without_a_credit_page_offers_no_credit_button():
     out = _run(CARD.replace("__DETAIL__", json.dumps("Daily quota exhausted.")),
                setup={"daily_caps": []})
     assert [b["text"] for b in out["buttons"]] == ["Connect another AI", "Wait until tomorrow"]
-    assert out["body"] == "Your agent continues when they reset. Or connect another AI: a key."
+    assert out["body"] == ("It can be used again after the daily reset. "
+                           "Or connect another AI: a key.")
 
 
 def test_a_hostile_credit_link_is_never_rendered():
@@ -161,15 +165,21 @@ const button=find(host,n=>n.tag==='button');
 ConnectOAuth.reply={status:'sign_in_required',request:{request_id:'req-1',
   action:{type:'connect',oauth:{authorize_url:'https://huggingface.co/oauth/authorize'}}}};
 await button.listeners.click();
-const ok={text:text(host),label:button.textContent,calls:calls.slice()};
+const ok={text:text(host),label:button.textContent,calls:calls.slice(),
+  children:host.children[0].children.map(n=>({tag:n.tag,text:n.textContent,cls:n.className}))};
 calls.length=0;
 ConnectOAuth.reply={request:{request_id:'req-2',action:{type:'connect'}}};
 await button.listeners.click();
-const status=host.children[0].children[3];
+const status=find(host,n=>n.attrs.role==='status');
 console.log(JSON.stringify({ok,refused:{calls,status:status.textContent,disabled:button.disabled}}));
 """)
     assert out["ok"]["label"] == "Sign in with Hugging Face"
     assert "Hugging Face" in out["ok"]["text"]
+    children = out["ok"]["children"]
+    assert children[1]["text"] == SETUP["sign_in_sources"][0]["offer"]
+    assert children[2] == {"tag": "p", "cls": "connect-terms",
+                           "text": SETUP["sign_in_sources"][0]["billing_note"]}
+    assert children[3]["tag"] == "button"
     assert out["ok"]["calls"] == [
         {"op": "source_sign_in", "payload": {"preset_id": "huggingface"}},
         {"begin": "req-1", "source": True}]

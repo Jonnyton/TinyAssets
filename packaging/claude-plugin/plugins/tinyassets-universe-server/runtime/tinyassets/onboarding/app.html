@@ -6446,8 +6446,8 @@
     },
     async begin(req,note,button,opts){
       if(NATIVE) return;
-      // A connect-screen source card: the platform's own ask, not the agent's.
-      const source=!!(opts&&opts.source);
+      // Server-confirmed platform provenance survives retries from the rail.
+      const source=req.origin==="platform"||!!(opts&&opts.source);
       button.disabled=true;
       note.textContent="Opening the provider's sign-in. You choose there whether to allow it.";
       try{
@@ -6610,6 +6610,9 @@
         name.textContent=source.name;card.appendChild(name);
         const offer=document.createElement("p");offer.className="connect-terms";
         offer.textContent=typeof source.offer==="string"?source.offer:"";card.appendChild(offer);
+        const terms=document.createElement("p");terms.className="connect-terms";
+        terms.textContent=typeof source.billing_note==="string"?source.billing_note:"";
+        card.appendChild(terms);
         const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
         button.textContent=source.label;card.appendChild(button);
         const status=document.createElement("p");status.className="rtab-note";
@@ -6679,17 +6682,18 @@
       const reset=this.resetText(detail), others=this.others(setup);
       let creditLabel="", creditHref=credit?credit.href:"";
       if(cap){
-        head.textContent="You've used today's free "+cap.name+" requests ("+
-          cap.free_requests_per_day+"/day).";
-        body.textContent="Your agent continues tomorrow"+reset+". Or add "+cap.credit_amount+
-          " credit to your own "+cap.name+" account to raise your "+cap.name+" daily limit to "+
-          Number(cap.credit_requests_per_day).toLocaleString("en-US")+" requests. The money goes to "+
-          cap.name+", not TinyAssets, and it is one-time. Or connect another AI: "+others+".";
+        head.textContent="You've used today's free "+cap.name+" requests.";
+        body.textContent="On a free "+cap.name+" account that is "+cap.free_requests_per_day+
+          "/day. Adding "+cap.credit_amount+" credit to your own "+cap.name+
+          " account once raises your "+cap.name+" daily limit to "+
+          Number(cap.credit_requests_per_day).toLocaleString("en-US")+" requests; the money goes to "+
+          cap.name+", not TinyAssets. It can be used again after the daily reset"+reset+
+          ". Or connect another AI: "+others+".";
         creditLabel="Add credit on "+cap.name;
         try{ const u=new URL(cap.credit_url); if(u.protocol==="https:") creditHref=u.href; }catch(_e){}
       }else{
-        head.textContent="This AI source has used today's free requests.";
-        body.textContent="Your agent continues when they reset"+reset+"."+
+        head.textContent="This AI source reached its daily limit.";
+        body.textContent="It can be used again after the daily reset"+reset+"."+
           (credit?" You can add credit at "+credit.host+
             " (the money goes to that provider, not TinyAssets).":"")+
           " Or connect another AI: "+others+".";

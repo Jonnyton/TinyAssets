@@ -166,8 +166,8 @@ async def handle_model_connect(request):
                     base=base, uid=home, owner=identity.user_id,
                     request_id=str(done.get("request_id") or ""), completed=done,
                     public_resource=resource)
-            except (hosted.HostedAuthError, PermissionError):
-                # The sign-in itself landed; say so rather than fail it.
+            except Exception:  # noqa: BLE001 - post-deposit failures must not fail sign-in
+                # The sign-in itself landed; expose no internal exception details.
                 return {**done, "confirmation_error": "model_confirmation_requires_review"}
             if confirmation is not None:
                 done = {**done, "confirmation": confirmation["request"]}

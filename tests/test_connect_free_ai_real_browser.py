@@ -21,6 +21,7 @@ _END = "  // End connect screen sources."
 SETUP = {
     "sign_in_sources": [{"id": "huggingface", "name": "Hugging Face",
                          "offer": "A small free monthly allowance.",
+                         "billing_note": "Paid credits may be billed. Check your billing settings.",
                          "label": "Sign in with Hugging Face"}],
     "subscriptions": [{"service": "codex", "name": "ChatGPT",
                        "label": "Use your ChatGPT subscription", "note": "For more volume."}],
@@ -79,9 +80,13 @@ def test_daily_cap_card_renders_and_dismisses_in_a_real_browser(page):
     card = page.locator(".daily-cap")
     assert card.is_visible()
     text = card.inner_text()
-    assert "You've used today's free OpenRouter requests (50/day)." in text
-    assert "raise your OpenRouter daily limit to 1,000 requests" in text
-    assert "not TinyAssets" in text
+    assert "You've used today's free OpenRouter requests." in text
+    assert "On a free OpenRouter account that is 50/day." in text
+    assert ("Adding $10 credit to your own OpenRouter account once raises your OpenRouter daily "
+            "limit to 1,000 requests") in text
+    assert "the money goes to OpenRouter, not TinyAssets." in text
+    assert "It can be used again after the daily reset" in text
+    assert "continues" not in text and "Not now" not in text
     credit = page.get_by_role("link", name="Add credit on OpenRouter")
     assert credit.get_attribute("href") == "https://openrouter.ai/settings/credits"
     assert credit.get_attribute("target") == "_blank"
@@ -95,6 +100,13 @@ def test_sign_in_source_card_is_one_tap_in_a_real_browser(page):
     page.evaluate("() => SignInSourceCards.render(railCache[0].action.setup.sign_in_sources)")
     button = page.get_by_role("button", name="Sign in with Hugging Face")
     assert button.is_visible()
+    note = page.get_by_text(SETUP["sign_in_sources"][0]["billing_note"], exact=True)
+    assert note.is_visible()
+    assert note.get_attribute("class") == "connect-terms"
+    assert note.evaluate("el => el.previousElementSibling.textContent") == (
+        SETUP["sign_in_sources"][0]["offer"])
+    assert note.evaluate("el => el.nextElementSibling.tagName") == "BUTTON"
+    assert note.bounding_box()["y"] < button.bounding_box()["y"]
     button.click()
     page.wait_for_function("window.calls.length === 2")
     assert page.evaluate("window.calls") == [
