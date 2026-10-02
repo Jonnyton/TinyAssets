@@ -64,6 +64,11 @@ MIN_RAN_FLOORS = {
     # floor is checked again by `--aggregate`, but the union floor alone cannot
     # see one shard collapsing: 5 of 6 shards still clear it comfortably.
     "shard": 1000,
+    # The PR-time run of scripts/affected_tests.py's selection. Zero on
+    # purpose: a selection can honestly be one test or none (a docs-only
+    # change), and this run is advisory -- the merge-group shards above carry
+    # the floors that gate. Only reachable with --affected.
+    "affected": 0,
 }
 
 
@@ -498,6 +503,44 @@ def aggregate(
     )
 
 
+def _shard_label(args: argparse.Namespace) -> str:
+    return f" - shard {args.shard[0]}/{args.shard[1]}" if args.shard else ""
+
+
+def _read_selection(args: argparse.Namespace) -> list[str] | None:
+    """This run's slice of an affected-tests selection; None means the whole surface.
+
+    Sliced here rather than through the `-p` plugin so a slice that owns no
+    selected file is known to be empty BEFORE pytest runs (pytest would exit 5
+    and the run would read as broken). Files under --exclude-from are dropped
+    the same way the required shards drop them: the heavy list is red at
+    baseline and belongs to `heavy-tests`.
+    """
+    entries = Path(args.affected).read_text(encoding="utf-8").split()
+    if entries == ["ALL"]:
+        return None
+    if "ALL" in entries:
+        raise SystemExit(f"{args.affected}: ALL must be the only entry")
+    excluded: list[str] = []
+    if args.exclude_from:
+        excluded = [
+            line.strip().rstrip("/")
+            for line in Path(args.exclude_from).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+    picked = []
+    for rel in entries:
+        if any(rel == e or rel.startswith(e + "/") for e in excluded):
+            continue
+        if args.shard and shard_of(rel, args.shard[1]) != args.shard[0]:
+            continue
+        if not (REPO_ROOT / rel).is_file():
+            print(f"WARNING: {args.affected} lists a missing path: {rel}", flush=True)
+            continue
+        picked.append(rel)
+    return picked
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--junit", default="junit.xml")
@@ -588,6 +631,16 @@ def main() -> int:
         help="With --aggregate: the shard count the workflow matrix runs.",
     )
     ap.add_argument(
+        "--affected",
+        metavar="FILE",
+        help=(
+            "The output of scripts/affected_tests.py: test paths to run, or the "
+            "single word ALL for the whole required surface. Combined with "
+            "--shard I/N it runs that shard's slice of the selection. An empty "
+            "slice is a green no-op. Requires --profile affected."
+        ),
+    )
+    ap.add_argument(
         "--shard-job-result",
         metavar="RESULT",
         help=(
@@ -597,8 +650,12 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if args.shard and args.profile != "shard":
+    if args.shard and args.profile not in ("shard", "affected"):
         raise SystemExit("--shard requires --profile shard (the per-shard floor).")
+    if (args.profile == "affected") != bool(args.affected):
+        raise SystemExit("--affected and --profile affected go together.")
+    if args.affected and args.include_from:
+        raise SystemExit("--affected already names what to run; drop --include-from.")
     if args.profile == "shard" and not args.shard:
         raise SystemExit("--profile shard is only meaningful with --shard I/N.")
     if args.aggregate and (
@@ -772,7 +829,19 @@ def main() -> int:
                 f"run (an empty include list would silently run nothing)."
             )
         cmd += present
-    if args.shard:
+    selection = _read_selection(args) if args.affected else None
+    if selection is not None:
+        if not selection:
+            summarise(
+                [
+                    f"### Affected tests{_shard_label(args)}",
+                    "",
+                    "No selected test file falls in this slice; nothing to run.",
+                ]
+            )
+            return 0
+        cmd += selection
+    elif args.shard:
         # Loads THIS module as a pytest plugin for its pytest_ignore_collect.
         # `-p` imports by module name, hence scripts/ on PYTHONPATH below.
         cmd += ["-p", "ci_required_tests", f"--ci-shard={args.shard[0]}/{args.shard[1]}"]
@@ -825,11 +894,17 @@ def main() -> int:
         return 1
 
     failing, ran = collect_outcomes(junit)
-    if args.shard:
+    exits = [proc.returncode]
+    if args.affected:
+        heading = f"### Affected tests{_shard_label(args)}"
+        # Exit 5 (nothing collected) is honest here: a selected file can hold
+        # only `slow` tests, which `-m "not slow"` deselects.
+        exits = [0 if code == 5 else code for code in exits]
+    elif args.shard:
         heading = f"### Required tests - shard {args.shard[0]}/{args.shard[1]}"
     else:
         heading = "### Required tests"
-    return evaluate(failing, ran, args.min_ran, [proc.returncode], heading)
+    return evaluate(failing, ran, args.min_ran, exits, heading)
 
 
 if __name__ == "__main__":
