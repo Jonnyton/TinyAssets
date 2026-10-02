@@ -47,6 +47,7 @@ from tinyassets.providers.base import (
 from tinyassets.providers.owned_process import (
     akill_owned_tree,
     aspawn_owned,
+    disk_stop_note,
     kill_owned_tree,
     no_window_kwargs,
 )
@@ -1101,7 +1102,8 @@ class ClaudeProvider(BaseProvider):
                 ))
             if returncode not in (0, None):
                 raise _attach(ProviderError(
-                    f"claude -p exit {returncode}: {stderr_text[:400]}"
+                    f"claude -p exit {returncode}{disk_stop_note(proc)}: "
+                    f"{stderr_text[:400]}"
                 ))
             # EOF with a clean/absent exit but NO terminal result: the stream was
             # truncated (blocker J). Classify it as a protocol error rather than a
@@ -1209,7 +1211,8 @@ class ClaudeProvider(BaseProvider):
 
             if proc.returncode != 0:
                 raise ProviderError(
-                    f"claude -p (json) exit {proc.returncode}: {stderr_text_json}"
+                    f"claude -p (json) exit {proc.returncode}{disk_stop_note(proc)}: "
+                    f"{stderr_text_json}"
                 )
 
             raw = stdout.decode("utf-8", errors="replace")
