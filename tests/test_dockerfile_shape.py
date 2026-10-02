@@ -562,3 +562,24 @@ def test_ta_op_is_built_in_the_builder_stage_and_installed_read_only_outside_app
     # deploy/compose.yml, the keepalive workflows and env-apply (slice 2),
     # asserted by tests/test_drop_first_operational_migration.py.
     assert "ta-op pulse" not in text and "ta-op canary" not in text
+
+
+def test_the_final_stage_ships_the_ui_preview_headless_shell():
+    """custom-ui-assets D6: the agent renders its own UI to see it. The headless
+    shell is installed as root in the FINAL stage (the builder's copy would not
+    carry its apt libraries), readable by uid 1001, at a fixed path, pinned by
+    the exact Playwright version the venv installs."""
+    import tomllib
+
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    final = text.split("# ---------- Stage 2: final ----------", 1)[1]
+    assert "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright" in final
+    install = final.index("playwright install --with-deps --only-shell chromium")
+    assert install < final.index("USER tinyassets"), "installed as root, before USER"
+    assert "chmod -R a+rX /opt/ms-playwright" in final
+    assert '".[mcp,gemini,groq,grok,preview]"' in text
+    extras = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    preview = extras["project"]["optional-dependencies"]["preview"]
+    assert preview == ["playwright==1.58.0"], "exact pin: it decides the Chromium build"
+    # Interim placement is written where the box image will look for it.
+    assert "sealed box image" in final

@@ -141,7 +141,7 @@ RUN gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c \
 # final image free of pip metadata + build tools.
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/venv/bin/pip install --no-cache-dir -e ".[mcp,gemini,groq,grok]"
+    /opt/venv/bin/pip install --no-cache-dir -e ".[mcp,gemini,groq,grok,preview]"
 
 # ---------- Stage 2: final ----------
 
@@ -244,6 +244,26 @@ COPY --from=builder /build/tinyassets /app/tinyassets
 COPY --from=builder /build/domains /app/domains
 COPY --from=builder /build/fantasy_daemon /app/fantasy_daemon
 COPY --from=builder /build/pyproject.toml /app/pyproject.toml
+
+# Headless Chromium for the custom-UI preview (openspec custom-ui-assets D6:
+# `read_graph target="app_ui_preview"` renders a person's own UI so the agent
+# that built it can see it). INTERIM PLACEMENT: in the target architecture
+# (#4263) the renderer belongs inside the command center's sealed box image,
+# not this shared daemon image; move this layer there when the box image exists.
+#
+# --only-shell: the headless shell, not the full browser. --with-deps installs
+# its shared libraries with apt (root, here, before USER). The browser runs as
+# uid 1001 with Chromium's OWN sandbox on (ui_preview passes chromium_sandbox=
+# True), which needs unprivileged user namespaces -- the same thing bubblewrap
+# needs, and compose's seccomp=unconfined already allows. Proven 2026-10-02 in a
+# python:3.11-slim + playwright 1.58 container as uid 1001: Chromium 145, WebGL
+# via SwiftShader. One render at a time per process (ui_preview._SLOT).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN /opt/venv/bin/playwright install --with-deps --only-shell chromium &&\
+    rm -rf /var/lib/apt/lists/* &&\
+    chmod -R a+rX /opt/ms-playwright &&\
+    /opt/venv/bin/python -c "from playwright.sync_api import sync_playwright" &&\
+    ls -d /opt/ms-playwright/chromium_headless_shell-*
 
 # Static data files required at runtime.
 # world_rules.lp is the ASP constraint program; asp_engine.py resolves it

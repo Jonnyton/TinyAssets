@@ -125,6 +125,11 @@ grok = [
 groq = [
     "groq>=0.9",
 ]
+# The custom-UI preview's headless browser (tinyassets/ui_preview.py). Exact pin:
+# the Playwright version decides which Chromium build the image downloads.
+preview = [
+    "playwright==1.58.0",
+]
 api = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
