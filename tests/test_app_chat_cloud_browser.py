@@ -230,3 +230,20 @@ def test_shrinking_on_its_own_moves_focus_to_the_bubble(app_url, browser):
 
     assert page.locator("#chat-cloud").is_hidden()
     assert page.evaluate("document.activeElement.id") == "chat-cloud-bubble"
+
+
+def test_arrows_inside_a_control_in_the_bar_do_not_move_the_window(app_url, browser):
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    _drag(page, "#chat-cloud-resize", -700, -400)
+    page.evaluate("""() => { const s = document.createElement('select'); s.id = 'probe-select';
+        for (const v of ['a', 'b', 'c']) { const o = document.createElement('option');
+          o.value = v; o.textContent = v; s.appendChild(o); }
+        document.getElementById('chat-cloud-bar').appendChild(s); }""")
+    before = _box(page, "#chat-cloud")
+
+    page.focus("#probe-select")
+    page.keyboard.press("ArrowDown")
+
+    after = _box(page, "#chat-cloud")
+    assert (after["x"], after["y"]) == (before["x"], before["y"])

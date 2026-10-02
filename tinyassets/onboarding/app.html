@@ -4736,6 +4736,9 @@
     const arrows={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]};
     const dir=arrows[ev.key];
     if(!dir || !cloudState) return;
+    // Only the bar or bubble itself: arrows inside a control placed in the bar
+    // (the agent switcher) belong to that control.
+    if(ev.currentTarget && ev.target!==ev.currentTarget) return;
     ev.preventDefault();
     const dx=dir[0]*CLOUD_STEP, dy=dir[1]*CLOUD_STEP;
     cloudState=ev.shiftKey && cloudState.mode==="open"
