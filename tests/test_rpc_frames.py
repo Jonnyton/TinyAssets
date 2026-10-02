@@ -126,3 +126,30 @@ def test_deeply_nested_control_json_is_a_frame_error_not_a_crash():
     raw = struct.pack(">BII", rf.CONTROL, 1, len(payload)) + payload
     with pytest.raises(rf.FrameError):
         rf.Decoder().feed(raw)
+
+
+def test_a_timeout_inside_a_frame_is_a_frame_error_not_a_resumable_read():
+    left, right = socket.socketpair()
+    try:
+        right.settimeout(0.3)
+        whole = rf.control(1, {"op": "END"})
+        left.sendall(whole[:5])  # half a header, then silence
+        with pytest.raises(rf.FrameError):
+            rf.read_frame_blocking(right)
+        left.sendall(whole[:rf.HEADER_BYTES + 2])  # a header and part of a payload
+        with pytest.raises(rf.FrameError):
+            rf.read_frame_blocking(right)
+    finally:
+        left.close()
+        right.close()
+
+
+def test_a_timeout_between_frames_is_the_plain_timeout():
+    left, right = socket.socketpair()
+    try:
+        right.settimeout(0.2)
+        with pytest.raises(TimeoutError):
+            rf.read_frame_blocking(right)
+    finally:
+        left.close()
+        right.close()

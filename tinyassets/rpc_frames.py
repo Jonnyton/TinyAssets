@@ -20,7 +20,24 @@ picks every other id, unique per connection.
 
 Anything else is a protocol error, raised as :class:`FrameError` before a byte
 of payload is interpreted. A peer that sends one is dropped: there is no
-resynchronizing a length-prefixed stream after a bad header.
+resynchronizing a length-prefixed stream after a bad header. The same holds
+for a read that times out inside a frame: :func:`read_frame_blocking` raises
+``FrameError`` rather than leave a half-read header for the next call.
+
+Conventions both services keep (op names are upper case, case-sensitive):
+
+* **Cancel** is a CONTROL frame ``{"op": "CANCEL"}`` on the target stream. A
+  server dispatches frames independently of a stream's handler work, so a
+  cancel is seen while that handler is blocked.
+* **A stream ends** with one CONTROL frame ``{"op": "END", ...}`` carrying
+  ``outcome`` (``completed``, ``cancelled``, ``refused``, ``failed``),
+  ``error_class`` (a fixed class name, never a peer's words) and
+  ``side_effect_state``: ``none`` only when the operation provably never ran
+  (a box's ``BoxOperationRefused`` / ``BoxDeadlineBeforeStart``), else
+  ``unknown``.
+* **A deadline** rides on the request's CONTROL frame as ``deadline_ms``,
+  absolute epoch milliseconds. Past it the server stops waiting and ends the
+  stream ``failed`` with the deadline's class (``side_effect_state`` as above).
 """
 
 from __future__ import annotations
@@ -174,21 +191,32 @@ async def read_frame(reader: asyncio.StreamReader) -> Frame | None:
 
 
 def read_frame_blocking(sock: Any) -> Frame | None:
-    """:func:`read_frame` for a blocking socket (the synchronous client)."""
+    """:func:`read_frame` for a blocking socket (the synchronous client).
+
+    A socket timeout before any byte of a frame propagates as the timeout (the
+    caller may simply read again); a timeout INSIDE a frame raises
+    :class:`FrameError`, because the half-read frame cannot be resumed.
+    """
     header = _recv_exactly(sock, HEADER_BYTES, allow_eof=True)
     if header is None:
         return None
     kind, stream, length = decode_header(header)
-    payload = _recv_exactly(sock, length, allow_eof=False) if length else b""
+    payload = _recv_exactly(sock, length, allow_eof=False, started=True) if length else b""
     if kind == CONTROL:
         _document(payload)
     return Frame(kind, stream, payload)
 
 
-def _recv_exactly(sock: Any, count: int, *, allow_eof: bool) -> bytes | None:
+def _recv_exactly(sock: Any, count: int, *, allow_eof: bool,
+                  started: bool = False) -> bytes | None:
     parts = bytearray()
     while len(parts) < count:
-        chunk = sock.recv(count - len(parts))
+        try:
+            chunk = sock.recv(count - len(parts))
+        except TimeoutError:
+            if started or parts:
+                raise FrameError("timed out inside a frame") from None
+            raise
         if not chunk:
             if allow_eof and not parts:
                 return None
