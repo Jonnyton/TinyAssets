@@ -3032,6 +3032,9 @@ def converse(
         addressed = addressed_agents.resolve(
             _base_path(), universe_id=uid, owner=current_actor_id(), agent_id=agent_id,
         )
+        addressed_id = addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT
+        # Built here, inside the refusal: a key that cannot be built has no reading.
+        memory_session = addressed_agents.memory_session(current_actor_id(), addressed_id)
     except addressed_agents.AgentNotAddressable as exc:
         return json.dumps({"error": str(exc), "agent_not_found": True, "universe_id": uid})
     except Exception:
@@ -3040,7 +3043,6 @@ def converse(
             "error": "Your agents couldn't be read right now, so nothing was sent.",
             "universe_id": uid,
         })
-    addressed_id = addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT
 
     if addressed is None:
         from tinyassets.consumer_runtime import converse_turn
@@ -3066,7 +3068,6 @@ def converse(
     from tinyassets.universe_intelligence import converse as _converse_impl
 
     memory_universe_dir = _memory_universe_dir(uid)
-    memory_session = addressed_agents.memory_session(current_actor_id(), addressed_id)
     try:
         from tinyassets.conversation_store import load_recent
 

@@ -3787,6 +3787,23 @@ def read_brain(section: str = "") -> str:
 
 
 @mcp.tool
+def _acting_agent() -> str:
+    """The agent this engine call acts for, from the launch's own session key.
+
+    Set by the platform for one launch (``?session=``), never by the model. No
+    session is a background or main-thread launch: the main agent. A key that is
+    an agent's thread but does not parse as one of THIS owner's is never main.
+    """
+    from tinyassets.addressed_agents import MAIN_AGENT, agent_of_session
+    from tinyassets.engine_steering import STEERED_PREFIX, _session_key
+
+    session = _session_key()
+    if not session.startswith(STEERED_PREFIX + "agent:"):
+        return MAIN_AGENT
+    agent = agent_of_session(session[len(STEERED_PREFIX):], _ACTOR_ID)
+    return agent if agent and agent != MAIN_AGENT else "unresolved-agent"
+
+
 def write_brain(
     identity: str = "",
     founder: str = "",
@@ -3876,7 +3893,8 @@ def write_brain(
         udir = _universe_dir(_GRAPH_ID)
         proposed: dict = {"name": learned_name, "soul": soul}
         result = commit_learning(
-            udir, proposed, universe_id=_GRAPH_ID, actor_id=_ACTOR_ID
+            udir, proposed, universe_id=_GRAPH_ID, actor_id=_ACTOR_ID,
+            agent_id=_acting_agent(),
         )
         if result is None:
             return json.dumps({

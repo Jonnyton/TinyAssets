@@ -20,7 +20,7 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
-from tinyassets.addressed_agents import AddressedAgent
+from tinyassets.addressed_agents import MAIN_AGENT, AddressedAgent
 from tinyassets.api import interlocutor
 from tinyassets.api.helpers import _request_universe, _universe_dir
 from tinyassets.config import load_universe_config
@@ -947,6 +947,7 @@ def commit_learning(
     *,
     universe_id: str = "",
     actor_id: str = "",
+    agent_id: str,
 ) -> dict | None:
     """Persist grounded learning — governed soul + private canon — or None.
 
@@ -994,6 +995,7 @@ def commit_learning(
         try:
             soul_result = apply_soul_edit(
                 universe_dir,
+                agent_id=agent_id,
                 changes=changes,
                 source=source,
                 context=_LEARN_CONTEXT,
@@ -1023,7 +1025,7 @@ def _learn_from_turn(
     founder_message: str,
     reply: str,
     actor_id: str,
-    own_identity: bool = True,
+    agent_id: str,
 ) -> bool:
     """Persist what the founder taught this turn. Returns whether it ran.
 
@@ -1049,9 +1051,12 @@ def _learn_from_turn(
 
     try:
         proposed = extract_learning(founder_message, reply, ctx)
-        if not own_identity:
+        if agent_id != MAIN_AGENT:
+            # The door refuses a non-main edit that names; drop those parts so
+            # the rest of the lesson still lands in the shared brain.
             proposed = _without_identity(proposed)
-        commit_learning(universe_dir, proposed, universe_id=universe_id, actor_id=actor_id)
+        commit_learning(universe_dir, proposed, universe_id=universe_id, actor_id=actor_id,
+                        agent_id=agent_id)
         return True
     except (AllProvidersExhaustedError, ProviderAuthorityHeldError, TurnInterrupted) as exc:
         # A stop pressed after the reply exists ends only this extraction: the
@@ -1653,7 +1658,7 @@ def converse(
                 settled = _learn_from_turn(
                     ctx, universe_dir=udir, universe_id=uid,
                     founder_message=founder_message, reply=reply, actor_id=actor_id,
-                    own_identity=addressed_agent is None,
+                    agent_id=addressed_agent.agent_id if addressed_agent else MAIN_AGENT,
                 )
             if learning_observer is not None:
                 try:

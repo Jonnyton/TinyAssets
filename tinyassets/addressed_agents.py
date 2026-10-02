@@ -55,28 +55,51 @@ def normalize_agent_id(agent_id: object) -> str:
     return value
 
 
+def _component(value: str, what: str) -> str:
+    """One key component, refused if it could be read as two.
+
+    Keys are built from parts, never parsed by searching for a delimiter: a
+    component containing the delimiter (or the escape character) is refused
+    here, so no owner id or agent id can make one person's key spell another's.
+    """
+    text = str(value or "")
+    if not text or ":" in text or "%" in text or any(ch.isspace() for ch in text):
+        raise AgentNotAddressable(f"{what} cannot be part of a conversation key")
+    return text
+
+
 def memory_session(owner: str, agent_id: str = MAIN_AGENT) -> str:
     """The conversation-memory key of ``agent_id``'s thread with ``owner``.
 
     The main thread keeps ``principal:<owner>`` (no migration). Another agent's
     is ``agent:<agent_id>:principal:<owner>``; its native session and steering
-    key is ``thread:`` plus this, exactly like the main thread's.
+    key is ``thread:`` plus this, exactly like the main thread's. Both parts are
+    checked by :func:`_component`, so a key has exactly one reading.
     """
+    owner = _component(owner, "this account id")
     if agent_id == MAIN_AGENT:
         return f"principal:{owner}"
-    return f"{_AGENT_PREFIX}{agent_id}:principal:{owner}"
+    return f"{_AGENT_PREFIX}{_component(agent_id, 'this agent id')}:principal:{owner}"
 
 
 def agent_of_session(session_id: str, owner: str) -> str | None:
-    """The agent a memory session belongs to, for ``owner``; None if not theirs."""
-    if session_id == f"principal:{owner}":
-        return MAIN_AGENT
-    if session_id.startswith(_AGENT_PREFIX):
-        agent_id, separator, session_owner = session_id[len(_AGENT_PREFIX):].partition(
-            ":principal:")
-        if separator and agent_id and ":" not in agent_id and session_owner == owner:
-            return agent_id
-    return None
+    """The agent a memory session belongs to, for ``owner``; None if not theirs.
+
+    By construction, not by search: the key must have exactly the shape
+    :func:`memory_session` builds, and rebuilding it from the parsed agent and
+    ``owner`` must give the same string back.
+    """
+    parts = str(session_id or "").split(":")
+    if len(parts) == 2:
+        agent_id = MAIN_AGENT
+    elif len(parts) == 4 and parts[0] == "agent" and parts[2] == "principal":
+        agent_id = parts[1]
+    else:
+        return None
+    try:
+        return agent_id if memory_session(owner, agent_id) == session_id else None
+    except AgentNotAddressable:
+        return None
 
 
 def is_conversable(binding: dict, *, owner: str, universe_id: str) -> bool:

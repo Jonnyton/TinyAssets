@@ -770,7 +770,7 @@ def test_a_soul_edit_refuses_alias_frontmatter_without_expanding_it(tmp_path):
                                           encoding="utf-8")
     with pytest.raises(SoulEditError, match="refused"):
         apply_soul_edit(universe, changes={"identity.md": "new identity body"},
-                        source="test", context="c", summary="s")
+                        agent_id="main", source="test", context="c", summary="s")
 
 
 def test_a_soul_edit_refuses_an_oversized_governed_file(tmp_path):
@@ -781,7 +781,7 @@ def test_a_soul_edit_refuses_an_oversized_governed_file(tmp_path):
                                           encoding="utf-8")
     with pytest.raises(SoulEditError, match="over its bound"):
         apply_soul_edit(universe, changes={"identity.md": "new identity body"},
-                        source="test", context="c", summary="s")
+                        agent_id="main", source="test", context="c", summary="s")
 
 
 def test_soul_versions_are_listed_and_read_without_following_links(tmp_path):

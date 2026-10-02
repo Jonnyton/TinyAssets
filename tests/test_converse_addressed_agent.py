@@ -300,21 +300,37 @@ def test_a_steer_goes_to_the_agent_the_owner_is_talking_to(world, monkeypatch):
 
 
 def test_owner_delimiters_never_alias_another_owners_agent_session(tmp_path):
+    """Keys are built from parts and read back only by rebuilding them.
+
+    An owner id carrying the delimiter cannot be part of a key at all, and a key
+    already in the store with an adversarial shape (as if planted) never reads as
+    another owner's thread.
+    """
     from tinyassets.conversation_store import load_recent_agent_turns, record_turn
 
-    alice = "alice:principal:bob"
-    key = addressed_agents.memory_session(alice, "weaver")
-    assert addressed_agents.agent_of_session(key, "bob") is None
-    assert addressed_agents.agent_of_session(key, alice) == "weaver"
-    for malformed in ("agent::principal:bob", "agent:x:y:principal:bob"):
-        assert addressed_agents.agent_of_session(malformed, "bob") is None
+    for hostile in ("alice:principal:bob", "a%3Ab", "x y", ""):
+        with pytest.raises(addressed_agents.AgentNotAddressable):
+            addressed_agents.memory_session(hostile, "weaver")
+        with pytest.raises(addressed_agents.AgentNotAddressable):
+            addressed_agents.memory_session(hostile)
+    planted = "agent:weaver:principal:alice:principal:bob"
+    for malformed in (planted, "agent::principal:bob", "agent:x:y:principal:bob",
+                      "agent:x:principal:bob:", "principal:bob:x", "principal:"):
+        assert addressed_agents.agent_of_session(malformed, "bob") is None, malformed
     record_turn(tmp_path, addressed_agents.memory_session("bob", "mine"),
                 "founder", "bob's line", ts=1)
-    record_turn(tmp_path, key, "founder", "alice's private line", ts=2)
-    assert [(a, m.text) for a, m in load_recent_agent_turns(tmp_path, "bob", limit=1)] == [
+    record_turn(tmp_path, planted, "founder", "alice's private line", ts=2)
+    assert [(a, m.text) for a, m in load_recent_agent_turns(tmp_path, "bob")] == [
         ("mine", "bob's line")]
-    assert [(a, m.text) for a, m in load_recent_agent_turns(tmp_path, alice)] == [
-        ("weaver", "alice's private line")]
+    assert load_recent_agent_turns(tmp_path, "alice:principal:bob") == []
+
+
+def test_an_adversarial_owner_cannot_converse_into_any_thread(world, monkeypatch):
+    from tinyassets.api import permissions
+
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "x:principal:" + OWNER)
+    out = _converse(message="hi", agent_id=world["weaver"])
+    assert "reply" not in out and world["provider"].calls == []
 
 
 def test_huge_agent_activity_preserves_the_main_threads_newest_exchange(world):
