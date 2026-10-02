@@ -231,7 +231,7 @@ def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monk
     # interfaces. What each one decides is asserted in tests/test_jail_seccomp.py.
     from tinyassets.providers.jail_seccomp import deny_program
 
-    assert universe_tools.seccomp_program() == deny_program(nested_sandbox=False)
+    assert universe_tools.seccomp_program() == deny_program()
 
 
 def test_limits_wrap_the_command_and_prove_themselves_before_it_runs(monkeypatch):

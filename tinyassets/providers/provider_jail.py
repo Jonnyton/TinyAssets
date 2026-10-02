@@ -90,6 +90,7 @@ __all__ = [
     "default_view",
     "jail_argv",
     "hidden_root_masks",
+    "launch_is_confined",
     "provider_launch_scope",
 ]
 
@@ -148,6 +149,21 @@ def provider_launch_scope(
         yield
     finally:
         _SCOPE.reset(token)
+
+
+def launch_is_confined() -> bool:
+    """Whether a provider process launched right now would be OS-jailed.
+
+    True exactly when the active scope names an owning universe -- the same
+    condition under which :func:`confine_launch` builds a jail (a scope with no
+    universe is refused, not jailed). An adapter reads this to drop its OWN,
+    nested sandbox when ours is the boundary: a second sandbox inside this one
+    only adds attack surface, and a nested bubblewrap is what would force this
+    jail's seccomp filter to keep user namespaces and symlinks open
+    (``tinyassets.providers.jail_seccomp``).
+    """
+    scope = _SCOPE.get()
+    return scope is not None and scope.universe_dir is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -674,9 +690,13 @@ def confine_launch(
         prlimit, *_limit_args(), "--",
         *universe_egress.forwarder_argv(python, list(argv), engine_port=engine_port),
     ]
-    # A provider CLI may build its own sandbox inside this one (codex does), so
-    # user namespaces and symlinks stay open (tinyassets.providers.jail_seccomp).
-    filter_fd = program_fd(nested_sandbox=True)
+    # No provider CLI nests a sandbox of its own inside this jail: the codex
+    # adapter drops its workspace-write sandbox for commands when
+    # launch_is_confined, its served turns disable the shell tool entirely, and
+    # claude never had one. So the filter denies new user namespaces and
+    # symlinks, the same as the tool jail: a provider can no longer plant a link
+    # the daemon follows out of the universe (jail_seccomp).
+    filter_fd = program_fd()
     try:
         jailed = jail_argv(
             inner, view, bwrap_path=bwrap_path, install_paths=install_paths, env=env,

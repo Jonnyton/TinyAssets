@@ -40,6 +40,7 @@ from tinyassets.providers.owned_process import (
     kill_owned_tree,
     no_window_kwargs,
 )
+from tinyassets.providers import provider_jail
 from tinyassets.providers.provider_jail import JailMount, UniverseView
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, granted_tools
 
@@ -788,10 +789,22 @@ class CodexProvider(BaseProvider):
         base_cmd, use_shell = self.native_command_resolver()
         model = _codex_model() if config.native_model_id is None else config.native_model_id
         sandbox_status = get_sandbox_status()
-        sandbox_args = (
-            ["--sandbox", "workspace-write"] if sandbox_status.get("bwrap_available")
-            else ["--dangerously-bypass-approvals-and-sandbox"]
-        )
+        # Our provider jail (tinyassets.providers.provider_jail) is the sandbox
+        # whenever this launch is confined. codex's OWN workspace-write sandbox
+        # is a nested bubblewrap inside ours: it adds no confinement our jail
+        # does not already give (the universe RW, nothing else writable, no
+        # network off the egress proxy), and a nested bwrap is what forced the
+        # jail's seccomp to keep user namespaces and symlinks open. So drop it
+        # and let codex run its commands directly in our jail. Off the jail (a
+        # host-authority call with no owning universe) codex keeps its own
+        # sandbox, falling back to bypass only where bwrap is unavailable.
+        if provider_jail.launch_is_confined():
+            sandbox_args = ["--dangerously-bypass-approvals-and-sandbox"]
+        else:
+            sandbox_args = (
+                ["--sandbox", "workspace-write"] if sandbox_status.get("bwrap_available")
+                else ["--dangerously-bypass-approvals-and-sandbox"]
+            )
         # Prompt-node calls use Codex as a subscription-backed text model, but
         # loop-investigation coding prompts still need repo source/tests mounted.
         # Prefer Codex's sandboxed auto mode when bwrap is actually usable;

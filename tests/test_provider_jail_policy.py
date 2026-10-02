@@ -362,7 +362,7 @@ def test_the_seccomp_filter_is_handed_to_the_jail_and_released(wired):
     assert launch.argv[launch.argv.index("--seccomp") + 1] == str(fd)
     from tinyassets.providers.jail_seccomp import deny_program
 
-    assert os.read(fd, 1 << 16) == deny_program(nested_sandbox=True)
+    assert os.read(fd, 1 << 16) == deny_program()
     launch.close()
     with pytest.raises(OSError):
         os.fstat(fd)
