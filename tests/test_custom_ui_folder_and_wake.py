@@ -72,7 +72,7 @@ folderUniverseOverride='u-bob';
 for(const action of ['list_files','read_file']){
  const wrong=await ask(action,{path:'notes/board.md'});
  assert.equal(wrong.ok,false,action);
- assert(/another universe/.test(wrong.error),wrong.error);
+ assert(/another command center/.test(wrong.error),wrong.error);
 }
 folderUniverseOverride='';
 calls=[];

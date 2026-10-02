@@ -110,7 +110,7 @@ def _windows_path_is_clean(base: Path, uid: str, rel: str) -> Path:
         current = current / part
         info = os.lstat(current)
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
-            raise UniverseFileError(f"{part!r} is a link; universe files are read link-free")
+            raise UniverseFileError(f"{part!r} is a link; command center files are read link-free")
     return current
 
 

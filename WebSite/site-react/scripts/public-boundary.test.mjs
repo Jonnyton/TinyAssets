@@ -119,7 +119,7 @@ test("the public list labels its snapshot and sign-in boundary", () => {
   assert.match(shapes, /mcp-snapshot\.json/);
   assert.match(shapes, /checked-in snapshot from/);
   assert.match(shapes, /PUBLIC_READ_NEEDS_SIGN_IN/);
-  assert.match(shapes, /No public universes/);
+  assert.match(shapes, /No public command centers/);
   assert.doesNotMatch(shapes, /visibility\s*\?\?\s*["']public["']/);
   assert.doesNotMatch(shapes, /visibility\s*!==\s*["']private["']/);
   assert.doesNotMatch(shapes, /Refresh MCP|live read from/);

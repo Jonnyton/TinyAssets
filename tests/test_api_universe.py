@@ -232,7 +232,7 @@ def test_scope_universe_response_prepends_universe_lead_in() -> None:
     """#15 contract: response carries a `Universe: <id>` text lead-in."""
     raw = '{"text": "hello", "universe_id": "u_test"}'
     out = univ_mod._scope_universe_response(raw)
-    assert "Universe:" in out
+    assert "Command center:" in out
 
 
 # ── Daemon telemetry helpers ─────────────────────────────────────────────────

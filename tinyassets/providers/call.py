@@ -134,7 +134,7 @@ class UniverseBoundProviderCall:
     def __call__(self, prompt: str, system: str = "", **kwargs: Any) -> str:
         supplied = kwargs.pop("universe_context", None)
         if supplied is not None and supplied is not self.universe_context:
-            raise PermissionError("provider call cannot substitute universe context")
+            raise PermissionError("provider call cannot substitute command center context")
         supplied_operation = kwargs.pop("operation", None)
         if supplied_operation is not None and supplied_operation != self.operation:
             raise PermissionError("provider call cannot substitute its bound operation")
@@ -159,7 +159,7 @@ class UniverseBoundProviderCall:
     ) -> tuple[str, str, dict]:
         supplied = universe_context
         if supplied is not None and supplied is not self.universe_context:
-            raise PermissionError("provider policy cannot substitute universe context")
+            raise PermissionError("provider policy cannot substitute command center context")
         delegated = getattr(self.provider_call, "call_with_policy_sync", None)
         if callable(delegated):
             return delegated(

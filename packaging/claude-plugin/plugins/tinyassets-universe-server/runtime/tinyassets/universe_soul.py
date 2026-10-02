@@ -1,4 +1,4 @@
-"""Domain-neutral universe soul profile helpers.
+"""Domain-neutral command center soul profile helpers.
 
 PR-139 slice 3 keeps the old ``PROGRAM.md`` premise file as a compatibility
 mirror while introducing ``soul.md`` as the durable universe-intent artifact.
@@ -84,7 +84,7 @@ class PinnedUniverseSoul:
             "loop_branch_def_id": self.soul.loop_branch_def_id,
             "effect_authority": list(self.soul.effect_authority),
             "identity_boundary": (
-                "Universe soul guides this context only; it does not change "
+                "Command center soul guides this context only; it does not change "
                 "the actor identity or user memory scope."
             ),
             "content": content,
@@ -216,7 +216,7 @@ def write_universe_soul(
     effect_authority: tuple[str, ...] = (),
     clear_loop_branch: bool = False,
 ) -> UniverseSoul:
-    """Write or update a universe soul.
+    """Write or update a command center soul.
 
     ``clear_loop_branch`` exists because an empty ``loop_branch_def_id``
     PRESERVES the existing value (every field here treats blank as "leave
