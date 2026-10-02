@@ -6,10 +6,13 @@ name: Queue freshness
 # (scripts/queue_freshness.py). Measured 24 h to 2026-10-02: 241 merge-group
 # Tests runs for 76 merges, 99 failed.
 #
-# Two jobs on purpose. `probe` runs PR code (pytest on the merged tree) with a
-# read-only token, and the script strips even that from the test process.
-# `act` holds the write token, checks out only the default branch, never runs
-# PR code, and acts only on a head that has not moved since the probe.
+# Three jobs, three trust levels:
+# - list:  default-branch code only; picks up to 6 PRs in queue order.
+# - probe: one matrix job PER PR; runs that PR's code with NO GitHub token
+#   (job permissions are empty and checkout keeps no credentials). Its artifact
+#   is named from the trusted matrix, so it can only speak about its own PR.
+# - act:   holds the write token, never runs PR code, re-derives a textual
+#   conflict itself, and acts only on an unchanged head.
 #
 # Not a required check and not a gate: it only spares the queue a doomed group.
 
@@ -18,27 +21,56 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  # One probe at a time and at most one waiting: a newer push replaces the
+  # One run at a time and at most one waiting: a newer push replaces the
   # pending run, never cancels the running one (which would lose its verdicts).
   group: queue-freshness
   cancel-in-progress: false
 
 jobs:
-  probe:
-    name: queue-freshness probe
+  list:
+    name: queue-freshness list
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+      main: ${{ steps.list.outputs.main }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "main=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(python scripts/queue_freshness.py list --repo "$REPO")" >> "$GITHUB_OUTPUT"
+
+  probe:
+    name: queue-freshness probe
+    needs: list
+    if: needs.list.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        pr: ${{ fromJSON(needs.list.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.list.outputs.main }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -53,23 +85,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
 
-      - name: Probe queued and armed PRs against current main
+      - name: Probe this PR against current main
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+          NUMBER: ${{ matrix.pr.number }}
+          HEAD_SHA: ${{ matrix.pr.head }}
+          MAIN_SHA: ${{ needs.list.outputs.main }}
           TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-fresh
         run: |
-          mkdir -p "$TINYASSETS_DATA_DIR"
-          python scripts/queue_freshness.py probe --repo "$REPO" --out "$RUNNER_TEMP/verdicts.json"
+          mkdir -p "$TINYASSETS_DATA_DIR" "$RUNNER_TEMP/verdict"
+          python scripts/queue_freshness.py probe --number "$NUMBER" --head "$HEAD_SHA" \
+            --main "$MAIN_SHA" --out "$RUNNER_TEMP/verdict/verdict.json"
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: queue-freshness-verdicts
-          path: ${{ runner.temp }}/verdicts.json
+          name: verdict-${{ matrix.pr.number }}
+          path: ${{ runner.temp }}/verdict/verdict.json
+          if-no-files-found: ignore
 
   act:
     name: queue-freshness act
-    needs: probe
+    needs: [list, probe]
+    if: always() && needs.list.result == 'success' && needs.list.outputs.matrix != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -80,6 +117,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-python@v5
@@ -87,12 +125,19 @@ jobs:
           python-version: '3.11'
 
       - uses: actions/download-artifact@v4
+        # No verdicts (every probe died) is not an error: act then does nothing.
+        continue-on-error: true
         with:
-          name: queue-freshness-verdicts
-          path: ${{ runner.temp }}
+          pattern: verdict-*
+          path: ${{ runner.temp }}/verdicts
 
       - name: Dequeue and ping PRs that went stale
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-        run: python scripts/queue_freshness.py act --repo "$REPO" --verdicts "$RUNNER_TEMP/verdicts.json"
+          MATRIX: ${{ needs.list.outputs.matrix }}
+          MAIN_SHA: ${{ needs.list.outputs.main }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/verdicts"
+          python scripts/queue_freshness.py act --repo "$REPO" --main "$MAIN_SHA" \
+            --matrix "$MATRIX" --verdict-dir "$RUNNER_TEMP/verdicts"
