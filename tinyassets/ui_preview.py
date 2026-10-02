@@ -244,7 +244,11 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
 
     with sync_playwright() as p:
         try:
+            # The UI is somebody's arbitrary code: Chromium's own sandbox stays
+            # ON (Playwright turns it off by default), so a renderer exploit is
+            # confined the way any browser tab is, not handed the daemon's user.
             browser = p.chromium.launch(
+                chromium_sandbox=True,
                 args=["--use-gl=swiftshader", "--enable-unsafe-swiftshader",
                       "--disable-dev-shm-usage", "--no-first-run"])
         except PlaywrightError as exc:

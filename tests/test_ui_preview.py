@@ -231,3 +231,13 @@ def test_the_engine_handle_renders_writes_and_reports(tmp_path, monkeypatch):
     assert busy["error"] == "ui_preview_busy"
     missing = json.loads(s.read_graph(target="app_ui_preview", query=""))
     assert missing["error"] == "app_ui_validation_error"
+
+
+def test_the_browser_sandbox_is_never_turned_off():
+    """Playwright launches Chromium with its sandbox OFF unless asked. The UI is
+    somebody's code, so the render keeps the browser's own confinement."""
+    import inspect
+
+    source = inspect.getsource(ui_preview._child)
+    assert "chromium_sandbox=True" in source
+    assert "--no-sandbox" not in source
