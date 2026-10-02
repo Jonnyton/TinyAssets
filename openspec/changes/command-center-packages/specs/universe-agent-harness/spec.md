@@ -13,7 +13,7 @@ The package SHALL never contain:
 - the owner-describing brain files;
 - the wiki's drafts or raw material;
 - unselected memory;
-- any file in which a credential or contact details are detected. Owner approval SHALL NOT override this.
+- any file holding a certain credential (by structure, or a mixed-class opaque value assigned to a secret's name) or contact details. Owner approval SHALL NOT override this. Any other opaque run SHALL keep its file in and be listed on the tab for review.
 
 Connections SHALL appear only as named references in the manifest. A binary file SHALL never be included. A final check SHALL scan every public path, the manifest and the definition, and SHALL refuse the publish on any detection.
 

@@ -32,8 +32,16 @@ universe-file readers.
 - the brain files that describe the owner or hold the control plane:
   `founder.md`, `soul.md`, `soul.edit.md`, `soul_versions/` and `log.md`;
 - the wiki's `drafts/`, `raw/` and `daemon-wiki/`;
-- any file in which the platform's credential parser
-  (`tinyassets.credential_shape`) detects a credential;
+- any file holding a CERTAIN credential. The platform's parser
+  (`tinyassets.credential_shape`) finds it as one of two things:
+  - a credential by structure: a private-key block, an auth header, a JWT, URL
+    userinfo, or a URL parameter named as a secret;
+  - an opaque value of mixed character classes assigned to a secret's name
+    (`api_key = …`, `"token": "…"`, `my key is …`).
+
+  Any other opaque run (ids, hashes, minified identifiers) is a SUSPECT: the
+  file stays in, and the tab lists it under "Worth a look". See the dry-run
+  evidence in the review log.
 - any file carrying contact details (an email address or a phone number). The
   `export` profile alone may include those item by item;
 - any file that is not UTF-8 text. A binary cannot be inspected, so the public
@@ -301,3 +309,34 @@ the runtime for a roster agent is D8.
     check-then-use, and that PR's author owns it as the single-tenant tray's
     containment. This lane does not fork a second writer for one platform: one
     definition of safe file IO is the lead's rule.
+
+- **gpt-6-astra code refute, round 3, the last (2026-10-01): ADAPT, with one
+  P1.** The identifier exemption applied to matching key names at every
+  depth, so `state_schema[0].default.id` skipped the credential test. Fixed:
+  the exemption is now by SCHEMA LOCATION (`_ID_PATHS`, with list indices
+  dropped and a definition's component key read as `*`). A nested `id` in user
+  data is scanned in full. No fourth round, per the three-round cap.
+
+- **Dry run against the founder's live GTM Village (2026-10-01, read-only,
+  production container, no publish).** The probe printed paths, reasons,
+  parser labels and token shapes only, never content.
+  - The round-2 scrub would have excluded 246 of 300 text files and refused
+    150 of 217 workflows: ids, hex run ids, git shas, CSS classes and code
+    identifiers, nearly all of them `opaque_high_entropy`.
+  - The lead's rule: the default must not strip a working village. So the
+    scan is tiered (D2): only a certain credential excludes or refuses; a
+    suspect is listed for review and stays in.
+  - Measured after tiering:
+    - 322 files are included and 46 excluded. Of those 46, 8 are certain
+      credentials (2 URL userinfo), 4 carry email addresses, and the rest are
+      runtime files, databases, brain files, wiki drafts and the checkout.
+    - 289 files are flagged for review.
+    - All 8 GTM Village workflows pass. The 14 that are still refused are
+      unrelated platform-development workflows whose code assigns a mixed-class
+      value to a secret's name.
+    - 92 `extensions/gtm-village/` files travel.
+  - The tradeoff, stated: a key pasted bare into a note, not assigned to a
+    secret's name, is now listed for review instead of dropped. The owner
+    reads the list before confirming; the tab says detection cannot prove
+    a file holds no secret.
+

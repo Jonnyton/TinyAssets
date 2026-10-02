@@ -234,7 +234,7 @@ def test_the_tab_names_every_file_and_every_exclusion_with_its_reason(home: Path
 
 
 @pytest.mark.parametrize("rel,data,reason", [
-    ("notes/a.md", "token " + SECRET_KEY, ccp.R_CREDENTIAL),
+    ("notes/a.md", "token: " + SECRET_KEY, ccp.R_CREDENTIAL),
     ("notes/a.md", "call +1 415 555 0132", ccp.R_CONTACT),
     ("notes/a.md", "mail " + ALICE_EMAIL, ccp.R_CONTACT),
     ("notes/a.bin", b"\xff\xfe\x00binary", ccp.R_BINARY),
@@ -254,7 +254,7 @@ def test_classify_keeps_every_private_class_out(rel, data, reason):
 
 
 def test_classify_owner_choices_never_lift_a_detection():
-    leaked = ("- [m_a] key " + SECRET_KEY).encode()
+    leaked = ("- [m_a] key: " + SECRET_KEY).encode()
     # Naming the memory item cannot carry a credential out with it.
     assert ccp.classify("MEMORY.md", leaked, exclude=[],
                         memory_items={"MEMORY.md": ["m_a"]}) == (None, ccp.R_CREDENTIAL)
@@ -810,15 +810,36 @@ def test_a_switch_publishes_the_verified_bytes_not_a_later_edit(home: Path, monk
     assert "wiki/pages/village.md" not in files
 
 
-@pytest.mark.parametrize("value", ["0123456789abcdef", "415-555-1212"])
-def test_an_id_named_field_is_not_a_blind_spot(home: Path, value):
+def test_an_id_named_field_is_not_a_blind_spot(home: Path):
     from tinyassets.daemon_server import get_branch_definition, save_branch_definition
 
     raw = get_branch_definition(home, branch_def_id=SCOUT)
-    raw["node_defs"][0]["customer_id"] = value
+    raw["node_defs"][0]["customer_id"] = "0123456789abcdef"
+    raw["state_schema"] = [{"name": "x", "type": "str", "default": {"id": "0123456789abcdef"}}]
+    save_branch_definition(home, branch_def=raw)
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    # A random-looking value is listed for review, wherever it sits; a schema
+    # id key nested in user data is NOT exempt (gpt-6-astra, code r3).
+    assert "node_defs[0].customer_id: holds a long random-looking string" in ask["body"]
+    assert "state_schema[0].default.id: holds a long random-looking string" in ask["body"]
+    raw["node_defs"][0]["customer_id"] = "415-555-1212"
     save_branch_definition(home, branch_def=raw)
     out = _ask(OWNER, UNIVERSE, _publish_action())
-    assert "request_id" not in out, out
+    assert "request_id" not in out and "contact details" in out["detail"], out
+
+
+def test_a_secret_named_line_makes_an_opaque_run_certain():
+    assert ccp.text_detection("api_key = 0123456789abcdef0123") == ccp.R_CREDENTIAL
+    assert ccp.text_detection("run 0123456789abcdef0123 finished") is None
+    assert ccp.text_suspect("run 0123456789abcdef0123 finished")
+
+
+def test_a_platform_id_is_exempt_only_at_its_schema_location():
+    notes: list[str] = []
+    ccp.scan_public({"node_defs": [{"node_id": "0123456789abcdef"}]}, "w", notes)
+    assert notes == []
+    ccp.scan_public({"state_schema": [{"default": {"node_id": "0123456789abcdef"}}]}, "w", notes)
+    assert notes == ["w.state_schema[0].default.node_id"]
 
 
 def test_a_phone_number_under_a_schema_id_key_is_refused():
@@ -863,3 +884,20 @@ def test_an_unrelated_screen_at_the_intended_id_is_never_adopted(home: Path):
                                                  universe_id=BOB_UNIVERSE)["ui_library"]}
     assert library["village"]["markup"] == "<p>mine</p>"
     assert library[landed]["markup"] == UI["markup"]
+
+
+def test_a_bare_opaque_run_is_listed_for_review_not_dropped():
+    # Not assigned to a secret's name: the file stays in and the tab lists it.
+    # This is the deliberate tradeoff that keeps a real village from being gutted
+    # (live dry run, 2026-10-01); the owner reads the list before confirming.
+    data = ("a note mentioning " + SECRET_KEY).encode()
+    assert ccp.classify("notes/a.md", data, exclude=[], memory_items={}) == (data, "")
+    assert ccp.review_note(data) == ccp.N_OPAQUE
+
+
+def test_a_one_class_value_assigned_to_a_secret_name_is_only_a_suspect():
+    # A one-class run the parser reads as opaque, assigned to a secret name:
+    # in the live village these were minified-code identifiers, not keys.
+    line = 'token: "qwzx-plmk-vbtr-hgfd"'
+    assert ccp.text_detection(line) is None and ccp.text_suspect(line)
+    assert ccp.text_detection('token: "Punc9Before7Expression3"') == ccp.R_CREDENTIAL

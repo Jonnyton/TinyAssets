@@ -24,11 +24,11 @@
 - [x] 2.2 Mutation check (2026-10-01, Windows host, scratchpad `mutate.py`): 28 mutations of the scrub, the consent gate, the boundary, install, the round-1 fixes and the lead's switches and flags. 27 went red.
   - `boundary: traversal allowed` stayed green: the hidden-component rule refuses `..` as well, so it is defence in depth.
   - The comment-only decoy stayed green.
-- [ ] 2.3 gpt-6-astra refute (at most 3 rounds):
+- [x] 2.3 gpt-6-astra refute (at most 3 rounds):
   - design round 1: ADAPT, folded (see the design's review log);
   - code round 1: ADAPT, all 10 folded (the design's review log);
   - code round 2: ADAPT, 7 of 8 folded, 1 DISAGREE_CONCERN (the design's review log);
-  - code round 3 (last): pending.
+  - code round 3 (last): ADAPT, one P1 folded (schema-location id exemption). Then the lead's live-village dry run drove the certain/suspect tiers (the design's review log).
 - [ ] 2.4 Linux oracle on the changed tests and their importers; deploy; `deployed_sha.py --assert-contains`; the lead's founder-account village test.
 
 ## 3. Land

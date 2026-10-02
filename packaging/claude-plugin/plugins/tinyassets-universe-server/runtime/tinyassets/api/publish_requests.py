@@ -230,10 +230,10 @@ def _package_lines(package: dict[str, Any]) -> list[str]:
             lines.append(f"  - {_shown(entry['path'], _FULL)}: {entry['reason']}")
     if package.get("flagged"):
         lines.append(f"Worth a look before you confirm ({len(package['flagged'])}): these "
-                     "mention something that is often private. Leave any out below.")
+                     "are included, but hold something that is often private. Leave any "
+                     "out below.")
         for entry in package["flagged"]:
-            lines.append(f"  - {_shown(entry['path'], _FULL)}: mentions "
-                         f"\"{_shown(entry['word'], 40)}\"")
+            lines.append(f"  - {_shown(entry['path'], _FULL)}: {entry['note']}")
     if package["connections"]:
         lines.append("Whoever installs it connects their own: "
                      + ", ".join(_shown(c, 60) for c in package["connections"]))
@@ -364,6 +364,7 @@ def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, A
     from tinyassets.api.helpers import _base_path, _universe_dir
     from tinyassets.command_center_packages import (
         FORMAT_VERSION,
+        N_OPAQUE,
         PACKAGE_KIND,
         PACKAGE_TAG,
         PackageError,
@@ -398,20 +399,23 @@ def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, A
         }
         # The final-output check: everything that becomes public, paths and
         # names included, through the same detectors as file content.
+        notes: list[str] = []
         scan_public({"manifest": {k: v for k, v in manifest.items() if k != "files"},
                      "paths": [f["path"] for f in manifest["files"]],
                      "name": action["name"], "description": action["description"],
-                     "components": components, "package": component})
+                     "components": components, "package": component}, "", notes)
         for bid, row in branches.items():
             # Every workflow string through the shared detectors, one by one:
             # a joined row lets one detection mask another (gpt-6-astra, code r1 #4).
-            scan_public(row, f"workflow {_shown(row.get('name') or bid)}")
+            scan_public(row, f"workflow {_shown(row.get('name') or bid)}", notes)
     except PackageError as exc:
         raise ValueError(str(exc)) from None
     shown["package"] = {
         "file_count": component["file_count"], "size": human(component["size_bytes"]),
         "version": component["version"], "files": [f["path"] for f in manifest["files"]],
-        "excluded": built["excluded"], "flagged": built["flagged"],
+        "excluded": built["excluded"],
+        "flagged": built["flagged"] + [{"path": where, "note": N_OPAQUE}
+                                       for where in dict.fromkeys(notes)],
         "connections": manifest["needs"]["connections"]}
     return {"component": component, "tag": PACKAGE_TAG, "blob": built["blob"],
             "sha256": built["sha256"], "version": component["version"]}

@@ -128,13 +128,19 @@ _AGENT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 #: and digests are key-shaped by construction, so under exactly these keys an
 #: id-shaped value skips the CREDENTIAL test. Contact detection always runs, and
 #: any key not named here is scanned in full (gpt-6-astra, code r2 #2: a
-#: suffix rule let ``customer_id: "0123456789abcdef"`` through).
-_ID_FIELDS = frozenset({
-    "author", "author_id", "approved_by", "approved_source_hash", "branch_def_id",
-    "branch_version_id", "parent_def_id", "fork_from", "goal_id", "domain_id",
-    "entry_point", "node_id", "node_def_id", "id", "from_node", "to_node",
-    "published_version_id", "blob_sha256", "sha256", "ui_id", "workflow",
-    "agent_definition_id",
+#: suffix rule let ``customer_id: "0123456789abcdef"`` through). Matched by
+#: SCHEMA LOCATION, not key name (code r3: ``{"id": ...}`` nested in a state
+#: default is user data): list indices are dropped and a definition's
+#: component key reads as ``*``.
+_ID_PATHS = frozenset({
+    # A branch row's own platform ids.
+    "branch_def_id", "parent_def_id", "fork_from", "author", "goal_id", "domain_id",
+    "entry_point", "node_defs.node_id", "node_defs.author", "node_defs.approved_by",
+    "node_defs.approved_source_hash", "graph_nodes.id", "graph_nodes.node_def_id",
+    "edges.from_node", "edges.to_node",
+    # A definition's platform-computed references and digests.
+    "components.*.published_version_id", "components.*.workflow", "components.*.ui_id",
+    "components.*.blob_sha256", "package.blob_sha256",
 })
 _ID_VALUE = re.compile(r"^[A-Za-z0-9._:@-]{1,200}$")
 #: Words that often mark private material. A hit is NOT an exclusion: it puts
@@ -145,6 +151,23 @@ _REVIEW_WORDS = re.compile(
     r"password|passcode|salary|payroll|social security|ssn|bank account|iban|"
     r"routing number|date of birth|home address|medical|diagnosis|nda)\b",
     re.IGNORECASE)
+
+#: Parser findings that are credentials by STRUCTURE, wherever they appear.
+_CERTAIN_LABELS = frozenset({
+    "private_key_block", "auth_header", "jwt", "url_userinfo", "url_secret_parameter",
+})
+#: A value ASSIGNED to a secret's name: ``api_key = …``, ``"token": "…"``,
+#: ``password: …``, ``my key is …``. The value itself must be what the parser
+#: flags. Merely sharing a line with the word was tried and still dropped 123
+#: files and 32 workflows of the live village: code says ``token`` beside every
+#: kind of identifier.
+_SECRET_ASSIGN = re.compile(
+    r"(?i)(?:api[_-]?key|access[_-]?key|secret|token|passw(?:or)?d|\bpwd|credential|"
+    r"private[_-]?key|authorization|\bauth|cookie|session[_-]?id|\bkeys?)"
+    r"[\"'\]]?\s*(?:[:=]|=>|\bis\b)\s*[\"'\[]?([^\s\"',;\])}]+)")
+#: Review notes, as the tab words them.
+N_OPAQUE = ("holds a long random-looking string: usually an id or a hash, but check it "
+            "is not a key")
 
 #: Excluded-file reasons, as the tab words them.
 R_DOT = "platform or private state"
@@ -235,6 +258,8 @@ def structural_exclusion(rel: str) -> str | None:
     if parts[-1].startswith("."):
         return R_DOT
     head = fold(parts[0])
+    if parts[-1].endswith((".pyc", ".lock")):
+        return R_RUNTIME
     if len(parts) == 1 and head in _BRAIN_F:
         return R_BRAIN
     if len(parts) == 1 and head in _RUNTIME_F:
@@ -255,25 +280,63 @@ def dir_exclusion(rel_dir: str) -> str | None:
     head = fold(parts[0])
     if head in NEVER_DIRS:
         return R_CHECKOUT if head == "workspaces" else R_BRAIN
+    if "__pycache__" in parts or "node_modules" in parts:
+        return R_RUNTIME
     if head == WIKI_DIR and len(parts) >= 2 and fold(parts[1]) != WIKI_PAGES:
         return R_WIKI
     return None
 
 
-def text_detection(text: str) -> str | None:
-    """``R_CREDENTIAL`` / ``R_CONTACT`` for text that may not be public, else None.
+def _line_verdict(line: str) -> str:
+    """``certain`` / ``suspect`` / ``""`` for one line, by the shared parser.
 
-    The credential test is the platform's own parser (``credential_shape``),
-    line by line; contact details are an email address or a phone number.
+    The parser is tuned for a sentence typed into a box, where any opaque run is
+    worth refusing. Over a whole command center that is the wrong default: a
+    live dry run of the founder's GTM Village (2026-10-01) excluded 246 of its
+    300 text files and refused 150 of its 217 workflows, nearly all for ids,
+    hashes, CSS class names and code identifiers. So only what is a credential
+    BY STRUCTURE, or an opaque value assigned to a secret's name, is certain.
+    An opaque run anywhere else is a suspect: the file stays in, and the tab
+    lists it for the owner to look at.
     """
     from tinyassets.credential_shape import credential_shape
 
+    label = credential_shape(line)
+    if label is None:
+        return ""
+    if label in _CERTAIN_LABELS:
+        return "certain"
+    if any(credential_shape(m.group(1)) and _mixed_classes(m.group(1))
+           for m in _SECRET_ASSIGN.finditer(line)):
+        return "certain"
+    return "suspect"
+
+
+def _mixed_classes(value: str) -> bool:
+    """At least two of lowercase, uppercase and digits: key material mixes them,
+    while ``token: "punc-before-expression"`` (a lowercase compound the parser
+    reads as opaque) does not. A one-class value stays a suspect, for review."""
+    return sum((any(c.islower() for c in value), any(c.isupper() for c in value),
+                any(c.isdigit() for c in value))) >= 2
+
+
+def text_detection(text: str) -> str | None:
+    """``R_CREDENTIAL`` / ``R_CONTACT`` for text that may not be public, else None.
+
+    ``R_CREDENTIAL`` only for a certain finding (`_line_verdict`); contact
+    details are an email address or a phone number.
+    """
     for line in text.splitlines() or [text]:
-        if credential_shape(line):
+        if _line_verdict(line) == "certain":
             return R_CREDENTIAL
     if _EMAIL.search(text) or _PHONE.search(text):
         return R_CONTACT
     return None
+
+
+def text_suspect(text: str) -> bool:
+    """Whether the text holds an opaque run that is not certainly a credential."""
+    return any(_line_verdict(line) == "suspect" for line in text.splitlines() or [text])
 
 
 def as_text(data: bytes) -> str | None:
@@ -351,30 +414,41 @@ def _id_shaped(value: Any) -> bool:
     return bool(values) and all(isinstance(v, str) and _ID_VALUE.match(v) for v in values)
 
 
-def scan_public(value: Any, where: str = "") -> None:
-    """The final-output check: every string in ``value`` (keys included) must
-    pass the credential parser and the contact detector. Hex digest fields the
-    platform computed are skipped by key. Raises `PackageError` naming where."""
+def scan_public(value: Any, where: str = "", notes: list[str] | None = None,
+                schema: str = "") -> None:
+    """The final-output check over every string in ``value``, keys included.
+
+    A certain credential or contact details anywhere raises `PackageError`
+    naming where. A suspect string (an opaque run that is not certainly a
+    credential) is appended to ``notes`` as its location, for the tab's review
+    list. A platform id at a known schema location (``_ID_PATHS``; ``schema``
+    is the path from the scan root) skips the credential test, never the
+    contact test.
+    """
     if isinstance(value, dict):
         for key, child in value.items():
             here = f"{where}.{key}" if where else str(key)
             if text_detection(str(key)):
                 raise PackageError(f"{where or 'the package'} has a field name that "
                                    "carries a credential or contact details")
-            if str(key) in _ID_FIELDS and _id_shaped(child):
+            step = "*" if schema == "components" else str(key)
+            path = f"{schema}.{step}" if schema else step
+            if path in _ID_PATHS and _id_shaped(child):
                 if any(_EMAIL.search(v) or _PHONE.search(v) for v in _strings(child)):
                     raise PackageError(f"{here}: {R_CONTACT}; nothing was published. "
                                        "Remove it and ask again")
                 continue
-            scan_public(child, here)
+            scan_public(child, here, notes, path)
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            scan_public(child, f"{where}[{index}]")
+            scan_public(child, f"{where}[{index}]", notes, schema)
     elif isinstance(value, str):
         reason = text_detection(value)
         if reason:
             raise PackageError(f"{where or 'the package'}: {reason}; nothing was "
                                "published. Remove it and ask again")
+        if notes is not None and text_suspect(value):
+            notes.append(where or "the package")
 
 
 # --------------------------------------------------------------------------- #
@@ -430,6 +504,14 @@ def review_word(data: bytes) -> str:
     """The first often-private word in an included text file, or ``""``."""
     match = _REVIEW_WORDS.search(data.decode("utf-8", "replace"))
     return match.group(0) if match else ""
+
+
+def review_note(data: bytes) -> str:
+    """Why an included file is worth a look before publishing, or ``""``."""
+    word = review_word(data)
+    if word:
+        return f'mentions "{word}"'
+    return N_OPAQUE if text_suspect(data.decode("utf-8", "replace")) else ""
 
 
 def collect(universe_dir: Path, *, exclude: list[str],
@@ -556,8 +638,8 @@ def build_publish_package(universe_dir: Path, *, name: str, description: str,
     """Everything the ``publish`` ask pins for a package. Reads the folder only."""
     files, excluded = collect(universe_dir, exclude=options["exclude"],
                               memory_items=options["memory_items"])
-    flagged = [{"path": p, "word": w} for p, b in sorted(files.items())
-               if (w := review_word(b))]
+    flagged = [{"path": p, "note": n} for p, b in sorted(files.items())
+               if (n := review_note(b))]
     if not files:
         raise PackageError("nothing in this command center can be published as files")
     if len(files) > MAX_FILES:
