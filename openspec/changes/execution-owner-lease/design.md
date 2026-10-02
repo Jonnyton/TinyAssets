@@ -288,3 +288,11 @@ So a delete cannot race a late insert (round-1 finding 11).
 | 4 | Migration extraction | AGREE, enforceable |
 
 Review cap reached (3 rounds). Taken to the lead per AGENTS.md; no fourth round.
+
+## B1 as built (feat/owner-lease-b1): refinements from its code review
+
+Three refinements came out of the Codex code review of B1. The design above is otherwise unchanged.
+
+- **Founder and members.** A tree's FOUNDER is the process that started it, the daemon, from `main()` before anything is spawned. Every other member is a spawned executor that joined through `TINYASSETS_OWNER_TREE`. Engines join at their own startup, and they refuse to start if the founder is gone. A member acts only while its founder holds its member lock, and it never takes a key by death recovery; succeeding a dead owner is the founder's job. This is how D2's "a child validates its spawn owner" holds without passing a proof to every child.
+- **Pre-lease rows are generation 0.** The first acquisition of any key is generation 1. So the first leased boot settles a leftover from before B1, as the boot rule it replaces did.
+- **Open-time migrations are gated, not yet extracted.** `owner_stores.MIGRATES_ON_OPEN_BEFORE_C2` names every connection helper that migrates a schema when a store is opened (`provider_work_authority.connection()`, and the journal's additive `owner_generation` ALTER). The journal ALTER is re-checked under `BEGIN IMMEDIATE`, so it is race-free. C2 cannot set `HANDOVER_ENABLED` while either list in `owner_stores` (`FENCE_BEFORE_C2`, `MIGRATES_ON_OPEN_BEFORE_C2`) is non-empty. Full extraction into a startup step is owed before C2, together with the 82 writers still awaiting a fence.
