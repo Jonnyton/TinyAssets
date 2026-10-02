@@ -9,8 +9,9 @@ exist in their command center, as THEIR copy.
   definition, loads its blob from platform storage, runs the ingestion
   boundary (``check_blob``) and plans every file's destination against the
   installer's folder. Nothing is written into the command center. The pin
-  (``pin_ask``) is the quarantine record: it lives outside every agent-reachable
-  location and holds the plan, the digest and the tab the platform wrote.
+  (``pending_requests._pin_consent``) is the quarantine record: it lives
+  outside every agent-reachable location and holds the plan, the digest and
+  the tab the platform wrote.
 * **Answer** (a person's surface only). ``execute_action`` executes the PIN,
   never the pending-request row. It re-verifies the blob, re-plans and refuses
   if the plan moved, claims the pin atomically, reserves the installer's
@@ -221,17 +222,6 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
             "\n".join(lines))
 
 
-def pin_ask(uid: str, action: dict[str, Any], tab: tuple[str, str, str]) -> str:
-    """The quarantine record, outside every agent-reachable location."""
-    from tinyassets.api.helpers import _base_path
-    from tinyassets.command_center_packages import pin
-
-    kind, title, body = tab
-    return pin(_base_path(), universe_id=uid, kind="install", agent=action["agent"],
-               digest=action["snapshot_digest"],
-               record={"action": action, "tab": {"kind": kind, "title": title, "body": body}})
-
-
 _CHANGED = (
     "this command center changed since the install was shown (a file or folder it "
     "would write appeared), so nothing was installed; ask again and the tab will "
@@ -274,33 +264,49 @@ def execute_action(uid: str, pinned: dict[str, Any]) -> dict[str, Any]:
     if state == "activated":
         return {**pinned["progress"], "already_installed": True}
     progress: dict[str, Any] = dict(pinned["progress"]) if state == "activating" else {}
+    if state == "activating":
+        # Progress is re-read after the claim: the pre-claim copy may be stale.
+        from tinyassets.command_center_packages import pin_progress
+
+        progress = pin_progress(base, universe_id=uid, pin_id=pinned["pin_id"])
     progress.setdefault("workflows", {})
     progress.setdefault("automations", {})
     progress.setdefault("files", [])
     _, _, _, files = _load(action)
-    try:
-        from tinyassets.universe_owner import owner_of
+    sizes = {e["to"]: len(files[e["path"]]) for e in plan["placement"]["land"]}
+    landed_before = sum(sizes.get(p, 0) for p in progress["files"])
+    from tinyassets.universe_owner import owner_of
 
-        # Files in a command center are charged to its owner, as every write
-        # into it is (`api/wiki.py`); None is an unattributed universe.
-        account = owner_of(base, uid)
-        with storage_accounting.admitted(
-                base, account_id=account, scope_id=uid, store="universe_files",
-                nbytes=plan["placement"]["bytes"]):
-            _materialise(uid, actor, pinned["pin_id"], plan, files, progress)
+    # Files in a command center are charged to its owner, as every write into
+    # it is (`api/wiki.py`); None is an unattributed universe. Only what is
+    # still to land is reserved, so a resume does not charge twice.
+    remaining = max(0, plan["placement"]["bytes"] - landed_before)
+    try:
+        reservation = storage_accounting.reserve(
+            base, account_id=owner_of(base, uid), scope_id=uid, store="universe_files",
+            nbytes=remaining)
     except storage_accounting.StorageRefused as refused:
         detail = storage_accounting.visible_record(refused).get("error", "")
         _release(uid, pinned["pin_id"], progress)
-        raise ValueError(f"Installing writes {human(plan['placement']['bytes'])}, more than "
-                         f"your storage has room for, so nothing was installed. "
-                         f"{detail}") from None
-    except (PackageError, OSError) as exc:
+        raise ValueError(f"Installing writes {human(remaining)}, more than your storage "
+                         f"has room for, so nothing was installed. {detail}") from None
+
+    def landed_now() -> int:
+        return sum(sizes.get(p, 0) for p in progress["files"]) - landed_before
+
+    try:
+        _materialise(uid, actor, pinned["pin_id"], plan, files, progress)
+    except BaseException as exc:
+        # What landed stays charged (a partial install keeps its files); only
+        # the unwritten rest of the reservation is given back.
+        storage_accounting.commit(reservation, min(landed_now(), remaining))
         _release(uid, pinned["pin_id"], progress)
-        raise ValueError(f"the install stopped part way ({exc}); what landed is listed "
-                         "in your command center, and confirming again resumes it") from None
-    except BaseException:
-        _release(uid, pinned["pin_id"], progress)
+        if isinstance(exc, (PackageError, OSError)):
+            raise ValueError(f"the install stopped part way ({exc}); what landed is listed "
+                             "in your command center, and confirming again resumes it"
+                             ) from None
         raise
+    storage_accounting.commit(reservation, min(landed_now(), remaining))
     receipt = {"installed": True, "package": plan["name"], "version": plan["version"],
                **progress}
     finish(base, universe_id=uid, pin_id=pinned["pin_id"], progress=receipt)
@@ -330,7 +336,10 @@ def _materialise(uid: str, actor: str, pin_id: str, plan: dict[str, Any],
             progress["workflows"][workflow["key"]] = _remix(pin_id, workflow)
             save()
     if plan["ui"] and "ui" not in progress:
-        progress["ui"] = _add_ui(uid, plan["ui"])
+        if "ui_intended" not in progress:
+            progress["ui_intended"] = _free_ui_id(uid, plan["ui"])
+            save()
+        progress["ui"] = _add_ui(uid, plan["ui"], progress["ui_intended"])
         save()
     for automation in plan["automations"]:
         if automation["key"] not in progress["automations"]:
@@ -372,17 +381,31 @@ def _remix(pin_id: str, workflow: dict[str, str]) -> str:
     return str(branch_id)
 
 
-def _add_ui(uid: str, ui: dict[str, Any]) -> str:
-    """The screen, added to the installer's library under a free ``ui_id``."""
-    from tinyassets.api.app_ui import change_app_ui, read_app_ui
+def _library_ids(uid: str) -> set[str]:
+    from tinyassets.api.app_ui import read_app_ui
 
     library = (read_app_ui(universe_id=uid).get("app_ui") or {}).get("ui_library") or []
-    taken = {c.get("ui_id") for c in library if isinstance(c, dict)}
+    return {str(c.get("ui_id")) for c in library if isinstance(c, dict)}
+
+
+def _free_ui_id(uid: str, ui: dict[str, Any]) -> str:
+    """A ``ui_id`` the installer's library does not hold yet."""
+    taken = _library_ids(uid)
     ui_id, n = str(ui.get("ui_id") or "package-ui"), 1
     base_id = ui_id
     while ui_id in taken:
         n += 1
         ui_id = f"{base_id[:56]}-{n}"
+    return ui_id
+
+
+def _add_ui(uid: str, ui: dict[str, Any], ui_id: str) -> str:
+    """The screen, added under the id recorded before this call. Already there
+    (a crash after the add, before it was recorded): nothing more is added."""
+    from tinyassets.api.app_ui import change_app_ui
+
+    if ui_id in _library_ids(uid):
+        return ui_id
     outcome = change_app_ui(universe_id=uid, operation="add_ui",
                             payload={"component": {**ui, "ui_id": ui_id}})
     if outcome.get("error"):
@@ -417,12 +440,15 @@ def _automation(uid: str, actor: str, pin_id: str, spec: dict[str, Any],
             event_type=str(trigger.get("event_type") or "") if kind == "event" else "",
             event_filter=event_filter if kind == "event" else None,
             overlap=spec.get("overlap") or "",
-            event_key=f"package:{pin_id}:{spec['key']}",
+            event_key=f"package:{uid}:{actor}:{pin_id}:{spec['key']}",
             paused_reason="installed from a package; resume it when you are ready",
         )
     except AutomationUnavailable as exc:
         raise ValueError(f"the automation \"{spec['name']}\" could not be created "
                          f"({exc.reason})") from None
+    if row.universe_id != uid or row.owner_principal_id != actor:
+        # A replayed key must name THIS installer's row, never anyone else's.
+        raise ValueError(f"the automation \"{spec['name']}\" could not be created")
     return row.automation_id
 
 
@@ -484,7 +510,6 @@ __all__ = [
     "capture_action",
     "execute_action",
     "list_packages",
-    "pin_ask",
     "tab_text",
     "validate_action",
 ]

@@ -81,9 +81,21 @@ MAX_WALK_ENTRIES = 20000
 # -- the scrub -------------------------------------------------------------------
 #: Harness files at the command-center root: they travel, and an install lands
 #: them under ``agents/<slug>/`` (§4.14 roster layout).
+def fold(name: str) -> str:
+    """A name as a case-insensitive, Unicode-normalising filesystem sees it.
+
+    Every protected-name comparison goes through this: on such a filesystem
+    ``Founder.md`` IS ``founder.md``, so an exact-case test would publish it.
+    """
+    return unicodedata.normalize("NFC", name).casefold()
+
+
 HARNESS_ROOT_FILES = frozenset({"AGENTS.md", "identity.md", "MEMORY.md", "settings.yaml"})
 HARNESS_ROOT_DIRS = frozenset({"skills", "extensions", "prompts"})
 MEMORY_FILE = "MEMORY.md"
+_HARNESS_FILES_F = frozenset(fold(n) for n in HARNESS_ROOT_FILES)
+_HARNESS_DIRS_F = frozenset(fold(n) for n in HARNESS_ROOT_DIRS)
+_MEMORY_F = fold(MEMORY_FILE)
 
 _BRAIN_FILES = frozenset({"founder.md", "soul.md", "soul.edit.md", "log.md"})
 #: Platform-written runtime state at the folder root.
@@ -93,6 +105,8 @@ _RUNTIME_FILES = frozenset({
     "dispatcher_config.yaml", "config.yaml",
 })
 NEVER_DIRS = frozenset({"workspaces", "soul_versions"})
+_BRAIN_F = frozenset(fold(n) for n in _BRAIN_FILES)
+_RUNTIME_F = frozenset(fold(n) for n in _RUNTIME_FILES)
 #: Under ``wiki/`` only the curated ``pages/`` travel (okf_export's set).
 WIKI_DIR = "wiki"
 WIKI_PAGES = "pages"
@@ -103,15 +117,27 @@ _PHONE = re.compile(
     r"(?<![\w+])(?:\+\d{1,3}[\s.-]?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}"
     r"|\(\d{3}\)\s?\d{3}[-.\s]\d{4}|\d{3}[-.]\d{3}[-.]\d{4})(?!\w)"
 )
+_ISO_TIME = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?")
 _MEMORY_ID = re.compile(r"m_[A-Za-z0-9]{1,32}")
 _MEMORY_ITEM = re.compile(r"^\s*[-*]\s*\[(m_[A-Za-z0-9]{1,32})\]")
 _CONNECTION_NAME = re.compile(r"^[a-z0-9][a-z0-9._:-]{1,126}$")
 _CONNECTION_KEYS = frozenset({"destination", "connection", "connection_name"})
 _SLUG = re.compile(r"[^a-z0-9]+")
 _AGENT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-#: Hash-valued fields: hex digests are key-shaped by design, so the final
-#: credential scan skips exactly these keys (their values are platform-computed).
-_DIGEST_KEYS = frozenset({"sha256", "blob_sha256", "published_version_id"})
+#: Identifier and digest fields: ids and hex digests are key-shaped by design,
+#: so the final scan skips a string under such a key when it LOOKS like an id
+#: (no spaces, no email). Anything sentence-shaped under it is still scanned.
+_ID_KEY = re.compile(r"(?:^|_)(?:id|ids|hash|digest|sha256|fingerprint|etag)$")
+_ID_VALUE = re.compile(r"^[A-Za-z0-9._:@/+=-]{1,200}$")
+#: Words that often mark private material. A hit is NOT an exclusion: it puts
+#: the file on the tab's "worth a look" list, so the owner reviews it before
+#: confirming rather than it being silently included.
+_REVIEW_WORDS = re.compile(
+    r"\b(confidential|internal only|do not (?:share|distribute|forward)|private|"
+    r"password|passcode|salary|payroll|social security|ssn|bank account|iban|"
+    r"routing number|date of birth|home address|medical|diagnosis|nda)\b",
+    re.IGNORECASE)
 
 #: Excluded-file reasons, as the tab words them.
 R_DOT = "platform or private state"
@@ -169,7 +195,7 @@ def check_path(raw: Any) -> str:
 def collision_key(path: str) -> str:
     """Two paths with one key would be one file on a case-insensitive or
     Unicode-normalising filesystem."""
-    return unicodedata.normalize("NFC", path).casefold()
+    return fold(path)
 
 
 def check_tree(paths: list[str]) -> None:
@@ -201,11 +227,12 @@ def structural_exclusion(rel: str) -> str | None:
         return reason
     if parts[-1].startswith("."):
         return R_DOT
-    if len(parts) == 1 and parts[0] in _BRAIN_FILES:
+    head = fold(parts[0])
+    if len(parts) == 1 and head in _BRAIN_F:
         return R_BRAIN
-    if len(parts) == 1 and parts[0] in _RUNTIME_FILES:
+    if len(parts) == 1 and head in _RUNTIME_F:
         return R_RUNTIME
-    if parts[0] == WIKI_DIR and (len(parts) < 3 or parts[1] != WIKI_PAGES):
+    if head == WIKI_DIR and (len(parts) < 3 or fold(parts[1]) != WIKI_PAGES):
         return R_WIKI
     if parts[-1].lower().endswith(_DB_SUFFIXES):
         return R_DATABASE
@@ -218,9 +245,10 @@ def dir_exclusion(rel_dir: str) -> str | None:
     parts = rel_dir.split("/")
     if any(part.startswith(".") for part in parts):
         return R_DOT
-    if parts[0] in NEVER_DIRS:
-        return R_CHECKOUT if parts[0] == "workspaces" else R_BRAIN
-    if parts[0] == WIKI_DIR and len(parts) >= 2 and parts[1] != WIKI_PAGES:
+    head = fold(parts[0])
+    if head in NEVER_DIRS:
+        return R_CHECKOUT if head == "workspaces" else R_BRAIN
+    if head == WIKI_DIR and len(parts) >= 2 and fold(parts[1]) != WIKI_PAGES:
         return R_WIKI
     return None
 
@@ -234,7 +262,10 @@ def text_detection(text: str) -> str | None:
     from tinyassets.credential_shape import credential_shape
 
     for line in text.splitlines() or [text]:
-        if credential_shape(line):
+        # The shared parser reads an ISO-8601 timestamp as an opaque run
+        # (`2026-10-01T12:00:00+00:00` -> opaque_high_entropy); every board and
+        # every workflow row carries them, so they are taken out first.
+        if credential_shape(_ISO_TIME.sub(" ", line)):
             return R_CREDENTIAL
     if _EMAIL.search(text) or _PHONE.search(text):
         return R_CONTACT
@@ -256,8 +287,9 @@ def _excluded_by_owner(rel: str, exclude: list[str]) -> bool:
 
 def is_memory_file(rel: str) -> bool:
     parts = rel.split("/")
-    return rel == MEMORY_FILE or (len(parts) == 3 and parts[0] == "agents"
-                                  and parts[2] == MEMORY_FILE)
+    folded = [fold(p) for p in parts]
+    return folded == [_MEMORY_F] or (len(parts) == 3 and folded[0] == "agents"
+                                     and folded[2] == _MEMORY_F)
 
 
 def classify(rel: str, data: bytes, *, exclude: list[str],
@@ -278,9 +310,10 @@ def classify(rel: str, data: bytes, *, exclude: list[str],
     if _excluded_by_owner(rel, exclude):
         return None, R_EXCLUDED
     if is_memory_file(rel):
-        if not memory_items.get(rel):
+        wanted = {fold(k): v for k, v in memory_items.items()}.get(fold(rel))
+        if not wanted:
             return None, R_MEMORY
-        data = select_memory(data, memory_items[rel], rel)
+        data = select_memory(data, wanted, rel)
     text = as_text(data)
     if text is None:
         return None, R_BINARY
@@ -314,7 +347,8 @@ def scan_public(value: Any, where: str = "") -> None:
             if text_detection(str(key)):
                 raise PackageError(f"{where or 'the package'} has a field name that "
                                    "carries a credential or contact details")
-            if str(key) in _DIGEST_KEYS:
+            if (_ID_KEY.search(str(key)) and isinstance(child, str)
+                    and _ID_VALUE.match(child) and not _EMAIL.search(child)):
                 continue
             scan_public(child, here)
     elif isinstance(value, list):
@@ -376,6 +410,12 @@ def walk(universe_dir: Path) -> Iterator[tuple[str, str]]:
                 yield rel, kind
 
 
+def review_word(data: bytes) -> str:
+    """The first often-private word in an included text file, or ``""``."""
+    match = _REVIEW_WORDS.search(data.decode("utf-8", "replace"))
+    return match.group(0) if match else ""
+
+
 def collect(universe_dir: Path, *, exclude: list[str],
             memory_items: dict[str, list[str]]
             ) -> tuple[dict[str, bytes], list[dict[str, str]]]:
@@ -413,7 +453,7 @@ def collect(universe_dir: Path, *, exclude: list[str],
             excluded.append({"path": rel, "reason": reason})
             continue
         files[rel] = kept
-    missing = sorted(set(memory_items) - set(files))
+    missing = sorted(set(memory_items) - {fold(p) for p in files})
     if missing:
         raise PackageError(f"you named memory items in {', '.join(missing)}, but that "
                            "file could not be included")
@@ -459,8 +499,10 @@ def model_need(files: dict[str, bytes]) -> str:
 
 
 def agents_in(files: dict[str, bytes]) -> list[str]:
-    names = {p.split("/")[1] for p in files if p.startswith("agents/") and p.count("/") >= 2}
-    root = any(p in HARNESS_ROOT_FILES or p.split("/")[0] in HARNESS_ROOT_DIRS for p in files)
+    names = {p.split("/")[1] for p in files
+             if fold(p.split("/")[0]) == "agents" and p.count("/") >= 2}
+    root = any(fold(p) in _HARNESS_FILES_F or fold(p.split("/")[0]) in _HARNESS_DIRS_F
+               for p in files)
     return (["main"] if root else []) + sorted(names)
 
 
@@ -498,6 +540,8 @@ def build_publish_package(universe_dir: Path, *, name: str, description: str,
     """Everything the ``publish`` ask pins for a package. Reads the folder only."""
     files, excluded = collect(universe_dir, exclude=options["exclude"],
                               memory_items=options["memory_items"])
+    flagged = [{"path": p, "word": w} for p, b in sorted(files.items())
+               if (w := review_word(b))]
     if not files:
         raise PackageError("nothing in this command center can be published as files")
     if len(files) > MAX_FILES:
@@ -512,7 +556,7 @@ def build_publish_package(universe_dir: Path, *, name: str, description: str,
         raise PackageError(f"this package is {human(len(blob))}, over the "
                            f"{human(MAX_PACKAGE_BYTES)} a package may be")
     return {"blob": blob, "sha256": hashlib.sha256(blob).hexdigest(), "manifest": manifest,
-            "excluded": excluded}
+            "excluded": excluded, "flagged": flagged}
 
 
 def human(size: int | float) -> str:
@@ -556,9 +600,10 @@ def validate_options(raw: Any) -> dict[str, Any]:
         if not _MEMORY_ID.fullmatch(ident) or not is_memory_file(path):
             raise ValueError(f"package.memory_items: {item!r} is not an item id like m_7f3a "
                              "or agents/<id>/MEMORY.md#m_7f3a")
-        memory.setdefault(path, [])
-        if ident not in memory[path]:
-            memory[path].append(ident)
+        key = fold(path)
+        memory.setdefault(key, [])
+        if ident not in memory[key]:
+            memory[key].append(ident)
     return {"exclude": sorted(exclude),
             "memory_items": {p: sorted(ids) for p, ids in sorted(memory.items())},
             "agent": agent_id(raw.get("agent"))}
@@ -604,7 +649,7 @@ CREATE TABLE IF NOT EXISTS pins (
     kind         TEXT NOT NULL CHECK (kind IN ('publish', 'install')),
     agent_id     TEXT NOT NULL,
     digest       TEXT NOT NULL,
-    request_id   TEXT NOT NULL DEFAULT '',
+    request_id   TEXT NOT NULL,
     record_json  TEXT NOT NULL,
     state        TEXT NOT NULL DEFAULT 'pinned'
                  CHECK (state IN ('pinned', 'activating', 'activated')),
@@ -614,7 +659,7 @@ CREATE TABLE IF NOT EXISTS pins (
     activated_at REAL,
     PRIMARY KEY (universe_id, pin_id)
 );
-CREATE INDEX IF NOT EXISTS idx_pins_request ON pins(universe_id, request_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pins_request ON pins(universe_id, request_id);
 """
 
 
@@ -752,25 +797,36 @@ def measure_packages(base_path: str | Path, actors: list[str]) -> int:
 
 def pin(base_path: str | Path, *, universe_id: str, kind: str, agent: str, digest: str,
         record: dict[str, Any]) -> str:
-    """Pin a consent record; returns its id. The same content pins once."""
-    pin_id = hashlib.sha256(f"{kind}\x00{agent}\x00{digest}".encode()).hexdigest()[:32]
+    """Pin a consent record under a request id the PLATFORM allocates; returns it.
+
+    The id is minted here, before any pending-request row exists, and the row
+    is then created under it. An id is never adopted from the agent-writable
+    request store, so no row the agent planted can become a consent's display.
+    Written once: a request's record is never replaced.
+    """
+    import uuid
+
+    request_id = "req_" + uuid.uuid4().hex[:24]
+    pin_id = hashlib.sha256(f"{universe_id}\x00{request_id}".encode()).hexdigest()[:32]
     with _db(base_path) as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO pins (universe_id, pin_id, kind, agent_id, digest, "
-            "record_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (universe_id, pin_id, kind, agent, digest,
+            "INSERT INTO pins (universe_id, pin_id, kind, agent_id, digest, "
+            "request_id, record_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (universe_id, pin_id, kind, agent, digest, request_id,
              json.dumps(record, sort_keys=True), time.time()))
-    return pin_id
+    return request_id
 
 
-def bind_request(base_path: str | Path, *, universe_id: str, pin_id: str,
-                 request_id: str) -> None:
-    """Tie a pin to the request that displays it. First request wins: no later
-    request can take over a pin."""
+def open_pins(base_path: str | Path, *, universe_id: str, kind: str, agent: str,
+              digest: str) -> list[str]:
+    """Request ids already pinned with this exact content and not yet activated,
+    newest first: the same ask raised again reuses its tab when that is still up."""
     with _db(base_path) as conn:
-        conn.execute(
-            "UPDATE pins SET request_id = ? WHERE universe_id = ? AND pin_id = ? "
-            "AND request_id = ''", (request_id, universe_id, pin_id))
+        rows = conn.execute(
+            "SELECT request_id FROM pins WHERE universe_id = ? AND kind = ? AND agent_id = ? "
+            "AND digest = ? AND state = 'pinned' ORDER BY created_at DESC",
+            (universe_id, kind, agent, digest)).fetchall()
+    return [str(r["request_id"]) for r in rows]
 
 
 def pin_for_request(base_path: str | Path, *, universe_id: str,
@@ -828,6 +884,13 @@ def unclaim(base_path: str | Path, *, universe_id: str, pin_id: str) -> None:
     with _db(base_path) as conn:
         conn.execute("UPDATE pins SET claimed_at = 0 WHERE universe_id = ? AND pin_id = ? "
                      "AND state = 'activating'", (universe_id, pin_id))
+
+
+def pin_progress(base_path: str | Path, *, universe_id: str, pin_id: str) -> dict[str, Any]:
+    with _db(base_path) as conn:
+        row = conn.execute("SELECT progress_json FROM pins WHERE universe_id = ? AND pin_id = ?",
+                           (universe_id, pin_id)).fetchone()
+    return json.loads(row["progress_json"]) if row else {}
 
 
 def record_progress(base_path: str | Path, *, universe_id: str, pin_id: str,
@@ -920,9 +983,9 @@ def destination(path: str, agent_slug: str) -> str:
     because the UI and the workflows address them by path.
     """
     parts = path.split("/")
-    if path in HARNESS_ROOT_FILES or (len(parts) > 1 and parts[0] in HARNESS_ROOT_DIRS):
+    if fold(path) in _HARNESS_FILES_F or (len(parts) > 1 and fold(parts[0]) in _HARNESS_DIRS_F):
         return f"agents/{agent_slug}/{path}"
-    if parts[0] == "agents" and len(parts) >= 3:
+    if fold(parts[0]) == "agents" and len(parts) >= 3:
         return f"agents/{agent_slug}-{parts[1]}/" + "/".join(parts[2:])
     return path
 

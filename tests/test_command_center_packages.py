@@ -154,12 +154,12 @@ def _ask(actor: str, universe: str, action: dict) -> dict:
             "body": "Nothing will be shared.", "action": action}))
 
 
-def _answer(actor: str, universe: str, request_id: str) -> dict:
+def _answer(actor: str, universe: str, request_id: str, values: dict | None = None) -> dict:
     from tinyassets.api.pending_requests import answer_request
 
     with _as(actor):
         return answer_request(universe_id=universe, payload=json.dumps(
-            {"request_id": request_id, "values": {}}))
+            {"request_id": request_id, "values": values or {}}))
 
 
 def _publish_action(**package) -> dict:
@@ -314,6 +314,19 @@ def test_a_rewritten_action_executes_the_pinned_one(home: Path):
     done = _answer(OWNER, UNIVERSE, ask["request_id"])
     assert done.get("published") is True, done
     assert get_definition(home, done["agent_definition_id"])["name"] == "GTM Village"
+
+
+def test_the_same_ask_raised_again_after_a_dismissal_is_confirmable(home: Path):
+    from tinyassets.api.pending_requests import answer_request
+
+    first = _ask(OWNER, UNIVERSE, _publish_action())
+    with _as(OWNER):
+        answer_request(universe_id=UNIVERSE, payload=json.dumps(
+            {"request_id": first["request_id"], "dismiss": True}))
+    second = _ask(OWNER, UNIVERSE, _publish_action())
+    assert second["request_id"] != first["request_id"]
+    done = _answer(OWNER, UNIVERSE, second["request_id"])
+    assert done.get("published") is True, done
 
 
 def test_a_publish_row_with_no_pin_cannot_be_confirmed(home: Path):
@@ -566,8 +579,9 @@ def test_a_tampered_blob_is_refused(home: Path):
 
 
 def test_a_live_claim_refuses_a_second_activation(tmp_path: Path):
-    pin_id = ccp.pin(tmp_path, universe_id="u", kind="install", agent="main", digest="d",
-                     record={})
+    request_id = ccp.pin(tmp_path, universe_id="u", kind="install", agent="main",
+                         digest="d", record={})
+    pin_id = ccp.pin_for_request(tmp_path, universe_id="u", request_id=request_id)["pin_id"]
     assert ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=1000.0) == "pinned"
     with pytest.raises(ccp.PackageError):
         ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=1001.0)
@@ -602,3 +616,142 @@ def test_a_cross_author_remix_never_takes_the_sources_later_skills(home: Path):
     bid = made.get("branch_def_id") or (made.get("branch") or {}).get("branch_def_id")
     assert bid, made
     assert "private-playbook" not in json.dumps(get_branch_definition(home, branch_def_id=bid))
+
+
+# ---------------------------------------------------------------------------
+# 8. The owner's switches, and the "worth a look" list (lead, 2026-10-01)
+# ---------------------------------------------------------------------------
+
+
+def _switch(ask: dict, label_start: str) -> str:
+    return next(f["name"] for f in ask["fields"] if f["label"].startswith(label_start))
+
+
+def test_the_owner_switches_a_folder_and_a_file_off_before_confirming(home: Path):
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    assert any(f["type"] == "choice" and f["label"].startswith("notes/") for f in ask["fields"])
+    done = _answer(OWNER, UNIVERSE, ask["request_id"], {
+        _switch(ask, "notes/"): "Leave out", "leave_out": "wiki/pages/village.md"})
+    assert done.get("published") is True, done
+    files = _blob_files(home, done["agent_definition_id"])
+    assert "notes/board.md" not in files and "wiki/pages/village.md" not in files
+    assert "AGENTS.md" in files
+
+
+@pytest.mark.parametrize("values,needle", [
+    ({"leave_out": "notes/never-shown.md"}, "is not in this package"),
+    ({"leave_out": "../x"}, "cannot leave out"),
+    ({"surprise": "x"}, "has no field"),
+])
+def test_a_switch_can_only_narrow_what_was_shown(home: Path, values, needle):
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    out = _answer(OWNER, UNIVERSE, ask["request_id"], values)
+    assert needle in out.get("detail", "") and out.get("request_pending"), out
+
+
+def test_often_private_words_are_flagged_for_review_not_hidden(home: Path):
+    _write(home / UNIVERSE, "notes/pricing.md", "CONFIDENTIAL: launch pricing\n")
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    assert "Worth a look before you confirm" in ask["body"]
+    assert 'notes/pricing.md: mentions "CONFIDENTIAL"' in ask["body"]
+    assert "  - notes/pricing.md\n" in ask["body"] + "\n"
+
+
+# ---------------------------------------------------------------------------
+# 9. Code refute round 1
+# ---------------------------------------------------------------------------
+
+
+def test_a_pinned_row_disguised_as_a_question_still_renders_as_the_pin(home: Path):
+    from tinyassets.api.pending_requests import list_requests
+
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    _rewrite_row(home, UNIVERSE, ask["request_id"], action={"type": "answer"},
+                 title="Quick question", body="Is it sunny?", fields=[])
+    with _as(OWNER):
+        rail = list_requests(universe_id=UNIVERSE)
+    [shown] = [r for r in rail["pending"] if r.get("request_id") == ask["request_id"]]
+    assert shown["title"] == ask["title"] and shown["action"]["type"] == "publish"
+
+
+def test_a_planted_row_is_never_adopted_as_a_consent(home: Path):
+    from tinyassets.storage.pending_requests import create_request
+
+    action = _publish_action()
+    first = _ask(OWNER, UNIVERSE, action)
+    # The agent plants a harmless row carrying the dedupe key the next ask would
+    # compute; the platform must mint its own id rather than adopt the plant.
+    from tinyassets.storage.pending_requests import get_request
+
+    key = get_request(home / UNIVERSE, first["request_id"])["dedupe_key"]
+    with sqlite3.connect(ccp.store_dir(home) / "packages.db") as conn:
+        conn.execute("UPDATE pins SET state = 'activated'")
+    with sqlite3.connect(home / UNIVERSE / ".pending_requests.db") as conn:
+        conn.execute("UPDATE pending_requests SET status = 'answered'")
+    planted = create_request(home / UNIVERSE, kind="x", title="harmless", body="harmless",
+                             fields=[], action={"type": "answer"}, dedupe_key=key)
+    second = _ask(OWNER, UNIVERSE, action)
+    assert second["request_id"] not in (planted["request_id"], first["request_id"])
+
+
+def test_an_install_ask_needs_no_kind_or_title(home: Path):
+    from tinyassets.api.pending_requests import request_from_user
+
+    published = _published(home)
+    with _as(BOB):
+        out = request_from_user(universe_id=BOB_UNIVERSE, payload=json.dumps({"action": {
+            "type": "install",
+            "agent_definition_id": published["done"]["agent_definition_id"]}}))
+    assert "request_id" in out and out["title"].startswith("Install"), out
+
+
+def test_two_installers_each_get_their_own_automations(home: Path):
+    from tinyassets.daemon_server import grant_universe_access, set_founder_home
+
+    published = _published(home)
+    definition_id = published["done"]["agent_definition_id"]
+    done = _answer(BOB, BOB_UNIVERSE, _install(home, definition_id)["request_id"])
+    assert done.get("installed") is True, done
+    # Bob installs again into a second command center of his: new rows, his own.
+    second = "universe_bob_two"
+    (home / second).mkdir()
+    grant_universe_access(home, universe_id=second, actor_id=BOB, permission="admin",
+                          granted_by=BOB)
+    set_founder_home(home, founder_sub=BOB, universe_id=second)
+    from tests.test_automations import _copy_assignment_to
+
+    _copy_assignment_to(home, universe_id=second, owner=BOB)
+    ask = _ask(BOB, second, {"type": "install", "agent_definition_id": definition_id})
+    again = _answer(BOB, second, ask["request_id"])
+    assert again.get("installed") is True, again
+    first_ids = set(done["automations"].values())
+    assert first_ids and first_ids.isdisjoint(again["automations"].values())
+    rows = AutomationStore(home).list(universe_id=second)
+    assert {r.automation_id for r in rows} == set(again["automations"].values())
+
+
+def test_a_credential_beside_contact_details_in_a_workflow_is_refused(home: Path):
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+
+    raw = get_branch_definition(home, branch_def_id=SCOUT)
+    raw["description"] = "0123456789abcdef " + ALICE_EMAIL
+    save_branch_definition(home, branch_def=raw)
+    out = _ask(OWNER, UNIVERSE, _publish_action())
+    assert "request_id" not in out and "workflow" in out.get("detail", ""), out
+
+
+@pytest.mark.parametrize("rel", ["Founder.md", "SOUL.md", "memory.md", "Wiki/Drafts/x.md",
+                                 "agents/scribe/Memory.md", "Workspaces/r/x.md"])
+def test_protected_names_are_protected_in_any_case(rel):
+    assert ccp.classify(rel, b"plain text", exclude=[], memory_items={})[0] is None
+
+
+def test_a_resumed_ui_add_never_duplicates_the_screen(home: Path):
+    from tinyassets.api.package_requests import _add_ui
+    from tinyassets.custom_agents import get_app_ui
+
+    with _as(BOB):
+        _add_ui(BOB_UNIVERSE, UI, "village")
+        _add_ui(BOB_UNIVERSE, UI, "village")
+    library = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"]
+    assert [u["ui_id"] for u in library] == ["village"]

@@ -26,7 +26,7 @@ whole command center's files beside the rest, scrubbed of private items
 (``tinyassets.command_center_packages``; change ``command-center-packages``).
 A copy of anything published runs as whoever installs it.
 
-The consent record is the platform's, not the row's: ``pin_ask`` stores the
+The consent record is the platform's, not the row's: ``pending_requests._pin_consent`` stores the
 action, its digest and the tab text outside the command-center folder, the rail
 renders the tab from it, and the answer executes it.
 """
@@ -229,6 +229,12 @@ def _package_lines(package: dict[str, Any]) -> list[str]:
             lines.append(f"  - {_shown(entry['path'], 160)}: {entry['reason']}")
         if len(package["excluded"]) > _SHOWN_FILES:
             lines.append(f"  - and {len(package['excluded']) - _SHOWN_FILES} more")
+    if package.get("flagged"):
+        lines.append(f"Worth a look before you confirm ({len(package['flagged'])}): these "
+                     "mention something that is often private. Leave any out below.")
+        for entry in package["flagged"][:_SHOWN_FILES]:
+            lines.append(f"  - {_shown(entry['path'], 160)}: mentions "
+                         f"\"{_shown(entry['word'], 40)}\"")
     if package["connections"]:
         lines.append("Whoever installs it connects their own: "
                      + ", ".join(_shown(c, 60) for c in package["connections"]))
@@ -361,13 +367,11 @@ def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, A
         FORMAT_VERSION,
         PACKAGE_KIND,
         PACKAGE_TAG,
-        R_CONTACT,
         PackageError,
         build_publish_package,
         human,
         next_version,
         scan_public,
-        text_detection,
     )
 
     workflows = [{"key": k, "name": c["name"]} for k, c in components.items()
@@ -383,7 +387,10 @@ def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, A
         component = {
             "kind": PACKAGE_KIND,
             "format_version": FORMAT_VERSION,
-            "version": next_version(_base_path(), actor, action["name"]),
+            # Allocated at ask time and pinned in the action, so a retry after
+            # the version was recorded still names the same number.
+            "version": int(action.get("package_version")
+                           or next_version(_base_path(), actor, action["name"])),
             "blob_sha256": built["sha256"],
             "size_bytes": len(built["blob"]),
             "file_count": len(manifest["files"]),
@@ -397,17 +404,16 @@ def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, A
                      "name": action["name"], "description": action["description"],
                      "components": components, "package": component})
         for bid, row in branches.items():
-            # Workflow rows already pass the credential scan below; a package
-            # also keeps contact details out of them.
-            if text_detection(_canonical(row)) == R_CONTACT:
-                raise PackageError(f"workflow {_shown(row.get('name') or bid)}: contact "
-                                   "details were detected; remove them and ask again")
+            # Every workflow string through the shared detectors, one by one:
+            # a joined row lets one detection mask another (gpt-6-astra, code r1 #4).
+            scan_public(row, f"workflow {_shown(row.get('name') or bid)}")
     except PackageError as exc:
         raise ValueError(str(exc)) from None
     shown["package"] = {
         "file_count": component["file_count"], "size": human(component["size_bytes"]),
         "version": component["version"], "files": [f["path"] for f in manifest["files"]],
-        "excluded": built["excluded"], "connections": manifest["needs"]["connections"]}
+        "excluded": built["excluded"], "flagged": built["flagged"],
+        "connections": manifest["needs"]["connections"]}
     return {"component": component, "tag": PACKAGE_TAG, "blob": built["blob"],
             "sha256": built["sha256"], "version": component["version"]}
 
@@ -415,24 +421,101 @@ def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, A
 def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     """Snapshot the public payload now; pin its digest and what the tab shows."""
     snap = build_snapshot(uid, action)
-    return {**action, "snapshot_digest": snap["digest"], "shown": snap["shown"]}
+    captured = {**action, "snapshot_digest": snap["digest"], "shown": snap["shown"]}
+    if snap.get("package"):
+        captured["package_version"] = snap["package"]["version"]
+    return captured
 
 
-def pin_ask(uid: str, action: dict[str, Any], tab: tuple[str, str, str]) -> str:
-    """Store the consent record outside the command-center folder; returns its id.
+#: The owner's per-folder switches on a package tab, and their two answers.
+_INCLUDE, _LEAVE_OUT = "Include", "Leave out"
+_MAX_TOGGLES = 15
+_LEAVE_OUT_FIELD = "leave_out"
 
-    The pending-request row lives inside the folder the agent writes with
-    ``bash``, so it is a reference only: the rail renders this record's tab and
-    the answer executes this record's action.
+
+def toggle_fields(action: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """The tab's exclude switches: one per top-level folder or file of the
+    package (the largest first), plus a box for any other path.
+
+    Returns ``(fields, toggles)``; ``toggles`` maps each switch to the path it
+    leaves out and rides in the pinned action, so an answer can only ever
+    narrow what the owner was shown.
+    """
+    package = (action.get("shown") or {}).get("package")
+    if not package:
+        return [], {}
+    counts: dict[str, int] = {}
+    for path in package["files"]:
+        head = path.split("/")[0]
+        counts[head] = counts.get(head, 0) + 1
+    groups = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:_MAX_TOGGLES]
+    fields: list[dict[str, Any]] = []
+    toggles: dict[str, str] = {}
+    for n, (head, count) in enumerate(sorted(groups), start=1):
+        name = f"out_{n}"
+        folder = any(p.startswith(head + "/") for p in package["files"])
+        label = f"{head}/ ({count} files)" if folder else head
+        fields.append({"name": name, "label": _shown(label, 120), "type": "choice",
+                       "options": [_INCLUDE, _LEAVE_OUT]})
+        toggles[name] = head
+    fields.append({"name": _LEAVE_OUT_FIELD, "type": "text",
+                   "label": "Leave out anything else (file or folder paths, comma-separated)"})
+    return fields, toggles
+
+
+def _left_out(action: dict[str, Any], values: dict[str, Any]) -> list[str]:
+    """The paths the owner switched off on the tab. Only paths the tab listed (or
+    folders holding them) count; anything else is refused, never guessed."""
+    from tinyassets.command_center_packages import PackageError, check_path
+
+    toggles = action.get("toggles") or {}
+    files = (action.get("shown") or {}).get("package", {}).get("files") or []
+    chosen = [toggles[k] for k, v in values.items() if k in toggles and v == _LEAVE_OUT]
+    typed = str(values.get(_LEAVE_OUT_FIELD) or "")
+    for raw in typed.replace("\n", ",").split(","):
+        path = raw.strip().rstrip("/")
+        if not path:
+            continue
+        try:
+            check_path(path)
+        except PackageError as exc:
+            raise ValueError(f"cannot leave out {path!r}: {exc}") from None
+        if not any(f == path or f.startswith(path + "/") for f in files):
+            raise ValueError(f"{path!r} is not in this package, so nothing was published; "
+                             "check the path and confirm again")
+        chosen.append(path)
+    return sorted(set(chosen))
+
+
+def answer_publish(uid: str, pinned: dict[str, Any], values: dict[str, Any], *,
+                   request_id: str) -> dict[str, Any]:
+    """The owner's confirm of a pinned publish, with any switches they turned off.
+
+    Claimed once: a second confirm while one runs is refused, and a confirm of
+    an already-published request returns its receipt.
     """
     from tinyassets.api.helpers import _base_path
-    from tinyassets.command_center_packages import agent_id, pin
+    from tinyassets.command_center_packages import PackageError, claim, finish, unclaim
 
-    agent = (action.get("package") or {}).get("agent") or agent_id(None)
-    kind, title, body = tab
-    return pin(_base_path(), universe_id=uid, kind="publish", agent=agent,
-               digest=action["snapshot_digest"],
-               record={"action": action, "tab": {"kind": kind, "title": title, "body": body}})
+    action = pinned["record"]["action"]
+    unknown = set(values) - set(action.get("toggles") or {}) - {_LEAVE_OUT_FIELD}
+    if unknown:
+        raise ValueError("this tab has no field " + ", ".join(sorted(unknown)))
+    extra = _left_out(action, values) if action.get("package") else []
+    base = _base_path()
+    try:
+        state = claim(base, universe_id=uid, pin_id=pinned["pin_id"])
+    except PackageError as exc:
+        raise ValueError(str(exc)) from None
+    if state == "activated":
+        return {**pinned["progress"], "already_published": True}
+    try:
+        receipt = execute_action(uid, action, request_id=request_id, leave_out=extra)
+    except BaseException:
+        unclaim(base, universe_id=uid, pin_id=pinned["pin_id"])
+        raise
+    finish(base, universe_id=uid, pin_id=pinned["pin_id"], progress=receipt)
+    return receipt
 
 
 def _store_package(actor: str, package: dict[str, Any], name: str) -> None:
@@ -519,7 +602,8 @@ def _unflip(prior: dict[str, tuple[Any, Any]]) -> None:
             )
 
 
-def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict[str, Any]:
+def execute_action(uid: str, action: dict[str, Any], *, request_id: str,
+                   leave_out: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
     """Publish exactly the approved snapshot, or nothing. Raises to leave the ask pending.
 
     Order is what makes it all-or-nothing across three stores (branch rows,
@@ -541,6 +625,44 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
        published before it is withdrawn.
     """
     from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    snap = build_snapshot(uid, action)
+    if snap["digest"] != action.get("snapshot_digest"):
+        raise ValueError(_CHANGED)
+    if leave_out and action.get("package"):
+        # The owner switched some of it off. Rebuilt from the live folder with
+        # those left out, and it must be a strict subset of what they were
+        # shown: a switch can only narrow.
+        shown_files = set(snap["shown"]["package"]["files"])
+        exclude = sorted(set(action["package"]["exclude"]) | set(leave_out))
+        snap = build_snapshot(uid, {**action, "package": {**action["package"],
+                                                         "exclude": exclude}})
+        if not set(snap["shown"]["package"]["files"]) <= shown_files:
+            raise ValueError(_CHANGED)
+
+    package = snap.get("package")
+    if package:
+        # First, before any version is minted: a package refused by quota
+        # publishes nothing, and a blob stored but never listed stays charged.
+        _store_package(actor, package, action["name"])
+    try:
+        return _publish_snapshot(actor, action, snap, request_id=request_id)
+    except BaseException:
+        if package:
+            # Unlisted, and charged until a measurement drops it; a retry
+            # re-records the same pinned version.
+            from tinyassets.command_center_packages import drop_version
+
+            drop_version(_base_path(), author_id=actor, name=action["name"],
+                         version=package["version"])
+        raise
+
+
+def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], *,
+                      request_id: str) -> dict[str, Any]:
     from tinyassets.api.custom_agents import custom_agents
     from tinyassets.api.helpers import _base_path
     from tinyassets.branch_versions import (
@@ -548,19 +670,8 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
         mark_versions_public,
         publish_branch_version,
     )
-    from tinyassets.principals import named_principal
-
-    actor = named_principal(permissions.current_actor_id())
-    snap = build_snapshot(uid, action)
-    if snap["digest"] != action.get("snapshot_digest"):
-        raise ValueError(_CHANGED)
 
     package = snap.get("package")
-    if package:
-        # First, before any version is minted: a package refused by quota
-        # publishes nothing, and a blob stored but never listed stays charged.
-        _store_package(actor, package, action["name"])
-
     expected = {c["published_version_id"] for c in snap["definition"]["components"].values()
                 if c.get("kind") == BRANCH_REF_KIND}
     versions: dict[str, str] = {}
@@ -589,11 +700,6 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
     except BaseException:
         mark_versions_public(_base_path(), newly_marked, public=False)
         _unflip(prior)
-        if package:
-            from tinyassets.command_center_packages import drop_version
-
-            drop_version(_base_path(), author_id=actor, name=action["name"],
-                         version=package["version"])
         raise
     receipt = {"published": True, "agent_definition_id": agent["agent_definition_id"],
                "branch_versions": versions}
@@ -614,8 +720,9 @@ __all__ = [
     "BRANCH_REF_KIND",
     "build_snapshot",
     "capture_action",
+    "answer_publish",
     "execute_action",
-    "pin_ask",
     "tab_text",
+    "toggle_fields",
     "validate_action",
 ]

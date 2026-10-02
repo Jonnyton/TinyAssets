@@ -21,12 +21,13 @@
   - A's private items are absent;
   - escaping and colliding packages are refused before quarantine;
   - an over-quota package is refused with its size named.
-- [x] 2.2 Mutation check (2026-10-01, Windows host, scratchpad `mutate.py`): 18 mutations of the scrub, the consent gate, the boundary and install. 17 went red.
+- [x] 2.2 Mutation check (2026-10-01, Windows host, scratchpad `mutate.py`): 28 mutations of the scrub, the consent gate, the boundary, install, the round-1 fixes and the lead's switches and flags. 27 went red.
   - `boundary: traversal allowed` stayed green: the hidden-component rule refuses `..` as well, so it is defence in depth.
   - The comment-only decoy stayed green.
 - [ ] 2.3 gpt-6-astra refute (at most 3 rounds):
   - design round 1: ADAPT, folded (see the design's review log);
-  - code round: pending.
+  - code round 1: ADAPT, all 10 folded (the design's review log);
+  - code round 2: pending.
 - [ ] 2.4 Linux oracle on the changed tests and their importers; deploy; `deployed_sha.py --assert-contains`; the lead's founder-account village test.
 
 ## 3. Land

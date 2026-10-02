@@ -286,8 +286,14 @@ def create_request(
     dedupe_key: str,
     origin: str = ORIGIN_AGENT,
     items: list[dict[str, Any]] | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Record one pending request. Returns the row, or None on storage failure.
+
+    ``request_id`` is set by a caller that minted the id in platform-owned
+    storage first (a pinned publish or install ask): the row is created under
+    it and never deduplicated onto an existing row, whose id would come from
+    this agent-writable store.
 
     Deduplicated on ``dedupe_key`` while pending, so an agent retrying the same
     ask does not open a second identical tab.
@@ -343,7 +349,7 @@ def create_request(
                     "feedback": settled[0] or "",
                     "answer": json.loads(settled[2]) if settled[2] else None,
                 }
-            existing = conn.execute(
+            existing = None if request_id else conn.execute(
                 "SELECT request_id FROM pending_requests "
                 "WHERE status = 'pending' AND dedupe_key = ? LIMIT 1",
                 (dedupe_key,),
@@ -355,7 +361,7 @@ def create_request(
                 # only the first is something to notify the owner about.
                 same = get_request(universe_dir, existing[0])
                 return {**same, "created": False} if same else None
-            row_id = "req_" + uuid.uuid4().hex[:24]
+            row_id = request_id or "req_" + uuid.uuid4().hex[:24]
             conn.execute(
                 "INSERT INTO pending_requests (request_id, kind, title, body, "
                 "fields_json, action_json, items_json, dedupe_key, status, "

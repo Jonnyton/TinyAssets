@@ -226,4 +226,51 @@ the runtime for a roster agent is D8.
     direction (2026-10-02, relayed by the lead) defines the `publish` profile
     as "the export layout minus the private items". The tab lists every
     included file, the owner confirms that list, and the tab states the
-    detection limit. The lead holds this tradeoff for the founder.
+    detection limit.
+
+- **Lead decision (2026-10-01): keep default-include.** Publishing is itself
+  the explicit opt-in: the owner confirms a preview, and the founder asked for
+  the whole command center. Three conditions come with it, all built:
+  - **The preview lists everything.** Every file that goes public, and every
+    file left out with its reason.
+  - **An exclude switch before confirming.** The publish tab carries one
+    Include / Leave out switch per top-level folder or file (the 15 largest),
+    plus a box for any other path.
+    - The answer rebuilds the package with those left out, and the result must
+      be a subset of what was shown, so a switch can only narrow it.
+    - A path that the tab did not list is refused, never guessed.
+  - **Likely-sensitive content is flagged, not silently included.** A file that
+    mentions an often-private word ("confidential", "salary", "password", …)
+    is listed under "Worth a look before you confirm", with the word. Detected
+    credentials and contact details stay excluded, as before.
+
+- **gpt-6-astra code refute, round 1 (2026-10-01): ADAPT.** Ten findings,
+  all adopted:
+  - 1: the rail and the answer look the pin up by request id BEFORE reading
+    any row field, so a row disguised as an ordinary question still renders
+    and executes as its pin.
+  - 2: the platform mints the request id in the pin first. The row is created
+    under that id and never deduplicated onto a row in the writable store. The
+    same ask raised again reuses its still-pending pinned row.
+  - 3: an automation's idempotency key is namespaced by command center and
+    owner, and a replay must return the installer's own row. Pin ids are
+    unique per request.
+  - 4: every workflow string goes through the shared detectors one by one.
+    Only id- and digest-shaped values under id or digest keys are skipped.
+    - The shared credential parser reads ISO-8601 timestamps as opaque runs,
+      so they are stripped before the scan. Without that, every board and
+      every workflow row would trip it.
+  - 5: the package writer moves to the shared `write_data_path(mode="exclusive")`
+    from #4254, which owns each platform's containment. That PR is not merged
+    yet, so this slice stacks on it. Until then, the POSIX path is the anchored
+    writer, and the Windows fallback (single-tenant tray only) keeps the named
+    parent-junction residual.
+  - 6: protected names, memory files and harness relocation compare
+    case- and Unicode-insensitively.
+  - 7: an install reserves only the bytes still to land. On failure it commits
+    what landed and gives back the rest.
+  - 8: publish claims its pin, finishes it with the receipt, and pins its
+    version number at ask time, so a retry names the same version.
+  - 9: the UI's id is recorded before it is added, and a resume adds nothing
+    if the id is already there.
+  - 10: a publish or install ask needs no agent-written kind or title.
