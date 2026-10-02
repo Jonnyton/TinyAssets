@@ -399,3 +399,10 @@ C1 adds no holding queue and makes no new durability claim. A frontend that cann
 | 9 | Key distribution | Moot: there is no key |
 | 10 | Acknowledgement claims too strong | C1 adds no claim; phase 1's limits stand |
 | 11 | Readiness and build evidence | Proxied pulse round trip; separate frontend and owner build headers |
+
+### C1 shape review (Codex, round 2): ADAPT. Rounds 1-11 resolved or mooted; two must-fixes, plus a payoff measurement
+- **12. Proxy metadata.** A Unix-socket peer is `client=None`, so uvicorn's forwarded-header trust does not apply. Scheme, host and client IP would need an explicit trusted-forwarding policy on the socket listener only. For example, an HTTPS request to `/app/models/preferences/` would redirect to `http`.
+- **13. The app shell is not static.** `render_app_html` injects config, bundled JS, theme values and a per-response CSP nonce. Discovery depends on the owner's auth configuration. The browser's build check compares `CFG.build` against `X-TinyAssets-Build`. A frontend that serves the shell therefore needs the render path and a coherent build identity.
+- **14. Payoff.** Of the last 25 commits touching `app.html`, 19 also changed owner files, and only about 6 were shell-only. "Frontend-only deploys" is a real but SMALL class; it does not mean "most deploys interrupt nothing".
+
+**Proposed (sent to the lead):** park C1. Phase 1 already keeps turns alive through owner deploys under its cap. The remaining cost is deploy latency during long turns, and its real fix is the per-command-center handover, deferred to S4.
