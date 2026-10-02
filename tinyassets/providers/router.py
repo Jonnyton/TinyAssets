@@ -1013,7 +1013,7 @@ class ProviderRouter:
                 )
                 raise AllProvidersExhaustedError(
                     f"All providers for role={role!r} are blocked by the "
-                    f"universe's allowed_providers={allowlist!r}. Daemon will "
+                    f"command center's allowed_providers={allowlist!r}. Daemon will "
                     f"not silently fall back to a disallowed provider."
                 )
             chain = filtered
@@ -1070,7 +1070,7 @@ class ProviderRouter:
                         _uid = served_authority.universe_id
                     else:
                         raise PermissionError(
-                            "open provider invocation requires a universe context"
+                            "open provider invocation requires a command center context"
                         )
                     _def_id = provider_name.split("api_key_http:", 1)[-1]
                     _definition = get_definition(_uid, _def_id)
@@ -1624,7 +1624,7 @@ class ProviderRouter:
         if served_authority is not None:
             raise AllProvidersExhaustedError(
                 f"Served provider {served_authority.provider!r} exhausted; "
-                f"universe {AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
+                f"command center {AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
                 attempts=attempts,
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),

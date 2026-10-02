@@ -1,4 +1,4 @@
-"""Make a deposited subscription actually SERVE the founder's own universe.
+"""Make a deposited subscription actually SERVE the founder's own command center.
 
 ``connect_llm`` is deliberately write-only (the chatbot path re-points serving
 with explicit ``bind_serving_provider`` / ``set_serving`` calls). The phone
@@ -7,7 +7,7 @@ OpenAI credential landing in the vault while every turn still failed with
 "exactly one founder serving binding is required", because nothing created
 the agent binding the serving authority hangs off.
 
-This provisions the minimal chain for the founder's OWN universe, exactly as
+This provisions the minimal chain for the founder's OWN command center, exactly as
 the served-router tests do:
 
     platform definition (published once, idempotent)
@@ -86,7 +86,7 @@ def _platform_definition(base: Path) -> dict[str, Any]:
 
 
 def _require_current_admin(base: Path, *, universe_id: str, owner: str) -> None:
-    """The owner must hold an explicit, CURRENT ``admin`` ACL row on the universe.
+    """The owner must hold an explicit, CURRENT ``admin`` ACL row on the command center.
 
     Re-checked immediately before any mutation (Codex 2026-08-21 #1): a bearer
     whose founder-home mapping survived an ACL revocation must not be able to
@@ -99,7 +99,7 @@ def _require_current_admin(base: Path, *, universe_id: str, owner: str) -> None:
         if row.get("actor_id") == owner and row.get("permission") == "admin"
     ]
     if not rows:
-        raise PermissionError("a current admin ACL on the universe is required")
+        raise PermissionError("a current admin ACL on the command center is required")
 
 
 def _platform_binding(base: Path, *, universe_id: str, owner: str) -> dict[str, Any]:
@@ -187,7 +187,7 @@ def ensure_founder_serving(
     service: str,
     model_access: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Point the founder's universe at the just-deposited ``service`` and enable it.
+    """Point the founder's command center at the just-deposited ``service`` and enable it.
 
     ``model_access`` is the complete accepted membership for a first binding
     (``{provider: ModelAccess}``), used when the owner has just confirmed the

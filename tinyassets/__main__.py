@@ -79,7 +79,7 @@ def _build_argparser() -> argparse.ArgumentParser:
         "--universe",
         type=str,
         default=None,
-        help="Path to universe directory (optional)",
+        help="Path to command center directory (optional)",
     )
 
     parser.add_argument(
@@ -136,7 +136,7 @@ def _declared_soul_loop_dispatch_requested(universe: str | None) -> bool:
         loop_branch_def_id, _info = _universe_loop_dispatch(Path(universe))
     except Exception:  # noqa: BLE001
         logger.exception(
-            "Failed to resolve soul loop dispatch for universe %s",
+            "Failed to resolve soul loop dispatch for command center %s",
             universe,
         )
         return False
@@ -198,7 +198,7 @@ def main() -> int:
             "Only fantasy_author domain is fully operational in this phase. "
             "Other domains can be registered but cannot yet be executed. "
             "Use --domain fantasy_author, or enable TINYASSETS_SOUL_LOOP_DISPATCH "
-            "for a universe with a declared soul loop."
+            "for a command center with a declared soul loop."
         )
         return 1
     if args.domain != "fantasy_author":

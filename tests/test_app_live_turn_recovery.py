@@ -184,7 +184,7 @@ def test_a_status_poll_does_not_restore_the_turn_the_live_page_owns(tmp_path, ht
     out = _run(tmp_path, html, _LIVE_TURN)
     thinking, polled, done = out["whileThinking"], out["afterPolls"], out["done"]
     assert thinking["founderBubbles"] == 1 and thinking["sendDisabled"] is True
-    assert thinking["status"] == "Your universe is thinking..."
+    assert thinking["status"] == "Your agent is thinking..."
     assert thinking["inflight"]["message"] == "Retest your workflow checklist", \
         "the live turn's durable recovery must be on disk while it is in flight"
     # The polls ran (the heartbeat is not disabled) ...
@@ -193,7 +193,8 @@ def test_a_status_poll_does_not_restore_the_turn_the_live_page_owns(tmp_path, ht
     assert polled["founderBubbles"] == 1, "the live message was drawn a second time"
     assert polled["unconfirmedNotes"] == 0, "a live turn was reported as never confirmed"
     assert polled["resendButtons"] == 0, "a resend was offered for a request still in flight"
-    assert polled["sendDisabled"] is True and polled["status"] == "Your universe is thinking..."
+    assert polled["sendDisabled"] is True
+    assert polled["status"] == "Your agent is thinking..."
     assert polled["inflight"]["message"] == "Retest your workflow checklist", \
         "a poll erased the live turn's recovery record"
     assert polled["converseCalls"] == ["Retest your workflow checklist"]
@@ -396,8 +397,8 @@ def test_an_account_change_retires_the_live_turn_and_fences_its_record(tmp_path,
     as_b = out["asB"]
     assert as_b["founderBubbles"] == 0 and as_b["resendButtons"] == 0
     assert [n["text"] for n in as_b["notes"]] == [
-        "An unconfirmed message from another universe's session on this browser "
-        "is waiting there; open that universe to see it."]
+        "An unconfirmed message from another command center's session on this browser "
+        "is waiting there; open that command center to see it."]
     assert as_b["inflight"]["owner"] == "p-1", "the retired turn's record was erased"
     assert as_b["sendDisabled"] is False
     late = out["afterLateReply"]
@@ -468,7 +469,7 @@ await settle();
 // separate, deliberate behaviour and happens above).
 $("composer-input").value = "a draft I was typing";
 const queuedBefore = sendQueue.length;
-const silent = new Error("your universe stopped sending anything back");
+const silent = new Error("your agent stopped sending anything back");
 silent.transport = "stream_silent"; silent.replayable = false;
 gates[0].reject(silent);
 await turn; await settle(); await settle();

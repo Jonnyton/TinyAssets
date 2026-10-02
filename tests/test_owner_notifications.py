@@ -394,7 +394,7 @@ def test_an_unnamed_universe_never_borrows_the_product_name(base):
     unknown = _compose(base, "u-does-not-exist", crafted)
 
     for notification in (unnamed, unknown):
-        assert notification.title == "Your universe asks"
+        assert notification.title == "Your agent asks"
         assert notification.title != "TinyAssets"
         assert "Security alert" not in notification.title
 

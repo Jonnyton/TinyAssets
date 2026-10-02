@@ -576,7 +576,7 @@ def _sandbox_cli_args(
     # this fixes. Refuse rather than silently run un-isolated.
     if config.sandbox_workspace and universe_dir is None:
         raise ProviderError(
-            "sandboxed universe turn requires a universe_dir — refusing to run "
+            "sandboxed command center turn requires a universe_dir — refusing to run "
             "un-isolated in the daemon's working directory (fail-closed)."
         )
     # Founder-scoped engine MCP: only inside the sandbox (universe_dir present),
