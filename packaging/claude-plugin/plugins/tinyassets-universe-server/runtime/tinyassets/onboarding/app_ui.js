@@ -255,6 +255,8 @@
       host.replaceChildren(frame);
       host.hidden=false;
       $("view-chat").classList.add("ui-custom-active");
+      // The chat cloud starts small over a layout and big without one.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
       this.paintHeader();
     },
     unmount(){
@@ -262,6 +264,8 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
+      // The chat cloud starts small over a layout and big without one.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();
