@@ -162,7 +162,7 @@ def test_the_screenshot_lands_in_previews_and_replaces_a_planted_hard_link(tmp_p
     assert sorted(p.name for p in (universe / "previews").iterdir()) == ["village.png"]
 
 
-@pytest.mark.parametrize("ui_id", ["../soul", "a/b", "", "UPPER", "x" * 65])
+@pytest.mark.parametrize("ui_id", ["../soul", "a/b", "", "UPPER", "x" * 65, "con", "lpt1"])
 def test_only_the_apps_id_shape_names_a_file(tmp_path, ui_id):
     with pytest.raises(ui_preview.PreviewUnavailable, match="ui_id"):
         ui_preview.write_preview(tmp_path, ui_id, b"png")
@@ -171,7 +171,7 @@ def test_only_the_apps_id_shape_names_a_file(tmp_path, ui_id):
 
 def test_a_previews_entry_that_is_not_a_folder_is_refused(tmp_path):
     (tmp_path / "previews").write_text("a file", encoding="utf-8")
-    with pytest.raises(ui_preview.PreviewUnavailable, match="not a plain folder"):
+    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_preview_failed"):
         ui_preview.write_preview(tmp_path, "village", b"png")
 
 
@@ -184,7 +184,7 @@ def test_a_previews_symlink_is_refused(tmp_path):
     universe = tmp_path / "u"
     universe.mkdir()
     os.symlink(elsewhere, universe / "previews")
-    with pytest.raises(ui_preview.PreviewUnavailable, match="not a plain folder"):
+    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_preview_failed"):
         ui_preview.write_preview(universe, "village", b"png")
     assert list(elsewhere.iterdir()) == []
 
@@ -216,7 +216,9 @@ def test_the_engine_handle_renders_writes_and_reports(tmp_path, monkeypatch):
         return {"ui_id": ui_id, "fps": 60.0, "uncaught_errors": [], "png": b"\x89PNG-shot"}
 
     monkeypatch.setattr(ui_preview, "preview_app_ui", fake_render)
-    report = json.loads(s.read_graph(target="app_ui_preview", query="village"))
+    envelope = json.loads(s.read_graph(target="app_ui_preview", query="village"))
+    assert envelope["untrusted"] is True, "the UI's output is data, never instructions"
+    report = envelope["content"]
 
     assert seen == {"owner": "actor-a", "universe": "u-a", "ui": "village"}, (report,
         "the owner and universe come from the binding, never the arguments")
@@ -241,3 +243,77 @@ def test_the_browser_sandbox_is_never_turned_off():
     source = inspect.getsource(ui_preview._child)
     assert "chromium_sandbox=True" in source
     assert "--no-sandbox" not in source
+
+
+def test_stored_ui_text_never_reaches_the_parent_page():
+    """Codex 2026-10-02 (P1): the bundle was spliced into the parent's <script>,
+    so a stored `</script>` ran code in the unrestricted parent. The parent is a
+    fixed page under a nonce-only policy and fetches the UI as JSON."""
+    import inspect
+
+    assert "__SPEC__" not in ui_preview._PARENT
+    assert "fetch('/__preview/spec.json')" in ui_preview._PARENT
+    source = inspect.getsource(ui_preview._child)
+    assert "script-src 'nonce-{nonce}'" in source
+    for flag in ("--host-resolver-rules=MAP * ~NOTFOUND", "--proxy-server=http://127.0.0.1:9"):
+        assert flag in source, flag
+    assert ui_preview.FRAME_SANDBOX == "allow-scripts allow-forms"
+
+
+def test_the_preview_frame_sandbox_is_the_apps():
+    import re
+    from pathlib import Path
+
+    app = Path("tinyassets/onboarding/app_ui.js").read_text(encoding="utf-8")
+    assert re.search(r'SANDBOX:"([^"]+)"', app).group(1) == ui_preview.FRAME_SANDBOX
+
+
+@pytest.mark.real_browser
+def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path):
+    _need_browser()
+    _add(tmp_path, "hostile",
+         markup="</script><script>window.top.__pwned=1</script><p id=ok>still a frame</p>",
+         script="for(let i=0;i<3000;i++){tinyassets.call('act-'+(i%200),{}).catch(()=>{});}"
+                "try{new WebSocket('wss://elsewhere.example/s')}catch(e){}")
+    try:
+        report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
+                                           ui_id="hostile", width=320, height=240)
+    except ui_preview.PreviewUnavailable as exc:
+        pytest.skip(str(exc))
+    assert len(report["bridge_calls"]) <= ui_preview.MAX_ACTIONS
+    assert report["bridge_actions_dropped"] > 0
+    assert report["delivery_error"] == ""
+    assert report["png"].startswith(b"\x89PNG")
+
+
+_TREE = (
+    "import subprocess, sys, time\n"
+    "kids = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])"
+    " for _ in range(3)]\n"
+    "hog = bytearray(MEGS * 1024 * 1024)\n"
+    "for i in range(0, len(hog), 4096): hog[i] = 1\n"
+    "time.sleep(60)\n"
+)
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="process sessions are POSIX")
+@pytest.mark.parametrize("megs, wall, breach", [(300, 30.0, "memory"), (1, 1.5, "timeout")])
+def test_the_whole_render_tree_is_bounded_and_reaped(monkeypatch, megs, wall, breach):
+    """Codex 2026-10-02 (P1): a render's memory was unbounded and only the direct
+    child was killed. The supervisor sums resident memory over the whole session,
+    and kills and reaps every process in it before the slot frees."""
+    import sys
+
+    monkeypatch.setattr(ui_preview, "TREE_MEMORY_BYTES", 150 * 1024 * 1024)
+    argv = [sys.executable, "-c", _TREE.replace("MEGS", str(megs))]
+    process_holder = {}
+    real_popen = ui_preview.subprocess.Popen
+
+    def remember(*args, **kwargs):
+        process_holder["p"] = real_popen(*args, **kwargs)
+        return process_holder["p"]
+
+    monkeypatch.setattr(ui_preview.subprocess, "Popen", remember)
+    _, _, _, found = ui_preview._supervised(b"", wall, argv=argv)
+    assert found.startswith(breach), found
+    assert ui_preview._session_members(process_holder["p"].pid) == [], "every process reaped"

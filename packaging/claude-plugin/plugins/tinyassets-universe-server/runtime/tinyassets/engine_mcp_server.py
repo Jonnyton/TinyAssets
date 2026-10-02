@@ -652,7 +652,13 @@ def read_graph(
         if normalized == "app_ui_preview":
             from tinyassets.api.app_ui import preview_app_ui
 
-            return json.dumps(preview_app_ui(universe_id=_GRAPH_ID, ui_id=query))
+            report = preview_app_ui(universe_id=_GRAPH_ID, ui_id=query)
+            if "error" in report:
+                return json.dumps(report)
+            # Console lines, errors and URLs are what the UI's code produced --
+            # possibly someone else's code, installed by remix. Data, never
+            # instructions.
+            return _untrusted("app_ui_preview", json.dumps(report))
         if normalized == "access":
             from tinyassets.api.agent_access import read_access
             from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_access
