@@ -42,7 +42,12 @@
 - [ ] 2.6 Retire the tool jail and the engine route's four tools for HTTP
       turns on the thin loop (HTTP model calls never used the provider jail);
       keep both for CLI paths.
-- [ ] 2.7 CLI-in-box only for command adapters and file-OAuth CLIs; Claude
+- [ ] 2.7 Addressed agents (#4287): the owner read `history` takes its
+      session from `addressed_agents.memory_session(owner, agent_id)`, never a
+      hardcoded `principal:<owner>`. The turn carries `agent_id` the way
+      `converse(addressed_agent=)` does, and steering keeps reading the
+      session from the turn's config.
+- [ ] 2.8 CLI-in-box only for command adapters and file-OAuth CLIs; Claude
       subscription serving stays owner-only (D6).
 
 ## 3. Rollout (the switch is temporary)
