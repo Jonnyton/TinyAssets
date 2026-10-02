@@ -42,13 +42,15 @@ def _shown(result: ToolImage) -> Image.Image:
 # --------------------------------------------------------------------------- #
 
 
-def test_a_small_image_is_shown_as_it_is():
+def test_a_small_image_is_shown_at_its_size_with_exact_pixels():
     data = _png(64, 32)
     shown = bound_image(data, "art/tile.png")
     assert isinstance(shown, ToolImage)
-    assert shown.data == data and shown.mime_type == "image/png"
+    assert shown.mime_type == "image/png"
     assert (shown.width, shown.height) == (64, 32)
-    assert "art/tile.png: 64x32 image/png" == shown.text
+    assert shown.text == "art/tile.png: 64x32 image/png, shown as 64x32 image/png"
+    # Re-encoded from decoded pixels, never passed through -- and lossless.
+    assert _shown(shown).convert("RGB").getpixel((10, 10)) == (40, 120, 200)
 
 
 def test_a_large_image_is_scaled_to_the_long_edge():
@@ -57,14 +59,23 @@ def test_a_large_image_is_scaled_to_the_long_edge():
     assert (shown.width, shown.height) == (tool_images.MAX_EDGE, tool_images.MAX_EDGE // 2)
     assert _shown(shown).size == (shown.width, shown.height)
     assert len(shown.data) <= tool_images.MAX_IMAGE_BYTES
-    assert "4000x2000" in shown.text and "shown as 1568x784" in shown.text
+    assert "4000x2000 image/png, shown as 1568x784 image/" in shown.text
 
 
 def test_transparency_survives_scaling_and_noise_is_squeezed_under_the_byte_bound():
+    import random
+
     rgba = Image.new("RGBA", (2000, 2000), (0, 0, 0, 0))
     shown = bound_image(_encode(rgba, "PNG"), "sprite.png")
     assert isinstance(shown, ToolImage) and shown.mime_type == "image/png"
     assert _shown(shown).mode == "RGBA"
+    # Noisy RGBA does not fit as PNG at 1568 px: it is scaled further, never
+    # flattened to JPEG (Codex, 2026-10-02).
+    noisy = Image.frombytes("RGBA", (1600, 1600), random.Random(1).randbytes(1600 * 1600 * 4))
+    kept = bound_image(_encode(noisy, "PNG"), "noisy-sprite.png")
+    assert isinstance(kept, ToolImage) and kept.mime_type == "image/png", kept
+    assert _shown(kept).mode == "RGBA" and kept.width < 1568
+    assert len(kept.data) <= tool_images.MAX_IMAGE_BYTES
     import random
 
     noise = Image.frombytes("RGB", (1500, 1500), random.Random(0).randbytes(1500 * 1500 * 3))
@@ -78,7 +89,7 @@ def test_transparency_survives_scaling_and_noise_is_squeezed_under_the_byte_boun
 def test_each_supported_format_is_recognised_by_its_bytes(fmt, mime):
     data = _encode(Image.new("RGB", (40, 30), (200, 10, 10)), fmt)
     shown = bound_image(data, "x." + fmt.lower())
-    assert isinstance(shown, ToolImage) and shown.mime_type == mime
+    assert isinstance(shown, ToolImage) and f"40x30 {mime}, shown as 40x30" in shown.text
 
 
 def test_an_animated_gif_shows_its_first_frame():
@@ -118,10 +129,56 @@ def test_the_extension_is_not_trusted():
     assert isinstance(refused, str)
 
 
-def test_a_truncated_image_is_refused_with_a_reason():
-    data = _png(2000, 2000)[:400]
-    refused = bound_image(data, "cut.png")
-    assert isinstance(refused, str) and "could not be decoded" in refused
+@pytest.mark.parametrize("fmt", ["PNG", "JPEG"])
+def test_a_truncated_image_is_refused_even_when_small(fmt):
+    """Codex 2026-10-02: `verify()` passed a small JPEG whose scan was cut; every
+    pixel is now decoded before anything is shown."""
+    import random
+
+    noise = Image.frombytes("RGB", (64, 64), random.Random(2).randbytes(64 * 64 * 3))
+    data = _encode(noise, fmt)
+    refused = bound_image(data[: len(data) * 2 // 3], "cut." + fmt.lower())
+    assert isinstance(refused, str) and "could not be decoded" in refused, refused
+
+
+def test_jpeg_magic_cannot_reach_another_decoder():
+    """Codex 2026-10-02: Pillow probes every plugin; a JPEG prefix with a PCD
+    header at 2048 could open as PCD. The sniffed type's decoder is the only one."""
+    polyglot = bytearray(b"\xff\xd8\xff\x02" + b"\x00" * 4096)
+    polyglot[2048:2055] = b"PCD_IPI"
+    refused = bound_image(bytes(polyglot), "pcd.jpg")
+    assert isinstance(refused, str), refused
+
+
+def test_exif_orientation_is_applied():
+    image = Image.new("RGB", (40, 20), (0, 200, 0))
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90 CW to display
+    shown = bound_image(_encode(image, "JPEG", exif=exif.tobytes()), "photo.jpg")
+    assert isinstance(shown, ToolImage)
+    assert (shown.width, shown.height) == (20, 40)
+    assert _shown(shown).getexif().get(0x0112) is None, "metadata is dropped"
+
+
+@pytest.mark.parametrize("mime, header, size", [
+    ("image/gif", b"GIF89a" + (5000).to_bytes(2, "little") + (6000).to_bytes(2, "little"),
+     (5000, 6000)),
+])
+def test_declared_size_is_read_without_a_decoder(mime, header, size):
+    assert tool_images.declared_size(header + b"\x00" * 16, mime) == size
+    refused = bound_image(header + b"\x00" * 16, "big.gif")
+    assert isinstance(refused, str) and "5000x6000" in refused
+
+
+def test_a_webp_canvas_is_refused_before_pillow_opens_it():
+    """libwebp allocates two full canvases while opening an animated WebP; the
+    VP8X header is read first (Codex, 2026-10-02)."""
+    vp8x = (b"RIFF" + (30).to_bytes(4, "little") + b"WEBP" + b"VP8X"
+            + (10).to_bytes(4, "little") + b"\x02\x00\x00\x00"
+            + (9999).to_bytes(3, "little") + (9999).to_bytes(3, "little"))
+    assert tool_images.declared_size(vp8x, "image/webp") == (10000, 10000)
+    refused = bound_image(vp8x, "anim.webp")
+    assert isinstance(refused, str) and "10000x10000" in refused
 
 
 # --------------------------------------------------------------------------- #
@@ -150,7 +207,7 @@ def test_an_image_is_read_whole_inside_the_jail_with_its_own_output_cap(tmp_path
     spy = _Spy(ToolRun(0, data, None, 0.0))
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
     shown = universe_tools.read_file(_universe(tmp_path), "previews/village.png")
-    assert isinstance(shown, ToolImage) and shown.data == data
+    assert isinstance(shown, ToolImage) and (shown.width, shown.height) == (10, 10)
     call = spy.calls[0]
     assert call["inner"][-1] == "/u/previews/village.png"
     assert "cat --" in call["inner"][2]
@@ -219,5 +276,37 @@ def test_the_engine_read_returns_image_content_the_client_accepts(tmp_path, monk
     kinds = [block.type for block in shot.content]
     assert kinds == ["text", "image"], kinds
     assert shot.content[1].mimeType in ("image/png", "image/jpeg")
-    assert "shown as 1568x523" in shot.content[0].text
+    assert "3000x1000 image/png, shown as 1568x523" in shot.content[0].text
     assert not text.is_error and text.content[0].text.startswith("text body")
+
+
+def test_the_http_loop_gets_a_line_instead_of_an_image():
+    """The engine-owned HTTP loop's results are text by contract; an image block
+    would hold the turn as unsupported (Codex, 2026-10-02). It becomes a line."""
+    from mcp.types import CallToolResult, TextContent
+
+    from tinyassets.engine_tool_client import text_only
+
+    shown = bound_image(_png(8, 8), "a.png")
+    result = CallToolResult(content=shown.content_blocks(), isError=False)
+    projected = text_only(result)
+    assert [b.type for b in projected.content] == ["text", "text"]
+    assert projected.content[0].text == shown.text
+    assert "carries text only" in projected.content[1].text
+    plain = CallToolResult(content=[TextContent(type="text", text="x")], isError=False)
+    assert text_only(plain) is plain
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="rlimits are POSIX")
+def test_the_decode_runs_in_a_child_whose_memory_limit_bites(monkeypatch):
+    """The daemon never decodes: a child does, under an address-space limit. With
+    the limit shrunk below what a legitimate 4000x4000 decode needs, it is
+    refused -- proving the limit is applied, not just declared."""
+    data = _png(4000, 4000)
+    assert isinstance(bound_image(data, "ok.png"), ToolImage)
+    monkeypatch.setattr(tool_images, "DECODE_MEMORY_BYTES", 200 * 1024 * 1024)
+    # Control: the child starts and decodes a small image under the same limit,
+    # so the refusal below is the decode's memory, not a child that never ran.
+    assert isinstance(bound_image(_png(8, 8), "small.png"), ToolImage)
+    refused = bound_image(data, "big.png")
+    assert isinstance(refused, str) and refused.startswith("error:"), refused
