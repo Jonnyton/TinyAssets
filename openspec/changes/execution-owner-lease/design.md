@@ -55,24 +55,37 @@ This revision answers both; the round-1 cross-reference is at the end.
 
 **Effect-executor fencing** is scoped by owner key. There is no global "cancel everything older than G".
 
-### D2. Acquisition: released, or provably dead; restore is an explicit offline step
-A process acquires `owner_key` inside `BEGIN IMMEDIATE` on the lease store. One of three conditions must hold:
-- the row is `released`;
-- `process_liveness.owner_state(holder_token) == DEAD`;
-- no row exists.
+### D2. Acquisition: voluntary release, or kernel-proven death of the WHOLE owner tree; restore is gated
+A process acquires `owner_key` inside `BEGIN IMMEDIATE` on the lease store. There are two distinct paths, plus first use, and no acquisition happens while a restore is in progress (below).
 
-The acquirer:
-- sets `generation = max(row.generation, max_fence_seen(owner_key)) + 1`;
+- **Voluntary release.** The row is `released`. The old owner released it in D4's idle transaction, so it holds no execution for that key.
+- **Death recovery** (round-2 finding 1). The holder's process dying is NOT enough: today's HTTP engines are ordinary subprocesses (`engine_mcp_http.py:277`) that can outlive the server and keep dispatching. So every process that executes for an owner takes a **shared** flock (`LOCK_SH`) on that owner's tree lock `.owner_tree/<holder_token>.lock`, inherited by being opened at that process's own start, never by fd inheritance:
+  - the server process;
+  - every engine child;
+  - every worker the owner spawns.
+
+  Death recovery requires `LOCK_EX|LOCK_NB` on the tree lock to SUCCEED. The kernel grants that only when no member of the tree is alive, whatever killed it. This is kernel-proven quiescence of every executor that could still act for the old generation. Effects those processes already sent externally remain potentially completed: they are reconciled as unknown (D2 of #4263), never replayed. The holder's own liveness token (`process_liveness`) still blocks a contender while it is alive.
+- **First use.** No row exists for the key.
+
+**The acquirer:**
+- sets `generation = max(row.generation, catalog_high_water(owner_key)) + 1`. `catalog_high_water` reads the per-key fence high-water that the lease store itself records. Every `advance_fence`/`init_fence` writes the store's fence and the lease store's `fence_high_water(owner_key, store)` together, with the store write first; a crash between them leaves the store ahead, and restore reads the stores themselves;
 - mints a 32-byte proof and stores only its sha256;
-- stores its own `owner_token`, so it holds the token's liveness flock for its whole life.
+- records its own `owner_token` and tree lock.
 
-**Liveness retention.** `process_liveness` cleanup must never delete a token that a lease row names. The lease store is added to the cleanup's "still named" check (`runtime/assigned_queue_consumer.py:~265`). An UNKNOWN holder (its liveness file is missing) blocks acquisition. It is never read as dead (round-1 finding 5).
+**Liveness retention.** Cleanup (`runtime/assigned_queue_consumer.py:~265`) must never delete a liveness file or tree lock that a lease row, or a pending row's frontend (D7), names. An UNKNOWN holder blocks; it is never read as dead.
 
-**Restore.** After a restore, liveness files are not trusted. `scripts/owner_lease_restore.py` refuses unless no daemon or engine process is running against the data root (it checks the host-mutation lock plus a process scan). It then reads EVERY registered owner store's fences and `agent_turns.owner_generation` per key. It writes each key's high-water as a `released` row at that generation, and records a restore manifest. Ordinary acquisition then takes high-water + 1.
+**Restore** (round-2 finding 2: a gate, not a scan).
+- The lease store carries `restore_state(singleton, state CHECK IN ('none','in_progress'), started_at, manifest_json)`. Every acquisition and every `init_fence` refuses while `state = 'in_progress'`. An interrupted restore therefore fails closed: no owner can start until the tool is re-run to completion.
+- `scripts/owner_lease_restore.py` runs in a fixed order:
+  1. takes the host-mutation flock and holds it to the end;
+  2. stops the stack (`docker compose stop daemon` plus every service that mounts the data volume, found by a volume-mount scan, not a process-name scan);
+  3. sets `restore_state = 'in_progress'` in its own committed transaction;
+  4. reads every store in the catalog (below), plus a deterministic offline scan of `<data_root>` and `<data_root>/*/` for each registered store filename, so stores the catalog never saw are still found;
+  5. computes each key's high-water as the max of the recovered lease generation, every recovered fence, and every `agent_turns.owner_generation` (round-2 finding 3: the recovered lease generation is included);
+  6. writes each key's row `released` at that high-water, writes the manifest, and sets `state = 'none'` in ONE transaction.
+- Containers restart only after the tool exits.
 
-Ordinary acquisition never scans every store. It reads only `max_fence_seen` from the stores registered for that key (D3), because restore has already established the high-water.
-
-### D3. Two write primitives, one registry
+### D3. Two write primitives, plus first-fence initialisation and one durable store catalog
 **`fenced(conn, owner_key, lease)`** is used for ordinary owner mutations. It requires an idle connection and raises otherwise. It then runs:
 1. `BEGIN IMMEDIATE`;
 2. read `owner_fence[owner_key]`;
@@ -82,11 +95,19 @@ Ordinary acquisition never scans every store. It reads only `max_fence_seen` fro
 
 It is the one transaction: a helper that commits inside the body is a bug, and a test asserts `conn.in_transaction` holds through the body.
 
-**`advance_fence(conn, owner_key, lease)`** is called only during acquisition, after `verify_lease_proof`. It requires the stored fence to be below `lease.generation` and writes it. It is a different primitive from `fenced`, so the equality check does not reject it (round-1 finding 6).
+**`advance_fence(conn, owner_key, lease)`** is called only during acquisition, after `verify_lease_proof`. It requires the stored fence to be below `lease.generation` and writes it.
 
-**Schema and migrations** run before any process takes a lease, from the startup migration step, under the host-mutation lock. This covers `provider_work_authority`'s `executescript`, the table-rebuild migration, and `ensure_schema`. Store opening is therefore read-and-additive only. A standby or stale process can create missing tables with `IF NOT EXISTS`, but it never rebuilds or alters a table outside that lock.
+**`init_fence(conn, owner_key, lease)`** applies when a store has NO fence row for the key (a store created after acquisition, such as a new universe's `.runs.db`). It requires `verify_lease_proof` and writes the fence at the current generation (round-2 finding 3).
 
-**`OWNER_STORES`** is the explicit registry of owner-written stores, each with its scope (per command center or platform). The inventory test fails on any writer reachable from the owner entrypoints that is neither fenced nor listed with a reason. Dynamic per-universe stores register through their own constructor.
+**The store catalog.** `owner_store_catalog(store_path PK, store_kind, scope, owner_key, registered_at)` lives in the lease store. Every owner-store constructor registers its path before its first fenced write. Restore reads the catalog plus the offline scan.
+
+**Schema and migrations are extracted, not wrapped** (round-2 finding 4). Today, `SQLiteProviderWorkAuthorityStore.connection()` runs its schema, the receipt table rebuild (which commits on its own, `provider_work_authority.py:266,303`) and its column migrations on EVERY open. `AgentTurnJournal._transaction` calls `ensure_schema` before its transaction, and automations (`automations.py:625`) and run input admissions (`run_input_admissions.py:48`) migrate at runtime too. B1 moves every rebuild and `ALTER` into one startup migration step (`tinyassets/storage/migrations.py`), run under the host-mutation flock before the server takes any lease. Store opening keeps only `CREATE ... IF NOT EXISTS`. The B1 inventory test asserts that no connection helper runs `ALTER`, a rebuild, or `executescript` outside that step.
+
+Under C2's mixed-version operation, an old owner may still be serving while a new one has started. Migrations are therefore additive-only: no drop, no rename, no rebuild. A rebuild needs a declared maintenance window (#4263's schema-cutover exception).
+
+**The registry test.** `OWNER_STORES` plus the catalog. The inventory test fails on any writer reachable from the owner entrypoints that is neither fenced nor listed with a reason.
+
+**Engine writes in B1** (round-2 finding 1). Engine children receive the owner key, generation and proof in their environment at spawn. They open their own connections and write through `fenced` with that generation, so an orphaned engine from an older generation commits nothing.
 
 ### D4. A command center moves only when it is idle, so the barrier has nothing to cancel
 **This is the central change from round 1** (findings 7, 8 and 13). For each command center, an owner handover is:
@@ -184,7 +205,17 @@ So a delete cannot race a late insert (round-1 finding 11).
 ## Migration Plan (B1 is coherent and revertible)
 
 - **B0 (precursor, deployed first).** `AgentTurnJournal` inserts name their columns (`agent_turn_journal.py:~410` is positional today). After that, an added column cannot break a revert.
-- **B1. Lease store, keyed fences, `owner_generation`, `advance_fence` and `fenced`, the registry and the restore tool.** The current single process acquires `platform` plus every `cc:` key at boot (acquire by key, lazily on first use). It reconciles `< G` per key. The fence is initialized at acquisition. Revert: the columns and tables are additive and unused by old code.
+- **B1.** It consists of:
+  - the migration extraction (D3);
+  - the lease store, with tree locks, `restore_state`, the catalog and `fence_high_water`;
+  - keyed fences: `fenced`, `advance_fence` and `init_fence`;
+  - `owner_generation`, with reconcile per key `< G` after acquisition;
+  - the restore tool;
+  - engine children writing fenced at their spawn generation.
+
+  The current single process takes the tree lock at start, then acquires `platform`, plus each `cc:` key lazily on first use. Its engines join its tree. Because the server and its engines share the container's PID namespace under tini, a container restart kills the whole tree, and the next boot's death-recovery acquisition proves it.
+
+  Revert safety: B1's columns and tables are additive, and B0 makes old inserts tolerate them. A revert leaves the migration step's additive changes in place, and they are harmless.
 - **B2. Admission rows and op ids, whole-execution counting, and continuation carriage.** Also the D9 steering fix and the D8 cursor fix.
 - **C1. Frontend/owner process split, the D6 envelope and minting, the pending journal (D7), and the module classifier.**
 - **C2. The `deploy-prod` handover path (D4) and the frontend-only path (D10).** Phase 1's wait becomes per-key idleness. Add the metrics (failed requests, interrupted turns, lingering old-owner time) and the force path.
@@ -208,6 +239,7 @@ So a delete cannot race a late insert (round-1 finding 11).
 | 1 | Envelope lacks capabilities; tier must be re-resolved | D6 |
 | 2 | Frontend can assert any user | D6 (accepted, named boundary) |
 | 3 | Retry executes twice | D6a |
+| 4 | Kernel-lock sound for cooperative ownership (AGREE) | D2 keeps the liveness flock and adds the tree lock |
 | 5 | Death proof lost; restore | D2 |
 | 6 | Wrapper not a boundary; advance rejected | D3 |
 | 7 | Barrier topology | D4 (idle move) |
@@ -217,3 +249,15 @@ So a delete cannot race a late insert (round-1 finding 11).
 | 11 | Learning / deletion races | D7, D8 |
 | 12 | Shared stores under per-command-center ownership | D1 |
 | 13 | Drain contradiction; B1 coherence | D4, D10, Migration |
+
+## Round-2 refute (ADAPT) cross-reference
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | Owner death does not prove engine death | D2 tree lock (`LOCK_SH` per executor, `LOCK_EX` proves the whole tree dead); D3 engines write fenced at their spawn generation |
+| 2 | Restore needs a gate, not a scan | D2 `restore_state` plus fail-closed acquisition, held flock, stack stop by volume mount |
+| 3 | Restore can lower a generation; dynamic stores | D2 includes the recovered lease generation; D3 catalog, offline scan and `init_fence` |
+| 4 | Migrations must be extracted | D3: extracted into one startup step, additive-only, inventory test |
+| 5-7, 11 | B2: cross-database admission, exactly-once settlement, spawned descendants, gap-aware learning | **Must resolve in the B2 design addendum before B2 starts** |
+| 8-10 | C1: one winning pending transition, the abandoned projection's authorisation, a principal-scoped deletion exclusion | **Must resolve before C1** |
+| 12 | C2: force scope = container; phase-1 cap rules transitional; closing a busy key makes its requests wait | **Must resolve before C2**. Direction: close a key only at its idle instant, so no request waits behind a turn |
