@@ -414,3 +414,74 @@ def test_local_driver_refuses_to_start_without_the_unisolated_acknowledgement(tm
     with pytest.raises(BoxError):
         LocalBoxProvider(boxes_root=tmp_path / "b", state_dir=tmp_path / "s",
                          owner_of=OWNERS.get)
+
+
+# -- the owner fence and the idle proof (D11 per-command-center handover) -----------------
+
+
+@needs_posix
+def test_try_fence_idle_fences_an_idle_box_and_refuses_older_owners(provider):
+    from tinyassets.boxes import StaleOwner
+
+    old = provider.bind("cc-a", account_id="acct-a", owner_generation=1)
+    provider.write(old, "w1", "/cc/a.txt", b"1", max_bytes=10)
+    assert provider.try_fence_idle("cc-a", owner_generation=2) is True
+    with pytest.raises(StaleOwner):
+        provider.write(old, "w2", "/cc/a.txt", b"2", max_bytes=10)
+    with pytest.raises(StaleOwner):
+        provider.start_exec(old, "e1", ["true"])
+    assert provider.read(old, "/cc/a.txt", max_bytes=10).data == b"1"  # reads are not fenced
+    new = provider.bind("cc-a", account_id="acct-a", owner_generation=2)
+    provider.write(new, "w3", "/cc/a.txt", b"3", max_bytes=10)
+    with pytest.raises(StaleOwner):
+        provider.try_fence_idle("cc-a", owner_generation=1)
+
+
+@needs_posix
+def test_try_fence_idle_changes_nothing_while_an_exec_runs(provider):
+    handle = provider.bind("cc-a", account_id="acct-a", owner_generation=1)
+    exec_id = provider.start_exec(handle, "e1", ["sleep", "5"],
+                                  limits=ExecLimits(wall_seconds=30))
+    assert provider.try_fence_idle("cc-a", owner_generation=2) is False
+    provider.write(handle, "w1", "/cc/a.txt", b"still mine", max_bytes=20)  # not fenced
+    provider.cancel(handle, exec_id)
+    _drain(provider, handle, exec_id)
+    assert provider.try_fence_idle("cc-a", owner_generation=2) is True
+
+
+@needs_posix
+def test_an_exec_racing_the_fence_never_both_proceed(provider):
+    import threading
+
+    from tinyassets.boxes import StaleOwner
+
+    for i in range(20):
+        old = provider.bind("cc-a", account_id="acct-a", owner_generation=10 + i)
+        results = {}
+        go = threading.Barrier(2)
+
+        def start():
+            go.wait()
+            try:
+                results["exec"] = provider.start_exec(old, f"race{i}", ["sleep", "3"],
+                                                      limits=ExecLimits(wall_seconds=30))
+            except StaleOwner:
+                results["exec"] = None
+
+        def fence():
+            go.wait()
+            results["fence"] = provider.try_fence_idle("cc-a", owner_generation=11 + i)
+
+        threads = [threading.Thread(target=start), threading.Thread(target=fence)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        # The exec (3 s) cannot have finished before the fence ran, so exactly one wins:
+        # a fence that succeeded means the exec was refused; an exec that started means
+        # the fence saw it running and changed nothing.
+        assert results["fence"] is not (results["exec"] is not None)
+        if results["exec"] is not None:
+            provider.cancel(old, results["exec"])
+            _drain(provider, old, results["exec"])
+            assert provider.try_fence_idle("cc-a", owner_generation=11 + i) is True

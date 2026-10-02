@@ -60,6 +60,9 @@ _SCHEMA = (
     " incarnation INTEGER NOT NULL,"
     " outcome TEXT,"
     " PRIMARY KEY (command_center_id, op_id))",
+    "CREATE TABLE IF NOT EXISTS fences ("
+    " command_center_id TEXT PRIMARY KEY,"
+    " owner_generation INTEGER NOT NULL)",
     "CREATE TABLE IF NOT EXISTS execs ("
     " exec_id TEXT PRIMARY KEY,"
     " command_center_id TEXT NOT NULL,"
@@ -279,6 +282,29 @@ class BoxHostState:
             return None
         return {"kind": row[0], "state": row[1],
                 "outcome": json.loads(row[2]) if row[2] else None}
+
+    def owner_fence(self, cc: str) -> int | None:
+        with self._lock, self._conn() as conn:
+            row = conn.execute(
+                "SELECT owner_generation FROM fences WHERE command_center_id = ?", (cc,)
+            ).fetchone()
+        return None if row is None else int(row[0])
+
+    def raise_owner_fence(self, cc: str, generation: int) -> bool:
+        """Set the fence to ``generation`` if it is not below the current one. True if set."""
+        with self._lock, self._conn() as conn:
+            row = conn.execute(
+                "SELECT owner_generation FROM fences WHERE command_center_id = ?", (cc,)
+            ).fetchone()
+            if row is not None and int(row[0]) > generation:
+                return False
+            conn.execute(
+                "INSERT INTO fences (command_center_id, owner_generation) VALUES (?, ?)"
+                " ON CONFLICT(command_center_id) DO UPDATE"
+                " SET owner_generation = excluded.owner_generation",
+                (cc, generation),
+            )
+            return True
 
     def register_exec(self, cc: str, op_id: str, exec_id: str) -> None:
         with self._lock, self._conn() as conn:

@@ -33,12 +33,14 @@ from __future__ import annotations
 import enum
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, Union, runtime_checkable
+from typing import ContextManager, Protocol, Union, runtime_checkable
 
 __all__ = [
     "BOX_ROOT",
     "BoxAuthError",
     "BoxBusy",
+    "BoxDeadline",
+    "BoxDeadlineBeforeStart",
     "BoxError",
     "BoxHandle",
     "BoxNotFound",
@@ -61,6 +63,7 @@ __all__ = [
     "OpIdReuse",
     "Snapshot",
     "StaleHandle",
+    "StaleOwner",
     "StreamIn",
     "WriteConflict",
     "WriteMode",
@@ -88,6 +91,18 @@ class BoxOperationRefused(BoxError):
 
 class BoxAuthError(BoxOperationRefused):
     """The handle's account does not own the command center it names."""
+
+
+class StaleOwner(BoxOperationRefused):
+    """The handle's owner generation is below the box's owner fence (a handover moved on)."""
+
+
+class BoxDeadline(BoxError):
+    """A call ran out of time after it may have started: its outcome is unknown."""
+
+
+class BoxDeadlineBeforeStart(BoxDeadline, BoxOperationRefused):
+    """A call ran out of time before it could have had any effect (waiting for the box lock)."""
 
 
 class BoxBusy(BoxError):
@@ -139,6 +154,9 @@ class BoxHandle:
     account_id: str
     epoch: int
     turn_id: str | None = None
+    #: The execution owner's lease generation for this command center (D11). Mutations
+    #: and execs carrying a generation below the box's owner fence are refused.
+    owner_generation: int | None = None
 
 
 @dataclass(frozen=True)
@@ -267,7 +285,8 @@ class BoxProvider(Protocol):
 
     # binding and waking
     def bind(self, command_center_id: str, *, account_id: str,
-             turn_id: str | None = None) -> BoxHandle: ...
+             turn_id: str | None = None,
+             owner_generation: int | None = None) -> BoxHandle: ...
     def committed_generation(self, handle: BoxHandle) -> int: ...
     def ensure_awake(self, handle: BoxHandle, *, reason: str) -> None: ...
 
@@ -302,6 +321,12 @@ class BoxProvider(Protocol):
     def usage(self, handle: BoxHandle) -> BoxUsage: ...
     def suspend(self, handle: BoxHandle) -> None: ...
     def destroy(self, handle: BoxHandle, op_id: str) -> DestroyReceipt: ...
+
+    def try_fence_idle(self, command_center_id: str, *, owner_generation: int) -> bool: ...
+
+    # bounded calls: every call above finishes within the provider's call timeout, or the
+    # deadline set here for calls made inside the block on this thread
+    def bounded(self, deadline_s: float) -> ContextManager[None]: ...
 
     # host lifecycle
     def close(self) -> None: ...
