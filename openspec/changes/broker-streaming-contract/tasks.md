@@ -1,0 +1,23 @@
+## 1. Contract (this change)
+
+- [x] 1.1 Proposal, design and spec delta for I14.
+- [ ] 1.2 Cross-family review of the design (max 3 rounds); log the verdicts
+      in `design.md`.
+
+## 2. Build (S6, after review)
+
+- [ ] 2.1 Frame codec shared with `boxhostd` (D2): control frames, byte
+      frames, stream ids; property tests on framing.
+- [ ] 2.2 Broker process: socket, `SO_PEERCRED` channel classes, supervised
+      restart; fail closed where peer credentials are unavailable.
+- [ ] 2.3 Per-stream authorization through the `resolve_exact_scoped_proxy`
+      checks; box-channel principal derivation.
+- [ ] 2.4 Streaming pinned HTTPS reader: redirects and the OAuth retry
+      before `HEAD`; credit-gated reads; idle and absolute deadlines.
+- [ ] 2.5 Incremental secret scan with hold-back; split-secret tests.
+- [ ] 2.6 `op_id` outcome records, `STATUS`, never re-send after `sent`.
+- [ ] 2.7 Owner-generation fence: persisted, barrier, reload on start.
+- [ ] 2.8 `ScopedConnectionProxy.request` as a one-stream wrapper; delete the
+      spawned worker; every existing caller's tests unchanged.
+- [ ] 2.9 Async client for the thin loop (S7 task 2.3).
+- [ ] 2.10 Measurements (design § Measurement owed); spec sync and archive.
