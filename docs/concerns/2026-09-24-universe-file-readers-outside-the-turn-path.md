@@ -40,7 +40,7 @@ path can be replaced by a link, and the jail allows `symlink`
 (`docs/concerns/2026-10-01-provider-planted-link-reads-another-universe.md`).
 The tool-jail half of the fix no longer bounds the daemon's exposure.
 
-`fix/daemon-link-refusing-reads` (PR #4247) made two things true:
+PR #4254 (`fix/daemon-link-refusing-writes`, superseding #4247) made two things true:
 
 - **One reader, one writer.** `universe_files.read_data_path` /
   `write_data_path` (built on `read_universe_file` / `write_universe_file`)
@@ -53,10 +53,18 @@ The tool-jail half of the fix no longer bounds the daemon's exposure.
   `ingestion` canon/source/manifest writes (`canon_io`, `core`; a linked canon
   root is refused in `resolve_within_canon`), `dispatcher_config.yaml` (was a
   cross-user WRITE), requests, ledger, notes, `work_targets`, premise mirror,
-  `.pause`, heartbeats, `soul/*.yaml`, the config probe, `status` activity.
+  `.pause`, heartbeats, `soul/*.yaml`, the config probe, `status` activity,
+  the `daemon_overview` tail, `soul.md` + `soul_versions/`, the OKF seed,
+  enrichment signals, and every `api/wiki.py` write, append, exclusive
+  create and delete (`unlink_data_path`). A universe wiki root or page
+  path is no longer `resolve()`d before containment; a linked root refuses.
 - **A shrink-only guard.** `tests/test_universe_path_io_guard.py` pins the raw
   file operations left in every module that mentions a universe or data-dir
-  path. A new one fails; a removed one must lower the pin.
+  path, keyed by enclosing function and operation (reads, writes, rename,
+  unlink, os.replace, shutil). A new one fails; a converted one must be
+  deleted from the pin. The pin is the sealed-box migration checklist.
+  It does not count `mkdir` or `Path.replace` (indistinguishable from
+  `str.replace`).
 
 ## Still open
 

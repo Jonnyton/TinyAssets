@@ -264,7 +264,11 @@ def _read_text(path: Path, default: str = "", *, errors: str = "strict") -> str:
     a planted link would otherwise land on another universe's file and the
     plain reader would follow it.
     """
-    from tinyassets.universe_files import UniverseFileError, read_universe_file
+    from tinyassets.universe_files import (
+        MAX_UNIVERSE_FILE_BYTES,
+        UniverseFileError,
+        read_universe_file,
+    )
 
     root = _wiki_root()
     try:
@@ -275,10 +279,19 @@ def _read_text(path: Path, default: str = "", *, errors: str = "strict") -> str:
                 f"{path.name!r} is outside this universe's wiki; nothing was read"
             ) from None
         return _read_platform_text(path, default, errors)
-    try:
-        data = read_universe_file(root, relpath)
-    except FileNotFoundError:
-        return default
+    from tinyassets.universe_files import is_data_path, read_data_path
+
+    if is_data_path(path):
+        # Under the data dir: walked from the data root, so a wiki ROOT that
+        # is (or was swapped for) a link is refused too, not just a page.
+        data = read_data_path(path, max_bytes=MAX_UNIVERSE_FILE_BYTES)
+        if data is None:
+            return default
+    else:
+        try:
+            data = read_universe_file(root, relpath)
+        except FileNotFoundError:
+            return default
     text = data.decode("utf-8", errors=errors)
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -308,8 +321,17 @@ def _wiki_root() -> Path:
 
 @contextmanager
 def _scoped_wiki_root(root: Path) -> Iterator[None]:
-    """Temporarily route wiki helpers to an explicit wiki root."""
-    token = _WIKI_ROOT_OVERRIDE.set(root.resolve())
+    """Temporarily route wiki helpers to an explicit wiki root.
+
+    Never ``resolve()``: a universe's ``wiki -> /data/<other>/wiki`` link would
+    turn the scoped root into the other universe's wiki. A linked root is
+    refused; the root is kept as the (absolute) path the caller named.
+    """
+    from tinyassets.universe_files import UniverseFileError
+
+    if root.is_symlink():
+        raise UniverseFileError(f"the wiki root {root.name!r} is a link; nothing was opened")
+    token = _WIKI_ROOT_OVERRIDE.set(root if root.is_absolute() else root.absolute())
     try:
         yield
     finally:

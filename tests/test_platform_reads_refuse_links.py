@@ -244,3 +244,136 @@ def test_universe_files_has_one_reader_and_one_writer():
     """The single-helper contract: callers import these, nothing reimplements them."""
     assert {"read_data_path", "write_data_path", "read_universe_file",
             "write_universe_file"} <= set(universe_files.__all__)
+
+
+# --- round 2 refute (gpt-6-astra on #4254) ----------------------------------
+
+
+def test_daemon_overview_tail_refuses_a_linked_activity_log(data):
+    _link(data / "u-bravo" / "founder.md", _alpha(data) / "activity.log")
+    with pytest.raises(UniverseFileError):
+        us._tail_file_lines(_alpha(data) / "activity.log", 10)
+    (data / "u-alpha" / "real.log").write_bytes(b"a\nb\nc\n")
+    assert us._tail_file_lines(_alpha(data) / "real.log", 2) == ["b", "c"]
+    assert us._tail_file_lines(_alpha(data) / "absent.log", 2) == []
+
+
+def _bravo_wiki(data: Path) -> Path:
+    wiki = data / "u-bravo" / "wiki"
+    for sub in ("pages", "drafts"):
+        (wiki / sub / "notes").mkdir(parents=True, exist_ok=True)
+        (wiki / sub / "notes" / "secret.md").write_text(FOREIGN, encoding="utf-8")
+    return wiki
+
+
+def test_a_linked_universe_wiki_root_is_refused(data):
+    from tinyassets.api.helpers import _scoped_wiki_root
+    from tinyassets.api.wiki import _wiki_root_for_universe
+
+    _link(_bravo_wiki(data), _alpha(data) / "wiki")
+    with pytest.raises(UniverseFileError):
+        _wiki_root_for_universe("u-alpha")
+    with pytest.raises(UniverseFileError):
+        with _scoped_wiki_root(_alpha(data) / "wiki"):
+            pass
+
+
+def test_wiki_reads_and_writes_refuse_linked_page_dirs(data):
+    from tinyassets.api.helpers import _scoped_wiki_root
+    from tinyassets.api.wiki import _wiki_read, _wiki_write
+
+    bravo_wiki = _bravo_wiki(data)
+    wiki = _alpha(data) / "wiki"
+    wiki.mkdir()
+    for sub in ("pages", "drafts"):
+        _link(bravo_wiki / sub, wiki / sub)
+    with _scoped_wiki_root(wiki):
+        try:
+            out = _wiki_read(page="pages/notes/secret.md")
+        except OSError:
+            out = ""
+        assert FOREIGN not in out
+        try:
+            _wiki_write(category="notes", filename="secret", content="overwritten")
+        except OSError:
+            pass
+    for sub in ("pages", "drafts"):
+        assert (bravo_wiki / sub / "notes" / "secret.md").read_text(encoding="utf-8") == FOREIGN
+        assert sorted(p.name for p in (bravo_wiki / sub / "notes").iterdir()) == ["secret.md"]
+
+
+def test_set_premise_never_writes_a_linked_soul(data):
+    from tinyassets.universe_soul import write_universe_soul
+
+    (data / "u-bravo" / "soul.md").write_text(FOREIGN, encoding="utf-8")
+    (data / "u-bravo" / "soul_versions").mkdir()
+    _link(data / "u-bravo" / "soul.md", _alpha(data) / "soul.md")
+    _link(data / "u-bravo" / "soul_versions", _alpha(data) / "soul_versions")
+    try:
+        write_universe_soul(_alpha(data), purpose="alpha purpose")
+    except OSError:
+        pass
+    assert (data / "u-bravo" / "soul.md").read_text(encoding="utf-8") == FOREIGN
+    assert list((data / "u-bravo" / "soul_versions").iterdir()) == []
+
+
+def test_enrichment_signals_never_write_through_a_link(data):
+    from tinyassets.enrichment_signals import append_enrichment_signals, enrichment_signals_path
+
+    bravo_signals = enrichment_signals_path(data / "u-bravo")
+    bravo_signals.write_text(json.dumps([{"secret": FOREIGN}]), encoding="utf-8")
+    _link(bravo_signals, enrichment_signals_path(_alpha(data)))
+    with pytest.raises((OSError, RuntimeError)):
+        append_enrichment_signals(_alpha(data), [{"kind": "probe"}])
+    assert json.loads(bravo_signals.read_text(encoding="utf-8")) == [{"secret": FOREIGN}]
+
+
+def test_a_refused_manifest_read_raises_instead_of_reading_empty(data):
+    from tinyassets.ingestion.core import SourceManifest
+
+    canon = _alpha(data) / "canon"
+    canon.mkdir()
+    _link(data / "u-bravo" / "canon" / ".lore.md.meta.json", canon / ".manifest.json")
+    with pytest.raises(OSError):
+        SourceManifest.load(canon)
+
+
+def test_append_exclusive_and_unlink_never_cross_a_linked_dir(data):
+    from tinyassets.universe_files import unlink_data_path
+
+    _link(data / "u-bravo", _alpha(data) / "elsewhere")
+    target = _alpha(data) / "elsewhere" / "founder.md"
+    for call in (
+        lambda: write_data_path(target, "x", mode="append"),
+        lambda: write_data_path(_alpha(data) / "elsewhere" / "new.md", "x", mode="exclusive"),
+        lambda: unlink_data_path(target),
+    ):
+        with pytest.raises(OSError):
+            call()
+    assert (data / "u-bravo" / "founder.md").read_text(encoding="utf-8") == FOREIGN + "\n"
+    assert not (data / "u-bravo" / "new.md").exists()
+
+
+def test_append_and_exclusive_refuse_a_linked_file(data):
+    link = _alpha(data) / "log.md"
+    _link(data / "u-bravo" / "founder.md", link)
+    with pytest.raises(OSError):
+        write_data_path(link, "x", mode="append")
+    with pytest.raises(FileExistsError):
+        write_data_path(link, "x", mode="exclusive")
+    assert (data / "u-bravo" / "founder.md").read_text(encoding="utf-8") == FOREIGN + "\n"
+
+
+def test_a_failed_write_leaves_no_temp_file(data, monkeypatch):
+    if not getattr(universe_files.fs, "_POSIX", False):
+        pytest.skip("the descriptor write path is POSIX")
+    udir = _alpha(data)
+
+    def broken_write(fd, view):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(universe_files.os, "write", broken_write)
+    with pytest.raises(OSError):
+        write_data_path(udir / "x.json", "{}")
+    monkeypatch.undo()
+    assert [p.name for p in udir.iterdir()] == []

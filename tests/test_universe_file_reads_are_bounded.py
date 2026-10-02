@@ -66,10 +66,6 @@ ALLOWED = {
     ("tinyassets/universe_intelligence.py", "read_operating_instructions"):
         "creates the seed AGENTS.md with O_CREAT|O_EXCL|O_NOFOLLOW and writes it; "
         "reading it goes through universe_files",
-    ("tinyassets/api/wiki.py", "_append_wiki_log"):
-        "opens log.md in append mode to WRITE one line; it never reads it",
-    ("tinyassets/api/wiki.py", "_wiki_file_bug"):
-        "opens a new bug page with mode 'x' to WRITE it; it never reads it",
     ("tinyassets/wiki/okf_export.py", "_conformance_report"):
         "reads the bundle this export just wrote into target_dir, which is refused "
         "when inside the wiki root; not an agent-written file",

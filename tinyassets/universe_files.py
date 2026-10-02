@@ -26,6 +26,7 @@ read in the daemon turn-path modules, so this stays the only way in.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import uuid
@@ -40,12 +41,15 @@ __all__ = [
     "MAX_PLATFORM_FILE_BYTES",
     "MAX_UNIVERSE_FILE_BYTES",
     "UniverseFileError",
+    "is_data_path",
     "list_universe_dir",
     "load_untrusted_yaml",
     "open_runtime_dir",
     "read_data_path",
     "read_universe_file",
     "read_universe_text",
+    "unlink_data_path",
+    "unlink_universe_file",
     "write_data_path",
     "write_universe_file",
 ]
@@ -227,66 +231,127 @@ def _split(relpath: str) -> list[str]:
     return parts
 
 
+def _windows_parent(root: Path, parts: list[str], *, create: bool) -> Path:
+    """Non-POSIX: the parent of ``parts[-1]``, each component checked to be no
+    link BEFORE anything is created inside it. Check-then-use: this host is
+    the single-tenant tray, so the cross-universe guarantee is POSIX-only."""
+    parent = root
+    for part in parts[:-1]:
+        parent = parent / part
+        try:
+            info = parent.lstat()
+        except FileNotFoundError:
+            if not create:
+                raise
+            parent.mkdir()
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+            raise UniverseFileError(f"{part!r} is a link; universe files are written link-free")
+    return parent
+
+
 def write_universe_file(
     universe_dir: Path | str,
     relpath: str,
     data: bytes,
     *,
     make_parents: bool = True,
+    mode: str = "replace",
 ) -> None:
-    """Atomically replace ``universe_dir/relpath`` with ``data``, link-free.
+    """Write ``universe_dir/relpath`` with no link followed. The one writer.
 
     Every directory component is opened (and with ``make_parents`` created)
-    with no link followed; the bytes go to a fresh temp file created
-    ``O_EXCL|O_NOFOLLOW`` in that verified directory, then renamed over the
-    name. A rename replaces a link at the final name rather than writing
-    through it, so a planted ``config.yaml -> /data/<other>/config.yaml``
-    becomes this universe's own file and the other one is never touched.
+    with no link followed. ``mode``:
+
+    * ``"replace"`` (default): the bytes go to a fresh temp file created
+      ``O_EXCL|O_NOFOLLOW`` in the verified directory, then renamed over the
+      name. A rename replaces a link at the final name rather than writing
+      through it, so a planted ``config.yaml -> /data/<other>/config.yaml``
+      becomes this universe's own file and the other is never touched.
+    * ``"exclusive"``: create the name ``O_CREAT|O_EXCL|O_NOFOLLOW``;
+      ``FileExistsError`` if anything (a link included) is already there.
+    * ``"append"``: open ``O_APPEND|O_CREAT|O_NOFOLLOW``; a link refuses.
     """
+    if mode not in ("replace", "exclusive", "append"):
+        raise ValueError(f"unknown write mode {mode!r}")
     root = Path(universe_dir)
     parts = _split(relpath)
     name = parts[-1]
-    tmp = f".{name}.{uuid.uuid4().hex[:12]}.tmp"
-    if getattr(fs, "_POSIX", False):
-        dir_fd = _parent_dir_fd(root, parts, create=make_parents)
+    nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    if not getattr(fs, "_POSIX", False):
+        parent = _windows_parent(root, parts, create=make_parents)
+        target = parent / name
+        if mode != "replace":
+            if os.path.islink(target):
+                raise UniverseFileError(f"{relpath!r} is a link; nothing was written")
+            with open(target, "xb" if mode == "exclusive" else "ab") as handle:  # noqa: PTH123
+                handle.write(data)
+            return
+        temp = parent / f".{name}.{uuid.uuid4().hex[:12]}.tmp"
         try:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-            flags |= getattr(os, "O_CLOEXEC", 0)
-            fd = os.open(tmp, flags, 0o666, dir_fd=dir_fd)
+            with open(temp, "xb") as handle:  # noqa: PTH123 - parent link-checked above
+                handle.write(data)
+            os.replace(temp, target)
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
+        return
+    dir_fd = _parent_dir_fd(root, parts, create=make_parents)
+    try:
+        if mode != "replace":
+            flags = os.O_WRONLY | os.O_CREAT | nofollow
+            flags |= os.O_EXCL if mode == "exclusive" else os.O_APPEND
             try:
-                view = memoryview(data)
-                while view:
-                    view = view[os.write(fd, view):]
+                fd = os.open(name, flags, 0o666, dir_fd=dir_fd)
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise UniverseFileError(
+                        f"{relpath!r} is a link; universe files are written link-free"
+                    ) from exc
+                raise
+            try:
+                _write_all(fd, data)
+            finally:
+                os.close(fd)
+            return
+        tmp = f".{name}.{uuid.uuid4().hex[:12]}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o666, dir_fd=dir_fd)
+        try:
+            try:
+                _write_all(fd, data)
                 os.fsync(fd)
             finally:
                 os.close(fd)
+            os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
             try:
-                os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-            except BaseException:
-                try:
-                    os.unlink(tmp, dir_fd=dir_fd)
-                except OSError:
-                    pass
-                raise
-        finally:
-            os.close(dir_fd)
+                os.unlink(tmp, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(dir_fd)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view):]
+
+
+def unlink_universe_file(universe_dir: Path | str, relpath: str) -> None:
+    """Remove ``universe_dir/relpath`` (a link there is removed itself), never
+    through a linked directory. ``FileNotFoundError`` when absent."""
+    root = Path(universe_dir)
+    parts = _split(relpath)
+    if not getattr(fs, "_POSIX", False):
+        (_windows_parent(root, parts, create=False) / parts[-1]).unlink()
         return
-    parent = root
-    for part in parts[:-1]:
-        parent = parent / part
-        if make_parents and not os.path.lexists(parent):
-            parent.mkdir()
-    if len(parts) > 1:
-        _lstat_nofollow_windows(root, "/".join(parts[:-1]))
-    target = parent / name
-    temp = parent / tmp
-    with open(temp, "xb") as handle:  # noqa: PTH123 - parent link-checked above
-        handle.write(data)
+    dir_fd = _parent_dir_fd(root, parts, create=False)
     try:
-        os.replace(temp, target)
-    except BaseException:
-        temp.unlink(missing_ok=True)
-        raise
+        os.unlink(parts[-1], dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _data_relative(path: Path) -> tuple[Path, str] | None:
@@ -305,6 +370,11 @@ def _data_relative(path: Path) -> tuple[Path, str] | None:
             return None
         return root, rel
     return None
+
+
+def is_data_path(path: Path | str) -> bool:
+    """Whether ``path`` names something under the data dir (lexically)."""
+    return _data_relative(Path(path)) is not None
 
 
 def read_data_path(path: Path | str, *, max_bytes: int = MAX_UNIVERSE_FILE_BYTES) -> bytes | None:
@@ -333,29 +403,51 @@ def read_data_path(path: Path | str, *, max_bytes: int = MAX_UNIVERSE_FILE_BYTES
         raise UniverseFileError(f"{located[1]!r} was refused: {exc}") from exc
 
 
-def write_data_path(path: Path | str, data: bytes | str, *, make_parents: bool = True) -> None:
-    """Atomically write a daemon file by absolute path, never through a link.
+def write_data_path(
+    path: Path | str,
+    data: bytes | str,
+    *,
+    make_parents: bool = True,
+    mode: str = "replace",
+) -> None:
+    """Write a daemon file by absolute path, never through a link.
 
     Under the data dir this is :func:`write_universe_file` from the data root
-    (no link at any component, temp + rename in the verified directory).
-    Outside it, the same temp + rename with a plain path.
+    (no link at any component; ``mode`` replace / exclusive / append). Outside
+    it -- a path in no universe -- the same modes on a plain path.
     """
     payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
     located = _data_relative(Path(path))
     if located is not None:
-        write_universe_file(located[0], located[1], payload, make_parents=make_parents)
+        write_universe_file(
+            located[0], located[1], payload, make_parents=make_parents, mode=mode,
+        )
         return
     target = Path(path)
     if make_parents:
         target.parent.mkdir(parents=True, exist_ok=True)
+    if mode != "replace":
+        with open(target, "xb" if mode == "exclusive" else "ab") as handle:  # noqa: PTH123
+            handle.write(payload)
+        return
     temp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:12]}.tmp")
-    with open(temp, "xb") as handle:  # noqa: PTH123 - outside every universe
-        handle.write(payload)
     try:
+        with open(temp, "xb") as handle:  # noqa: PTH123 - outside every universe
+            handle.write(payload)
         os.replace(temp, target)
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
+
+
+def unlink_data_path(path: Path | str) -> None:
+    """Remove a daemon file by absolute path, never through a linked directory.
+    ``FileNotFoundError`` when absent."""
+    located = _data_relative(Path(path))
+    if located is None:
+        Path(path).unlink()
+        return
+    unlink_universe_file(located[0], located[1])
 
 
 def load_untrusted_yaml(text: str, *, max_bytes: int = MAX_CONFIG_BYTES) -> object:

@@ -3626,16 +3626,17 @@ def _overview_limits(limit_param: Any) -> dict[str, int]:
 
 
 def _tail_file_lines(path: Path, n: int) -> list[str]:
-    """Return the last `n` lines of `path`, or empty list on missing/error."""
-    if not path.exists() or n <= 0:
+    """Return the last `n` lines of `path`; empty when absent.
+
+    Read link-free (``read_data_path``): a refused read raises rather than
+    returning another universe's lines through a planted ``activity.log``.
+    """
+    if n <= 0:
         return []
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            # Naive tail — OK up to 1000 lines for activity.log sized files.
-            lines = fh.readlines()
-        return [ln.rstrip("\n") for ln in lines[-n:]]
-    except OSError:
+    raw = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+    if raw is None:
         return []
+    return raw.decode("utf-8", "replace").splitlines()[-n:]
 
 
 def _action_daemon_overview(
@@ -5186,7 +5187,7 @@ def _canon_json(canon_dir: Path, name: str) -> dict[str, Any]:
     """
     if "/" in name or "\\" in name or name in ("", ".", ".."):
         return {}
-    raw = read_data_path(canon_dir / name, max_bytes=MAX_CONFIG_BYTES)
+    raw = read_data_path(canon_dir / name, max_bytes=MAX_PLATFORM_FILE_BYTES)
     if raw is None:
         return {}
     try:

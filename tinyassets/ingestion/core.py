@@ -170,39 +170,35 @@ class SourceManifest:
         return existing.sha256 != sha256
 
     def save(self, canon_dir: Path) -> None:
-        """Write the manifest to canon/.manifest.json."""
-        # Containment before write: a symlinked ``.manifest.json`` pointing
-        # outside canon_dir would let the clobbering write escape. Resolve and
-        # reject escapes before any I/O.
-        try:
-            resolve_within_canon(
-                canon_dir, ".manifest.json", kind="manifest"
-            )
-        except ValueError:
-            logger.warning("Manifest escapes canon dir, refusing to write")
-            return
+        """Write the manifest to canon/.manifest.json, link-free.
+
+        ``write_data_path`` refuses a link anywhere on the path (and replaces,
+        never writes through, one at the name). A refusal raises.
+        """
         data = {
             name: asdict(entry) for name, entry in self.entries.items()
         }
-        try:
-            write_data_path(canon_dir / ".manifest.json", json.dumps(data, indent=2) + "\n")
-        except OSError:
-            logger.debug("Failed to write manifest", exc_info=True)
+        write_data_path(canon_dir / ".manifest.json", json.dumps(data, indent=2) + "\n")
 
     @classmethod
     def load(cls, canon_dir: Path) -> SourceManifest:
-        """Load the manifest from canon/.manifest.json."""
+        """Load the manifest from canon/.manifest.json, link-free.
+
+        Absent reads as an empty manifest. A REFUSED read (a link on the path)
+        raises: ingestion must not go on to write and save a manifest derived
+        from "empty" over the real one.
+        """
         manifest = cls()
-        # Containment before read: ``read_text`` follows symlinks, so a
-        # symlinked manifest pointing outside canon_dir would leak external
-        # content. Resolve and reject escapes before any read.
-        try:
-            resolve_within_canon(
-                canon_dir, ".manifest.json", kind="manifest"
-            )
-        except ValueError:
-            logger.warning("Manifest escapes canon dir, refusing to read")
+        raw = read_data_path(canon_dir / ".manifest.json", max_bytes=MAX_PLATFORM_FILE_BYTES)
+        if raw is None:
             return manifest
+        try:
+            data = json.loads(raw.decode("utf-8"))
+            for name, entry_data in data.items():
+                manifest.entries[name] = ManifestEntry(**entry_data)
+        except (ValueError, TypeError, AttributeError):
+            logger.debug("Failed to load manifest", exc_info=True)
+        return manifest
         raw = read_data_path(canon_dir / ".manifest.json", max_bytes=MAX_PLATFORM_FILE_BYTES)
         if raw is None:
             return manifest
