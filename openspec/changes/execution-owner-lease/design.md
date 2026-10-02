@@ -352,39 +352,50 @@ Learning settlement uses explicit ranges. `settle_learned_cursor(from_turn, to_t
   - **The condition-4 additions** (linger alarm, two-generation cap, per-command-center pending status) attach to whichever slice first allows two owner processes to coexist.
 - **C1** (frontend/owner split plus #4272's frontend blue-green) proceeds independently. With it, most deploys interrupt nothing.
 
-## C1 design addendum: the frontend is an authenticating proxy, and the owner is today's server
+## C1 design addendum (revised after its shape review): frontends serve the app shell and proxy everything else; the owner verifies as today
 
-**Problem.** A frontend-only deploy must interrupt nothing (the lead's (c)). Frontends must also hold NO owner-written state. During blue-green, two frontends run at once (#4272), and 82 stores are not fenced yet (`owner_stores.FENCE_BEFORE_C2`). So no tool may execute in a frontend: reads, writes, `converse` and `run_graph` all execute in the owner.
+**Problem.** UI-only merges (`app.html`, assets) are frequent. Today every one of them recreates the daemon and waits for in-flight work. A frontend tier that owns only the app shell lets those merges deploy blue-green and interrupt nothing. Frontends hold NO owner state: 82 stores are not fenced yet, and two colours coexist during a switch.
 
-### C1-1. The shape: the owner keeps the MCP server; the frontend is an authenticating reverse proxy
-- **The owner** is today's daemon (`universe_server` with FastMCP, the app API, the scheduler and the engines). It listens on a Unix socket (`/run/tinyassets/owner.sock`), not a TCP port. The MCP sessions (`mcp-session-id`), the tool executions and the turn tasks all live in the owner, so they survive any frontend replacement.
-- **A frontend** is small. It:
-  - terminates TLS-free HTTP from HAProxy (#4272);
-  - verifies the bearer exactly as `auth/middleware` does today (the same code, imported);
-  - serves the static app;
-  - forwards each `/mcp` request (including SSE streams) to the owner socket, with an identity envelope (C1-2).
+### C1-1. The shape (round-1 review: proxy kept; envelope removed)
+- **The owner is today's daemon, unchanged in authority.** It serves every route except the app shell, and it verifies bearers, cookies and webhook signatures with today's code, on the request it actually receives. MCP sessions, tools, turns, `/app/token`, the app APIs, uploads, `/mcp/hooks/*`, `/app/billing/webhook` and `/mcp/pulse` all stay in the owner. It listens on a Unix socket, `/run/tinyassets/owner.sock`, as well as on its TCP port during the transition.
+- **A frontend is a plain reverse proxy plus a static file server.** It serves only these, statelessly from its image:
+  - the app shell and bundled assets;
+  - `/app/sw.js`;
+  - the OAuth discovery documents;
+  - the shell-only GET of `/app/model-callback/{flow}`.
 
-  It runs no tool, opens no owner store, and has no scheduler.
-- **Why a proxy and not a new RPC.** It reuses the whole MCP stack unchanged, which makes the tool contract trivially identical. Streaming, progress notifications and reconnect behave as today. Op-id attach (D6a) is just MCP's own request id plus session, forwarded verbatim.
+  Everything else is forwarded byte-for-byte to the owner socket. That includes methods, headers (cookies, Origin, Host, mcp-session-id, protocol headers), streamed request bodies and SSE responses. The frontend never authenticates and never constructs `create_streamable_http_app()`. **There is no identity envelope**, so there is no new trust boundary: a compromised frontend sees only what a TLS-terminating proxy sees today.
+- **No retries.** Neither HAProxy nor the frontend retries a forwarded request (`retry-on none`). An ambiguous delivery is reported to the client exactly as a dropped connection is today. D6a's operation attach is not promised in C1 (round-1 finding 3).
 
-### C1-2. The identity envelope replaces bearer verification only on the owner socket
-- **What the frontend adds:** a header `X-TA-Identity: <base64 JSON>`, carrying the verified `Identity` (user, capabilities, tenant, auth method), the session and the request id. It also adds `X-TA-Identity-MAC: HMAC-SHA256(key, body-digest || envelope || ts)`.
-- **The key** is per owner start: written 0600 into a directory on a volume shared only with frontends (D6).
-- **The owner's middleware** accepts this envelope only on the Unix socket, only with a valid MAC, and only when it is fresh (60 s). On that socket it does NOT re-verify a bearer. On TCP (today's port, during the transition) it keeps today's bearer verification and ignores any envelope header.
-- **Re-resolved in the owner, never trusted from the frontend:** the provider-request capability (minted in the owner's `on_call_tool` from the envelope identity exactly as it is from a bearer identity today), the tier, and universe access.
+### C1-2. Sessions and streams across a switch
+- **Sessions.** The owner runs FastMCP in stateful mode; this is pinned by a test. A later request through a new colour carrying the same `mcp-session-id` reaches the same owner session (round-1 finding 4).
+- **Streams.** A response stream is NOT resumable: there is no event store. So an old colour is drained, never cut. #4272's old colour leaves the pool for new connections, and it stays up until its last proxied stream ends. There is no automatic stream cap, for the same reason as condition 4: a cut buys only a lost reply. An explicit operator stop may cut it, and the tool keeps running in the owner (round-1 finding 5). D6's phrase "an open frontend connection" applies to the deferred handover slice only. In C1, execution never depends on the frontend.
 
-### C1-3. Frontend-only deploys
-- `runtime_paths` gains a frontend/owner classification. Frontend modules are the proxy, the static app assets, and `auth/` code used only for verification.
-- A merge that changes only frontend modules deploys a new frontend colour behind HAProxy (#4272). Old streams finish on the old colour; new requests go to the new one. The owner is untouched, so no turn, run or tool call is interrupted.
-- Any other change is an owner deploy, which keeps phase 1's whole-process wait (B2b is deferred).
+### C1-3. Readiness and build evidence
+- **Readiness.** A new colour is ready when it can complete a proxied round trip to the owner socket (a `/mcp/pulse` GET with the canary bearer) and is serving its own shell. Only then does #4272 mark it `ready`.
+- **Build evidence is reported separately.** Each frontend adds `X-TA-Frontend: <colour>/<git sha>` to its responses. The owner keeps reporting its own build in `release_state`. `deployed_sha.py` learns to assert both: which frontend served the probe, and which owner build answered (round-1 finding 11).
 
-### C1-4. Pending text: no frontend journal in C1
-D7's pending-request journal guards a frontend that holds a request while the owner is unavailable. In C1 the owner is never handed over without the phase-1 wait. A frontend that cannot reach the owner returns the same honest "TinyAssets is restarting" error the platform gives today. Before acknowledging, though, it records the message through the owner's own durable path if the owner is reachable, so a frontend never acknowledges text it did not persist. The pending journal, with its abandonment states and its deletion exclusion (C1 must-resolves 8-10), therefore moves to the slice that introduces owner handover (B2b/C2). It is not built in C1.
+### C1-4. Acknowledgement semantics are unchanged
+C1 adds no holding queue and makes no new durability claim. A frontend that cannot reach the owner returns an honest "TinyAssets is restarting" error, with no acknowledgement. Phase 1's guarantees for owner deploys stay exactly as limited as documented: the cap, the yield, and the idle-to-swap race (round-1 finding 10). The pending journal belongs to the deferred handover slice.
 
-### C1-5. Topology and order of work
-1. The owner listens on the Unix socket in addition to TCP. The envelope path is behind a flag that defaults off.
-2. The frontend service is added to compose. HAProxy (#4272) routes to the frontend colours; the frontends route to the owner socket.
-3. Flip the public path to the frontends. Keep the TCP fallback for one release, then remove it.
-4. Classify modules and wire deploy-prod's frontend-only path.
+### C1-5. Deploy classification and order of work
+- **Classification.** `runtime_paths` classifies a change as frontend-only when it touches only the shell assets, the frontend proxy config, or the frontend image. Shared `auth/` and server code are owner code (round-1 finding 11). A frontend-only merge takes #4272's blue-green; any other merge is an owner deploy with phase 1's wait.
+- **Order of work.**
+  - **C1a:** the owner listens on the socket; the frontend image (a proxy plus the shell); compose; tests for the route table and stateful mode.
+  - **C1b:** after #4272, flip the public path, add the frontend-only deploy path and the build evidence, and remove the TCP fallback a release later.
 
-Steps 1-2 are one PR (C1a). Steps 3-4 depend on #4272 (C1b).
+### C1 shape review (Codex, round 1): ADAPT. Disposition
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | Identity can cross, if the owner verifies per message | Moot: the owner verifies as today, with no envelope |
+| 2 | Frontend verification needs `.auth.db` in OAuth modes | Moot: frontends do not authenticate |
+| 3 | MCP ids are not operation attach; replays within 60 s | No retries anywhere; attach is not promised in C1 |
+| 4 | Sessions survive a switch in stateful mode | Kept; stateful mode is pinned by a test |
+| 5 | Streams are not resumable; #4272's cap cuts replies | Drain without a cap; operator stop only |
+| 6 | Route table incomplete; `/app/token` is stateful | The frontend serves only the shell, and everything else goes to the owner |
+| 7 | A body digest conflicts with streamed uploads | Moot: there is no digest; byte-for-byte streaming |
+| 8 | MAC binding contract | Moot: there is no MAC |
+| 9 | Key distribution | Moot: there is no key |
+| 10 | Acknowledgement claims too strong | C1 adds no claim; phase 1's limits stand |
+| 11 | Readiness and build evidence | Proxied pulse round trip; separate frontend and owner build headers |
