@@ -32,6 +32,7 @@ looks like a result.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import subprocess
 import sys
@@ -298,3 +299,49 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+PREVIEW_DIR = "previews"
+
+
+def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
+    """Put ``png`` at ``/u/previews/<ui_id>.png``; the path as the agent sees it.
+
+    The folder is the agent's own and the agent can change it, so the write
+    trusts nothing in it: ``previews`` must be a real directory (not a link or
+    junction), the bytes go to a fresh exclusive temp file, and ``os.replace``
+    swaps it in -- which breaks a hard link the agent may have planted at the
+    target instead of writing through it.
+    """
+    import os
+    import re
+    import stat
+
+    # The server stores any non-empty ui_id; only the app's own id shape names
+    # a file, so nothing like "../x" ever becomes a path.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", str(ui_id)):
+        raise PreviewUnavailable(
+            f"ui_preview_failed: ui_id {ui_id!r} is not lowercase letters, digits and dashes")
+    root = Path(universe_dir)
+    folder = root / PREVIEW_DIR
+    try:
+        info = os.lstat(folder)
+    except FileNotFoundError:
+        folder.mkdir()
+        info = os.lstat(folder)
+    if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+        raise PreviewUnavailable(f"ui_preview_failed: /u/{PREVIEW_DIR} is not a plain folder")
+    name = f"{ui_id}.png"
+    temp = folder / f".{name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) \
+        | getattr(os, "O_BINARY", 0)
+    fd = os.open(temp, flags, 0o644)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(png)
+        os.replace(temp, folder / name)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+        raise
+    return f"/u/{PREVIEW_DIR}/{name}"

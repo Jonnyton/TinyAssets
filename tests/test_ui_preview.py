@@ -137,3 +137,97 @@ def test_the_viewport_is_bounded(tmp_path, width, height):
     with pytest.raises(ValueError, match="width and height"):
         ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
                                   ui_id="village", width=width, height=height)
+
+
+# --------------------------------------------------------------------------- #
+# writing the screenshot into the agent's own folder
+# --------------------------------------------------------------------------- #
+
+
+def test_the_screenshot_lands_in_previews_and_replaces_a_planted_hard_link(tmp_path):
+    import os
+
+    universe = tmp_path / "u-alice"
+    universe.mkdir()
+    (universe / "soul.md").write_text("the persona", encoding="utf-8")
+    (universe / "previews").mkdir()
+    os.link(universe / "soul.md", universe / "previews" / "village.png")
+
+    shown = ui_preview.write_preview(universe, "village", b"\x89PNG-bytes")
+
+    assert shown == "/u/previews/village.png"
+    assert (universe / "previews" / "village.png").read_bytes() == b"\x89PNG-bytes"
+    assert (universe / "soul.md").read_text(encoding="utf-8") == "the persona", (
+        "the write replaced the link instead of writing through it")
+    assert sorted(p.name for p in (universe / "previews").iterdir()) == ["village.png"]
+
+
+@pytest.mark.parametrize("ui_id", ["../soul", "a/b", "", "UPPER", "x" * 65])
+def test_only_the_apps_id_shape_names_a_file(tmp_path, ui_id):
+    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_id"):
+        ui_preview.write_preview(tmp_path, ui_id, b"png")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_previews_entry_that_is_not_a_folder_is_refused(tmp_path):
+    (tmp_path / "previews").write_text("a file", encoding="utf-8")
+    with pytest.raises(ui_preview.PreviewUnavailable, match="not a plain folder"):
+        ui_preview.write_preview(tmp_path, "village", b"png")
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="needs symlink creation")
+def test_a_previews_symlink_is_refused(tmp_path):
+    import os
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    universe = tmp_path / "u"
+    universe.mkdir()
+    os.symlink(elsewhere, universe / "previews")
+    with pytest.raises(ui_preview.PreviewUnavailable, match="not a plain folder"):
+        ui_preview.write_preview(universe, "village", b"png")
+    assert list(elsewhere.iterdir()) == []
+
+
+# --------------------------------------------------------------------------- #
+# the served handle: read_graph target="app_ui_preview"
+# --------------------------------------------------------------------------- #
+
+
+def test_the_engine_handle_renders_writes_and_reports(tmp_path, monkeypatch):
+    import json
+
+    import tinyassets.api.helpers as helpers
+    from tests.engine_authority_helpers import mock_engine_admission, seed_engine_authority
+    from tinyassets import engine_mcp_server as s
+
+    root = tmp_path / "data"
+    (root / "u-a").mkdir(parents=True)
+    monkeypatch.setattr(helpers, "_base_path", lambda: root)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
+    monkeypatch.setattr(s, "_ACTOR_ID", "actor-a")
+    monkeypatch.setattr(s, "_GRAPH_ID", "u-a")
+    seed_engine_authority(root, actor="actor-a", graph="u-a")
+    mock_engine_admission(monkeypatch, {"u-a"})
+    seen = {}
+
+    def fake_render(base, *, owner_user_id, universe_id, ui_id, **_):
+        seen.update(owner=owner_user_id, universe=universe_id, ui=ui_id)
+        return {"ui_id": ui_id, "fps": 60.0, "uncaught_errors": [], "png": b"\x89PNG-shot"}
+
+    monkeypatch.setattr(ui_preview, "preview_app_ui", fake_render)
+    report = json.loads(s.read_graph(target="app_ui_preview", query="village"))
+
+    assert seen == {"owner": "actor-a", "universe": "u-a", "ui": "village"}, (report,
+        "the owner and universe come from the binding, never the arguments")
+    assert report["screenshot"] == "/u/previews/village.png"
+    assert report["see_it"] == 'read path="/u/previews/village.png"'
+    assert "png" not in report, "bytes go to the folder, never into the result"
+    assert (root / "u-a" / "previews" / "village.png").read_bytes() == b"\x89PNG-shot"
+
+    monkeypatch.setattr(ui_preview, "preview_app_ui", lambda *a, **k: (_ for _ in ()).throw(
+        ui_preview.PreviewUnavailable("ui_preview_busy: another preview is rendering")))
+    busy = json.loads(s.read_graph(target="app_ui_preview", query="village"))
+    assert busy["error"] == "ui_preview_busy"
+    missing = json.loads(s.read_graph(target="app_ui_preview", query=""))
+    assert missing["error"] == "app_ui_validation_error"
