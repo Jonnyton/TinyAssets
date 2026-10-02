@@ -241,8 +241,7 @@ def _page(tmp_path, tools):
     from tests.test_app_working_indicator import _NODE, _run
     from tinyassets import onboarding
 
-    if _NODE is None:
-        pytest.skip("node is required to execute the page's own source")
+    assert _NODE is not None, "node is required to execute the page's own source"
     page, _csp = onboarding.render_app_html()
     return _run(tmp_path, page, {"tools": tools}, _PAGE)
 
@@ -267,8 +266,7 @@ def test_model_wait_survives_tool_painter_then_yields_to_running_tool(tmp_path):
     from tests.test_app_working_indicator import _NODE, _run
     from tinyassets import onboarding
 
-    if _NODE is None:
-        pytest.skip("node is required to execute the page's own source")
+    assert _NODE is not None, "node is required to execute the page's own source"
     page, _csp = onboarding.render_app_html()
     out = _run(tmp_path, page, {}, r"""
 setQueueOwner("p-1");
