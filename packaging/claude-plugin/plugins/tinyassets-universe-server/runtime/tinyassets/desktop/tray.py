@@ -329,7 +329,7 @@ class TrayApp:
 
         # Status header section
         if universe:
-            items.append(MenuItem(f"Universe: {universe}", lambda _: None, enabled=False))
+            items.append(MenuItem(f"Command center: {universe}", lambda _: None, enabled=False))
         items.append(MenuItem(f"Phase: {status}", lambda _: None, enabled=False))
         if words:
             items.append(MenuItem(f"Words: {words:,}", lambda _: None, enabled=False))

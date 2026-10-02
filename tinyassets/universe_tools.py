@@ -1,7 +1,7 @@
-"""The universe agent's four tools: ``read``, ``write``, ``edit``, ``bash``.
+"""The command center agent's four tools: ``read``, ``write``, ``edit``, ``bash``.
 
-Slice S1 of "the universe is the harness" (PLAN.md Scoping Rule 1; OpenSpec
-change ``universe-harness-four-tools``). A universe IS its agent's harness and
+Slice S1 of "the command center is the harness" (PLAN.md Scoping Rule 1; OpenSpec
+change ``universe-harness-four-tools``). A command center IS its agent's harness and
 project folder, so its agent works in that folder with the same four
 primitives pi.dev gives an agent, and builds everything else from them.
 
@@ -16,7 +16,7 @@ Every call -- reads included -- runs as a process inside bubblewrap, built by
 the SAME :func:`tinyassets.providers.provider_jail.jail_argv` as a provider
 launch, with a narrower view:
 
-* the owning universe at ``/u``, and nothing else of ``/data``. ``/u`` is an
+* the owning command center at ``/u``, and nothing else of ``/data``. ``/u`` is an
   allowlist, not the root with holes punched in it: a read-only tmpfs holding
   one bind per VISIBLE root entry. Only what the agent owns is bound
   read-write (its brain files, its own ``wiki/`` and the harness directories
@@ -40,13 +40,15 @@ launch, with a narrower view:
 * an empty environment (``--clearenv``) plus a fixed ``PATH``/``HOME``;
 * a seccomp filter refusing ``symlink``/``mknod`` (see :func:`seccomp_program`):
   the daemon reads this folder from OUTSIDE the jail and follows links, so a
-  link planted towards another universe must never exist on disk.
+  link planted towards another command center must never exist on disk. The
+  same filter refuses io_uring, new user namespaces and the other kernel
+  interfaces listed in :mod:`tinyassets.providers.jail_seccomp`.
 
 Because the process sees only ``/u``, path policy is the jail's, not Python's:
-a path outside the universe, or a symlink the agent planted towards another
-universe, resolves inside the jail's own mount namespace and finds nothing.
+a path outside the command center, or a symlink the agent planted towards another
+command center, resolves inside the jail's own mount namespace and finds nothing.
 
-Resource limits (per call, per universe)
+Resource limits (per call, per command center)
 ----------------------------------------
 Measured on the production container 2026-09-24 (kernel 6.1, uid 1001, no
 capabilities, cgroup2 mounted READ-ONLY, so no per-universe cgroup can be
@@ -61,7 +63,7 @@ cap enforced while reading, and a watch on the jail's whole process tree
 volume. The kernel exempts root from ``RLIMIT_NPROC``, so a ROOT-run jail
 (a hosted CI runner's sudo fallback, a self-host running as root) runs inside
 its own cgroup v2 with ``pids.max`` and ``memory.max`` instead, or is refused.
-Concurrency is bounded per universe and across the host by lock-file slots,
+Concurrency is bounded per command center and across the host by lock-file slots,
 so the sum of jails is bounded too.
 
 Fail closed: no bubblewrap, no ``prlimit``, or a jail that exits before the
@@ -191,7 +193,7 @@ class UniverseToolError(RuntimeError):
 @dataclass(frozen=True)
 class ToolLimits:
     """The limits every tool jail runs under. Floor, not policy: on a shared
-    host a fork bomb or a memory spike in one universe is an outage for the
+    host a fork bomb or a memory spike in one command center is an outage for the
     others (design section 4)."""
 
     #: ``RLIMIT_AS`` per process.
@@ -326,13 +328,13 @@ def tool_jail_argv(
     try:
         root = Path(universe_dir).resolve(strict=True)
     except OSError:
-        raise UniverseToolError("the universe folder does not exist") from None
+        raise UniverseToolError("the command center folder does not exist") from None
     if not root.is_dir():
-        raise UniverseToolError("the universe folder does not exist")
+        raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
     view = _universe_view(root, egress_socket)
     return jail_argv(
-        list(inner), view, bwrap_path=bwrap, share_net=False, clearenv=True,
+        list(inner), view, bwrap_path=bwrap, clearenv=True,
         seccomp_fd=seccomp_fd,
     )
 
@@ -342,75 +344,28 @@ def tool_jail_argv(
 TOOL_JAIL_ARGV: Callable[..., list[str]] = tool_jail_argv
 
 
-# The link filter. The jail makes the agent's view safe, but the DAEMON reads
-# the same folder from outside it (persona grounding, config, soul) and follows
-# links. A symlink the agent planted -- ``founder.md -> /data/<other>/founder.md``
-# dangles inside the jail and resolves on the host -- would pull another user's
-# file into this universe's prompt; a FIFO would hang the reading thread. So the
-# jailed process may create neither: ``symlink``/``symlinkat`` and
-# ``mknod``/``mknodat`` fail with EPERM. Hard links cannot reach outside ``/u``
-# (every other visible path is a different mount: EXDEV).
-#
-# io_uring is the way around a syscall filter: ``IORING_OP_SYMLINKAT`` (opcode
-# 38, kernel 5.15+) creates a link through a submission queue, which seccomp
-# never sees -- and production is 6.1 with no ``io_uring_disabled`` sysctl
-# (that arrived in 6.6). So the three io_uring setup calls are refused too;
-# with no ring, no ring op can run. The daemon-side safe reader
+# The syscall filter is shared with the provider jail
+# (:mod:`tinyassets.providers.jail_seccomp`): links and special files (the
+# daemon reads this folder from OUTSIDE the jail and follows links, so a link
+# planted towards another universe must never exist on disk), io_uring (the
+# way around a syscall filter) and the kernel interfaces a cross-user privilege
+# escalation on the shared kernel keeps using. The daemon-side safe reader
 # (:mod:`tinyassets.universe_files`) is the belt to this braces: it never
 # follows a link that already exists, whatever created it.
-#
-# Unknown architectures and the x32 ABI get EPERM for every call, so a filter
-# this module cannot vouch for never runs as ALLOW.
-_AUDIT_ARCH_X86_64 = 0xC000003E
-_AUDIT_ARCH_AARCH64 = 0xC00000B7
-_X32_SYSCALL_BIT = 0x40000000
-# symlink, symlinkat, mknod, mknodat, io_uring_setup/enter/register.
-_DENIED_X86_64 = (88, 266, 133, 259, 425, 426, 427)
-# symlinkat, mknodat, io_uring_setup/enter/register (asm-generic numbers).
-_DENIED_AARCH64 = (36, 33, 425, 426, 427)
-_SECCOMP_RET_ALLOW = 0x7FFF0000
-_SECCOMP_RET_EPERM = 0x00050000 | 1
 
 
 def seccomp_program() -> bytes:
     """The compiled cBPF filter bubblewrap loads with ``--seccomp``."""
-    import struct
+    from tinyassets.providers.jail_seccomp import deny_program
 
-    ld_abs, jeq, jge, ret = 0x20, 0x15, 0x35, 0x06
-    x86 = list(_DENIED_X86_64)
-    arm = list(_DENIED_AARCH64)
-    # Layout: [0] ld arch; [1] arch==x86_64?; [2] ld nr; [3] x32?; x86 checks;
-    # allow; [arm] arch==aarch64?; ld nr; arm checks; allow; [deny].
-    arm_at = 4 + len(x86) + 1
-    deny_at = arm_at + 2 + len(arm) + 1
-    prog: list[tuple[int, int, int, int]] = [
-        (ld_abs, 0, 0, 4),
-        (jeq, 0, arm_at - 2, _AUDIT_ARCH_X86_64),
-        (ld_abs, 0, 0, 0),
-        (jge, deny_at - 4, 0, _X32_SYSCALL_BIT),
-    ]
-    for nr in x86:
-        prog.append((jeq, deny_at - (len(prog) + 1), 0, nr))
-    prog.append((ret, 0, 0, _SECCOMP_RET_ALLOW))
-    assert len(prog) == arm_at
-    prog.append((jeq, 0, deny_at - (len(prog) + 1), _AUDIT_ARCH_AARCH64))
-    prog.append((ld_abs, 0, 0, 0))
-    for nr in arm:
-        prog.append((jeq, deny_at - (len(prog) + 1), 0, nr))
-    prog.append((ret, 0, 0, _SECCOMP_RET_ALLOW))
-    assert len(prog) == deny_at
-    prog.append((ret, 0, 0, _SECCOMP_RET_EPERM))
-    return b"".join(struct.pack("=HBBI", *insn) for insn in prog)
+    return deny_program()
 
 
 def _seccomp_fd() -> int:
     """A readable descriptor holding :func:`seccomp_program`, for the child."""
-    read_end, write_end = os.pipe()
-    try:
-        os.write(write_end, seccomp_program())
-    finally:
-        os.close(write_end)
-    return read_end
+    from tinyassets.providers.jail_seccomp import program_fd
+
+    return program_fd()
 
 
 def _statvfs(path: Path) -> os.statvfs_result | None:
@@ -488,7 +443,7 @@ def _slot(
     cancelling that await does not stop the worker thread, so a cancelled request
     keeps its place in the queue until a slot frees. The waiter holds no lock and
     no jail (one pipe descriptor only), and the queue's depth is the transport's
-    own thread pool rather than anything a universe chooses --
+    own thread pool rather than anything a command center chooses --
     ``docs/concerns/2026-09-30-a-cancelled-tool-call-keeps-waiting.md``.
 
     There is no deadline. A 30-second one used to turn a busy host into
@@ -516,7 +471,7 @@ def _slot(
                     with contextlib.suppress(Exception):
                         on_wait(time.monotonic() - started)
                 logger.info(
-                    "universe_tools: every host tool slot is busy; waiting (universe %s)",
+                    "universe_tools: every host tool slot is busy; waiting (command center %s)",
                     universe_dir.name,
                 )
             time.sleep(_SLOT_POLL_SECONDS)
@@ -608,7 +563,7 @@ def run_jailed(
     on_wait: Callable[[float], None] | None = None,
     egress_socket: Path | None = None,
 ) -> ToolRun:
-    """Run ``inner`` in the universe's tool jail under ``limits``.
+    """Run ``inner`` in the command center's tool jail under ``limits``.
 
     If every host slot is taken the call WAITS for one; it is not refused for the
     host being busy. ``on_wait`` is invoked once when that happens, so a caller
@@ -1017,7 +972,7 @@ def bash(
     if socket_path is not None and python:
         from tinyassets import universe_egress
 
-        inner = [python, "-c", universe_egress.FORWARDER, *inner]
+        inner = universe_egress.forwarder_argv(python, inner)
         egress = {"egress_socket": socket_path}
     run = RUNNER(universe_dir, inner, limits=limits, wall_seconds=wall, **egress)
     body = _text(run.output)
@@ -1098,14 +1053,14 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
 
 _HARNESS_HEAD = (
     "# My folder and my four tools\n"
-    "My universe is a folder, mounted at /u, and I work in it with four tools: "
+    "My command center is a folder, mounted at /u, and I work in it with four tools: "
     "`read` (a file, or a range of its lines), `write` (create or replace a "
     "file), `edit` (replace one exact passage in a file) and `bash` (a shell in "
     "/u with public internet through a proxy that HTTP(S)_PROXY already points "
     "at, so pip, npm, git and urllib work, and bounded memory, processes and "
     "time, so long-running "
     "work does not belong there: it is workflows and automations in this "
-    "universe, never a service hosted elsewhere -- handbook chapter "
+    "command center, never a service hosted elsewhere -- handbook chapter "
     "write_graph.systems). Relative paths are under /u. Nothing outside "
     "/u is mine or reachable. I can write my brain files (identity.md, "
     "founder.md, origin.md, body.md, orgchart.md, projects.md, goals.md, "

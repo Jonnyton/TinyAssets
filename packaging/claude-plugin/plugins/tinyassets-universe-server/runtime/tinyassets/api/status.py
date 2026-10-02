@@ -41,7 +41,7 @@ from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_provide
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
 
-_STATUS_SCHEMA_VERSION = 2
+_STATUS_SCHEMA_VERSION = 3  # 3: universe_* fields renamed command_center_* (C1)
 # Async overhead plus the in-band reap, on top of the turn's own cap: the same
 # margin the router already allows a sync wrapper over the streaming cap
 # (``providers.router._sync_call_timeout_s``).
@@ -1017,8 +1017,8 @@ def _compute_supervisor_liveness_uncached(
                         "epoch2_unscoped_integrity_rows"
                         + count_text
                         + ": corrupt rows without an authoritative "
-                        "admission/request universe exist; exact counts are "
-                        "restricted to universe admins."
+                        "admission/request command center exist; exact counts are "
+                        "restricted to command center admins."
                     )
                 if epoch2.get("unknown_lifecycle_status_counts"):
                     out["warnings"].append(
@@ -1111,7 +1111,7 @@ def _compute_supervisor_liveness_uncached(
             "branch_tasks.reclaim_expired_leases sweeps these at every "
             "dispatcher pick (BUG-011 Phase C, shipped 2026-06-10); a "
             "persistent entry here means no picks are happening — check "
-            "worker_liveness in universe inspect."
+            "worker_liveness in command center inspect."
         )
 
     return out
@@ -1291,7 +1291,7 @@ def get_status(
     if needs_birth:
         active_host, _, _, _ = _active_host_snapshot()
         _about = (
-            "TinyAssets hosts your own AI universe — a persistent mind that "
+            "TinyAssets hosts your own AI command center — a persistent mind that "
             "starts blank, learns who it is from you, and grows into your "
             "projects and goals."
         )
@@ -1299,13 +1299,13 @@ def get_status(
             "first_contact": {
                 "event": "no_universe_yet",
                 "note": (
-                    "No complete home universe is bound to this account yet. "
+                    "No complete home command center is bound to this account yet. "
                     "Status is read-only and does not create one."
                 ),
             },
             "about": _about,
             "next_step_for_user": (
-                "Start a conversation with your universe to meet it in its own voice."
+                "Start a conversation with your command center to meet it in its own voice."
             ),
             "identity_evidence": identity_evidence,
             "request_identity": request_identity,
@@ -1453,7 +1453,7 @@ def get_status(
     if not activity_tail:
         tail_caveats = [
             "activity.log is empty or missing — daemon has not run in "
-            "this universe, or the log was cleared."
+            "this command center, or the log was cleared."
         ]
         if not log_read_ok:
             tail_caveats.append(
@@ -1481,9 +1481,9 @@ def get_status(
         caveats.append(
             "No default LLM provider detected on this host (checked: "
             "OLLAMA_HOST, Codex CLI with subscription auth, and Claude CLI). "
-            "That is expected: the platform has no LLM of its own. A universe "
+            "That is expected: the platform has no LLM of its own. A command center "
             "runs on the provider its owner connects -- see read_graph "
-            "target=model_options for that universe."
+            "target=model_options for that command center."
         )
     if api_key_vars_present and not api_key_enabled:
         caveats.append(
@@ -1508,7 +1508,7 @@ def get_status(
         )
     if endpoint_hint == "unset":
         actionable_next_steps.append(
-            "To run a universe, its owner connects their own provider to it "
+            "To run a command center, its owner connects their own provider to it "
             "(read_graph target=model_options shows what is connected). There "
             "is no platform or host model to bind."
         )
@@ -1525,13 +1525,13 @@ def get_status(
 
     if not universe_exists:
         caveats.append(
-            f"Universe '{uid}' does not exist on disk. Daemon is reporting "
-            "default-fallback identity, not a live universe. Use read_graph "
+            f"Command center '{uid}' does not exist on disk. Daemon is reporting "
+            "default-fallback identity, not a live command center. Use read_graph "
             'target="graphs" to see what exists; use write_graph '
-            f'target="universe" graph_id="{uid}" to bootstrap.'
+            f'target="command_center" graph_id="{uid}" to bootstrap.'
         )
         actionable_next_steps.append(
-            f"Create universe '{uid}' with write_graph target=\"universe\" "
+            f"Create command center '{uid}' with write_graph target=\"command_center\" "
             f'graph_id="{uid}", '
             'or pick an existing one with read_graph target="graphs".'
         )

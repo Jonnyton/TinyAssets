@@ -30,7 +30,17 @@ bound (:func:`provider_launch_scope`) runs inside bubblewrap. The jail holds:
 * the provider's own install tree, read-only, plus a fixed list of system
   paths (``/usr``, ``/bin``, ``/lib*``, CA certificates, name resolution);
 * a private ``/tmp``, ``/dev`` and a ``/proc`` of its own pid namespace;
-* the host network (``--share-net``): API calls and web tools keep working.
+* NO network interface of its own: an empty network namespace, with the
+  universe's checking egress proxy (:mod:`tinyassets.universe_egress`) as its
+  only way out, the same floor the universe tool jail has. ``HTTP(S)_PROXY``
+  point the CLI at an in-jail forwarder; a second, pinned relay reaches the
+  universe's OWN engine MCP server on the daemon's loopback and nothing else
+  there. Before 2026-10-01 a provider shared the container network: the
+  daemon's loopback ports, other universes' engine ports, the cloud metadata
+  address, the host and the log sidecar (concern
+  ``2026-10-01-provider-jail-has-unfiltered-host-network``);
+* the shared seccomp filter (:mod:`tinyassets.providers.jail_seccomp`) and
+  in-jail rlimits on processes, open files, file size and core dumps.
 
 Nothing else. Not ``/data`` or another universe, not ``/app``, not the daemon's
 ``/proc``, not the host credential homes. Everything the CLI starts -- a hook,
@@ -72,6 +82,7 @@ from tinyassets.exceptions import ProviderAuthorityHeldError
 
 __all__ = [
     "BWRAP_RESOLVER",
+    "ConfinedLaunch",
     "JailMount",
     "ProviderConfinementError",
     "UniverseView",
@@ -95,13 +106,15 @@ class ProviderConfinementError(ProviderAuthorityHeldError):
 
     failure_class = "provider_confinement_unavailable"
     #: Every raise starts with this, so a stored error string stays classifiable.
-    MESSAGE = "provider launch refused: it cannot be confined to its universe"
+    MESSAGE = "provider launch refused: it cannot be confined to its command center"
 
 
 @dataclass(frozen=True, slots=True)
 class _LaunchScope:
     universe_dir: Path | None
     credential_dir: Path | None
+    #: ``(actor_id, graph_id)`` whose engine MCP route this call may reach.
+    engine_route: tuple[str, str] | None = None
 
 
 _SCOPE: ContextVar[_LaunchScope | None] = ContextVar(
@@ -114,6 +127,7 @@ def provider_launch_scope(
     universe_dir: str | Path | None,
     *,
     credential_dir: str | Path | None = None,
+    engine_route: tuple[str, str] | None = None,
 ) -> Iterator[None]:
     """Bind the universe that owns every provider process launched inside.
 
@@ -121,10 +135,13 @@ def provider_launch_scope(
     owning universe", and any process it tries to launch is refused. The router
     enters this around each ``provider.complete``; a context variable carries it
     to the spawn point through ``await`` and into tasks the call creates.
+    ``engine_route`` names the owner and universe whose engine MCP server the
+    jail may reach through its pinned loopback relay; ``None`` reaches none.
     """
     scope = _LaunchScope(
         universe_dir=None if universe_dir is None else Path(universe_dir),
         credential_dir=None if credential_dir is None else Path(credential_dir),
+        engine_route=engine_route,
     )
     token = _SCOPE.set(scope)
     try:
@@ -270,7 +287,7 @@ def hidden_dir_masks(universe_dir: Path) -> list[JailMount]:
         if not entry.name.startswith(".") or entry.name == PLATFORM_RUNTIME_DIR:
             continue
         if entry.is_symlink():
-            raise _refuse(f"the universe's {entry.name} is a link; it cannot be masked")
+            raise _refuse(f"the command center's {entry.name} is a link; it cannot be masked")
         if entry.is_dir(follow_symlinks=False):
             masks.append(JailMount("tmpfs", str(Path(universe_dir) / entry.name)))
     return masks
@@ -310,7 +327,7 @@ def _validated_view(view: UniverseView) -> UniverseView:
         except OSError:
             raise _refuse("a bind source does not exist") from None
         if not (_within(source, root) or _within(source, _sidecars(root))):
-            raise _refuse("a view may only bind paths inside its own universe")
+            raise _refuse("a view may only bind paths inside its own command center")
         checked.append(JailMount(mount.op, dest, source))
     for name, _value in view.setenv:
         if not name or "=" in name:
@@ -371,7 +388,7 @@ def _install_binds(
         if text == "/" or _covered(text, already):
             continue
         if any(_overlaps(path, root) for root in forbidden):
-            raise _refuse("a provider install path overlaps universe data or platform source")
+            raise _refuse("a provider install path overlaps command center data or platform source")
         if _covered(text, ("/etc", "/proc", "/dev")):
             raise _refuse("a provider install path sits under a reserved system root")
         argv.extend(("--ro-bind", text, text))
@@ -414,7 +431,6 @@ def jail_argv(
     bwrap_path: str,
     install_paths: Iterable[Path] = (),
     env: Mapping[str, str] | None = None,
-    share_net: bool = True,
     clearenv: bool = False,
     seccomp_fd: int | None = None,
 ) -> list[str]:
@@ -425,12 +441,12 @@ def jail_argv(
     under ``/tmp`` lands on the private tmpfs, and a mask lands on the bind it
     masks), then the environment overrides and the working directory.
 
-    ``share_net=False`` leaves the jail in its own empty network namespace
-    (loopback only, nothing listening); ``clearenv=True`` starts the jailed
-    process from an empty environment plus ``view.setenv``. ``seccomp_fd`` is
-    an inherited descriptor holding a compiled seccomp filter for the jailed
-    process. The universe tool jail uses all three; a provider launch keeps the
-    defaults.
+    The jail always has its own empty network namespace (loopback only,
+    nothing listening); a caller gives it a way out only by binding the egress
+    socket, as :func:`confine_launch` does. ``clearenv=True`` starts
+    the jailed process from an empty environment plus ``view.setenv``.
+    ``seccomp_fd`` is an inherited descriptor holding a compiled seccomp filter
+    for the jailed process.
     """
     view = _validated_view(view)
     out: list[str] = [
@@ -439,8 +455,6 @@ def jail_argv(
         "--new-session",
         "--unshare-all",
     ]
-    if share_net:
-        out.append("--share-net")
     if clearenv:
         out.append("--clearenv")
     if seccomp_fd is not None:
@@ -472,6 +486,104 @@ def jail_argv(
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class ConfinedLaunch:
+    """A jailed argv and the descriptors the spawn must hand to it.
+
+    ``pass_fds`` holds the seccomp filter bubblewrap reads at start. The
+    spawner passes them to the child and then closes its own copies
+    (:meth:`close`), whether or not the spawn succeeded.
+    """
+
+    argv: list[str]
+    pass_fds: tuple[int, ...] = ()
+
+    def close(self) -> None:
+        for fd in self.pass_fds:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+#: Limits applied inside the jail by ``prlimit``, after the jail's user
+#: namespace exists, so ``RLIMIT_NPROC`` counts THIS jail's tasks (kernel >=
+#: 5.14), not the daemon user's. Each is only ever lowered, never raised past
+#: the daemon's own hard limit. There is deliberately no ``RLIMIT_AS``: a
+#: JavaScript CLI reserves far more address space than it uses, so any cap that
+#: means something kills it at start. There is no ``RLIMIT_CPU`` either: a turn
+#: runs until it is finished, and a long agentic turn mostly waits on the
+#: network.
+PROVIDER_LIMITS: tuple[tuple[str, str, int], ...] = (
+    ("--nproc", "RLIMIT_NPROC", 512),
+    ("--nofile", "RLIMIT_NOFILE", 8192),
+    ("--fsize", "RLIMIT_FSIZE", 1024 * 1024 * 1024),
+    ("--core", "RLIMIT_CORE", 0),
+)
+
+
+def _limit_args() -> list[str]:
+    import resource
+
+    args = []
+    for flag, name, value in PROVIDER_LIMITS:
+        _soft, hard = resource.getrlimit(getattr(resource, name))
+        if hard != resource.RLIM_INFINITY:
+            value = min(value, hard)
+        args.append(f"{flag}={value}")
+    return args
+
+
+def _system_binary(name: str) -> str:
+    found = shutil.which(name, path="/usr/bin:/bin")
+    if not found:
+        raise _refuse(f"{name} is not installed on this host, so the jail cannot apply its limits")
+    return found
+
+
+def _forwarder_python() -> tuple[str, list[Path]]:
+    """A Python the jail can run the network forwarder with, and what to bind."""
+    import sys
+
+    system = shutil.which("python3", path="/usr/bin:/bin")
+    if system:
+        return system, []
+    real = Path(os.path.realpath(sys.executable))
+    if real.is_file():
+        return str(real), [real.parent.parent]
+    raise _refuse("no Python is available to run the jail's network forwarder")
+
+
+def _network(
+    view: UniverseView, scope: _LaunchScope | None,
+) -> tuple[list[JailMount], int | None]:
+    """The egress socket (and the engine relay) this launch binds, or refuse.
+
+    There is no unfiltered fallback: a host where the proxy cannot start runs
+    no provider at all.
+    """
+    from tinyassets import universe_egress
+
+    try:
+        egress = universe_egress.ensure_proxy(view.universe_dir)
+    except OSError as exc:
+        raise _refuse(f"the universe's egress proxy could not start ({exc})") from None
+    if egress is None:
+        raise _refuse("this host cannot run the universe's egress proxy")
+    mounts = [JailMount("bind", universe_egress.JAIL_SOCKET, egress)]
+    engine_port = None
+    if scope is not None and scope.engine_route is not None:
+        actor_id, graph_id = scope.engine_route
+        try:
+            relay = universe_egress.ensure_engine_relay(
+                view.universe_dir, actor_id=actor_id, graph_id=graph_id,
+            )
+        except OSError as exc:
+            raise _refuse(f"the universe's engine relay could not start ({exc})") from None
+        if relay is not None:
+            socket_path, engine_port = relay
+            mounts.append(JailMount("bind", universe_egress.JAIL_ENGINE_SOCKET, socket_path))
+    return mounts, engine_port
+
+
 def confine_launch(
     argv: Sequence[str],
     *,
@@ -479,19 +591,20 @@ def confine_launch(
     env: Mapping[str, str] | None = None,
     view: UniverseView | None = None,
     install_mounts: Callable[[], Iterable[Path]] | None = None,
-) -> list[str] | None:
-    """The jailed argv for this launch, ``None`` when no jail applies, or refuse.
+) -> ConfinedLaunch | None:
+    """The jailed launch, ``None`` when no jail applies, or refuse.
 
     Called by the shared spawn point for EVERY provider process. The decision
     reads only the bound scope and the adapter's optional view -- never the
-    vendor, the config or the command.
+    vendor, the config or the command. Inside the jail the command runs under
+    ``prlimit``, behind the egress forwarder, with the seccomp filter loaded.
     """
     scope = _SCOPE.get()
     if scope is None and view is None:
         return None
     if scope is not None and scope.universe_dir is None:
         raise _refuse(
-            "this provider call has no owning universe, so there is no "
+            "this provider call has no owning command center, so there is no "
             "directory to confine it to; it will not run on the host"
         )
     if view is None:
@@ -504,13 +617,41 @@ def confine_launch(
         view.universe_dir.resolve(strict=False)
         != scope.universe_dir.resolve(strict=False)
     ):
-        raise _refuse("the adapter's view names a different universe than its call")
+        raise _refuse("the adapter's view names a different command center than its call")
     if not view.universe_dir.resolve(strict=False).is_dir():
-        raise _refuse("the owning universe directory does not exist")
+        raise _refuse("the owning command center directory does not exist")
     bwrap_path = BWRAP_RESOLVER()
     install_paths = [*_command_install_paths(str(argv[0]), env)] if argv else []
     if install_mounts is not None:
         install_paths.extend(install_mounts())
-    return jail_argv(
-        argv, view, bwrap_path=bwrap_path, install_paths=install_paths, env=env,
+    from tinyassets import universe_egress
+    from tinyassets.providers.jail_seccomp import program_fd
+
+    prlimit = _system_binary("prlimit")
+    python, python_paths = _forwarder_python()
+    install_paths.extend(python_paths)
+    net_mounts, engine_port = _network(view, scope)
+    # The proxy environment goes LAST, so nothing the provider env carried (an
+    # inherited HTTPS_PROXY or NO_PROXY) can point around the forwarder.
+    view = UniverseView(
+        universe_dir=view.universe_dir,
+        mounts=(*view.mounts, *net_mounts),
+        chdir=view.chdir,
+        setenv=(*view.setenv, *universe_egress.PROXY_ENV),
     )
+    inner = [
+        prlimit, *_limit_args(), "--",
+        *universe_egress.forwarder_argv(python, list(argv), engine_port=engine_port),
+    ]
+    # A provider CLI may build its own sandbox inside this one (codex does), so
+    # user namespaces and symlinks stay open (tinyassets.providers.jail_seccomp).
+    filter_fd = program_fd(nested_sandbox=True)
+    try:
+        jailed = jail_argv(
+            inner, view, bwrap_path=bwrap_path, install_paths=install_paths, env=env,
+            seccomp_fd=filter_fd,
+        )
+    except BaseException:
+        os.close(filter_fd)
+        raise
+    return ConfinedLaunch(jailed, (filter_fd,))

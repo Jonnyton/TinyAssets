@@ -381,6 +381,25 @@ def test_the_owner_turns_notifications_off_and_on(app_env):
     assert len(devices.delivery_targets(base, owner_user_id=ALICE)) == 1
 
 
+def test_the_switch_reads_on_until_the_owner_turns_it_off_and_then_stays_off(app_env):
+    """The app's automatic prompt keys on this read: ON for an owner who never
+    chose, OFF once they did -- and re-registering a device (which the app does
+    on every sign-in) never flips it back."""
+    from tinyassets.onboarding.notifications import (
+        handle_devices,
+        handle_notify_settings,
+    )
+
+    with _as(ALICE):
+        _s, fresh, _ = _call(handle_notify_settings, "GET")
+        _call(handle_notify_settings, "POST", {"enabled": False})
+        _call(handle_devices, "POST", {"platform": "android", "token": "alice-phone"})
+        _s2, after, _ = _call(handle_notify_settings, "GET")
+
+    assert fresh["enabled"] is True
+    assert after["enabled"] is False
+
+
 def test_one_owners_switch_does_not_touch_another(app_env):
     from tinyassets.onboarding.notifications import handle_notify_settings
 

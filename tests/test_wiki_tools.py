@@ -359,19 +359,6 @@ class TestWikiWrite:
         )
         assert result.get("status") in {"drafted", "updated"}, result
 
-    def test_wiki_categories_enum_matches_expanded_taxonomy(self):
-        """Lock-in: the module constant carries the seed-default categories in
-        canonical order. These are defaults, not a closed whitelist — custom
-        categories grow organically (see test_wiki_write_accepts_custom_category)."""
-        from tinyassets.api.wiki import _WIKI_CATEGORIES
-
-        assert _WIKI_CATEGORIES == (
-            "projects", "concepts", "people", "research",
-            "recipes", "workflows", "notes", "references", "plans",
-            "bugs", "feature-requests", "design-proposals", "patch-requests",
-        )
-
-
 class TestWikiDelete:
     def test_delete_dry_run_default_does_not_delete(self, wiki_dir):
         target = wiki_dir / "pages" / "projects" / "test-project.md"

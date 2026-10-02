@@ -1,5 +1,5 @@
-  // ---- Custom universe UI: isolated renderer + closed bridge ----------------
-  // A universe can hold executable UI bundles (`tinyassets.app-ui.v1`) its own
+  // ---- Custom command center UI: isolated renderer + closed bridge ----------------
+  // A command center can hold executable UI bundles (`tinyassets.app-ui.v1`) its own
   // agent writes, and this renders them. A bundle is somebody's arbitrary code —
   // usually somebody the viewer has never met, because bundles are shared by
   // publish/remix — so nothing here sanitizes it. It runs in the sandboxed,
@@ -7,15 +7,15 @@
   // policy), which owns no storage, no cookies and no network of its own.
   //
   // Everything the bundle can do is in ACTIONS below and nowhere else. Each
-  // handler builds its own tool arguments and pins the universe to the VIEWING
-  // user's current home, so a bundle cannot name a universe: cross-user reach is
+  // handler builds its own tool arguments and pins the command center to the VIEWING
+  // user's current home, so a bundle cannot name a command center: cross-user reach is
   // not refused by a check, it is unrepresentable. Replies are assembled from
   // picked fields, never spread from a server payload, so a field added upstream
   // later cannot ride out to untrusted code.
   //
   // Storage is the viewer's own `app_ui` row (read_graph/write_graph
   // target="app_ui"): the bundles in `ui_library` and the choice in
-  // `ui_selection`, one row per person and universe, keyed server-side by who is
+  // `ui_selection`, one row per person and command center, keyed server-side by who is
   // signed in. It is not an agent binding and never appears to a binding reader.
   // Every write is compare-and-set on the row's revision.
   const AppUI={
@@ -30,7 +30,7 @@
     SANDBOX:"allow-scripts",
     // Per-UI bounds only. There is NO bound on the library as a whole -- neither
     // a count of UIs nor a byte total. A 4 MiB library ceiling used to refuse an
-    // install once the stored library was full; those bytes are the universe's
+    // install once the stored library was full; those bytes are the command center's
     // tier storage now, one of the two limits an account has (founder 2026-09-30).
     // Sizes are UTF-8 BYTES, because that is what the server validates: counting
     // UTF-16 units let multi-byte bundles pass here and fail at write time
@@ -162,7 +162,7 @@
       const id=String(home||"").trim();
       if(!this.enabled||!id||id===this.home) return;
       this.reset();
-      this.status("Your home universe changed; the custom UI was closed and its access ended.");
+      this.status("Your home command center changed; the custom UI was closed and its access ended.");
     },
     enable(home,principal){
       if(this.enabled&&this.home===home&&this.principal===principal) return;
@@ -200,7 +200,7 @@
         this.status("Could not read your installed UIs ("+(err&&err.message||"unknown error")+"). Default chat is in use.");
       }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
     },
-    // After each turn: the universe can switch or edit this row by talking
+    // After each turn: the command center can switch or edit this row by talking
     // (write_graph target="app_ui" operation="activate" ...). A bodiless index
     // read says whether the row moved; only then is it read whole and adopted,
     // so an unchanged row never remounts a UI mid-use.
@@ -267,7 +267,7 @@
       this.paintHeader();
     },
 
-    // ---- the bridge: one frame, one allowlist, one universe ----------------
+    // ---- the bridge: one frame, one allowlist, one command center ----------------
     // A frozen map. An action absent from it does not exist — the refusal names
     // what was asked and nothing is guessed from a near-match.
     ACTIONS:Object.freeze({
@@ -343,11 +343,11 @@
     // The viewer's identity, reduced to what a UI needs to greet them. No
     // principal id, no token, no provider or credential material.
     async whoami(){
-      return {protocol:this.PROTOCOL,universe_id:this.home,
-        universe_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
+      return {protocol:this.PROTOCOL,command_center_id:this.home,
+        command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
-    // bundle cannot enumerate anybody else's universe.
+    // bundle cannot enumerate anybody else's command center.
     // Every row of one of the viewer's OWN lists. The read takes a page size
     // and no offset, so ask for a page and, while the server fills it exactly,
     // ask for a bigger one: a bundle
@@ -383,7 +383,7 @@
     // in the shared conversation rather than a private side channel.
     //
     // `agent` is NOT yet honoured per message: the server admits a turn only for
-    // the universe's ONE currently selected conversation
+    // the command center's ONE currently selected conversation
     // (consumer_runtime.reserve_prepared_turn). Naming a different agent is
     // refused by name rather than silently sent to the selected one.
     async sendMessage(args){
@@ -396,7 +396,7 @@
         const match=agents.agents.find(a=>a.agent_id===wanted||a.name===wanted);
         if(!match) throw new Error("no agent of yours is named "+wanted);
         if(!match.selected) throw new Error(
-          "this universe sends turns to its selected conversation only, and "+match.name+" is not it; "+
+          "this command center sends turns to its selected conversation only, and "+match.name+" is not it; "+
           "change the conversation design first (set_conversation_design)");
       }
       if(this.sending) throw new Error("a message from this UI is already in flight");
@@ -408,7 +408,7 @@
     // The viewer's own saved conversation, field by field.
     //
     // Pinned to `this.home` and the ANSWER is checked against it. `get_status`
-    // with no universe defaults to the caller's ACTIVE universe, so an unpinned
+    // with no command center defaults to the caller's ACTIVE command center, so an unpinned
     // read hands a bundle whichever home the account moved to rather than the one
     // it was granted (Codex, 2026-09-26). `verify()` closes the window; this
     // closes the read itself, so neither depends on the other being right.
@@ -423,7 +423,7 @@
       const doc=await Owner.status(call);
       if(!doc||doc.error) throw new Error("your conversation is unavailable");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that conversation belongs to another universe; this UI's access ended");
+        throw new Error("that conversation belongs to another command center; this UI's access ended");
       const conversation=doc.recent_conversation;
       if(!conversation||typeof conversation.error==="string"||!Array.isArray(conversation.turns))
         throw new Error("your conversation could not be read");
@@ -440,20 +440,20 @@
     // ---- live state: the viewer's own automations and runs, read-only -------
     // What a screen needs to show agents WORKING rather than a picture of them.
     // Same rules as the reads above: `graph_id` is always this.home, the answer
-    // is checked against it where it names a universe, and every reply is built
+    // is checked against it where it names a command center, and every reply is built
     // from picked fields. Automation `inputs` and a run's `actor` never cross:
     // the first is the owner's private configuration, the second a principal id.
     //
-    // The server scopes each of these to the named universe, so a run id from
+    // The server scopes each of these to the named command center, so a run id from
     // anywhere else reads as not found rather than being returned.
     async listAutomations(){
       const doc=await this.readWhole({target:"automations",graph_id:this.home},"automations");
       if(!doc||doc.error||!Array.isArray(doc.automations)) throw new Error("your automations are unavailable");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("those automations belong to another universe; this UI's access ended");
+        throw new Error("those automations belong to another command center; this UI's access ended");
       const automations=[];
       for(const a of doc.automations){
-        // A retired fleet-era row names no universe and runs nothing: skip it.
+        // A retired fleet-era row names no command center and runs nothing: skip it.
         if(!a||typeof a!=="object"||a.universe_id!==this.home) continue;
         const t=(a.trigger&&typeof a.trigger==="object")?a.trigger:{};
         automations.push({automation_id:String(a.automation_id||""),name:String(a.name||""),
@@ -524,7 +524,7 @@
     },
 
     // ---- the shared folder and the wake -------------------------------------
-    // Agents coordinate through files in the universe folder, so a screen of
+    // Agents coordinate through files in the command center folder, so a screen of
     // them reads those files. Owner-only on the server (an admin grant on this
     // home), pinned to this.home here, picked fields back.
     filePath(value,required){
@@ -536,10 +536,10 @@
     async listFiles(args){
       const path=this.filePath(args.path,false);
       const doc=await Owner.read(
-        {target:"universe_files",graph_id:this.home,query:path});
+        {target:"command_center_files",graph_id:this.home,query:path});
       if(!doc||doc.error||!Array.isArray(doc.entries)) throw new Error("that folder is not available");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that folder belongs to another universe; this UI's access ended");
+        throw new Error("that folder belongs to another command center; this UI's access ended");
       const entries=[];
       for(const e of doc.entries){
         if(!e||typeof e.name!=="string") continue;
@@ -552,11 +552,11 @@
     async readFile(args){
       const path=this.filePath(args.path,true);
       const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
-      const doc=await Owner.read({target:"universe_file",graph_id:this.home,
+      const doc=await Owner.read({target:"command_center_file",graph_id:this.home,
         query:path,file_offset:offset,file_max_bytes:this.MAX_FILE_CHUNK});
       if(!doc||doc.error) throw new Error("that file is not available");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that file belongs to another universe; this UI's access ended");
+        throw new Error("that file belongs to another command center; this UI's access ended");
       const text=doc.encoding==="text"&&typeof doc.text==="string";
       return {path:String(doc.path||path),encoding:text?"text":"base64",
         content:text?doc.text:String(doc.base64||""),size_bytes:Number.isInteger(doc.size_bytes)?doc.size_bytes:null,
@@ -681,7 +681,7 @@
         const rows=await this.installations();
         if(!this.fence(epoch,home)) throw new Error("your session changed");
         if(rows.length>1){
-          if(target||approve) throw new Error("more than one conversation installation exists; restore the default conversation in Switch UI first. Nothing was changed");
+          if(target||approve) throw new Error("more than one conversation installation exists; restore the default conversation in Switch command center first. Nothing was changed");
           return await this.clearAmbiguity(rows,epoch,home);
         }
         const b=rows[0]||null;
@@ -856,7 +856,7 @@
     },
     // Install a bundle into the viewer's own library: a remix installs the
     // COMPONENT, so it runs against this viewer's bridge and this viewer's
-    // universe. The author's universe is never addressed by an installed copy.
+    // command center. The author's command center is never addressed by an installed copy.
     async install(component){
       if(!this.enabled||this.busy) return {ok:false,reason:"not ready"};
       const parsed=this.parseBundle(component);
@@ -880,7 +880,7 @@
         next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
         // No library-wide limit, so no install is ever turned away for the size
         // of what is already there. The bundle itself was validated above, and
-        // its bytes are the universe's storage.
+        // its bytes are the command center's storage.
         return {ui_library:JSON.parse(JSON.stringify(next))};
       });
       if(!outcome.ok){
@@ -930,7 +930,7 @@
         list.appendChild(item);
       }
       if(!this.library.length)
-        this.line(list,"No custom UI installed. Ask your universe to build one.","muted");
+        this.line(list,"No custom UI installed. Ask your agent to build one.","muted");
       $("btn-ui-refresh").disabled=this.busy;
       this.paintConversation();
     },

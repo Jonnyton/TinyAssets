@@ -89,7 +89,7 @@ def _lstat_nofollow_windows(root: Path, relpath: str) -> Path:
         except OSError as exc:
             raise UniverseFileError(str(exc)) from exc
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
-            raise UniverseFileError(f"{part!r} is a link; universe files are read link-free")
+            raise UniverseFileError(f"{part!r} is a link; command center files are read link-free")
     return current
 
 
@@ -465,7 +465,8 @@ def load_untrusted_yaml(text: str, *, max_bytes: int = MAX_CONFIG_BYTES) -> obje
     try:
         for event in yaml.parse(text, Loader=yaml.SafeLoader):
             if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None):
-                raise UniverseFileError("YAML anchors and aliases are refused in universe files")
+                raise UniverseFileError("YAML anchors and aliases are refused in command "
+                    "center files")
         return yaml.safe_load(text)
     except RecursionError:
         raise UniverseFileError("YAML nested too deeply") from None

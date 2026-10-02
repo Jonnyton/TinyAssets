@@ -32,7 +32,7 @@ DEFAULT_READ_BYTES = 65_536
 #: One listing returns at most this many entries, sorted, with ``truncated``.
 MAX_LIST_ENTRIES = 500
 
-_NOT_FOUND = {"error": "not_found", "resource": "universe_file"}
+_NOT_FOUND = {"error": "not_found", "resource": "command_center_file"}
 
 
 def _owner_universe(universe_id: str) -> tuple[str, Path] | None:
@@ -110,7 +110,7 @@ def _windows_path_is_clean(base: Path, uid: str, rel: str) -> Path:
         current = current / part
         info = os.lstat(current)
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
-            raise UniverseFileError(f"{part!r} is a link; universe files are read link-free")
+            raise UniverseFileError(f"{part!r} is a link; command center files are read link-free")
     return current
 
 

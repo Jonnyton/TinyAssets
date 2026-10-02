@@ -373,11 +373,11 @@ def ensure_seed_targets(
     created: list[WorkTarget] = []
     notes_target = WorkTarget(
         target_id="universe-notes",
-        title="Universe Notes",
+        title="Command Center Notes",
         role=ROLE_NOTES,
         publish_stage=PUBLISH_STAGE_NONE,
         tags=["notes", "universe"],
-        current_intent="maintain universe notes",
+        current_intent="maintain command center notes",
         metadata={"auto_created": True},
     )
     created.append(notes_target)
