@@ -227,7 +227,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind", "/app/models/preferences",
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
-        "/app/account/delete", "/app/account/timezone", "/app/rules",
+        "/app/account/delete", "/app/account/timezone", "/app/rules", "/app/memory",
         "/app/turn/interrupt", "/app/turn/steer",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
@@ -247,6 +247,8 @@ def test_route_is_apex_app_get(monkeypatch):
     assert "GET" in by_path["/app/voice/status"].methods
     assert {"GET", "POST"} <= by_path["/app/models/preferences"].methods
     assert by_path["/app/connections"].methods == {"GET", "HEAD", "POST"}
+    for path in ("/app/rules", "/app/memory"):
+        assert by_path[path].methods == {"GET", "HEAD", "POST"}
     for post_only in (
         "/app/token", "/app/openai/device/start", "/app/openai/device/poll",
         "/app/openai/begin", "/app/openai/exchange", "/app/trace",

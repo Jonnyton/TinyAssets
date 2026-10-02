@@ -529,6 +529,7 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: which native session each thread resumes (bytes per thread; "
         "the session files themselves live in the command center and count there)"
     ),
+    "history.db": "platform: harness history inside .agent-sessions/<universe>/ (D7a)",
     "rules.db": (
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"

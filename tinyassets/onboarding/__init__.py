@@ -1206,6 +1206,70 @@ async def _handle_serving_bind(request: Any) -> Any:
 
 
 
+async def _handle_memory(request: Any) -> Any:
+    """Memory and harness Undo for the authenticated owner's own home only."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets import harness_history, memory_items
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.auth.middleware import current_identity
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    home = await run_in_threadpool(_read_home, current_identity())
+    if not home:
+        return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
+    query = request.query_params
+    if any(query.get(key, home) != home for key in ("universe", "universe_id")):
+        return JSONResponse({"error": "not_your_home"}, status_code=403, headers=_NO_STORE)
+
+    def _listing():
+        root = _universe_dir(home)
+        return {"universe_id": home, "items": memory_items.list_items(root),
+                "history": harness_history.list_history(root)}
+
+    try:
+        if request.method == "GET":
+            return JSONResponse(await run_in_threadpool(_listing), headers=_NO_STORE)
+        if not _same_origin_json(request, str(app_config().get("resource") or "")):
+            return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
+                                headers=_NO_STORE)
+        data = await _read_small_json(request)
+        if data is None:
+            raise ValueError("invalid JSON")
+        if any(data.get(key, home) != home for key in ("universe", "universe_id")):
+            return JSONResponse({"error": "not_your_home"}, status_code=403, headers=_NO_STORE)
+
+        def _save():
+            root = _universe_dir(home)
+            if "undo" in data:
+                change_id = data["undo"]
+                if type(change_id) is not int or not 0 < change_id <= 9_223_372_036_854_775_807:
+                    raise ValueError("undo must be a history id")
+                harness_history.undo(root, change_id)
+            elif "delete" in data:
+                memory_items.delete_item(root, data["delete"])
+            else:
+                memory_items.set_item(root, data.get("id"), data.get("text"))
+            return _listing()
+
+        return JSONResponse(await run_in_threadpool(_save), headers=_NO_STORE)
+    except harness_history.HistoryConflict as exc:
+        return JSONResponse({"error": "history_conflict", "detail": str(exc)},
+                            status_code=409, headers=_NO_STORE)
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"error": "invalid_memory", "detail": str(exc)},
+                            status_code=400, headers=_NO_STORE)
+    except OSError:
+        return JSONResponse({"error": "memory_unavailable",
+                             "detail": "Memory could not be read or saved safely."},
+                            status_code=409, headers=_NO_STORE)
+
+
 async def _handle_rules(request: Any) -> Any:
     """The signed-in owner's Custom Rules for their own agent (harness D1a).
 
@@ -2079,6 +2143,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
+        Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
         Route("/app/turn/steer", _handle_turn_steer, methods=["POST"]),
         Route("/app/connections", handle_connections, methods=["GET", "POST"]),
