@@ -343,8 +343,8 @@
     // The viewer's identity, reduced to what a UI needs to greet them. No
     // principal id, no token, no provider or credential material.
     async whoami(){
-      return {protocol:this.PROTOCOL,universe_id:this.home,
-        universe_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
+      return {protocol:this.PROTOCOL,command_center_id:this.home,
+        command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
     // bundle cannot enumerate anybody else's command center.
@@ -536,7 +536,7 @@
     async listFiles(args){
       const path=this.filePath(args.path,false);
       const doc=await Owner.read(
-        {target:"universe_files",graph_id:this.home,query:path});
+        {target:"command_center_files",graph_id:this.home,query:path});
       if(!doc||doc.error||!Array.isArray(doc.entries)) throw new Error("that folder is not available");
       if(String(doc.universe_id||"")!==this.home)
         throw new Error("that folder belongs to another command center; this UI's access ended");
@@ -552,7 +552,7 @@
     async readFile(args){
       const path=this.filePath(args.path,true);
       const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
-      const doc=await Owner.read({target:"universe_file",graph_id:this.home,
+      const doc=await Owner.read({target:"command_center_file",graph_id:this.home,
         query:path,file_offset:offset,file_max_bytes:this.MAX_FILE_CHUNK});
       if(!doc||doc.error) throw new Error("that file is not available");
       if(String(doc.universe_id||"")!==this.home)
