@@ -354,6 +354,25 @@ class AgentTurnCoordinator:
         except Exception:  # noqa: BLE001 - bookkeeping never replaces the outcome
             _LOG.warning("could not release agent turn boot ownership")
 
+    def _open_tools(self, timeout):
+        """The turn's tool session: the adapter's own, else the engine route."""
+        opener = getattr(self.adapter, "open_tools", None)
+        if opener is not None:
+            return opener(self, timeout=timeout)
+        actor_id, graph_id = self.adapter.engine_identity(self.context, self.config)
+        return open_engine_tools(
+            actor_id=actor_id, graph_id=graph_id,
+            enabled_tools=granted_tools(self.config), timeout=timeout,
+            **self.steering(),
+        )
+
+    def steering(self):
+        """The session and live turn the owner's mid-turn messages are bound to."""
+        return {
+            "session_key": session_of(self.config),
+            "turn": getattr(self.interrupt, "live_id", "") or turn_of(),
+        }
+
     def _interrupted(self):
         return self.interrupt is not None and self.interrupt.requested()
 
@@ -457,15 +476,9 @@ class AgentTurnCoordinator:
                     )
                     if self.execution_kind == "engine_inference":
                         if engine is None:
-                            actor_id, graph_id = self.adapter.engine_identity(
-                                self.context, self.config,
+                            engine = await stack.enter_async_context(
+                                self._open_tools(timeout),
                             )
-                            engine = await stack.enter_async_context(open_engine_tools(
-                                actor_id=actor_id, graph_id=graph_id,
-                                enabled_tools=granted_tools(self.config), timeout=timeout,
-                                session_key=session_of(self.config),
-                                turn=getattr(self.interrupt, "live_id", "") or turn_of(),
-                            ))
                         config = replace(
                             self._remaining(turn_deadline),
                             agent_request=AgentInferenceRequest(
@@ -590,7 +603,18 @@ class AgentTurnCoordinator:
                             )
                         )
                         try:
-                            result = await engine.call(tool.request.name, tool.request.arguments())
+                            if getattr(engine, "takes_op_id", False):
+                                # The journal position names the operation, so a
+                                # lost reply is asked about, never re-run.
+                                result = await engine.call(
+                                    tool.request.name, tool.request.arguments(),
+                                    op_id=f"{self.turn.turn_id}:{len(self.turn.rounds)}"
+                                          f":{call_ordinal}",
+                                )
+                            else:
+                                result = await engine.call(
+                                    tool.request.name, tool.request.arguments(),
+                                )
                         except BaseException as exc:
                             failure = (
                                 "not_sent"
