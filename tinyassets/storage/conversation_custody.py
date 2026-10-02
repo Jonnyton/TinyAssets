@@ -40,6 +40,7 @@ from tinyassets.conversation_custody import (
     thread_request_digest,
     validate_private_universe_location,
 )
+from tinyassets.universe_files import connect_db
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversation_custody_database_binding (
@@ -491,7 +492,7 @@ def _open_database(
     evidence: ConversationCustodyGrantEvidence,
 ) -> tuple[sqlite3.Connection, Path, StorageFileIdentity]:
     before = validate_private_universe_location(evidence)
-    conn = sqlite3.connect(str(before.database_path), timeout=30, isolation_level=None)
+    conn = connect_db(str(before.database_path), timeout=30, isolation_level=None)
     try:
         _configure(conn)
         conn.executescript(_SCHEMA)

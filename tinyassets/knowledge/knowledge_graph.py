@@ -21,6 +21,7 @@ from tinyassets.knowledge.models import (
 )
 from tinyassets.knowledge.tag_matrix import KnowledgeTags, knowledge_tags_from_mapping
 from tinyassets.memory.scoping import MemoryScope
+from tinyassets.universe_files import connect_db
 
 # Memory-scope Stage 2b: shared helpers for injecting scope column
 # values into the INSERT/UPSERT fragments. The columns are identical
@@ -140,7 +141,7 @@ class KnowledgeGraph:
             )
         self._db_path = str(db_path)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
+        self._conn = connect_db(self._db_path)
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.row_factory = sqlite3.Row
         self._init_schema()

@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tinyassets import agent_sessions
+from tinyassets.universe_files import connect_db
 
 DO = "do"
 DO_IF_PREAPPROVED = "do_if_preapproved"
@@ -174,7 +175,7 @@ class Decision:
 
 def _connect(universe_dir: Path) -> sqlite3.Connection:
     path = agent_sessions._records_dir(Path(universe_dir)) / _FILE
-    conn = sqlite3.connect(path, timeout=10.0, isolation_level=None)
+    conn = connect_db(path, timeout=10.0, isolation_level=None)
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute(_SCHEMA)
     conn.execute(_KINDS_SCHEMA)

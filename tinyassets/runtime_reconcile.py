@@ -22,6 +22,7 @@ from tinyassets.dispatcher import load_dispatcher_config, prefers_request_type
 from tinyassets.platform_runtime_provenance import require_process_cloud_admission
 from tinyassets.storage import DB_FILENAME, data_dir
 from tinyassets.storage.request_admissions import RequestAdmissionStore
+from tinyassets.universe_files import connect_db
 
 STALE_TASK_REASON = (
     "stale_awaiting_compatible_capacity_retired_fleet"
@@ -73,7 +74,7 @@ class _LegacyCapacityMatcher:
         if not database.is_file():
             return {}
         uri = f"{database.resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
+        with connect_db(uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only = ON")
             rows = conn.execute(

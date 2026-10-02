@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from tinyassets.universe_files import connect_db
+
 logger = logging.getLogger(__name__)
 
 _TEMPORAL_SCHEMA = """
@@ -145,7 +147,7 @@ class TemporalFactStore:
 
     def __init__(self, db_path: str | Path = ":memory:") -> None:
         self._db_path = str(db_path)
-        self._conn = sqlite3.connect(self._db_path)
+        self._conn = connect_db(self._db_path)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_TEMPORAL_SCHEMA)
         logger.debug("TemporalFactStore initialized: %s", self._db_path)

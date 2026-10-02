@@ -60,6 +60,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable
 
+from tinyassets.universe_files import connect_db
+
 logger = logging.getLogger(__name__)
 
 _WORKOS_USER_ID = re.compile(r"user_[A-Za-z0-9]+\Z")
@@ -723,7 +725,7 @@ def _delete_satellite_rows(
     if path == runs_db_path(path.parent):
         from tinyassets.run_file_erasure import erase_owner_files
         erase_owner_files(path.parent, owner_id=principal)
-    conn = sqlite3.connect(str(path), timeout=30.0)
+    conn = connect_db(str(path), timeout=30.0)
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("PRAGMA foreign_keys = ON")
@@ -817,7 +819,7 @@ def _authoring_session_ids(root: Path, principal: str) -> list[str]:
     path = root / DB_FILENAME
     if not path.is_file():
         return []
-    conn = sqlite3.connect(str(path), timeout=30.0)
+    conn = connect_db(str(path), timeout=30.0)
     try:
         if "authoring_sessions" not in _tables(conn):
             return []

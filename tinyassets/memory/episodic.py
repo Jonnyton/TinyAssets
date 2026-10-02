@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from tinyassets.universe_files import connect_db
+
 if TYPE_CHECKING:
     from tinyassets.memory.scoping import MemoryScope
 
@@ -196,7 +198,7 @@ class EpisodicMemory:
         self._db_path = str(db_path)
         self._universe_id = universe_id
         self._window_chapters = window_chapters
-        self._conn = sqlite3.connect(self._db_path, timeout=30)
+        self._conn = connect_db(self._db_path, timeout=30)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=30000")
         self._conn.executescript(_SCHEMA)
@@ -905,7 +907,7 @@ def _migrate_episodic_database_in_place(
     backup_path: Path | None,
     legacy_domain_id: str,
 ) -> EpisodicSchemaMigrationResult:
-    conn = sqlite3.connect(db_path)
+    conn = connect_db(db_path)
     conn.row_factory = sqlite3.Row
     try:
         _ensure_scope_columns(conn)
@@ -1125,9 +1127,9 @@ def _ensure_domain_neutral_columns(conn: sqlite3.Connection) -> None:
 
 def _backup_sqlite_database(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    src = sqlite3.connect(source)
+    src = connect_db(source)
     try:
-        dst = sqlite3.connect(target)
+        dst = connect_db(target)
         try:
             src.backup(dst)
         finally:
@@ -1148,7 +1150,7 @@ def _coerce_connection(
 ) -> tuple[sqlite3.Connection, bool]:
     if isinstance(conn_or_path, sqlite3.Connection):
         return conn_or_path, False
-    conn = sqlite3.connect(conn_or_path)
+    conn = connect_db(conn_or_path)
     return conn, True
 
 

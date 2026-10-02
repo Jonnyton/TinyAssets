@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets import agent_sessions
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ class ReviewSwitchRefused(ValueError):
 
 def _connect(universe_dir: Path) -> sqlite3.Connection:
     path = agent_sessions._records_dir(Path(universe_dir)) / _FILE
-    conn = sqlite3.connect(path, timeout=10.0, isolation_level=None)
+    conn = connect_db(path, timeout=10.0, isolation_level=None)
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute(_SCHEMA)
     return conn

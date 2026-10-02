@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from tinyassets.universe_files import connect_db
+
 logger = logging.getLogger(__name__)
 
 VAULT_FILENAME = ".credential-vault.json"
@@ -270,7 +272,7 @@ def http_deposit_refusal(
     owner = (owner_user_id or "").strip()
     if not service or not owner:
         return "incomplete_request"
-    conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+    conn = connect_db(db_path(universe.parent), isolation_level=None)
     try:
         _ensure_llm_deposit_owner_schema(conn)
         rows = conn.execute(
@@ -604,28 +606,38 @@ def _persist_credential_vault_file(
     universe = Path(universe_dir)
     universe.mkdir(parents=True, exist_ok=True)
     path = credential_vault_path(universe)
-    tmp = path.with_name(f"{path.name}.tmp")
+    # A fresh, unguessable temp name created O_EXCL|O_NOFOLLOW at 0600: a fixed
+    # ``.tmp`` name could be pre-placed by something the universe runs as a
+    # hardlink to a file it keeps, and the credential bytes would land in that
+    # inode (concern 2026-10-01-platform-state-inside-the-universe-dir.md).
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     data = (
         json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
         + "\n"
     )
-    # Pre-commit: write the temp file. A write/flush failure here is before the
-    # commit point and propagates. The temp fsync is durability only — log loudly
-    # on failure but do not abort a deposit whose bytes are already written.
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(data)
-        handle.flush()
-        try:
-            os.fsync(handle.fileno())
-        except OSError as exc:
-            logger.warning(
-                "credential vault temp fsync failed pre-commit (%s)",
-                type(exc).__name__,
-            )
-    _chmod_best_effort(tmp, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, flags | getattr(os, "O_CLOEXEC", 0), 0o600)
+    try:
+        # Pre-commit: write the temp file. A write/flush failure here is before
+        # the commit point and propagates. The temp fsync is durability only —
+        # log loudly on failure but do not abort a deposit whose bytes are written.
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError as exc:
+                logger.warning(
+                    "credential vault temp fsync failed pre-commit (%s)",
+                    type(exc).__name__,
+                )
+        _chmod_best_effort(tmp, 0o600)
 
-    # COMMIT POINT: the atomic rename. A failure here leaves the prior file intact.
-    tmp.replace(path)
+        # COMMIT POINT: the atomic rename. A failure leaves the prior file intact.
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
     # Past the commit point: DURABILITY ONLY. Never raise — the deposit already
     # took effect, so a durability failure must not fail it or trigger compensation.
@@ -787,7 +799,7 @@ def _write_credential_vault_locked(
     from tinyassets.storage import db_path
     from tinyassets.storage.current_home import check_principal_not_deleted
 
-    conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+    conn = connect_db(db_path(universe.parent), isolation_level=None)
     try:
         # The records THIS call is depositing (pre-merge). Ownership is claimed
         # only for these — never for untouched records already in the vault.
@@ -1010,7 +1022,7 @@ def record_refresh_rejected(
 
     stamp = when or datetime.now(timezone.utc).isoformat()
     try:
-        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+        conn = connect_db(db_path(Path(base_path)), isolation_level=None)
     except sqlite3.Error:
         logger.warning("could not open storage to record a sign-in rejection")
         return
@@ -1035,7 +1047,7 @@ def clear_refresh_rejected(base_path: str | Path, *, universe_id: str, service: 
     from tinyassets.storage import db_path
 
     try:
-        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+        conn = connect_db(db_path(Path(base_path)), isolation_level=None)
     except sqlite3.Error:
         return
     try:
@@ -1055,7 +1067,7 @@ def refresh_rejected_sources(base_path: str | Path, *, universe_id: str) -> dict
     from tinyassets.storage import db_path
 
     try:
-        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+        conn = connect_db(db_path(Path(base_path)), isolation_level=None)
     except sqlite3.Error:
         return {}
     try:

@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from tinyassets.universe_files import connect_db
+
 GIB = 1024**3
 
 #: Defaults from design note ``workspace-node`` D4.
@@ -342,7 +344,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def _connect(db: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db), timeout=30)
+    conn = connect_db(str(db), timeout=30)
     conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
@@ -694,7 +696,7 @@ def wait_ticket(db: Path, run_id: str) -> WaitTicket | None:
     """``run_id``'s ticket, or None. Read-only: never creates the database."""
     if not Path(db).is_file():
         return None
-    conn = sqlite3.connect(f"file:{Path(db).as_posix()}?mode=ro", uri=True, timeout=30)
+    conn = connect_db(f"file:{Path(db).as_posix()}?mode=ro", uri=True, timeout=30)
     try:
         if not _has_waiters_table(conn):
             return None
@@ -744,7 +746,7 @@ def waiting_universes(db: Path) -> list[str]:
     """Every universe with at least one waiter in this database."""
     if not Path(db).is_file():
         return []
-    conn = sqlite3.connect(f"file:{Path(db).as_posix()}?mode=ro", uri=True, timeout=30)
+    conn = connect_db(f"file:{Path(db).as_posix()}?mode=ro", uri=True, timeout=30)
     try:
         if not _has_waiters_table(conn):
             return []

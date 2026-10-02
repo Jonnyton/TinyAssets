@@ -26,6 +26,7 @@ from types import MappingProxyType
 from typing import AbstractSet, Callable, Mapping
 
 from tinyassets.storage import DB_FILENAME
+from tinyassets.universe_files import connect_db
 
 INVENTORY_REVISION = "scoped-reset-inventory-v4-2026-07-25"
 
@@ -861,8 +862,8 @@ def _connect_read_only(db_file: Path) -> sqlite3.Connection:
             raise ScopedResetBlocked(
                 f"database WAL has no readable shared-memory index: {wal.name}"
             )
-        return sqlite3.connect(f"{uri}?mode=ro", uri=True)
-    return sqlite3.connect(f"{uri}?mode=ro&immutable=1", uri=True)
+        return connect_db(f"{uri}?mode=ro", uri=True)
+    return connect_db(f"{uri}?mode=ro&immutable=1", uri=True)
 
 
 def _sha256_file(path: Path) -> str:
@@ -1842,7 +1843,7 @@ def read_completed_plan_receipt(
 def _connect_control(data_dir: Path) -> sqlite3.Connection:
     root = _validated_root(data_dir)
     db_file = _validated_main_database(root)
-    conn = sqlite3.connect(str(db_file), timeout=30.0)
+    conn = connect_db(str(db_file), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 30000")

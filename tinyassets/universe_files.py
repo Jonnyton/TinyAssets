@@ -41,6 +41,7 @@ __all__ = [
     "MAX_PLATFORM_FILE_BYTES",
     "MAX_UNIVERSE_FILE_BYTES",
     "UniverseFileError",
+    "connect_db",
     "is_data_path",
     "list_universe_dir",
     "load_untrusted_yaml",
@@ -451,6 +452,176 @@ def unlink_data_path(path: Path | str) -> None:
         Path(path).unlink()
         return
     unlink_universe_file(located[0], located[1])
+
+
+#: Files SQLite opens beside a database; each could be planted as a link.
+_SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def _sqlite_target(database: str, uri: bool) -> tuple[Path, str] | None:
+    """``(filesystem path, uri to open)`` for an on-disk database, else ``None``."""
+    from urllib.parse import unquote, urlsplit
+    from urllib.request import url2pathname
+
+    if not uri:
+        if database in ("", ":memory:"):
+            return None
+        target = Path(database).absolute()
+        return target, f"{target.as_uri()}?nofollow=1"
+    if not database.startswith("file:"):
+        return None
+    parts = urlsplit(database)
+    if parts.path in ("", ":memory:") or "mode=memory" in parts.query:
+        return None
+    target = Path(url2pathname(unquote(parts.path))).absolute()
+    joiner = "&" if parts.query else "?"
+    return target, f"{database}{joiner}nofollow=1"
+
+
+#: Daemon-owned per-universe state outside every jail; must equal
+#: ``tinyassets.providers.provider_jail.UNIVERSE_SIDECARS_DIR``.
+_SIDECARS_DIR = ".universe-sidecars"
+_PROVENANCE_DIR = "db-provenance"
+_PROVENANCE_READY = ".initialized"
+
+
+def _is_universe_state_db(parts: list[str]) -> bool:
+    """A hidden database at a universe's root: platform state the universe's
+    own processes can pre-create (``<data>/<uid>/.<name>.db``)."""
+    return (
+        len(parts) == 2
+        and not parts[0].startswith(".")
+        and parts[1].startswith(".")
+        and parts[1].endswith(".db")
+    )
+
+
+def _provenance_path(root: Path, uid: str, name: str) -> Path:
+    return root / _SIDECARS_DIR / uid / _PROVENANCE_DIR / name
+
+
+def _identity(info: os.stat_result) -> str:
+    return f"{info.st_dev}:{info.st_ino}"
+
+
+def _grandfather_state_dbs(root: Path, uid: str, dir_fd: int) -> None:
+    """First sight of a universe since provenance landed: record the hidden
+    databases already there as daemon-made. A one-time window -- anything a
+    universe pre-seeded BEFORE this ran is trusted, nothing after."""
+    ready = _provenance_path(root, uid, _PROVENANCE_READY)
+    if read_data_path(ready) is not None:
+        return
+    for entry in os.listdir(dir_fd):
+        if not _is_universe_state_db([uid, entry]):
+            continue
+        info = os.lstat(entry, dir_fd=dir_fd)
+        if stat.S_ISREG(info.st_mode):
+            write_data_path(_provenance_path(root, uid, entry), _identity(info))
+    try:
+        write_data_path(ready, "1", mode="exclusive")
+    except FileExistsError:
+        pass
+
+
+def _check_db_provenance(root: Path, parts: list[str], dir_fd: int, *, read_only: bool) -> None:
+    """Refuse a universe state database the daemon did not create.
+
+    The universe's processes can write its root, so a hidden database that is
+    absent until first use (``.effector_consents.db``) could be pre-seeded as
+    a regular SQLite file holding forged rows -- an agent granting itself its
+    owner's consent (concern 2026-10-01-platform-state-inside-the-universe-dir).
+    The daemon records the device and inode of every state database it
+    creates, outside the universe; an existing file without a matching record
+    is refused. A new database is created here ``O_EXCL|O_NOFOLLOW`` and
+    recorded BEFORE SQLite opens it.
+    """
+    import time
+
+    uid, name = parts
+    _grandfather_state_dbs(root, uid, dir_fd)
+    record = _provenance_path(root, uid, name)
+    try:
+        info = os.lstat(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        if read_only:
+            return  # SQLite reports the missing file itself
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        try:
+            fd = os.open(name, flags | getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=dir_fd)
+        except FileExistsError:
+            info = os.lstat(name, dir_fd=dir_fd)  # a concurrent daemon open made it
+        else:
+            try:
+                write_data_path(record, _identity(os.fstat(fd)))
+            finally:
+                os.close(fd)
+            return
+    expected = _identity(info)
+    for _ in range(20):  # a concurrent creator writes the record just after O_EXCL
+        found = read_data_path(record)
+        if found is not None and found.decode("ascii", "replace") == expected:
+            return
+        if found is not None:
+            break
+        time.sleep(0.05)
+    raise UniverseFileError(
+        f"{name} in universe {uid!r} was not created by the daemon; refusing to "
+        "open it as platform state"
+    )
+
+
+def connect_db(database: str | os.PathLike, *args: object, uri: bool = False, **kwargs: object):
+    """``sqlite3.connect`` that never opens a database through a link under the data dir.
+
+    A workflow provider jail binds its universe read-write and allows
+    ``symlink``, so ``.runs.db -> /data/<other>/.runs.db`` would otherwise make
+    the daemon read and write another universe's database in this one's
+    context. Under the data dir: every directory component must be link-free,
+    the database opens with SQLite's ``nofollow`` (``SQLITE_OPEN_NOFOLLOW``,
+    refusing a link at the file itself), and a ``-wal``/``-shm``/``-journal``
+    sidecar that is a link is refused before SQLite can open it. A refusal is
+    a :class:`UniverseFileError`. Elsewhere this is plain ``sqlite3.connect``.
+    ``sqlite3.connect`` is looked up at call time, so tests that patch it still
+    see every call.
+    """
+    import sqlite3
+
+    raw = os.fspath(database)
+    if isinstance(raw, bytes):
+        return sqlite3.connect(database, *args, uri=uri, **kwargs)
+    target = _sqlite_target(raw, uri)
+    located = _data_relative(target[0]) if target is not None else None
+    if target is None or located is None:
+        return sqlite3.connect(database, *args, uri=uri, **kwargs)
+    root, relpath = located
+    parts = _split(relpath)
+    try:
+        if getattr(fs, "_POSIX", False):
+            dir_fd = _parent_dir_fd(root, parts, create=False)
+            try:
+                for suffix in _SQLITE_SIDECARS:
+                    try:
+                        info = os.lstat(parts[-1] + suffix, dir_fd=dir_fd)
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISLNK(info.st_mode):
+                        raise UniverseFileError(
+                            f"{relpath}{suffix} is a link; a database is opened link-free"
+                        )
+                if _is_universe_state_db(parts):
+                    read_only = "mode=ro" in target[1]
+                    _check_db_provenance(root, parts, dir_fd, read_only=read_only)
+            finally:
+                os.close(dir_fd)
+        elif len(parts) > 1:
+            _lstat_nofollow_windows(root, "/".join(parts[:-1]))
+    except FileNotFoundError:
+        pass  # a missing parent: let SQLite report it in its own terms
+    except UniverseFileError:
+        raise
+    except OSError as exc:
+        raise UniverseFileError(f"{relpath!r} was refused: {exc}") from exc
+    return sqlite3.connect(target[1], *args, uri=True, **kwargs)
 
 
 def load_untrusted_yaml(text: str, *, max_bytes: int = MAX_CONFIG_BYTES) -> object:

@@ -42,6 +42,7 @@ from typing import Any
 
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
+from tinyassets.universe_files import connect_db
 
 # -------------------------------------------------------------------
 # Constants
@@ -825,7 +826,7 @@ def universe_id_from_path(universe_path: str | Path) -> str:
 def _connect(base_path: str | Path):
     path = db_path(base_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = connect_db(path, timeout=30.0)
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from tinyassets import workspace_pool as wp
 from tinyassets.api import storage_observations
+from tinyassets.universe_files import connect_db
 
 
 def _utc(stamp: float | None) -> str | None:
@@ -33,7 +34,7 @@ def _readonly(db: Path):
     # Keep normal locking/change detection: a missing WAL now is not proof the
     # database stays immutable while we read it (especially the ownership ACL).
     # mode=ro/query_only forbid database/schema/record writes, not SQLite locks.
-    conn = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=0.2)
+    conn = connect_db(db.as_uri() + "?mode=ro", uri=True, timeout=0.2)
     try:
         conn.execute("PRAGMA query_only=ON")
         deadline = time.monotonic() + 0.2

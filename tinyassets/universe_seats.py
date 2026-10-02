@@ -41,6 +41,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
+from tinyassets.universe_files import connect_db
+
 _log = logging.getLogger(__name__)
 _current_seat: ContextVar = ContextVar("account_seat", default=None)
 
@@ -236,7 +238,7 @@ def _connect(db: Path) -> sqlite3.Connection:
     try:
         # Autocommit mode: `_txn` issues BEGIN IMMEDIATE / COMMIT itself, so the
         # driver never opens or closes a transaction behind its back.
-        conn = sqlite3.connect(str(db), timeout=30, isolation_level=None)
+        conn = connect_db(str(db), timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")
         return conn
@@ -540,7 +542,7 @@ def holder_is_named(root: str | Path, holder: str) -> bool:
     db = ledger_path(root)
     if not db.exists():
         return False
-    with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
+    with closing(connect_db(db.as_uri() + "?mode=ro", uri=True)) as conn:
         for table in ("account_seats", "seat_waiters"):
             try:
                 if conn.execute(
@@ -598,7 +600,7 @@ def occupancy(account_id: str, *, db: Path | None = None, universe_id: str = "",
     try:
         if not _trusted(db):
             raise SeatLedgerUnusable("untrusted seat ledger")
-        with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
+        with closing(connect_db(db.as_uri() + "?mode=ro", uri=True)) as conn:
             out["running"] = _count(conn, "account_seats", account_id)
             live = "SELECT COUNT(*) FROM seat_waiters WHERE account_id = ? AND expires_at >= ?"
             out["waiting"] = int(conn.execute(live, (account_id, moment)).fetchone()[0])

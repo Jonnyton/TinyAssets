@@ -41,6 +41,7 @@ from tinyassets.storage.request_admissions import (
     _stale_task_integrity_digest,
     expected_idempotency_hash_re,
 )
+from tinyassets.universe_files import connect_db
 
 
 @dataclass
@@ -260,7 +261,7 @@ class Epoch2BranchTaskAdapter:
         if not database.is_file():
             return []
         uri = f"{database.resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
+        with connect_db(uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only = ON")
             rows = self._store._v2_integrity_cursor(
@@ -544,7 +545,7 @@ class Epoch2BranchTaskAdapter:
         if not database.is_file():
             return None
         uri = f"{database.resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
+        with connect_db(uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only = ON")
             conn.execute("BEGIN")

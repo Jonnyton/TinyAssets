@@ -24,6 +24,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from tinyassets.universe_files import connect_db
+
 FLOW_TTL_SECONDS = 600
 CALLBACK_PREFIX = "/app/model-callback/"
 #: The one fixed redirect URI path of the generic flow. A standard client is
@@ -71,7 +73,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 @contextmanager
 def flows_db(base: Path | str) -> Iterator[tuple[sqlite3.Connection, float]]:
     """One IMMEDIATE transaction over the flow store, expired rows swept first."""
-    conn = sqlite3.connect(Path(base) / _DB_NAME, timeout=5, isolation_level=None)
+    conn = connect_db(Path(base) / _DB_NAME, timeout=5, isolation_level=None)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL")

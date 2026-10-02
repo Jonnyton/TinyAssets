@@ -31,6 +31,7 @@ from tinyassets.storage.automation_activations import (
     AutomationActivationState,
     AutomationActivationStore,
 )
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -428,7 +429,7 @@ class RequestAdmissionStore:
 
         path = db_path(self.base_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(
+        conn = connect_db(
             path,
             timeout=self._busy_timeout_ms / 1000,
             isolation_level=None,

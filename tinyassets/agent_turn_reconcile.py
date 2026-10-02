@@ -53,6 +53,7 @@ from tinyassets.storage.agent_turn_journal import (
     WORKING_STATES,
     AgentTurnJournal,
 )
+from tinyassets.universe_files import connect_db
 
 _LOG = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ def _orphan_rows(path: Path, boot: BootTurns) -> list[tuple[str, str, str, str]]
     than ``mode=ro`` because a WAL database missing its ``-shm`` file cannot be
     opened read-only at all, which is the state a restarted box is in.
     """
-    conn = sqlite3.connect(
+    conn = connect_db(
         path.as_uri() + "?mode=rw", uri=True, timeout=30.0, isolation_level=None,
     )
     try:

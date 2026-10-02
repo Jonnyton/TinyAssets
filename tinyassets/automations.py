@@ -64,6 +64,7 @@ from tinyassets.schedule_timezone import (
     slot_instant,
     slot_key,
 )
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -618,7 +619,7 @@ class AutomationStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         # isolation_level=None: the fence needs an explicit BEGIN IMMEDIATE, not
         # Python's implicit deferred-transaction wrapper.
-        conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+        conn = connect_db(path, timeout=30.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 30000")

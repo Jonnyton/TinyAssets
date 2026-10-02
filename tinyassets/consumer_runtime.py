@@ -17,6 +17,7 @@ from tinyassets.scoped_reset import ScopedResetError
 from tinyassets.storage import conversation_run_admissions as canonical
 from tinyassets.storage import run_input_admissions
 from tinyassets.storage.current_home import CurrentHomeChanged
+from tinyassets.universe_files import connect_db
 
 
 def _lookup_key(conn, scope, request_key):
@@ -161,7 +162,7 @@ def prepare_admitted_consumer(base, envelope, *, author_conn, runs_conn):
 
 def settle_admitted_consumer(base, run_id):
     """Static notification adapter; current owner authorization precedes repair."""
-    with sqlite3.connect(runs_db_path(base).as_uri() + "?mode=ro", uri=True) as conn:
+    with connect_db(runs_db_path(base).as_uri() + "?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT admission_id,owner_user_id,universe_id FROM "
                            "conversation_run_admissions WHERE run_id=?", (run_id,)).fetchone()
@@ -184,7 +185,7 @@ def _installation_present(base, owner, universe):
     """Cheap default-path probe; no schema/home creation and no execution permission."""
     from tinyassets.storage import db_path
 
-    with sqlite3.connect(db_path(base).as_uri() + "?mode=ro", uri=True, timeout=5) as conn:
+    with connect_db(db_path(base).as_uri() + "?mode=ro", uri=True, timeout=5) as conn:
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                         "AND name='agent_bindings'").fetchone() is None:
             return False
@@ -271,7 +272,7 @@ def converse_turn(base, *, owner, universe, message, input_method, model_choice,
 def initialize(base):
     """Explicit schema setup only; not called inside request/worker fences."""
     canonical.initialize(base)
-    with sqlite3.connect(runs_db_path(base), timeout=5) as conn:
+    with connect_db(runs_db_path(base), timeout=5) as conn:
         run_input_admissions.ensure_schema(conn)
 
 

@@ -10,6 +10,7 @@ from contextlib import closing
 from pathlib import Path
 
 from tinyassets.conversation_failure import failure_column_sql, project_failure_row
+from tinyassets.universe_files import connect_db
 
 PAGE_SIZE = 20
 
@@ -27,7 +28,7 @@ def read_conversation_page(universe_dir, session_id, *, field_name="", offset=0,
         raise PermissionError("conversation_store_outside_universe")
     if not path.exists():
         return {"available": False, "messages": [], "next_offset": None}
-    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5.0)) as conn:
+    with closing(connect_db(path.as_uri() + "?mode=ro", uri=True, timeout=5.0)) as conn:
         conn.row_factory = sqlite3.Row
         failure_column = failure_column_sql(conn)
         if field_name:

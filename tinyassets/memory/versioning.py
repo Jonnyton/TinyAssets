@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tinyassets.universe_files import connect_db
+
 logger = logging.getLogger(__name__)
 
 _SCHEMA = """
@@ -74,7 +76,7 @@ class OutputVersionStore:
     ) -> None:
         self._db_path = str(db_path)
         self._universe_id = universe_id
-        self._conn = sqlite3.connect(self._db_path, timeout=30)
+        self._conn = connect_db(self._db_path, timeout=30)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=30000")
         self._conn.executescript(_SCHEMA)

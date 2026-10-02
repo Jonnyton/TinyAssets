@@ -18,6 +18,7 @@ from typing import Any
 
 from tinyassets.effectors.authority import DENIED as SOUL_AUTHORITY_DENIED
 from tinyassets.effectors.authority import resolve_soul_effect_authority
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +272,7 @@ def _record_destination_marker(
     page_sha256 = hashlib.sha256(_page_bytes(universe_dir, target)).hexdigest()
     db_path = _destination_marker_db_path(universe_dir)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path, timeout=30.0) as connection:
+    with connect_db(db_path, timeout=30.0) as connection:
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA busy_timeout = 30000")
         connection.execute(
@@ -318,7 +319,7 @@ def _reconcile_destination_marker(
     try:
         if not target.is_file():
             return {"status": "unknown"}
-        with sqlite3.connect(
+        with connect_db(
             _destination_marker_db_path(universe_dir),
             timeout=30.0,
         ) as connection:

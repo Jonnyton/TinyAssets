@@ -29,6 +29,7 @@ from tinyassets.storage.agent_turn_records import (
 )
 from tinyassets.storage.current_home import check_current_home
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+from tinyassets.universe_files import connect_db
 
 _SCOPE = "owner_user_id = ? AND universe_id = ? AND turn_id = ?"
 # States in which a turn is still PROGRESSING: created, inferring, or waiting on
@@ -470,7 +471,7 @@ class AgentTurnJournal:
         # closes the window between the check above and the open. Read-write, not
         # ``mode=ro``: a WAL database whose -shm file is absent cannot be opened
         # read-only at all, and that is the state a freshly restarted box is in.
-        conn = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True,
+        conn = connect_db(path.as_uri() + "?mode=rw", uri=True,
                                timeout=30.0, isolation_level=None)
         try:
             conn.row_factory = sqlite3.Row

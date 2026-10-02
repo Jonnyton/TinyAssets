@@ -40,6 +40,7 @@ from tinyassets.provider_admission import (
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
+from tinyassets.universe_files import connect_db
 
 _STATUS_SCHEMA_VERSION = 2
 # Async overhead plus the in-band reap, on top of the turn's own cap: the same
@@ -1234,7 +1235,7 @@ def _platform_last_activity_at() -> str | None:
     if not db.exists():
         return None
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+        conn = connect_db(f"file:{db}?mode=ro", uri=True, timeout=5.0)
         try:
             row = conn.execute(
                 "SELECT MAX(COALESCE(finished_at, started_at)) FROM runs"

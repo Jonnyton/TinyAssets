@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tinyassets.storage import db_path
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +75,11 @@ def _connect(base_path: str | Path, *, create: bool) -> sqlite3.Connection | Non
         return None
     if create:
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path, timeout=_BUSY_WAIT_MS / 1000, isolation_level=None)
+        conn = connect_db(path, timeout=_BUSY_WAIT_MS / 1000, isolation_level=None)
     else:
         # `mode=rw`, never `mode=ro`: a WAL database missing its -shm cannot be
         # opened read-only, and an observational read must not create a file.
-        conn = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True,
+        conn = connect_db(path.as_uri() + "?mode=rw", uri=True,
                                timeout=_BUSY_WAIT_MS / 1000, isolation_level=None)
     conn.execute(f"PRAGMA busy_timeout = {_BUSY_WAIT_MS}")
     return conn

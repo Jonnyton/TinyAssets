@@ -21,6 +21,7 @@ from typing import Any, Iterator
 
 from tinyassets.ids import new_ulid
 from tinyassets.storage import db_path
+from tinyassets.universe_files import connect_db
 
 AGENT_SCHEMA_VERSION = 1
 MAX_AGENT_JSON_BYTES = 256 * 1024
@@ -493,7 +494,7 @@ def _ensure_schema(base_path: str | Path) -> Path:
         if key in _SCHEMA_INITIALIZED:
             return path
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path, timeout=30.0)
+        conn = connect_db(path, timeout=30.0)
         try:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout = 30000")
@@ -560,7 +561,7 @@ def _agent_connect(
     base_path: str | Path,
 ) -> Iterator[sqlite3.Connection]:
     path = _ensure_schema(base_path)
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = connect_db(path, timeout=30.0)
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")

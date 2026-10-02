@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.universe_files import connect_db
+
 # ── Watch-window defaults (Task #22 Phase A) ─────────────────────────────────
 
 DEFAULT_WATCH_WINDOW_SECONDS = 86400  # 24h
@@ -134,7 +136,7 @@ class BranchVersion:
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     from tinyassets.runs import runs_db_path
     path = runs_db_path(base_path)
-    conn = sqlite3.connect(str(path), timeout=30.0)
+    conn = connect_db(str(path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
@@ -246,7 +248,7 @@ def _public_branch_ids(base_path: str | Path) -> set[str] | None:
     path = db_path(base_path)
     if not path.exists():
         return None
-    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
+    conn = connect_db(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
     try:
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")}

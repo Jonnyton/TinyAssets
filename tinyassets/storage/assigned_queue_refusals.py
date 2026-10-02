@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tinyassets.storage import db_path
+from tinyassets.universe_files import connect_db
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS assigned_queue_refusals (
@@ -36,7 +37,7 @@ class AssignedQueueRefusalStore:
         observed_at: str,
         consumer_id: str,
     ) -> None:
-        with sqlite3.connect(db_path(self.base_path)) as conn:
+        with connect_db(db_path(self.base_path)) as conn:
             conn.executescript(_SCHEMA)
             conn.execute(
                 """
@@ -76,7 +77,7 @@ class AssignedQueueRefusalStore:
         )
         uri = f"{database.resolve().as_uri()}?mode=ro"
         try:
-            with sqlite3.connect(uri, uri=True) as conn:
+            with connect_db(uri, uri=True) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA query_only = ON")
                 rows = conn.execute(

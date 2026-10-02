@@ -15,6 +15,8 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
+from tinyassets.universe_files import connect_db
+
 LEDGER_NAME = ".engine_run_admissions.db"
 KIND_WRITE = "write"
 KIND_READ = "read"
@@ -95,7 +97,7 @@ def admit(universe_id: str, *, db: Path | None = None) -> int:
         return ADMITTED_UNRECORDED
     now = time.time()
     try:
-        conn = sqlite3.connect(str(db), timeout=10)
+        conn = connect_db(str(db), timeout=10)
         try:
             # The lock comes FIRST: migration and insert happen under it, so a
             # second first-touch waits and sees the migrated table.
@@ -134,7 +136,7 @@ def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bo
     if _ledger_is_trusted(db) is not True or not db.exists():
         return False
     try:
-        conn = sqlite3.connect(str(db), timeout=10)
+        conn = connect_db(str(db), timeout=10)
         try:
             conn.execute("BEGIN IMMEDIATE")
             _ensure_schema(conn)
@@ -183,7 +185,7 @@ def settle(run_id: str, kind: str, *, db: Path | None = None) -> bool:
         return False
     now = time.time()
     try:
-        conn = sqlite3.connect(str(db), timeout=10)
+        conn = connect_db(str(db), timeout=10)
         try:
             conn.execute("BEGIN IMMEDIATE")
             _ensure_schema(conn)

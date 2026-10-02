@@ -34,6 +34,7 @@ from tinyassets.storage.workspace_authority import (
     normalize_git_host,
     validate_git_scopes,
 )
+from tinyassets.universe_files import connect_db
 
 AuthenticatedPrincipalVerifier = Callable[[], str]
 
@@ -4282,7 +4283,7 @@ class ConnectionLedger:
                 )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._db_path, timeout=30.0)
+        connection = connect_db(self._db_path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")

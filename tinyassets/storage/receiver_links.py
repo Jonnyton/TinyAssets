@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from tinyassets.runs import runs_db_path
+from tinyassets.universe_files import connect_db
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS graph_receivers (
@@ -150,7 +151,7 @@ def transaction(base_path: str | Path) -> Iterator[sqlite3.Connection]:
     """Use the runs DB, not the author store used by legacy webhook tokens."""
     path = runs_db_path(base_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
+    conn = connect_db(path, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL")

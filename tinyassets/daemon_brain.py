@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.universe_files import connect_db
+
 SCHEMA_VERSION = 1
 DEFAULT_BRAIN_PACKET_CHARS = 1600
 
@@ -101,7 +103,7 @@ def daemon_brain_db_path(base_path: str | Path) -> Path:
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     db_path = daemon_brain_db_path(base_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn = connect_db(str(db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     initialize_daemon_brain(conn)
     return conn
@@ -210,7 +212,7 @@ def _connect_existing_read_only(base_path: str | Path) -> sqlite3.Connection | N
     db_path = daemon_brain_db_path(base_path)
     if not db_path.exists():
         return None
-    conn = sqlite3.connect(
+    conn = connect_db(
         f"file:{db_path.as_posix()}?mode=ro",
         timeout=30.0,
         uri=True,
@@ -1113,7 +1115,7 @@ def read_daemon_brain_dispatch_hints(
 
     uri = f"file:{db_path.as_posix()}?mode=ro"
     try:
-        conn = sqlite3.connect(uri, uri=True, timeout=30.0)
+        conn = connect_db(uri, uri=True, timeout=30.0)
         conn.row_factory = sqlite3.Row
     except sqlite3.OperationalError:
         return {
@@ -1936,7 +1938,7 @@ def open_brain_status_surface(
             "warnings": ["daemon_registry_db_missing"],
         }
 
-    conn = sqlite3.connect(
+    conn = connect_db(
         f"file:{author_db.as_posix()}?mode=ro",
         timeout=30.0,
         uri=True,

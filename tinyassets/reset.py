@@ -19,6 +19,8 @@ import shutil
 import sqlite3
 from pathlib import Path
 
+from tinyassets.universe_files import connect_db
+
 # Universe-scoped tables in .tinyassets.db, cleared entirely. Every row belongs
 # to a universe (index / visibility / ownership / per-universe runtime + branch
 # INSTANCES). The reusable commons (branch_definitions, goals, gate_claims,
@@ -100,7 +102,7 @@ def reset(data_dir: Path, *, confirm: bool) -> dict[str, object]:
 
     table_counts: dict[str, int] = {}
     if db_path.is_file():
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_db(str(db_path))
         try:
             for table in _RESET_TABLES:
                 if _table_exists(conn, table):
@@ -126,7 +128,7 @@ def reset(data_dir: Path, *, confirm: bool) -> dict[str, object]:
     if marker.is_file():
         marker.unlink()
     if db_path.is_file() and table_counts:
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_db(str(db_path))
         try:
             for table in table_counts:
                 conn.execute(f"DELETE FROM {table}")

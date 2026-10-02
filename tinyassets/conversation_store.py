@@ -70,6 +70,7 @@ from tinyassets.conversation_failure import (
 )
 from tinyassets.conversation_memory import DEFAULT_LIMIT, Msg
 from tinyassets.providers.execution_receipt import ExecutionReceipt, normalize_execution_receipt
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ def _db_path(universe_dir: "str | Path") -> Path:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path), timeout=5.0)
+    conn = connect_db(str(db_path), timeout=5.0)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
@@ -257,7 +258,7 @@ def read_history_page(
     db_path = _db_path(universe_dir)
     if not db_path.exists():
         return [], False
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+    conn = connect_db(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
     try:
         messages = _read_messages(conn, session_id, limit + 1, before=before)
     finally:
@@ -286,7 +287,7 @@ def load_recent_readonly(
     if not db_path.exists():
         return []
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        conn = connect_db(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
             messages = _read_messages(conn, session_id, limit)
         finally:

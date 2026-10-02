@@ -92,6 +92,7 @@ from tinyassets.api.wiki import (
     _parse_frontmatter,
 )
 from tinyassets.catalog import CommitFailedError, DirtyFileError
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -892,7 +893,7 @@ def _branch_dependents(
         goal_ids: set[str] = set()
         db = db_path(base)
         if db.exists():
-            conn = sqlite3.connect(db)
+            conn = connect_db(db)
             try:
                 tables = {
                     r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
