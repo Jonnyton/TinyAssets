@@ -248,7 +248,9 @@ def test_render_removes_every_compose_spelling_of_a_forbidden_name(tmp_path):
 def test_render_refuses_a_forbidden_value_that_continues_past_its_line(tmp_path):
     source = tmp_path / "env"
     daemon = tmp_path / "daemon.env"
-    source.write_text('KEEP=1\nDO_API_TOKEN="placeholder-start\nplaceholder-rest"\n', encoding="utf-8")
+    source.write_text(
+        'KEEP=1\nDO_API_TOKEN="placeholder-start\nplaceholder-rest"\n', encoding="utf-8"
+    )
 
     result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
 
