@@ -49,6 +49,15 @@ def test_counts_failed_rounds_and_only_this_owner_connection_free_models_today(t
     assert budget(tmp_path, zero_priced_models={"zero"}).used == 6
 
 
+def test_submillisecond_reset_and_current_time_boundaries(tmp_path):
+    for ordinal, instant in enumerate((
+        NOW.replace(hour=0) - timedelta(microseconds=1),
+        NOW.replace(hour=0), NOW, NOW + timedelta(microseconds=1),
+    )):
+        seed_requests(tmp_path, 1, created_at=instant, turn_id=f"boundary-{ordinal}")
+    assert budget(tmp_path).used == 2
+
+
 @pytest.mark.parametrize("broken", [False, True])
 def test_unreadable_journal_returns_unknown_without_creating_it(tmp_path, broken):
     path = tmp_path / DB_FILENAME

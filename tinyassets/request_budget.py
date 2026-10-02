@@ -117,7 +117,12 @@ def requests_today(base_path, owner, source_ref, *, reset_timezone,
                 "ORDER BY t.created_at, t.turn_id, r.ordinal",
                 (owner, reset.isoformat(), current.isoformat()),
             )
-            for _, raw, state, reply in rows:
+            for created_at, raw, state, reply in rows:
+                # SQLite date arithmetic rounds sub-millisecond timestamps. Keep
+                # the SQL range as a coarse filter, then honor the exact reset.
+                instant = datetime.fromisoformat(created_at)
+                if not reset <= instant <= current:
+                    continue
                 candidate = json.loads(raw)
                 if candidate.get("source_ref") != source_ref:
                     continue
