@@ -131,33 +131,35 @@ def test_android_shell_loads_the_apex_app_url():
     assert config["server"]["allowNavigation"] == ["tinyassets.io"]
 
 
-#: The highest versionCode Play has accepted, and the versionName it carries.
-#: Raise this ONLY when the Console shows a newer bundle live, never to make a
-#: local build pass — the assertion below is what stops a repo that looks green
-#: from shipping a code Play already refuses.
-SHIPPED_PLAY_RELEASE = (5, "1.0.4")
+#: The highest versionCode Play has CONSUMED, and the versionName it carried.
+#: Consumed means uploaded, which is not the same as live: Play burns a code the
+#: moment a bundle is accepted, whether or not it is ever published or rolled
+#: back. So raise this on upload, not on rollout, or a code that was accepted and
+#: abandoned looks free and the next upload is rejected. Raise it only from the
+#: Console, never to make a local build pass.
+CONSUMED_PLAY_VERSION_CODE = 5
+CONSUMED_PLAY_VERSION_NAME = "1.0.4"
 
 
-def test_android_release_is_bumped_past_the_shipped_play_build():
+def test_android_release_is_bumped_past_every_code_play_has_consumed():
     """Play refuses a versionCode it has seen, so a bump IS the fix for installs.
 
     Code 5 / `1.0.4` carried the `/app` move and the push-notification native
-    change, and went live on the closed Alpha track (verified in the Console
-    2026-10-02). It was pinned to exactly 5 while both lanes were in flight, so
-    they could not split one user-visible update in two. That window is closed:
-    the pin is now a floor, because the closed test requires *further* updates
-    during its 14 days and a ceiling would block every one of them.
+    change, and is live on the closed Alpha track (Console, 2026-10-02). It was
+    pinned to exactly 5 while both lanes were in flight, so they could not split
+    one user-visible update in two. That window is closed: the pin is now a
+    floor, because the closed test requires *further* updates during its 14 days
+    and a ceiling would block every one of them.
     """
-    shipped_code, shipped_name = SHIPPED_PLAY_RELEASE
     release = json.loads((REPO_ROOT / "mobile/android-release.json").read_text(encoding="utf-8"))
-    assert release["versionCode"] > shipped_code, (
-        f"code {shipped_code} ({shipped_name}) is live on Play; Play never accepts a "
-        "versionCode it has seen, so the next bundle needs a higher one "
-        "(docs/ops/google-play-launch.md §1b)"
+    assert release["versionCode"] > CONSUMED_PLAY_VERSION_CODE, (
+        f"Play has consumed code {CONSUMED_PLAY_VERSION_CODE} "
+        f"({CONSUMED_PLAY_VERSION_NAME}) and never accepts a code twice, so the next "
+        "bundle needs a higher one (docs/ops/google-play-launch.md §1b)"
     )
-    assert release["versionName"] != shipped_name, (
-        f"versionName {shipped_name!r} is the shipped build's; a new code needs its own name "
-        "so release notes and the Console agree"
+    assert release["versionName"] != CONSUMED_PLAY_VERSION_NAME, (
+        f"versionName {CONSUMED_PLAY_VERSION_NAME!r} belongs to a consumed code; a new code "
+        "needs its own name so release notes and the Console agree"
     )
 
 

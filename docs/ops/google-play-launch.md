@@ -143,7 +143,21 @@ offline tester gets the WebView's own error page with the raw URL on it instead.
 
 Nothing in a window update may touch sign-in, `server.url`, or push. Bump the code
 and the name together, one update per bundle; a code Play has seen is refused even
-on a test track.
+on a test track — and Play consumes a code on **upload**, not on rollout, so a
+bundle that is accepted and never published still burns its number.
+`CONSUMED_PLAY_VERSION_CODE` in `tests/test_app_url_is_apex_app.py` records the
+highest consumed code and is raised from the Console on upload, not on rollout.
+
+**The behaviour of each update is proved on a phone.** The release gate is a text
+gate over Java that ships verbatim: it can show the decision is present and
+cannot show it runs, and a disabled branch still carries every token it looks
+for. So one device check belongs to each bundle before the founder promotes it:
+
+| Code | Device check |
+|---|---|
+| 6 (`1.0.5`) | On the opening screen, press back: a toast appears and the app stays. Press back again inside ~2.5 s: the app leaves. Reopen from the launcher: the conversation is still there, not reloaded. Navigate into a second view first and back returns to the previous one instead. |
+| 7 (`1.0.6`) | Turn on airplane mode and cold-start: the TinyAssets offline page appears, not the WebView's error page, and Try again recovers once the network is back. |
+| 8 (`1.0.7`) | Cold-start and watch the first half second: no colour flash between splash and app. |
 
 **Build route: `Android release AAB` (`workflow_dispatch` on `main`), not the
 container.** The container recipe in `mobile/container/` builds without
