@@ -1,5 +1,4 @@
 """Phone conversation geometry and controls in real Chromium."""
-from pathlib import Path
 
 import pytest
 
@@ -13,7 +12,7 @@ browser = _browser
 pytestmark = pytest.mark.real_browser
 
 
-def test_phone_conversation(app_url, browser):
+def test_phone_conversation(app_url, browser, tmp_path):
     context = browser.new_context(viewport={"width": 390, "height": 844},
                                   is_mobile=True, has_touch=True)
     page = context.new_page()
@@ -70,8 +69,8 @@ def test_phone_conversation(app_url, browser):
     page.locator('#btn-account').tap()
     assert page.locator('#btn-header-menu').get_attribute('aria-expanded') == 'false'
     page.evaluate("showView('chat'); refreshChatCloud();")
-    page.screenshot(path='C:/Users/Jonathan/AppData/Local/Temp/phone-p0.png')
-    Path('C:/Users/Jonathan/AppData/Local/Temp/phone-p0-measurements.txt').write_text(
+    page.screenshot(path=tmp_path / 'phone-p0.png')
+    (tmp_path / 'phone-p0-measurements.txt').write_text(
         f"header={header['height']}, thread={thread['height']}, input={field['width']}")
     page.set_viewport_size({'width': 390, 'height': 500})
     page.wait_for_function(
