@@ -145,3 +145,22 @@ share is two to three orders of magnitude smaller, inside the ~1 MB D6 estimated
 - **Two tool routes during the cutover.** While the switch is off the engine
   route serves the four tools; while it is on, the box does. No turn ever has
   both.
+
+## Appendix R. Cross-family refute (gpt-6-astra), three rounds, cap reached
+
+- **Round 1 (5c38ccf0): REJECT, 5 x P1.** Shared loop vs the thread-keyed
+  admission lock; cancel during a slow start orphaned the execution; an
+  unconfirmed timeout reported as completed; cancel queued behind reads on a
+  shared executor; edit's hash check not atomic. All acted on in bb9c7653
+  (decision 1 replaced; executor rewritten).
+- **Round 2 (bb9c7653): REJECT.** Closed: shared loop, unconfirmed timeout,
+  executor queueing. Open: a start reply later than the grace period; edit
+  races. New: unbounded cancel wait, thread accumulation, late failures to the
+  loop handler. All acted on in 7421361a and 487be261 (refused reader after a
+  started command is unknown, found while writing the round-3 brief).
+- **Round 3 (487be261): REJECT.** Closed: late start reply, bounded cancel,
+  late failures, reader classification, script quoting. Open, both reproduced:
+  the file lock's inode is replaced by the rename (an edit lost), and cancel
+  threads bypassed the bound. Both fixed in c6418af3 (directory lock, cancel
+  slots), each with a test that is red on the old code; NOT re-reviewed, per
+  the three-round cap. Taken to the lead with this list.
