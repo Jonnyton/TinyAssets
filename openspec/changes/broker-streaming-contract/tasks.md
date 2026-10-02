@@ -1,7 +1,7 @@
 ## 1. Contract (this change)
 
 - [x] 1.1 Proposal, design and spec delta for I14.
-- [ ] 1.2 Cross-family review of the design (max 3 rounds); log the verdicts
+- [ ] 1.2 Cross-family review of the design (max 3 rounds; round 1 ADAPT acted on); log the verdicts
       in `design.md`.
 
 ## 2. Build (S6, after review)
@@ -12,7 +12,7 @@
       restart; fail closed where peer credentials are unavailable.
 - [ ] 2.3 Per-stream authorization through the `resolve_exact_scoped_proxy`
       checks; box-channel principal derivation.
-- [ ] 2.4 Streaming pinned HTTPS reader: redirects and the OAuth retry
+- [ ] 2.4 Streaming pinned HTTPS reader (capped collected request bodies): redirects and the OAuth retry
       before `HEAD`; credit-gated reads; idle and absolute deadlines.
 - [ ] 2.5 Incremental secret scan with hold-back; split-secret tests.
 - [ ] 2.6 `op_id` outcome records, `STATUS`, never re-send after `sent`.

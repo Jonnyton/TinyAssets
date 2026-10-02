@@ -26,7 +26,8 @@ This is a design-only change: it fixes the contract so S6 can be built.
 - **One long-lived broker process.** Callers reach it over a local socket with
   length-prefixed frames. Many concurrent **streams** share one connection,
   each with its own request body, response, flow-control credit and cancel.
-  The broker remains the only process that resolves a credential.
+  The broker remains the only process that resolves a credential. Request
+  bodies stay capped and collected in v1; only responses stream.
 - **Per-request authorization.** Every stream is authorized as it opens,
   through the same checks as `resolve_exact_scoped_proxy` today. Authorization
   is no longer granted once, when a proxy starts.
@@ -37,15 +38,18 @@ This is a design-only change: it fixes the contract so S6 can be built.
 - **Cancellation both ways.** A caller cancel aborts the upstream request. A
   broker-side end (deadline, scan hit, fence) reaches the caller as a typed
   end frame.
-- **The secret scan stays complete.** The scan runs incrementally and holds
-  back the bytes a match could still end in, so no prefix of a held secret is
-  ever forwarded.
-- **Lost replies resolved by `op_id`.** A stream's outcome is recorded by
-  `op_id`. A caller that lost its connection asks for the status. It never
-  re-sends a request the broker recorded as sent.
-- **Owner-generation fence.** Every stream carries the owner's lease
-  generation. An acknowledged fence barrier cancels the streams of older
-  generations and refuses any new stream below the fence.
+- **The secret scan stays complete.** It covers today's full set of sensitive
+  values, including the ones the driver derives and the ones it accumulates
+  across redirects. It runs incrementally and holds back the bytes an
+  occurrence could still complete in, so no forwarded byte belongs to a held
+  value.
+- **Lost replies resolved by `op_id`.** Each operation gets a durable,
+  namespaced record bound to its request, and "may have sent" is persisted
+  before the first byte is written. A caller that lost its connection asks
+  for the status; nothing is ever sent twice.
+- **Owner-generation fence.** Every stream carries the lease generation and
+  the token the last barrier issued. The barrier is serialized against every
+  network write, and it acknowledges only once no older stream can write.
 - **Compatibility.** `proxy.request(verb, request)` becomes a client-side
   wrapper that opens one stream and collects it, so every existing caller
   keeps its semantics. The per-proxy spawned worker is retired.
