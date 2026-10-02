@@ -255,7 +255,9 @@ def test_every_store_kind_has_an_enumerator_that_finds_its_store(base):
 
 
 def test_the_daemon_advertises_its_tree_to_children(base, monkeypatch):
-    monkeypatch.delenv(owner_lease.TREE_ENV, raising=False)
+    # Recorded first, so teardown restores the variable's absence even though
+    # start_owner_tree writes os.environ directly.
+    monkeypatch.setenv(owner_lease.TREE_ENV, "")
     tree = owner_lease.start_owner_tree(base)
     try:
         import os
@@ -272,7 +274,6 @@ def test_the_daemon_advertises_its_tree_to_children(base, monkeypatch):
         assert child.stdout.strip() == "True", child.stderr
     finally:
         tree.leave()
-        monkeypatch.delenv(owner_lease.TREE_ENV, raising=False)
 
 
 def test_engine_spawns_carry_the_owner_tree(monkeypatch, tmp_path):
