@@ -273,10 +273,22 @@ render_daemon_env() {
   TINYASSETS_DAEMON_ENV_SOURCE="$ENV_FILE" TINYASSETS_DAEMON_ENV_FILE="$DAEMON_ENV_FILE" \
     TINYASSETS_ENV_FILE="$DAEMON_ENV_FILE" bash "$ENV_HELPER" render-daemon-env
 }
+# This is also what creates daemon.env on the FIRST deploy after the split: the
+# box has only ENV_FILE until here, and nothing below reads daemon.env before it.
+#
+# `--restore-bundle` is a rollback and must not be blocked by this: the bundle
+# it restores may predate the split and never read daemon.env, and if it does
+# read it, the copy a previous successful deploy rendered is still on disk.
+RENDER_OK=1
 if ! render_daemon_env; then
-  err "could not render ${DAEMON_ENV_FILE} from ${ENV_FILE}; refusing (prod untouched)"
-  echo "deploy_result=daemon_env_render_failed"
-  exit 1
+  RENDER_OK=0
+  if [ "$RESTORE_BUNDLE" = "1" ]; then
+    err "could not render ${DAEMON_ENV_FILE}; continuing the restore with the copy on disk"
+  else
+    err "could not render ${DAEMON_ENV_FILE} from ${ENV_FILE}; refusing (prod untouched)"
+    echo "deploy_result=daemon_env_render_failed"
+    exit 1
+  fi
 fi
 # The helper lives in /tmp for this run only, and a host checkout can predate
 # `render-daemon-env`, so install it where the unit's refusal message and
@@ -284,9 +296,13 @@ fi
 # subcommands, so a newer copy is safe under any older bundle.
 if ! install -m 0755 -o "$HELPER_INSTALL_OWNER" -g "$HELPER_INSTALL_GROUP" \
       "$ENV_HELPER" "$HELPER_INSTALL_PATH"; then
-  err "could not install ${ENV_HELPER} to ${HELPER_INSTALL_PATH}; refusing (prod untouched)"
-  echo "deploy_result=daemon_env_render_failed"
-  exit 1
+  if [ "$RESTORE_BUNDLE" = "1" ]; then
+    err "could not install ${ENV_HELPER} to ${HELPER_INSTALL_PATH}; continuing the restore"
+  else
+    err "could not install ${ENV_HELPER} to ${HELPER_INSTALL_PATH}; refusing (prod untouched)"
+    echo "deploy_result=daemon_env_render_failed"
+    exit 1
+  fi
 fi
 
 container_state() {
@@ -319,7 +335,17 @@ tunnel_up() {
   [ "$s" = "running" ]
 }
 
-set_image() { printf '%s' "$1" | bash "$ENV_HELPER" set TINYASSETS_IMAGE; }
+# A source the daemon copy cannot be rendered from makes the helper refuse every
+# write to it. Only a restore gets here with RENDER_OK=0, and it must still be
+# able to record the image it is restoring, so it writes without re-rendering
+# (an empty TINYASSETS_DAEMON_ENV_FILE turns rendering off in the helper).
+set_image() {
+  if [ "$RENDER_OK" = "1" ]; then
+    printf '%s' "$1" | bash "$ENV_HELPER" set TINYASSETS_IMAGE
+  else
+    printf '%s' "$1" | TINYASSETS_DAEMON_ENV_FILE= bash "$ENV_HELPER" set TINYASSETS_IMAGE
+  fi
+}
 
 # The container must actually be RUNNING the requested image. A healthy daemon
 # is not proof: when the systemd unit could not start (2026-08-21), the OLD

@@ -266,6 +266,11 @@ def inline_env_files(service):
     merged = {}
     for entry in paths:
         path = entry if isinstance(entry, str) else (entry or {}).get("path", "")
+        required = True if isinstance(entry, str) else (entry or {}).get("required", True)
+        if path and required and not os.path.isfile(path):
+            # The real CLI refuses a missing env_file. Skipping it here is what
+            # would let a deploy that never rendered daemon.env pass this suite.
+            raise RuntimeError("env file %s not found" % path)
         if path:
             merged.update(read_env_file(path))
     merged.update(service.get("environment") or {})
@@ -576,9 +581,12 @@ grep -v -E "^${key}=" "$ENV_FILE" > "$tmp" || true
 printf '%s=%s\n' "$key" "$value" >> "$tmp"
 cat "$tmp" > "$ENV_FILE"
 rm -f "$tmp"
-# As the real helper does: a write to the source re-renders the daemon's copy.
-TINYASSETS_DAEMON_ENV_SOURCE="$ENV_FILE" TINYASSETS_DAEMON_ENV_FILE="$DAEMON_ENV_FILE" \
-  TINYASSETS_ENV_FILE="$DAEMON_ENV_FILE" real render-daemon-env >/dev/null
+# As the real helper does: a write to the source re-renders the daemon's copy,
+# unless the caller turned rendering off with an empty TINYASSETS_DAEMON_ENV_FILE.
+if [ "${TINYASSETS_DAEMON_ENV_FILE-unset}" != "" ]; then
+  TINYASSETS_DAEMON_ENV_SOURCE="$ENV_FILE" TINYASSETS_DAEMON_ENV_FILE="$DAEMON_ENV_FILE" \
+    TINYASSETS_ENV_FILE="$DAEMON_ENV_FILE" real render-daemon-env >/dev/null
+fi
 '''
 
 
@@ -2089,3 +2097,63 @@ def test_restore_bundle_onto_a_pre_split_bundle_restores_the_previous_image(box:
     assert "DO_API_TOKEN" in _config_env_names(box), (
         "precondition: the restored bundle really does load the host env file"
     )
+
+
+def test_the_first_deploy_after_the_split_renders_daemon_env_before_compose(box: Box):
+    """The box has only /etc/tinyassets/env. The fake refuses a missing
+    env_file as the real CLI does, so this fails if anything reads daemon.env
+    before the render."""
+    _seed_platform_secrets(box)
+    assert not box.daemon_env_file.exists(), "precondition: a box that predates the split"
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert _result(completed) == "deployed"
+    assert box.daemon_env_file.is_file()
+    assert "DO_API_TOKEN" not in _config_env_names(box)
+
+
+def test_the_fake_refuses_a_missing_daemon_env_like_the_real_cli(box: Box):
+    """Guards the test above: without the render, the same deploy must fail."""
+    box.stage_bundle()
+    box.set_docker_state()
+    helper = box.env_helper.read_text(encoding="utf-8").replace(
+        "daemon-forbidden-names|render-daemon-env) real",
+        "daemon-forbidden-names) real",
+    )
+    helper = helper.replace(
+        'case "${1:-}" in',
+        'case "${1:-}" in\n  render-daemon-env) exit 0 ;;',
+    )
+    helper = helper.replace(
+        "TINYASSETS_ENV_FILE=\"$DAEMON_ENV_FILE\" real render-daemon-env >/dev/null",
+        "true",
+    )
+    assert "render-daemon-env) exit 0" in helper
+    assert "real render-daemon-env" not in helper, "precondition: every render is disabled"
+    box.env_helper.write_text(helper, encoding="utf-8", newline="\n")
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "bundle_invalid"
+    assert not box.daemon_env_file.exists()
+
+
+def test_restore_bundle_is_not_blocked_by_a_failed_render(box: Box):
+    """A rollback must run even when the source cannot be rendered."""
+    box.stage_bundle()
+    assert box.run(NEW_IMAGE).returncode == 0
+    box.env_file.write_text(
+        f'TINYASSETS_IMAGE={NEW_IMAGE}\nDO_API_TOKEN="placeholder-start\nplaceholder-rest"\n',
+        encoding="utf-8",
+    )
+
+    restored = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert restored.returncode == 0, restored.stderr
+    assert box.env_image() == OLD_IMAGE
+    assert "continuing the restore" in restored.stderr
+    assert "placeholder" not in restored.stdout + restored.stderr
