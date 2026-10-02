@@ -72,8 +72,11 @@ concurrency:
 env:
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
-  # A scheduled run has no inputs, so it is always the off-region drill.
+  # A scheduled run has NO inputs: dispatch defaults do not apply to it, so
+  # every input the drill job reads needs its default spelled out here
+  # (Codex on #4271: an empty size reached the Droplet create payload).
   BACKUP_ORIGIN: ${{ inputs.backup_origin || 'offregion' }}
+  DRILL_DROPLET_SIZE: ${{ inputs.drill_droplet_size || 's-2vcpu-2gb' }}
   CANARY_URL: https://tinyassets.io/mcp
   DRILL_REGION: nyc3
 
@@ -210,8 +213,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The off-region origin walks back up to 20 commits for a built image.
-          fetch-depth: 20
+          # The off-region origin walks back up to 100 commits for a built image
+          # (build-image is path-filtered, so many commits publish nothing).
+          fetch-depth: 100
 
       - uses: actions/setup-python@v5
         with:
@@ -281,6 +285,8 @@ jobs:
             # here reads the primary host.
             sudo apt-get install -y --no-install-recommends rclone >/dev/null
             rclone_conf="${RUNNER_TEMP}/rclone.conf"
+            # Removed on EVERY exit, not just success (Codex on #4271).
+            trap 'rm -f "${rclone_conf}"' EXIT
             ( umask 077; printf '%s\n' "${OFFREGION_BACKUP_RCLONE_CONFIG}" > "${rclone_conf}" )
             backup_root="${RUNNER_TEMP}/offregion-backups"
             mkdir -p "${backup_root}"
@@ -435,11 +441,14 @@ jobs:
           set -euo pipefail
           if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
             # The primary may be gone in a real disaster, so the drill resolves
-            # the image from GHCR: the newest of the last 20 commits on this ref
+            # the image from GHCR: the newest of the last 100 commits on this ref
             # that has a published build, pinned to its immutable digest.
+            # Honest scope: this restores the backup into RECENTLY PUBLISHED code,
+            # not the image that wrote it. Backups do not record their image yet;
+            # when they do, the drill should prefer that.
             echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null 2>&1 || true
             raw_runtime_image=""
-            for commit in $(git rev-list --max-count=20 HEAD); do
+            for commit in $(git rev-list --max-count=100 HEAD); do
               tag="${commit:0:12}"
               if docker manifest inspect "ghcr.io/tinyassets/tinyassets-daemon:${tag}" >/dev/null 2>&1; then
                 digest=$(docker buildx imagetools inspect "ghcr.io/tinyassets/tinyassets-daemon:${tag}" \
@@ -487,7 +496,7 @@ jobs:
         id: droplet
         env:
           DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-          DRILL_SIZE: ${{ inputs.drill_droplet_size }}
+          DRILL_SIZE: ${{ env.DRILL_DROPLET_SIZE }}
           PUB_KEY: ${{ steps.pubkey.outputs.pub }}
         run: |
           set -euo pipefail
@@ -1021,7 +1030,7 @@ jobs:
             echo "- **Drill Droplet:** ID \`${DROPLET_ID}\`, IP \`${DRILL_IP}\`"
             echo "- **Base Image:** \`${DRILL_IMAGE}\`"
             echo "- **Runtime Image:** \`${RUNTIME_IMAGE}\`"
-            echo "- **Size:** \`${{ inputs.drill_droplet_size }}\`"
+            echo "- **Size:** \`${DRILL_DROPLET_SIZE}\`"
             echo "- **Probe:** green (MCP status via SSH port-forward to localhost:8001)"
             echo "- **Cleanup:** Droplet DELETE confirmed before PASS publication"
             echo "- **Run:** ${run_url}"

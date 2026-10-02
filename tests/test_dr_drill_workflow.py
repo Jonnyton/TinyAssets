@@ -165,7 +165,8 @@ def test_off_region_names_are_checked_before_rclone_uses_them():
     copy = run.index("rclone --config \"${rclone_conf}\" copyto")
     assert grammar_check < copy
     assert "umask 077" in run, "the rclone credential must not be world-readable"
-    assert 'rm -f "${rclone_conf}"' in run
+    trap = run.index("""trap 'rm -f "${rclone_conf}"' EXIT""")
+    assert trap < run.index("umask 077"), "cleanup must be armed before the file exists"
 
 
 def test_one_validator_binds_to_the_origin_s_root():
@@ -180,11 +181,11 @@ def test_off_region_image_comes_from_ghcr_not_the_primary():
     marker = 'if [ "${BACKUP_ORIGIN}" = "offregion" ]; then'
     offregion = run.split(marker, 1)[1].split("\nelse\n", 1)[0]
     assert "docker buildx imagetools inspect" in offregion
-    assert "git rev-list --max-count=20 HEAD" in offregion
+    assert "git rev-list --max-count=100 HEAD" in offregion
     drill_job = _load()["jobs"]["drill"]
     checkout = drill_job["steps"][0]
     assert checkout["uses"].startswith("actions/checkout@")
-    assert checkout.get("with", {}).get("fetch-depth", 1) >= 20
+    assert checkout.get("with", {}).get("fetch-depth", 1) >= 100
 
 
 # ---------------------------------------------------------------------------
@@ -812,3 +813,44 @@ def test_terminal_evidence_distinguishes_runtime_image(step_name):
     step = _step(step_name)
     assert "steps.runtime-image.outputs.image" in str(step.get("env", {}))
     assert "Runtime Image" in str(step)
+
+
+def test_every_input_the_drill_job_reads_survives_a_scheduled_run():
+    """A schedule supplies no inputs and dispatch defaults do not apply. Every
+    input read outside the cleanup-only job must either carry an `||` default or
+    be one whose empty value is the intended scheduled behaviour (Codex on #4271:
+    an empty droplet size reached the create payload)."""
+    empty_is_intended = {
+        "inputs.backup_source",        # empty = newest backup
+        "inputs.destroy_on_failure",   # empty != 'true' = keep a red Droplet up
+        "inputs.cleanup_droplet_id",   # empty = run the drill, not cleanup
+    }
+    wf = _load()
+    drill_text = yaml.safe_dump(wf["jobs"]["drill"]) + yaml.safe_dump(wf.get("env", {}))
+    for expr in re.findall(r"\$\{\{([^}]*)\}\}", drill_text):
+        for name in re.findall(r"inputs\.[a-z_]+", expr):
+            if name in empty_is_intended:
+                continue
+            assert "||" in expr, f"{name} has no default for a scheduled run: {expr.strip()}"
+
+
+def test_the_droplet_payload_gets_the_effective_size():
+    wf = _load()
+    assert wf["env"]["DRILL_DROPLET_SIZE"] == "${{ inputs.drill_droplet_size || 's-2vcpu-2gb' }}"
+    provision = _step("Provision drill Droplet")
+    assert provision["env"]["DRILL_SIZE"] == "${{ env.DRILL_DROPLET_SIZE }}"
+    assert "inputs.drill_droplet_size" not in yaml.safe_dump(wf["jobs"]["drill"])
+
+
+def test_no_step_reaches_the_primary_outside_the_primary_origin():
+    """All steps, not a named few (Codex on #4271)."""
+    for step in _steps(_load()):
+        run = step.get("run", "") or ""
+        if "DO_DROPLET_HOST" not in run:
+            continue
+        marker = 'if [ "${BACKUP_ORIGIN}" = "offregion" ]; then'
+        if marker in run:
+            offregion = run.split(marker, 1)[1].split("\nelse\n", 1)[0]
+            assert "DO_DROPLET_HOST" not in offregion, step.get("name")
+        else:
+            assert 'if [ "${BACKUP_ORIGIN}" = "primary" ]; then' in run, step.get("name")
