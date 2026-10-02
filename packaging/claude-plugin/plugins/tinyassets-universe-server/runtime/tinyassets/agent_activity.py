@@ -114,11 +114,40 @@ def _safe_words(text: str, *, limit: int = 12) -> str:
     return _line(" ".join(shown))
 
 
+def _command_summary(text: object) -> str:
+    """A command as its program and, when it is a plain word, its subcommand
+    ("git status", "npm test"), then an ellipsis for anything further.
+
+    Nothing past those two is kept, however safe it looks: arguments are where
+    paths, hosts, tokens and file contents go, and this line is shown live --
+    in the owner's command center and to the UIs they build. The program is
+    shown by its own name, never the path it was run from.
+    """
+    try:
+        tokens = shlex.split(str(text or ""), posix=True)
+    except ValueError:
+        tokens = str(text or "").split()
+    if not tokens:
+        return ""
+    def plain(word: str) -> bool:
+        return bool(_WORD.fullmatch(word)) and not _OPAQUE.fullmatch(word)
+
+    program = tokens[0].rsplit("/", 1)[-1]
+    shown = [program if plain(program) else _HIDDEN]
+    rest = tokens[1:]
+    if rest and plain(rest[0]) and shown[0] != _HIDDEN:
+        shown.append(rest[0])
+        rest = rest[1:]
+    if rest and shown[-1] != _HIDDEN:
+        shown.append(_HIDDEN)
+    return _line(" ".join(shown))
+
+
 def summarize(tool: str, arguments: dict | None) -> str:
     """One safe line saying what a call does, from its own arguments."""
     args = arguments if isinstance(arguments, dict) else {}
     if tool == "bash":
-        return _safe_words(args.get("command"))
+        return _command_summary(args.get("command"))
     if tool in ("read", "write", "edit"):
         return _safe_words(args.get("path"), limit=1)
     for key in ("target", "action", "operation", "name"):

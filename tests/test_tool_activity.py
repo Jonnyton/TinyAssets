@@ -72,8 +72,10 @@ def test_since_drops_calls_from_an_earlier_turn(tmp_path):
 
 
 @pytest.mark.parametrize("tool, args, line", [
-    ("bash", {"command": "pip install   rich"}, "pip install rich"),
-    ("bash", {"command": "pytest -q tests/x.py"}, "pytest -q tests/x.py"),
+    ("bash", {"command": "pip install   rich"}, "pip install \u2026"),
+    ("bash", {"command": "pytest -q tests/x.py"}, "pytest \u2026"),
+    ("bash", {"command": "git status"}, "git status"),
+    ("bash", {"command": "/usr/bin/python3 -m http.server"}, "python3 \u2026"),
     ("read", {"path": "wiki/pages/a.md"}, "wiki/pages/a.md"),
     ("write_graph", {"target": "automation", "x": 1}, "target=automation"),
     ("get_status", {}, ""),
@@ -105,9 +107,18 @@ def test_a_command_never_stores_a_credential(command):
     assert not any(secret in out for secret in _SECRETS), out
 
 
-def test_a_url_keeps_only_its_scheme_and_host():
-    assert agent_activity.summarize("bash", {"command": f"curl {_URL_SECRET}"}) == (
-        "curl https://api.example.com")
+def test_a_command_line_keeps_its_program_and_subcommand_only():
+    """Shown live, also to UIs the owner builds (read_live): nothing past the
+    program and a plain-word subcommand, not even a path or a host."""
+    for command, line in [
+        (f"curl {_URL_SECRET}", "curl \u2026"),
+        ("cat ~/.ssh/id_rsa", "cat \u2026"),
+        ("cat .ssh/id_rsa", "cat \u2026"),
+        ("git push origin main", "git push \u2026"),
+        ("TOKEN=example-token run", "\u2026"),
+        ("sk_live_" + "Z" * 24, "\u2026"),
+    ]:
+        assert agent_activity.summarize("bash", {"command": command}) == line, command
 
 
 def test_an_error_line_never_stores_a_credential(tmp_path):
@@ -158,7 +169,7 @@ def test_the_engine_records_a_named_sessions_call(monkeypatch, tmp_path):
         return _result("3 passed")
 
     [row] = _drive(monkeypatch, tmp_path, THREAD, ok)
-    assert (row["tool"], row["summary"], row["state"]) == ("bash", "pytest -q", "done")
+    assert (row["tool"], row["summary"], row["state"]) == ("bash", "pytest …", "done")
 
 
 def test_the_engine_records_a_refusal_with_its_cause(monkeypatch, tmp_path):
