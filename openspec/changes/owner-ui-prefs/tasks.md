@@ -4,7 +4,7 @@ Design approval gates task 1 onward. Depends on the chat cloud (#4277) being on 
 
 ## 1. Store
 
-- [ ] 1.1 `tinyassets/storage/owner_ui_prefs.py`: the `owner_ui_prefs` table (D1) in root `.owner_ui_prefs.db`; `read_prefs(owner, agent, viewport)` and `write_pref(owner, agent, viewport, key, value)`, with key, size and shape validation (D2). Register in `storage_accounting.py` ROOT_ENTRIES.
+- [ ] 1.1 `tinyassets/storage/owner_ui_prefs.py`, modelled on `account_timezone.py`: the `owner_ui_prefs` table (D1) in the canonical root database; `read_prefs(owner, agent, viewport)` and `write_pref(owner, agent, viewport, key, value)`, with key, agent (`main`), viewport, size and shape validation (D2).
 - [ ] 1.2 Tests: round trip; owner isolation; refusals (unknown key, over 2 KiB, malformed `chat_cloud`), each leaving the stored value unchanged.
 
 ## 2. Routes
@@ -18,8 +18,8 @@ Design approval gates task 1 onward. Depends on the chat cloud (#4277) being on 
 
 ## 4. The page
 
-- [ ] 4.1 `app.html` chat cloud: server read first, `localStorage` fallback, write both on each placement, and no late server answer after the first owner gesture (D4).
-- [ ] 4.2 Tests: Node controller (server value wins over local; failed read uses local; late answer ignored after a gesture) and one real-browser reload test that starts with a server record and no local copy.
+- [ ] 4.1 `app.html` chat cloud (D4): local layout first; a server record is applied before the first gesture and cached locally; an empty read keeps the local placement and migrates it up; a failed read keeps local; every placement writes both.
+- [ ] 4.2 Tests: Node controller (a record wins and is cached; an empty read keeps and migrates local; a failed read uses local; a late answer is ignored after a gesture) and one real-browser reload test that starts with a server record and no local copy.
 - [ ] 4.3 Update the `onboarding-web-app` chat-cloud requirement's persistence clause. Sync this change's spec and archive on land.
 
 ## 5. Verify
