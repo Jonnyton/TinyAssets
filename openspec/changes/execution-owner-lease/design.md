@@ -437,3 +437,12 @@ C1 adds no holding queue and makes no new durability claim. A frontend that cann
   - the `tinyassets.frontend` entrypoint (shell render with the frontend build, `/healthz`, a byte-for-byte proxy to the socket);
   - tests.
 - **C1b.** Compose, the public path flip, deploy-prod's frontend-only path and the build evidence land with #4272.
+
+### B2b's idle proof exists (openshell-spike, #4319, S4 PR2)
+`BoxProvider.try_fence_idle(cc, *, owner_generation) -> bool` checks idleness and fences in one step, under the box lock, on both the local and gVisor drivers.
+- A generation below the fence raises `StaleOwner`.
+- Writes, execs and destroy below the fence are refused.
+- A contract test races exec-start against the fence 20 times, and exactly one side wins each time.
+- Cost: 4 ms p50 on gVisor.
+
+When B2b resumes, a command center's key is released in the lease-store transaction that receives True from it. That replaces B2-1..B2-3's claim scan for executions that run in boxes.
