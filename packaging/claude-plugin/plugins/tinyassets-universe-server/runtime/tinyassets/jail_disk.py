@@ -65,6 +65,9 @@ MASK_TMPFS_BYTES = 16 * _MiB
 #: The longest a running jail goes without its universe being walked, whatever
 #: the volume says: what bounds the overshoot when the cheap trigger is masked.
 WALK_SECONDS = 5.0
+#: How often a running launch re-stamps its reservation; well inside
+#: `storage_accounting.RESERVED_TTL_S`.
+RENEW_SECONDS = 120.0
 
 DISK_LIMIT = "disk_limit"
 STORAGE_LIMIT = "storage_limit"
@@ -119,10 +122,19 @@ def floor_breach(path: Path, *, min_free_bytes: int, min_free_inodes: int) -> st
     return None
 
 
-def _universe_bytes(base: Path, universe_id: str) -> int:
+#: The one top-level entry no jail can write (the provider jail masks every
+#: hidden directory but ``.runtime``; the tool jail binds an allowlist): the
+#: platform's own checkout staging, which a concurrent workspace node fills.
+_NOT_JAIL_WRITABLE = frozenset({".workspace-staging"})
+
+
+def _jail_writable_bytes(root: Path) -> int:
+    """Bytes under everything a jail can write in this universe -- WIDER than
+    the account's ``universe_files`` store, which leaves out ``.runtime`` and
+    ``workspaces`` (the provider jail can write both)."""
     from tinyassets import storage_accounting
 
-    return int(storage_accounting.STORES[_STORE].measure(base, universe_id))
+    return storage_accounting._walk_bytes(root, exclude_top=_NOT_JAIL_WRITABLE)
 
 
 @dataclass
@@ -138,18 +150,31 @@ class DiskBudget:
     reservation: object | None = None
     _volume_baseline: int = -1
     _last_walk: float = 0.0
+    _last_renew: float = 0.0
     _settled: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         self._volume_baseline = used_bytes(self.root)
-        self._last_walk = time.monotonic()
+        self._last_walk = self._last_renew = time.monotonic()
+
+    def _renew(self) -> None:
+        """Re-stamp the reservation well inside its TTL while the process runs:
+        a ledger measurement would otherwise drop it as a crashed writer's and
+        let a concurrent launch spend the same headroom again."""
+        if self.reservation is None or time.monotonic() - self._last_renew < RENEW_SECONDS:
+            return
+        self._last_renew = time.monotonic()
+        from tinyassets import storage_accounting
+
+        storage_accounting.renew(self.reservation)
 
     def growth(self) -> int:
-        """Bytes this universe's own files grew by since launch (a walk)."""
-        return _universe_bytes(self.root.parent, self.root.name) - self.start_bytes
+        """Bytes everything this jail can write grew by since launch (a walk)."""
+        return _jail_writable_bytes(self.root) - self.start_bytes
 
     def breach(self) -> str | None:
         """``disk_limit``, ``storage_limit`` or None. Cheap unless triggered."""
+        self._renew()
         if floor_breach(
             self.root, min_free_bytes=self.min_free_bytes,
             min_free_inodes=self.min_free_inodes,
@@ -187,7 +212,8 @@ class DiskBudget:
 
         if self.reservation is not None:
             storage_accounting.release(self.reservation)
-        storage_accounting.touch(self.root.parent, self.root.name, _STORE)
+        for store in (_STORE, "workspaces"):
+            storage_accounting.touch(self.root.parent, self.root.name, store)
 
 
 def _human(size: int) -> str:
@@ -223,38 +249,35 @@ def open_budget(
     reservation = None
     try:
         account = owner_of(base, universe_id)
-        # FRESH: this universe's files are exactly what a jail writes, and the
-        # last jailed run only marked them dirty.
-        start = storage_accounting.measure(base, universe_id, _STORE)
+        # FRESH: this universe's files are what a jail writes, and the last
+        # jailed run only marked them dirty.
+        storage_accounting.measure(base, universe_id, _STORE)
         reservation, bound = storage_accounting.reserve_fitted(
             base, account_id=account, scope_id=universe_id, store=_STORE,
             cap=LAUNCH_BYTES_CAP, minimum=1,
         )
         bound = max(int(bound), GRACE_BYTES)
     except storage_accounting.StorageRefused as refused:
-        start = _start_bytes_or_zero(base, universe_id)
         bound = GRACE_BYTES
         notice = _full_notice(refused)
     except (sqlite3.Error, OSError, ValueError):
         _log.exception("jail disk budget: storage ledger unavailable")
-        start = _start_bytes_or_zero(base, universe_id)
         bound = GRACE_BYTES
         notice = (
             f"[storage accounting is unavailable right now, so this call may add at "
             f"most {_human(GRACE_BYTES)} to the universe]"
         )
+    try:
+        start = _jail_writable_bytes(root)
+    except OSError:
+        if reservation is not None:
+            storage_accounting.release(reservation)
+        raise DiskFloorRefused("the universe could not be measured") from None
     return DiskBudget(
         root=root, bound=bound, start_bytes=int(start),
         min_free_bytes=min_free_bytes, min_free_inodes=min_free_inodes,
         notice=notice, reservation=reservation,
     )
-
-
-def _start_bytes_or_zero(base: Path, universe_id: str) -> int:
-    try:
-        return _universe_bytes(base, universe_id)
-    except OSError:
-        return 0
 
 
 def _full_notice(refused) -> str:

@@ -358,3 +358,20 @@ def test_a_provider_launch_below_the_volume_floor_never_starts(world, monkeypatc
     with pytest.raises(ProviderConfinementError, match="nearly full"):
         _launch(world.universe_a, "touch started")
     assert not (world.universe_a / "started").exists()
+
+
+def test_a_provider_filling_its_runtime_dir_is_stopped_too(world, monkeypatch):
+    """``.runtime`` is read-write in the provider jail and outside the account's
+    ``universe_files`` store; the launch's walk still counts it."""
+    from tinyassets import jail_disk
+    from tinyassets.providers import owned_process
+
+    monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 24 * _MiB)
+    monkeypatch.setattr(owned_process, "DISK_POLL_SECONDS", 0.1)
+    target = world.universe_a / ".runtime" / "many"
+    try:
+        proc, out = _launch(world.universe_a, _FILL.replace("many", ".runtime/many"))
+        assert proc.disk_killed == jail_disk.STORAGE_LIMIT
+        assert b"filled" not in out
+    finally:
+        shutil.rmtree(target, ignore_errors=True)

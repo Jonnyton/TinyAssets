@@ -260,3 +260,40 @@ def test_an_adapters_exit_error_says_the_disk_budget_stopped_it():
     assert "nearly full" in disk_stop_note(SimpleNamespace(disk_killed="disk_limit"))
     assert disk_stop_note(SimpleNamespace(disk_killed=None)) == ""
     assert disk_stop_note(object()) == ""
+
+
+@pytest.mark.parametrize("where", [".runtime", "workspaces"])
+def test_writes_outside_the_charged_store_still_count_against_the_launch(
+    base, volume, monkeypatch, where,
+):
+    """The provider jail can write ``.runtime`` and ``workspaces``, which the
+    account's ``universe_files`` store leaves out; the launch's walk does not."""
+    udir = _universe(base, "u-one")
+    budget = jail_disk.open_budget(udir)
+    (udir / where).mkdir()
+    _write(udir / where, "fill.bin", budget.bound + 1)
+    monkeypatch.setattr(jail_disk, "WALK_SECONDS", 0.0)
+    assert budget.breach() == jail_disk.STORAGE_LIMIT
+    budget.settle()
+
+
+def test_a_long_launch_keeps_its_reservation_past_the_ledger_ttl(base, volume, monkeypatch):
+    udir = _universe(base, "u-one")
+    _write(udir, "half.bin", 50 * KIB)  # the other 50 KiB is this launch's
+    budget = jail_disk.open_budget(udir)
+    assert budget.bound == 50 * KIB
+    conn = sa._connect(base)
+    try:
+        conn.execute("UPDATE pending SET created_at = created_at - ?", (sa.RESERVED_TTL_S + 1,))
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr(jail_disk, "RENEW_SECONDS", 0.0)
+    assert budget.breach() is None  # renews
+    # A later measurement must not drop it as a crashed writer's...
+    sa.measure(base, "u-one", "universe_files")
+    # ...so a concurrent launch of the same account still finds the headroom spent.
+    other = jail_disk.open_budget(_universe(base, "u-two"))
+    assert other.bound == jail_disk.GRACE_BYTES
+    other.settle()
+    budget.settle()
