@@ -4626,11 +4626,19 @@
   }
   // Writes the owner's record after the local copy, so a failed post leaves a
   // valid local placement. Fire and forget: the page never waits on it.
+  // The login a write or read is FOR. A token refresh can land on someone
+  // else's sign-in; a placement must never be written, or applied, across it.
+  function cloudSession(key){
+    const epoch=(typeof MCP!=="undefined") ? MCP._loginEpoch : 0, owner=queueOwner;
+    return ()=>key===cloudStoreKey && owner===queueOwner &&
+      ((typeof MCP!=="undefined") ? MCP._loginEpoch : 0)===epoch;
+  }
   async function postChatCloud(key){
     if(!cloudState || key!==cloudStoreKey) return;
-    const q=cloudPrefsQuery(key), value=cloudRecord(cloudState);
+    const q=cloudPrefsQuery(key), value=cloudRecord(cloudState), current=cloudSession(key);
     try{
       await ensureFreshToken();
+      if(!current()) return;
       await fetch("/app/ui-prefs", {method:"POST",
         headers:Object.assign({"Content-Type":"application/json"}, authHeaders()),
         body:JSON.stringify({agent:q.agent, viewport:q.viewport, key:"chat_cloud", value})});
@@ -4643,6 +4651,7 @@
   async function syncChatCloudFromServer(key, agent, viewport){
     if(cloudSynced===key || !queueOwner) return;
     cloudSynced=key;
+    const current=cloudSession(key);
     let doc=null;
     try{
       await ensureFreshToken();
@@ -4650,14 +4659,16 @@
         +"&viewport="+encodeURIComponent(viewport), {headers:authHeaders()});
       doc=r && r.ok ? await r.json() : null;
     }catch(_error){ doc=null; }
-    if(key!==cloudStoreKey || !doc || !doc.prefs || typeof doc.prefs!=="object") return;
+    if(!current() || !doc || !doc.prefs || typeof doc.prefs!=="object") return;
     const server=doc.prefs.chat_cloud ? cloudParseSaved(JSON.stringify(doc.prefs.chat_cloud)) : null;
     if(!server){
       if(cloudState && cloudState.userSet) postChatCloud(key);
       return;
     }
-    try{ localStorage.setItem(key, JSON.stringify(cloudRecord(server))); }catch(_error){ /* cache only */ }
+    // Once the owner has moved it on this page, the late record changes nothing:
+    // not the cloud, and not this device's newer copy.
     if(cloudGestured) return;
+    try{ localStorage.setItem(key, JSON.stringify(cloudRecord(server))); }catch(_error){ /* cache only */ }
     cloudState=cloudClamp(server, cloudStageSize());
     applyChatCloud();
   }
@@ -4701,6 +4712,7 @@
         const dx=e.clientX-start.x, dy=e.clientY-start.y;
         if(!moved && Math.abs(dx)+Math.abs(dy)<4) return;
         moved=true;
+        cloudGestured=true;                      // a record arriving mid-drag must not move it
         $("chat-cloud").classList.add("is-dragging");
         cloudState=kind==="resize" ? cloudShifted(origin,0,0,dx,dy) : cloudShifted(origin,dx,dy,0,0);
         applyChatCloud();

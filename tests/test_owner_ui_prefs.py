@@ -59,6 +59,8 @@ def test_one_owner_never_sees_or_changes_anothers(tmp_path):
     ({}, {**CLOUD, "mode": "huge"}),
     ({}, {**CLOUD, "open": {"x": float("inf"), "y": 0, "w": 9, "h": 9}}),
     ({}, {**CLOUD, "bubble": {"x": True, "y": 0}}),
+    ({}, {**CLOUD, "bubble": {"x": 10 ** 400, "y": 0}}),      # float() would overflow
+    ({}, {**CLOUD, "open": {"x": 0, "y": 0, "w": 10 ** 7, "h": 9}}),
     ({}, "not an object"),
 ])
 def test_a_refused_write_leaves_the_stored_value_alone(tmp_path, kw, value):
@@ -193,3 +195,12 @@ def test_a_cross_origin_write_is_refused(tmp_path, monkeypatch):
 
     assert status == 403 and doc["error"] == "cross_origin_rejected"
     assert _read(tmp_path) == {}
+
+
+def test_a_huge_coordinate_is_a_400_not_a_500(tmp_path, monkeypatch):
+    body = {"viewport": "wide", "key": "chat_cloud",
+            "value": {**CLOUD, "bubble": {"x": 10 ** 400, "y": 0}}}
+    status, doc = _drive("POST", body=body, identity=_as(ALICE),
+                         monkeypatch=monkeypatch, base=tmp_path)
+
+    assert status == 400 and doc["error"] == "ui_prefs_invalid"

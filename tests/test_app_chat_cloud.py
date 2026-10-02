@@ -211,18 +211,20 @@ console.log(JSON.stringify({mode:snap().mode, w:cloudState.open.w}));""")
 
 # --- the owner's record on the server (openspec/changes/owner-ui-prefs) -----
 
-SYNC = CONTROLLER + ("syncChatCloudFromServer", "postChatCloud", "cloudPrefsQuery")
+SYNC = CONTROLLER + ("syncChatCloudFromServer", "postChatCloud", "cloudPrefsQuery", "cloudSession")
 
 NET = """
-let cloudSynced="", cloudGestured=false, answer=null, failRead=false;
-const posts=[], reads=[];
-const ensureFreshToken=async()=>{}, authHeaders=()=>({Authorization:'Bearer t'});
+let cloudSynced="", cloudGestured=false, answer=null, failRead=false, onRefresh=null;
+const posts=[], reads=[], MCP={_loginEpoch:1};
+const ensureFreshToken=async()=>{ if(onRefresh) onRefresh(); };
+const authHeaders=()=>({Authorization:'Bearer '+queueOwner});
 const fetch=async(path,opts)=>{
-  if(opts&&opts.method==='POST'){ posts.push(JSON.parse(opts.body));
+  if(opts&&opts.method==='POST'){ posts.push(Object.assign(JSON.parse(opts.body),
+      {bearer:opts.headers.Authorization}));
     return {ok:true,json:async()=>({saved:true})}; }
   reads.push(path);
   if(failRead) throw new Error('offline');
-  return {ok:true, json:async()=>answer};
+  return {ok:true, json:async()=>(typeof answer==='function' ? answer(opts) : answer)};
 };
 const settle=()=>new Promise(r=>setTimeout(r,10));
 const SERVER={v:1,mode:'open',open:{x:300,y:120,w:500,h:400},bubble:{x:10,y:10}};
@@ -300,12 +302,38 @@ console.log(JSON.stringify(posts.map(p=>p.value.mode)));""")
 
 def test_an_answer_for_a_previous_owner_is_dropped():
     out = sync("""
-answer={prefs:{chat_cloud:SERVER}};
-refreshChatCloud();
-queueOwner='bob'; refreshChatCloud();                 // bob signed in before alice's answer
+const ALICE={v:1,mode:'open',open:{x:300,y:120,w:500,h:400},bubble:{x:10,y:10}};
+const BOB={v:1,mode:'bubble',open:{x:20,y:20,w:400,h:400},bubble:{x:70,y:80}};
+answer=o=>({prefs:{chat_cloud:o.headers.Authorization==='Bearer bob'?BOB:ALICE}});
+refreshChatCloud();                                   // alice's read is in flight
+queueOwner='bob'; refreshChatCloud();                 // bob signs in before it lands
 await settle();
-console.log(JSON.stringify({key:cloudStoreKey, open:cloudState.open,
+console.log(JSON.stringify({key:cloudStoreKey, mode:cloudState.mode, bubble:cloudState.bubble,
   aliceCached:'app.chatCloud.v1:alice:main:wide' in store}));""")
 
     assert out["key"] == "app.chatCloud.v1:bob:main:wide"
+    assert out["mode"] == "bubble" and out["bubble"] == {"x": 70, "y": 80}   # bob's own
     assert out["aliceCached"] is False
+
+
+def test_a_placement_is_never_written_under_the_next_owners_sign_in():
+    out = sync("""
+answer={prefs:{}}; refreshChatCloud(); await settle();
+onRefresh=()=>{ queueOwner='bob'; MCP._loginEpoch++; };   // the refresh lands on bob
+setChatCloudMode('bubble'); await settle();
+console.log(JSON.stringify(posts));""")
+
+    assert out == []
+
+
+def test_a_late_record_does_not_overwrite_this_devices_newer_copy():
+    out = sync("""
+answer={prefs:{chat_cloud:SERVER}};
+refreshChatCloud();
+cloudKeydown({key:'ArrowLeft', shiftKey:true, preventDefault(){}});
+const mine=JSON.parse(store['app.chatCloud.v1:alice:main:wide']).open;
+await settle();
+const cached=JSON.parse(store['app.chatCloud.v1:alice:main:wide']).open;
+console.log(JSON.stringify({mine, cached}));""")
+
+    assert out["cached"] == out["mine"]

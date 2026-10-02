@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -25,6 +26,7 @@ RECORD = {"v": 1, "mode": "open", "open": {"x": 200, "y": 60, "w": 520, "h": 420
 def server():
     html, csp = render_app_html()
     posts: list[dict] = []
+    delay = {"seconds": 0.0}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -43,6 +45,7 @@ def server():
                 self._send(html.encode("utf-8"), "text/html; charset=utf-8",
                            {"Content-Security-Policy": csp})
             elif self.path.startswith("/app/ui-prefs?") and "viewport=wide" in self.path:
+                time.sleep(delay["seconds"])
                 self._send(json.dumps({"prefs": {"chat_cloud": RECORD}}).encode(),
                            "application/json")
             else:
@@ -61,7 +64,7 @@ def server():
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
-        yield f"http://127.0.0.1:{httpd.server_port}/app", posts
+        yield f"http://127.0.0.1:{httpd.server_port}/app", posts, delay
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -82,7 +85,7 @@ def page():
 
 
 def test_a_new_device_takes_the_owners_record_and_writes_back_its_placement(server, page):
-    url, posts = server
+    url, posts, _delay = server
     page.goto(url)
     page.wait_for_selector("#view-signin", state="visible")
     page.wait_for_load_state("networkidle")
@@ -101,3 +104,24 @@ def test_a_new_device_takes_the_owners_record_and_writes_back_its_placement(serv
     page.wait_for_timeout(300)
     assert posts and posts[-1]["key"] == "chat_cloud" and posts[-1]["value"]["mode"] == "bubble"
     assert posts[-1]["agent"] == "main" and posts[-1]["viewport"] == "wide"
+
+
+def test_a_record_arriving_mid_drag_does_not_move_the_cloud(server, page):
+    url, posts, delay = server
+    delay["seconds"] = 1.5
+    page.goto(url)
+    page.wait_for_selector("#view-signin", state="visible")
+    page.evaluate("() => { setQueueOwner('owner-1'); showView('chat'); refreshChatCloud(); }")
+    page.wait_for_function("cloudState !== null")
+    corner = page.locator("#chat-cloud-resize").bounding_box()
+
+    page.mouse.move(corner["x"] + 9, corner["y"] + 9)
+    page.mouse.down()
+    page.mouse.move(corner["x"] - 600, corner["y"] - 300, steps=10)
+    page.wait_for_timeout(2000)                       # the record lands mid-drag
+    page.mouse.up()
+    page.wait_for_timeout(300)
+
+    width = page.evaluate("cloudState.open.w")
+    assert width != 520                               # not the record's width
+    assert posts and posts[-1]["value"]["open"]["w"] == width

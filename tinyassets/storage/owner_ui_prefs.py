@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS owner_ui_prefs (
 AGENTS = frozenset({"main"})
 VIEWPORTS = frozenset({"phone", "wide"})
 MAX_VALUE_BYTES = 2048
+MAX_COORDINATE = 100_000
 
 
 class PrefRefused(ValueError):
@@ -51,7 +52,14 @@ class PrefRefused(ValueError):
 def _chat_cloud(value: Any) -> dict[str, Any]:
     """The chat cloud's ``{v, mode, open, bubble}``, exactly as the page parses it."""
     def num(x: Any) -> bool:
-        return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+        # A layout coordinate, not arithmetic: finite and of screen magnitude. A
+        # huge JSON integer would make float() overflow; it is refused, not a 500.
+        if not isinstance(x, (int, float)) or isinstance(x, bool):
+            return False
+        try:
+            return math.isfinite(float(x)) and abs(x) <= MAX_COORDINATE
+        except OverflowError:
+            return False
 
     if not isinstance(value, dict) or value.get("v") != 1:
         raise PrefRefused("chat_cloud needs v: 1")
