@@ -1,0 +1,61 @@
+# universe-agent-harness (delta)
+
+## ADDED Requirements
+
+### Requirement: A whole command center publishes as one immutable package, scrubbed of private items
+An owner SHALL be able to publish their whole command center as one package through the owner-confirmed `publish` ask, using the shared bundle manifest with profile `publish`.
+
+The package SHALL contain the harness files, the workspace files and the wiki's curated pages, alongside the workflows, UI and automation triggers the ask already publishes. The owner MAY leave out any path, and MAY name memory items, per file, to include.
+
+The package SHALL never contain:
+- dot-prefixed entries or managed repository checkouts;
+- platform runtime files or databases;
+- the owner-describing brain files;
+- the wiki's drafts or raw material;
+- unselected memory;
+- any file in which a credential or contact details are detected. Owner approval SHALL NOT override this.
+
+Connections SHALL appear only as named references in the manifest. A binary file SHALL never be included. A final check SHALL scan every public path, the manifest and the definition, and SHALL refuse the publish on any detection.
+
+The package content SHALL be stored once, immutably and content-addressed, in platform storage outside every command-center folder. Its bytes SHALL be admitted against the publisher's storage quota before anything is published, and a refusal SHALL name the package's size.
+
+The tab SHALL list every included file, and every excluded file with its reason, and SHALL state that detection cannot prove a file free of personal data. The consent record (the action, its digest covering the package content, and the tab text) SHALL be pinned in platform-owned storage keyed by the request. The owner's surfaces SHALL render the tab from that record, and the answer SHALL execute only that record.
+
+#### Scenario: private items never reach a published package
+- **GIVEN** a command center whose folder holds `MEMORY.md`, `founder.md`, a `.credentials` file, a workspace file containing an API key and one containing an email address
+- **WHEN** the owner confirms a package publish without naming memory items
+- **THEN** none of those files is in the package, and the tab named each excluded file with its reason
+
+#### Scenario: an over-quota package is refused with its size
+- **WHEN** a package's content would take the publisher over their storage quota
+- **THEN** nothing becomes public and the refusal names the package's size
+
+### Requirement: Installing a package is quarantined until the owner activates it, and materialises as the installer's own copy
+A served agent SHALL be able to raise an `install` ask naming a package's definition. The platform SHALL verify the package content against its pinned digest, and SHALL run the ingestion boundary, which:
+- bounds bytes, file count, depth and path length;
+- rejects absolute, traversal, dot-prefixed and colliding paths.
+
+The platform SHALL then record a quarantine record in platform-owned storage, keyed by command center, agent and request, outside every agent-reachable location. It SHALL write the tab itself, previewing what will land where, what the package needs, and which existing paths stay the installer's own.
+
+Only the owner's answer from their own surface SHALL activate the install, and it SHALL be idempotent on the request. The answer SHALL:
+- create private workflow copies authored by the installer;
+- add the UI to the installer's library;
+- create the automations paused, owned by the installer;
+- write the files into the installer's command center, within their storage quota.
+
+Harness files SHALL land under `agents/<slug>/`, never over the installer's own main agent. An existing path SHALL NOT be overwritten. The installer SHALL never receive the publisher's private data, credentials or any write path to the publisher's command center, and installed work SHALL run only under the installer's own authority and connections.
+
+#### Scenario: a second user installs and runs a published command center
+- **GIVEN** user A published their command center as a package
+- **WHEN** user B's agent raises an install ask and B confirms it
+- **THEN** B owns private copies of A's workflows, the UI and paused automations, and A's files appear in B's command center
+- **AND** B can run an installed workflow under B's own authority
+- **AND** none of A's excluded items is present
+
+#### Scenario: nothing materialises before activation
+- **WHEN** an install ask is raised but not yet confirmed
+- **THEN** no file, workflow, UI or automation exists in the installer's command center
+
+#### Scenario: a path that escapes is refused
+- **WHEN** a package's content names a path with `..`, an absolute path or two paths that collide after case folding
+- **THEN** the install ask is refused before any quarantine record is written

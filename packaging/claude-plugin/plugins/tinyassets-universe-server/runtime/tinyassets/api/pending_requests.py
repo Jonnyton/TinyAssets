@@ -226,6 +226,10 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         from tinyassets.api.publish_requests import validate_action as _validate_publish
 
         return _validate_publish({**action, "type": kind})
+    if kind == "install":
+        from tinyassets.api.package_requests import validate_action as _validate_install
+
+        return _validate_install({**action, "type": kind})
     if kind == PATCH_INTAKE_ACTION:
         return _validated_patch_intake(action)
     if kind == "extend_http":
@@ -830,7 +834,7 @@ def _validated_fields(
                 "not one unlabelled box for the owner to work out"
             )
         if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent",
-                              PATCH_INTAKE_ACTION, "publish"):
+                              PATCH_INTAKE_ACTION, "publish", "install"):
             # Nothing to type. For extend_http the key is already in the vault
             # and for remove_http it is on its way out; either way this is a
             # yes/no, and a paste box on a removal would be nonsense.
@@ -1162,6 +1166,24 @@ def request_from_user(
         except (ValueError, LookupError, PermissionError) as exc:
             return _bad(str(exc))
         kind, title, body = tab_text(action)
+    if action.get("type") == "install":
+        # Quarantine: the package is verified and planned, and nothing lands in
+        # this command center until the owner answers. The tab is the platform's.
+        from tinyassets.api.package_requests import capture_action as _capture_install
+        from tinyassets.api.package_requests import tab_text as _install_tab
+
+        if fields:
+            return _bad("an install ask is a fieldless owner confirmation")
+        try:
+            action = _capture_install(_uid, action)
+        except (ValueError, LookupError, PermissionError) as exc:
+            return _bad(str(exc))
+        kind, title, body = _install_tab(action)
+    consent_pin = ""
+    if action.get("type") in _PINNED_ACTIONS:
+        # The consent record lives outside this command center's folder (which
+        # the agent writes with bash); the row only references it.
+        consent_pin = _pin_consent(_uid, action, (kind, title, body))
     if action.get("type") == "connect" and "model" in (action.get("uses") or {}):
         refused = _model_use_refusal(_uid, action)
         if refused is not None:
@@ -1253,6 +1275,12 @@ def request_from_user(
         return {"error": "request_storage_unavailable"}
     if row.get("error"):
         return row
+    if consent_pin and row.get("request_id"):
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.command_center_packages import bind_request
+
+        bind_request(_base_path(), universe_id=_uid, pin_id=consent_pin,
+                     request_id=row["request_id"])
     if row.get("settled"):
         # Already decided in a past interaction. This is the "it might know from
         # past interaction what it is allowed" case: a standing ALLOW means go
@@ -1277,6 +1305,46 @@ def request_from_user(
     if created:
         _notify_owner(_uid, row)
     return {**row, "grant_sentence": _grant_sentence(row), **sign_in}
+
+
+#: Asks whose consent record is platform-owned (`tinyassets.command_center_packages`
+#: pins): the rail renders them from the pin and the answer executes the pin.
+_PINNED_ACTIONS = frozenset({"publish", "install"})
+
+
+def _pin_consent(uid: str, action: dict[str, Any], tab: tuple[str, str, str]) -> str:
+    if action["type"] == "publish":
+        from tinyassets.api.publish_requests import pin_ask
+    else:
+        from tinyassets.api.package_requests import pin_ask
+    return pin_ask(uid, action, tab)
+
+
+def _consent_pin(uid: str, request_id: str) -> dict[str, Any] | None:
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.command_center_packages import pin_for_request
+
+    return pin_for_request(_base_path(), universe_id=uid, request_id=request_id)
+
+
+#: What the rail shows for a pinned ask whose record is gone: it cannot be
+#: confirmed, and says so rather than showing words nothing vouches for.
+_UNPINNED_BODY = (
+    "This request can no longer be confirmed: the platform has no record of what "
+    "it showed you. Clear it and ask your agent to raise it again."
+)
+
+
+def _rendered_from_pin(uid: str, row: dict[str, Any]) -> dict[str, Any]:
+    """A pinned ask as the platform wrote it, whatever its row now says."""
+    if str((row.get("action") or {}).get("type") or "") not in _PINNED_ACTIONS:
+        return row
+    pinned = _consent_pin(uid, str(row.get("request_id") or ""))
+    if pinned is None or pinned["kind"] != row["action"]["type"]:
+        return {**row, "body": _UNPINNED_BODY, "confirmable": False}
+    tab = pinned["record"]["tab"]
+    return {**row, "kind": tab["kind"], "title": tab["title"], "body": tab["body"],
+            "action": pinned["record"]["action"]}
 
 
 def _owned_connection_git_host(connection_id: str) -> str:
@@ -2022,7 +2090,7 @@ def list_requests(*, universe_id: str = "") -> dict[str, Any]:
     # their next sign-in with no migration. One call seeds and describes, so the
     # block cannot contradict the rail it is describing. Never raises.
     intake = rail_entry(uid, udir)
-    rows = list_pending(udir)
+    rows = [_rendered_from_pin(uid, r) for r in list_pending(udir)]
     # Prepended, not stored: derived from current serving authority, so it
     # cannot go stale, cannot be dismissed into a state where the universe is
     # mute with no way back, and needs no migration.
@@ -2646,11 +2714,30 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             return {"error": "request_resolution_unconfirmed", "request_pending": True}
         return {**result, "status": "answered", "request_id": request_id,
                 "receipt": _grant_sentence(row), "secret_reused": True, "suppressed": False}
+    if action.get("type") in _PINNED_ACTIONS:
+        pinned = _consent_pin(_uid, request_id)
+        if pinned is None or pinned["kind"] != action["type"]:
+            return _bad(_UNPINNED_BODY)
+        if row["fields"] or values:
+            return _bad("this is a fieldless owner confirmation")
+        # What executes is the platform's record of what the tab showed.
+        action = pinned["record"]["action"]
+    if action.get("type") == "install":
+        from tinyassets.api.package_requests import execute_action as _execute_install
+
+        try:
+            result = _execute_install(_uid, pinned)
+        except (ValueError, LookupError, PermissionError) as exc:
+            return {"error": "install_refused", "detail": str(exc), "request_pending": True}
+        if not resolve_request(udir, request_id, status="answered", answer=answer,
+                               feedback=feedback, dont_ask_again=False, decision="allowed"):
+            return {"error": "request_resolution_unconfirmed", "request_pending": True}
+        return {**result, "status": "answered", "request_id": request_id,
+                "receipt": f"Installed \"{action['plan']['name']}\" as your own copy.",
+                "suppressed": False}
     if action.get("type") == "publish":
         from tinyassets.api.publish_requests import execute_action as _execute_publish
 
-        if row["fields"] or values:
-            return _bad("publishing is a fieldless owner confirmation")
         try:
             result = _execute_publish(_uid, action, request_id=request_id)
         except (ValueError, LookupError, PermissionError) as exc:

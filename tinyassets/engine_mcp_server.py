@@ -2265,7 +2265,24 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       workflow goes public with a version, and ONE definition bundles the UI, a
       ``tinyassets.branch-ref.v1`` per workflow and a
       ``tinyassets.automation-spec.v1`` per trigger (never its inputs).
-    * **Installing someone else's**: ``browse_commons kind="agents"``, then
+    * **Sharing the WHOLE command center** is the same ask with a ``package``
+      block, ``"package": {}``: the files travel too (agents' instructions and
+      skills, workspace files, ``wiki/pages``) as one versioned package. The
+      platform leaves out memory, the brain files about the person, platform
+      state, binaries and any file with a credential or contact details, and
+      lists every file either way on the tab. ``"exclude": ["<path>", ...]``
+      leaves out more; ``"memory_items": ["m_7f3a",
+      "agents/<id>/MEMORY.md#m_..."]`` shares named memory items.
+    * **Installing a whole command center**: ``browse_commons kind="packages"``,
+      then ``write_graph target="pending_request" operation="ask"
+      payload_json={"action": {"type": "install", "agent_definition_id":
+      "<the package's>"}}``. The platform checks the package, shows the person
+      what lands where, and installs only when they confirm: private copies of
+      its workflows under their published names, its screen in their library,
+      its automations PAUSED, its files written beside theirs (never over one),
+      its agent's instructions under ``agents/<name>/``. Tell them to resume the
+      automations they want.
+    * **Installing someone else's** single system: ``browse_commons kind="agents"``, then
       ``read_commons_shape agent_definition_id=...``; ``remix_shape`` each
       branch-ref's ``published_version_id``; ``add_ui`` the ``ui`` component into
       this person's ``app_ui``; create an automation per automation-spec against the
@@ -3244,7 +3261,7 @@ def write_graph(
 # gated by the same current-owner admission + rate-limit as run_graph.
 # PUBLISH to the global commons is a separate,
 # consent-gated slice — deliberately NOT exposed here.
-_COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals"})
+_COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals", "packages"})
 #: Hard server-side cap on a commons browse (Codex ADAPT 2026-08-22 #7): the
 #: branch catalog is global and unbounded, so cap the rows we return to the agent
 #: to protect its context window as the commons grows. (Cursor pagination is a
@@ -3457,20 +3474,20 @@ def browse_commons(
     author: str = "",
     limit: int = 30,
 ) -> str:
-    """Browse the SHARED TinyAssets commons — automation shapes other command centers
+    """Browse the SHARED TinyAssets commons — what other command centers
     published, that you can remix into your own.
 
     THIS is the commons to use — do NOT web-search other platforms (n8n, Make,
-    Zapier). These are live, remixable TinyAssets shapes.
+    Zapier).
 
     Args:
-        kind: What to list: ``branches`` (published workflow graph shapes — the
-            main commons; each row carries a ``published_version_id`` you pass to
-            ``remix_shape``), ``agents`` (public custom agent definitions), or
-            ``goals`` (shared goals). Defaults to ``branches``.
-        query: Optional search text (agents/goals).
+        kind: ``branches`` (published workflow shapes; each row's
+            ``published_version_id`` goes to ``remix_shape``), ``agents`` (public
+            agent definitions), ``packages`` (whole command centers; install via
+            an ``install`` ask) or ``goals``. Defaults to ``branches``.
+        query: Optional search text (not branches).
         author: Optional author filter.
-        limit: Max records (agents/goals).
+        limit: Max records (not branches).
     """
     import json
 
@@ -3520,6 +3537,14 @@ def browse_commons(
             # published rows come back beside it under `own`, so the notice is
             # true for everything under `content`.
             foreign, own = _split_own_rows(raw)
+            return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
+        if normalized == "packages":
+            from tinyassets.api.package_requests import list_packages
+
+            rows = list_packages(query=(query or "").strip(), author=(author or "").strip(),
+                                 limit=max(1, min(int(limit or 30), _COMMONS_BROWSE_MAX)))
+            foreign, own = _split_own_rows(
+                json.dumps({"packages": rows, "count": len(rows)}, default=str))
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
         from tinyassets.universe_server import read_graph as _impl
 
