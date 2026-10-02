@@ -266,18 +266,17 @@ fi
 
 SHIP_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_ship_gh.py"
 if [[ -n "${GH_TOKEN:-}" ]]; then
-    for ship_path in "${BRAIN_PATH}"; do
-        log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/tinyassets-backups})..."
-        set +e
-        python3 "${SHIP_SCRIPT}" "${ship_path}" 2>&1 | while IFS= read -r line; do
-            log "  gh-ship: ${line}"
-        done
-        ship_status=$?
-        set -e
-        if [[ "${ship_status}" -ne 0 ]]; then
-            log "WARN: GH offsite ship exited ${ship_status} for $(basename "${ship_path}") (local backup succeeded)"
-        fi
+    ship_path="${BRAIN_PATH}"
+    log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/tinyassets-backups})..."
+    set +e
+    python3 "${SHIP_SCRIPT}" "${ship_path}" 2>&1 | while IFS= read -r line; do
+        log "  gh-ship: ${line}"
     done
+    ship_status=$?
+    set -e
+    if [[ "${ship_status}" -ne 0 ]]; then
+        log "WARN: GH offsite ship exited ${ship_status} for $(basename "${ship_path}") (local backup succeeded)"
+    fi
 else
     log "GH_TOKEN not set — skipping offsite GH release upload"
 fi
