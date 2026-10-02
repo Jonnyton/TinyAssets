@@ -27,10 +27,12 @@ design addendum"). C1a puts the owner behind a Unix socket and ships a separate 
 Until it lands, the honest state is the measured stop/start window. No interim blue-green is
 proposed, because any overlap before the split is a double-writer bug.
 
-**What a frontend is (C1, revised 2026-10-02):** a plain reverse proxy plus the static app shell.
-It does not authenticate, holds no envelope key, and builds no app. Everything except the shell
-assets goes byte-for-byte to the owner over `/run/tinyassets/owner.sock`. The owner keeps today's
-whole server: FastMCP, tools, sessions and turns.
+**What a frontend is (C1 revision 3, 2026-10-02):** the daemon image run with a
+`tinyassets.frontend` entrypoint. It is a plain reverse proxy that also renders the app shell
+with the owner's own renderer, which keeps the CSP nonce and config injection. It does not
+authenticate and holds no key. Everything else goes byte-for-byte to the owner over
+`/run/tinyassets/owner.sock`. The owner keeps today's whole server: FastMCP, tools, sessions and
+turns.
 
 ## The switch
 
@@ -60,10 +62,16 @@ cloudflared (host net) --> 127.0.0.1:8001  local switch (HAProxy, host net)
 
 ## Deploy protocol (frontend-only deploy)
 
-1. **Start the idle colour**, say green on 8012, with the new frontend image. It is **ready**
-   when a proxied `/mcp/pulse` round trip to the owner socket succeeds, using the canary
-   bearer (C1). The switch's health check is that round trip. The colour owns nothing, and
-   it stamps every response `X-TA-Frontend: <colour>/<sha>`.
+1. **Start the idle colour**, say green on 8012, with the new image. Two different checks apply:
+   - The **switch's continuous health check** is the frontend's own shallow `/healthz` (C1-8).
+     If the owner restarts, the frontends answer with an honest "restarting" error and `/healthz`
+     stays up, so HAProxy keeps the colour in. The client gets that error, never a 502, and the
+     switch never marks both colours down because of the owner.
+   - The **one-time deploy readiness gate** is a proxied `/mcp/pulse` round trip through the new
+     colour to the owner socket, using the canary bearer. It proves that colour actually reaches
+     the owner before it takes traffic.
+
+   The colour owns nothing, and it stamps every response `X-TA-Frontend: <colour>/<sha>`.
 2. **Health gate:** the switch's health check, plus a loopback canary through 8012 directly
    (`mcp_public_canary.py --url http://127.0.0.1:8012/mcp`, as the canary principal). It asserts
    `X-TA-Frontend: green/<new sha>`, because `/mcp/pulse` alone cannot tell the colours apart:
@@ -90,12 +98,14 @@ cloudflared (host net) --> 127.0.0.1:8001  local switch (HAProxy, host net)
 **Owner changes are not frontend deploys.** Owner deploys keep phase 1's whole-process wait (the
 in-flight-turn wait in deploy-prod). Owner handover and frontend queueing are **deferred** (C1).
 This switch is not involved in an owner deploy. Which path a change takes is decided from the
-diff: frontend image, owner image, or both.
+diff (C1-8): frontend-only diffs take this switch, owner diffs take phase 1's wait, and a mixed
+diff runs the owner first, then the frontend switch.
 
 ## Failure modes
 
 | Failure | Effect | Mitigation |
 |---|---|---|
+| The owner restarts | requests fail with an honest "restarting" error | frontends' `/healthz` stays up, so no colour is dropped and no 502 is served; the watchdogs' restart action targets the owner unit only (C1-8) |
 | The switch process dies | port 8001 refuses, public 502 | `restart: unless-stopped`; the watchdog probes 8001 through it; the proxy restarts in well under a second; its state lives in the config plus a server-state file |
 | The admin socket is reachable by a tenant | traffic hijack | a unix socket, root-owned 0600, on the host only; never in a jail bind |
 | Both colours unhealthy | 502 | the same as today's failed boot; the deploy stops at step 2, before blue is touched |
@@ -109,8 +119,8 @@ frontend image and its compose services. The switch ships as its own change.
 
 1. A `switch` service in `deploy/compose.yml` (haproxy, host net, binds 127.0.0.1:8001). Frontend
    services `frontend-blue`/`frontend-green` on 8011/8012. The daemon stops publishing 8001.
-2. `deploy/haproxy.cfg`: one backend, two servers; the health check is the proxied pulse
-   round trip; the admin socket; `load-server-state-from-file`; and **`retry-on none`**. Forwarded
+2. `deploy/haproxy.cfg`: one backend, two servers; the health check is each frontend's shallow
+   `/healthz`; the admin socket; `load-server-state-from-file`; and **`retry-on none`**. Forwarded
    requests are never retried, because MCP ids are not idempotency keys.
 3. `deploy_fail_safe.sh`: the colour protocol above for frontend-only deploys. The
    host-mutation lock covers the whole sequence.
