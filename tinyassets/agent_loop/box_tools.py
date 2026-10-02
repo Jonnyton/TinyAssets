@@ -60,9 +60,14 @@ _CANCEL_GRACE_SECONDS = 5.0
 #: Box calls (starts and stream reads) that may be in flight in this process.
 #: A call the box host never answers keeps its slot, so a host that stops
 #: answering exhausts this bound and new calls are refused loudly, instead of
-#: threads accumulating without limit. Cancels are never refused.
+#: threads accumulating without limit.
 MAX_BOX_CALLS = 512
 _BOX_CALL_SLOTS = threading.BoundedSemaphore(MAX_BOX_CALLS)
+#: Cancels in flight, bounded separately so a stuck cancel can never take the
+#: slot a new call needs. With none free, a cancel is not sent and the outcome
+#: is reported unknown (the turn holds) rather than spawning another thread.
+MAX_BOX_CANCELS = 128
+_BOX_CANCEL_SLOTS = threading.BoundedSemaphore(MAX_BOX_CANCELS)
 
 
 class BoxOperationRefused(RuntimeError):
@@ -214,7 +219,8 @@ class BoxExecutor:
             launch.abandon()
             raise
         try:
-            collector = _in_thread(self._collect, exec_id, op_id, output_bytes, slot=True)
+            collector = _in_thread(self._collect, exec_id, op_id, output_bytes,
+                                   slots=_BOX_CALL_SLOTS)
         except BoxOperationRefused:
             # The command is running; only reading it was refused. Never "not sent".
             await self._cancel(exec_id)
@@ -236,7 +242,8 @@ class BoxExecutor:
     async def _cancel(self, exec_id: Any) -> bool:
         """Ask the box to kill the execution; ``True`` only if it acknowledged in time."""
         try:
-            await _wait(_in_thread(self._provider.cancel, self._handle, exec_id),
+            await _wait(_in_thread(self._provider.cancel, self._handle, exec_id,
+                                   slots=_BOX_CANCEL_SLOTS),
                         timeout=_CANCEL_GRACE_SECONDS)
             return True
         except Exception:  # noqa: BLE001 - an unacknowledged cancel is reported as unknown
@@ -244,11 +251,29 @@ class BoxExecutor:
             return False
 
     def cancel_quietly(self, exec_id: Any) -> None:
-        """Cancel from a thread that has no turn to report to."""
+        """Cancel from a thread that has no turn to report to (it recorded unknown)."""
         try:
             self._provider.cancel(self._handle, exec_id)
         except Exception:  # noqa: BLE001 - the turn already recorded an unknown outcome
             _LOG.warning("box cancel of an abandoned execution failed")
+
+    def cancel_in_background(self, exec_id: Any) -> None:
+        """``cancel_quietly`` on a cancel slot's thread; none free, it is logged."""
+        if not _BOX_CANCEL_SLOTS.acquire(blocking=False):
+            _LOG.warning("no cancel slot free; an abandoned box execution was not cancelled")
+            return
+
+        def work() -> None:
+            try:
+                self.cancel_quietly(exec_id)
+            finally:
+                _BOX_CANCEL_SLOTS.release()
+
+        try:
+            threading.Thread(target=work, name="box-cancel", daemon=True).start()
+        except BaseException:
+            _BOX_CANCEL_SLOTS.release()
+            raise
 
 
 class _Launch:
@@ -266,7 +291,7 @@ class _Launch:
         self._abandoned = False
         self._exec_id: Any = None
         self._started = False
-        self.future = _in_thread(self._run, op_id, argv, stdin, slot=True)
+        self.future = _in_thread(self._run, op_id, argv, stdin, slots=_BOX_CALL_SLOTS)
 
     def _run(self, op_id: str, argv: Sequence[str], stdin: bytes | None) -> Any:
         exec_id = self._executor._start(op_id, argv, stdin)
@@ -282,8 +307,7 @@ class _Launch:
             self._abandoned = True
             started, exec_id = self._started, self._exec_id
         if started:
-            threading.Thread(target=self._executor.cancel_quietly, args=(exec_id,),
-                             name="box-cancel", daemon=True).start()
+            self._executor.cancel_in_background(exec_id)
 
 
 async def _wait(future: asyncio.Future, *, timeout: float | None = None) -> Any:
@@ -295,15 +319,15 @@ async def _wait(future: asyncio.Future, *, timeout: float | None = None) -> Any:
     return future.result()
 
 
-def _in_thread(fn: Callable[..., Any], /, *args: Any, slot: bool = False) -> asyncio.Future:
+def _in_thread(fn: Callable[..., Any], /, *args: Any,
+               slots: threading.BoundedSemaphore) -> asyncio.Future:
     """Run a blocking call on a fresh daemon thread; its result as a future.
 
-    ``slot`` calls take one of :data:`MAX_BOX_CALLS`; none free means the box
+    The call holds one of ``slots`` until it returns; none free means the box
     host has stopped answering, and the call is refused before it is sent.
     """
-    if slot and not _BOX_CALL_SLOTS.acquire(blocking=False):
-        raise BoxOperationRefused(
-            f"{MAX_BOX_CALLS} box calls are already waiting on the box host")
+    if not slots.acquire(blocking=False):
+        raise BoxOperationRefused("every box call slot is waiting on the box host")
     loop = asyncio.get_running_loop()
     future: asyncio.Future = loop.create_future()
     # A call nobody waits for any more must not report its failure as unhandled.
@@ -323,14 +347,12 @@ def _in_thread(fn: Callable[..., Any], /, *args: Any, slot: bool = False) -> asy
             with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(deliver, future.set_result, result)
         finally:
-            if slot:
-                _BOX_CALL_SLOTS.release()
+            slots.release()
 
     try:
         threading.Thread(target=work, name="box-op", daemon=True).start()
     except BaseException:
-        if slot:
-            _BOX_CALL_SLOTS.release()
+        slots.release()
         raise
     return future
 
@@ -382,27 +404,30 @@ _READ = (
 )
 _CAT = '[ -f "$1" ] || { echo "no such file: $1"; exit 1; }; cat -- "$1"'
 #: The content lands in a temp file first; the rename then happens under an
-#: exclusive ``flock`` on the target, so a reader never sees half a file and
-#: every write through these tools is ordered. ``$2`` is the sha256 the target
-#: must still have (edit), checked under the same lock, or empty (write).
-#: Two edits, or an edit and a write, can therefore never silently overwrite
-#: each other: the later one finds the hash changed and refuses. A process in
-#: the box that writes the file WITHOUT the lock (an arbitrary ``bash``
-#: command) is not ordered by it; that residual is the same as for any editor.
-#: ``flock`` (util-linux) is a box-image requirement; without it the write
-#: fails loudly rather than racing.
+#: exclusive ``flock`` on the target's DIRECTORY, so a reader never sees half a
+#: file and every write through these tools is ordered. The lock is on the
+#: directory, not the file, because the rename replaces the file's inode: a
+#: lock on the file would let a waiter on the old inode and a newcomer on the
+#: new one run together. ``$2`` is the sha256 the target must still have
+#: (edit), checked under the same lock, or empty (write). Two edits, or an
+#: edit and a write, can therefore never silently overwrite each other: the
+#: later one finds the hash changed and refuses. A process in the box that
+#: writes the file WITHOUT the lock (an arbitrary ``bash`` command) is not
+#: ordered by it; that residual is the same as for any editor. ``flock``
+#: (util-linux) is a box-image requirement; without it the write fails loudly
+#: rather than racing.
 _WRITE = (
-    '[ -n "$2" ] || mkdir -p -- "$(dirname -- "$1")" || exit 1; '
+    'd="$(dirname -- "$1")"; '
+    '[ -n "$2" ] || mkdir -p -- "$d" || exit 1; '
     't="$1.ta-write.$$"; cat > "$t" || { rm -f -- "$t"; exit 1; }; '
-    'if [ -n "$2" ]; then '
-    '[ -f "$1" ] || { rm -f -- "$t"; echo "no such file: $1"; exit 1; }; '
-    'flock -x "$1" sh -c '
-    '\'[ "$(sha256sum -- "$1" | cut -d" " -f1)" = "$2" ] || exit 3; mv -f -- "$3" "$1"\' '
+    'flock -x "$d" sh -c '
+    '\'if [ -n "$2" ]; then [ -f "$1" ] || exit 4; '
+    '[ "$(sha256sum -- "$1" | cut -d" " -f1)" = "$2" ] || exit 3; fi; '
+    'mv -f -- "$3" "$1"\' '
     'sh "$1" "$2" "$t"; '
-    'elif [ -e "$1" ]; then flock -x "$1" mv -f -- "$t" "$1"; '
-    'else mv -f -- "$t" "$1"; fi; '
     'rc=$?; [ "$rc" -eq 0 ] && exit 0; rm -f -- "$t"; '
     '[ "$rc" -eq 3 ] && echo "$1 changed while it was being edited; read it again"; '
+    '[ "$rc" -eq 4 ] && echo "no such file: $1"; '
     'exit "$rc"'
 )
 

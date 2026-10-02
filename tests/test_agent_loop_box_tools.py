@@ -295,7 +295,7 @@ def test_write_sends_content_as_stdin_and_renames_into_place():
     record = box.execs["op"]
     assert record.stdin == "héllo".encode()
     assert record.argv[4:] == ["/cc/a.txt", ""]
-    assert 'mv -f -- "$t" "$1"' in record.argv[2]
+    assert 'flock -x "$d"' in record.argv[2] and 'mv -f -- "$3" "$1"' in record.argv[2]
 
 
 def test_edit_writes_only_if_the_file_still_has_the_bytes_it_read():
@@ -434,3 +434,43 @@ def test_concurrent_edits_never_silently_lose_one(tmp_path):
         assert token.upper() in final, (token, results)
     for token, res in zip(tokens, results):
         assert res.startswith("edited") or "changed while it was being edited" in res, res
+
+
+@posix
+def test_edits_wait_on_the_directory_lock_whose_identity_survives_the_rename(tmp_path):
+    """The lock is the directory's: a rename replaces the file's inode, never it."""
+    target = tmp_path / "f.txt"
+    target.write_text("aa bb")
+    holder = subprocess.Popen(["flock", "-x", str(tmp_path), "sleep", "1.5"])
+    try:
+        time.sleep(0.3)  # the holder has the lock
+        t = tools(LocalBox(), str(tmp_path))
+
+        async def scenario():
+            return await asyncio.gather(t.edit("a", "f.txt", "aa", "AA"),
+                                        t.edit("b", "f.txt", "bb", "BB"))
+
+        started = time.monotonic()
+        results = run(scenario())
+        waited = time.monotonic() - started
+    finally:
+        holder.wait(10)
+    assert waited >= 0.8, "the edits did not wait for the directory lock"
+    assert sorted(r.startswith("edited") for r in results) == [False, True], results
+    assert target.read_text() in {"AA bb", "aa BB"}
+
+
+def test_no_free_cancel_slot_is_unknown_and_spawns_nothing(monkeypatch):
+    monkeypatch.setattr(box_tools, "_CANCEL_GRACE_SECONDS", 0.3)
+    empty = threading.BoundedSemaphore(1)
+    empty.acquire()
+    monkeypatch.setattr(box_tools, "_BOX_CANCEL_SLOTS", empty)
+    box = FakeBox()
+    box.hang = True
+    try:
+        with pytest.raises(EngineToolError) as raised:
+            run(tools(box).bash("op", "sleep 999", timeout=1))
+        assert raised.value.outcome == "unknown"
+        assert box.cancels == []
+    finally:
+        box.released.set()

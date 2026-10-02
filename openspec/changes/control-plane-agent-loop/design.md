@@ -63,9 +63,12 @@ existed (stale epoch, foreign handle) -- is reported as not sent, and only on
 the first attempt: refused on the retry means the first may have run.
 
 `edit` is two executions (`op_id/read`, `op_id/write`). The write fills a
-temp file, then, under an exclusive `flock` on the target, checks that the
-target still has the sha256 of the bytes read and renames the temp file over
-it. A plain `write` renames under the same lock. Every write through the box
+temp file, then, under an exclusive `flock` on the target's DIRECTORY, checks
+that the target still has the sha256 of the bytes read and renames the temp
+file over it. A plain `write` renames under the same lock. The lock is the
+directory's because the rename replaces the file's inode: a lock on the file
+let a waiter on the old inode and a newcomer on the new one run together, and
+an edit was lost (refute round 3, reproduced). Every write through the box
 tools is therefore ordered: of two edits that read the same bytes, the second
 finds the hash changed and refuses, and neither is silently lost
 (`test_concurrent_edits_never_silently_lose_one`, red with the lock removed).
@@ -79,9 +82,10 @@ Every wait on the box is bounded and owned:
   outcomes;
 - a `start_exec` reply that arrives after the turn stopped waiting, however
   late, is cancelled by the thread that receives it (exactly one side cancels);
-- box calls in flight per process are bounded (`MAX_BOX_CALLS`); a box host
-  that stops answering exhausts the bound and new calls are refused before
-  they are sent, rather than threads accumulating.
+- box calls in flight per process are bounded (`MAX_BOX_CALLS`), and cancels
+  separately (`MAX_BOX_CANCELS`); a box host that stops answering exhausts a
+  bound and new calls are refused before they are sent (a cancel that cannot
+  be sent is an unknown outcome), rather than threads accumulating.
 
 ### 4. The scripts are the tool jail's
 
