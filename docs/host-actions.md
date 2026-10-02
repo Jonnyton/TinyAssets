@@ -22,7 +22,7 @@ daemon ran with it. Nothing on the box reads it; the workflows use the GitHub se
 
 1. DigitalOcean → API → Tokens: create a replacement, then revoke the old one.
 2. `gh secret set DO_API_TOKEN` with the new value (the workflows need it).
-3. On the droplet: `sudo bash /opt/tinyassets/deploy/install-tinyassets-env.sh delete DO_API_TOKEN`.
+3. On the droplet, after the next deploy: `sudo tinyassets-env delete DO_API_TOKEN`.
 
 Optional, same concern: swap `STRIPE_SECRET_KEY` for a restricted `rk_live_` key scoped
 to Checkout, Subscriptions and webhook reads. The daemon must still hold a Stripe key.

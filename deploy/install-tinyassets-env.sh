@@ -35,8 +35,9 @@
 #   # Set an immutable key once; a different existing value fails closed:
 #   printf '%s' "$SECRET" | sudo bash install-tinyassets-env.sh set-once KEY
 #
-#   # Re-render the daemon's copy after a hand edit of /etc/tinyassets/env:
-#   sudo bash install-tinyassets-env.sh render-daemon-env
+#   # Re-render the daemon's copy after a hand edit of /etc/tinyassets/env
+#   # (deploy_fail_safe.sh installs this script as /usr/local/sbin/tinyassets-env):
+#   sudo tinyassets-env render-daemon-env
 #
 # The daemon's own env file
 # -------------------------
@@ -76,9 +77,10 @@
 #   5  set-once refused replacement of an existing non-empty value.
 #   6  assert-absent found a Compose-recognized target assignment or could
 #      not read the target file.
-#   7  render-daemon-env could not produce a daemon file free of every
-#      DAEMON_FORBIDDEN_ENV name (unreadable source, or a forbidden value that
-#      continues past its own line and so cannot be removed line-wise).
+#   7  the daemon's env file could not be rendered exactly (unreadable source,
+#      a forbidden value spanning lines, a quoted value followed by more text,
+#      an unclosed quote). On `set`/`delete` this is checked before the source
+#      is written, so the source is left unchanged.
 
 set -euo pipefail
 
@@ -494,10 +496,18 @@ cmd_set() {
         new_content+="${key}=${value}"$'\n'
     fi
 
+    # A source the daemon copy cannot be rendered from is refused BEFORE it is
+    # committed: committing first would leave daemon.env stale, and the unit
+    # refuses to start on a stale copy.
+    if is_daemon_env_source; then
+        render_daemon_content "${new_content}"
+    fi
     atomic_install "${new_content}"
     assert_readable
     echo "set ${key} (${ENV_FILE} $(owner_label) ${ENV_MODE})"
-    render_daemon_env_if_source
+    if is_daemon_env_source; then
+        write_daemon_env
+    fi
 }
 
 cmd_delete() {
@@ -523,10 +533,15 @@ cmd_delete() {
         fi
     done < "${ENV_FILE}"
 
+    if is_daemon_env_source; then
+        render_daemon_content "${new_content}"
+    fi
     atomic_install "${new_content}"
     assert_readable
     echo "deleted: $* (${ENV_FILE} $(owner_label) ${ENV_MODE})"
-    render_daemon_env_if_source
+    if is_daemon_env_source; then
+        write_daemon_env
+    fi
 }
 
 cmd_assert_absent() {
@@ -546,77 +561,205 @@ cmd_assert_absent() {
     echo "absent ${key} (${ENV_FILE})"
 }
 
-# Is this line an assignment of a DAEMON_FORBIDDEN_ENV name? Sets
-# FORBIDDEN_MATCH to the name (and COMPOSE_ASSIGNMENT, via the matcher).
-FORBIDDEN_MATCH=""
-line_assigns_forbidden() {
+# --- the daemon's env file ---------------------------------------------
+#
+# A line filter over a dotenv file is only safe if it knows where values
+# begin and end, so this reads the file the way Compose's dotenv parser does as
+# far as that matters here: an optional BOM, leading whitespace and `export`,
+# a key, `=` or `:`, and a value that is unquoted (to end of line), single- or
+# double-quoted on one line (optionally followed by a comment), or a quoted
+# value that continues onto later lines. Anything it cannot place exactly is
+# REFUSED rather than guessed at (Codex on the first draft: a quoted value
+# followed by a second assignment, and a kept multi-line value containing a
+# line that looked like a forbidden assignment, were both mishandled).
+#
+# Names are reported; values never are.
+
+ENV_KEY=""
+ENV_VALUE=""
+QUOTE_OPEN=""
+RENDERED_CONTENT=""
+RENDER_REMOVED=""
+
+# Parse one line as an assignment; sets ENV_KEY and ENV_VALUE.
+parse_env_assignment() {
+    local normalized rest after_export
+    strip_compose_leading_space "$1"
+    normalized="${COMPOSE_TRIMMED#$'\xEF\xBB\xBF'}"
+    strip_compose_leading_space "${normalized}"
+    normalized="${COMPOSE_TRIMMED}"
+    if [[ "${normalized}" == export* ]]; then
+        after_export="${normalized#export}"
+        strip_compose_leading_space "${after_export}"
+        if [ "${COMPOSE_TRIMMED}" != "${after_export}" ]; then
+            normalized="${COMPOSE_TRIMMED}"
+        fi
+    fi
+    [[ "${normalized}" =~ ^([A-Za-z_][A-Za-z0-9_.-]*)(.*)$ ]] || return 1
+    ENV_KEY="${BASH_REMATCH[1]}"
+    rest="${BASH_REMATCH[2]}"
+    strip_compose_leading_space "${rest}"
+    rest="${COMPOSE_TRIMMED}"
+    [[ "${rest}" == =* || "${rest}" == :* ]] || return 1
+    strip_compose_leading_space "${rest:1}"
+    ENV_VALUE="${COMPOSE_TRIMMED}"
+}
+
+# Classify ENV_VALUE. Returns 0 when it is understood (QUOTE_OPEN set to the
+# quote character when the value continues onto the next line), 2 when a
+# quoted value is followed by anything but a comment.
+classify_env_value() {
+    local re_dq_closed='^"([^"\\]|\\.)*"[[:space:]]*(#.*)?$'
+    local re_dq_open='^"([^"\\]|\\.)*\\?$'
+    local re_sq_closed="^'[^']*'[[:space:]]*(#.*)?\$"
+    local re_sq_open="^'[^']*\$"
+    QUOTE_OPEN=""
+    case "${ENV_VALUE}" in
+        \"*)
+            if [[ "${ENV_VALUE}" =~ ${re_dq_closed} ]]; then return 0; fi
+            if [[ "${ENV_VALUE}" =~ ${re_dq_open} ]]; then QUOTE_OPEN='"'; return 0; fi
+            return 2
+            ;;
+        \'*)
+            if [[ "${ENV_VALUE}" =~ ${re_sq_closed} ]]; then return 0; fi
+            if [[ "${ENV_VALUE}" =~ ${re_sq_open} ]]; then QUOTE_OPEN="'"; return 0; fi
+            return 2
+            ;;
+    esac
+    return 0
+}
+
+# Does this continuation line close the open quote? Returns 0 if it closes
+# cleanly, 1 if the value continues, 2 if text other than a comment follows.
+closes_open_quote() {
+    local re_dq_close='^([^"\\]|\\.)*"(.*)$'
+    local re_sq_close="^[^']*'(.*)\$"
+    local re_tail='^[[:space:]]*(#.*)?$'
+    local tail
+    if [ "${QUOTE_OPEN}" = '"' ]; then
+        [[ "$1" =~ ${re_dq_close} ]] || return 1
+        tail="${BASH_REMATCH[2]}"
+    else
+        [[ "$1" =~ ${re_sq_close} ]] || return 1
+        tail="${BASH_REMATCH[1]}"
+    fi
+    [[ "${tail}" =~ ${re_tail} ]] || return 2
+    return 0
+}
+
+is_daemon_forbidden() {
     local name
     for name in "${DAEMON_FORBIDDEN_ENV[@]}"; do
-        if compose_line_assigns_key "$1" "${name}"; then
-            FORBIDDEN_MATCH="${name}"
-            return 0
-        fi
+        [ "$1" = "${name}" ] && return 0
     done
     return 1
 }
 
-# Write DAEMON_ENV_FILE: DAEMON_ENV_SOURCE line for line, minus every
-# assignment of a forbidden name, through the same atomic transaction, owner
-# and mode as the source. Names are reported; values never are.
-cmd_render_daemon_env() {
-    if [ ! -r "${DAEMON_ENV_SOURCE}" ]; then
-        echo "::error::cannot render ${DAEMON_ENV_FILE}: ${DAEMON_ENV_SOURCE} is unreadable" >&2
-        exit 7
-    fi
-    local new_content="# GENERATED from ${DAEMON_ENV_SOURCE} by install-tinyassets-env.sh"$'\n'
-    new_content+="# render-daemon-env. Edit the source, never this file. Removed names:"$'\n'
-    new_content+="# ${DAEMON_FORBIDDEN_ENV[*]}"$'\n'
-    local line value removed=()
-    while IFS= read -r line || [ -n "${line}" ]; do
-        if line_assigns_forbidden "${line}"; then
-            # A quoted value that does not close on its own line continues onto
-            # the following lines, and Compose reads those as the value. A
-            # line-wise filter would leave them behind, so refuse instead.
-            value="${COMPOSE_ASSIGNMENT#"${FORBIDDEN_MATCH}"}"
-            strip_compose_leading_space "${value}"
-            value="${COMPOSE_TRIMMED#[=:]}"
-            strip_compose_leading_space "${value}"
-            value="${COMPOSE_TRIMMED}"
-            value="${value%"${value##*[![:space:]]}"}"
-            case "${value}" in
-                \"*|\'*)
-                    if [ "${#value}" -lt 2 ] || [ "${value: -1}" != "${value:0:1}" ]; then
-                        echo "::error::${FORBIDDEN_MATCH} in ${DAEMON_ENV_SOURCE} has a quoted value that continues past its line; cannot remove it line-wise" >&2
-                        exit 7
-                    fi
-                    ;;
-            esac
-            removed+=("${FORBIDDEN_MATCH}")
-            continue
-        fi
-        new_content+="${line}"$'\n'
-    done < "${DAEMON_ENV_SOURCE}"
-
-    local ENV_FILE="${DAEMON_ENV_FILE}"
-    atomic_install "${new_content}"
-    # Read back what landed, not what was meant to.
-    while IFS= read -r line || [ -n "${line}" ]; do
-        if line_assigns_forbidden "${line}"; then
-            echo "::error::${FORBIDDEN_MATCH} survived into ${DAEMON_ENV_FILE}" >&2
-            exit 7
-        fi
-    done < "${DAEMON_ENV_FILE}"
-    assert_readable
-    echo "rendered ${DAEMON_ENV_FILE} from ${DAEMON_ENV_SOURCE} (removed: ${removed[*]:-none})"
+refuse_render() {
+    echo "::error::cannot render ${DAEMON_ENV_FILE}: $1" >&2
+    exit 7
 }
 
-# A write to the main env file keeps the daemon's copy current. Any other
-# target (request-idempotency.env, agent-interchange.env, a test's temp file)
-# is not the daemon's source and renders nothing.
-render_daemon_env_if_source() {
-    if [ -n "${DAEMON_ENV_FILE}" ] && [ "${ENV_FILE}" = "${DAEMON_ENV_SOURCE}" ]; then
-        cmd_render_daemon_env
+# Render $1 (the source's text) into RENDERED_CONTENT, every assignment of a
+# DAEMON_FORBIDDEN_ENV name removed; RENDER_REMOVED lists them. Works on a
+# string so a write can be checked BEFORE the source is committed.
+render_daemon_content() {
+    local rest="$1" line out="" first=1 rc removed=() closing
+    out+="# GENERATED from ${DAEMON_ENV_SOURCE} by install-tinyassets-env.sh"$'\n'
+    out+="# render-daemon-env. Edit the source, never this file. Removed names:"$'\n'
+    out+="# ${DAEMON_FORBIDDEN_ENV[*]}"$'\n'
+    QUOTE_OPEN=""
+    while [ -n "${rest}" ]; do
+        if [[ "${rest}" == *$'\n'* ]]; then
+            line="${rest%%$'\n'*}"
+            rest="${rest#*$'\n'}"
+        else
+            line="${rest}"
+            rest=""
+        fi
+        if [ "${first}" = "1" ]; then
+            # Compose ignores a BOM only at byte zero, and the header above
+            # moves this line off byte zero.
+            line="${line#$'\xEF\xBB\xBF'}"
+            first=0
+        fi
+        if [ -n "${QUOTE_OPEN}" ]; then
+            # Inside a kept multi-line value: copy verbatim, never filter.
+            out+="${line}"$'\n'
+            rc=0
+            closes_open_quote "${line}" || rc=$?
+            if [ "${rc}" = "0" ]; then
+                QUOTE_OPEN=""
+            elif [ "${rc}" = "2" ]; then
+                refuse_render "a multi-line quoted value is followed by more text on its closing line"
+            fi
+            continue
+        fi
+        if ! parse_env_assignment "${line}"; then
+            out+="${line}"$'\n'
+            continue
+        fi
+        rc=0
+        classify_env_value || rc=$?
+        if [ "${rc}" = "2" ]; then
+            refuse_render "${ENV_KEY} has a quoted value followed by more text; Compose may read a second assignment there"
+        fi
+        if is_daemon_forbidden "${ENV_KEY}"; then
+            if [ -n "${QUOTE_OPEN}" ]; then
+                refuse_render "${ENV_KEY} has a quoted value that continues past its line; edit it onto one line"
+            fi
+            removed+=("${ENV_KEY}")
+            continue
+        fi
+        out+="${line}"$'\n'
+    done
+    if [ -n "${QUOTE_OPEN}" ]; then
+        refuse_render "a quoted value is never closed"
     fi
+    RENDERED_CONTENT="${out}"
+    RENDER_REMOVED="${removed[*]:-none}"
+}
+
+read_file_exactly() {
+    local text
+    text="$(cat -- "$1"; printf x)" || return 1
+    printf '%s' "${text%x}"
+}
+
+# Write RENDERED_CONTENT to DAEMON_ENV_FILE through the same transaction, owner
+# and mode as the source, then read back what landed.
+write_daemon_env() {
+    local ENV_FILE="${DAEMON_ENV_FILE}"
+    local written
+    atomic_install "${RENDERED_CONTENT}"
+    written="$(read_file_exactly "${DAEMON_ENV_FILE}")" \
+        || refuse_render "${DAEMON_ENV_FILE} unreadable after write"
+    render_daemon_content "${written}"
+    if [ "${RENDER_REMOVED}" != "none" ]; then
+        refuse_render "${RENDER_REMOVED} survived into ${DAEMON_ENV_FILE}"
+    fi
+    assert_readable
+    echo "rendered ${DAEMON_ENV_FILE} from ${DAEMON_ENV_SOURCE}"
+}
+
+cmd_render_daemon_env() {
+    local content removed
+    if [ ! -r "${DAEMON_ENV_SOURCE}" ]; then
+        refuse_render "${DAEMON_ENV_SOURCE} is unreadable"
+    fi
+    content="$(read_file_exactly "${DAEMON_ENV_SOURCE}")" \
+        || refuse_render "${DAEMON_ENV_SOURCE} is unreadable"
+    render_daemon_content "${content}"
+    removed="${RENDER_REMOVED}"
+    write_daemon_env
+    echo "removed: ${removed}"
+}
+
+# Writes to the main env file keep the daemon's copy current. Any other target
+# (request-idempotency.env, agent-interchange.env, a test's temp file) is not
+# the daemon's source and renders nothing.
+is_daemon_env_source() {
+    [ -n "${DAEMON_ENV_FILE}" ] && [ "${ENV_FILE}" = "${DAEMON_ENV_SOURCE}" ]
 }
 
 [ $# -ge 1 ] || usage

@@ -379,8 +379,7 @@ def main(argv):
         elif "{{.Config.Image}}" in fmt:
             print(container.get("image_ref", ""))
         elif ".Config.Env" in fmt:
-            for entry in container.get("config_env") or []:
-                print(entry)
+            print(json.dumps(container.get("config_env") or []))
         else:
             print("")
         return 0
@@ -453,6 +452,14 @@ def main(argv):
             else:
                 with open(environ, "w", encoding="utf-8") as handle:
                     handle.write("".join("%s=%s\0" % item for item in process_env.items()))
+            # More processes: "unreadable" leaves a live pid whose environ
+            # cannot be read; "gone" lists a pid that exited before the read.
+            pids = [pid]
+            for extra_pid, kind in (state.get("extra_pids") or {}).items():
+                pids.append(int(extra_pid))
+                extra_dir = os.path.join(os.environ["PROC_ROOT"], str(extra_pid))
+                if kind == "unreadable":
+                    os.makedirs(os.path.join(extra_dir, "environ"), exist_ok=True)
             containers = state.setdefault("containers", {})
             containers["tinyassets-daemon"] = {
                 "status": "running",
@@ -460,7 +467,7 @@ def main(argv):
                 "image_id": image_id(ref),
                 "image_ref": ref,
                 "config_env": ["%s=%s" % item for item in daemon_env.items()],
-                "pids": [pid],
+                "pids": pids,
             }
             containers.setdefault(
                 "tinyassets-tunnel",
@@ -610,6 +617,7 @@ class Box:
         self.lock = root / "host-mutation.lock"
         self.daemon_env_file = self.env_file.parent / "daemon.env"
         self.proc = root / "proc"
+        self.helper_install_path = root / "usr" / "local" / "sbin" / "tinyassets-env"
 
     # -- live state ------------------------------------------------------
     @property
@@ -732,6 +740,9 @@ class Box:
             "DAEMON_ENV_FILE": str(self.daemon_env_file),
             "PROC_ROOT": str(self.proc),
             "REAL_ENV_HELPER": str(REAL_ENV_HELPER),
+            "HELPER_INSTALL_PATH": str(self.helper_install_path),
+            "HELPER_INSTALL_OWNER": str(os.getuid()),
+            "HELPER_INSTALL_GROUP": str(os.getgid()),
             "ENV_HELPER": str(self.env_helper),
             "RUNTIME_DIR": str(self.runtime),
             "UNIT_FILE": str(self.unit_file),
@@ -812,6 +823,7 @@ def box(tmp_path: Path) -> Box:
         path.write_text(body, encoding="utf-8", newline="\n")
         path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
+    fake.helper_install_path.parent.mkdir(parents=True)
     fake.env_helper.write_text(FAKE_ENV_HELPER, encoding="utf-8", newline="\n")
     fake.env_helper.chmod(0o755)
 
@@ -1985,7 +1997,7 @@ def test_a_daemon_whose_processes_cannot_be_read_is_not_accepted(box: Box):
 
     assert completed.returncode == 2, completed.stderr
     assert _result(completed) == "rolled_back"
-    assert "read no tinyassets-daemon process environment" in completed.stderr
+    assert "pid 4242 of tinyassets-daemon has no readable environment" in completed.stderr
 
 
 def test_a_refused_render_leaves_production_untouched(box: Box):
@@ -2002,3 +2014,78 @@ def test_a_refused_render_leaves_production_untouched(box: Box):
     assert _result(completed) == "daemon_env_render_failed"
     assert box.live() == before
     assert "compose" not in box.docker_calls_text()
+
+
+def test_the_env_helper_is_kept_where_the_unit_points_an_operator(box: Box):
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert box.helper_install_path.read_bytes() == box.env_helper.read_bytes()
+
+
+def test_a_permitted_value_that_looks_like_a_forbidden_name_is_not_a_leak(box: Box):
+    """Record boundaries are kept: a newline inside a permitted value is not a
+    new variable (Codex on the first draft, which split on newlines)."""
+    box.stage_bundle()
+    box.set_docker_state(
+        extra_config_env={"NOTES": "line one\nDO_API_TOKEN=looks-like-one"},
+        extra_process_env={"MORE_NOTES": "x\nCLOUDFLARE_TUNNEL_TOKEN=also"},
+    )
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert _result(completed) == "deployed"
+
+
+def test_one_unreadable_live_process_is_not_skipped(box: Box):
+    box.stage_bundle()
+    box.set_docker_state(extra_pids={"4243": "unreadable"})
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 2, completed.stderr
+    assert _result(completed) == "rolled_back"
+    assert "pid 4243" in completed.stderr
+
+
+def test_a_process_that_exited_before_the_read_is_not_a_failure(box: Box):
+    box.stage_bundle()
+    box.set_docker_state(extra_pids={"4244": "gone"})
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert _result(completed) == "deployed"
+
+
+def test_restore_bundle_onto_a_pre_split_bundle_restores_the_previous_image(box: Box):
+    """The public-canary rollback must land on the image it was given.
+
+    The bundle it restores predates the split and loads the host env file, so
+    the previous daemon holds the platform's secrets again. Checking scope on
+    that path failed it and re-converged the image the canary had just
+    rejected (Codex on the first draft).
+    """
+    pre_split = box.valid_compose().replace(
+        str(box.daemon_env_file), str(box.env_file)
+    )
+    assert pre_split != box.valid_compose(), "precondition: the live bundle is pre-split"
+    (box.runtime / "compose.yml").write_text(pre_split, encoding="utf-8")
+    (box.runtime / "deploy" / "compose.yml").write_text(pre_split, encoding="utf-8")
+    _seed_platform_secrets(box)
+    box.stage_bundle()
+    forward = box.run(NEW_IMAGE)
+    assert forward.returncode == 0, forward.stderr
+
+    restored = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert restored.returncode == 0, restored.stderr
+    assert box.env_image() == OLD_IMAGE
+    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    assert daemon["image_ref"] == OLD_IMAGE
+    assert "DO_API_TOKEN" in _config_env_names(box), (
+        "precondition: the restored bundle really does load the host env file"
+    )

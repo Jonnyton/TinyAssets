@@ -11,6 +11,7 @@ assertion is on names.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -303,3 +304,126 @@ def test_forbidden_names_subcommand_prints_the_list(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert set(result.stdout.split()) == set(DAEMON_FORBIDDEN_ENV)
+
+
+@_POSIX_SHELL
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        'KEEP="ok" DO_API_TOKEN=placeholder\n',  # Compose reads a second assignment
+        "KEEP='never closed\n",
+        'KEEP="a\nb" DO_API_TOKEN=placeholder\n',
+    ],
+)
+def test_render_refuses_what_it_cannot_place_exactly(tmp_path, source_text):
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    source.write_text(source_text, encoding="utf-8")
+
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+
+    assert result.returncode == 7
+    assert not daemon.exists()
+    assert "placeholder" not in result.stdout + result.stderr
+
+
+@_POSIX_SHELL
+def test_render_keeps_a_multiline_value_verbatim_even_when_a_line_looks_forbidden(tmp_path):
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    kept = 'PEM="-----BEGIN-----\nDO_API_TOKEN=this-is-inside-the-value\n-----END-----"\n'
+    source.write_text(kept + 'DO_API_TOKEN="placeholder" # trailing comment\n', encoding="utf-8")
+
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+
+    assert result.returncode == 0, result.stderr
+    text = daemon.read_text(encoding="utf-8")
+    assert kept in text
+    assert "placeholder" not in text
+
+
+@_POSIX_SHELL
+def test_render_drops_a_bom_that_the_header_would_move_off_byte_zero(tmp_path):
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    source.write_bytes("\ufeffKEEP=1\n".encode("utf-8"))
+
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+
+    assert result.returncode == 0, result.stderr
+    assert "\ufeff" not in daemon.read_text(encoding="utf-8")
+    assert "KEEP=1\n" in daemon.read_text(encoding="utf-8")
+
+
+@_POSIX_SHELL
+def test_a_write_the_daemon_copy_cannot_follow_leaves_the_source_unchanged(tmp_path):
+    """Committing the source first would leave daemon.env stale, and the unit
+    refuses to start on a stale copy."""
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    original = "KEEP=1\n"
+    source.write_text(original, encoding="utf-8")
+
+    result = _helper(
+        tmp_path, ["set", "DO_API_TOKEN"], source, daemon, stdin='"opens\ncloses"'
+    )
+
+    assert result.returncode == 7
+    assert source.read_text(encoding="utf-8") == original
+    assert not daemon.exists()
+
+
+def _compose_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    probe = subprocess.run(["docker", "compose", "version"], capture_output=True, check=False)
+    return probe.returncode == 0
+
+
+def _compose_environment(env_file: Path, work: Path) -> dict:
+    compose = work / "compose.yml"
+    compose.write_text(
+        f"services:\n  x:\n    image: busybox\n    env_file:\n      - {env_file.as_posix()}\n",
+        encoding="utf-8",
+    )
+    rendered = subprocess.run(
+        ["docker", "compose", "-f", str(compose), "config", "--format", "json"],
+        capture_output=True, text=True, cwd=work, check=True,
+    )
+    return json.loads(rendered.stdout)["services"]["x"].get("environment") or {}
+
+
+@_POSIX_SHELL
+@pytest.mark.skipif(not _compose_available(), reason="needs docker compose")
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        "A=1\nDO_API_TOKEN=x\nB=two words\n",
+        "export A = 1\n  CLOUDFLARE_TUNNEL_TOKEN : y\nB: 2\n",
+        "\ufeffA=1\nDO_API_TOKEN=x\n",
+        "\ufeffDO_API_TOKEN=x\nA=1\n",
+        'DO_API_TOKEN="v" # c\nA="q" # c\n',
+        "A='lit $X'\nDO_API_TOKEN='z'\n",
+        'A="line1\nDO_API_TOKEN=inner\nline3"\nB=2\n',
+        "A='l1\nDO_API_TOKEN=inner'\nB=2\n",
+        'A="say \\"hi\\""\nDO_API_TOKEN=x\n',
+        "A=1\r\nDO_API_TOKEN=x\r\nB=2\r\n",
+        "DO_API_TOKEN=a\nDO_API_TOKEN=b\nA=1\n",
+    ],
+)
+def test_render_matches_composes_own_parser(tmp_path, source_text):
+    """The daemon copy, read by Compose, is the source read by Compose minus
+    the forbidden names: same keys, same values."""
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    source.write_bytes(source_text.encode("utf-8"))
+
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+
+    assert result.returncode == 0, result.stderr
+    expected = {
+        key: value
+        for key, value in _compose_environment(source, tmp_path).items()
+        if key not in DAEMON_FORBIDDEN_ENV
+    }
+    assert _compose_environment(daemon, tmp_path) == expected

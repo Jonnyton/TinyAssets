@@ -8,6 +8,11 @@ summary: the account-wide DigitalOcean token, the live Stripe key, the tunnel to
 # The daemon and its engine MCP children held the platform's own secrets
 
 **Filed:** 2026-10-02.
+**Cross-family review:** Codex (gpt-6-astra) round 1 ADAPT: the
+`--restore-bundle` path re-converged the failing image, the line filter was not
+Compose-exact, the process scan lost record boundaries and skipped unreadable
+processes, a refused render left the source committed, and the repair command
+was not installed. All folded in.
 **Severity:** P1. One defect in the daemon (RCE, an exception or log line that
 dumps the environment, `/proc/<pid>/environ` read by anything at uid 1001)
 yields an **account-wide** DigitalOcean token and a **live** Stripe secret key:
@@ -60,10 +65,14 @@ Least privilege by deploy config, nothing done by hand on the host:
 - **The daemon loads `/etc/tinyassets/daemon.env`**, which is
   `/etc/tinyassets/env` minus `DAEMON_FORBIDDEN_ENV` (the first five rows above
   plus the Supabase key). `deploy/install-tinyassets-env.sh render-daemon-env`
-  writes it with the source's owner and mode and reads the result back. Every
-  `set` / `set-once` / `delete` of the source re-renders it, so the deploy
-  (`set TINYASSETS_IMAGE`, the canary sync, `retire_platform_llm_logins.sh`,
-  `apply-daemon-env`) keeps it current. The tunnel still gets its token by
+  writes it with the source's owner and mode and reads the result back. It
+  tracks where each dotenv value begins and ends (quotes, multi-line values,
+  a BOM) and refuses what it cannot place exactly; on a Docker host it was
+  checked against Compose's own parser on every edge case the review raised.
+  Every `set` / `set-once` / `delete` of the source checks the render BEFORE
+  committing the source, then re-renders, so the deploy (`set
+  TINYASSETS_IMAGE`, the canary sync, `retire_platform_llm_logins.sh`,
+  `apply-daemon-env`) keeps it current and cannot leave it stale. The tunnel still gets its token by
   interpolation from the untouched source, so the public surface is unchanged.
 - **Engine MCP children get `platform_secrets.child_env(os.environ)`**, which
   also removes the Stripe and WorkOS names the daemon itself still needs.
@@ -72,8 +81,15 @@ Least privilege by deploy config, nothing done by hand on the host:
   source, or whose rendered `environment` names a forbidden secret (before any
   install, prod untouched); and after the candidate is healthy,
   `daemon_env_scoped` reads `Config.Env` and the procfs environ of every
-  container process from the host. A hit, or no readable process, rolls the
-  candidate back. Names only, never values.
+  container process from the host, keeping record boundaries. A hit, or any
+  live process it cannot read, rolls the candidate back. Names only, never
+  values. Rollbacks are exempt (the automatic one and `--restore-bundle`):
+  they restore the previous state as it ran.
+- **Every deploy installs the env helper as `/usr/local/sbin/tinyassets-env`**,
+  which is what the unit's refusal message and `DEPLOY.md` tell an operator to
+  run after a hand edit; the copy in `/tmp` does not outlive the run.
+- **The entrypoint's empty-env sentinel gained `TINYASSETS_WIKI_CANARY_TOKEN`**,
+  since the daemon no longer receives two of its three old sentinels.
 - **The unit refuses a missing or stale `daemon.env`** (`DAEMON-ENV-UNREADABLE`,
   `DAEMON-ENV-STALE`) so a hand edit of the source cannot be silently ignored.
   This does not stop running containers: the unit has no `ExecStop`.
@@ -86,7 +102,7 @@ reads `/etc/tinyassets/env` as before; `daemon.env` left behind is inert.
 ## Founder action (not automatable, not done)
 
 - **Rotate `DO_API_TOKEN`.** It sat in a long-running process environment. Then
-  delete it from `/etc/tinyassets/env` (`install-tinyassets-env.sh delete
+  delete it from `/etc/tinyassets/env` (`sudo tinyassets-env delete
   DO_API_TOKEN`); nothing on the box reads it. Rotating also means updating
   the GitHub secret of the same name, which the workflows do use.
 - **Consider replacing `STRIPE_SECRET_KEY` with a restricted key** (`rk_live_`)
@@ -108,9 +124,11 @@ reads `/etc/tinyassets/env` as before; `daemon.env` left behind is inert.
 - Daemon children launched without `env=` (`git_bridge.py`, `bid/node_bid.py`)
   inherit the daemon's environment, so the Stripe and WorkOS names. Platform git
   operations, not universe code, but a repository hook would run with them.
-- `docker-entrypoint.sh`'s empty-env sentinel lists `CLOUDFLARE_TUNNEL_TOKEN`
-  and `SUPABASE_DB_URL`, which the daemon no longer receives. `TINYASSETS_IMAGE`
-  is now the daemon's only live sentinel; the deploy always writes it.
+- An image-only deploy onto a box whose live compose still predates the split
+  fails the scope check and rolls back. The next normal deploy carries the
+  bundle and migrates it.
+- procfs shows a process's environment as of its `execve`; a name a process
+  sets on itself afterwards is invisible to the deploy check.
 
 ## Post-deploy verification
 

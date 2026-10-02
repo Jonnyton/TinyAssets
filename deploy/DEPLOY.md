@@ -553,7 +553,7 @@ sudo install -m 0644 -o tinyassets -g tinyassets \
 #     then re-render the daemon's copy (it loads daemon.env, which is env minus
 #     the platform's own secrets; the unit refuses to start on a stale copy).
 printf '\nTINYASSETS_SOME_FLAG=value\n' >> /etc/tinyassets/env
-sudo bash /opt/tinyassets/deploy/install-tinyassets-env.sh render-daemon-env
+sudo tinyassets-env render-daemon-env     # the env helper, installed by every deploy
 
 # Recreate ONLY the daemon so it re-reads config (brief MCP-surface blip):
 systemctl restart tinyassets-daemon

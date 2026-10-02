@@ -143,6 +143,10 @@ DAEMON_ENV_FILE="${DAEMON_ENV_FILE:-/etc/tinyassets/daemon.env}"
 ENV_HELPER="${ENV_HELPER:-/tmp/install-tinyassets-env.sh}"
 # Host procfs, read to list the environment NAMES of every daemon process.
 PROC_ROOT="${PROC_ROOT:-/proc}"
+# Where the env helper is kept between runs (see the install after the render).
+HELPER_INSTALL_PATH="${HELPER_INSTALL_PATH:-/usr/local/sbin/tinyassets-env}"
+HELPER_INSTALL_OWNER="${HELPER_INSTALL_OWNER:-root}"
+HELPER_INSTALL_GROUP="${HELPER_INSTALL_GROUP:-root}"
 UNIT="${UNIT:-tinyassets-daemon}"
 RUNTIME_DIR="${RUNTIME_DIR:-/opt/tinyassets}"
 COMPOSE_FILE="${COMPOSE_FILE:-${RUNTIME_DIR}/compose.yml}"
@@ -274,6 +278,16 @@ if ! render_daemon_env; then
   echo "deploy_result=daemon_env_render_failed"
   exit 1
 fi
+# The helper lives in /tmp for this run only, and a host checkout can predate
+# `render-daemon-env`, so install it where the unit's refusal message and
+# DEPLOY.md send an operator after a hand edit. Every version only adds
+# subcommands, so a newer copy is safe under any older bundle.
+if ! install -m 0755 -o "$HELPER_INSTALL_OWNER" -g "$HELPER_INSTALL_GROUP" \
+      "$ENV_HELPER" "$HELPER_INSTALL_PATH"; then
+  err "could not install ${ENV_HELPER} to ${HELPER_INSTALL_PATH}; refusing (prod untouched)"
+  echo "deploy_result=daemon_env_render_failed"
+  exit 1
+fi
 
 container_state() {
   # Prints "<health-or-status>" for a container, or "missing" / "error".
@@ -326,31 +340,69 @@ running_image_matches() {
 #   /proc environ   every process in the container, read from the host
 # Names only; a value is never printed, logged or kept.
 daemon_env_scoped() {
-  local names pid read_any=0 leaked="" name
-  if ! names="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$DAEMON_CONTAINER" 2>/dev/null | cut -d= -f1)"; then
-    err "cannot read ${DAEMON_CONTAINER} Config.Env names"
-    return 1
-  fi
-  for pid in $(docker top "$DAEMON_CONTAINER" -eo pid 2>/dev/null | tail -n +2); do
-    case "$pid" in ''|*[!0-9]*) continue ;; esac
-    if [ -r "${PROC_ROOT}/${pid}/environ" ]; then
-      names="${names}"$'\n'"$(tr '\0' '\n' <"${PROC_ROOT}/${pid}/environ" 2>/dev/null | cut -d= -f1)"
-      read_any=1
-    fi
-  done
-  if [ "$read_any" = "0" ]; then
-    err "read no ${DAEMON_CONTAINER} process environment; cannot show the platform secrets are absent"
-    return 1
-  fi
-  for name in $DAEMON_FORBIDDEN_ENV; do
-    if printf '%s\n' "$names" | grep -qxF -- "$name"; then leaked="${leaked} ${name}"; fi
-  done
-  if [ -n "$leaked" ]; then
-    err "${DAEMON_CONTAINER} environment carries platform secret(s):${leaked} (names only)"
-    return 1
-  fi
-  log "daemon environment holds none of: ${DAEMON_FORBIDDEN_ENV}"
-  return 0
+  # In Python because both sources need exact record boundaries: a permitted
+  # value containing "\nDO_API_TOKEN=" must not read as that name (Codex on the
+  # first draft, which split Config.Env on newlines and environ via tr).
+  # Every listed process must be read, or be gone by the time it is read; one
+  # unreadable live process fails the check rather than being skipped.
+  # Limit: procfs shows a process's environment as of its execve, so a name a
+  # process sets on itself afterwards is invisible here.
+  # shellcheck disable=SC2086  # DAEMON_FORBIDDEN_ENV is a space-separated list
+  python3 - "$DAEMON_CONTAINER" "$PROC_ROOT" $DAEMON_FORBIDDEN_ENV <<'SCOPE_PY'
+import json
+import os
+import subprocess
+import sys
+
+container, proc_root, *forbidden = sys.argv[1:]
+
+
+def fail(message):
+    sys.stderr.write("::error::%s\n" % message)
+    sys.exit(1)
+
+
+def run(argv):
+    done = subprocess.run(argv, capture_output=True, text=True)
+    if done.returncode != 0:
+        fail("%s failed (rc=%d)" % (" ".join(argv[:2]), done.returncode))
+    return done.stdout
+
+
+try:
+    config_env = json.loads(run(["docker", "inspect", "-f", "{{json .Config.Env}}", container]))
+except ValueError:
+    fail("cannot parse %s Config.Env" % container)
+names = {str(entry).split("=", 1)[0] for entry in config_env or []}
+
+pids = [token for token in run(["docker", "top", container, "-eo", "pid"]).split()[1:] if token.isdigit()]
+read = 0
+for pid in pids:
+    path = os.path.join(proc_root, pid, "environ")
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except FileNotFoundError:
+        if not os.path.exists(os.path.join(proc_root, pid)):
+            continue  # exited between `docker top` and this read
+        fail("pid %s of %s has no readable environment" % (pid, container))
+    except OSError as exc:
+        fail("pid %s of %s environment unreadable (%s)" % (pid, container, type(exc).__name__))
+    names.update(
+        record.split(b"=", 1)[0].decode("utf-8", "replace")
+        for record in data.split(b"\0")
+        if record
+    )
+    read += 1
+if read == 0:
+    fail("read no %s process environment; cannot show the platform secrets are absent" % container)
+
+leaked = sorted(set(forbidden) & names)
+if leaked:
+    fail("%s environment carries platform secret(s): %s (names only)" % (container, " ".join(leaked)))
+print("[deploy-fail-safe] daemon environment (%d process(es) + Config.Env) holds none of: %s"
+      % (read, " ".join(forbidden)))
+SCOPE_PY
 }
 
 accept() {  # daemon healthy AND running the requested image AND tunnel up AND logs up
@@ -1460,10 +1512,20 @@ if [ "$CONVERGED" = "1" ] && [ "$VECTOR_CHANGED" = "1" ]; then
 fi
 
 # --- 5. accept the new image (healthy + RUNNING it + tunnel + logs up) -----
-# Scoping is checked on the FORWARD image only. The rollback below accepts the
-# previous image as it was, platform secrets included if that is how it ran:
-# refusing it would leave prod with nothing healthy, which is worse.
-if [ "$CONVERGED" = "1" ] && accept "$NEW_IMAGE" && daemon_env_scoped; then
+# Scoping is checked on a FORWARD deploy only. A rollback accepts the previous
+# state as it ran, platform secrets included if that is how it ran: refusing it
+# would leave prod on the image being rolled away from. That covers BOTH
+# rollbacks: step 6 below, and `--restore-bundle`, which restores the previous
+# bundle (whose compose may still load the host env file) and converges the
+# image it was given. Checking that path re-converged the failing image the
+# public canary had just rejected (Codex on the first draft).
+ACCEPTED=0
+if [ "$CONVERGED" = "1" ] && accept "$NEW_IMAGE"; then
+  if [ "$RESTORE_BUNDLE" = "1" ] || daemon_env_scoped; then
+    ACCEPTED=1
+  fi
+fi
+if [ "$ACCEPTED" = "1" ]; then
   log "deploy healthy on ${NEW_IMAGE}"
   finish deployed "$NEW_IMAGE" 0
 fi
