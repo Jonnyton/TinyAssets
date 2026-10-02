@@ -89,7 +89,7 @@ _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 #: a second in which the public surface (/mcp, /app) returns 502. Nothing else can
 #: listen on 127.0.0.1:8001 until this process exits. On 2026-10-01 a 170s/180s
 #: drain behind a long codex turn took production down from 22:49:48Z to
-#: 22:53:04Z (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+#: 22:53:04Z (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
 #: Uptime is the Forever Rule, and a turn cut off here is settled truthfully at
 #: the next boot by ``agent_turn_reconcile.reconcile_orphaned_turns``.
 #:
