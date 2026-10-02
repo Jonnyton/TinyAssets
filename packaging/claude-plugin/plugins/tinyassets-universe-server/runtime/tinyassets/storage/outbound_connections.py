@@ -1049,6 +1049,61 @@ class _ProxyChannel:
             self._process.join(timeout=1.0)
 
 
+class _BrokerChannel:
+    """``ScopedConnectionProxy``'s channel when the broker process serves it.
+
+    Each ``request`` is one broker stream, collected (``BrokerClient``), with a
+    fresh ``op_id``: the same document and typed errors as the worker's
+    channel. Holds no credential.
+    """
+
+    __slots__ = ("_client", "_closed", "_connection_id", "_grant_id")
+
+    def __init__(self, client: Any, *, grant_id: str, connection_id: str) -> None:
+        self._client = client
+        self._grant_id = grant_id
+        self._connection_id = connection_id
+        self._closed = False
+
+    def request(self, verb: str, request: object) -> Any:
+        from tinyassets.broker.ops import new_op_id
+
+        if self._closed:
+            raise ProxyRequestError("outbound proxy is closed")
+        if not isinstance(request, dict):
+            raise ProxyRequestError("outbound proxy rejected an invalid request")
+        return self._client.request(grant_id=self._grant_id, connection_id=self._connection_id,
+                                    verb=verb, request=request, op_id=new_op_id())
+
+    def close(self) -> None:
+        self._closed = True
+
+
+def _broker_channel(data_root: Path, *, principal: str, command_center: str, grant_id: str,
+                    connection_id: str) -> _BrokerChannel | None:
+    """The broker's channel when the broker is selected; ``None`` keeps the worker.
+
+    Selected but not running is a loud refusal, never a silent fall back to the
+    worker: a switch that quietly does nothing cannot be proven on.
+    """
+    from tinyassets.broker.supervisor import broker_selected, read_owner
+
+    if not broker_selected():
+        return None
+    owner = read_owner(Path(data_root))
+    if owner is None:
+        raise ProxyRequestError("the credential broker is selected but not running")
+    from tinyassets.broker.client import BrokerClient
+
+    def fence() -> tuple[int, str]:
+        current = read_owner(Path(data_root)) or owner
+        return int(current["generation"]), str(current["token"])
+
+    client = BrokerClient(Path(owner["socket"]), principal=principal,
+                          command_center=command_center, fence=fence)
+    return _BrokerChannel(client, grant_id=grant_id, connection_id=connection_id)
+
+
 @dataclass(frozen=True, slots=True)
 class ScopedConnectionProxy:
     """Credential-blind adapter surface bound to one exact grant."""
@@ -5569,6 +5624,20 @@ class ConnectionLedger:
         grant, resource = self.authorize_exact(
             universe_id=universe_id, grant_id=grant_id, connection_id=connection_id,
         )
+        # The broker serves http connections, the only production type; the
+        # legacy untyped test fixture keeps its worker.
+        channel = None if resource.connection_type != "http" else _broker_channel(
+            self._db_path.parent, principal=resource.owner_user_id,
+            command_center=grant.universe_id, grant_id=grant.grant_id,
+            connection_id=resource.connection_id,
+        )
+        if channel is not None:
+            # The broker process serves it (S6): no per-proxy worker is spawned.
+            return ScopedConnectionProxy(
+                grant_id=grant.grant_id, provider=resource.provider,
+                destination=resource.destination, scopes=resource.scopes,
+                _channel=channel,
+            )
         return self._start_scoped_proxy(
             grant_id=grant.grant_id,
             universe_id=grant.universe_id,

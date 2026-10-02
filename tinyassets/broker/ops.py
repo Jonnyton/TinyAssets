@@ -55,6 +55,18 @@ class OpIdInvalid(ValueError):
     """Not a ULID."""
 
 
+def new_op_id(clock: Callable[[], float] = time.time) -> str:
+    """A fresh ULID: 48-bit millisecond timestamp, 80 random bits."""
+    import secrets
+
+    value = (int(clock() * 1000) << 80) | secrets.randbits(80)
+    chars = []
+    for _ in range(26):
+        chars.append(_CROCKFORD[value & 31])
+        value >>= 5
+    return "".join(reversed(chars))
+
+
 def canonical_op_id(op_id: str) -> str:
     """The one spelling an op_id is stored under: ULIDs are case-insensitive."""
     ulid_stamp_ms(op_id)
