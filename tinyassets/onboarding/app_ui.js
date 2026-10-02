@@ -456,7 +456,7 @@
       const doc=await Owner.status({universe_id:this.home});
       if(!doc||doc.error) throw new Error("your agents' live state is unavailable");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that state belongs to another universe; this UI's access ended");
+        throw new Error("that state belongs to another command center; this UI's access ended");
       const turn=(doc.active_turn&&typeof doc.active_turn==="object")?doc.active_turn:null;
       const working=!!turn&&turn.state!=="unreadable"&&turn.stale!==true;
       const steps=[];
