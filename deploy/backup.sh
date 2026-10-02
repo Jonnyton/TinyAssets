@@ -32,6 +32,13 @@
 #                 configured for the scheme (see docs/ops/backup-restore-runbook.md).
 #
 # Optional env:
+#   BACKUP_OFFREGION_DEST  rclone destination in ANOTHER REGION (target-architecture
+#                          S1a.3). BACKUP_DEST is in the droplet's own region, so it
+#                          does not survive a regional loss. When set, both tiers are
+#                          also copied here and pruned on the same policy, and a
+#                          failed copy is fatal (exit 3): this is the copy the weekly
+#                          DR drill restores from. Converged by install-host-services
+#                          ("Ensure off-region backup configuration").
 #   BACKUP_VOLUME          Docker volume name (default: tinyassets-data)
 #   BACKUP_RETAIN_DAILY    keep last N daily archives (default: 7)
 #   BACKUP_RETAIN_WEEKLY   keep first archive per week, last N weeks (default: 4)
@@ -39,8 +46,10 @@
 #   DRY_RUN                set to "1" — print plan, no tar/upload/prune
 #   BACKUP_LOG             append log to this file (default: /var/log/tinyassets-backup.log)
 #   GH_TOKEN               GitHub token for offsite upload to BACKUP_GH_REPO.
-#                          When set, both tarballs are also shipped as GH
-#                          release assets.
+#                          When set, the BRAIN tarball is also shipped as a GH
+#                          release asset. The full tier is not: at about 4 GB it
+#                          exceeds GitHub's 2 GiB asset limit and got a 422 every
+#                          night (concern 2026-10-02-github-full-tier-backup-exceeds-2gib).
 #   BACKUP_GH_REPO         GitHub repo for offsite releases (default: Jonnyton/tinyassets-backups).
 #   BACKUP_GH_RETAIN       GH releases to keep (default: 30).
 #
@@ -225,13 +234,34 @@ if ! rclone copyto --contimeout 60s --timeout 900s \
 fi
 log "  upload OK"
 
+# ----- 4b. off-region copy (both tiers) ----------------------------------
+# Fatal on failure: BACKUP_DEST shares the droplet's region, so without this
+# copy a regional loss leaves nothing to restore. Not configured is loud but
+# not fatal, because install-host-services converges it and the lag alarm
+# reports its age.
+if [[ -n "${BACKUP_OFFREGION_DEST:-}" ]]; then
+    for offregion_path in "${BRAIN_PATH}" "${TAR_PATH}"; do
+        offregion_name="$(basename "${offregion_path}")"
+        log "uploading ${offregion_name} off-region to ${BACKUP_OFFREGION_DEST}/..."
+        if ! rclone copyto --contimeout 60s --timeout 900s \
+                "${offregion_path}" "${BACKUP_OFFREGION_DEST}/${offregion_name}"; then
+            log "ERROR: off-region rclone upload failed: ${offregion_name}"
+            rm -f "${TAR_PATH}" "${BRAIN_PATH}"
+            exit 3
+        fi
+    done
+    log "  off-region upload OK"
+else
+    log "WARN: BACKUP_OFFREGION_DEST is not set; this backup has NO off-region copy"
+fi
+
 # ----- 5. offsite upload (GH release assets) ----------------------------
 # Best-effort; failure is non-fatal so local backup still counts as done.
-# Activated only when GH_TOKEN is set. Ships both tiers.
+# Activated only when GH_TOKEN is set. Ships the brain tier only.
 
 SHIP_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/backup_ship_gh.py"
 if [[ -n "${GH_TOKEN:-}" ]]; then
-    for ship_path in "${TAR_PATH}" "${BRAIN_PATH}"; do
+    for ship_path in "${BRAIN_PATH}"; do
         log "shipping $(basename "${ship_path}") to GitHub releases (${BACKUP_GH_REPO:-Jonnyton/tinyassets-backups})..."
         set +e
         python3 "${SHIP_SCRIPT}" "${ship_path}" 2>&1 | while IFS= read -r line; do
@@ -269,17 +299,28 @@ set +o pipefail
 # rclone lsf default output is filename-per-line — no --format flag needed
 # (prior --format n was invalid; 'n' isn't a valid format char and made
 # rclone exit 1, which pipefail propagated → systemd marked service failed).
-rclone lsf "${BACKUP_DEST}/" 2>/dev/null \
-    | python3 "${PRUNE_SCRIPT}" \
-        --keep-daily "${BACKUP_RETAIN_DAILY}" \
-        --keep-weekly "${BACKUP_RETAIN_WEEKLY}" \
-        --keep-monthly "${BACKUP_RETAIN_MONTHLY}" \
-    | while read -r victim; do
-        log "  prune: ${victim}"
-        rclone deletefile "${BACKUP_DEST}/${victim}" || \
-            log "    WARN: delete failed for ${victim}"
-    done
+prune_dest() {
+    local dest="$1"
+    rclone lsf "${dest}/" 2>/dev/null \
+        | python3 "${PRUNE_SCRIPT}" \
+            --keep-daily "${BACKUP_RETAIN_DAILY}" \
+            --keep-weekly "${BACKUP_RETAIN_WEEKLY}" \
+            --keep-monthly "${BACKUP_RETAIN_MONTHLY}" \
+        | while read -r victim; do
+            log "  prune ${dest}: ${victim}"
+            rclone deletefile "${dest}/${victim}" || \
+                log "    WARN: delete failed for ${victim}"
+        done
+}
+prune_dest "${BACKUP_DEST}"
 prune_status=$?
+if [[ -n "${BACKUP_OFFREGION_DEST:-}" ]]; then
+    prune_dest "${BACKUP_OFFREGION_DEST}"
+    offregion_prune_status=$?
+    if [[ "${prune_status}" -eq 0 ]]; then
+        prune_status="${offregion_prune_status}"
+    fi
+fi
 set -eo pipefail
 
 if [[ "${prune_status}" -ne 0 ]]; then

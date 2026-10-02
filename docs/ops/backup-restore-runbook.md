@@ -114,8 +114,20 @@ Final exact-merge proof on 2026-07-24 used merge
   host-service run `30076156783` then reported the off-host configuration
   already verified and reconverged all five timers.
 
-The intended offsite topology remains: **DO Spaces (primary) + GitHub releases
-(secondary)**.
+The offsite topology (2026-10-02, target-architecture S1a.3):
+
+- **DO Spaces sfo3** (`BACKUP_DEST`, both tiers): same region as the droplet.
+- **DO Spaces nyc3** (`BACKUP_OFFREGION_DEST=offregion:tinyassets-offregion/backups`,
+  both tiers): the off-region copy. A failed upload here fails the backup, and
+  the weekly DR drill restores from it. It is converged by install-host-services
+  ("Ensure off-region backup configuration"), which mints the per-bucket key
+  through the DO API. The bucket is created once, with a short-lived fullaccess
+  key that is deleted before the droplet gets its own key.
+- **GitHub releases**: the brain tier only. The full tier, at about 4 GB, exceeds
+  GitHub's 2 GiB asset limit.
+
+Same provider by decision ("keep things slim till we have paying users"). The
+provider-diverse upgrade is Cloudflare R2 at the first paying users.
 Teardown/rollback: delete the Spaces key via DO API, repoint `BACKUP_DEST`,
 remove the bucket. Cost: Spaces subscription ~$5/mo on the existing DO
 account. Local retention stays tight (`BACKUP_RETAIN_DAILY=3 / WEEKLY=2 /
@@ -356,7 +368,7 @@ Expected healthy output ends with `backup complete.`
 ## Offsite backup — GitHub release assets
 
 When `GH_TOKEN` is set in `/etc/tinyassets/env`, `backup.sh` also ships the
-tarball to a private GitHub repo (`Jonnyton/tinyassets-backups`) as a release
+brain-tier tarball (not the full tier, which exceeds GitHub's 2 GiB asset limit) to a private GitHub repo (`Jonnyton/tinyassets-backups`) as a release
 asset via `scripts/backup_ship_gh.py`.  This is a second copy independent of
 the rclone primary destination.
 

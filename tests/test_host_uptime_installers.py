@@ -289,8 +289,8 @@ case "$1" in
     printf '%s\\n' \
       '  brain upload OK' \
       '  upload OK' \
+      '  off-region upload OK' \
       '  gh-ship: [backup-ship] uploaded: brain-asset' \
-      '  gh-ship: [backup-ship] uploaded: full-asset' \
       'backup complete.'
     ;;
   *)
@@ -2100,7 +2100,8 @@ def test_host_service_workflow_exercises_backup_only_on_explicit_dispatch():
     assert '"${after_brain}" != "${before_brain}"' in run
     assert '"${after_full}" != "${before_full}"' in run
     assert "gh-ship: [backup-ship] uploaded:" in run
-    assert '"${gh_upload_count}" -eq 2' in run
+    assert '"${gh_upload_count}" -eq 1' in run
+    assert "off-region upload OK" in run
     assert "backup complete." in run
     assert "grep -Eq 'WARN:|ERROR:'" in run
     assert "Backup invocation emitted a warning or error." in run
@@ -2116,7 +2117,7 @@ def test_backup_exercise_scopes_evidence_to_new_systemd_invocation(tmp_path):
         "--no-pager --output=cat"
     )
     assert "Verified fresh backup:" in result.stdout
-    assert "github_assets=2" in result.stdout
+    assert "github_assets=1" in result.stdout
 
 
 def test_backup_exercise_rejects_invocation_warning(tmp_path):
