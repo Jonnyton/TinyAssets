@@ -15,7 +15,8 @@ Prerequisite: C4a (#4234) is in production for at least one day.
       `cc-<ulid>/`, platform state in `.platform/cc-<ulid>/`, and an empty
       `.platform/accounts/`. One resolver builds every path, and mixed
       consumers (soul edit, self-model, config, dispatcher, vault lookup) get
-      both roots explicitly. Database families move journaled, and the run
+      both roots explicitly. The authority fields move out of `config.yaml` into
+      `.platform/cc-<ulid>/assignment.json`. Database families move journaled, and the run
       crash-resumes between every pair of moves (E6).
 - [ ] 4. Migration phase 2 (ids, `u-` to `cc-`), including derived
       identities, folders and credential custody references (E4b).
