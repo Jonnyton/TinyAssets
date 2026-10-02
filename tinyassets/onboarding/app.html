@@ -4904,9 +4904,6 @@
   }
   // Arrow keys move the window or bubble; Shift and an arrow resize the window.
   function cloudKeydown(ev){
-    // A mounted command center owns navigation keys; resizing by keyboard is
-    // available when the temporary blank command center is showing.
-    if($("ui-frame") && !$("ui-frame-host").hidden) return;
     const arrows={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]};
     const dir=arrows[ev.key];
     if(!dir || !cloudState) return;
