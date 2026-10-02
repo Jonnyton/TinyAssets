@@ -421,6 +421,14 @@ class AmbiguousProxyOutcome(RuntimeError):
     """The destination may have applied the request before transport failed."""
 
 
+class BrokerStreamStop(Exception):
+    """The broker stopped a stream (cancelled, past its deadline, fenced).
+
+    Raised from the broker's own checks inside a send. Never converted into a
+    destination failure by the transport, so the broker reports its real cause.
+    """
+
+
 class SsrfValidationError(ProxyRequestError):
     """A general outbound HTTP request was refused by the strict egress guard.
 
@@ -1353,8 +1361,10 @@ class CredentialBlindBroker:
             remaining = deadline_at - time.monotonic()
             if remaining <= 0:
                 raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
-            reply_budget_s = remaining if reply_budget_s is None else min(reply_budget_s,
-                                                                           remaining)
+            # Never wider than what was granted: no extended budget means the
+            # ordinary one, now cut to what is left of the stream.
+            granted = _SSRF_MAX_TOTAL_SECONDS if reply_budget_s is None else reply_budget_s
+            reply_budget_s = min(granted, remaining)
         with guard() if guard is not None else contextlib.nullcontext():
             return self._send_unguarded(resource, grant_id, verb, request, credential,
                                         revalidate_authority, reply_budget_s, **streaming)
@@ -1379,6 +1389,8 @@ class CredentialBlindBroker:
                 **({"reply_budget_s": reply_budget_s} if reply_budget_s is not None else {}),
                 **streaming,
             )
+        except BrokerStreamStop:
+            raise
         except AmbiguousProxyOutcome:
             self._record_error(
                 resource,
@@ -3449,6 +3461,7 @@ def _execute_pinned_https_request(
     max_header_bytes: int,
     absolute_deadline: float | None = None,
     hop_metadata: _HttpHopMetadata | None = None,
+    on_connect: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """Fire ONE request: no ambient proxies, no redirects, bounded response."""
     deadline = (
@@ -3473,6 +3486,7 @@ def _execute_pinned_https_request(
             pinned_address=pinned_address,
             open_socket=open_socket,
             deadline=deadline,
+            on_connect=on_connect,
         )
     )
 
@@ -3485,7 +3499,7 @@ def _execute_pinned_https_request(
         response = opener.open(request, timeout=min(timeout, remaining))
     except _TotalDeadlineExceeded:
         deadline_exceeded = True
-    except (SsrfValidationError, GrantResolutionError):
+    except (SsrfValidationError, GrantResolutionError, BrokerStreamStop):
         raise
     except Exception as exc:
         # A deadline breach during the status-line/header parse surfaces as a
@@ -3672,7 +3686,7 @@ class UpstreamStream:
     """
 
     __slots__ = ("_closed", "_done", "_lifetime", "_max_body", "_queued", "_read_bytes",
-                 "_reading", "_response", "_socket", "_deadline", "headers", "reason",
+                 "_reading", "_response", "_deadline", "headers", "reason",
                  "redirect_count", "sensitive", "status")
 
     def __init__(self, *, status: int, reason: str, headers: dict[str, str],
@@ -3692,9 +3706,7 @@ class UpstreamStream:
         self._done = response is None
         self._closed = False
         self._reading = False
-        self._socket = sock
-        #: Serializes aborting the socket against releasing it, so an abort can
-        #: never act on a descriptor number the kernel already gave to someone else.
+        del sock  # accepted for callers that pass it; nothing acts on it any more
         self._lifetime = threading.Lock()
 
     @classmethod
@@ -3755,7 +3767,6 @@ class UpstreamStream:
     def _release(self) -> None:
         with self._lifetime:
             response, self._response = self._response, None
-            self._socket = None
             if response is not None:
                 try:
                     response.close()
@@ -3763,63 +3774,16 @@ class UpstreamStream:
                     pass
 
     def close(self) -> None:
-        """Abort without blocking: shut the upstream socket down, so a read
-        blocked in another thread returns at once; that read releases the
-        response itself. Safe to call from any thread, any number of times."""
+        """Stop the stream without blocking. Safe from any thread, any number of times."""
         self._closed = True
         self._queued = b""
         self._done = True
-        with self._lifetime:
-            # Under the lifetime lock: the response (and so the descriptor) is
-            # still ours while we act on it.
-            abort_socket(self._socket, duplicate=True)
-            response = self._response
-            if response is not None:
-                # The socket object the response's file reads through (on
-                # Windows, closing it is what wakes a blocked recv).
-                raw = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock",
-                              None)
-                if raw is not None:
-                    try:
-                        raw.close()
-                    except Exception:
-                        pass
         if not self._reading:
             self._release()
-
-
-def abort_socket(sock: Any, *, duplicate: bool = False) -> None:
-    """Shut a socket down and close it; never blocks, never raises.
-
-    ``shutdown`` is what wakes a ``recv`` blocked in another thread on Linux;
-    closing the descriptor is what does it on Windows. Neither touches the
-    response object a reader may be holding a lock on.
-    """
-    if sock is None:
-        return
-    # http.client marks its socket object closed once the response holds the
-    # connection through a file object; the descriptor lives on. ``shutdown``
-    # acts on the CONNECTION, so a duplicate of the descriptor reaches it. Only
-    # a caller that holds the descriptor's lifetime (``duplicate=True``) may
-    # take that path: otherwise the number could already belong to another socket.
-    try:
-        fd = sock.fileno() if duplicate else -1
-    except Exception:
-        fd = -1
-    if fd >= 0:
-        try:
-            duplicate = socket.fromfd(fd, sock.family, sock.type)
-            try:
-                duplicate.shutdown(socket.SHUT_RDWR)
-            finally:
-                duplicate.close()
-        except Exception:
-            pass
-    for step in (lambda: sock.shutdown(socket.SHUT_RDWR), sock.close):
-        try:
-            step()
-        except Exception:
-            pass
+        # A read in progress is NOT interrupted: it returns within its bound
+        # (the idle timeout, under the total deadline) and then releases the
+        # response itself. Acting on the socket from another thread raced the
+        # descriptor's lifetime (a reused descriptor could be shut down).
 
 
 def _open_pinned_https_stream(
@@ -3874,7 +3838,7 @@ def _open_pinned_https_stream(
         response = opener.open(request, timeout=min(timeout, max_total_seconds))
     except _TotalDeadlineExceeded:
         deadline_exceeded = True
-    except (SsrfValidationError, GrantResolutionError):
+    except (SsrfValidationError, GrantResolutionError, BrokerStreamStop):
         raise
     except Exception as exc:
         if _looks_like_deadline_breach(exc, deadline):
@@ -4265,6 +4229,9 @@ class _SsrfHardenedHttpDriver:
                 max_total_seconds=self._max_total_seconds, max_body_bytes=remaining_bytes,
                 max_header_count=self._max_header_count, max_header_bytes=self._max_header_bytes,
                 absolute_deadline=deadline, hop_metadata=metadata,
+                # Connected, not yet written: authority (and a broker's
+                # cancellation and fence) re-checked once more before the request.
+                on_connect=lambda _sock: revalidate_authority(deadline),
             )
             remaining_bytes -= metadata.body_bytes
             _declassify_response(result, tuple(sensitive))  # ALL raw response fields

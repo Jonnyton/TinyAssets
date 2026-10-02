@@ -56,6 +56,7 @@ from typing import Any
 from tinyassets import rpc_frames as rf
 from tinyassets.broker.fence import Fence, Fenced
 from tinyassets.broker.ops import OpIdInvalid, OpStore
+from tinyassets.storage.outbound_connections import BrokerStreamStop
 
 _LOG = logging.getLogger(__name__)
 
@@ -70,6 +71,11 @@ MAX_QUEUED_FRAMES = 64
 ORDINARY_BUDGET_S = 30.0
 MAX_BUDGET_S = 600.0
 RESEND_GRACE_S = 30.0
+#: The longest one upstream read may wait when the caller named no idle bound:
+#: also how long a cancelled stream's thread may take to notice.
+DEFAULT_IDLE_S = 30.0
+#: How long a final END may wait on a full queue for a peer that stopped reading.
+END_WAIT_S = 5.0
 #: The fixed, secret-free error classes an END may carry.
 ERROR_CLASSES = frozenset({
     "PermissionError", "GrantResolutionError", "AmbiguousProxyOutcome",
@@ -129,7 +135,6 @@ class _Stream:
     #: This stream reached a network write (a guarded send began).
     wrote: bool = False
     upstream: Any = None
-    sockets: list[Any] = field(default_factory=list)
     wake: threading.Condition = field(default_factory=threading.Condition)
 
 
@@ -195,23 +200,16 @@ class BrokerServer:
 
     @staticmethod
     def cancel(stream: _Stream) -> None:
-        """Never blocks: marks the stream cancelled and shuts its sockets down.
+        """Never blocks, never touches a socket: marks the stream cancelled.
 
-        Once a response exists its own ``close`` owns the socket's lifetime;
-        before that, the connecting socket is shut down directly (no descriptor
-        duplication, which only the lifetime owner may do).
+        The stream's own thread stops at its next check: before any send
+        (guard), at connect before the write, and between body reads -- each
+        read bounded by the idle timeout. Acting on sockets from another thread
+        raced their lifetime, so cancellation is a flag with a bound, not an abort.
         """
-        from tinyassets.storage.outbound_connections import abort_socket
-
         with stream.wake:
             stream.cancelled = True
             stream.wake.notify_all()
-        upstream = stream.upstream
-        if upstream is not None:
-            upstream.close()
-            return
-        for sock in list(stream.sockets):
-            abort_socket(sock)
 
 
 class _Connection:
@@ -236,19 +234,24 @@ class _Connection:
              *, final: bool = False) -> None:
         """From a stream thread: queue frames, blocking while the queue is full.
 
-        A stream's producer stops waiting when the peer is gone, or (except for
-        its final END) when the stream is cancelled or past its deadline.
+        A stream's producer stops waiting when the peer is gone, or when the
+        stream is cancelled or past its deadline. Its final END waits at most
+        ``END_WAIT_S`` for a peer that has stopped reading, then is dropped.
         """
         for item in frame if isinstance(frame, list) else [frame]:
             if self._closed.is_set():
                 return
             future = asyncio.run_coroutine_threadsafe(self._queue.put(item), self._loop)
+            started = time.monotonic()
             while True:
                 try:
                     future.result(timeout=0.25)
                     break
                 except TimeoutError:
                     if self._closed.is_set():
+                        future.cancel()
+                        return
+                    if final and time.monotonic() - started > END_WAIT_S:
                         future.cancel()
                         return
                     if stream is not None and not final:
@@ -369,34 +372,45 @@ class _Connection:
         namespace = _namespace(principal, command_center)
         digest = request_digest(grant_id=grant_id, connection_id=connection_id, verb=verb,
                                 request=request)
-        try:
-            admission = await asyncio.to_thread(self._server._ops.admit, namespace, op_id,
-                                                digest)
-        except OpIdInvalid:
-            await refuse("refused")
-            return
-        if admission.kind != "new":
-            await refuse({"expired": "expired", "existing": "duplicate",
-                          "mismatch": "duplicate"}.get(admission.kind, "refused"))
-            return
-        stream = _Stream(stream_id, generation, token, namespace, op_id,
-                         deadline=time.monotonic() + _stream_budget(request),
-                         credit=min(max(int(doc.get("credit") or 0), 0), MAX_WINDOW))
-        with self._server._streams_lock:
-            self._server._streams[(self._key, stream_id)] = stream
-        try:
-            dispatch = self._server._dispatch_for(principal, command_center, grant_id,
-                                                  resource)
-            threading.Thread(
-                target=self._run, args=(stream, dispatch, grant_id, verb, request,
-                                        doc.get("idle_s")),
-                name=f"broker-stream-{stream_id}", daemon=True,
-            ).start()
-        except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
+        credit = doc.get("credit")
+        credit = min(max(credit, 0), MAX_WINDOW) if type(credit) is int else 0
+
+        def admit_and_start() -> str | None:
+            """One unit, run to the end even if the handler is cancelled: an
+            operation is never left reserved with no stream to settle it."""
+            try:
+                admission = self._server._ops.admit(namespace, op_id, digest)
+            except OpIdInvalid:
+                return "refused"
+            if admission.kind != "new":
+                return {"expired": "expired", "existing": "duplicate",
+                        "mismatch": "duplicate"}.get(admission.kind, "refused")
+            if self._closed.is_set():
+                self._server._ops.finish(namespace, op_id, "refused")
+                return "refused"
+            stream = _Stream(stream_id, generation, token, namespace, op_id,
+                             deadline=time.monotonic() + _stream_budget(request),
+                             credit=credit)
             with self._server._streams_lock:
-                self._server._streams.pop((self._key, stream_id), None)
-            await asyncio.to_thread(self._server._ops.finish, namespace, op_id, "refused")
-            await refuse("refused")
+                self._server._streams[(self._key, stream_id)] = stream
+            try:
+                dispatch = self._server._dispatch_for(principal, command_center, grant_id,
+                                                      resource)
+                threading.Thread(
+                    target=self._run, args=(stream, dispatch, grant_id, verb, request,
+                                            doc.get("idle_s")),
+                    name=f"broker-stream-{stream_id}", daemon=True,
+                ).start()
+            except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
+                with self._server._streams_lock:
+                    self._server._streams.pop((self._key, stream_id), None)
+                self._server._ops.finish(namespace, op_id, "refused")
+                return "refused"
+            return None
+
+        refused = await asyncio.shield(asyncio.to_thread(admit_and_start))
+        if refused is not None:
+            await refuse(refused)
 
     def _checkpoint(self, stream: _Stream) -> None:
         if stream.cancelled:
@@ -404,25 +418,22 @@ class _Connection:
         if time.monotonic() >= stream.deadline:
             raise _Expired
         if not self._server._fence.admits(stream.generation, stream.token):
-            raise Fenced("this stream's generation is below the fence")
+            raise _Fenced
 
     @contextlib.contextmanager
     def _guard(self, stream: _Stream) -> Iterator[None]:
         """Held across each network send: fence and cancellation re-checked first."""
         with self._server._fence.send(stream.generation, stream.token):
             self._checkpoint(stream)
-            stream.wrote = True
             yield
 
     def _connected(self, stream: _Stream, sock: Any) -> None:
-        """The upstream socket exists, the request is not yet written: if the
-        stream was cancelled meanwhile (say, during DNS), abort before the write."""
-        from tinyassets.storage.outbound_connections import abort_socket
-
-        stream.sockets.append(sock)
-        if stream.cancelled:
-            abort_socket(sock)
-            raise _Cancelled
+        """Connected, the request not yet written: everything re-checked once
+        more (name resolution may have taken the deadline, or a cancel arrived).
+        Raising here aborts the exchange before its first byte; past this point
+        the stream has written."""
+        self._checkpoint(stream)
+        stream.wrote = True
 
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
              request: dict[str, Any], idle_s: Any) -> None:
@@ -436,7 +447,7 @@ class _Connection:
                       stream)
             upstream = dispatch(
                 grant_id, verb, request, stream=True,
-                idle_s=idle_s if type(idle_s) in (int, float) else None,
+                idle_s=idle_s if type(idle_s) in (int, float) and idle_s > 0 else DEFAULT_IDLE_S,
                 guard=lambda: self._guard(stream),
                 on_connect=lambda sock: self._connected(stream, sock),
                 checkpoint=lambda: self._checkpoint(stream),
@@ -455,7 +466,7 @@ class _Connection:
             outcome, error_class = "cancelled", None
         except (_Expired, TimeoutError):
             outcome, error_class = "failed", "OutboundDeadlineExceeded"
-        except Fenced:
+        except (Fenced, _Fenced):
             outcome, error_class = "cancelled", "fenced"
         except Exception as exc:  # noqa: BLE001 - mapped to a fixed class
             if stream.cancelled:
@@ -527,11 +538,15 @@ class _Connection:
             self._server.cancel(stream)
 
 
-class _Cancelled(Exception):
+class _Cancelled(BrokerStreamStop):
     pass
 
 
-class _Expired(Exception):
+class _Expired(BrokerStreamStop):
+    pass
+
+
+class _Fenced(BrokerStreamStop):
     pass
 
 

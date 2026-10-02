@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import http.server
 import socket
-import sys
 import threading
 import time
 
@@ -141,17 +140,9 @@ def test_a_reason_phrase_echoing_the_credential_is_refused(dribble):
         _open(dribble)
 
 
-_linux_wake = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="waking a blocked recv from another thread is the Linux broker host's behaviour; "
-           "the broker refuses to run where peer credentials are unavailable",
-)
-
-
-@_linux_wake
-def test_close_unblocks_a_read_waiting_in_another_thread(dribble):
+def test_close_ends_a_read_waiting_in_another_thread_within_its_idle_bound(dribble):
     dribble.stub.update(pieces=[b"x", None], pause=5, hang=True)
-    stream = _open(dribble)
+    stream = _open(dribble, idle_s=0.5)
     assert stream.read(10) == b"x"
     errors = []
 
@@ -272,10 +263,9 @@ def test_an_oauth1_signature_alone_is_held_encoded_and_decoded():
     assert urllib.parse.unquote(signature) in prepared.sensitive
 
 
-@_linux_wake
 def test_close_from_another_thread_never_blocks_behind_a_read(dribble):
     dribble.stub.update(pieces=[b"x", None], pause=5, hang=True)
-    stream = _open(dribble)
+    stream = _open(dribble, idle_s=0.5)
     assert stream.read(10) == b"x"
     reading = threading.Thread(target=lambda: _swallow(stream.read, 10))
     reading.start()
