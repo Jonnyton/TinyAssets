@@ -255,7 +255,8 @@ def test_stored_ui_text_never_reaches_the_parent_page():
     assert "fetch('/__preview/spec.json')" in ui_preview._PARENT
     source = inspect.getsource(ui_preview._child)
     assert "script-src 'nonce-{nonce}'" in source
-    for flag in ("--host-resolver-rules=MAP * ~NOTFOUND", "--proxy-server=http://127.0.0.1:9"):
+    for flag in ("--host-resolver-rules=MAP * ~NOTFOUND", "--proxy-server=http://127.0.0.1:9",
+                 "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"):
         assert flag in source, flag
     assert ui_preview.FRAME_SANDBOX == "allow-scripts allow-forms"
 
@@ -273,47 +274,95 @@ def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path):
     _need_browser()
     _add(tmp_path, "hostile",
          markup="</script><script>window.top.__pwned=1</script><p id=ok>still a frame</p>",
-         script="for(let i=0;i<3000;i++){tinyassets.call('act-'+(i%200),{}).catch(()=>{});}"
+         script="for(const name of ['constructor','__proto__','toString'])"
+                "{tinyassets.call(name,{}).catch(()=>{});}"
+                "for(let i=0;i<3000;i++){tinyassets.call('act-'+(i%200),{}).catch(()=>{});}"
                 "try{new WebSocket('wss://elsewhere.example/s')}catch(e){}")
     try:
         report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
                                            ui_id="hostile", width=320, height=240)
     except ui_preview.PreviewUnavailable as exc:
         pytest.skip(str(exc))
+    for name in ("constructor", "__proto__", "toString"):
+        assert report["bridge_calls"][name] == 1
     assert len(report["bridge_calls"]) <= ui_preview.MAX_ACTIONS
     assert report["bridge_actions_dropped"] > 0
     assert report["delivery_error"] == ""
     assert report["png"].startswith(b"\x89PNG")
 
 
-_TREE = (
-    "import subprocess, sys, time\n"
-    "kids = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])"
-    " for _ in range(3)]\n"
-    "hog = bytearray(MEGS * 1024 * 1024)\n"
-    "for i in range(0, len(hog), 4096): hog[i] = 1\n"
-    "time.sleep(60)\n"
-)
+_TREE = """
+import os, time
+if os.fork() == 0:
+    for _ in range(3):
+        if os.fork() == 0:
+            os.setsid()
+            time.sleep(0.5)
+            hog = bytearray(MEGS * 1024 * 1024)
+            for i in range(0, len(hog), 4096): hog[i] = 1
+            time.sleep(60)
+            os._exit(0)
+    time.sleep(60)
+    os._exit(0)
+time.sleep(60)
+"""
 
 
-@pytest.mark.skipif(__import__("os").name != "posix", reason="process sessions are POSIX")
-@pytest.mark.parametrize("megs, wall, breach", [(300, 30.0, "memory"), (1, 1.5, "timeout")])
+@pytest.mark.skipif(__import__("sys").platform != "linux", reason="PID namespaces need Linux")
+@pytest.mark.parametrize("megs, wall, breach", [(100, 30.0, "memory"), (1, 2.0, "timeout")])
 def test_the_whole_render_tree_is_bounded_and_reaped(monkeypatch, megs, wall, breach):
-    """Codex 2026-10-02 (P1): a render's memory was unbounded and only the direct
-    child was killed. The supervisor sums resident memory over the whole session,
-    and kills and reaps every process in it before the slot frees."""
+    import os
+    import shutil
+    import subprocess
     import sys
+    from pathlib import Path
 
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        pytest.skip("bubblewrap is not installed")
+    probe = subprocess.run(
+        [bwrap, "--unshare-pid", "--bind", "/", "/", "--", "true"],
+        capture_output=True, timeout=10,
+    )
+    if probe.returncode:
+        pytest.skip("this host does not permit bubblewrap PID namespaces")
     monkeypatch.setattr(ui_preview, "TREE_MEMORY_BYTES", 150 * 1024 * 1024)
     argv = [sys.executable, "-c", _TREE.replace("MEGS", str(megs))]
-    process_holder = {}
-    real_popen = ui_preview.subprocess.Popen
+    real_snapshot = ui_preview._proc_snapshot
+    grandchildren = set()
 
-    def remember(*args, **kwargs):
-        process_holder["p"] = real_popen(*args, **kwargs)
-        return process_holder["p"]
+    def remember():
+        snapshot = real_snapshot()
+        # The intermediate child forks exactly three detached grandchildren.
+        for pid, (ppid, _, _) in snapshot.items():
+            try:
+                command = Path(f"/proc/{pid}/cmdline").read_bytes()
+                stat = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()
+            except OSError:
+                continue
+            if argv[-1].encode() in command and int(stat[3]) == pid and ppid != os.getpid():
+                grandchildren.add(pid)
+        return snapshot
 
-    monkeypatch.setattr(ui_preview.subprocess, "Popen", remember)
+    monkeypatch.setattr(ui_preview, "_proc_snapshot", remember)
     _, _, _, found = ui_preview._supervised(b"", wall, argv=argv)
     assert found.startswith(breach), found
-    assert ui_preview._session_members(process_holder["p"].pid) == [], "every process reaped"
+    assert len(grandchildren) == 3, "observed all detached grandchildren by host PID"
+    snapshot = real_snapshot()
+    for pid in grandchildren:
+        assert pid not in snapshot or snapshot[pid][2], f"grandchild {pid} survived"
+
+
+def test_preview_refuses_a_read_only_caller_before_writing(tmp_path, monkeypatch):
+    from tinyassets.api import app_ui, helpers
+
+    denial = {"error": "write_access_denied"}
+    monkeypatch.setattr(app_ui, "_binding_universe", lambda uid: HOME)
+    monkeypatch.setattr(app_ui, "_binding_access", lambda uid, *, write: denial if write else None)
+    monkeypatch.setattr(app_ui, "_authenticated_actor", lambda: OWNER)
+    monkeypatch.setattr(app_ui, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(helpers, "_universe_dir", lambda uid: tmp_path)
+    monkeypatch.setattr(ui_preview, "preview_app_ui", lambda *a, **k: {"png": b"PNG"})
+
+    assert app_ui.preview_app_ui(universe_id=HOME, ui_id="village") == denial
+    assert list(tmp_path.iterdir()) == []

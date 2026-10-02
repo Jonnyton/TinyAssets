@@ -652,7 +652,11 @@ def read_graph(
         if normalized == "app_ui_preview":
             from tinyassets.api.app_ui import preview_app_ui
 
-            report = preview_app_ui(universe_id=_GRAPH_ID, ui_id=query)
+            preview_token = _bind_founder_identity(("write",))
+            try:
+                report = preview_app_ui(universe_id=_GRAPH_ID, ui_id=query)
+            finally:
+                _current_identity.reset(preview_token)
             if "error" in report:
                 return json.dumps(report)
             # Console lines, errors and URLs are what the UI's code produced --

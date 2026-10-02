@@ -231,7 +231,7 @@ def preview_app_ui(*, universe_id: str = "", ui_id: str = "") -> dict[str, Any]:
     from tinyassets.api.helpers import _universe_dir
 
     uid = _binding_universe(universe_id)
-    denial = _binding_access(uid, write=False)
+    denial = _binding_access(uid, write=True)
     if denial is not None:
         return denial
     actor = _authenticated_actor()

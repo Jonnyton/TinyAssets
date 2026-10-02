@@ -28,9 +28,9 @@ them from ``blob:`` URLs. Only the parent is a stand-in, playing the app's part:
   and each call is reported so the agent sees what its UI tried.
 
 It runs as a short-lived subprocess tree (``python -m tinyassets.ui_preview``, its
-Playwright driver and Chromium) in a session of its own, watched from outside: a
+Playwright driver and Chromium) in a PID namespace, watched from outside: a
 wall clock, a resident-memory budget summed over the whole tree and a process
-count, and on any breach -- or when the render ends -- the whole session is
+count, and on any breach -- or when the render ends -- the whole namespace is
 killed and reaped before the slot frees. One render per HOST (a lock file the
 per-universe engine processes share); a second is refused as busy, never
 queued. A host without Playwright's Chromium refuses with
@@ -42,6 +42,8 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import math
+import shutil
 import subprocess
 import sys
 import threading
@@ -84,7 +86,7 @@ _PARENT = """<!doctype html><html><head><meta charset="utf-8">
 <style nonce="__NONCE__">html,body{margin:0;height:100%}
 iframe{border:0;width:100%;height:100%;display:block}</style>
 </head><body><script nonce="__NONCE__">
-window.__preview={calls:{},dropped:0,delivered:false,error:""};
+window.__preview={calls:Object.create(null),dropped:0,delivered:false,error:""};
 const EMPTY_FOR=uid=>({whoami:{protocol:1,command_center_id:uid,command_center_name:'Preview'},
   list_agents:{agents:[]},read_conversation:{turns:[],has_more:false,next_before:null},
   list_automations:{automations:[]},list_runs:{runs:[],has_more:false},
@@ -93,8 +95,9 @@ const EMPTY_FOR=uid=>({whoami:{protocol:1,command_center_id:uid,command_center_n
 const bytes=async path=>(await (await fetch(path)).arrayBuffer());
 const count=action=>{
   const p=window.__preview,name=String(action).slice(0,__ACTION_CHARS__);
-  if(!(name in p.calls)&&Object.keys(p.calls).length>=__MAX_ACTIONS__){p.dropped++;return;}
-  p.calls[name]=Math.min((p.calls[name]||0)+1,__MAX_PER_ACTION__);
+  const own=Object.prototype.hasOwnProperty.call(p.calls,name);
+  if(!own&&Object.keys(p.calls).length>=__MAX_ACTIONS__){p.dropped++;return;}
+  p.calls[name]=Math.min((own?p.calls[name]:0)+1,__MAX_PER_ACTION__);
 };
 (async()=>{
   // The UI arrives as DATA: a JSON document this page fetches. Nothing stored
@@ -254,11 +257,11 @@ def _host_slot():
         os.close(fd)
 
 
-def _session_members(session: int) -> list[tuple[int, int]]:
-    """``(pid, rss_bytes)`` of every process in ``session`` (Linux /proc)."""
+def _proc_snapshot() -> dict[int, tuple[int, int, bool]]:
+    """Host PID -> (parent PID, RSS bytes, zombie) from Linux /proc."""
     import os
 
-    members = []
+    snapshot = {}
     page = os.sysconf("SC_PAGE_SIZE")
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
@@ -268,23 +271,46 @@ def _session_members(session: int) -> list[tuple[int, int]]:
                 fields = handle.read().rsplit(b")", 1)[1].split()
         except OSError:
             continue
-        # After the ")" : state ppid pgrp session ... rss is field 24 overall. A
-        # zombie holds no memory and runs nothing; PID 1 reaps it.
-        if int(fields[3]) == session and fields[0] != b"Z":
-            members.append((int(entry), int(fields[21]) * page))
-    return members
+        snapshot[int(entry)] = (int(fields[1]), int(fields[21]) * page, fields[0] == b"Z")
+    return snapshot
+
+
+def _descendants(root: int, snapshot: dict[int, tuple[int, int, bool]]) -> set[int]:
+    # Traverse zombies too: their live children still belong to this tree.
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _, _) in snapshot.items():
+        children.setdefault(ppid, []).append(pid)
+    found = set()
+    pending = list(children.get(root, []))
+    while pending:
+        pid = pending.pop()
+        if pid not in found:
+            found.add(pid)
+            pending.extend(children.get(pid, []))
+    return found
 
 
 def _supervised(stdin: bytes, wall_seconds: float,
                 argv: list[str] | None = None) -> tuple[bytes, bytes, int, str]:
-    """Run the child in a session of its own; kill the WHOLE session on a breach
-    and always before returning, so no Chromium outlives its slot."""
+    """Contain even detached Chromium processes in a Linux PID namespace."""
     import os
     import signal
 
     posix = os.name == "posix"
+    linux = sys.platform == "linux"
+    command = argv or [sys.executable, "-m", "tinyassets.ui_preview"]
+    if linux:
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            raise PreviewUnavailable("ui_preview_unavailable: previews need bubblewrap")
+        # No filesystem isolation: bwrap contains the PID tree only. Chromium's
+        # own sandbox remains enabled and nests inside bwrap's user namespace.
+        command = [bwrap, "--unshare-pid", "--die-with-parent", "--bind", "/", "/",
+                   "--dev", "/dev", "--proc", "/proc", "--", *command]
+    elif posix:
+        raise PreviewUnavailable("ui_preview_unavailable: previews need Linux")
     process = subprocess.Popen(
-        argv or [sys.executable, "-m", "tinyassets.ui_preview"],
+        command,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         cwd=str(Path(__file__).resolve().parents[1]),
         start_new_session=posix,
@@ -311,34 +337,67 @@ def _supervised(stdin: bytes, wall_seconds: float,
         pass
     deadline = time.monotonic() + wall_seconds
     breach = ""
-    while process.poll() is None:
-        if time.monotonic() > deadline:
-            breach = f"timeout: the render did not finish in {wall_seconds:.0f} s"
-        elif posix:
-            members = _session_members(process.pid)
-            if sum(rss for _, rss in members) > TREE_MEMORY_BYTES:
-                breach = "memory: the render used more memory than a preview may"
-            elif len(members) > TREE_PROCESSES:
-                breach = "processes: the render started more processes than a preview may"
-        if sizes["out"] > MAX_CHILD_OUTPUT:
-            breach = "failed: the render printed more than a preview may"
-        if breach:
-            break
-        time.sleep(0.25)
-    # The child is done or breached: the whole session goes, and is reaped.
-    if posix:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGKILL)
-        settle = time.monotonic() + 10
-        while _session_members(process.pid) and time.monotonic() < settle:
-            time.sleep(0.1)
-    else:
-        _kill_tree_windows(process.pid)
-    with contextlib.suppress(Exception):
-        process.kill()
-    process.wait()
-    for reader in readers:
-        reader.join(timeout=5)
+    observed: set[int] = set()
+    try:
+        while process.poll() is None:
+            if linux:
+                snapshot = _proc_snapshot()
+                descendants = _descendants(process.pid, snapshot)
+                observed.update(descendants)
+                members = [snapshot[pid] for pid in descendants if not snapshot[pid][2]]
+                if sum(rss for _, rss, _ in members) > TREE_MEMORY_BYTES:
+                    breach = "memory: the render used more memory than a preview may"
+                elif len(members) > TREE_PROCESSES:
+                    breach = "processes: the render started more processes than a preview may"
+            if time.monotonic() > deadline:
+                breach = f"timeout: the render did not finish in {wall_seconds:.0f} s"
+            if sizes["out"] > MAX_CHILD_OUTPUT:
+                breach = "failed: the render printed more than a preview may"
+            if breach:
+                break
+            time.sleep(0.25)
+    finally:
+        gone = True
+        if linux:
+            snapshot = _proc_snapshot()
+            observed.update(_descendants(process.pid, snapshot))
+            # bwrap's direct child is namespace init. Killing init makes the
+            # kernel kill every namespace member, irrespective of setsid().
+            for pid in [pid for pid, (ppid, _, _) in snapshot.items()
+                        if ppid == process.pid] + [process.pid]:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGKILL)
+            settle = time.monotonic() + 10
+            try:
+                process.wait(timeout=max(0, settle - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                gone = False
+            while True:
+                snapshot = _proc_snapshot()
+                observed.update(_descendants(process.pid, snapshot))
+                alive = {pid for pid in observed | {process.pid}
+                         if pid in snapshot and not snapshot[pid][2]}
+                if not alive:
+                    break
+                if time.monotonic() >= settle:
+                    gone = False
+                    break
+                time.sleep(0.1)
+            if not gone:
+                breach = "failed: the render could not be stopped"
+        else:
+            # Windows is a dev host only; production containment requires Linux.
+            _kill_tree_windows(process.pid)
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            process.wait()
+        for reader in readers:
+            if linux:
+                if gone:
+                    reader.join()
+            else:
+                reader.join(timeout=5)
+
     return b"".join(chunks["out"]), b"".join(chunks["err"]), process.returncode, breach
 
 
@@ -427,7 +486,7 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
                       "--host-resolver-rules=MAP * ~NOTFOUND",
                       "--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=<-loopback>",
                       "--disable-background-networking", "--disable-component-update",
-                      "--webrtc-ip-handling-policy=disable_non_proxied_udp"])
+                      "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"])
         except PlaywrightError as exc:
             return {"unavailable": str(exc).splitlines()[0][:300]}
         try:
@@ -462,13 +521,14 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
                 except PlaywrightError as exc:
                     errors.append(f"frame rate could not be measured: {str(exc)[:200]}")
             png = page.screenshot(type="png")
-            state = page.evaluate("window.__preview")
+            # JSON preserves prototype-named keys across Playwright's transport.
+            state = json.loads(page.evaluate("JSON.stringify(window.__preview)"))
             loaded_ms = int((time.monotonic() - started) * 1000)
         finally:
             browser.close()
     raw_calls = state.get("calls") if isinstance(state.get("calls"), dict) else {}
     calls = {str(k)[:64]: int(v) for k, v in list(raw_calls.items())[:MAX_ACTIONS]
-             if isinstance(v, (int, float))}
+             if isinstance(v, (int, float)) and math.isfinite(v)}
     return {
         "ui_id": spec["ui_id"], "width": spec["width"], "height": spec["height"],
         "fps": fps, "rendered_ms": loaded_ms,
