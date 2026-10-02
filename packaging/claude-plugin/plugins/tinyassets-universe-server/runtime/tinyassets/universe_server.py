@@ -4468,12 +4468,18 @@ def create_streamable_http_app() -> Starlette:
             # Initialize storage before the scheduler's immediate tick can open
             # the same fresh database and race its first journal-mode switch.
             initialize_consumer(data_dir())
-            # A deploy recreates the container mid-turn, so every progressing
-            # agent turn row predates this boot and nothing is executing it.
-            # Settle them before anything can read them as activity (founder,
+            # This process is the execution owner: a tree of its own, advertised
+            # to every child it spawns (change execution-owner-lease B1). Its
+            # command center keys are acquired as they are first used.
+            from tinyassets.owner_lease import start_owner_tree
+
+            start_owner_tree(data_dir())
+            # A deploy recreates the container mid-turn, so a progressing agent
+            # turn row from the previous owner generation has nothing executing
+            # it. Settle them before anything can read them as activity (founder,
             # 2026-09-26: a killed turn showed "thinking" for 35 minutes).
-            # Hygiene, not a gate: an unsettleable row leaves the boot-ownership
-            # guard in `universe_working_turn` to keep it out of the indicator.
+            # Hygiene, not a gate: an unsettleable row is still kept out of the
+            # indicator by the generation check in `universe_working_turn`.
             from tinyassets.agent_turn_reconcile import reconcile_orphaned_turns
 
             try:

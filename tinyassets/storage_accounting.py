@@ -518,6 +518,8 @@ ROOT_ENTRIES: dict[str, str] = {
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".consumer_liveness": "platform: process liveness locks",
+    ".owner_leases.db": "platform: execution-owner leases and fences (owner_lease)",
+    ".owner_tree": "platform: execution-owner tree member locks (owner_lease)",
     ".runtime": "platform: provider runtime",
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",
