@@ -39,6 +39,7 @@ __all__ = [
     "MAX_UNIVERSE_FILE_BYTES",
     "UniverseFileError",
     "list_universe_dir",
+    "list_universe_entries",
     "load_untrusted_yaml",
     "open_runtime_dir",
     "read_universe_file",
@@ -142,6 +143,13 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
     component is a link or not a directory. Names only: read each entry with
     :func:`read_universe_file`, which re-checks it.
     """
+    return [name for name, _ in list_universe_entries(universe_dir, relpath)]
+
+
+def list_universe_entries(
+    universe_dir: Path | str, relpath: str,
+) -> list[tuple[str, os.stat_result]]:
+    """Sorted names and link-free metadata; never follow an entry's symlink."""
     root = Path(universe_dir)
     if getattr(fs, "_POSIX", False):
         root_fd = fs.open_dir_nofollow(root.resolve(strict=False))
@@ -153,7 +161,10 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
                     _check_component(part)
                     current = fs.open_subdir_nofollow(current, part)
                     opened.append(current)
-                return sorted(os.listdir(current))
+                return sorted(
+                    (name, os.stat(name, dir_fd=current, follow_symlinks=False))
+                    for name in os.listdir(current)
+                )
             finally:
                 for handle in opened:
                     os.close(handle)
@@ -162,7 +173,8 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
     directory = _lstat_nofollow_windows(root, relpath)
     if not directory.is_dir():
         raise UniverseFileError("not a directory")
-    return sorted(entry.name for entry in os.scandir(directory))
+    with os.scandir(directory) as entries:
+        return sorted((entry.name, entry.stat(follow_symlinks=False)) for entry in entries)
 
 
 def open_runtime_dir(universe_dir: Path | str, *parts: str) -> int:

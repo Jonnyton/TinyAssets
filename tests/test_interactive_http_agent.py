@@ -104,8 +104,14 @@ def agent(served, monkeypatch):
             pass
 
         def request(self, verb, document):
-            assert latest().state == "inference_started"
-            assert latest().rounds[-1].candidate.reservation_id
+            learning = any(
+                message.get("role") == "system"
+                and message.get("content") == universe_intelligence._LEARNING_SYSTEM
+                for message in document["body"]["messages"]
+            )
+            if not learning:
+                assert latest().state == "inference_started"
+                assert latest().rounds[-1].candidate.reservation_id
             state.wires.append((verb, document))
             if state.unknown_inference:
                 return {"error": "synthetic post-dispatch disconnect"}
@@ -121,8 +127,11 @@ def agent(served, monkeypatch):
                 }
             if state.before_reply is not None:
                 state.before_reply()
-            tools = len(state.wires) <= state.requested_rounds
-            message = {"role": "assistant", "content": None if tools else "finished exact answer"}
+            tools = not learning and len(state.wires) <= state.requested_rounds
+            message = {
+                "role": "assistant",
+                "content": "{}" if learning else None if tools else "finished exact answer",
+            }
             if tools:
                 message["tool_calls"] = [
                     {
@@ -153,7 +162,12 @@ def agent(served, monkeypatch):
     return state
 
 
-def run(agent, observer=None):
+def run(agent, observer=None, *, greeting=False):
+    if greeting:
+        return universe_intelligence.converse(
+            founder_message="hi", universe_id=agent.served.context.universe_dir.name,
+            response_observer=observer,
+        )
     return universe_intelligence._call_writer(
         "exact user prompt",
         system="exact system",
