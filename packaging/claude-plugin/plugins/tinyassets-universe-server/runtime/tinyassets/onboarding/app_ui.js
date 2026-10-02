@@ -263,7 +263,9 @@
       // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
       if(typeof refreshCommandCenter === "function") refreshCommandCenter();
-      if(typeof focusCommandCenter === "function") focusCommandCenter();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.paintHeader();
     },
     unmount(){
@@ -274,7 +276,9 @@
       // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
       if(typeof refreshCommandCenter === "function") refreshCommandCenter();
-      if(typeof focusCommandCenter === "function") focusCommandCenter();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();
@@ -307,7 +311,9 @@
       this.ready=true;
       this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:{
         markup:this.active.markup,style:this.active.style,script:this.active.script}});
-      if(typeof focusCommandCenter === "function") focusCommandCenter();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
     },
     post(payload){
       const frame=this.frame&&this.frame.contentWindow;

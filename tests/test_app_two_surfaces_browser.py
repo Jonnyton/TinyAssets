@@ -139,16 +139,17 @@ def test_play_never_needs_a_second_click(app_url, browser):
         position += 10
         from playwright.sync_api import expect
         expect(hero).to_have_css("left", f"{position}px")
-        # Border clicks may use the parent key-forward fallback in Chromium.
+        # Native walks prove the focus handoff itself.
         if native:
             expect(hero).to_have_attribute("data-trusted", "true")
 
     walk()
     assert page.locator("#cc-blank").is_hidden()
     page.click("#chat-cloud-bubble")
+    assert _box(page, "#chat-cloud")["width"] <= 440
     # Put the cloud centrally so all four stage edges and corners are exposed.
-    _drag(page, "#chat-cloud-resize", -816, -156)
-    _drag(page, "#chat-cloud-bar", 400, 80, at=(0.8, 0.5))
+    _drag(page, "#chat-cloud-resize", -100, -156)
+    _drag(page, "#chat-cloud-bar", -400, -80, at=(0.8, 0.5))
     stage = _box(page, "#chat-stage")
     w, h = stage["width"], stage["height"]
     for x, y in [(2, 2), (w-2, 2), (2, h-2), (w-2, h-2),
@@ -158,12 +159,13 @@ def test_play_never_needs_a_second_click(app_url, browser):
     page.click("#chat-cloud-title")
     walk()
     cloud = _box(page, "#chat-cloud")
-    for x, y in [(cloud["x"]+.5, cloud["y"]+100),
-                 (cloud["x"]+cloud["width"]-.5, cloud["y"]+100),
-                 (cloud["x"]+100, cloud["y"]+.5),
-                 (cloud["x"]+100, cloud["y"]+cloud["height"]-.5)]:
+    for x, y in [(cloud["x"], cloud["y"]+100),
+                 (cloud["x"]+cloud["width"]-1, cloud["y"]+100),
+                 (cloud["x"]+100, cloud["y"]),
+                 (cloud["x"]+100, cloud["y"]+cloud["height"]-1)]:
         page.mouse.click(x, y)
-        walk(native=False)
+        assert page.evaluate("document.activeElement.id") == "ui-frame"
+        walk(native=True)
     page.click("#chat-cloud-resize")
     walk()
     _drag(page, "#chat-cloud-resize", 20, 20)
@@ -188,8 +190,40 @@ def test_play_never_needs_a_second_click(app_url, browser):
     walk()
     page.click("#btn-cloud-shrink")
     walk()
+    page.focus("#chat-cloud-bubble")
+    page.keyboard.press("Escape")
+    walk()
     page.click("#chat-cloud-bubble")
     page.mouse.click(2, 2)
+    walk()
+    for dialog in ("model-dialog", "ui-dialog"):
+        page.evaluate("id=>document.getElementById(id).showModal()", dialog)
+        assert page.evaluate(
+            "id=>document.getElementById(id).contains(document.activeElement)", dialog)
+        page.keyboard.press("Escape")
+        page.wait_for_function("""() => !document.querySelector('dialog[open]') &&
+            document.activeElement.id === 'ui-frame'""")
+        walk()
+    page.fill("#composer-input", "draft survives ready")
+    page.focus("#composer-input")
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    page.evaluate("AppUI.ready=false; AppUI.deliver()")
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    assert page.input_value("#composer-input") == "draft survives ready"
+    hero.wait_for()
+    page.evaluate("AppUI.mount(AppUI.active)")
+    hero.wait_for()
+    position = 0
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    assert page.input_value("#composer-input") == "draft survives ready"
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    page.focus("#btn-cloud-menu")
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    walk()
+    page.evaluate("document.getElementById('view-chat').style.paddingTop='24px'")
+    page.focus("#composer-input")
+    page.mouse.click(5, 5)
     walk()
     # Explicitly exercise the fallback independently of the native-focus play.
     page.evaluate("""() => { const stage=document.getElementById('chat-stage');
@@ -198,6 +232,12 @@ def test_play_never_needs_a_second_click(app_url, browser):
     from playwright.sync_api import expect
     expect(hero).to_have_css("left", f"{position+10}px")
     expect(hero).to_have_attribute("data-trusted", "false")
+    position += 10
+    for control in ("btn-attach", "btn-models"):
+        page.focus("#" + control)
+        page.keyboard.press("ArrowRight")
+        position += 10
+        expect(hero).to_have_css("left", f"{position}px")
     page.evaluate("AppUI.unmount()")
     assert page.locator("#cc-blank").is_visible()
     assert page.evaluate("document.activeElement.id") == "cc-blank"

@@ -55,8 +55,10 @@ def test_a_layout_starts_small_in_the_corner():
 
     assert state["mode"] == "bubble"
     assert state["bubble"] == {"x": 1280 - 56 - 12, "y": 740 - 56 - 12}
-    # Expanding it from there opens it big.
-    assert state["open"]["w"] == 1256
+    # Expanding it opens the same medium rectangle as without a layout.
+    assert state["open"] == {"x": 828, "y": 108, "w": 440, "h": 620}
+    assert call("cloudDefaultState(true, {w:390,h:700})")["open"] == {
+        "x": 0, "y": 280, "w": 390, "h": 420}
 
 
 def test_the_owners_last_state_wins_over_either_default():

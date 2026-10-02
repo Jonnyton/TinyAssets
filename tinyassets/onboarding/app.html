@@ -2479,13 +2479,20 @@
         this.capability=null;this.disclosureOpen=false;$("voice-disclosure").hidden=true;
         this.returnFocus=null;this.state="checking";
         this._render("Voice capability could not be confirmed. Typed chat still works.");
-      }finally{this.acceptingDisclosure=false;button.disabled=false;}
+      }finally{
+        this.acceptingDisclosure=false;button.disabled=false;
+        if(!this.disclosureOpen && typeof focusCommandCenter === "function" &&
+           !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+           !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
+      }
     },
     cancelDisclosure(){
       this.disclosureOpen=false;$("voice-disclosure").hidden=true;
       const target=this.returnFocus&&typeof this.returnFocus.focus==="function"
         ?this.returnFocus:$("btn-voice");
-      target.focus(); this.returnFocus=null;
+      if(typeof isTypingTarget === "function" && isTypingTarget(target)) target.focus();
+      else if(typeof focusCommandCenter === "function") focusCommandCenter();
+      this.returnFocus=null;
     },
     async _session(offerSdp){
       await ensureFreshToken();
@@ -3128,7 +3135,7 @@
       const menu=$("model-menu");if(!menu||menu.hidden) return;
       menu.hidden=true;menu.replaceChildren();
       $("btn-models").setAttribute("aria-expanded","false");
-      if(!opts||opts.restoreFocus!==false) $("btn-models").focus();
+      if((!opts||opts.restoreFocus!==false) && typeof focusCommandCenter === "function") focusCommandCenter();
     },
     menuItems(){
       return Array.from(($("model-menu")||{children:[]}).children)
@@ -3607,7 +3614,6 @@
         this.menuClose({restoreFocus:false});
       });
       $("btn-model-close").addEventListener("click",()=>$("model-dialog").close());
-      $("model-dialog").addEventListener("close",()=>$("btn-models").focus());
       $("btn-model-refresh").addEventListener("click",()=>this.refresh());
       $("btn-model-fallback-add").addEventListener("click",()=>this.addFallback($("model-fallback-add").value));
       $("btn-model-restore").addEventListener("click",()=>this.restoreAccess());
@@ -4636,6 +4642,12 @@
   function refreshCommandCenter(){
     $("cc-blank").hidden=!$("ui-frame-host").hidden;
   }
+  function isTypingTarget(el){
+    if(!el) return false;
+    const tag=(el.tagName||"").toLowerCase();
+    return el.isContentEditable===true || tag==="textarea" || tag==="select" ||
+      (tag==="input" && !["button","submit","checkbox","radio","range","file","color","reset","image"].includes((el.type||"text").toLowerCase()));
+  }
   function focusCommandCenter(){
     const frame=$("ui-frame");
     if(frame){
@@ -4646,7 +4658,13 @@
   function forwardCommandCenterKey(event){
     const frame=$("ui-frame"), host=$("ui-frame-host");
     if(!frame || !host || host.hidden || !frame.contentWindow) return;
-    if(event.target!==document.body && event.target!==$("chat-stage") && event.target!==$("cc-blank")) return;
+    const target=event.target;
+    if(event.defaultPrevented || event.key==="Tab" ||
+       (typeof isTypingTarget === "function" && isTypingTarget(target))) return;
+    if(target.closest && (target.closest("dialog[open]") ||
+       (!$("cloud-menu").hidden && target.closest("#cloud-menu")))) return;
+    if((event.key==="Enter" || event.key===" ") && target.closest &&
+       target.closest("button, a, [role=button]")) return;
     const {key,code,shiftKey,altKey,ctrlKey,metaKey,repeat}=event;
     frame.contentWindow.postMessage({ta_ui:1,type:"key",key,code,shiftKey,altKey,ctrlKey,metaKey,repeat,
       phase:event.type==="keyup" ? "up" : "down"},"*");
@@ -4672,17 +4690,20 @@
     if($("cloud-menu").hidden) return;
     $("cloud-menu").hidden=true;
     $("btn-cloud-menu").setAttribute("aria-expanded","false");
-    focusCommandCenter();
+    if(!(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement))) focusCommandCenter();
   }
   function wireCommandCenter(){
     $("btn-cc-build").addEventListener("click",ccBlankBuild);
     $("btn-cc-try").addEventListener("click",ccBlankTryOne);
-    $("chat-stage").addEventListener("pointerdown",event=>{
+    $("view-chat").addEventListener("pointerdown",event=>{
       if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
         // Avoid the pointer's default focus step undoing the handoff; buttons still click.
         if(!event.target.closest("button")) event.preventDefault();
         focusCommandCenter();
       }
+    });
+    $("chat-cloud").addEventListener("pointerdown",event=>{
+      if(event.target===$("chat-cloud")) event.preventDefault();
     });
     $("chat-cloud").addEventListener("pointerup",event=>{
       if(event.target===$("chat-cloud")) focusCommandCenter();
@@ -4709,6 +4730,22 @@
         if(document.activeElement===$("ui-frame")) closeCloudMenu();
       },0);
     });
+    document.addEventListener("close",event=>{
+      if(event.target.tagName!=="DIALOG") return;
+      if(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) return;
+      if(document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) return;
+      if(typeof focusCommandCenter === "function") focusCommandCenter();
+    },true);
+    window.addEventListener("focus",()=>{
+      const active=document.activeElement;
+      if(document.querySelector("dialog[open]")) return;
+      if(typeof isTypingTarget === "function" && isTypingTarget(active)) return;
+      if(active.closest("dialog[open], #cloud-menu:not([hidden])")) return;
+      if(active===document.body || active===document.documentElement ||
+         active.closest("#chat-cloud-bar, #cloud-menu")){
+        if(typeof focusCommandCenter === "function") focusCommandCenter();
+      }
+    });
     document.addEventListener("keydown",forwardCommandCenterKey);
     document.addEventListener("keyup",forwardCommandCenterKey);
   }
@@ -4733,8 +4770,8 @@
   }
   function cloudDefaultState(hasLayout, stage){
     const m=cloudViewportClass(stage.w)==="phone" ? 0 : CLOUD_MARGIN;
-    const w=hasLayout ? stage.w-2*m : (m ? Math.min(440,stage.w-2*m) : stage.w);
-    const h=hasLayout ? stage.h-2*m : (m ? Math.min(620,stage.h-2*m) : Math.round(stage.h*.6));
+    const w=m ? Math.min(440,stage.w-2*m) : stage.w;
+    const h=m ? Math.min(620,stage.h-2*m) : Math.round(stage.h*.6);
     return cloudClamp({
       mode:hasLayout ? "bubble" : "open",
       open:{x:stage.w-w-m, y:stage.h-h-m, w:w, h:h},
@@ -4867,6 +4904,9 @@
   }
   // Arrow keys move the window or bubble; Shift and an arrow resize the window.
   function cloudKeydown(ev){
+    // A mounted command center owns navigation keys; resizing by keyboard is
+    // available when the temporary blank command center is showing.
+    if($("ui-frame") && !$("ui-frame-host").hidden) return;
     const arrows={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]};
     const dir=arrows[ev.key];
     if(!dir || !cloudState) return;
@@ -6290,13 +6330,14 @@
     document.addEventListener("keydown",(e)=>{
       if(e.key!=="Escape"||e.defaultPrevented||e.isComposing) return;
       if($("btn-stop").hidden||$("btn-stop").disabled){
-        if($("chat-cloud").contains(e.target) && typeof focusCommandCenter === "function"){
+        if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && typeof focusCommandCenter === "function"){
           e.preventDefault(); focusCommandCenter();
         }
         return;
       }
       if(document.querySelector("dialog[open]")) return;
       e.preventDefault(); interruptTurn();
+      if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && typeof focusCommandCenter === "function") focusCommandCenter();
     });
     $("btn-rail-add").addEventListener("click",toggleAddKey);
     $("btn-rail-retry").addEventListener("click",()=>{ refreshRail(); });
