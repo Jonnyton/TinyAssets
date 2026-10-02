@@ -407,7 +407,8 @@ class AgentTurnJournal:
         with self._transaction() as conn:
             check_current_home(conn, owner, universe)
             conn.execute(
-                "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, generation, "
+                "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, "
+                "generation, "
                 "state, round_ordinal, input_json, created_at) "
                 "VALUES (?, ?, ?, 1, 1, 'ready', 0, ?, ?)",
                 (*scope, raw, self._ledger.timestamp()),
@@ -572,7 +573,8 @@ class AgentTurnJournal:
             ordinal = len(current.rounds) + 1
             state = "native_started" if type(candidate) is NativeInput else "inference_started"
             conn.execute(
-                "INSERT INTO agent_turn_rounds (owner_user_id, universe_id, turn_id, ordinal, version, "
+                "INSERT INTO agent_turn_rounds (owner_user_id, universe_id, turn_id, ordinal, "
+                "version, "
                 "state, candidate_json, reply_json, cost_microusd) "
                 "VALUES (?, ?, ?, ?, 1, ?, ?, NULL, NULL)",
                 (*scope, ordinal, state, raw),
@@ -637,7 +639,8 @@ class AgentTurnJournal:
             )
             for call_ordinal, request in enumerate(() if reply is None else reply.tool_requests, 1):
                 conn.execute(
-                    "INSERT INTO agent_turn_tools (owner_user_id, universe_id, turn_id, round_ordinal, "
+                    "INSERT INTO agent_turn_tools (owner_user_id, universe_id, turn_id, "
+                    "round_ordinal, "
                     "ordinal, version, call_id, name, arguments_json, state, result_json, "
                     "content_kind, is_error) "
                     "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'planned', NULL, NULL, NULL)",
