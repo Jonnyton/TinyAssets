@@ -143,6 +143,7 @@ class BoxExecutor:
         self._handle = handle
         self._cwd = cwd
         self._awake = False
+        self._wake_lock = threading.Lock()
 
     @property
     def handle(self) -> BoxHandle:
@@ -151,10 +152,11 @@ class BoxExecutor:
     def _start(self, op_id: str, argv: Sequence[str], stdin: bytes,
                limits: ExecLimits) -> str:
         def start() -> str:
-            if not self._awake:
-                # bind() never wakes a box; the first execution does.
-                self._provider.ensure_awake(self._handle, reason="tool")
-                self._awake = True
+            with self._wake_lock:  # concurrent first executions wake it once
+                if not self._awake:
+                    # bind() never wakes a box; the first execution does.
+                    self._provider.ensure_awake(self._handle, reason="tool")
+                    self._awake = True
             return self._provider.start_exec(self._handle, op_id, list(argv), stdin=stdin,
                                              cwd=self._cwd, limits=limits)
 
@@ -206,8 +208,17 @@ class BoxExecutor:
         try:
             while True:
                 try:
-                    events = await _wait(_in_thread(self._slice, exec_id, collected.offset,
-                                                    slots=_BOX_CALL_SLOTS))
+                    events = await _wait(
+                        _in_thread(self._slice, exec_id, collected.offset,
+                                   slots=_BOX_CALL_SLOTS),
+                        # A slice asks for SLICE_SECONDS; one that does not come
+                        # back well after that is a box host that stopped
+                        # answering (an untimed lock, say), not a slow command.
+                        timeout=SLICE_SECONDS + _CANCEL_GRACE_SECONDS,
+                    )
+                except TimeoutError:
+                    await self._cancel(exec_id)
+                    raise _unknown() from None
                 except BoxOperationRefused:
                     # The command is running; only reading it was refused.
                     await self._cancel(exec_id)
@@ -451,7 +462,9 @@ class BoxTools:
         if target == self._root:
             return "."
         prefix = self._root.rstrip("/") + "/"
-        return target[len(prefix):] if target.startswith(prefix) else target
+        # "./" so a name such as "-" or "-n/x" is never read as an option or
+        # as standard input by the command it is handed to.
+        return "./" + target[len(prefix):] if target.startswith(prefix) else target
 
     async def read(self, op_id: str, path: str, offset: int = 0, limit: int = 0) -> str:
         target = box_path(path, self._root)

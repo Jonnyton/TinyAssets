@@ -65,7 +65,7 @@ def test_the_first_execution_wakes_the_box_and_binding_does_not():
 def test_relative_paths_resolve_under_the_box_root():
     box = FakeBox(lambda argv, stdin: (b"line\n", 0))
     assert run(tools(box).read("op", "notes/a.md")) == "line\n"
-    assert box.execs["op"].argv[4:] == ["notes/a.md", "1", "2000"]
+    assert box.execs["op"].argv[4:] == ["./notes/a.md", "1", "2000"]
 
 
 def test_lost_start_reply_asks_again_with_the_same_op_id_and_runs_once():
@@ -338,6 +338,55 @@ def test_no_free_cancel_slot_is_unknown_and_spawns_nothing(monkeypatch):
         box.released.set()
 
 
+def test_a_slice_the_box_host_never_returns_is_bounded_and_unknown(monkeypatch):
+    monkeypatch.setattr(box_tools, "SLICE_SECONDS", 0.2)
+    monkeypatch.setattr(box_tools, "_CANCEL_GRACE_SECONDS", 0.3)
+    box = FakeBox()
+    stuck = threading.Event()
+
+    def blocked(handle, exec_id, *, from_offset=0, timeout=None):
+        stuck.wait(30)  # an untimed lock ahead of the stream's own deadline
+        return iter(())
+
+    box.stream = blocked
+    started = time.monotonic()
+    try:
+        with pytest.raises(EngineToolError) as raised:
+            run(tools(box).bash("op", "sleep 999", timeout=1))
+        assert raised.value.outcome == "unknown"
+        assert time.monotonic() - started < 3.0
+        assert box.cancels == ["op"]
+    finally:
+        stuck.set()
+
+
+def test_concurrent_first_executions_wake_the_box_once():
+    box = FakeBox()
+    gate = threading.Barrier(2, timeout=5)
+    woke = []
+
+    def slow_wake(handle, *, reason):
+        woke.append(reason)
+        time.sleep(0.2)
+
+    box.ensure_awake = slow_wake
+    original = box.start_exec
+
+    def start(*args, **kwargs):
+        return original(*args, **kwargs)
+
+    box.start_exec = start
+    t = tools(box)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, gate.reset)
+        await asyncio.gather(t.bash("a", "true"), t.bash("b", "true"))
+
+    run(scenario())
+    assert woke == ["tool"]
+
+
 def test_output_past_the_cap_reported_by_the_box():
     box = FakeBox()
     box.stream = lambda h, exec_id, from_offset=0, timeout=None: iter(
@@ -351,7 +400,7 @@ def test_write_sends_content_as_stdin_and_renames_into_place():
     assert run(tools(box).write("op", "a.txt", "héllo")) == "wrote 6 bytes to /cc/a.txt"
     record = box.execs["op"]
     assert record.stdin == "héllo".encode()
-    assert record.argv[4:] == ["a.txt", ""]
+    assert record.argv[4:] == ["./a.txt", ""]
     assert 'flock -x "$d"' in record.argv[2] and 'mv -f -- "$3" "$1"' in record.argv[2]
 
 
@@ -515,3 +564,12 @@ def test_edits_wait_on_the_directory_lock_whose_identity_survives_the_rename(tmp
     assert waited >= 0.8, "the edits did not wait for the directory lock"
     assert sorted(r.startswith("edited") for r in results) == [False, True], results
     assert target.read_text() in {"AA bb", "aa BB"}
+
+
+@posix
+def test_dash_names_are_never_options_or_stdin(tmp_path):
+    (tmp_path / "-").write_text("dash file\n")
+    t = tools(LocalBox(tmp_path), str(tmp_path))
+    assert run(t.read("r", "-")) == "dash file\n"
+    assert run(t.write("w", "-n/file.txt", "x")).startswith("wrote 1 bytes")
+    assert (tmp_path / "-n" / "file.txt").read_text() == "x"
