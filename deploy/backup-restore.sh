@@ -322,8 +322,22 @@ if [[ -n "${ESCROW_FILE:-}" ]]; then
     script_dir="$(dirname "$(realpath "$0")")"
     escrow_tool="${script_dir}/../scripts/host_key_escrow.py"
     env_helper="${script_dir}/install-tinyassets-env.sh"
-    if [[ ! -f "${ESCROW_FILE}" || -L "${ESCROW_FILE}" ]]; then
-        log "ERROR: ESCROW_FILE must be a regular, non-symlink file"
+    ulimit -c 0
+    if [[ ! -f "${ESCROW_FILE}" || -L "${ESCROW_FILE}" ]] \
+        || [[ "$(stat -c '%U %a' "${ESCROW_FILE}")" != "root 600" ]]; then
+        log "ERROR: ESCROW_FILE must be a regular, non-symlink, root-owned 0600 file"
+        exit 6
+    fi
+    manifest="$(docker volume inspect --format '{{ .Mountpoint }}' "${BACKUP_VOLUME}")/.escrow-key-hashes"
+    # Fail closed: without the archive's manifest there is nothing to check the
+    # escrow against, so nothing is installed (Codex refute).
+    if [[ ! -f "${manifest}" ]]; then
+        log "ERROR: archive has no .escrow-key-hashes manifest; refusing to install unverified keys"
+        exit 6
+    fi
+    # Check BEFORE installing, so a wrong escrow never becomes set-once state.
+    if ! python3 "${escrow_tool}" check-escrow "${manifest}" < "${ESCROW_FILE}"; then
+        log "ERROR: escrow does not match the keys this archive was written under; nothing installed"
         exit 6
     fi
     log "installing escrowed host keys (values are never printed)..."
@@ -331,16 +345,11 @@ if [[ -n "${ESCROW_FILE:-}" ]]; then
         log "ERROR: escrowed keys could not be installed; do not start services"
         exit 6
     fi
-    manifest="$(docker volume inspect --format '{{ .Mountpoint }}' "${BACKUP_VOLUME}")/.escrow-key-hashes"
-    if [[ -f "${manifest}" ]]; then
-        if ! python3 "${escrow_tool}" check-manifest "${manifest}"; then
-            log "ERROR: restored keys do not match the keys this archive was written under"
-            exit 6
-        fi
-        log "  restored keys match the archive's key manifest"
-    else
-        log "WARN: archive predates the key manifest; keys installed but not proven against the data"
+    if ! python3 "${escrow_tool}" check-manifest "${manifest}"; then
+        log "ERROR: installed keys do not match the archive's manifest; do not start services"
+        exit 6
     fi
+    log "  installed keys match the archive's key manifest"
 fi
 
 # ----- 5. done — caller verifies, starts, and later removes old data ----

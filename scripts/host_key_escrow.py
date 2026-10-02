@@ -8,6 +8,7 @@ script never prints one, and the only output is key NAMES, hashes, and verdicts.
     host_key_escrow.py verify            escrow on stdin vs this host: verdicts only
     host_key_escrow.py install <helper>  escrow on stdin -> host env files, set-once
     host_key_escrow.py check-manifest <file>  host keys vs a backup's hash manifest
+    host_key_escrow.py check-escrow <manifest>  escrow on stdin vs a manifest (pre-install)
 
 Why these four: they exist only on the production host, and losing them leaves
 restored data unusable. Sealed sessions cannot be opened, entitlement claims
@@ -17,13 +18,24 @@ are orphaned, and app ingress cannot be checked
 
 Where the escrow lives: the off-region bucket (tinyassets-offregion, nyc3), under
 its own `escrow/` prefix, written by the nightly backup job with the droplet's
-per-bucket key. It is PLAINTEXT in a private bucket. That is the same trust level
-as /etc/tinyassets/env on the droplet today, and the same as the backups
-themselves, which already hold /data in plaintext in that bucket. Encrypting it
-needs a key that survives losing the droplet without a human holding it. At $0
-there is no such place: GitHub secrets cannot be written by a workflow, and
-anything the droplet holds dies with the droplet. A founder-held key is a later
-nicety, accepted under the slim-until-paying-users rule.
+per-bucket key. It is PLAINTEXT in a private bucket.
+
+The trust boundary this WIDENS, stated plainly (Codex refute): anyone who can
+read `escrow/` holds the keys themselves, not just sealed ciphertext. That means
+they can open sealed sessions and forge billing-entitlement and app-ingress
+HMACs. The readers are:
+- the droplet's per-bucket readwrite key (root on the droplet, which already
+  holds these keys in /etc/tinyassets/env);
+- the DR drill's short-lived per-run read key;
+- DigitalOcean account administrators.
+History is bounded to the newest 10 sets (backup.sh). Encrypting the escrow
+needs a key that survives losing the droplet without a human holding it, and at
+$0 there is no such place: GitHub secrets cannot be written by a workflow, and
+anything on the droplet dies with it. Accepted under the slim-until-paying-users
+rule (lead, 2026-10-02). A founder-held wrapping key is the later upgrade.
+
+Not defended against: an attacker who can write the bucket AND replace both an
+archive and its escrow. Restore can only check the two against each other.
 
 Value shape: exactly one unquoted `NAME=value` line per key (verified on prod,
 2026-10-02). Any other shape is UNSUPPORTED rather than guessed: a partial
@@ -38,6 +50,14 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+try:  # the host is Linux; the import only fails on a developer's Windows box
+    import resource
+
+    # Plaintext keys live in this process: a crash must not write a core file.
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+except ImportError:  # pragma: no cover
+    pass
 
 # The host's env directory. Overridable only so the backup harness can point
 # it at a temp tree; production never sets it.
@@ -60,16 +80,23 @@ _LEGACY_FOR = {
 UNSUPPORTED = object()
 
 
+# The characters these keys are actually made of: base64/base64url (seal,
+# ingress, billing) and a PEM with literal `\n` escapes (VAPID). Anything else,
+# such as interpolation, quoting, comments or control bytes, is UNSUPPORTED, as
+# is a value too short to be a key.
+_VALUE = re.compile(r"[A-Za-z0-9+/=_\\ .:-]{16,8192}")
+
+
 def parse_value(text: str, name: str):
     """The value, None if absent, or UNSUPPORTED for any shape we will not guess at."""
     mentions = [line for line in text.splitlines()
-                if re.match(rf"^\s*(export\s+)?{re.escape(name)}\s*=", line)]
+                if re.match(rf"^\s*(export\s+)?{re.escape(name)}\s*[=:]", line)]
     if not mentions:
         return None
     if len(mentions) != 1 or not mentions[0].startswith(name + "="):
         return UNSUPPORTED
     value = mentions[0].split("=", 1)[1].rstrip()
-    if not value or value[0] in "'\"" or " #" in value:
+    if not _VALUE.fullmatch(value) or " #" in value:
         return UNSUPPORTED
     return value
 
@@ -158,10 +185,12 @@ def install(escrow_text: str, helper: str) -> int:
 
 
 def check_manifest(manifest_text: str) -> int:
-    """Prove the keys on this host are the ones a restored backup was written under.
+    """Check the keys on this host against a backup's key-hash manifest.
 
-    The manifest (NAME sha256 lines) is written into every backup by backup.sh. A
-    match for every key means restored sealed data will open under these keys.
+    The manifest (NAME sha256 lines) is written into every backup by backup.sh,
+    from the host env files at backup time. A match proves only that these key
+    strings are the ones the host's env files held when that archive was taken.
+    It does not decrypt anything and does not authenticate the archive.
     """
     expected: dict[str, str] = {}
     for line in manifest_text.splitlines():
@@ -184,6 +213,33 @@ def check_manifest(manifest_text: str) -> int:
     return 0 if ok else 1
 
 
+def check_escrow_against_manifest(escrow_text: str, manifest_text: str) -> int:
+    """Before installing anything: does this escrow match the archive's manifest?
+
+    Restore runs this FIRST, so a wrong escrow is refused before it becomes
+    set-once state on a fresh host (Codex refute).
+    """
+    expected: dict[str, str] = {}
+    for line in manifest_text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in ESCROWED_KEYS:
+            expected[parts[0]] = parts[1]
+    escrow = escrow_values(escrow_text)
+    ok = True
+    for name in ESCROWED_KEYS:
+        want = expected.get(name)
+        have = escrow[name]
+        if want is None or want in {"ABSENT", "UNSUPPORTED"}:
+            verdict = "not-in-manifest"
+        elif have is None or have is UNSUPPORTED:
+            verdict = "not-in-escrow"
+        else:
+            verdict = "match" if digest(have) == want else "MISMATCH"
+        ok = ok and verdict == "match"
+        print(f"{name}: {verdict}")
+    return 0 if ok else 1
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["write"] and len(argv) == 2:
         return write(Path(argv[1]))
@@ -198,6 +254,8 @@ def main(argv: list[str]) -> int:
         return 0
     if argv == ["verify"]:
         return verify(sys.stdin.read())
+    if argv[:1] == ["check-escrow"] and len(argv) == 2:
+        return check_escrow_against_manifest(sys.stdin.read(), _read(argv[1]))
     if argv[:1] == ["check-manifest"] and len(argv) == 2:
         return check_manifest(_read(argv[1]))
     if argv[:1] == ["install"] and len(argv) == 2:

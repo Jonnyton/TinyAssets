@@ -151,7 +151,7 @@ def test_github_gets_the_brain_tier_only(tmp_path):
 def test_the_escrow_goes_to_its_own_prefix_content_addressed_and_latest(tmp_path):
     result, calls, _ = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups")
     assert result.returncode == 0, result.stdout + result.stderr
-    escrow = [c for c in calls if c.startswith("copyto") and "/escrow/" in c]
+    escrow = [c for c in calls if "copyto" in c.split() and "/escrow/" in c]
     assert len(escrow) == 2
     assert any("offregion:tinyassets-offregion/escrow/history/host-keys-" in c for c in escrow)
     assert any(c.endswith("offregion:tinyassets-offregion/escrow/host-keys.env") for c in escrow)

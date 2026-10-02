@@ -54,10 +54,19 @@ jobs:
           set -euo pipefail
           stage="$1"
           trap 'rm -rf -- "${stage}"' EXIT
-          dest="$(awk -F= '$1 == "BACKUP_OFFREGION_DEST" { v = substr($0, index($0, "=") + 1) } END { print v }' /etc/tinyassets/env)"
+          ulimit -c 0
+          read_env() {
+            awk -F= -v k="$1" '$1 == k { v = substr($0, index($0, "=") + 1) } END { print v }' /etc/tinyassets/env
+          }
+          dest="$(read_env BACKUP_OFFREGION_DEST)"
           if [[ -z "${dest}" ]]; then
             echo "off-region store is not configured on this host (BACKUP_OFFREGION_DEST unset)"
             exit 1
           fi
-          rclone cat "${dest%/*}/escrow/host-keys.env" | python3 "${stage}/host_key_escrow.py" verify
+          # The same destination backup.sh writes, including its override.
+          escrow_dest="$(read_env BACKUP_ESCROW_DEST)"
+          escrow_dest="${escrow_dest:-${dest%/*}/escrow}"
+          env -u RCLONE_DUMP -u RCLONE_LOG_FILE -u RCLONE_VERBOSE -u RCLONE_LOG_LEVEL \
+              rclone --log-level ERROR cat "${escrow_dest}/host-keys.env" \
+            | python3 "${stage}/host_key_escrow.py" verify
           ESCROW_VERIFY

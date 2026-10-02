@@ -283,22 +283,42 @@ if [[ -n "${BACKUP_OFFREGION_DEST:-}" ]]; then
     # rotation adds one; latest is what a restore reads. A host missing a key
     # REFUSES to escrow rather than overwrite a good copy with a partial one.
     ESCROW_DEST="${BACKUP_ESCROW_DEST:-${BACKUP_OFFREGION_DEST%/*}/escrow}"
+    # Plaintext keys are about to exist in this process tree: no core dumps,
+    # and no inherited rclone body-dumping or log-file setting may copy the
+    # escrow into the journal or a log (Codex on the escrow refute).
+    ulimit -c 0
+    escrow_rclone() {
+        env -u RCLONE_DUMP -u RCLONE_LOG_FILE -u RCLONE_VERBOSE -u RCLONE_LOG_LEVEL \
+            rclone --log-level ERROR --contimeout 60s --timeout 300s "$@"
+    }
     escrow_dir="$(mktemp -d /tmp/tinyassets-escrow.XXXXXX)"
     chmod 0700 "${escrow_dir}"
     escrow_file="${escrow_dir}/host-keys.env"
     if python3 "${ESCROW_SCRIPT}" write "${escrow_file}"; then
         escrow_id="$(sha256sum "${escrow_file}" | cut -c1-16)"
-        if rclone copyto --contimeout 60s --timeout 300s \
+        if escrow_rclone copyto \
                 "${escrow_file}" "${ESCROW_DEST}/history/host-keys-${escrow_id}.env" \
-            && rclone copyto --contimeout 60s --timeout 300s \
-                "${escrow_file}" "${ESCROW_DEST}/host-keys.env"; then
+            && escrow_rclone copyto "${escrow_file}" "${ESCROW_DEST}/host-keys.env"; then
             log "  host-key escrow OK"
+            # Bounded history: the newest BACKUP_ESCROW_HISTORY sets (default 10)
+            # by modification time; enough to restore an archive from before a
+            # rotation, without keeping every superseded key forever.
+            escrow_rclone lsf --files-only --format tp --include 'host-keys-*.env' \
+                    "${ESCROW_DEST}/history/" 2>/dev/null \
+                | LC_ALL=C sort -r \
+                | tail -n "+$(( ${BACKUP_ESCROW_HISTORY:-10} + 1 ))" \
+                | cut -d';' -f2 \
+                | while read -r old_set; do
+                    [[ "${old_set}" == host-keys-*.env ]] || continue
+                    escrow_rclone deletefile "${ESCROW_DEST}/history/${old_set}" \
+                        || log "    WARN: could not prune escrow history ${old_set}"
+                done
         else
             log "ERROR: host-key escrow upload failed"
             OFFREGION_FAILED=1
         fi
     else
-        log "ERROR: host-key escrow refused (a key is missing or unsupported on this host)"
+        log "ERROR: host-key escrow refused (a key is missing, unsupported or malformed on this host)"
         OFFREGION_FAILED=1
     fi
     rm -rf "${escrow_dir}"
