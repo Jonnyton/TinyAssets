@@ -1,49 +1,51 @@
 ## ADDED Requirements
 
-### Requirement: Deploys cause no origin downtime
+### Requirement: One execution owner behind replaceable frontends; deploys fail no requests
 
-A production deploy SHALL start the idle colour and wait for its health check
-before moving new requests to it. It SHALL then drain the old colour: no new
-admissions, singleton duties released, in-flight turns and streams finished up
-to the drain bound. A turn still running at the bound SHALL be journaled and
-reconciled on the new colour. Scheduling, triggers, the outbox pump and
-metering SHALL run only under a leadership lease fenced by generation, so two
-colours never both run them. A restart-gap probe at 5-second resolution SHALL
-record origin downtime per deploy.
+The control plane SHALL run exactly one execution owner at a time, under a
+lease fenced by generation. The execution owner covers the agent loop, the turn
+journal writer and its reconciliation, the scheduler, triggers, the outbox
+pump, metering and the storage allocator. Every owner-side mutation SHALL check
+the lease generation. Reconciliation SHALL run only after the lease is
+acquired. Frontends SHALL hold no turn ownership, and SHALL be replaced
+blue-green. While the owner hands over, frontends SHALL queue requests rather
+than fail them. A handover SHALL drain the old owner first: it stops admitting,
+finishes in-flight turns up to the drain bound, journals the rest, cancels
+outstanding box executions and releases the lease. Schema-changing cutovers
+SHALL be declared maintenance windows under the cutover exclusion protocol.
 
 #### Scenario: A deploy during a chat turn
-- **WHEN** a deploy starts while a user's turn is streaming
-- **THEN** the turn finishes on the old colour, new requests go to the new colour, and the probe records zero seconds of origin downtime
+- **WHEN** a deploy runs while a user's turn is streaming
+- **THEN** the turn either finishes on the old owner or is journaled and reconciled after the handover, no live turn is settled as interrupted, and no request fails
 
-#### Scenario: Two colours never both schedule
-- **WHEN** the old colour has not yet released the lease and the new colour starts
-- **THEN** only the lease holder runs triggers, and no trigger fires twice
+#### Scenario: A stalled old owner cannot write
+- **WHEN** an old owner resumes after the new owner acquired the lease at a higher generation
+- **THEN** its next mutation is refused
 
 ### Requirement: A fenced warm standby in a second region
 
 A standby cell and box host SHALL run in a second region or provider. They
-SHALL restore platform state continuously, keep their tunnel connector stopped,
-and restore box disks from off-region backups on first wake. Promotion SHALL
-first fence the primary, by powering it off and blocking its auto-restart
-through a credential held only by CI, and only then start the standby. If
+SHALL restore platform state continuously, keep their tunnel connectors
+stopped, and restore box disks from off-region backups on first wake.
+Promotion SHALL first fence every primary execution host, meaning the cell host
+and any separate box host, by powering them off and blocking auto-restart
+through a credential held only by CI. Only then SHALL it start the standby. If
 fencing cannot be confirmed, promotion SHALL stop and page a human. Failback
-SHALL be manual. The stated recovery points SHALL be about one second for
-platform state, and the backup interval for box files, at most one hour plus
-at suspend when dirty.
+SHALL be manual. The stated recovery point SHALL be about one second for
+platform state, and the last box backup for box files.
 
 #### Scenario: Fencing fails
-- **WHEN** promotion cannot confirm the primary is powered off
+- **WHEN** promotion cannot confirm that a primary host is powered off
 - **THEN** the standby is not started, and a page is sent
 
-### Requirement: The restore drill runs on a schedule from off-region copies, including boxes
+### Requirement: The restore drill runs weekly from off-region copies, including boxes
 
 The DR drill SHALL run weekly on a schedule. It SHALL restore into a fresh host
-from the off-region copies only, never from the primary. It SHALL assert that
-the public canary goes green, and that a sample of boxes restores with matching
-content checksums. A failed drill SHALL page. This requirement supersedes the
-manual-drill clause of "Nightly Two-Tier Backup And Manual Fresh-Host
-Data-Restore Drill" when S1 syncs.
+from off-region copies only, using a fresh template environment with the pinned
+image, and SHALL NOT copy the primary host's environment or secrets. It SHALL
+assert that the public canary goes green, and that a sample of boxes restores
+with matching content checksums. A failed drill SHALL page.
 
 #### Scenario: The drill restores from off-region
 - **WHEN** the weekly drill runs
-- **THEN** it restores platform state and sampled boxes from off-region storage into a fresh host, and the canary goes green
+- **THEN** it restores platform state and sampled boxes from off-region storage into a fresh host without the primary's secrets, and the canary goes green

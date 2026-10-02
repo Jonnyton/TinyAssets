@@ -60,15 +60,25 @@ delivery change, with at most 12 tasks, one owner and one PR. This change's
 1. **Sealed command-center box (`BoxProvider`).**
    - One box per command center. Firecracker with snapshot/restore is the
      primary driver; gVisor is the fallback behind the same interface.
-   - Each box owns its files and a fixed-size disk allocated from the account's
-     storage quota.
-   - The box API is wake-aware: `ensure_awake`, `exec`, `read`, `write`, `list`,
-     `export`, `suspend`, `destroy`. A box suspends after ≤60 s idle.
+   - Each box owns its files, behind a hard per-box disk bound. The account's
+     storage quota stays logical: used bytes, as `account-storage-quota`
+     defines. A host reservation ledger prevents host exhaustion.
+   - The box API separates binding from waking. It has an op-id execution
+     lifecycle (start, stream, cancel, status), paginated and streaming file
+     operations, and `share`/`migration` export profiles. Every operation is
+     authenticated to its owning account and placement epoch. A box suspends
+     after ≤60 s idle and restores only from a matching checkpoint.
    - The daemon never touches box contents through host paths.
+   - The on-disk layout is agreed with `command-center-cutover` (#4262) so data
+     migrates once (design D8a): `cc-<ulid>/` holds user content,
+     `.platform/` holds platform state.
 2. **Thin vendor-neutral agent loop in the control plane.**
-   - It speaks the standard HTTP model protocols.
-   - Credentials stay outside the box and out of the loop process; the egress
-     proxy injects them.
+   - It runs in the cell's single execution owner and speaks the standard HTTP
+     model protocols.
+   - Credentials stay outside the box and out of the loop. Today's credential
+     broker, bound to owner, connection and grant, makes the upstream calls.
+     API-key CLIs reach it through an in-box endpoint, so no TLS interception
+     is needed.
    - A CLI runs in the box only for credential types that need it. A Claude
      subscription is gated by the founder's TOS decision, owner-only.
 3. **Platform state outside every box and universe folder**: vault, run,
@@ -85,11 +95,16 @@ delivery change, with at most 12 tasks, one owner and one PR. This change's
    - SQLite pinned ≥3.51.3.
 6. **A user-to-cell routing seam from day one**, with one cell today:
    `home_cell`, ownership generations, ingress dedup and a transactional outbox.
-7. **Usage limits**: storage, seats, monthly priority compute-hours, and a
-   spare-capacity lane, metered by the box lifecycle. Work waits and is never
-   refused.
+7. **Usage limits stay storage + seats.**
+   - Box-lifecycle compute metering is added.
+   - Host admission is first-come across accounts, within each account's seats.
+     Work waits and is never refused.
+   - A compute-hour budget with a spare-capacity lane is a founder decision,
+     not built here.
 8. **Uptime.**
-   - Zero-downtime blue-green deploys behind the tunnel.
+   - Deploys fail no requests. There is one execution owner under a fenced
+     lease, which keeps the single-writer turn journal, behind blue-green
+     frontends that queue during handover.
    - A warm standby in a second region with fenced promotion.
    - A scheduled DR drill that restores from off-region backups, boxes included.
 9. **Least-privilege secrets per process.** No platform or cloud-account secret
@@ -125,15 +140,20 @@ delivery change, with at most 12 tasks, one owner and one PR. This change's
   replication.
 - `cell-routing`: the home cell, ownership generations, ingress dedup and the
   outbox.
-- `account-compute-budget`: priority compute-hours and the spare-capacity lane,
-  metered from the box lifecycle.
+- `account-compute-budget`: box-lifecycle compute metering, and first-come
+  host admission within seats. Any budget is a founder decision.
 
 ### Modified Capabilities
 
-- `uptime-and-alarms`: zero-downtime deploys, a fenced warm standby in a second
-  region, and a scheduled off-region DR drill that includes boxes.
-- `credential-vault`: per-process secret scope; credentials reach model and API
-  endpoints only through the egress proxy.
+- `uptime-and-alarms`: one execution owner behind replaceable frontends, a
+  fenced warm standby in a second region, and a scheduled off-region DR drill
+  that includes boxes.
+- `credential-vault`: per-process secret scope; the credential broker is the
+  only holder of the vault key, and the narrow exception.
+
+Existing requirements that slices change are MODIFIED in those slices' own
+changes (design §"Spec reconciliation owed"). Raw measurements are in
+`evidence.md`.
 
 ## Impact
 

@@ -1,686 +1,693 @@
 # Design: target architecture
 
+*Revision 2, 2026-10-02.* This revision folds in the cross-family refute (gpt-6-astra, round 1: **ADAPT**, Appendix R). It also adds the on-disk layout agreed with `command-center-cutover` (D8a). Raw measurements are in `evidence.md`.
+
 ## Context
 
 **What production looks like today** (`origin/main` `55a526ff`, read 2026-10-02):
 
-- **One droplet** in DigitalOcean sfo3: `s-4vcpu-8gb`, Debian 12, kernel 6.1. It reports `/dev/kvm`, `kvm_intel` with `nested=Y`, and the `vmx` flag.
-- **One daemon container** serves everything: the MCP and app API, the scheduler, the provider jails and the tool jails.
-- **All state is SQLite plus files** on one Docker volume under `/data`.
-  - Each universe is a host directory, `/data/<universe>/`.
-  - The agent's files and the platform's hidden per-universe state live side by side in it: `.credential-vault.json`, `.runs.db`, the consent, usage and attention databases, lock files.
-- **Isolation is per-call bubblewrap** on the shared kernel:
-  - `universe_tools.py` runs the four tools;
-  - `provider_jail.py` runs provider CLIs, with the universe bound read-write;
-  - #4245 adds a shared seccomp denylist.
-- **Network:**
-  - the tool jail has an empty network namespace plus the checking egress proxy (`universe_egress.py`);
-  - the provider jail moves behind the egress floor in #4245.
-- **Concurrency limits are global:** 4 runs per host (`runs.py:5597`, `TINYASSETS_RUN_MAX_CONCURRENT`) and 4 tool slots (`universe_tools.py:173`).
-- **Daemon-side reads of universe files** go through `universe_files.py` (O_NOFOLLOW per component, bounded). #4247 widens its ratchet to the remaining ~350 sites.
+- **Host.** One droplet in DigitalOcean sfo3: `s-4vcpu-8gb`, Debian 12, kernel 6.1. It reports `/dev/kvm`, `kvm_intel nested=Y` and `vmx`.
+- **One daemon container serves everything:** the MCP and app API, the scheduler, the agent turns, the provider jails and the tool jails.
+- **One process writes `agent_turns`.** `storage/agent_turn_boot.py:28` pins this invariant, and `tests/test_orphaned_turn_reconcile.py` holds it. Startup reconciliation (`universe_server.py:4369`, `agent_turn_reconcile.py:100`) settles any turn this boot did not create.
+- **State is SQLite plus files** on one volume under `/data`. Each universe is a host directory, `/data/<universe>/`, and it mixes the agent's files with hidden platform state: the vault, the run, consent, usage and attention databases, and locks.
+- **Isolation is per-call bubblewrap** on the shared kernel: `universe_tools.py` for the four tools, `provider_jail.py` for CLIs. #4245 adds a shared seccomp denylist.
+- **Credentials.** HTTP model calls already run credential-blind. The generic connector calls an owned broker process bound to the exact owner, connection and grant (`providers/api_key_http_provider.py:354-362`). CLI launches materialise a per-launch credential snapshot.
+- **Concurrency limits are global:** 4 runs per host (`runs.py:5597`) and 4 tool slots (`universe_tools.py:173`).
+- **Daemon reads of universe files** go through `universe_files.py`, with O_NOFOLLOW per component and a size bound. #4247 widens its ratchet to the ~350 remaining sites.
 
-**Approved direction:**
+**Approved direction.**
 
-- The founder approved the sealed box (2026-10-01): "every command center is a sealed box that owns its files and disk; the daemon never reads box contents via host paths, only via the box API; tool calls and provider CLIs run inside it".
-- He then asked for the target shape now (2026-10-02): "move towards the architecture and dependencies we want later sooner rather than later… do things correct the first time".
+- Founder, 2026-10-01, on the sealed box: "approved, go with the sealed box design".
+- Founder, 2026-10-02, on the target shape now: "move towards the architecture and dependencies we want later sooner rather than later… do things correct the first time".
 
-**What this design is.** It fixes the final interfaces and where every piece of data lives. Capacity is the only thing that scales later.
+**What this design is.** It fixes the final interfaces and where every piece of data lives. Capacity is what scales later.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
 1. **One shape for every account and every stage.** Stages change capacity behind fixed interfaces, never code paths ("all accounts, one code path"; PLAN "Phased rollout — explicitly rejected").
-2. **The cross-user floor is held by construction, not by audit:**
+2. **The cross-user floor is held by construction:**
    - a separate kernel per command center;
-   - its own disk;
-   - no daemon access to its files through host paths;
-   - no platform state inside it;
-   - no cross-tenant host uid.
-3. **Cost scales with work, not with registered users.** Boxes are suspended unless acting. The loop holds a waiting turn in about a megabyte. Idle users cost storage only.
+   - a per-box hard disk bound;
+   - no daemon access to box contents through host paths;
+   - no platform state inside a box;
+   - no cross-tenant host uid;
+   - every box operation authenticated to its owning account.
+3. **Cost scales with work, not with registered users.** Boxes are suspended unless acting; idle users cost storage only.
 4. **Uptime:**
-   - no deploy gaps;
-   - continuous off-region durability;
-   - a standby that can take over with fencing;
+   - deploys without request failures;
+   - continuous off-region durability for platform state;
+   - a fenced standby;
    - a recovery drill that actually runs.
 5. **Least-privilege secrets per process.**
 
 **Non-Goals:**
 
-- Building more than one cell, or more than one box host, now. The seams exist; the second instance waits for its capacity trigger.
-- Choosing the Postgres vendor. Postgres is decided (2026-07-25); self-hosted versus managed is a spend decision in S10.
-- Changing the MCP tool surface. The seven canonical handles are unchanged.
-- Settling private-content custody (PLAN carve-out 2). Boxes hold what universes hold today.
-- Running a Claude **subscription** server-side for anyone but its owner. The TOS gate is the founder's decision (D6).
-- Picking the usage-limit numbers. The founder picks them (D9).
+- **More than one cell or box host now.** The seams exist. A second cell (and the cell-move protocol, D10) is built when its capacity trigger fires; that is capacity work, not an interface change.
+- **The Postgres vendor.** Self-hosted versus managed is S10's spend decision.
+- **MCP tool surface changes.** The seven canonical handles are unchanged.
+- **Private-content custody** (PLAN carve-out 2).
+- **Serving a Claude subscription server-side** for anyone but its owner (D6).
+- **A compute-hour budget.** Today's founder rule is storage + seats. D9 adds metering only, and the budget is a founder decision.
 
 ## Architecture
 
 ```
-                    tinyassets.io  (Cloudflare: DNS, Worker router, tunnel)
-                               |
-                 signed cell claim -> cell c0 (only cell today)
-                               |
- +------------------------- CELL (control plane, always on) --------------------------+
- |  blue | green daemon (one active; leadership lease for singleton duties)           |
- |    MCP + app API, auth (WorkOS JWKS)                                               |
- |    thin agent loop (asyncio; HTTP model protocols; turn -> bound BoxHandle)        |
- |    scheduler / triggers / inbox / notifications (the only timers)                  |
- |    platform state: per-account SQLite under <data>/platform/  --Litestream--> R2/B2 |
- |    outbox -> Postgres (catalog, ledger, inbox, market)        (off-region backups)  |
- |  egress proxy (own process, own secret: vault key; placeholder -> credential)       |
- +------------------------------|-----------------------------------------------------+
-                                | BoxProvider RPC (UDS today; mTLS when the host is remote)
- +---------------------- BOX HOST (boxhostd; same machine today) ----------------------+
- |  per command center: one sealed box                                                 |
- |    Firecracker microVM via jailer (distinct uid)  | fallback: gVisor runsc          |
- |    fixed-size disk image (allocated from the account quota), no NIC                 |
- |    boxd (in-box agent) over vsock: exec / read / write / list / export              |
- |    awake only while acting; snapshot + suspend after <=60 s idle                    |
- |  box images + snapshots --restic (dedup chunks)--> off-region                       |
- +-------------------------------------------------------------------------------------+
- standby cell + standby box host in a second region: cloudflared stopped, restoring
- continuously; promoted only after fencing the primary.
+               tinyassets.io (Cloudflare: DNS, Worker router, tunnel)
+                          | signed cell claim -> cell c0 (only cell today)
++----------------------------- CELL (always on) ------------------------------------+
+| FRONTEND  blue | green   MCP + app API, auth; stateless; replaceable per deploy      |
+|     |  (local RPC; queues while the owner hands over)                               |
+| EXECUTION OWNER (exactly one, under a generation-fenced lease)                      |
+|     thin agent loop, agent_turns writer + reconcile, scheduler/triggers/inbox/      |
+|     notifications, outbox pump, metering, storage allocator                        |
+| CREDENTIAL BROKER (own process; only holder of the vault key; owner/connection/     |
+|     grant-bound requests; OAuth refresh)                                            |
+| platform state: .platform/ (D8a)  --Litestream--> off-region                        |
++------------------------------|------------------------------------------------------+
+                               | BoxProvider RPC (UDS now; mTLS when remote), per-op
+                               | auth: cell credential + account + cc + op id + epoch
++------------------- BOX HOST (boxhostd; same machine today) -------------------------+
+| one sealed box per command center: Firecracker via jailer (distinct uid) | gVisor    |
+| per-box hard disk bound; no NIC; boxd over vsock; awake only while acting           |
+| checkpoint manifests bind memory snapshot to disk state; reservation ledger         |
+| box backups from quiesced/suspended images --restic, per-account key--> off-region   |
++-------------------------------------------------------------------------------------+
+standby cell + standby box host in a second region: connectors stopped, restoring;
+promoted only after BOTH primary hosts are fenced.
 ```
 
 ## Decisions
 
-### D1. The unit of isolation is one sealed box per command center
+### D1. One sealed box per command center; Firecracker primary, gVisor fallback
 
-- **Every command center gets exactly one box:**
-  - its own guest kernel (microVM), or its own user-space kernel (gVisor);
-  - its own disk;
-  - no network interface.
-- **The box holds the command center's files:**
-  - the workspace;
-  - brain, wiki, notes, skills and prompts (today's `AGENT_BRAIN_FILES`);
-  - the agent-owned harness files;
-  - workflows and their checkouts;
-  - file-based CLI credentials for command adapters (D6).
-- **Inside the box run** every tool call (the four tools) and every command-adapter CLI. A second agent of the same command center shares the box. The cross-user floor is per user, not per agent (memory `the-floor-is-cross-user-only`).
-- **Driver selection.**
-  - **Firecracker with snapshot/restore is primary.** It gives a hardware VM boundary, and its lazy restore means a woken box pays only for the memory it touches (Evidence E3).
-  - **gVisor (rootful runsc, systrap) is the fallback** behind the same interface. It needs no KVM, starts in ~50 ms, and returns freed memory within 5 s. It cannot restore rootless, and its restore is eager (+420 MiB) (E4).
-  - **The driver is a box-host configuration, not a code path.** Slice S0 decides which driver production starts with. The `BoxProvider` contract tests (S4) run against both drivers in CI.
+- **What a box is.** Every command center gets exactly one box with its own kernel boundary, a hard disk bound and no network interface.
+- **What runs in it.** The box holds the command center's user content (D8a). Every tool call and every CLI run on its behalf executes inside it.
+- **Agents.** Several agents of one command center share its box. The floor is cross-user, not per agent (memory `the-floor-is-cross-user-only`).
+- **Drivers.**
+  - **Firecracker with snapshot/restore is primary.** It gives a hardware VM boundary, and its lazy restore means a woken box pays only for the memory it touches (E3).
+  - **gVisor (rootful runsc, systrap) is the fallback** behind the same contract. It needs no KVM, starts in ~50 ms, and frees memory in 5 s. Its restore is eager and cannot run rootless (E4).
+  - **The driver is box-host configuration, not a code path.** S0 decides which driver production starts with. The contract suite (S4) runs against both drivers.
 - **Rejected:**
-  - *OpenShell as the runtime:* no snapshot, the VM driver is experimental with gateway-wide sizing, and its credential placeholders do not fit subscription CLIs (spike §3).
-  - *Rootless Podman:* shared kernel, and limits fail open without cgroup delegation (spike §4.3).
-  - *Per-call bwrap:* isolation rank 5 (box-cost research §4).
+  - *OpenShell as runtime:* no snapshot, the VM driver is experimental with gateway-wide sizing, and its placeholder model does not fit subscription CLIs (E5).
+  - *Rootless Podman:* shared kernel, and limits fail open without delegation.
+  - *Per-call bwrap:* isolation rank 5.
 
 ### D2. `BoxProvider`: the only way the platform touches a box
 
 ```python
-class BoxProvider(Protocol):            # tinyassets/boxes/provider.py
-    def ensure_awake(self, cc: CommandCenterId, *, reason: WakeReason) -> BoxHandle
-    def exec(self, h: BoxHandle, argv: Sequence[str], *, stdin: bytes = b"",
-             env: Mapping[str, str] = {}, cwd: str = "/cc", limits: ExecLimits) -> ExecResult
-    def read(self, h, path: str, *, offset: int = 0, max_bytes: int) -> FileRead      # bytes + generation
-    def write(self, h, path: str, data: bytes, *, mode: WriteMode,                    # create | replace | cas
-              expect_generation: int | None = None) -> FileWrite
-    def list(self, h, path: str, *, max_entries: int) -> list[DirEntry]
+class BoxProvider(Protocol):                       # tinyassets/boxes/provider.py
+    # binding is separate from waking: bind never contacts the box
+    def bind(self, cc: CommandCenterId, *, account: AccountId, turn: TurnId | None) -> BoxHandle
+    def committed_generation(self, h: BoxHandle) -> int     # from boxhostd metadata; works while suspended
+    def ensure_awake(self, h: BoxHandle, *, reason: WakeReason) -> None
+    # execution lifecycle (idempotent by op_id; a lost reply is resolved by status, never by re-running)
+    def start_exec(self, h, op_id: OpId, argv: Sequence[str], *, stdin: StreamIn | None = None,
+                   env: Mapping[str, str] = {}, cwd: str = "/cc", limits: ExecLimits) -> ExecId
+    def stream(self, h, exec_id: ExecId, *, from_offset: int = 0) -> Iterator[ExecEvent]   # stdout/stderr/exit
+    def cancel(self, h, exec_id: ExecId) -> None        # kills the process tree in the box
+    def exec_status(self, h, op_id: OpId) -> ExecStatus  # running | exited(code) | unknown_after_restore
+    # files (paths are box paths; resolved inside the box)
+    def read(self, h, path: str, *, offset: int = 0, max_bytes: int) -> FileRead       # bytes + generation
+    def read_many(self, h, paths: Sequence[str], *, max_total: int) -> Snapshot        # one generation
+    def write(self, h, op_id: OpId, path: str, data: StreamIn, *, max_bytes: int,
+              mode: WriteMode, expect_generation: int | None = None) -> FileWrite  # temp + rename in box
+    def download(self, h, path: str) -> Iterator[bytes]                                # bounded streaming
+    def list(self, h, path: str, *, cursor: str | None = None, limit: int) -> DirPage  # paginated
     def stat(self, h, path: str) -> FileStat | None
-    def remove(self, h, path: str) -> None
-    def export(self, h, *, manifest: ExportManifest) -> Iterator[bytes]                # D11 bundle stream
-    def import_bundle(self, cc, chunks: Iterable[bytes]) -> ImportReport
-    def usage(self, h) -> BoxUsage                       # bytes used, disk allocation, change generation
-    def suspend(self, h) -> None                         # snapshot + stop; idempotent
-    def destroy(self, cc: CommandCenterId) -> DestroyReceipt   # disk, snapshots, backups (D12)
+    def remove(self, h, op_id: OpId, path: str) -> None
+    # whole-box
+    def export(self, h, *, profile: ExportProfile) -> Iterator[bytes]   # 'share' (scrubbed) | 'migration' (complete)
+    def import_bundle(self, cc, chunks: Iterable[bytes], *, profile: ExportProfile) -> ImportReport
+    def usage(self, h) -> BoxUsage          # used bytes, hard bound, generation
+    def suspend(self, h) -> None            # checkpoint + stop; idempotent
+    def destroy(self, cc, op_id: OpId) -> DestroyReceipt
 ```
 
-- **`BoxHandle`** is bound to `(command_center_id, account_id, box generation)`.
-  - It is minted by `ensure_awake` and carried on the turn object from turn start.
-  - It is never looked up by name per call, so a loop bug cannot route user A's tool call into user B's box (memory `verify-the-binding-in-the-destructive-step`).
-  - A handle whose generation is stale, because the box was destroyed or re-imported, is refused.
-- **Paths are box paths** (`/cc/...`). The provider resolves them inside the box, so a link the agent planted can only resolve inside the box's own filesystem.
-- **Transport.**
-  - `boxhostd` holds the drivers.
-  - The control plane talks to it over a Unix socket today, and over mTLS when the box host is remote. It is the same RPC either way.
-  - `boxhostd` talks to `boxd` inside each box over vsock (Firecracker) or a host-uds socket (gVisor).
-  - Framing: length-prefixed JSON headers plus raw byte frames, no shell interpolation. `exec` takes argv, never a command string.
-- **The daemon process has no filesystem access to box images or snapshots.** They live under `<boxes>/`, owned by the `boxhostd` uid with mode 0700. The daemon runs as a different uid. This is the by-construction close of #4244. A lint plus a ratchet test refuses any `open()` of a box-host path from `tinyassets/` outside the local driver.
-- **Rejected:** a shared filesystem between daemon and box (virtio-fs or 9p bind of a host directory). It reopens the host-path trust class and is not supported by Firecracker.
+**Authentication of every operation.**
+- `boxhostd` authenticates each call with:
+  - the cell's credential;
+  - the handle's account and command center;
+  - the turn, when there is one;
+  - the operation id;
+  - the box's **placement epoch**.
+- It refuses an operation when:
+  - the account does not own the command center;
+  - the epoch is stale (the box moved or was re-imported);
+  - the handle was minted for another command center.
+- **A valid handle passed to the wrong turn still fails at the execution boundary.**
+- A turn binds its handle at turn start and never looks a box up by name per call.
 
-### D3. Disk: one fixed-size image per box, allocated from the account's storage quota
+**Lost replies.**
+- `boxd` records each operation's outcome by `op_id` for a retention window.
+- A retry with the same `op_id` returns the recorded outcome and never re-runs it.
+- An operation in flight across a host crash reports `unknown_after_restore`, and the turn holds instead of re-issuing it. This is the same rule as the turn journal.
 
-- **The image.**
-  - Each box has one ext4 image, created as a fresh sparse file. Holes read as zero, so there is zero-on-allocate by construction (the Cloudflare cross-tenant storage lesson, box-cost research §4).
-  - Its size is the box's **disk allocation**.
-- **The account quota stays one pool per account** (`account-storage-quota`; founder 2026-09-30). The invariant is: *the sum of an account's box allocations ≤ the account's storage quota*. The cell's allocator is the single writer of allocations, and it holds this invariant transactionally.
-  - **A new command center** starts with a small allocation (default 1 GiB, or the remaining pool if smaller).
-  - **Growth.** When `boxd` reports free space below a threshold (default 20% or 256 MiB) and the pool has headroom, `boxhostd` grows the backing file and the box resizes online. Firecracker gets a drive rescan, then `resize2fs` runs in the guest. gVisor's fallback uses an XFS project quota per box directory set to the allocation.
-  - **Shrinking** happens only through an offline compaction (export, then import into a smaller image). It runs when the owner deletes data or asks, never automatically under a running box.
-- **What a box sees at the quota:** `ENOSPC` from its own filesystem. Nothing else on the host is affected.
-- **The user-facing quota refusal** (visible, with an inline "Upgrade" link) happens at the API and loop layer when a grow request is denied. That is the current `account-storage-quota` behaviour, re-homed.
-- **Host disk.** Images are sparse, so the host can overcommit allocations. `boxhostd` refuses a grow when host free space would fall below its floor, and pages.
-- **Measured costs (E3):** a box image starts from the shared read-only base rootfs (1.1 GB, copy-on-write per box) plus the command center's data image.
-- **Rejected:**
-  - a single per-account image shared by several boxes (ext4 cannot be mounted read-write twice);
-  - an even split of the quota per command center (it breaks "one pool").
+**Cache validity without waking** (fixes refute 1).
+- `boxd` keeps a monotonic **change generation**. It is bumped by any write through the API, and by inotify watches on the cache-relevant paths (persona files, `skills/`, `prompts/`), whoever wrote them: a CLI, `bash`, or the API.
+- At suspend, `boxhostd` persists the last generation. That makes `committed_generation` answerable while the box sleeps.
+- A turn with a warm cache at the committed generation calls `bind`, never `ensure_awake`, so it does not wake the box.
 
-### D4. Lifecycle: awake only while acting
+**Transport.**
+- Control plane to `boxhostd`: a Unix socket today, mTLS when the host is remote. It is the same RPC.
+- `boxhostd` to `boxd`: vsock (Firecracker) or host-uds (gVisor). It reconnects after every restore, because vsock connections close on restore (Firecracker snapshot docs).
+- Framing: length-prefixed JSON headers plus raw byte frames. `exec` takes argv, never a command string.
+
+**No host-path access.**
+- Box images, snapshots and the reservation ledger live under `<boxes>/`, owned by the `boxhostd` uid with mode 0700.
+- The daemon runs as a different uid, so it cannot open them.
+- A ratchet test fails any daemon-side open of command-center content outside `BoxProvider`. This is the by-construction close of #4244.
+
+### D3. Disk: per-box hard bound for the floor; logical account quota; physical reservation for the host
+
+The original "sum of allocations = quota" design was wrong in two ways (refute 2). Sparse holes could exhaust the host without a grow request ever being made, and empty reservations consumed the quota. The replacement separates three concerns.
+
+**1. Per-box hard bound (the cross-user floor, by construction).**
+- Each box's filesystem has a hard size: on Firecracker, the ext4 image size; on gVisor, an XFS project quota.
+- A full box sees `ENOSPC` inside itself and affects nothing else.
+- Images are fresh sparse files, which gives zero-on-allocate (the Cloudflare cross-tenant storage lesson).
+- The bound starts at `used + headroom`, where headroom is the smaller of 1 GiB and the account's remaining quota.
+- It grows online through the documented Firecracker sequence: grow the backing file, `PATCH /drives` rescan, then `resize2fs` in the guest. S5 validates this against the pinned version.
+- Shrinking happens only through offline compaction (export, then import).
+
+**2. Logical account quota (the `account-storage-quota` semantics, unchanged).**
+- Account usage = the **used bytes** of each box (from `boxd` statfs, not its bound) + the user-attributable platform bytes that change already counts (run records, checkpoints, upload custody). Platform runtime stays excluded.
+- At the quota, new user-driven writes are refused visibly with the inline Upgrade link, and box bounds stop growing.
+- **Accepted overshoot.** Several awake boxes of one account can together overshoot by at most `headroom × (awake boxes − 1)`. That error is per account, never cross-user, and it is corrected at the next grow or wake. The quota is a usage limit, not a floor invariant.
+
+**3. Physical host reservation (no overcommit of guaranteed space).**
+- `boxhostd` keeps a durable reservation ledger: the sum over boxes of their bounds, plus snapshot space, plus the writable rootfs layer, plus a floor.
+- That sum must fit the host's free space.
+- A grow is **reserve, then resize, then confirm**, and is idempotent by `op_id`. On startup, `boxhostd` reconciles the ledger against the actual image sizes.
+- A grow that would breach the floor is denied (the box hits its own `ENOSPC`) and pages.
+- Because bounds track usage plus headroom, the reservation tracks real usage, not quotas.
+
+**Fencing.** A box host acts on a box only while it holds that box's current placement epoch, which the cell issues. After reassignment, an old host refuses to start or write the box.
+
+### D4. Lifecycle and checkpoints
 
 ```
- absent --create--> cold (image only)
- cold --ensure_awake--> booting --(boxd ready)--> awake
- suspended (snapshot) --ensure_awake--> restoring --> awake
- awake --(no exec/API in flight for idle_s <= 60)--> suspending --> suspended
- awake|suspended --destroy--> absent      (any state --host restart--> suspended or cold)
+ absent --create--> cold --ensure_awake--> booting --> awake
+ suspended --ensure_awake--> restoring --> awake
+ awake --(no op in flight for idle_s)--> checkpointing --> suspended
+ any --destroy--> absent
+ host crash while awake  --> cold   (disk is newer than any memory checkpoint)
 ```
 
-**Idle and timers:**
-- `idle_s` defaults to 30 s and can be configured up to 60 s. It is never a vendor default of 10–15 min.
-- A box has no timers and no cron. In-box background processes freeze with the snapshot and continue on the next wake.
-- Anything that must happen on a schedule is a control-plane trigger (D7).
+**Idle and timers.**
+- `idle_s` defaults to 30 s and can be configured up to 60 s.
+- A box has no timers or cron. In-box background processes freeze at checkpoint and continue on the next restore.
 
-**Restore path:**
-- Firecracker restores from the full snapshot plus the latest diff snapshot. Measured: restore and resume 31–51 ms; guest observed running at 52–166 ms; host RSS 15–22 MiB right after restore (E3).
-- Diff snapshots (2–8 MiB, 20 ms) are taken at suspend, so a crash loses at most the in-memory state since the last suspend. Files persist on the disk image regardless.
+**Checkpoints** (refute 3).
+1. At suspend, `boxhostd` pauses the VM, asks `boxd` to `sync` and freeze the filesystem, then takes the memory snapshot.
+2. It **merges the diff into the base** using the release's `rebase-snap`, so a restore always loads one memory file.
+3. It writes a **checkpoint manifest** binding that memory file to the disk image's content hash and generation.
+4. On resume, the image is marked **dirty**. A restore is allowed only from a manifest whose disk hash still matches.
+5. A dirty image (the host crashed while awake) **cold-boots** from disk. Memory state is lost and the turn reconciles.
 
-**Memory:**
-- The box memory ceiling is 1 GiB (512 MiB default for tools-only boxes). It is a **ceiling, not a reservation**: the balloon and free-page reporting return memory (E3, E5).
+**Restore numbers (E3):** 31–51 ms to resume; running at 52–166 ms; RSS 15–22 MiB after restore.
 
-**Seats and capacity (D9):**
-- A **seat** is one concurrently running agent turn of the account (unchanged semantics).
-- Box awake time is metered for compute-hours.
-- At host capacity, a wake **waits** in the box host's admission queue and is never refused (founder 2026-09-30). The waiting state is visible on the turn and in the activity line.
+**Memory ceiling:** 1 GiB, 512 MiB for tools-only boxes. It is a ceiling, not a reservation: the balloon and free-page reporting return memory.
 
-### D5. Network and credentials
+**Admission.** A **seat** is one concurrently running agent turn of the account, as today. At host capacity, a wake **waits** in the box host's FIFO admission queue and is never refused (founder 2026-09-30). The waiting state is visible.
 
-- **No network interface in any box.**
-  - Egress is a single socket to the cell's egress proxy: vsock for Firecracker, host-uds for gVisor. Measured working through gVisor with our proxy: Anthropic 401 through the proxy, 403 for metadata and private addresses, no direct path (spike §8.3).
-  - The egress floor is unchanged: globally routable only, SMTP ports refused, a per-box connection cap.
-- **Credential placement.** The egress proxy is its own process. It is the only holder of the vault decryption key.
-  - **Header-auth credentials** (API keys, OAuth bearer tokens the platform refreshes) are injected by the proxy, for the endpoint the connection profile names. The loop and the box see only a placeholder. Measured pattern: OpenShell's supervisor swapped a placeholder for the real value only at the approved host (spike §3).
-  - **File-based CLI credentials** that a CLI refreshes itself (Codex `auth.json`) live **inside that user's box**, on its disk image, encrypted at rest with a per-box key held by `boxhostd`. They never live on a shared host path.
-  - **A Claude subscription** is never used server-side for anyone but its owner, and only behind the founder's TOS decision (D6). Default: off.
-- **TLS interception** is needed for placeholder substitution inside HTTPS. It uses a per-cell CA installed only in box images and in the loop's own HTTP client trust store. It is never used for a connection without a placeholder; those are tunnelled byte-for-byte.
+### D5. Network and credentials: the existing broker, extended; no TLS interception
 
-### D6. A thin vendor-neutral agent loop in the control plane; CLI-in-box only where a credential needs it
+**No NIC in any box.** Egress goes to one socket: vsock (Firecracker) or host-uds (gVisor). The cell's egress floor applies unchanged:
+- globally routable destinations only;
+- no metadata, private or loopback addresses;
+- SMTP ports refused;
+- a per-box connection cap.
+
+**The credential broker is the one privileged process.** It holds the vault decryption key. It builds on today's broker (`api_key_http_provider.py:354-362`), which already binds every request to the exact owner, connection and grant, and owns:
+- **Requests for the loop.** The loop sends owner-, connection- and grant-bound requests. The broker performs the HTTPS call to the connection's endpoint itself (its own TLS, with upstream certificate validation), streams the response back, and propagates cancellation.
+- **OAuth refresh and rotation.** These follow the existing single-flight refresh requirement (`credential-vault` "One Shared Single-Flight Credential Refresh"): serialised refresh, re-read under locks, atomic write-back. Revocation and refresh failure report as sign-in failures.
+- **A credential-management interface** for deposit, rotate and revoke, called only by owner-authorised platform actions.
+
+**API-key CLIs in a box.** The CLI's base URL points at a **broker endpoint exposed inside the box** over the egress socket. Examples: `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`.
+- The endpoint is plain HTTP inside the box's private channel.
+- The broker authenticates the box by its socket, and the connection by the CLI's configured connection id.
+- The broker adds the key and makes the upstream TLS call.
+- So **no per-cell CA and no TLS interception** are needed (refute 4). Pinned-certificate CLIs are unaffected, because they talk to the broker, not the upstream.
+
+**File-OAuth CLIs (e.g. Codex login).**
+- These must hold and refresh their own token file. It is stored in `.platform/cc-<ulid>/.credentials/` (D8a).
+- It is materialised into **that** box for the launch, and copied back through the broker after the run.
+- This is the one sanctioned case of a real credential inside a box process, scoped to its owner's box and its run.
+
+**Streaming and WebSockets.** v1 supports request/response and streamed responses (SSE/chunked) with backpressure and cancellation. An upgrade (WebSocket) is supported only for connection protocols that declare it. Redirects are followed only within the connection's declared hosts.
+
+### D6. A thin vendor-neutral loop; CLI in a box only where the credential needs it
 
 **The loop:**
-- It runs as asyncio tasks in the cell's daemon.
-- It speaks the standard model protocols through the generic connector: OpenAI chat and responses, Anthropic messages, and the OpenAI-compatible API (`api_key_http_provider.py` encoders).
-- It holds a waiting turn as a coroutine plus one HTTP stream plus its context buffer. That is estimated at ~1 MB and measured in S7.
-- It never executes model output. It parses tool-call JSON and forwards each call over the turn's bound `BoxHandle`.
+- It runs in the **execution owner** (D11), as asyncio tasks.
+- It speaks the standard model protocols through the broker (D5).
+- It holds a waiting turn as a coroutine plus a stream plus its context buffer, estimated at ~1 MB; S7 measures it.
+- It never executes model output. It forwards each tool call over the turn's bound handle with an `op_id`.
 
-**Effects:**
-- Box memory per awake agent drops from 338–525 MiB (CLI in box) to the tools-only footprint, estimated at 80–130 MiB.
-- The model credential never enters the box (box-cost research §E.2b).
+**Effects.** Box memory per awake agent drops from 338–525 MiB (CLI in box) to the tools-only footprint, estimated at 80–130 MiB, and no model credential is in the box (Anthropic's Managed Agents split: p50 TTFT −60%).
 
-**Precedent:** Anthropic's Managed Agents made the same split and measured p50 TTFT −60% and p95 −90% (staged-architecture §7.5).
+**CLI in a box stays for:**
+- command adapters (any binary);
+- file-OAuth CLIs;
+- the Claude subscription CLI, behind the **owner-scoped** `claude_subscription_serving` setting. It defaults off, only the owner's own command center may turn it on, and that is the founder's TOS decision (memory `anthropic-forbids-third-party-subscription-oauth`).
 
-**CLI-in-box stays** for:
-- **command adapters**, meaning any binary a user connects;
-- **file-OAuth CLIs**, such as Codex via its own login;
-- **a Claude subscription CLI.** That path is gated by `claude_subscription_serving`, an **owner-scoped** setting. Today only the founder's own command center can turn it on, under his TOS decision (memory `anthropic-forbids-third-party-subscription-oauth`). For everyone else the sanctioned subscription path is the user's own device (desktop app).
-- One CLI process never serves two users.
+One CLI process never serves two accounts.
 
-**The turn journal is unchanged** (`agent_turns`, per round). After a failover, an interrupted turn *reconciles* into held states (`agent_turn_reconcile.py`). It does not replay.
+**The turn journal keeps its single-writer invariant.** Only the execution owner writes `agent_turns`, and reconciliation runs only after it acquires the lease (D11). After a failover or host crash, an interrupted turn reconciles into a held state. Its unknown-outcome operations stay unknown (D2), and nothing replays.
 
 ### D7. The control plane is the only always-on layer
 
-- **Inside the cell, under one leadership lease:** the scheduler, the trigger table, the inbox, notifications, the outbox pump, quota and metering.
-- **Coalescing:** one pending run per trigger. Proactive cadence decays with engagement:
-  - 4 runs/day while the user engages;
-  - 1/day after a week without engagement;
-  - weekly after a month;
-  - back to normal on the next interaction.
+- **Under the execution owner's lease:** the scheduler, the trigger table, the inbox, notifications, the outbox pump, metering and the storage allocator.
+- **Coalescing:** one pending run per trigger.
+- **Engagement-decayed proactive cadence:** 4/day while engaged, 1/day after a week, weekly after a month, reset on the next interaction. That puts the dormant duty floor at ~0.1%.
+- A box is woken only by the control plane.
+- The platform-visible record per command center lives in `.platform/`: schedule, routing, unread and notification metadata, quota counters and the activity line. Listing, scheduling and notifying never wake a box.
 
-  That puts the dormant-user duty floor at ~0.1% (box-cost research §D.1).
-- **Waking a box** is always the control plane calling `ensure_awake`. A box cannot schedule itself.
-- **The platform-visible record per command center lives outside the box** (D8): schedule, routing, unread and notification metadata, quota counters, activity line. Listing, scheduling and notifying therefore never wake a box.
+### D8. Data placement
 
-### D8. Data placement: where everything lives
-
-| Data | Home | Store | Replication / backup |
+| Data | Home | Store | Backup |
 |---|---|---|---|
-| Command center files (workspace, brain/wiki, skills, prompts, notes, workflows, agent-owned harness files) | **inside the box**, on its disk image | files | restic (content-defined chunks) to off-region object storage, at suspend when dirty and at least hourly. Restore = rebuild the image |
-| Box memory state | box host | Firecracker snapshot (full + diffs) | not backed up (rebuildable by a cold boot) |
-| File-OAuth CLI credentials | inside the box, encrypted with a per-box key | file | with the box disk |
-| Header-auth credentials (vault) | cell, `<data>/platform/<account>/vault` | encrypted file + key held only by the egress proxy | Litestream/restic, encrypted |
-| Per-command-center platform state: runs, consent, usage, attention, conversation and session journals, rules, auto-review results, activity records, pending effects, proposals, import quarantine, browser profile, locks/stamps | cell, `<data>/platform/<account>/<command_center>/` (never mounted in any box) | per-account SQLite + files | **Litestream v0.5** continuous to off-region (RPO ~1 s); restic for files |
-| Cross-user transactional domains: catalog, ledger, inbox, market | shared | **Postgres** (founder-approved 2026-07-25) | managed point-in-time recovery or pgBackRest to off-region |
-| Commons (OKF bundle) | shared | files (canonical), with a SQLite/FTS index rebuilt from them | restic off-region |
-| Identity map (WorkOS subject → user → home cell) | shared, read-mostly | Postgres (with the catalog) | as Postgres |
-| Release state, health | per cell | file | — |
+| Command center user content | **inside the box** (D8a dir 1 becomes the disk image) | files | restic from quiesced/suspended images only (D11), **per-account encryption key**, off-region |
+| Box memory state | box host | Firecracker checkpoint (merged) + manifest | not backed up; cold boot rebuilds |
+| Vault + file-OAuth CLI credentials | `.platform/cc-<ulid>/` | encrypted; key only in the broker | Litestream/restic, encrypted, per-account key |
+| Per-command-center platform state (D8a dir 2) | `.platform/cc-<ulid>/` | SQLite + files | **Litestream v0.5** off-region (RPO ~1 s); restic for files |
+| Per-account platform state (D8a dir 3) | `.platform/accounts/<id>/` | SQLite | Litestream |
+| Catalog, ledger, inbox, market | shared | **Postgres** (PLAN 2026-07-25) | managed PITR or pgBackRest, off-region |
+| Commons (OKF bundle) | shared | files (canonical) + rebuildable index | restic |
+| Identity map (subject → user → home cell, ownership generation) | shared | Postgres | as Postgres |
+| Root databases (`.tinyassets.db`, `.runs.db`, …) | cell root | SQLite (renamed by the cutover) | Litestream |
 
-**Rules:**
-- Nothing the platform trusts is ever read from inside a box. The platform reads box content only through `BoxProvider`, and treats it as untrusted input (memory `daemon-reads-universe-files-as-untrusted`).
-- Per-account SQLite stays the store for anything owned by one account. Postgres holds only what is genuinely cross-user. This follows the measured counter-example: 37signals moved per-tenant SQLite to MySQL for cross-tenant features and DR (staged-architecture §7.1).
-- **SQLite ≥3.51.3** in every image (prod links 3.46.1; Tailscale WAL-reset race), pinned before Litestream is turned on.
+**Rules.**
+- **The platform never trusts box content.** It reads it only through `BoxProvider`, as untrusted input (memory `daemon-reads-universe-files-as-untrusted`).
+- **SQLite ≥3.51.3 in every image**, pinned before Litestream is turned on.
+- **Each outbox sits beside its cause** (refute 5). An effect bound for Postgres is written to an `outbox` table **in the same SQLite database, and the same transaction, as its cause**. The pump delivers at least once. The Postgres consumer applies idempotently, deduplicating on `(origin store, outbox id)` with a unique constraint. "Exactly once" is not claimed across an asynchronous failover: an effect whose acknowledgement was lost reconciles into an unknown/held state.
 
 **Hot-path cache.**
-- The daemon caches the box reads it needs on every turn: persona grounding (soul, founder files), the skills index, and harness prompts.
-- The cache is keyed by `(command_center, box change generation)`. `boxd` keeps a monotonic change generation, bumped by any write, and returns it on every RPC. A cached entry is valid while the generation matches, so a turn that finds a warm cache never wakes the box.
-- The activity status line is platform state (D7), not a box read.
+- Persona grounding, the skills index and prompts are read with `read_many` at one generation and cached by `(cc, generation)`.
+- A turn compares the cache with `committed_generation`, which needs no wake (D2).
+- The activity line is platform state.
 
-**The #4247 safe-reader ratchet maps onto this directly.**
-- `universe_files.py` becomes the **local driver** behind `BoxProvider.read/list/stat`.
-- Its ratchet test, "no raw read of a universe file outside this module", becomes "no daemon read of command-center content outside `BoxProvider`".
-- The ~350 sites move once (S3). Switching the driver to a box (S11) then changes nothing at the call sites.
+**The #4247 ratchet maps directly.** `universe_files.py` becomes the **local driver** of `BoxProvider.read/read_many/list/stat`. Its ratchet becomes "no daemon read of command-center content outside `BoxProvider`". The ~350 call sites move once (S3), and switching the driver to a box (S11) changes nothing at those sites.
 
-### D9. Usage limits: storage, seats, priority compute-hours, spare lane
+### D8a. Target on-disk layout (agreed with `command-center-cutover`, 2026-10-02)
 
-These are three numbers per account and one code path (box-cost research §F.3):
-- **Storage GiB** is enforced as box disk allocation (D3). New user-driven writes are refused visibly at the quota.
-- **Seats**, meaning concurrent running agent turns: extra turns **wait**.
-- **Priority compute-hours per month** are metered per second from the box lifecycle. One compute-hour is one awake hour of a box with a ≤512 MiB ceiling; larger ceilings scale linearly.
-  - Past the budget, work moves to the **spare-capacity lane**. It is admitted only while the host has headroom: lower priority, never dropped.
-  - A trigger that fires while its previous run is still waiting is coalesced.
-- **Host-capacity admission replaces the global 4-run pool and the 4 tool slots.** One user's fan-out is bounded by their seats, so it can never block another user's admission.
-- **The numbers are the founder's to pick.** Proposed: free 200 compute-hours, 2 seats, 2 GiB; paid 2,000, 8, 20 GiB. Per memory `usage-limits-are-storage-and-seats`, no compute-hour limit code ships until he picks. S9 ships metering and the lane first.
+*This section is shared with `openspec/changes/command-center-cutover` (PR #4262, rename-cc). Both changes cite it. The cutover moves data straight into this layout, so the storage migration runs **once**. After the cutover, S11 turns directory 1 into a disk image. That is an image build, not a second layout migration.*
 
-### D10. Cells: user-to-cell routing from day one, one cell now
+**Rule:** anything the daemon **trusts** goes in the platform directories: authority, identity, owner settings, records. Anything the person or their agent may write is **user content**, and the daemon treats it as untrusted.
 
-- **A cell** is one control plane plus its box host capacity, serving a shard of users. All of a user's command centers live in the user's cell.
-- **The routing seam:**
-  - **`home_cell`** on the account record. A signed `cell` claim is minted at sign-in. The edge Worker routes by the claim, and falls back to a small global lookup on a cold start. Today every claim says `c0` and the Worker has one target.
-  - **Ownership generation** (I11): moving a user bumps it, and requests carrying an older generation are refused, not served stale.
-  - **Ingress dedup and event cursors** (I10): every externally triggered request carries an idempotency key that the cell deduplicates.
-  - **Transactional outbox** (I12): a cell's effects on the shared Postgres domains are written to a local outbox in the same transaction as the cause, then pumped. They are never written directly.
-  - **Consistent export** (I13): `BoxProvider.export` plus the platform-state snapshot, at one change generation, is the user-migration unit between cells and the D11 export bundle.
-- **Moving a user between cells** = export, import, flip `home_cell`, bump the generation. Nothing in the code checks how many cells exist.
+```
+data_dir()/
+  cc-<ulid>/                      1. USER CONTENT = the future box volume (box path /cc)
+  .platform/
+    cc-<ulid>/                    2. per-command-center platform state (daemon-only)
+    accounts/<account_id>/        3. per-account platform state (daemon-only)
+  .tinyassets.db, .runs.db, ...   4. root databases (unchanged location, renamed schema)
+```
 
-### D11. Uptime topology
+| # | Directory | Holds | Never holds |
+|---|---|---|---|
+| 1 | `cc-<ulid>/` | The agent-owned brain files (`identity.md`, `founder.md`, `origin.md`, `body.md`, `orgchart.md`, `projects.md`, `goals.md`, `index.md`, `log.md`, `voice.md`, `AGENTS.md`). The harness dirs (`skills/`, `prompts/`, `extensions/`, `workflows/`, `bin/`, `notes/`, `wiki/`). Upload **bytes**, verbatim (Hard Rule 9). Files a run or the agent wrote into the folder. Permanent workspace generations. Anything else the agent creates | anything the daemon trusts |
+| 2 | `.platform/cc-<ulid>/` | Credentials: the vault, file-OAuth CLI credentials (`.credentials/`). Per-home databases: runs, consent, usage, attention, conversation custody and session journals, checkpoints. Records: rules, auto-review, activity, pending effects, proposals, import quarantine, the browser profile. Identity and coordination: the id marker (`.command_center_id`), lease/seat/slot/lock/stamp state, the egress socket (formerly `.universe-sidecars/<id>/`). Upload **custody** records. **Owner-door files the agent must not write: `soul.md`, `config.yaml`** | agent-writable content |
+| 3 | `.platform/accounts/<account_id>/` | The storage ledger (D3), the compute meter (D9), seat state | — |
+| 4 | root DBs | Unchanged except for the rename. S10 moves catalog, ledger, inbox and market to Postgres. Per-account rows move behind `store_for(account)` in their own slice | — |
 
-**Zero-downtime deploys (blue-green behind the tunnel):**
-- `cloudflared` points at a local switch on the cell host. The switch fronts a `blue` and a `green` daemon.
-- **A deploy:**
-  1. starts the idle colour;
-  2. waits for its health check;
-  3. moves new requests to it;
-  4. puts the old colour into **drain**: no new admissions, scheduler leadership released, in-flight turns and SSE streams finished, up to the drain bound;
-  5. stops the old colour.
+**What the agent may read but must not write** (`soul.md`, `config.yaml`, conversation history) reaches the box as a **read-only projection**, refreshed at wake. The daemon never reads the projection back.
 
-  A turn still running at the bound is journaled and reconciles on the new colour.
-- **Singleton duties (D7) run only under the leadership lease.** It is fenced by a lease generation, so the two colours never both schedule.
-- **Box hosts are unaffected by control-plane deploys.**
-- **Target:** zero origin-down seconds per deploy, measured by a 5-second restart-gap probe. Today: 3.7 min/day.
+**Resolvers:** one module owns all three paths: `command_center_dir(id)`, `platform_dir(id)` (`PlatformStatePaths`, I2) and `account_platform_dir(account_id)`. A test fails on any hand-built path.
+
+### D9. Usage limits: storage + seats (unchanged); compute metering; budget is the founder's call
+
+- **The founder rule stands:** account limits are storage GiB and concurrent seats, and work waits and is never refused (memory `usage-limits-are-storage-and-seats`).
+- **This change ships metering only.** Box awake seconds, weighted by memory ceiling, give an operational measurement of cost per account.
+- **Not built until the founder decides:** a monthly priority compute-hour budget with a spare-capacity lane. Box-cost research §F.3 proposes it, and it would change the two-dimension rule.
+- **Admission fairness, stated measurably** (refute 7). Host-capacity admission is **FIFO across accounts**. One account can occupy at most its seats' worth of concurrently awake boxes. A run within its seats is admitted no later than any later-arriving run from another account. Admission bounds concurrency, not the CPU or I/O a running box consumes. Per-box CPU and IO weights (cgroup `cpu.weight`/`io.weight` on the VMM, or gVisor's equivalents) bound noisy neighbours, measured in S5's co-tenancy test.
+- **Host admission replaces** `TINYASSETS_RUN_MAX_CONCURRENT` and `_HOST_SLOTS`.
+
+### D10. Cells: the seam now, one cell, the move protocol specified
+
+- **A cell** is one control plane plus its box host capacity. All of a user's command centers live in the user's `home_cell`.
+- **The seam, built now in S10:**
+  - `home_cell` on the account, and a signed cell claim minted at sign-in;
+  - the edge routes by the claim, with one target today;
+  - an **ownership generation** in the identity map, so a request or claim with an older generation is refused;
+  - **ingress dedup** by idempotency key;
+  - the beside-the-cause outbox (D8).
+- **Export profiles (refute 5).**
+  - `share`: harness §4.17. Scrubbed, credentials excluded, owner-selected memory.
+  - `migration`: complete private state, re-encrypted credential custody, pending work, dedup history and ownership metadata.
+  - They are one container format with distinct profiles. Only `share` is user-facing.
+- **The move protocol (I13).** It is specified now and built when the second cell's trigger fires:
+  1. close the account's admission;
+  2. drain and fence its turns;
+  3. suspend its boxes (consistent checkpoints);
+  4. snapshot its SQLite stores with the backup API, at one admission-closed point;
+  5. transfer in the `migration` profile and import;
+  6. **flip `home_cell` and bump the generation atomically** in the identity map;
+  7. reopen.
+
+  Writes cannot land between the snapshot and the flip, because admission is closed.
+
+### D11. Uptime: one execution owner behind replaceable frontends
+
+Refute 6 is the blocker this section fixes. Two daemons writing `agent_turns` breaks `agent_turn_boot.py`'s invariant: green's startup would settle blue's live turns before traffic switched.
+
+**The control plane splits into two roles:**
+- **Frontend** (MCP and app API, auth, streaming to clients). It holds no turn ownership, and its deploy is blue-green.
+- **Execution owner** (the loop, the `agent_turns` writer and reconciliation, the scheduler, triggers, the outbox pump, metering, the allocator). There is exactly one at a time, under a **lease fenced by generation**.
+- Frontends forward turn starts and cancellations to the current owner over local RPC. While the owner hands over, frontends **queue** requests. They wait and are never refused.
+
+**Owner handover:**
+1. The new owner starts in standby.
+2. The old owner drains: it stops admitting turns, finishes in-flight turns up to the drain bound, journals the rest, cancels outstanding box executions with `cancel` and records their `op_id`s, then releases the lease.
+3. The new owner acquires the lease at generation+1, runs reconciliation (now safe, because the old owner is gone), and serves the queue.
+4. Every owner-side mutation checks the lease generation, so a stalled old owner cannot write after losing it.
+
+**Measured target:** zero failed requests per deploy; queueing visible as latency. The restart-gap probe (5-second resolution) is evidence, not proof; request-level errors are the metric.
+
+**Schema-changing cutovers are a declared maintenance exception.** Rename D7/C4b needs an exclusive migration, and so does S11. These run in announced freeze windows under the cutover's exclusion protocol. That protocol now covers both frontend colours, the owner, `boxhostd`, Litestream and the backup workers.
 
 **Warm standby, second region:**
-- A smaller standby cell host and box host in another region or provider.
-  - Its `cloudflared` connector is installed and **stopped**, because tunnel replicas take traffic from the nearest edge (staged-architecture §7.4).
-  - It restores Litestream continuously.
-  - It restores box disks lazily, from restic, on the first wake after promotion.
-- **Promotion:**
-  - The detector is a Cloudflare Load Balancer health check, or two red canaries.
-  - The primary is **fenced first**: powered off through the provider API with a scoped token held only by CI, and blocked from auto-restart.
-  - Then the standby's daemon and connector start.
-  - If fencing cannot be confirmed, promotion stops and pages a human.
-  - Failback is manual.
-- **RPO:**
-  - platform state ~1 s (Litestream);
-  - box files ≤ the backup interval (default 1 h, plus at suspend when dirty);
-  - box memory is lost, so the box cold-boots.
-- **RTO:** ≤5 min after detection.
+- A standby cell host and box host. Their connectors are stopped. They restore Litestream continuously, and restore box disks from restic on first wake.
+- **Promotion fences every primary execution host:** the cell host **and** the box host, if separate. They are powered off through the provider API with CI-held credentials and blocked from auto-restart.
+- If fencing cannot be confirmed, promotion stops and pages. Failback is manual.
+- **Promotion also restores:** the broker's vault key (from the founder-held key escrow; S1 defines it) and Postgres (PITR to the standby region).
 
-**DR drill:**
-- **Scheduled weekly**, restoring **from the off-region copies** into a fresh VM.
-- It asserts the canary goes green, and that N sampled boxes restore with matching content checksums.
-- It pages when the drill itself fails.
-- As built, the drill is dispatch-only and last ran 2026-07-24; S1 fixes this.
+**Recovery points:**
+- platform state ~1 s;
+- box files: the last box backup (default ≤1 h, plus at suspend when dirty);
+- box memory is lost, so boxes cold-boot.
 
-### D12. Account deletion, export, and migration
+**Recovery times, stated separately (refute 3):**
+- **API availability** ≤5 min after detection;
+- **a given command center usable**, meaning its image is restored on first wake. That time is size-dependent and is measured in S5, not promised here.
 
-**Account deletion:**
-- `BoxProvider.destroy` for each of the account's command centers removes the disk image, the snapshots, and the box's restic snapshot set, and then prunes it.
-- The platform-state directories and Postgres rows go through the existing schema-derived deletion set (memory `deletion-set-derived-from-schema`).
-- It produces one `DestroyReceipt` per box, and deletion completes only when every receipt exists.
+**Consistent box backups.** Backups are taken only from **suspended** images, or for a box awake longer than the interval, from a brief `boxd` filesystem freeze plus a reflink copy (the box-host filesystem is XFS with reflink). restic reads the immutable copy.
 
-**Export (harness D11 / §4.17):**
-- `BoxProvider.export` streams the command center's files, scrubbed by the D11 manifest, from inside the box, plus the platform-owned records the manifest selects.
-- The result is the same bundle used for sharing, import and moving between cells (D10). Credentials are never exported.
+**DR drill.**
+- It is **weekly and scheduled**, and restores into a fresh host **from off-region copies only**.
+- It uses a fresh template environment with the pinned image. It never copies the primary host's environment or secrets (existing `uptime-and-alarms` requirement).
+- It asserts the canary goes green and that sampled boxes match their content checksums. A failure pages.
 
-**Migration from shared `/data/<universe>` (S11):**
-- It is **clean cutover, no compatibility layer** (memory `clean-cutover-no-compat-while-early`): one locked, idempotent, resumable migration run in the `command-center-cutover` freeze window if that has not shipped yet, otherwise in its own window.
-- **The run:**
-  1. Inventory each universe directory, derived and never hand-listed. Agent-owned regular files go to the box; platform files go to `<data>/platform/` (already done by S2); everything else is reported.
-  2. Build each box image by copying regular files only, refusing links and special files.
-  3. Verify file counts and content hashes inside the box through `BoxProvider`.
-  4. Flip each command center's `box_generation`.
-  5. Keep the source directory read-only until the drill passes.
-- **Backup:** a pre-run volume snapshot plus a restic snapshot off-region.
-- **Rollback:**
-  - before the flip, the old image keeps running unchanged;
-  - after the flip, deploy the previous image plus the pre-run snapshot. The layout guard from rename C4a refuses a mixed state.
+### D12. Deletion, export, migration
+
+**Account deletion keeps today's semantics** (`account_deletion.py:199`, refute 5).
+- The schema-derived deletion set decides what goes.
+- Command centers the person owned that **survive** them keep their box, with the opaque-fingerprint owner. Only command centers the deletion set deletes are `destroy`ed.
+- Destroying removes the image, the checkpoints and the backup set.
+- **Backups are crypto-shredded.** Each account's backup data is encrypted under a per-account key, and deletion destroys that key. Platform replicas (Litestream, standby copies) receive the deletion through normal replication.
+- A **tombstone list** of deleted accounts is checked by every restore, so an old backup cannot resurrect them.
+- Deletion completes when every destroy receipt and the key destruction are recorded.
+
+**Export (harness D11 / §4.17).** `BoxProvider.export(profile="share")` plus the manifest-selected platform records.
+
+**Migration from shared `/data/<universe>`** runs in one window (D8a):
+- **The `command-center-cutover` (#4262)** moves data straight into the D8a layout, so platform state lands in `.platform/` and user content in `cc-<ulid>/`. That delivers S2's moves.
+- **S11 then builds each box image from `cc-<ulid>/`.** It copies regular files only, refusing links and special files, verifies counts and hashes through `BoxProvider`, and flips `box_epoch`. The source stays read-only until the drill passes.
+- **Backup:** a pre-run volume snapshot plus restic off-region.
+- **Rollback:** before the flip, nothing changed. After the flip, redeploy the previous image with the snapshot; the C4a layout guard refuses mixed state.
 
 ## Interfaces fixed by this change
 
 | # | Interface | Module (target) | Local implementation now | Scaled implementation |
 |---|---|---|---|---|
-| I1 | `BoxProvider` (D2) | `tinyassets/boxes/provider.py` | `boxhostd` on the same host (UDS) | remote box hosts (mTLS), N per cell |
-| I2 | `PlatformStatePaths` (D8) | `tinyassets/platform_state.py` | `<data>/platform/<account>/<cc>/` | same, per cell |
-| I3 | Thin turn loop (D6) | `tinyassets/agent_loop/` | in-process asyncio | same in every cell |
-| I4 | Placement `home_cell` (D10) | `tinyassets/cells.py` | constant `c0` | edge-routed cells |
-| I5 | `store_for(account)` | storage factories | per-account SQLite files | same, per cell |
-| I6 | Bundle export/import (D12) | `tinyassets/export_bundle/` | from box | user moves between cells |
-| I7 | `TransactionalStore` (catalog, ledger, inbox, market) | `tinyassets/txstore/` | one Postgres | Postgres HA |
-| I8 | Scheduler/trigger table under lease (D7) | `tinyassets/scheduler/` | in the active colour | per cell |
-| I9 | Release state + health per origin | `scripts/deployed_sha.py`, `/data/release-state.json` | per colour | per cell |
+| I1 | `BoxProvider` (D2) | `tinyassets/boxes/provider.py` | `boxhostd` on the same host (UDS) | remote box hosts (mTLS) |
+| I2 | `PlatformStatePaths` + `command_center_dir` + `account_platform_dir` (D8a) | `tinyassets/platform_state.py` | `.platform/…`, `cc-<ulid>/` | same, per cell |
+| I3 | Thin loop in the execution owner (D6, D11) | `tinyassets/agent_loop/` | one owner process | one per cell |
+| I4 | `home_cell` + signed claim (D10) | `tinyassets/cells.py` | constant `c0` | edge-routed cells |
+| I5 | `store_for(account)` | storage factories | per-account SQLite | same, per cell |
+| I6 | Export profiles `share` / `migration` (D10, D12) | `tinyassets/export_bundle/` | share from box | migration for cell moves |
+| I7 | `TransactionalStore` | `tinyassets/txstore/` | one Postgres | Postgres HA |
+| I8 | Owner lease + scheduler/triggers (D7, D11) | `tinyassets/scheduler/` | one owner | per cell |
+| I9 | Release state + health per role/origin | `scripts/deployed_sha.py` | per colour + owner | per cell |
 | I10 | Ingress dedup + cursors | request-idempotency store | local SQLite | per cell |
-| I11 | Ownership generation | account record | generation 1 | bumped on move |
-| I12 | Outbox to `TransactionalStore` | per-cell SQLite outbox | pump in-process | same |
-| I13 | Consistent export | I6 + platform-state snapshot | — | cell moves |
-| I14 | `EgressProxy` placeholder contract (D5) | `tinyassets/egress/` | own process on the cell host | per cell |
+| I11 | Ownership generation | identity map (Postgres) | generation 1 | bumped on move |
+| I12 | Beside-the-cause outbox + idempotent consumer | each SQLite store + Postgres | in-process pump | same |
+| I13 | Cell move protocol (D10) | `tinyassets/cells.py` | specified, not built | built at the second-cell trigger |
+| I14 | Credential broker (D5) | `tinyassets/broker/` (extends today's owned broker) | own process | per cell |
+| I15 | Box placement epoch + reservation ledger (D3) | `boxhostd` | one host | N hosts |
+
+## Spec reconciliation owed (existing requirements the slices modify)
+
+The umbrella's delta specs sync only when this change archives, after S11. Each slice that changes as-built behaviour MODIFIES or REMOVES the existing requirement **in its own change**, so the main specs never contradict as-built:
+
+| Existing requirement | Owner slice | Change |
+|---|---|---|
+| `uptime-and-alarms` "Nightly Two-Tier Backup And Manual Fresh-Host Data-Restore Drill" | S1 (platform state), S5 (boxes) | MODIFIED: scheduled drill from off-region copies, Litestream tier, box sample. The no-secret-transfer and archive-validation clauses are kept |
+| `credential-vault` "Per-Universe Provider Auth Env Overlay Without Cross-Universe Leakage" | S6, S11 | MODIFIED: API-key CLIs get a broker base URL instead of the key; file-OAuth materialisation moves into the box. REMOVED at S11 for the bwrap path |
+| `credential-vault` "One Shared Single-Flight Credential Refresh" | S6 | kept; the broker becomes its sole caller |
+| `credential-vault` "As-Built Storage Protection Is Filesystem Permissions Only" | S6 | MODIFIED: vault key in the broker only |
+| `account-deletion` (main spec) | S11 | MODIFIED: destroy receipts, crypto-shred, tombstones |
+| `account-storage-quota` (change in flight) | S4/S5 | adds the per-box bound and physical reservation (D3) beside its logical quota |
+| `universe-seats` / `two-dimension-usage-limits` | S9 | host admission replaces the global pool; FIFO fairness |
 
 ## Slice plan
 
-Every slice below is opened as its own delivery change: one owner, one branch, one PR, ≤12 tasks, proposal and design first where it touches storage, authority, migration or money.
-
-**Founder spend** marks slices that need a paid resource approved first.
-
-**Order:** S0, S1, S2 and S8 can start now in parallel. S10 can start any time.
+**How slices ship.** Each slice is delivered as one or more delivery changes. Each change has ≤12 tasks, one owner and one PR, with proposal and design first where it touches storage, authority, migration or money. A slice's checkbox in `tasks.md` ticks when **all** of its changes have landed, deployed, been live-verified and archived. Slices marked **(multi)** are expected to need more than one change.
 
 ```
-S0 ─┐                 S1 (independent)      S8 (independent)     S10 (independent)
-    ├──> S5 ──┐
-S2 ─> S3 ─> S4 ─┬─> S6 ─> S7 ──┐
-                └─> S9 <─ S5   ├──> S11 (cutover)
-                               │
-            S2,S3,S5,S6,S7 ────┘
+S0 ──────────────────────────┐
+S1 (platform durability) ────┼─────────────────────────────┐
+cutover #4262 / S2 ──> S3 ──> S4 ──┬──> S5 ──┐              │
+                                   ├──> S6 ──┼──> S7 ──┐    │
+S8 (owner/frontend split) ─────────┼─────────┘         ├──> S11
+                                   └──> S9 <── S5      │    │
+S10 (Postgres + seam) ─────────────────────────────────┘    │
+S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───┘
 ```
 
-### S0. DigitalOcean nested-KVM validation (decides the box host) — **founder spend**
+### S0. DigitalOcean nested-KVM validation — **founder spend** (staging droplet ~$0.14)
 
-- **Goal:** decide whether Firecracker runs acceptably under DigitalOcean's nested KVM. DO calls nested virtualization unsupported, even though production reports `nested=Y`.
-- **Owner brief:**
-  - Production stays untouched. Run on a **short-lived staging droplet** of the production size (`s-4vcpu-8gb`, sfo3, 2 h ≈ $0.14), created from `deploy/hetzner-bootstrap.sh` and destroyed after.
-  - Fallback if the founder prefers: a gated quiet-window micro-benchmark on production, which needs explicit founder approval.
-  - The scripts already exist from the 2026-10-01 spike: `fc_snap.py`, `gv_ckpt.py` and `sysprobe.py`. They move into `scripts/box_bench/` in this slice.
+- **Goal:** decide Firecracker on DigitalOcean nested KVM versus a bare-metal box host. Production is not touched.
+- **Setup:** a short-lived `s-4vcpu-8gb` droplet in sfo3 for ~2 h, built by `deploy/hetzner-bootstrap.sh` and destroyed after. A quiet-window production benchmark is the alternative, and needs explicit founder approval.
 - **Tasks:**
-  1. Create the staging droplet.
-  2. Run Firecracker + jailer as a dedicated uid.
-  3. Measure cold boot and restore p50/p95, `exec` RPC p50/p95, and snapshot create and size.
-  4. Measure idle CPU per awake box and steal time under 10 and 30 concurrent awake boxes.
-  5. Measure the gVisor equivalents on the same droplet.
-  6. Record the results.
+  1. Move the spike scripts into `scripts/box_bench/` with their versions pinned (`evidence.md`).
+  2. Run Firecracker + jailer as its own uid.
+  3. Measure cold boot and restore p50/p95, exec RPC p50/p95, and checkpoint time and size.
+  4. Measure idle CPU and steal for 10 and 30 awake boxes, plus a 30-box restore storm.
+  5. Run the same set on gVisor.
+  6. Record the raw results.
   7. Destroy the droplet.
   8. Write the decision.
 - **Decision rule:**
-  - **Firecracker on DO** if restore p95 ≤ 500 ms, exec p95 ≤ 50 ms, awake-idle CPU ≤ 5% of a core per box, and 30 awake boxes keep the host responsive (canary p95 unchanged).
-  - **Otherwise a bare-metal box host:** OVH RISE-S Hillsboro, 64 GB, native KVM, $77/mo with setup waived on a 12-month term; **founder spend**. The control plane stays on DO.
-  - **gVisor on the droplet** serves until the box host exists.
-- **Acceptance:** numbers recorded in the slice's design.md with commands; the decision written into this design (D1) and PLAN.
+  - **Firecracker on DO** if restore p95 ≤ 500 ms, exec p95 ≤ 50 ms, awake-idle CPU ≤ 5% of a core per box, and canary p95 is unchanged with 30 awake boxes.
+  - **Otherwise a bare-metal box host:** OVH RISE-S Hillsboro, $77/mo, **founder spend**. gVisor on the droplet serves until it exists.
 
-### S1. Durability foundations and the warm standby — **founder spend**
+### S1. Platform-state durability and the warm standby — **founder spend** (bucket ~$0–5/mo, standby $12–24/mo, Cloudflare LB ~$5/mo) — (multi)
 
-**Spend:**
-- off-region object storage (R2 or B2), ~$0–5/mo;
-- the standby droplet (2–4 GiB), $12–24/mo;
-- a Cloudflare Load Balancer, ~$5/mo.
+- **S1a durability:**
+  1. Pin SQLite ≥3.51.3 and assert it at startup.
+  2. Run Litestream v0.5 for every SQLite store, to off-region.
+  3. Move `BACKUP_DEST` off-region. The GitHub copy keeps the brain tier only.
+  4. Restore test, including point in time.
+  5. Schedule `dr-drill.yml` weekly, restoring from the off-region copy (MODIFIED requirement, see reconciliation).
+  6. Alarms for replication and backup lag.
+  7. Define the vault-key escrow.
+- **S1b standby:**
+  1. Provision the standby through bootstrap, with connectors stopped.
+  2. Continuous restore on the standby.
+  3. Fence-every-primary-host promotion, using a scoped DO token in CI.
+  4. A Cloudflare LB health-check detector.
+  5. A promotion drill.
+  6. The runbook.
+- **Acceptance:** the drill is green from off-region; promotion reaches API-green ≤5 min after detection; RPO is measured.
+- The box-inclusive drill lands in S5.
 
-**Tasks:**
-1. Pin SQLite ≥3.51.3 in the image, and assert it at startup.
-2. Run a Litestream v0.5 sidecar for every SQLite store, to the off-region bucket.
-3. Change `BACKUP_DEST` to the off-region bucket. The GitHub copy keeps the brain tier only.
-4. Restore test from Litestream: point in time.
-5. Give `dr-drill.yml` a weekly `schedule:` and restore from the off-region copy.
-6. Provision the standby through the bootstrap script, with `cloudflared` installed and stopped.
-7. Continuous Litestream restore on the standby.
-8. A fence-then-promote workflow, using a scoped DO token held only by GitHub Actions.
-9. A Cloudflare LB health check as the detector.
-10. A promotion drill.
-11. The runbook.
-12. Spec sync to `uptime-and-alarms` and `platform-state-placement`.
+### S2. Platform state out of the universe directory (§4.16, #4258)
 
-**Acceptance:**
-- the drill restores from off-region and goes green;
-- a promotion drill reaches green ≤5 min after detection;
-- RPO is measured.
+- **If the cutover lands first, it delivers S2's moves.** The cutover (#4262) moves data straight into D8a. S2 then shrinks to tasks 4, 5 and 7.
+- **Tasks:**
+  1. The `PlatformStatePaths` resolver.
+  2. Move the D8a dir-2 items through it.
+  3. A locked, verified startup migration with backup.
+  4. Refuse to open a platform store found inside user content (#4258 attack 3).
+  5. Prove no jail mounts `.platform/`, in the Linux oracle.
+  6. Fold in `.universe-sidecars`.
+  7. Update the deletion set.
+  8. Spec sync.
+- **Acceptance:** the three #4258 reproductions fail in the oracle.
 
-### S2. Platform state out of the universe directory (§4.16, concern #4258)
+### S3. One accessor for command-center content, plus the hot-path cache — (multi, one change per module batch)
 
-**Brief:** the full-blast fix #4258 asked for. It can ship before boxes exist, and it is a hard prerequisite for them.
+- **Tasks:**
+  1. The `BoxProvider` read-side signatures (`read`, `read_many`, `list` with cursor, `stat`) as a local driver over `universe_files.py`.
+  2. Module-batched migrations of the ~350 sites, each its own change.
+  3. Ratchet the count to zero.
+  4. The generation cache.
+  5. A latency check.
+- **Acceptance:** the ratchet holds at 0; no turn-latency regression.
 
-**Tasks:**
-1. Add a `PlatformStatePaths` resolver (I2) as the only way to name a platform file.
-2. Move to `<data>/platform/<account>/<cc>/`, through it:
-   - the vault;
-   - the run, consent, usage, attention, conversation and session stores;
-   - rules, auto-review, activity, pending effects, proposals, import quarantine, the browser profile;
-   - locks and stamps.
-3. Add a startup migration: locked, idempotent and verified, with a backup.
-4. Refuse to open a platform store found inside a universe directory. That closes #4258 attack 3, the pre-created consent database.
-5. Prove no jail mounts the platform root: a test plus the Linux oracle.
-6. Fold in `.universe-sidecars`.
-7. Update the account-deletion set.
-8. Spec sync.
+### S4. `BoxProvider` complete, `boxd`, gVisor driver, allocator and admission — (multi)
 
-**Acceptance:** the #4258 reproductions (rename re-exposure, hard-link capture, forged consent DB) fail in the Linux oracle.
+- **Tasks:**
+  1. `boxhostd` (own uid, RPC, per-operation authentication, placement epochs, op-id outcome log).
+  2. `boxd` (execution lifecycle, files, inotify generation, usage).
+  3. The gVisor driver: rootful runsc, a distinct uid/userns per box, `--network=none`, the egress socket over host-uds, and an XFS-project-quota hard bound.
+  4. The driver-agnostic reservation ledger and the grow protocol (D3).
+  5. FIFO host admission (D9).
+  6. The contract suite. It covers path escape, links resolving in-box only, a stale or foreign handle being refused, a lost-reply retry not re-running, cancel killing the tree, and `ENOSPC` at the bound with no effect on a neighbour.
+  7. Re-point `universe_tools.RUNNER` and `provider_jail.confine_launch` at `BoxProvider`.
+  8. Spec sync.
+- **Acceptance:** the contract suite is green on gVisor in CI; a tool loop runs through a box on staging.
 
-### S3. One accessor for command-center content, plus the hot-path cache
+### S5. Firecracker driver, host build, box backups, box-host operations — **founder spend if S0 picks bare metal** — (multi)
 
-**Brief:** this builds on #4247's ratchet.
+- **Tasks:**
+  1. Firecracker + jailer at a pinned version, one uid per VMM, cgroup CPU/IO weights.
+  2. The base rootfs plus a per-box image; images are fresh sparse files.
+  3. Checkpoint with merge plus a manifest; restore only on a manifest match, otherwise cold boot.
+  4. Idle suspend.
+  5. Balloon and free-page reporting.
+  6. vsock `boxd` with reconnect.
+  7. The online grow sequence, validated.
+  8. The box host on Debian 13 with XFS reflink.
+  9. Consistent restic backups with a per-account key.
+  10. The box-inclusive DR drill.
+  11. Box-host operations:
+      - metrics: awake boxes, admission wait, reservation headroom, restore p95;
+      - a partition and reconnect path;
+      - a compromised-host quarantine runbook (fence, rotate the cell credential, re-image);
+      - checkpoint compatibility across VMM upgrades: cold boot when versions differ.
+  12. A co-tenancy test: one box saturating CPU, memory, disk and egress while a neighbour completes a turn.
+  13. Spec sync.
+- **Acceptance:** the contract suite is green on both drivers; restore p95 meets S0's rule; the co-tenancy test passes.
 
-**Tasks:**
-1. Define the `BoxProvider` read/list/stat/write signatures with a **local driver** wrapping `universe_files.py`.
-2. Migrate the ~350 daemon sites, in batches by module.
-3. Make the ratchet count *any* universe-path open outside the provider, with a target of zero.
-4. Add the change-generation hot-path cache: persona grounding, skills index, prompts.
-5. Measure turn latency before and after.
-6. Spec sync.
+### S6. Credential broker extension and per-process secret scope
 
-**Acceptance:** the ratchet holds at 0; turn latency does not regress.
+- Coordinated with the secret-scope lane.
+- **Tasks:**
+  1. The broker as its own process, the only holder of the vault key, with escrow (S1).
+  2. In-box broker endpoints for API-key CLIs (base-URL mode).
+  3. File-OAuth materialise and copy-back.
+  4. The owner-scoped `claude_subscription_serving` gate, default off.
+  5. Credential rotation: per-cell broker credentials, box-socket identities, revoke.
+  6. Keep `DO_API_TOKEN`, `STRIPE_SECRET_KEY`, `WORKOS_API_KEY` and `CLOUDFLARE_TUNNEL_TOKEN` out of every process handling tenant input; the broker's exception is narrow and stated.
+  7. A `/proc/<pid>/environ` names test per process.
+  8. MODIFIED vault requirements (see reconciliation).
+- **Acceptance:** no real credential in the loop or in any box process, **except** a file-OAuth CLI's own token inside its owner's box during its run (asserted). API-key CLIs reach their API through the broker endpoint.
 
-### S4. `BoxProvider` complete, plus `boxd` and the gVisor driver
+### S7. The thin loop
 
-**Tasks:**
-1. `boxhostd`: its own uid, a Unix-socket RPC, and the framing.
-2. `boxd` in the base image: exec, files, change generation, usage.
-3. The gVisor driver, rootful runsc with systrap. Each box runs as a distinct host uid/user namespace, with `--network=none` and the proxy socket over host-uds.
-4. Contract tests that every driver must pass, covering:
-   - path escape;
-   - links resolving inside the box only;
-   - a stale handle being refused;
-   - a cross-box handle being refused;
-   - `ENOSPC` at the allocation.
-5. Re-point `universe_tools.RUNNER` and `provider_jail.confine_launch` at `BoxProvider`.
-6. The box-host admission queue: wait, never refuse.
-7. Spec sync.
+- **Depends on:** S4, S6, S8.
+- **Tasks:**
+  1. An asyncio loop through the broker in the execution owner.
+  2. Bind the handle at turn start, then forward tool calls by `op_id` over `start_exec`/`stream`/`cancel`.
+  3. The per-round journal (single writer kept).
+  4. Streaming to clients via the frontend.
+  5. CLI-in-box for command adapters and file-OAuth CLIs.
+  6. Memory per waiting turn: 500 concurrent against a mock SSE server.
+  7. A live rendered conversation (`ui-test`).
+  8. Retire the per-turn provider jail for HTTP connections.
+  9. Spec sync.
+- **Acceptance:** live proof; memory measured; cancellation and reconcile work.
 
-**Acceptance:** the contract suite is green on gVisor in CI; a tool loop runs end to end through a box on staging.
+### S8. Execution owner + frontends, the lease, the always-on duties, deploys — (multi)
 
-### S5. Firecracker driver, disk allocator and host build — **founder spend if S0 picks bare metal**
+- **This must land before any second writer exists.** It replaces the "independent blue-green" plan that refute 6 broke.
+- **Tasks:**
+  1. The owner lease with generation fencing, checked by every owner-side mutation.
+  2. Reconciliation runs only after the lease is acquired; `test_orphaned_turn_reconcile.py` is extended.
+  3. Frontend/owner RPC, with queueing during handover.
+  4. The scheduler, triggers, outbox pump and metering under the lease.
+  5. Coalescing and cadence decay.
+  6. No in-box timers (asserted).
+  7. Blue/green frontends behind the local switch.
+  8. `deploy-prod.yml`: frontends blue-green, owner handover.
+  9. The maintenance-exception protocol for schema cutovers.
+  10. A request-level error probe during scripted deploys.
+  11. Spec sync.
+- **Acceptance:** a scripted deploy loop shows 0 failed requests, no duplicate effects and no live turn settled.
 
-**Tasks:**
-1. Firecracker + jailer, one uid per VMM, with a pinned version.
-2. The base rootfs plus the per-box data image. The image is a fresh sparse file.
-3. Full and diff snapshots at suspend, and restore on `ensure_awake`.
-4. The idle timer (≤60 s).
-5. Balloon and free-page reporting.
-6. vsock `boxd`.
-7. The grow-only disk allocator, holding the account invariant (D3).
-8. Rebuild the box host on Debian 13: the droplet, or the bare-metal host S0 picked.
-9. restic backup of the box images, off-region.
-10. The contract suite on Firecracker.
-11. Spec sync.
+### S9. Admission and metering
 
-**Acceptance:**
-- the contract suite is green on both drivers;
-- restore p95 on the production box host meets S0's rule.
+- **Founder decision** before any compute budget exists.
+- **Tasks:**
+  1. Meter box awake seconds weighted by memory ceiling.
+  2. Seat and FIFO host admission replacing `TINYASSETS_RUN_MAX_CONCURRENT` and `_HOST_SLOTS`.
+  3. A visible waiting state.
+  4. Storage refusal when a grow is denied (D3).
+  5. Spec sync.
+- **Only if the founder adopts it:** a compute-hour budget and spare-capacity lane, as its own change.
+- **Acceptance:** FIFO fairness holds under a 20-agent fan-out (measured).
 
-### S6. Egress proxy as credential injector, and per-process secret scope
+### S10. Postgres domains and the cell seam — **founder spend if managed Postgres** ($15.15–30.30/mo; self-hosted $0)
 
-This slice coordinates with the secret-scope lane.
+- **Tasks:**
+  1. Inventory which of the four domains exist today.
+  2. `TransactionalStore` and Postgres.
+  3. A locked, verified migration of the existing domains.
+  4. Beside-the-cause outboxes plus the idempotent consumer.
+  5. The identity map with the ownership generation.
+  6. `home_cell` plus the signed claim plus the Worker route (one target).
+  7. Ingress dedup.
+  8. Off-region Postgres backups.
+  9. Spec sync.
+- **Acceptance:**
+  - a stale-generation request and a duplicate webhook are refused or deduplicated;
+  - a lost-ack outbox delivery applies once.
+  - (The cell move itself is I13, built at the second-cell trigger.)
 
-**Tasks:**
-1. The proxy as its own process, the only holder of the vault key.
-2. The placeholder contract (I14) for header-auth credentials.
-3. A per-cell CA in box images and the loop's trust store. Connections without a placeholder are tunnelled verbatim.
-4. File-OAuth CLI credentials encrypted inside the box.
-5. The owner-scoped `claude_subscription_serving` gate, default off.
-6. Remove `DO_API_TOKEN`, `STRIPE_SECRET_KEY`, `WORKOS_API_KEY` and `CLOUDFLARE_TUNNEL_TOKEN` from every process that handles tenant input, so each lives only in its one consumer.
-7. A test that reads `/proc/<pid>/environ` names per process.
-8. Spec sync to `credential-vault`.
+### S11. Cutover: user content into sealed boxes
 
-**Acceptance:**
-- a box process and the loop process each hold no real credential (asserted);
-- the CLI reaches its API through a placeholder.
-
-### S7. The thin agent loop
-
-**Tasks:**
-1. An asyncio loop over the generic connector's HTTP protocols.
-2. Bind a `BoxHandle` at turn start.
-3. Forward tool calls through it.
-4. The per-round journal (unchanged schema).
-5. Streaming to SSE.
-6. CLI-in-box as the path for command adapters and file-OAuth CLIs.
-7. Measure memory per waiting turn: 500 concurrent turns against a mock SSE server.
-8. A real subscription-free turn, live through `ui-test`.
-9. Retire the per-turn provider jail for HTTP connections.
-10. Spec sync.
-
-**Acceptance:**
-- a live rendered conversation works;
-- the waiting-turn memory is measured;
-- cancellation and reconcile work.
-
-### S8. Always-on control plane, leadership lease, and blue-green deploys
-
-**Tasks:**
-1. A leadership lease with a fenced generation.
-2. The scheduler, triggers, outbox pump and metering run under it.
-3. Trigger coalescing.
-4. Engagement-decayed cadence.
-5. Remove or forbid in-box timers: a box has no cron, asserted.
-6. The blue/green compose services plus the local switch.
-7. Drain mode.
-8. `deploy-prod.yml` switches colours.
-9. A 5-second restart-gap probe.
-10. A replay-safety check: only idempotent requests are retried at the edge.
-11. Spec sync.
-
-**Acceptance:** a scripted deploy loop shows 0 s of origin-down time and no duplicate effects.
-
-### S9. Usage limits on the box lifecycle — **founder decision on the numbers**
-
-**Tasks:**
-1. Meter box awake time per second, weighted by memory ceiling.
-2. Seat admission plus host-capacity admission replace `TINYASSETS_RUN_MAX_CONCURRENT` and `_HOST_SLOTS`.
-3. The spare-capacity lane.
-4. The visible waiting message with its reset time and the inline Upgrade link.
-5. Storage refusal at a denied grow (D3).
-6. Ship the limit numbers only after the founder picks them.
-7. Spec sync to `account-compute-budget`.
-
-**Acceptance:** one account's fan-out never delays another account's admission (measured).
-
-### S10. Postgres domains and the cell seam — **founder spend if managed Postgres**
-
-**Spend:** self-hosted on the cell host is $0; DO managed is $15.15/mo, or $30.30 with HA.
-
-**Tasks:**
-1. Inventory which of catalog, ledger, inbox and market exist on SQLite today.
-2. Define `TransactionalStore` (I7) and stand up Postgres.
-3. Migrate the existing domains in a locked, verified run.
-4. The outbox (I12).
-5. The identity map in Postgres.
-6. `home_cell` + the signed cell claim + the Worker route (one target).
-7. The ownership generation (I11).
-8. Ingress dedup (I10).
-9. Postgres backups off-region.
-10. Spec sync to `cell-routing` and `platform-state-placement`.
-
-**Acceptance:** a simulated user move between two local cells passes the generation and dedup tests.
-
-### S11. Cutover: shared `/data/<universe>` becomes sealed boxes
-
-**Depends on:** S2, S3, S5 (or S4 with gVisor), S6, S7.
-
-**Tasks:**
-1. The derived inventory.
-2. The migration run, inside the `command-center-cutover` freeze window if it is still open (D12).
-3. Per-box verification through `BoxProvider`.
-4. The flip.
-5. Rollback rehearsal on staging.
-6. Export from the box (harness D11) and deletion through `destroy`.
-7. Retire the bwrap tool/provider jails, `.universe-sidecars` and the host-path local driver.
-8. Live proof: a rendered conversation using every tool, plus the public canary with `--assert-handles`.
-9. `deployed_sha.py --assert-contains`.
-10. Spec sync and archive.
-
-**Acceptance:**
-- every command center serves from its box;
-- the old paths are gone;
-- the DR drill restores boxes.
+- **Depends on:** the cutover (#4262) or S2, plus S1, S3, S4/S5 (per S0's decision), S6, S7, S8 and S9.
+- **Tasks:**
+  1. The derived inventory of `cc-<ulid>/`.
+  2. Build the images in a declared freeze window, under the extended exclusion protocol (D11).
+  3. Verify each box through `BoxProvider`.
+  4. The `box_epoch` flip.
+  5. A rollback rehearsal on staging.
+  6. Export (`share`) and deletion through `destroy` + crypto-shred + tombstones.
+  7. Retire the bwrap jails and the host-path local driver.
+  8. Live proof: a rendered conversation using every tool, plus `mcp_public_canary.py --assert-handles`.
+  9. `deployed_sha.py --assert-contains`.
+  10. Sync the umbrella specs, then archive.
+- **Acceptance:** every command center serves from its box; the old paths are gone; the DR drill restores boxes.
 
 ## What this supersedes, and the interim hardening
 
 | Interim item | Status |
 |---|---|
-| #4245 shared seccomp denylist for the bwrap jails | **Keep until S11.** Add the measured delta (mount APIs, `memfd_create` after a compatibility check, `process_vm_*`, pidfd, `execveat(AT_EMPTY_PATH)`, `seccomp(SET_MODE_FILTER)`, non-route netlink) only if S11 is more than ~4 weeks out. Retired by S11 |
-| #4247 safe-reader ratchet | **Becomes S3.** Its module becomes the local driver of `BoxProvider` |
-| #4252/#4253 mask of hidden root files | **Retired by S2:** platform state is no longer there |
-| `openat2` universe-path helper (spike §9) | Folded into S3's local driver; unnecessary after S11 |
-| Per-universe project quota (spike §9) | **Not built.** Replaced by box disk allocation (D3) |
-| `TINYASSETS_RUN_MAX_CONCURRENT` / `_HOST_SLOTS` | Replaced by S9 admission |
-| `.universe-sidecars/` | Folded into S2's platform root |
+| #4245 seccomp denylist for the bwrap jails | Kept until S11. Add the measured delta (`evidence.md` E2) only if S11 is more than ~4 weeks out |
+| #4247 safe-reader ratchet | Becomes S3; its module becomes the local `BoxProvider` driver |
+| #4252/#4253 hidden-file masks | Retired by the cutover/S2 |
+| `openat2` helper, per-universe project quota (spike §9) | Not built; D3 and S3 replace them |
+| `TINYASSETS_RUN_MAX_CONCURRENT` / `_HOST_SLOTS` | Replaced by S9 |
+| `.universe-sidecars/` | Folded into `.platform/cc-<ulid>/` |
 | PLAN "Backend stack (target): Supabase" | Postgres stays; the vendor is open (S10) |
 
 ## Risks / Trade-offs
 
-- **DO nested virtualization is officially unsupported.** S0 measures it, and the design survives either answer. The driver is box-host configuration, and gVisor is the fallback behind the same contract.
-- **Firecracker host-side CVEs** (CVE-2026-5747 VMM OOB write, CVE-2026-1386 jailer symlink). Mitigation: a pinned VMM version, jailer, seccomp on the VMM, a distinct uid per VMM, and patch cadence in the host runbook.
-- **The TLS-interception CA is new attack surface.** It is scoped to placeholder-bearing connections only, and the CA private key is held by the proxy process alone.
-- **The shared loop holds many users' turns in one process.** Mitigations:
-  - credentials are never in it (D5);
-  - the turn object binds the box handle (D2);
-  - model output is never executed;
-  - the loop's own code is the reviewed surface.
-- **Snapshot restore pins to the CPU model.** Firecracker snapshots are not portable across CPU families. On failover to the standby, boxes cold-boot from disk (D11). The memory state loss is accepted.
-- **Box-file RPO is the backup interval** (≤1 h, plus at suspend), weaker than platform state (~1 s). This is accepted and stated in the uptime spec.
-- **Operations labour.** `boxhostd` is our orchestrator. The E2B postmortem says the orchestrator is where outages come from, so it stays one process with no external scheduler (no Nomad or Consul).
-- **The migration touches every user's data.** It is a clean cutover in one locked run, with backup, verify, rollback and a rehearsal on staging (S11 task 5).
+- **DO nested virtualization is unsupported.** S0 measures it; gVisor is the fallback behind the same contract.
+- **Firecracker host CVEs** (2026-5747, 2026-1386). Mitigations: a pinned version, jailer, seccomp, a uid per VMM, patch cadence, and S5's quarantine runbook.
+- **The broker is a high-value process.** It handles requests on tenants' behalf and holds the vault key. Its surface is narrow: owner/connection/grant-bound requests, the box-socket identity, and no execution of content.
+- **Checkpoints are CPU-model-bound.** On failover or a VMM upgrade, boxes cold-boot. Memory loss is accepted, and turns reconcile.
+- **Box-file RPO is the backup interval.** It is weaker than platform state, and stated.
+- **Account quota can overshoot** by bounded headroom (D3). This is per account, never cross-user.
+- **Operations labour:** `boxhostd` is our orchestrator. E2B's outage was its orchestrator, so ours stays one process with no external scheduler.
+- **The migration touches every user's data.** It runs once (D8a), with backup, verify, rollback and rehearsal.
 
 ## Open questions (founder)
 
-1. S0 spend: a staging droplet (~$0.14), or approve a quiet-window benchmark on production instead.
-2. S1 spend: off-region bucket provider (R2 or B2), the standby droplet ($12–24/mo), and the Cloudflare Load Balancer (~$5/mo).
-3. S5 spend, if S0 fails on DO: OVH RISE-S Hillsboro ($77/mo, 12-month term).
-4. S9: the compute-hour numbers.
-5. S10: self-hosted Postgres ($0) or DO managed ($15.15/mo, or $30.30 with HA).
-6. D6: the Claude subscription TOS gate stays owner-only (founder's own command center) until he decides otherwise.
+1. **S0:** a staging droplet (~$0.14), or a quiet-window production benchmark.
+2. **S1:** bucket provider (R2/B2), standby droplet ($12–24/mo), Cloudflare LB (~$5/mo), and the vault-key escrow holder.
+3. **S5, if S0 fails on DO:** OVH RISE-S Hillsboro ($77/mo, 12-month term).
+4. **S9:** whether to add a compute-hour budget and spare lane to storage + seats.
+5. **S10:** self-hosted Postgres ($0) or DO managed ($15.15/$30.30 HA).
+6. **D6:** the Claude subscription stays owner-only (founder's command center) unless he decides otherwise.
 
-## Evidence (measured 2026-10-01/02; the full reports were session artifacts and are summarised here)
+## Appendix R. Cross-family refute, round 1 (gpt-6-astra, 2026-10-02): **ADAPT**
 
-- **E1. Today's production** (read-only, 2026-10-02):
-  - memory and CPU: 1,086 MiB used of 7,940 MiB; CPU 97–99% idle;
-  - restarts: 81 in 4 days, p50 8 s, max 191 s, 14.8 min origin-down;
-  - backups: same region; the full tier is 4.0 GB and fails GitHub's 2 GiB limit;
-  - DR drill last ran 2026-07-24;
-  - SQLite 3.46.1;
-  - the daemon environment holds `DO_API_TOKEN`, `STRIPE_SECRET_KEY` (live), `CLOUDFLARE_TUNNEL_TOKEN` and `WORKOS_API_KEY` (names only);
-  - bill $57.72 (September).
-- **E2. Syscall surface** (#4245 head `30b0249b`, 34 syscalls, real jails versus an unfiltered baseline):
-  - #4245 filters mknod, io_uring, bpf, perf_event_open, keyring, setns, ptrace and userfaultfd. The tool jail also filters symlink, userns and clone3.
-  - Still reaching the kernel in both jails: mount, umount2, open_tree, fsconfig, memfd_create, process_vm_readv/writev, the pidfd family, execveat(AT_EMPTY_PATH), seccomp(SET_MODE_FILTER), non-route netlink.
-  - In the provider jail, after an in-jail `unshare -r --mount`, the mount calls are reachable with namespace capabilities.
-- **E3. Firecracker v1.17.0** (512 MiB guest, warm workspace of 54 MB files plus a 200 MiB incompressible heap, nested KVM on WSL2):
-  - cold boot to warm: 6.3–6.7 s; running warm RSS 416–419 MiB;
-  - full snapshot: 0.56–0.69 s; 512 MiB (295 MiB zstd); diff snapshot 20 ms, 2–8 MiB;
-  - restore: 31–51 ms; running at 52–166 ms; RSS 15–22 MiB after restore, 29–49 MiB after 5 s;
-  - balloon: 192 MiB inflation took RSS from 417 to 319 MiB in 0.2 s.
-- **E4. gVisor release-20260928.0** (systrap, no KVM):
-  - start: 42–59 ms; exec 16 ms median; idle box 16 MiB PSS, ~0 CPU;
-  - checkpoint: 0.32–0.51 s, 265 MiB (241 zstd);
-  - restore: rootful 0.46 s, eager (+420 MiB); **rootless restore unsupported**;
-  - frees 476 → 75 MiB within 5 s;
-  - writing small files through the gofer is slow: 19–32 s for a workspace Firecracker built in 6.5 s;
-  - runs in a production-shaped unprivileged container without `/dev/kvm`.
-- **E5. OpenShell v0.1.2:**
-  - microVM boots at 64 MiB; ~80 MiB idle; 3.4% of a core per idle VM; 5.7 s restart;
-  - libkrun free-page reporting returned 126 of 136 MiB in 15 s;
-  - no memory snapshot;
-  - placeholder credentials proven for header auth;
-  - the codex profile does not drive codex-cli 0.160.
-- **E6. Costs and research** (staged-architecture and box-cost research, 2026-10-01/02):
-  - box tier: OVH RISE-S Hillsboro $77/mo for 64 GB, native KVM;
-  - storage: R2 $0.015/GB-mo with no egress; B2 $6.95/TB-mo;
-  - Litestream v0.5 with point-in-time restore; LiteFS is unsupported;
-  - Cloudflare tunnel replicas route to the nearest replica;
-  - cost per user (est.): ~$6–8 at 10 users, $1–3 at 30–100, $0.15–0.35 at 1k, $0.05–0.14 at 10k. Thin loop plus cadence decay are the biggest levers.
-- **E7. Capacity on today's droplet** (4 vCPU / 7.9 GB, illustrative):
-  - active seats: CLI in gVisor ~19, CLI in Firecracker ~16;
-  - a thin-loop tools-only box (est. 80–130 MiB) roughly triples that;
-  - idle users cost disk only, ~0.3 GB each, ≈ $0.005/mo on R2.
+The disposition of each point is above. In summary:
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | BoxProvider lacks the execution lifecycle, pagination, streaming transfers, bulk reads and cache validation; caching contradicted waking; the handle bound the destination, not the principal | **Accepted.** D2 rewritten: `bind` separate from `ensure_awake`, `committed_generation`, op-id lifecycle, `read_many`, cursors, streaming, per-operation authentication with epochs |
+| 2 | Overcommit made the host guarantee false; the allocator was not crash-safe; the quota semantics changed | **Accepted.** D3 rewritten into three concerns: per-box bound, logical quota, physical reservation ledger plus epochs |
+| 3 | Diff chain, vsock reconnect, memory/disk mismatch after a crash, inconsistent backups, RTO meaning, box-host fencing | **Accepted.** D4 checkpoint manifest and merge; D11 consistent backups, split RTO, fence every host |
+| 4 | Selective TLS interception is unworkable; the existing broker binding was ignored; OAuth refresh had no owner; S6 acceptance contradicted file OAuth | **Accepted.** D5 now builds on the existing broker; base-URL mode for CLIs; no CA; refresh in the broker; S6 acceptance carries the explicit exception |
+| 5 | The outbox transaction boundary; export versus migration; consistent moves; deletion semantics; backup resurrection | **Accepted.** Beside-the-cause outbox; `share`/`migration` profiles; the move protocol; today's deletion semantics kept, plus crypto-shred and tombstones |
+| 6 | Blue-green breaks the `agent_turns` single writer (`agent_turn_boot.py:28`) | **Accepted, blocker.** D11 adds one execution owner behind replaceable frontends; reconciliation only after the lease; schema cutovers are a maintenance exception |
+| 7 | Dependencies (S8, S10, S11, S1/S5, gVisor allocator); D9 broke storage + seats; the fairness claim; oversized slices; missing operations work | **Accepted.** Graph fixed; D9 is metering only, budget a founder decision; FIFO fairness stated; multi-change slices; operations work in S1/S5/S6 |
+| 8 | ADDED-only deltas contradict existing specs; drill secret transfer; vault overlay; the broker exception; the gVisor representation; the compute example; exactly-once | **Accepted.** Reconciliation table (owner slices MODIFY in their own changes); PLAN drill wording fixed; specs reworded (driver-neutral bound, broker exception, at-least-once + idempotent apply, metering example) |
+| — | Evidence summarised without reproducible reports | **Accepted.** `evidence.md` added with versions, commands and raw results; S0 commits the scripts |
