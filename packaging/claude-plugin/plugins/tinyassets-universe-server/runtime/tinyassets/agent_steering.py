@@ -163,6 +163,55 @@ def enqueue(universe_dir: Path, session_key: str, text: str) -> Steer | None:
     return Steer(int(cursor.lastrowid), body, now)
 
 
+@dataclass(frozen=True, slots=True)
+class Pending:
+    """A line the owner sent that no turn has handled yet, as the page shows it."""
+    id: int
+    text: str
+    created_at: float
+    state: str  # "steered": bound to the running turn; "held": the next turn takes it
+
+
+def hold(universe_dir: Path, session_key: str, text: str) -> Steer:
+    """Keep ``text`` for the next turn of ``session_key`` (no turn is open to
+    steer). Saved here before the page is told, so a reload or a closed page
+    loses nothing: the next served turn folds it in, and a page that re-sends it
+    as that turn's own message is not repeated (``take_carryover``)."""
+    key = _key(session_key)
+    body = str(text or "").strip()
+    if not body:
+        raise SteeringRefused("the message is empty")
+    if len(body) > MAX_STEER_CHARS:
+        raise SteeringRefused(f"the message is over {MAX_STEER_CHARS} characters")
+    now = time.time()
+    with closing(_connect(universe_dir)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        waiting = conn.execute(
+            "SELECT COUNT(*) FROM steer WHERE session_key = ?", (key,),
+        ).fetchone()[0]
+        if waiting >= MAX_PENDING:
+            conn.execute("ROLLBACK")
+            raise SteeringRefused(f"{MAX_PENDING} messages are already waiting")
+        cursor = conn.execute(
+            "INSERT INTO steer (session_key, live_id, text, created_at) VALUES (?, NULL, ?, ?)",
+            (key, body, now),
+        )
+        conn.execute("COMMIT")
+    return Steer(int(cursor.lastrowid), body, now)
+
+
+def pending(universe_dir: Path, session_key: str) -> list[Pending]:
+    """Every line of ``session_key`` no turn has handled yet, oldest first."""
+    key = _key(session_key)
+    with closing(_connect(universe_dir)) as conn:
+        rows = conn.execute(
+            "SELECT id, text, created_at, live_id FROM steer WHERE session_key = ? "
+            "AND delivered_at IS NULL ORDER BY id", (key,),
+        ).fetchall()
+    return [Pending(int(r[0]), r[1], float(r[2]), "steered" if r[3] else "held")
+            for r in rows]
+
+
 def take(universe_dir: Path, session_key: str, live_id: str,
          *, budget: int = DELIVERY_BUDGET_CHARS) -> list[Steer]:
     """Lines bound to turn ``live_id`` not yet delivered, now marked delivered.

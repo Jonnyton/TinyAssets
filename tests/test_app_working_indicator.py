@@ -90,7 +90,7 @@ _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued
               "renderStop", "takeInterruptFlush", "flushAfterTurn",
               "drainAfterStop", "takeBatch", "flushBatch",
               "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
-              "adoptSteered")
+              "adoptSteered", "markHeld", "restoreHeldSteers", "readServerTurnRow")
 
 # A real tree. `insertBefore` and a detaching `remove` are the point: thread
 # order is what the ordering half of this bug is about.
@@ -518,16 +518,19 @@ def test_the_page_has_no_second_working_indicator(html):
 
 _LOCAL_AND_SERVER = r"""
 setQueueOwner("p-1");
-await pollStatus();                        // the server already reports a turn
-const serverOnly=indicator();
+// This tab's own send starts first; the server then reports a turn too. (A
+// send made while ONLY another window's turn runs no longer starts a turn of
+// its own -- it steers or waits; test_owner_steering covers that, P1 of
+// 2026-10-02.)
 const turn=sendTurn("and one from this tab");
 await settle();
+await pollStatus();                        // the server reports a turn as well
 const both=indicator();
 renderWorking();                           // the 1s repaint tick, mid-turn
 const afterTick=indicator();
 gates[0].resolve({reply:"done"});
 await turn; await settle();
-console.log(JSON.stringify({serverOnly, both, afterTick, after:indicator()}));
+console.log(JSON.stringify({both, afterTick, after:indicator()}));
 """
 
 
@@ -536,7 +539,6 @@ def test_a_local_turn_and_a_server_turn_do_not_both_speak(tmp_path, html):
     out = _run(tmp_path, html, {
         "activeTurn": {"turn_id": "t-1", "state": "inference_started",
                        "age_s": 30.0, "stale": False}}, _LOCAL_AND_SERVER)
-    assert "another window" in out["serverOnly"]["line"]
     # The page's own send takes the line, and the server sentence does not ride
     # along behind it or get appended to it.
     assert out["both"]["line"] == "Your agent is thinking...", out["both"]["line"]

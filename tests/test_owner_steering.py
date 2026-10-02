@@ -467,3 +467,114 @@ def test_an_answer_that_never_arrives_requeues_every_steered_line(tmp_path):
     out = _page_run(tmp_path, {"lost": True})
     assert out["stillQueued"] == 1
     assert out["sent"] == ["start the long job"]
+
+
+
+# -- P1, live 2026-10-02: a line sent while ANOTHER window's turn ran was lost --
+#
+# The founder's desktop app showed "Your agent is thinking... started in another
+# window"; a message sent then went out as a second, competing turn, never
+# reached the saved thread, and a reload a few seconds later left nothing to
+# recover. A mid-turn send must be saved on the SERVER before the page says it
+# was sent, must survive a reload, and must show in the thread.
+
+
+def test_a_line_with_no_open_turn_is_held_on_the_server_and_listed(monkeypatch, tmp_path):
+    from tests.test_turn_interrupt import _Request
+    from tinyassets import onboarding
+    from tinyassets.api import helpers
+    from tinyassets.auth import middleware
+
+    universe = _universe(tmp_path)
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path / "data")
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    caller = SimpleNamespace(user_id="owner-1")
+    monkeypatch.setattr(middleware, "current_identity", lambda: caller)
+    from tinyassets.api import permissions
+
+    monkeypatch.setattr(permissions, "universe_access_allows",
+                        lambda uid, write=False: caller.user_id == "owner-1" and uid == "u-alpha")
+
+    response = asyncio.run(onboarding._handle_turn_steer(
+        _Request({"universe_id": "u-alpha", "text": "also check the invoice"})))
+    body = json.loads(response.body)
+    assert body["steered"] is False and body["held"] is True and body["steer_id"] > 0
+    assert [(m.text, m.state) for m in agent_steering.pending(universe, THREAD)] == [
+        ("also check the invoice", "held")]
+    # The next served turn folds it in, and a page that re-sends it is not repeated.
+    assert agent_steering.take_carryover(universe, THREAD, "also check the invoice") == []
+
+    listed = asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha"})))
+    assert json.loads(listed.body)["pending"] == []  # taken by the turn above
+    asyncio.run(onboarding._handle_turn_steer(
+        _Request({"universe_id": "u-alpha", "text": "and the receipt"})))
+    listed = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha"}))).body)["pending"]
+    assert [(p["text"], p["state"]) for p in listed] == [("and the receipt", "held")]
+    caller.user_id = "intruder"
+    other = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha"}))).body)
+    assert other.get("pending", []) == []
+    refused = json.loads(asyncio.run(onboarding._handle_turn_steer(
+        _Request({"universe_id": "u-alpha", "text": "plant this"}))).body)
+    assert refused == {"steered": False, "universe_id": "u-alpha"}, "nothing saved for a stranger"
+
+
+_OTHER_WINDOW = r"""
+globalThis.authHeaders=()=>({});
+const posts=[];
+globalThis.fetch=(url,init)=>{
+  const method=(init&&init.method)||"GET";
+  posts.push({url, method, body:init&&init.body?JSON.parse(init.body):null});
+  const doc=url==="/app/turn/steer"?SCENARIO.post:(SCENARIO.pending||{pending:[]});
+  return Promise.resolve({ok:true,status:200,json:async()=>doc});
+};
+// The page learns its account and home with the server answering, as on load.
+setQueueOwner("p-1"); setQueueScope("u-1");
+const working={active_turn:{turn_id:"t9",state:"inference_started",age_s:5,stale:false}};
+readServerTurn(working);
+if(SCENARIO.reload){ queueRestored=false; restoreQueue(); }
+else { sendTurn("also check the invoice"); }
+await settle(); await settle(); await settle();
+const during={converse:converseCalls.slice(), queued:sendQueue.length,
+  posts:posts.filter(p=>p.url==="/app/turn/steer").map(p=>p.body&&p.body.text),
+  thread:bubbles().map(b=>b.text)};
+readServerTurn({active_turn:null});
+await settle(); await settle(); await settle();
+console.log(JSON.stringify({during, sent:converseCalls.slice(), queuedAfter:sendQueue.length}));
+"""
+
+
+def _other_window(tmp_path, scenario):
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    if _NODE is None:
+        pytest.skip("node is required to execute the page's own source")
+    page, _csp = onboarding.render_app_html()
+    return _run(tmp_path, page, scenario, _OTHER_WINDOW)
+
+
+def test_a_send_during_another_windows_turn_is_held_not_a_competing_turn(tmp_path):
+    out = _other_window(tmp_path, {"post": {"steered": False, "held": True, "steer_id": 3}})
+    assert out["during"]["converse"] == [], "no second turn while one is running"
+    assert out["during"]["posts"] == ["also check the invoice"], "saved on the server first"
+    assert "also check the invoice" in out["during"]["thread"], "it shows in the thread"
+    assert out["during"]["queued"] == 1
+    assert out["sent"] == ["also check the invoice"], "it goes out when the turn ends"
+
+
+def test_a_send_into_another_windows_open_turn_steers_it(tmp_path):
+    out = _other_window(tmp_path, {"post": {"steered": True, "steer_id": 3}})
+    assert out["during"]["converse"] == [] and out["during"]["queued"] == 0
+    assert out["sent"] == [], "the running turn heard it: no second turn"
+
+
+def test_a_held_line_survives_a_reload_and_still_goes_out(tmp_path):
+    held = {"pending": [{"id": 3, "text": "also check the invoice", "state": "held"}]}
+    out = _other_window(tmp_path, {"reload": True, "pending": held})
+    assert "also check the invoice" in out["during"]["thread"], "back on screen after reload"
+    assert out["during"]["queued"] == 1 and out["during"]["converse"] == []
+    assert out["sent"] == ["also check the invoice"]

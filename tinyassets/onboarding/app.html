@@ -1885,6 +1885,12 @@
   let seatWait=null;
   let seatLineShown=false;
   function readServerTurn(payload){
+    const wasLive=serverTurnLive();
+    readServerTurnRow(payload);
+    // A turn this page did not start just ended: lines that waited for it go now.
+    if(wasLive && !serverTurnLive() && !activeTurn && sendQueue.length) flushSendQueue();
+  }
+  function readServerTurnRow(payload){
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
       ?payload.seats:null;
     const row=payload&&payload.active_turn;
@@ -3734,9 +3740,15 @@
     // AND the home, it cannot tell an own row from a stranger's, so it says
     // nothing and leaves every row on disk.
     if(queueRestored || !queueScope || !queueOwner) return; queueRestored=true;
-    const now=Date.now();
-    retainedItems=readSavedQueue();
-    retainedItems.forEach(i=>offerSavedLine(i, now));
+    const offer=(serverLines)=>{
+      const now=Date.now();
+      // A line the server holds is already queued again above; its copy saved
+      // on this device is not offered a second time.
+      retainedItems=readSavedQueue().filter(i=>!(ownsSavedRow(i)&&serverLines.includes(i.message)));
+      retainedItems.forEach(i=>offerSavedLine(i, now));
+    };
+    if(typeof fetch!=="function"){ offer([]); return; }
+    restoreHeldSteers().then(offer, ()=>offer([]));
   }
   function offerSavedLine(item, now){
     // OWNERSHIP FIRST, and it is the SAME rule the in-flight record uses. A
@@ -3915,6 +3927,50 @@
     el.appendChild(note); el.steeredNote=note;
     return el;
   }
+  // A queued line's honest state: saved on the server for the next turn, or
+  // kept only on this device because the server could not be reached.
+  function markHeld(el, saved){
+    if(!el) return el;
+    if(el.heldNote&&el.heldNote.remove) el.heldNote.remove();
+    const note=document.createElement("span");
+    note.className="msg-steered-note";
+    note.textContent=saved
+      ? "Saved \u2014 your agent gets this as soon as its current work ends."
+      : "Not saved yet \u2014 kept on this device; it goes out when your agent finishes.";
+    el.appendChild(note); el.heldNote=note;
+    return el;
+  }
+  // After a reload: what the server still holds for this thread comes back on
+  // screen -- a line saved for the next turn is queued again and goes out when
+  // the work ends; one already handed to the running turn shows as sent there.
+  async function restoreHeldSteers(){
+    const owner=queueOwner, scope=queueScope, epoch=MCP._loginEpoch;
+    let doc=null;
+    try{
+      const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:scope})});
+      doc=r.ok?await r.json():null;
+    }catch(e){ doc=null; }
+    if(!doc||!Array.isArray(doc.pending)||epoch!==MCP._loginEpoch||
+       owner!==queueOwner||scope!==queueScope) return [];
+    const restored=[];
+    for(const line of doc.pending){
+      const text=line&&typeof line.text==="string"?line.text:"";
+      if(!text||sendQueue.some(q=>q.message===text)) continue;
+      if(line.state==="steered"){
+        markSteered(appendMessage("founder", text, null,
+          (typeof line.created_at==="number"?line.created_at:Date.now()/1000)));
+      }else{
+        queueTurn(text, text, {inputMethod:"typed", keepComposer:true});
+        const item=sendQueue[sendQueue.length-1];
+        if(item&&item.message===text){ item.heldId=line.id; markHeld(item.bubble, true); }
+      }
+      restored.push(text);
+    }
+    if(!activeTurn && !serverTurnLive()) flushSendQueue();
+    return restored;
+  }
   function unmarkSteered(el){
     if(el&&el.steeredNote&&el.steeredNote.remove) el.steeredNote.remove();
     if(el) el.steeredNote=null;
@@ -3925,8 +3981,8 @@
     // takes it.
     const before=sendQueue.length;
     queueTurn(message, display, opts);
-    const plain=!interruptPending && !!activeTurn && !opts.relay && !opts.echoed &&
-      !opts.consumerRequest && (!display || display===message);
+    const plain=!interruptPending && (!!activeTurn || serverTurnLive()) && !opts.relay &&
+      !opts.echoed && !opts.consumerRequest && (!display || display===message);
     const item=sendQueue.length>before ? sendQueue[sendQueue.length-1] : null;
     // Folded into an identical queued line, or returned to the composer when
     // the queue is full: nothing new to steer.
@@ -3941,8 +3997,13 @@
       doc=r.ok?await r.json():null;
     }catch(e){ doc=null; }
     finally{ pendingSteers--; }
-    if(epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
-       doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    const same=epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    if(same&&doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    // No turn could take it: the server SAVED it for the next one. It stays
+    // queued here too and goes out when the work ends; the next turn does not
+    // repeat a line its own message already carries.
+    else if(same&&doc&&doc.held===true){ item.heldId=doc.steer_id; markHeld(item.bubble, true); }
+    else if(same) markHeld(item.bubble, false);
     // The turn may have ended while this request was out: what was held goes now.
     if(pendingSteers===0 && !activeTurn){
       const batch=steerHeldBatch; steerHeldBatch=false; flushSendQueue(batch);
@@ -3993,7 +4054,13 @@
 
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
-    if($("btn-send").disabled || interruptPending) return steerOrQueue(message, display, opts);
+    // A turn running on the server that this page did not start (another
+    // window, an answered request) is just as busy as this page's own: a send
+    // now steers or waits, never starts a second turn beside it (P1, live
+    // 2026-10-02: such a send was lost).
+    const otherTurn=!activeTurn && serverTurnLive();
+    if($("btn-send").disabled || interruptPending || otherTurn)
+      return steerOrQueue(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the command center (file content
     // embedded verbatim). They differ only when an attachment rode along.

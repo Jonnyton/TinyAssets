@@ -81,7 +81,7 @@ _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
                    "takeBatch", "flushBatch",
                    # Harness S2: steering a running turn, and settling it.
                    "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
-                   "adoptSteered")
+                   "adoptSteered", "markHeld", "restoreHeldSteers", "readServerTurnRow")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.
