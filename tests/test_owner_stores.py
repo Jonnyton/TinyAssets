@@ -39,10 +39,20 @@ def test_the_inventory_names_no_ghosts():
     assert not set(owner_stores.FENCED) & owner_stores.FENCE_BEFORE_C2
 
 
-def test_the_handover_cannot_ship_while_any_store_is_unfenced():
+def test_the_handover_cannot_ship_while_any_store_is_unfenced_or_migrates_on_open():
     if owner_stores.HANDOVER_ENABLED:
         assert not owner_stores.FENCE_BEFORE_C2, (
             "C2 enables a second owner process; every owner store must be fenced first")
+        assert not owner_stores.MIGRATES_ON_OPEN_BEFORE_C2, (
+            "C2 enables a standby owner; no store may migrate when merely opened")
+
+
+def test_the_open_time_migrations_are_listed():
+    """Every connection helper that runs ALTER/rebuild/executescript is named."""
+    for module in owner_stores.MIGRATES_ON_OPEN_BEFORE_C2:
+        assert (_REPO / module).is_file(), module
+    source = (_REPO / "tinyassets/storage/provider_work_authority.py").read_text(encoding="utf-8")
+    assert "executescript" in source, "the listed open-time migration moved; update the list"
 
 
 def test_fenced_writers_actually_check_the_fence():

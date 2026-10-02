@@ -91,7 +91,7 @@ def _progressing_rows(path: Path) -> list[tuple[str, str, str, str, int]]:
         ).fetchone():
             return []
         columns = {r[1] for r in conn.execute("PRAGMA table_info(agent_turns)")}
-        generation = "owner_generation" if "owner_generation" in columns else "1"
+        generation = "owner_generation" if "owner_generation" in columns else "0"
         rows = conn.execute(
             f"SELECT owner_user_id, universe_id, turn_id, state, {generation} AS g "
             f"FROM agent_turns WHERE state IN ({','.join('?' * len(WORKING_STATES))}) "

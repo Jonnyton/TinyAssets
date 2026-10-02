@@ -4468,12 +4468,12 @@ def create_streamable_http_app() -> Starlette:
             # Initialize storage before the scheduler's immediate tick can open
             # the same fresh database and race its first journal-mode switch.
             initialize_consumer(data_dir())
-            # This process is the execution owner: a tree of its own, advertised
-            # to every child it spawns (change execution-owner-lease B1). Its
-            # command center keys are acquired as they are first used.
-            from tinyassets.owner_lease import start_owner_tree
+            # The execution owner's tree: main() starts it before spawning
+            # anything; an app served without main() (tests, embedding) starts it
+            # here. Idempotent for the same process (change execution-owner-lease).
+            from tinyassets.owner_lease import ensure_owner_tree
 
-            start_owner_tree(data_dir())
+            ensure_owner_tree(data_dir())
             # A deploy recreates the container mid-turn, so a progressing agent
             # turn row from the previous owner generation has nothing executing
             # it. Settle them before anything can read them as activity (founder,
@@ -4831,6 +4831,14 @@ def main(
     # earlier failure skips; this call is the one boot can rely on (once-only).
     from tinyassets.api.runs import _ensure_runs_recovery, start_run_owner_watcher
 
+    # This process is the execution owner. Its tree exists, and is advertised in
+    # the environment, BEFORE anything is spawned: engine children and workers
+    # started below inherit it and join it, so the owner's death proof covers
+    # them (change execution-owner-lease D2). Every transport, not only HTTP.
+    from tinyassets.owner_lease import start_owner_tree
+    from tinyassets.storage import data_dir as _owner_data_dir
+
+    start_owner_tree(_owner_data_dir())
     _ensure_runs_recovery()
     # And keep recovering: an engine child that dies mid-run while this server
     # lives is found within one tick, by proof that it died.

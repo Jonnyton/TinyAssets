@@ -149,7 +149,9 @@ def test_a_member_that_joins_late_cannot_act_for_the_moved_key(base, owner):
         late = OwnerTree(base, owner.tree_id).join()  # the delayed child
         try:
             with using_tree(late):
-                with pytest.raises(LeaseBusy):
+                # Its founder is dead, so it refuses outright; and its old
+                # generation is fenced off even if it tried to write directly.
+                with pytest.raises(LeaseLost):
                     acquire(base, A, wait_s=0.2)
                 with pytest.raises(LeaseLost):
                     _fenced_write(store, old)
@@ -294,3 +296,105 @@ def test_engine_spawns_carry_the_owner_tree(monkeypatch, tmp_path):
     instance = engine_mcp_http._EngineServer("u", "o", 1, str(tmp_path))
     assert instance.start() is True
     assert seen[owner_lease.TREE_ENV] == "a" * 32
+
+
+# --- B1 code review round 1 -------------------------------------------------
+
+
+def test_a_child_acts_only_while_its_founder_lives_and_never_succeeds_a_dead_owner(base):
+    """Finding 2: an inherited tree pins a child to the owner that spawned it."""
+    founder = OwnerTree.start(base)
+    child = OwnerTree(base, founder.tree_id).join()
+    try:
+        with using_tree(child):
+            assert child.founder_alive() is True
+            assert acquire(base, A).generation == 1  # acting for a living founder
+        founder.leave()  # the daemon dies; the child lingers
+        with using_tree(child), pytest.raises(LeaseLost):
+            acquire(base, A)
+        # And a child of a NEW owner never takes a key by death recovery.
+        heir = OwnerTree.start(base)
+        heir_child = OwnerTree(base, heir.tree_id).join()
+        try:
+            child.leave()  # the old tree is now entirely dead
+            with using_tree(heir_child), pytest.raises(LeaseBusy):
+                acquire(base, A, wait_s=0.2)
+            with using_tree(heir):
+                assert acquire(base, A, wait_s=1).generation == 2
+        finally:
+            heir_child.leave()
+            heir.leave()
+    finally:
+        child.leave()
+        founder.leave()
+
+
+def test_join_inherited_tree_refuses_when_the_founder_is_gone(base, monkeypatch):
+    founder = OwnerTree.start(base)
+    monkeypatch.setenv(owner_lease.TREE_ENV, founder.tree_id)
+    monkeypatch.setattr(owner_lease, "_trees", {})
+    assert owner_lease.join_inherited_tree(base).tree_id == founder.tree_id
+    monkeypatch.setattr(owner_lease, "_trees", {})
+    founder.leave()
+    with pytest.raises(LeaseLost):
+        owner_lease.join_inherited_tree(base)
+    monkeypatch.delenv(owner_lease.TREE_ENV)
+    assert owner_lease.join_inherited_tree(base) is None
+
+
+def test_the_daemon_starts_its_tree_before_spawning_any_executor():
+    """Finding 1: main() must advertise the tree before engines or the consumer."""
+    from tinyassets import universe_server
+
+    source = Path(universe_server.__file__).read_text(encoding="utf-8")
+    main = source[source.index("def main("):]
+    tree = main.index("start_owner_tree(")
+    for spawn in ("start_engine_mcp_http_servers()", "assigned_consumer.start()",
+                  "start_run_owner_watcher()", 'mcp.run(transport="sse"'):
+        assert tree < main.index(spawn), spawn
+
+
+def test_restore_reads_cataloged_stores_too(base, owner):
+    """Finding 5: a store only the catalog knows still lifts the high-water."""
+    store = _store(base)  # registered, but not at an enumerated path
+    conn = sqlite3.connect(store)
+    conn.execute("CREATE TABLE owner_fence (owner_key TEXT PRIMARY KEY, generation INTEGER)")
+    conn.execute("INSERT INTO owner_fence VALUES (?, 12)", (A,))
+    conn.commit()
+    conn.close()
+    assert _restore().run(base)["high_water"] == {A: 12}
+
+
+def test_restore_finds_consumers_by_mount_overlap_not_volume_name(tmp_path):
+    """Finding 4: a bind of the restored path, or of its parent, is a consumer."""
+    restore = _restore()
+    data = tmp_path / "data"
+    data.mkdir()
+    inspected = [
+        {"Id": "named", "Mounts": [{"Source": str(data), "Destination": "/data"}]},
+        {"Id": "parent", "Mounts": [{"Source": str(tmp_path), "Destination": "/srv"}]},
+        {"Id": "child", "Mounts": [{"Source": str(data / "u1"), "Destination": "/u"}]},
+        {"Id": "elsewhere", "Mounts": [{"Source": str(tmp_path / "other")}]},
+        {"Id": "none", "Mounts": []},
+    ]
+    assert restore.consumers_of(data, inspected) == ["named", "parent", "child"]
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "fork"), reason="POSIX fork only")
+def test_a_forked_child_inherits_no_membership_and_leaves_the_parents_intact(base):
+    """Finding 8: the at-fork hook drops the inherited member descriptor WITHOUT
+    unlocking it (an flock belongs to the shared open file description), so the
+    parent stays a member while the child is not one."""
+    import os
+
+    tree = OwnerTree.start(base)
+    with using_tree(tree):
+        pid = os.fork()
+        if pid == 0:  # the child: the hook already ran
+            code = 0 if not owner_lease._trees else 1
+            os._exit(code)
+        _, status = os.waitpid(pid, 0)
+        assert os.WEXITSTATUS(status) == 0, "the child kept the parent's tree registry"
+        assert owner_lease.tree_alive(base, tree.tree_id) is True, (
+            "the child's exit released the parent's membership")
+    tree.leave()

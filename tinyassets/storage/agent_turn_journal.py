@@ -84,17 +84,26 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ensure_fence_table(conn)
     # Additive and idempotent (change execution-owner-lease, B1): the generation
     # of the owner that created the row. Rows from before the lease existed are
-    # generation 1, which every first acquisition is above, so they read as an
-    # earlier owner's -- exactly what a pre-lease leftover is.
+    # generation 0 -- below every real generation (the first acquisition is 1) --
+    # so the first leased boot reads them as an earlier owner's and settles them,
+    # exactly what the boot rule this replaces did for a pre-deploy leftover.
+    # Additive only, and atomic: re-checked under the write lock, so two
+    # processes cannot race it. A rebuild or rename would need the startup
+    # migration boundary instead (owner_stores.MIGRATES_ON_OPEN_BEFORE_C2).
     columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}
     if "owner_generation" not in columns:
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute(
-                "ALTER TABLE agent_turns ADD COLUMN owner_generation INTEGER NOT NULL DEFAULT 1"
-            )
-        except sqlite3.OperationalError as exc:  # a sibling added it first
-            if "duplicate column" not in str(exc).lower():
-                raise
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}
+            if "owner_generation" not in columns:
+                conn.execute(
+                    "ALTER TABLE agent_turns ADD COLUMN owner_generation "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def _scope(owner: str, universe: str, turn: str) -> tuple[str, str, str]:
@@ -512,7 +521,7 @@ class AgentTurnJournal:
             ).fetchone():
                 return None
             columns = {r[1] for r in conn.execute("PRAGMA table_info(agent_turns)")}
-            generation = "owner_generation" if "owner_generation" in columns else "1"
+            generation = "owner_generation" if "owner_generation" in columns else "0"
             rows = conn.execute(
                 f"SELECT turn_id, state, created_at, {generation} AS owner_generation "
                 "FROM agent_turns WHERE universe_id = ? ORDER BY created_at DESC",
@@ -525,6 +534,7 @@ class AgentTurnJournal:
         newest: dict[str, object] | None = None
         for row in rows:
             if row["state"] not in WORKING_STATES:
+                boot.forget(uid, row["turn_id"])  # settled: nothing left to remember
                 continue
             started = row["created_at"]
             if not isinstance(started, str) or not started.endswith("Z"):

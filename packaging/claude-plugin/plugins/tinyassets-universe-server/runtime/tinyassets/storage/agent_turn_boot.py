@@ -18,12 +18,6 @@ process, and a restart is reconciled by generation instead.
 from __future__ import annotations
 
 import threading
-from collections import OrderedDict
-
-#: Released turns remembered for the projection. A turn released longer ago than
-#: this many releases has long since been settled or reconciled; the bound keeps
-#: a long-lived process from growing without limit.
-_RELEASED_MEMORY = 4096
 
 
 class BootTurns:
@@ -32,13 +26,16 @@ class BootTurns:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._claimed: set[tuple[str, str]] = set()
-        self._released: OrderedDict[tuple[str, str], None] = OrderedDict()
+        #: Stopped turns whose rows may still read as progressing. Kept until the
+        #: projection sees the row settled (:meth:`forget`), never evicted by count:
+        #: forgetting a still-progressing row would paint it as activity again.
+        self._released: set[tuple[str, str]] = set()
 
     def claim(self, universe_id: str, turn_id: str) -> None:
         """This process created that turn and is about to execute it."""
         with self._lock:
             self._claimed.add((universe_id, turn_id))
-            self._released.pop((universe_id, turn_id), None)
+            self._released.discard((universe_id, turn_id))
 
     def release(self, universe_id: str, turn_id: str) -> None:
         """Nothing in this process is executing that turn any more.
@@ -50,13 +47,16 @@ class BootTurns:
             if (universe_id, turn_id) not in self._claimed:
                 return
             self._claimed.discard((universe_id, turn_id))
-            self._released[(universe_id, turn_id)] = None
-            while len(self._released) > _RELEASED_MEMORY:
-                self._released.popitem(last=False)
+            self._released.add((universe_id, turn_id))
 
     def holds(self, universe_id: str, turn_id: str) -> bool:
         with self._lock:
             return (universe_id, turn_id) in self._claimed
+
+    def forget(self, universe_id: str, turn_id: str) -> None:
+        """The row is no longer progressing; the stopped mark has done its job."""
+        with self._lock:
+            self._released.discard((universe_id, turn_id))
 
     def stopped(self, universe_id: str, turn_id: str) -> bool:
         """This process created the turn and is no longer executing it."""

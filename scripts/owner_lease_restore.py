@@ -7,13 +7,16 @@ generation a recovered store already carries, and an old owner's leftovers would
 then read as the new owner's own. So after a restore, before any owner starts:
 
 1. take the host-mutation flock and hold it to the end;
-2. stop every container that mounts the data volume (found by volume mount, not
-   by process name), unless ``--stack-already-stopped``;
+2. stop every running container with ANY mount whose source overlaps the data
+   directory being restored (the named volume's mountpoint, a bind of it, or a
+   bind of a parent or child path), found by inspecting mounts -- never by a
+   hardcoded volume name -- unless ``--stack-already-stopped``;
 3. commit ``restore_state = 'in_progress'`` -- every acquisition refuses while it
    is set, so a crash anywhere below fails CLOSED until this tool is re-run;
 4. compute each key's high-water from the recovered lease generation, every fence
-   in every store found by each store kind's own path enumerator (independent of
-   the catalog), and every ``agent_turns.owner_generation``;
+   in every store -- the UNION of the recovered catalog and each store kind's own
+   path enumerator, so neither a store the catalog never saw nor one only the
+   catalog knows is missed -- and every ``agent_turns.owner_generation``;
 5. in ONE transaction: write each key ``released`` at its high-water, record the
    manifest and clear ``restore_state``.
 
@@ -39,7 +42,6 @@ from tinyassets import owner_lease  # noqa: E402
 from tinyassets.storage.owner_fence import stored_fences  # noqa: E402
 
 LOCK_FILE = "/var/lock/tinyassets-host-mutation.lock"
-VOLUME = "tinyassets-data"
 
 
 def begin(data_dir: Path) -> None:
@@ -81,8 +83,9 @@ def high_water(data_dir: Path) -> dict[str, int]:
     with owner_lease.lease_db(data_dir) as conn:
         for row in conn.execute("SELECT owner_key, generation FROM owner_lease"):
             lift(row["owner_key"], row["generation"])
-    stores: set[Path] = set()
-    for kind, enumerate_paths in owner_lease.STORE_ENUMERATORS.items():
+    stores: set[Path] = {path.resolve() for path, _kind in owner_lease.catalog(data_dir)
+                         if path.is_file()}
+    for _kind, enumerate_paths in owner_lease.STORE_ENUMERATORS.items():
         stores.update(p.resolve() for p in enumerate_paths(data_dir))
     for store in sorted(stores):
         for key, generation in stored_fences(store).items():
@@ -122,19 +125,40 @@ def run(data_dir: Path) -> dict:
     return finish(data_dir, high_water(data_dir))
 
 
-def _stop_volume_consumers() -> list[str]:
-    ids = subprocess.run(
-        ["docker", "ps", "-q", "--filter", f"volume={VOLUME}"],
-        capture_output=True, text=True, check=True,
-    ).stdout.split()
+def _overlaps(a: Path, b: Path) -> bool:
+    return a == b or a in b.parents or b in a.parents
+
+
+def consumers_of(data_dir: Path, inspected: list[dict]) -> list[str]:
+    """Running containers with any mount whose source overlaps ``data_dir``."""
+    target = data_dir.resolve()
+    found = []
+    for container in inspected:
+        for mount in container.get("Mounts") or []:
+            source = mount.get("Source") or ""
+            if source and _overlaps(Path(source).resolve(), target):
+                found.append(container["Id"])
+                break
+    return found
+
+
+def _running_consumers(data_dir: Path) -> list[str]:
+    ids = subprocess.run(["docker", "ps", "-q", "--no-trunc"], capture_output=True,
+                         text=True, check=True).stdout.split()
+    if not ids:
+        return []
+    inspected = json.loads(subprocess.run(["docker", "inspect", *ids], capture_output=True,
+                                          text=True, check=True).stdout)
+    return consumers_of(data_dir, inspected)
+
+
+def _stop_volume_consumers(data_dir: Path) -> list[str]:
+    ids = _running_consumers(data_dir)
     if ids:
         subprocess.run(["docker", "stop", *ids], check=True, capture_output=True)
-    still = subprocess.run(
-        ["docker", "ps", "-q", "--filter", f"volume={VOLUME}"],
-        capture_output=True, text=True, check=True,
-    ).stdout.split()
+    still = _running_consumers(data_dir)
     if still:
-        raise SystemExit(f"containers still mount {VOLUME}: {still}")
+        raise SystemExit(f"containers still mount {data_dir}: {still}")
     return ids
 
 
@@ -144,12 +168,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stack-already-stopped", action="store_true",
                         help="skip step 2; the operator verified nothing mounts the volume")
     args = parser.parse_args(argv)
+    if not args.data_dir.is_absolute() or not args.data_dir.is_dir():
+        raise SystemExit("--data-dir must be an existing absolute directory")
     import fcntl  # Linux host only, by design
 
     with open(LOCK_FILE, "w", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not args.stack_already_stopped:
-            stopped = _stop_volume_consumers()
+            stopped = _stop_volume_consumers(args.data_dir)
             print(json.dumps({"stopped": stopped}))
         print(json.dumps(run(args.data_dir), sort_keys=True))
     return 0

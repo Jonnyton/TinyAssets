@@ -562,3 +562,38 @@ def test_this_process_remembers_only_which_of_its_turns_it_stopped_running():
     assert boot.holds("home", "t") is False and boot.stopped("home", "t") is True
     boot.release("home", "t")  # idempotent; a turn released twice is not an error
     assert boot.stopped("home", "t") is True
+
+
+def test_the_first_leased_boot_settles_a_pre_lease_leftover(journal):
+    """A row written before B1 deployed has no owner generation. The first boot
+    that runs with leases must still settle it -- the boot rule this replaces
+    did -- so pre-lease rows are generation 0, below every real generation."""
+    turn = _killed_native_turn(journal)
+    with journal._ledger.connection() as conn:
+        # The pre-B1 schema: no owner_generation column at all. The next schema
+        # check adds it with its backfill default, which is what production gets.
+        conn.execute("ALTER TABLE agent_turns DROP COLUMN owner_generation")
+        conn.commit()
+    with journal._ledger.connection() as conn:
+        ensure_schema(conn)  # the first B1 writer re-adds it, backfilled
+    with owner_lease.lease_db(journal._ledger.base_path) as conn:
+        conn.execute("DELETE FROM owner_lease")  # no owner has ever held the key
+        conn.execute("DELETE FROM fence_high_water")
+    _restart(journal)
+
+    settled = _reconcile(journal)
+
+    assert [r["turn_id"] for r in settled] == [turn.turn_id]
+    assert owner_lease.held_generation(journal._ledger.base_path, "cc:home")[0] == 1
+
+
+def test_a_stopped_turn_stays_stopped_until_its_row_settles(journal):
+    """Finding 7: no count-based eviction can paint a cancelled turn as activity."""
+    turn = _killed_native_turn(journal)
+    BOOT.release("home", turn.turn_id)
+    for i in range(5000):
+        BOOT.claim("other", f"t{i}")
+        BOOT.release("other", f"t{i}")
+    assert _working(journal) is None
+    for i in range(5000):
+        BOOT.forget("other", f"t{i}")

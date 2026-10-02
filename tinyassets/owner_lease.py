@@ -73,6 +73,8 @@ TREE_DIR = ".owner_tree"
 #: same tree. A process without it is its own (private) tree.
 TREE_ENV = "TINYASSETS_OWNER_TREE"
 PLATFORM_KEY = "platform"
+#: The file naming the founder's member lock, inside each tree directory.
+_FOUNDER = "founder"
 #: The join gate inside each tree directory (under ``.owner_tree``, accounted as
 #: platform bytes in ``storage_accounting.ROOT_ENTRIES``).
 _GATE = ".gate"
@@ -183,22 +185,30 @@ def _tree_dir(base_path: Path, tree_id: str) -> Path:
 
 
 class OwnerTree:
-    """This process's membership of one owner tree. Keep it for the process life."""
+    """This process's membership of one owner tree. Keep it for the process life.
+
+    The FOUNDER is the process that started the tree (the daemon); every other
+    member is a child acting for it. A child acts only while its founder lives:
+    a child that outlives its daemon, or joins late after it died, refuses to act
+    (round-1 B1 code review finding 2), and a child never takes a key by death
+    recovery -- succeeding a dead owner is a founder's job.
+    """
 
     def __init__(self, base_path: str | Path, tree_id: str) -> None:
         self.base_path = Path(base_path)
         self.tree_id = tree_id
         self._member_fd: int | None = None
         self.member_path: Path | None = None
+        self.founder = False
 
     @classmethod
     def start(cls, base_path: str | Path) -> OwnerTree:
-        """A new tree, with this process as its first member."""
+        """A new tree, with this process as its founder."""
         tree = cls(base_path, uuid.uuid4().hex)
-        tree.join()
+        tree.join(founder=True)
         return tree
 
-    def join(self, *, timeout_s: float = 30.0) -> OwnerTree:
+    def join(self, *, timeout_s: float = 30.0, founder: bool = False) -> OwnerTree:
         directory = _tree_dir(self.base_path, self.tree_id)
         directory.mkdir(parents=True, exist_ok=True)
         gate = _lock_blocking(directory / _GATE, timeout_s=timeout_s)
@@ -207,10 +217,40 @@ class OwnerTree:
             fd = _try_lock(member)
             if fd is None:  # a brand-new name: only a filesystem fault holds it
                 raise OSError(f"could not lock owner tree member {member.name}")
-            self._member_fd, self.member_path = fd, member
+            self._member_fd, self.member_path, self.founder = fd, member, founder
+            if founder:
+                (directory / _FOUNDER).write_text(member.name, encoding="utf-8")
         finally:
             _unlock(gate)
         return self
+
+    def founder_alive(self) -> bool:
+        """Whether this tree's founder process still holds its member lock."""
+        if self.founder:
+            return self.alive
+        directory = _tree_dir(self.base_path, self.tree_id)
+        try:
+            name = (directory / _FOUNDER).read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        if not name.endswith(".lock") or "/" in name or "\\" in name:
+            return False
+        fd = _try_lock(directory / name)
+        if fd is None:
+            return True
+        _unlock(fd)
+        return False
+
+    def _close_after_fork(self) -> None:
+        """In a forked child: drop the inherited descriptor WITHOUT unlocking it
+        (an flock is shared by the open file description; unlocking here would
+        release the parent's membership). The child joins on its own."""
+        if self._member_fd is not None:
+            try:
+                os.close(self._member_fd)
+            except OSError:
+                pass
+            self._member_fd = None
 
     def leave(self) -> None:
         """Stop being a member. The kernel does this at death; tests do it to die."""
@@ -270,6 +310,19 @@ _trees: dict[str, OwnerTree] = {}
 _trees_lock = threading.Lock()
 
 
+def _reset_after_fork() -> None:
+    """A forked child inherits neither membership nor a possibly-held lock."""
+    global _trees_lock
+    for tree in _trees.values():
+        tree._close_after_fork()
+    _trees.clear()
+    _trees_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
+    os.register_at_fork(after_in_child=_reset_after_fork)
+
+
 def current_tree(base_path: str | Path) -> OwnerTree:
     """This process's tree for ``base_path``: the inherited one, else a private one."""
     key = str(Path(base_path).resolve())
@@ -290,6 +343,29 @@ def start_owner_tree(base_path: str | Path) -> OwnerTree:
         tree = OwnerTree.start(base_path)
         _trees[key] = tree
     os.environ[TREE_ENV] = tree.tree_id
+    return tree
+
+
+def ensure_owner_tree(base_path: str | Path) -> OwnerTree:
+    """The founder tree this process already started, else start one now."""
+    key = str(Path(base_path).resolve())
+    with _trees_lock:
+        tree = _trees.get(key)
+        if tree is not None and tree.alive and tree.founder:
+            return tree
+    return start_owner_tree(base_path)
+
+
+def join_inherited_tree(base_path: str | Path) -> OwnerTree | None:
+    """A spawned executor's startup: join the advertised tree before doing any
+    work, and refuse to run if its founder is already gone. None when the process
+    was not spawned by an owner (a CLI, a test)."""
+    if not (os.environ.get(TREE_ENV) or "").strip():
+        return None
+    tree = current_tree(base_path)
+    if not tree.founder_alive():
+        tree.leave()
+        raise LeaseLost("the owner process that spawned this executor is gone")
     return tree
 
 
@@ -427,6 +503,8 @@ def acquire(base_path: str | Path, owner_key: str, *, wait_s: float = 30.0) -> K
         raise ValueError("invalid owner key")
     base = Path(base_path)
     tree = current_tree(base)
+    if not tree.founder and not tree.founder_alive():
+        raise LeaseLost("this executor's owner process is gone; it must not act")
     deadline = time.monotonic() + wait_s
     while True:
         with lease_db(base) as conn:
@@ -443,7 +521,9 @@ def acquire(base_path: str | Path, owner_key: str, *, wait_s: float = 30.0) -> K
                     lease = KeyLease(base, owner_key, row["generation"], tree.tree_id,
                                      _proofs.get((str(base), owner_key, row["generation"])))
                     break
-                if row is not None and row["state"] == "open":
+                if row is not None and row["state"] == "open" and not tree.founder:
+                    conn.rollback()  # a child never succeeds a dead owner: wait, then fail
+                elif row is not None and row["state"] == "open":
                     with _dead_tree_gate(base, row["holder_tree"]) as dead:
                         if dead:
                             lease = _take(conn, base, owner_key, row, tree)
@@ -556,6 +636,8 @@ __all__ = [
     "acquire",
     "catalog",
     "current_tree",
+    "ensure_owner_tree",
+    "join_inherited_tree",
     "held_generation",
     "key_for",
     "record_fence",

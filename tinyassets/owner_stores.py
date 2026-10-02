@@ -112,6 +112,20 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/workspace_pool.py",
 })
 
+#: Connection helpers that still migrate a schema when a store is OPENED, outside
+#: a startup migration boundary (design D3). Harmless with one owner tree; with a
+#: standby owner process (C2), a stale process opening a store could rebuild or
+#: alter it. Each must move to the startup migration step, or be shown additive
+#: and atomic, before C2.
+MIGRATES_ON_OPEN_BEFORE_C2: dict[str, str] = {
+    "tinyassets/storage/provider_work_authority.py":
+        "connection() runs executescript, a receipt-table rebuild that commits on "
+        "its own, and column migrations on every open",
+    "tinyassets/storage/agent_turn_journal.py":
+        "ensure_schema adds owner_generation: additive, re-checked under BEGIN "
+        "IMMEDIATE, so race-free; listed until the startup boundary exists",
+}
+
 #: Set by slice C2 when a second owner process can exist. Never before
-#: :data:`FENCE_BEFORE_C2` is empty.
+#: :data:`FENCE_BEFORE_C2` and :data:`MIGRATES_ON_OPEN_BEFORE_C2` are empty.
 HANDOVER_ENABLED = False
