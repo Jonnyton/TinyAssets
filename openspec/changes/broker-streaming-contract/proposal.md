@@ -25,7 +25,7 @@ This is a design-only change: it fixes the contract so S6 can be built.
 
 - **One long-lived broker process.** Callers reach it over a local socket with
   length-prefixed frames. Many concurrent **streams** share one connection,
-  each with its own request body, response, flow-control credit and cancel.
+  each with its own response, flow-control credit and cancel.
   The broker remains the only process that resolves a credential. Request
   bodies stay capped and collected in v1; only responses stream.
 - **Per-request authorization.** Every stream is authorized as it opens,

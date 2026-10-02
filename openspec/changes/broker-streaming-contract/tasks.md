@@ -8,15 +8,15 @@
 
 - [ ] 2.1 Frame codec shared with `boxhostd` (D2): control frames, byte
       frames, stream ids; property tests on framing.
-- [ ] 2.2 Broker process: socket, `SO_PEERCRED` channel classes, supervised
+- [ ] 2.2 Broker process: socket, distinct-uid role map, supervised
       restart; fail closed where peer credentials are unavailable.
 - [ ] 2.3 Per-stream authorization through the `resolve_exact_scoped_proxy`
       checks; box-channel principal derivation.
 - [ ] 2.4 Streaming pinned HTTPS reader (capped collected request bodies): redirects and the OAuth retry
       before `HEAD`; credit-gated reads; idle and absolute deadlines.
 - [ ] 2.5 Incremental secret scan with hold-back; split-secret tests.
-- [ ] 2.6 `op_id` outcome records, `STATUS`, never re-send after `sent`.
-- [ ] 2.7 Owner-generation fence: persisted, barrier, reload on start.
+- [ ] 2.6 Durable, namespaced `op_id` state machine (reserved, may_have_sent before the first write, terminal), `STATUS`, ULID expiry.
+- [ ] 2.7 Fence: read/write lock around every write, barrier-minted token, monotonic persistence, reload on start.
 - [ ] 2.8 `ScopedConnectionProxy.request` as a one-stream wrapper; delete the
       spawned worker; every existing caller's tests unchanged.
 - [ ] 2.9 Async client for the thin loop (S7 task 2.3).
