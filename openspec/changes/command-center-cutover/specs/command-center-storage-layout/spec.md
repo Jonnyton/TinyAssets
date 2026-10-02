@@ -19,3 +19,11 @@ After the command-center cutover, no operational store SHALL contain the retired
 #### Scenario: The post-migration scan finds nothing
 - **WHEN** the inventory runs against a migrated data root
 - **THEN** it reports zero operational occurrences of `universe` names and `u-<ulid>` ids, and lists the exempt verbatim stores it skipped
+
+### Requirement: A command center id is never shown to a person
+
+The `cc-<ulid>` id SHALL be a machine value only. No user-facing surface (the app, the website, notification text) SHALL render it. Each SHALL show the command center's name, or "Your command center" when it has none. Served agent guidance SHALL NOT tell the agent to refer to a command center by its id.
+
+#### Scenario: An unnamed command center
+- **WHEN** a person opens the app for a command center with no name
+- **THEN** the header reads "Your command center" and no visible text contains its `cc-` id

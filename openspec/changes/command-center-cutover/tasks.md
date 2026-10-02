@@ -22,5 +22,6 @@ Prerequisite: C4a (#4234) is in production for at least one day.
 - [ ] 9. Rollback runbook in `docs/ops/`, rehearsed on the dry-run copy.
 - [ ] 10. Freeze window (E3.6). Evidence: canary `--assert-handles`,
       `deployed_sha.py`, and an inventory re-run on production showing zero.
-- [ ] 11. Delete C1's edge translation. Keep the retired-name refusals.
+- [ ] 11. Delete C1's edge translation, keeping the retired-name refusals.
+      Land the ids-never-shown guard (E5, after notify-prompt's header fix).
 - [ ] 12. Sync specs and archive both changes.

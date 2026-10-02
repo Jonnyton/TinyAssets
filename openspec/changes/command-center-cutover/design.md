@@ -66,3 +66,23 @@ Any of these stops the cutover:
 - an unrehearsed rollback;
 - C4a not in production for at least a day;
 - a WorkOS record holding an id that the live check finds.
+
+## E5. Ids are never shown to people (founder, 2026-10-02)
+
+*"keep the cc prefix, never show ids to users."* `cc-<ulid>` is the single id
+form after the cutover. It is a machine value only.
+
+**Covered surfaces:** the app (`app.html`, `app_ui.js`), the website, push and
+in-app notification text, and served agent guidance about how to refer to the
+command center. None of them renders an id. They show the command center's
+name, falling back to **"Your command center"**.
+
+**Guard test:** `tests/test_ids_never_shown.py`. It drives the app's render
+paths with a home whose id is `cc-<ulid>` and fails if the id appears in
+visible text. It also checks two more things:
+- notification titles and bodies, through `owner_notifications`;
+- served descriptions and instructions, which must never instruct the agent to
+  speak or show an id.
+
+It lands with or after notify-prompt's app-header fix, which removes the one
+known place the raw id shows today.
