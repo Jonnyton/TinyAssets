@@ -1825,16 +1825,6 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
 #: has none. A ``command`` runner joins this list when one exists to run it.
 _MODEL_CONNECT_SHAPES = ("api_key", "local")
 
-#: Subscriptions the connect screen offers "for more volume", completed by the
-#: brokered device sign-in (``onboarding.openai_device``). Words only; the
-#: service id is what the app hands back to ``/app/openai/device/start``.
-_SUBSCRIPTION_SIGN_INS = ({
-    "name": "ChatGPT",
-    "label": "Use your ChatGPT subscription",
-    "note": "For more volume: your agent runs on your ChatGPT plan's usage.",
-},)
-
-
 def _first_power_preset() -> dict[str, object] | None:
     """The bundled guided sign-in the setup request offers first, as display data.
 
@@ -1877,7 +1867,12 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
     ``optional``: offered, answerable, and outstanding to nobody.
     """
     from tinyassets.onboarding import DEVICE_SIGN_IN_SERVICE
-    from tinyassets.providers.free_sources import daily_cap_offers, sign_in_cards, source_cards
+    from tinyassets.providers.free_sources import (
+        daily_cap_offers,
+        sign_in_cards,
+        source_cards,
+        subscription_cards,
+    )
 
     # One connect screen: the guided sign-in (``primary``), the sources completed
     # by signing in, the key cards, the subscriptions, and the provider-stated daily
@@ -1885,7 +1880,7 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
     setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards(),
                                 "sign_in_sources": sign_in_cards(),
                                 "subscriptions": [{**s, "service": DEVICE_SIGN_IN_SERVICE}
-                                                  for s in _SUBSCRIPTION_SIGN_INS],
+                                                  for s in subscription_cards()],
                                 "daily_caps": daily_cap_offers()}
     primary = None if connected else _first_power_preset()
     if primary is not None:
