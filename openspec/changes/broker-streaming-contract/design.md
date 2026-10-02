@@ -90,13 +90,23 @@ and revocation. A refusal is `refused`, nothing is sent, and the stream
 reports `side_effect_state: none`.
 
 **Generation.** Comparing a number cannot fence a stale owner, which could
-claim a future generation. So the barrier mints the credential:
+claim a future generation. Nor can the owner channel's identity, which an old
+and a new owner share (same image, same uid). So the barrier is authorized by
+the LEASE, and the barrier mints the credential streams then carry:
 
-- `FENCE{G}` (decision 6) returns a fresh random **generation token** in
-  `FENCE_ACK`.
+- `FENCE{G, lease_proof}` is admitted only if the lease authority
+  (`control_plane.lease`, read by the broker itself) records G as the
+  currently held generation, and `lease_proof` matches the secret minted for
+  that acquisition (stored hashed in the lease row). An old owner holds the
+  proof of an old generation only.
+- On admission the broker persists G with a fresh random **generation
+  token** and returns `FENCE_ACK{G, token}`, with G the generation actually
+  persisted.
+- `FENCE{G}` below the persisted fence is refused. A repeat of the persisted
+  G with a valid proof is idempotent: it returns the same token and rotates
+  nothing, which is how a lost ACK is recovered.
 - Every owner-channel `OPEN` carries `(G, token)`. The broker admits it only
-  if both equal its persisted current fence. An old owner never sees the new
-  token.
+  if both equal its persisted fence.
 - `boxhostd` receives the same `(G, token)` through its own D5 barrier and
   stamps it on every relayed stream. A box never supplies a generation.
 
@@ -106,10 +116,10 @@ claim a future generation. So the barrier mints the credential:
 |---|---|---|
 | `OPEN` | caller | `stream`, `op_id`, `(G, token)`, principal/cc (owner) or box handle (box), `grant_id`, `connection_id`, `verb`, and `request`: today's request document unchanged (`url`, `headers`, `header_name`, `body` as str, dict or list with today's serialization and content-type rules, `reply_budget_s`); plus `idle_s` and initial `credit` |
 | `HEAD` | broker | `status`, `reason`, sanitized `headers`, `redirect_count`. Sent only after the redirect chain and the OAuth refresh-once are settled |
-| `DATA` | broker | response bytes, at most `MAX_FRAME` (64 KiB) per frame and never beyond granted credit |
-| `CREDIT` | caller | grant n more bytes; outstanding credit is capped at `MAX_WINDOW` (256 KiB) |
+| `DATA` | broker | response bytes, at most `MAX_DATA_FRAME` (64 KiB) per frame and never beyond granted credit |
+| `CREDIT` | caller | grant n more bytes; outstanding credit is capped at `MAX_WINDOW` (256 KiB); zero initial credit is legal, and a client replenishes as it consumes |
 | `CANCEL` | caller | abort this stream |
-| `END` | broker | `outcome` (`completed`, `cancelled`, `refused`, `failed`), `side_effect_state`, `error_class` (today's typed set plus `fenced`, `duplicate`, `expired`), the structured authorization failure where today's `ConnectionAuthorizationError` carries one, byte count, duration |
+| `END` | broker | `outcome` (`completed`, `cancelled`, `refused`, `failed`), the operation's `side_effect_state`, `stream_sent`, `error_class` (today's typed set plus `fenced`, `duplicate`, `expired`), the structured authorization failure where today's `ConnectionAuthorizationError` carries one, byte count, duration |
 | `STATUS` / `STATUS_IS` | caller / broker | an `op_id`'s recorded state (decision 7) |
 | `FENCE` / `FENCE_ACK` | owner / broker | decision 6 |
 
@@ -139,10 +149,14 @@ claim a future generation. So the barrier mints the credential:
   credit, so a slow consumer cannot make an active provider look silent; the
   absolute deadline still runs. SSE comment pings are bytes.
 
-**`side_effect_state` is strictly about transmission.**
-- `none` only when the broker proves no request byte left it: a refusal
-  before the socket write (authorization, fence, duplicate, expiry, a pinning
-  or DNS refusal).
+**`side_effect_state` is strictly about transmission, and it is the
+OPERATION's.** `END` carries the state of the operation named by `op_id`
+(decision 7), not just of this stream. A duplicate `OPEN` of an operation that
+may have sent reports `unknown`, though the duplicate itself sent nothing.
+`stream_sent` separately says whether THIS stream wrote.
+- `none` only when the broker proves no request byte of the operation ever
+  left it: a refusal before the socket write (authorization, fence, a pinning
+  or DNS refusal) of an operation with no earlier attempt.
 - Everything after the first write is `unknown`, and it stays `unknown`
   across the OAuth retry, redirects, cancellation and any later refusal.
 - A 4xx is NOT `none` here. Whether a model source's 4xx proves nothing was
@@ -151,18 +165,41 @@ claim a future generation. So the barrier mints the credential:
 
 ### 4. Backpressure and memory, as bounds
 
-- **Response side.** The broker reads upstream only while the stream has
-  credit, and never sends past it. A caller's per-stream receive buffer
-  therefore never exceeds the credit it granted. The client demultiplexer
-  hands each frame to its stream without blocking, so one stalled stream
-  cannot stop `HEAD`/`END` for the others.
-- **Hard caps on everything else:** `MAX_FRAME`, `MAX_WINDOW`, a per-stream
-  scan hold-back (decision 5), headers within today's 64 KiB bound, admitted
-  streams per connection (`MAX_STREAMS`, refused as `refused` beyond it), and
-  a per-connection output queue.
-- **Memory target, not yet a fact.** Window plus hold-back plus headers plus
-  one TLS record, about 100-350 KiB per stream depending on credit. S6 must
-  measure it, including parser and transport buffers.
+- **Credit gates DATA, not protocol progress.**
+  - Before `HEAD`, the broker reads and parses the status line and headers
+    whatever the credit, within today's header bounds. A caller may open with
+    zero credit and decide after `HEAD`.
+  - After `HEAD`, it may read up to a fixed look-ahead (`LOOKAHEAD`, 16 KiB,
+    beyond the scan hold-back) without credit. That lets it parse chunk
+    framing and see EOF, so a response whose last DATA exactly used the
+    credit still reaches `END`.
+  - Beyond that it reads only while credit remains, and it never sends past
+    the credit.
+- **Caller side.** A caller's per-stream receive buffer never exceeds the
+  credit it granted. The client demultiplexer hands each frame to its stream
+  without blocking, so one stalled stream cannot stop `HEAD`/`END` for the
+  others.
+- **Two frame limits.** `MAX_CONTROL_FRAME` keeps today's 16 MiB IPC bound, so
+  every request document accepted today still fits in one `OPEN`.
+  `MAX_DATA_FRAME` is 64 KiB. Request bodies have no new cap; today's encoding
+  rules apply unchanged.
+- **Hard caps on everything else:** `MAX_WINDOW`, `LOOKAHEAD`, the scan
+  hold-back, headers within today's bound, admitted streams per connection
+  (`MAX_STREAMS`, refused as `refused` beyond it), and a per-connection output
+  queue.
+- **Memory, as accounting rather than a promise.** A waiting stream holds:
+  - its retained request body and its serialized copy, kept for the OAuth
+    resend until `HEAD`;
+  - the window;
+  - the look-ahead;
+  - the hold-back;
+  - the headers;
+  - one TLS record.
+
+  For a small request that is about 100-350 KiB; a large request adds its own
+  size until `HEAD`. S6 measures it, including parser and transport buffers.
+- **The request/close wrapper** grants rolling credit of at most
+  `MAX_WINDOW`, replenished as it consumes, up to the connection's body cap.
 
 ### 5. The scan, incrementally, over today's full set
 
@@ -184,7 +221,8 @@ separate change for both paths.
 **Order:**
 - Intermediate redirect responses and targets are scanned before following,
   as today.
-- The final headers are scanned whole before `HEAD`.
+- Every destination-controlled field of `HEAD` is scanned before it is
+  emitted: the reason phrase, every header name and every header value.
 - The set is **final at `HEAD`**, because all redirect material accrues
   before it.
 
@@ -200,10 +238,19 @@ separate change for both paths.
   audit record is written.
 - An empty set means no hold-back.
 
+**Decoded matching, in the broker.** Today the body is decoded as UTF-8
+with replacement before it is scanned, so a value can match the DECODED text
+without matching the raw bytes (for example, a username containing U+FFFD
+against invalid bytes). The broker runs both matchers on every stream: raw
+bytes, and an incremental UTF-8-with-replacement decode of the same bytes.
+The hold-back is sized in raw bytes to cover both: the longest value's
+encoded length plus the up-to-3-byte incomplete sequence the decoder may be
+holding. The scan set never leaves the broker. No client, wrapper or box
+holds a value to scan with.
+
 **What is guaranteed, stated precisely:** no byte belonging to a complete
-occurrence of a held value is ever forwarded. A clean response that merely
-ends in a prefix of a value is delivered whole. The request/close wrapper
-additionally keeps today's check on the UTF-8-decoded body (decision 8).
+occurrence of a held value, raw or decoded, is ever forwarded. A clean
+response that merely ends in a prefix of a value is delivered whole.
 
 ### 6. Owner-generation fence
 
@@ -214,7 +261,8 @@ The fence is per cell: one broker serves one execution owner lineage.
   lock and re-checks `(G, token)` immediately before writing. `FENCE` takes
   the write lock.
 - **`FENCE{G}`:**
-  1. Persist `max(current, G)` with a new token, durably.
+  1. Validate the lease proof (decision 2). Persist G with a new token,
+     durably. A lower G is refused; the same G is idempotent.
   2. Mark every older-generation stream cancelled.
   3. Wait until no older producer holds the read lock. After that none can
      start another write.
@@ -230,17 +278,22 @@ The fence is per cell: one broker serves one execution owner lineage.
 **Namespace and binding.**
 - A record is keyed by the authority namespace (owner principal and command
   center, derived the same way as in decision 2) plus `op_id`.
-- It is bound to the request's identity: a digest of grant, connection,
-  verb, destination and body.
+- It is bound to the request's identity: a digest of the canonical
+  EFFECTIVE request. That covers the grant, the connection, the verb, the
+  destination URL, every header after the constant-header merge (names
+  lowercased, values exact), `header_name`, and the body bytes after
+  serialization. Only transport options (`reply_budget_s`, `idle_s`,
+  `credit`) are excluded.
 - An `OPEN` or `STATUS` naming an `op_id` outside its own namespace finds
   nothing.
 - An `OPEN` reusing an `op_id` with a different request identity is
-  `refused`/`duplicate`.
+  `refused`/`duplicate`, again carrying the recorded operation's state.
 
 **The state machine.** Persisted and fsynced before it is relied on:
 
 - `reserved`: an atomic insert at admission. A concurrent `OPEN` of the same
-  in-flight `op_id` is `refused`/`duplicate`.
+  in-flight `op_id` ends `refused`/`duplicate` carrying the operation's
+  current `side_effect_state` (decision 3), never a `none` of its own.
 - `may_have_sent`: written durably **before the first byte reaches the
   socket**. A crash after this point reads as `unknown`, never as
   `not_sent`.
@@ -251,9 +304,15 @@ The fence is per cell: one broker serves one execution owner lineage.
 - An `OPEN` reusing a recorded `op_id` returns the recorded state and never
   sends.
 - The OAuth resend is part of the same operation, not a second one.
-- `op_id`s are ULIDs. The broker refuses an `OPEN` whose `op_id` timestamp is
-  older than the retention window (`expired`), so a record cannot be evicted
-  and its id then accepted as new.
+- **Expiry never reopens an id.** `op_id`s are ULIDs.
+  - The broker keeps a durable, nondecreasing **cutoff**:
+    `max(previous cutoff, now - retention)`. Clock rollback cannot lower it.
+  - An `OPEN` whose timestamp is below the cutoff is refused (`expired`).
+  - An `OPEN` more than `MAX_SKEW` (5 min) in the future is refused.
+  - A record is deleted only once its timestamp is below the cutoff. By then
+    its id is inadmissible, so no deleted id can run again.
+  - At record capacity the broker refuses new admissions rather than evict an
+    admissible record.
 - `STATUS` distinguishes `not_sent`, `unknown`, the terminal states and
   `expired`. `expired` is never read as `not_sent`.
 - A lost stream's bytes are not replayable; the caller holds on `unknown`.
@@ -291,12 +350,16 @@ deadline -> 504, any other failure -> 502. The body is a small JSON document
 naming `error_class` and nothing of the destination's.
 
 **After `HEAD`, a failure is an incomplete response.**
-- `boxhostd` relays the status and sanitized headers, drops hop-by-hop
-  headers, and re-frames the body as chunked.
+- `boxhostd` relays the status and sanitized headers. It removes upstream
+  framing (`Content-Length`, `Transfer-Encoding`, hop-by-hop headers and any
+  named in `Connection`) and re-frames the body as chunked.
+- A response that cannot carry a body (to `HEAD`, or with status 1xx, 204 or
+  304) is relayed with no body and no framing.
 - On a failed `END` it **aborts the connection without the terminating
   chunk**. An HTTP client then sees a truncated response, never a successful
   short one.
-- A completed `END` writes the terminating chunk.
+- Only a `completed` `END` writes the terminating chunk. `cancelled`,
+  `refused` and `failed` after `HEAD` all abort.
 
 ### 10. Vendor neutrality
 
@@ -361,3 +424,17 @@ caller: the loop's incremental SSE reader folds chunks with today's codec
   - Compatibility fields missing: decision 8.
   - In-box failure after `HEAD`: an aborted chunked response.
   - Agreed: the hold-back argument, with the guarantee restated precisely.
+- **Round 2 (67382b8c): ADAPT.** Closed: 1, 3, 6, 8, 10, 11, 13. Acted on:
+  - A: the barrier is now authorized by a lease proof, refused below the fence,
+    idempotent at the same generation, and acknowledges the persisted G.
+  - B: decoded matching moves into the broker; no client holds values.
+  - C: the reason phrase and header names are scanned before `HEAD`.
+  - D: `side_effect_state` is operation-scoped; `stream_sent` is separate.
+  - E: a nondecreasing cutoff, a future-skew bound, delete only below the
+    cutoff, refuse at capacity.
+  - F: the digest covers the canonical effective request.
+  - G: separate control/DATA frame limits keep today's 16 MiB request bound;
+    memory accounting includes the retained body; the wrapper's credit rolls.
+  - H: headers parse and a bounded look-ahead run at zero credit.
+  - I: upstream framing is stripped, bodyless statuses are handled, and only
+    `completed` terminates.
