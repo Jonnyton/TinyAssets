@@ -153,3 +153,15 @@ def test_named_inputs_use_receiver_contract(world, monkeypatch):
     assert _send(title="Gap", details="Missing")["sent"] is True
     row, = _rows(base, "graph_deliveries")
     assert json.loads(row["inputs_json"]) == {"subject": "Gap", "description": "Missing"}
+
+
+def test_an_intake_with_its_own_field_names_still_receives_the_whole_report():
+    from tinyassets.patch_intake import _report_outputs
+
+    contract = [{"name": "what_happened", "type": "str", "required": True},
+                {"name": "notes", "type": "str", "required": False}]
+    assert _report_outputs(contract, "Can't chart", "Tried the chart node") == {
+        "what_happened": "Can't chart\n\nTried the chart node"}
+    titled = [{"name": "title", "type": "str", "required": True},
+              {"name": "details", "type": "str", "required": True}]
+    assert _report_outputs(titled, "T", "D") == {"title": "T", "details": "D"}

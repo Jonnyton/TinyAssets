@@ -500,8 +500,15 @@ def _report_outputs(contract: list[dict], title: str, details: str) -> dict[str,
             outputs[field["name"]] = title
         elif name in {"details", "description", "body", "reportdetails", "requestdetails"}:
             outputs[field["name"]] = details
-    if (title not in outputs.values() or details not in outputs.values()
-            or any(field["required"] and field["name"] not in outputs for field in contract)):
+    if title not in outputs.values() or details not in outputs.values():
+        # Names that say neither title nor details: the whole report goes into one
+        # text input (a required one first), so an intake's own wording never
+        # makes a report unsendable.
+        target = next((f for f in text_fields if f["required"]),
+                      text_fields[0] if text_fields else None)
+        outputs = {target["name"]: title + "\n\n" + details} if target else {}
+    if not outputs or any(field["required"] and field["name"] not in outputs
+                          for field in contract):
         raise ValueError("patch intake contract must accept one text input or title/details inputs")
     return outputs
 
