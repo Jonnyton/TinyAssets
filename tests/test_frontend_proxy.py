@@ -68,7 +68,8 @@ def test_socket_metadata(kind, scheme):
     assert normalized["scheme"] == scheme
     assert normalized["server"] == ("public.example", 443)
     assert normalized["client"] == ("192.0.2.1", 234)
-    assert dict(normalized["headers"])[b"host"] == b"public.example"
+    hosts = [value for name, value in normalized["headers"] if name.lower() == b"host"]
+    assert hosts == [b"public.example"], "the caller's Host must be replaced, not joined"
     assert b"x-ta-client-peer" not in dict(normalized["headers"])
     asyncio.run(capture(scope, None, None))
     assert scopes[0] == scope
@@ -103,6 +104,7 @@ def test_local_shell_and_health(monkeypatch):
         raise AssertionError("owner state accessed")
 
     monkeypatch.setattr(onboarding, "build_sha", forbidden)
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     with TestClient(create_app()) as client:
         for path in ("/healthz", "/app"):
             response = client.get(path)
@@ -252,3 +254,15 @@ def test_real_socket_proxy(monkeypatch):
                     assert b"first" in next(chunks)
                     assert not ended.is_set(), "SSE buffered until stream ended"
                     assert b"last" in b"".join(chunks)
+
+
+@unix_only
+def test_the_shell_is_proxied_when_the_owner_would_not_serve_it(monkeypatch):
+    """With the onboarding flag off the owner answers 404 for /app; the frontend
+    must not serve a shell the owner would refuse -- it proxies, and with no owner
+    that is the honest 503, never a locally rendered page."""
+    monkeypatch.delenv("TINYASSETS_ONBOARDING_APP", raising=False)
+    with TestClient(create_app()) as client:
+        response = client.get("/app")
+        assert response.status_code == 503
+        assert "build" not in response.text

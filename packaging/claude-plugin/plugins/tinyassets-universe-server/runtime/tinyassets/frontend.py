@@ -8,7 +8,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from tinyassets.onboarding import app_response
+from tinyassets.onboarding import app_response, onboarding_enabled
 
 _HOP_HEADERS = {
     b"connection",
@@ -45,7 +45,10 @@ class Frontend:
             await send(message)
 
         request = Request(scope, receive)
-        if request.method in {"GET", "HEAD"} and request.url.path == "/app":
+        # The shell is served here only where the owner would serve it; with the
+        # onboarding flag off the owner answers 404, so the request is proxied.
+        if (request.method in {"GET", "HEAD"} and request.url.path == "/app"
+                and onboarding_enabled()):
             response = app_response(build=self.build)
         elif request.method == "GET" and request.url.path == "/healthz":
             response = PlainTextResponse("ok")
