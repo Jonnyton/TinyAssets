@@ -122,22 +122,33 @@ Primary dependency sources:
 
 ## Phase 1, 2026-10-02: the deploy waits for in-flight work
 
-`deploy-prod.yml` step "Wait for in-flight turns" now runs before the swap. It runs
-`scripts/turns_in_flight.py` inside the live container and holds the swap while any
-account seat is leased. That covers chat turns and graph agent nodes, and a dead
-holder's seat expires within 120s. The step polls every 15s and stops waiting after
-45 min. While it waits, `get_status` reports `deploy_pending`. Merges that land during
-the wait coalesce through the `production-host-mutation` concurrency group into one
-queued deploy of the newest sha.
+`deploy-prod.yml` step "Wait for in-flight turns" (`deploy/wait_for_turns.sh`) now runs
+before the swap. Each poll pipes `scripts/turns_in_flight.py` into the live container and
+holds the swap while anything is in flight. Two things count:
+- an account seat a live process holds, expired or not, which covers chat turns and graph
+  agent nodes;
+- a queued or running graph run whose owner is alive, which covers automations and code
+  nodes, since those hold no seat.
+
+The loop polls every 15s and proceeds on any of: idle, an unhealthy daemon, three
+unanswerable polls, a recovery workflow queued behind it, or the 45 min cap. The image is
+pulled before the wait. While it waits, `get_status` reports `deploy_pending`. Merges that
+land during the wait coalesce through the `production-host-mutation` concurrency group into
+one queued deploy of the newest sha. release-reconcile no longer treats a cancelled
+(displaced) dispatch as the failed retry.
 
 Evidence is the compose repro in `docs/audits/2026-10-02-deploy-waits-for-turns-repro/`.
+The Codex refute verdict (ADAPT, 7 findings, all acted on) is in the PR body.
 
 What this does NOT close:
-- **Past the 45 min cap, the turn is still cut.** The startup reconcile notice is what
-  the user then sees.
-- **Steady overlapping turns can hold every deploy to the cap.** There is no admission
-  hold yet.
+- **Idle is a moment.** A turn that starts between the last poll and the swap is still
+  cut by the 20s drain. The prefetch shrinks that window but does not remove it.
+- **Past the 45 min cap, or on a yield to recovery, the turn is still cut.** The startup
+  reconcile notice is what the user then sees.
+- **Steady overlapping turns can hold every deploy to the cap.** The admission hold ships
+  only together with persist-and-replay of held messages (lead decision 2026-10-02).
 - **The real fix is Phase 2.** The new container serves while the old one finishes its
-  turns, which is the single-execution-owner handover in #4263 S7/S8.
+  turns, which is the single-execution-owner handover in #4263 S8 (change
+  `execution-owner-lease`).
 
 Keep this file until a live turn has been seen to survive a production deploy.

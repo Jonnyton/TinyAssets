@@ -475,9 +475,15 @@ def refresh(seat_id: str, *, db: Path | None = None, now: float | None = None) -
         return cur.rowcount == 1
 
 
-def _release_once(seat_id: str, db: Path) -> bool | None:
-    """One release attempt: True released (or its depth given back), False no
-    such seat of ours, None the store could not be written -- try again."""
+#: ``_release_once`` gave back one level of a LENT seat; the row, and the
+#: parent's claim on it, remain. Truthy, so callers reading "released" still do.
+_DEPTH_RETURNED = "depth_returned"
+
+
+def _release_once(seat_id: str, db: Path) -> bool | str | None:
+    """One release attempt: True released, ``_DEPTH_RETURNED`` a lent seat's
+    depth given back (the parent still holds it), False no such seat of ours,
+    None the store could not be written -- try again."""
     try:
         holder = _holder(db.parent)
         with _txn(db) as conn:
@@ -491,6 +497,7 @@ def _release_once(seat_id: str, db: Path) -> bool | None:
                 conn.execute(
                     "UPDATE account_seats SET depth = depth - 1 WHERE seat_id = ?", (seat_id,)
                 )
+                return _DEPTH_RETURNED
             else:
                 conn.execute("DELETE FROM account_seats WHERE seat_id = ?", (seat_id,))
             return True
@@ -512,13 +519,19 @@ def release(seat_id: str, *, db: Path | None = None) -> bool:
         return False
     db = db or ledger_path()
     outcome = _release_once(seat_id, db)
+    if outcome is _DEPTH_RETURNED:
+        # A nested call gave its loan back. The seat id is the PARENT's, and the
+        # parent is still working: dropping it from the refresh set here let the
+        # lease lapse under a live provider call, so anything trusting the lease
+        # (a deploy's in-flight check, a sibling's reaper) read it as finished.
+        return True
     with _held_lock:
         _held.pop(seat_id, None)
     if outcome is None:
         _log.warning("seat %s could not be released yet; retrying until it is", seat_id)
         _queue_retry(seat_id, db)
         return False
-    return outcome
+    return bool(outcome)
 
 
 def abandon(ticket: int | None, *, db: Path | None = None) -> bool:

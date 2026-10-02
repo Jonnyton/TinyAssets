@@ -323,6 +323,25 @@ def test_releasing_a_nested_seat_leaves_the_parent_holding_it(db):
     assert seats.occupancy("u1", db=db, now=1000.0)["running"] == 0
 
 
+def test_a_nested_release_keeps_the_parents_lease_refreshed(db):
+    """The loan shares the parent's seat id. Giving it back used to drop that id
+    from the refresh set, so the parent's lease lapsed under a live provider call
+    and a deploy's in-flight check read the parent as finished (Codex refute of
+    the turn-handover lane)."""
+    parent = take(db, seats_n=2, reserve=1)
+    seats._register(parent)
+    try:
+        child = take(db, seats_n=2, reserve=1, parent=parent.seat_id)
+        assert seats.release(child.seat_id, db=db) is True
+        with seats._held_lock:
+            assert parent.seat_id in seats._held
+        assert seats.release(parent.seat_id, db=db) is True
+        with seats._held_lock:
+            assert parent.seat_id not in seats._held
+    finally:
+        seats.stop_refresher()
+
+
 def test_a_seat_is_lent_to_one_nested_call_at_a_time(db):
     """astra round 1, finding 4. Reference counting would let a blocked parent lend
     one seat to three PARALLEL child agent nodes -- three model calls on one seat,

@@ -43,6 +43,14 @@ def test_duplicated_names_match_the_daemon():
     assert tif.SEATS_DB == seats.LEDGER_NAME
     assert tif.JOURNAL_DB == DB_FILENAME
     assert set(tif.WORKING_STATES) == set(WORKING_STATES)
+    from tinyassets import process_liveness, runs
+
+    assert set(tif.IN_FLIGHT_RUN_STATUSES) == {
+        runs.RUN_STATUS_QUEUED, runs.RUN_STATUS_RUNNING, runs.RUN_STATUS_RESUMED}
+    assert tif.RUNS_DB == runs.runs_db_path(Path("x")).name
+    assert tif.LIVENESS_DIR == process_liveness.LIVENESS_DIR
+    assert (tif.ALIVE, tif.DEAD, tif.UNKNOWN_OWNER) == (
+        process_liveness.ALIVE, process_liveness.DEAD, process_liveness.UNKNOWN)
 
 
 def test_script_imports_nothing_from_the_repo():
@@ -84,12 +92,100 @@ def test_a_held_seat_is_busy_and_its_release_is_idle(tmp_path):
     assert report["in_flight"] == 0
 
 
-def test_an_expired_seat_is_a_dead_holder_not_work(tmp_path):
+def _set_holder(db: Path, holder: str) -> None:
+    conn = sqlite3.connect(db, isolation_level=None)
+    conn.execute("UPDATE account_seats SET holder = ?", (holder,))
+    conn.close()
+
+
+def _dead_token(root: Path, token: str = "deadholder") -> str:
+    """A liveness file nobody holds: the proof that its owner died."""
+    (root / tif.LIVENESS_DIR).mkdir(exist_ok=True)
+    (root / tif.LIVENESS_DIR / f"{token}.lock").write_text("", encoding="utf-8")
+    return token
+
+
+def test_an_expired_seat_whose_holder_is_alive_is_still_work(tmp_path):
+    """The ledger keeps it (``universe_seats._reap``), so the probe must too: a
+    lapsed refresh is not a finished turn."""
     db = tmp_path / tif.SEATS_DB
     seat = seats.acquire("acct", db=db, now=time.time() - 600, lease_s=120)
-    assert isinstance(seat, seats.Seat)
+    assert isinstance(seat, seats.Seat)  # holder = this live process
+    status, report = tif.observe(tmp_path)
+    assert status == tif.BUSY, report
+    assert report["seats"][0]["expired"] is True
+    assert report["seats"][0]["holder"] == "alive"
+
+
+def test_a_dead_holders_seat_is_not_work_expired_or_not(tmp_path):
+    db = tmp_path / tif.SEATS_DB
+    seats.acquire("acct", db=db)
+    _set_holder(db, _dead_token(tmp_path))
     status, report = tif.observe(tmp_path)
     assert status == tif.IDLE, report
+
+
+def test_an_unprovable_holder_counts_only_until_its_lease_expires(tmp_path):
+    db = tmp_path / tif.SEATS_DB
+    seats.acquire("acct", db=db)
+    _set_holder(db, "no-liveness-file")
+    assert tif.observe(tmp_path)[0] == tif.BUSY
+    assert tif.observe(tmp_path, now=time.time() + 600)[0] == tif.IDLE
+
+
+# --- graph runs: seats cover agent calls, not whole runs ----------------------
+
+
+def _run_row(base: Path, *, status: str, owner: str | None, started_at: float | None = None):
+    from tinyassets import runs
+
+    runs.initialize_runs_db(base)
+    conn = sqlite3.connect(runs.runs_db_path(base), isolation_level=None)
+    conn.execute(
+        "INSERT INTO runs (run_id, branch_def_id, thread_id, status, actor, started_at, "
+        "owner_token) VALUES (?, 'b', 't', ?, 'universe:u', ?, ?)",
+        (f"run-{status}-{owner}", status, started_at or time.time(), owner),
+    )
+    conn.close()
+
+
+def test_a_running_graph_run_with_a_live_owner_holds_the_deploy(tmp_path):
+    """An automation or background run executing a code node holds no seat."""
+    from tinyassets.process_liveness import owner_token
+
+    universe = tmp_path / "u-village"
+    universe.mkdir()
+    _run_row(universe, status="running", owner=owner_token(universe))
+    status, report = tif.observe(tmp_path)
+    assert status == tif.BUSY, report
+    assert report["runs"][0]["store"] == "u-village"
+    assert report["seats"] == []
+
+
+def test_root_store_queued_run_counts_and_finished_or_dead_runs_do_not(tmp_path):
+    from tinyassets.process_liveness import owner_token
+
+    _run_row(tmp_path, status="queued", owner=owner_token(tmp_path))
+    assert tif.observe(tmp_path)[0] == tif.BUSY
+
+    other = tmp_path / "u-other"
+    other.mkdir()
+    _run_row(other, status="completed", owner=owner_token(other))
+    _run_row(other, status="running", owner=_dead_token(other))
+    _, report = tif.observe(tmp_path)
+    assert len(report["runs"]) == 1 and report["runs"][0]["store"] == ""
+
+
+def test_a_tokenless_run_counts_only_if_it_started_after_this_boot(tmp_path, monkeypatch):
+    universe = tmp_path / "u-old"
+    universe.mkdir()
+    _run_row(universe, status="running", owner=None, started_at=1000.0)
+    monkeypatch.setattr(tif, "boot_epoch", lambda: 2000.0)
+    assert tif.observe(tmp_path)[0] == tif.IDLE
+    monkeypatch.setattr(tif, "boot_epoch", lambda: 500.0)
+    assert tif.observe(tmp_path)[0] == tif.BUSY
+    monkeypatch.setattr(tif, "boot_epoch", lambda: None)
+    assert tif.observe(tmp_path)[0] == tif.IDLE
 
 
 def test_a_working_journal_row_is_reported_but_does_not_hold_the_deploy(tmp_path):
@@ -185,7 +281,12 @@ def test_a_garbled_marker_never_reads_as_pending(tmp_path, monkeypatch):
     assert status_mod._load_deploy_pending()["pending"] is False  # no expires_at
 
 
-# --- the workflow step -------------------------------------------------------
+
+
+# --- the workflow step and deploy/wait_for_turns.sh ---------------------------
+
+
+_WAIT_SCRIPT = _REPO / "deploy" / "wait_for_turns.sh"
 
 
 def _steps() -> list[dict]:
@@ -200,12 +301,22 @@ def _step(name: str) -> dict:
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
 def test_wait_runs_before_the_swap_and_outside_its_lock():
     names = [step.get("name") for step in _steps()]
-    wait = names.index("Wait for in-flight turns")
-    assert wait == names.index("Run fail-safe deploy on the droplet") - 1
-    run = _step("Wait for in-flight turns")["run"]
-    assert "turns_in_flight.py" in run
-    # The wait must not run under the host-mutation lock: watchdogs need it.
-    assert "flock" not in run and "deploy_fail_safe.sh" not in run
+    assert names.index("Wait for in-flight turns") < names.index(
+        "Run fail-safe deploy on the droplet")
+    step = _step("Wait for in-flight turns")
+    assert step["run"].strip() == "bash deploy/wait_for_turns.sh"
+    body = _WAIT_SCRIPT.read_text(encoding="utf-8")
+    assert "scripts/turns_in_flight.py" in body
+    # Not under the host-mutation lock: the watchdogs need it while we wait.
+    assert "flock" not in body and "deploy_fail_safe.sh" not in body
+    # Every recovery workflow sharing the group is one the wait yields to.
+    group_peers = {"p0-outage-triage.yml", "restart-daemon.yml",
+                   "install-host-services.yml", "apply-daemon-env.yml"}
+    for peer in group_peers:
+        text = (_REPO / ".github" / "workflows" / peer).read_text(encoding="utf-8")
+        assert "production-host-mutation" in text, peer
+    assert set(step["env"]["YIELD_WORKFLOWS"].split()) == group_peers
+    assert step["env"]["IMAGE_REF"] == "${{ steps.tag.outputs.image_ref }}"
 
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
@@ -213,20 +324,22 @@ def test_job_and_step_budgets_cover_the_cap():
     step = _step("Wait for in-flight turns")
     cap_s = int(step["env"]["TURN_WAIT_CAP_S"])
     assert cap_s == 2700
-    assert step["timeout-minutes"] * 60 > cap_s
+    # Cap + one bounded prefetch-free poll + cleanup must fit inside the step.
+    assert step["timeout-minutes"] * 60 >= cap_s + 2 * 90 + 60
     job = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy"]
-    # The job must outlive the wait plus the deploy work behind it.
     assert job["timeout-minutes"] >= step["timeout-minutes"] + 15
 
 
 _FAKE_SSH = r"""#!/usr/bin/env bash
-# Stand-in for the droplet: answers each in-flight check from a script of
-# exit codes, one per call, and records every command it was asked to run.
+# Stand-in for the droplet: answers each in-flight check from a script of exit
+# codes, one per call, and records every command it was asked to run.
 cmd="${@: -1}"
 printf '%s\n' "$cmd" >> "$FAKE_DIR/calls"
 case "$cmd" in
+  *"docker pull"*) exit 0 ;;
   *--clear-pending*) echo '{"cleared": true}'; exit 0 ;;
 esac
+if [ -n "${FAKE_HANG:-}" ]; then exec python -c "import time; time.sleep(60)"; fi
 n=$(cat "$FAKE_DIR/n" 2>/dev/null || echo 0)
 n=$((n + 1)); echo "$n" > "$FAKE_DIR/n"
 rc=$(sed -n "${n}p" "$FAKE_DIR/script")
@@ -235,8 +348,19 @@ echo "{\"poll\": $n, \"rc\": $rc}"
 exit "$rc"
 """
 
+#: Answers a runs query with $FAKE_GH_QUEUED for the named workflow, 0 otherwise.
+_FAKE_GH = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_DIR/gh_calls"
+case "$*" in
+  *"${FAKE_GH_WORKFLOW:-none}"*) echo "${FAKE_GH_QUEUED:-0}" ;;
+  *) echo 0 ;;
+esac
+"""
 
-def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700) -> dict[str, str]:
+
+def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700,
+              extra_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Run the step exactly as Actions does: its `run` text under `bash -eo pipefail`."""
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash not available")
@@ -244,6 +368,7 @@ def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700) -> dict[st
     bin_dir = fake / "bin"
     bin_dir.mkdir(parents=True)
     (bin_dir / "ssh").write_text(_FAKE_SSH, encoding="utf-8", newline="\n")
+    (bin_dir / "gh").write_text(_FAKE_GH, encoding="utf-8", newline="\n")
     for name, body in (("scp", "exit 0"), ("sleep", "exit 0")):
         (bin_dir / name).write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8",
                                     newline="\n")
@@ -251,28 +376,33 @@ def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700) -> dict[st
         tool.chmod(0o755)
     (fake / "script").write_text("\n".join(str(c) for c in codes) + "\n", encoding="utf-8",
                                  newline="\n")
+    (fake / "calls").write_text("", encoding="utf-8")
     out = tmp_path / "gh_output"
     out.write_text("", encoding="utf-8")
-    script = tmp_path / "wait.sh"
-    script.write_text(_step("Wait for in-flight turns")["run"], encoding="utf-8",
-                      newline="\n")
+    step = _step("Wait for in-flight turns")
+    script = tmp_path / "step.sh"
+    script.write_text(step["run"], encoding="utf-8", newline="\n")
     env = dict(os.environ)
+    env.update({k: v for k, v in step["env"].items() if "${{" not in str(v)})
     env.update({
-        "PATH": f"{bin_dir.as_posix()}{os.pathsep}{env.get('PATH', '')}",
         "FAKE_DIR": fake.as_posix(),
         "GITHUB_OUTPUT": out.as_posix(),
+        "GITHUB_REPOSITORY": "owner/repo",
         "DO_SSH_USER": "deploy", "DO_DROPLET_HOST": "droplet.invalid",
-        "TARGET_REVISION": "a" * 40, "TURN_WAIT_CAP_S": str(cap_s), "TURN_POLL_S": "15",
+        "TARGET_REVISION": "a" * 40, "TURN_WAIT_CAP_S": str(cap_s),
         "RUN_URL": "https://example.invalid/run",
+        "IMAGE_REF": "ghcr.io/o/tinyassets-daemon@sha256:" + "0" * 64,
+        "CHECK_TIMEOUT_S": "2",
     })
+    env.update(extra_env or {})
     if os.name == "nt":
         # Git Bash resolves PATH entries in POSIX form; prepend inside bash.
         wrapper = (f'export PATH="$(cygpath -u "{bin_dir}"):$PATH"; '
-                   f'bash "$(cygpath -u "{script}")"')
-        cmd = [bash, "-c", wrapper]
+                   f'bash -eo pipefail "$(cygpath -u "{script}")"')
     else:
-        cmd = [bash, str(script)]
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+        wrapper = f'export PATH="{bin_dir}:$PATH"; bash -eo pipefail "{script}"'
+    result = subprocess.run([bash, "-c", wrapper], env=env, capture_output=True, text=True,
+                            timeout=120, cwd=str(_REPO))
     assert result.returncode == 0, result.stdout + result.stderr
     outputs = dict(
         line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines() if "=" in line
@@ -284,12 +414,20 @@ def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700) -> dict[st
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
 def test_wait_holds_while_busy_then_deploys_when_idle(tmp_path):
+    """Under Actions' own `bash -e`: a busy answer is data, not a failed step."""
     out = _run_wait(tmp_path, [10, 10, 10, 0])
     assert out["outcome"] == "idle"
     assert out["polls"] == "4"
-    calls = out["_calls"]
-    assert calls.count("--mark-pending") == 4
-    assert "--clear-pending" in calls.splitlines()[-1]
+    calls = out["_calls"].splitlines()
+    assert sum("--mark-pending" in c for c in calls) == 4
+    assert "--clear-pending" in calls[-1]
+
+
+@pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
+def test_the_image_is_prefetched_before_the_first_poll(tmp_path):
+    calls = _run_wait(tmp_path, [0])["_calls"].splitlines()
+    assert "docker pull" in calls[0]
+    assert "--mark-pending" in calls[1]
 
 
 @pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
@@ -319,3 +457,27 @@ def test_one_unknown_between_busy_answers_does_not_end_the_wait(tmp_path):
     out = _run_wait(tmp_path, [10, 2, 10, 2, 10, 2, 0])
     assert out["outcome"] == "idle"
     assert out["polls"] == "7"
+
+
+@pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
+def test_a_hung_check_is_bounded_and_counts_as_unknown(tmp_path):
+    out = _run_wait(tmp_path, [10], extra_env={"FAKE_HANG": "1"})
+    assert out["outcome"] == "check_unavailable"
+    assert out["polls"] == "3"
+    assert "rc=124" in out["_stdout"]
+
+
+@pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
+def test_a_queued_recovery_workflow_ends_the_wait(tmp_path):
+    out = _run_wait(tmp_path, [10, 10, 10], extra_env={
+        "FAKE_GH_WORKFLOW": "p0-outage-triage.yml", "FAKE_GH_QUEUED": "1",
+    })
+    assert out["outcome"] == "yield_to_host_mutation"
+    assert out["polls"] == "1"
+
+
+@pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
+def test_no_queued_recovery_keeps_waiting(tmp_path):
+    out = _run_wait(tmp_path, [10, 10, 0], extra_env={"FAKE_GH_QUEUED": "0"})
+    assert out["outcome"] == "idle"
+    assert out["polls"] == "3"
