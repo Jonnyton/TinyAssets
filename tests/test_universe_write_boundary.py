@@ -3,7 +3,7 @@
 Encodes the invariant from the founder/universe identity design — see
 ``docs/design-notes/2026-06-26-founder-and-universe-identity.md`` (decision
 D0a) and ``openspec/changes/archive/2026-08-26-universe-creation`` requirement *"MCP writes are
-scoped to the founder's own universe"*:
+scoped to the founder's own command center"*:
 
     A universe created through ``universe action=create_universe`` is OWNED by
     the founder who created it. Another authenticated founder — even one

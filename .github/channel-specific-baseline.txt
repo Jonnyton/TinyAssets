@@ -32,9 +32,6 @@ tinyassets/api/universe.py:codex:1
 tinyassets/api/universe.py:openai:1
 tinyassets/api/webhook_ops.py:github:1
 tinyassets/api/wiki.py:claude:1
-tinyassets/auth/host_proof.py:claude:1
-tinyassets/auth/host_proof.py:codex:1
-tinyassets/auth/host_proof.py:gemini:1
 tinyassets/auth/provider.py:github:4
 tinyassets/automations.py:codex:1
 tinyassets/branches.py:codex:1

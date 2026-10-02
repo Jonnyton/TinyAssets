@@ -437,7 +437,7 @@ def validate_provider_request_carrier(
     if capability is None:
         raise PermissionError("provider request capability is revoked")
     if carrier.universe_id != universe_id:
-        raise PermissionError("provider request carrier belongs to another universe")
+        raise PermissionError("provider request carrier belongs to another command center")
     if carrier.agent_binding_id != agent_binding_id:
         raise PermissionError("provider request carrier belongs to another agent binding")
     if carrier.binding_revision != binding_revision:

@@ -95,7 +95,7 @@ class ProviderConfinementError(ProviderAuthorityHeldError):
 
     failure_class = "provider_confinement_unavailable"
     #: Every raise starts with this, so a stored error string stays classifiable.
-    MESSAGE = "provider launch refused: it cannot be confined to its universe"
+    MESSAGE = "provider launch refused: it cannot be confined to its command center"
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,7 +270,7 @@ def hidden_dir_masks(universe_dir: Path) -> list[JailMount]:
         if not entry.name.startswith(".") or entry.name == PLATFORM_RUNTIME_DIR:
             continue
         if entry.is_symlink():
-            raise _refuse(f"the universe's {entry.name} is a link; it cannot be masked")
+            raise _refuse(f"the command center's {entry.name} is a link; it cannot be masked")
         if entry.is_dir(follow_symlinks=False):
             masks.append(JailMount("tmpfs", str(Path(universe_dir) / entry.name)))
     return masks
@@ -310,7 +310,7 @@ def _validated_view(view: UniverseView) -> UniverseView:
         except OSError:
             raise _refuse("a bind source does not exist") from None
         if not (_within(source, root) or _within(source, _sidecars(root))):
-            raise _refuse("a view may only bind paths inside its own universe")
+            raise _refuse("a view may only bind paths inside its own command center")
         checked.append(JailMount(mount.op, dest, source))
     for name, _value in view.setenv:
         if not name or "=" in name:
@@ -371,7 +371,7 @@ def _install_binds(
         if text == "/" or _covered(text, already):
             continue
         if any(_overlaps(path, root) for root in forbidden):
-            raise _refuse("a provider install path overlaps universe data or platform source")
+            raise _refuse("a provider install path overlaps command center data or platform source")
         if _covered(text, ("/etc", "/proc", "/dev")):
             raise _refuse("a provider install path sits under a reserved system root")
         argv.extend(("--ro-bind", text, text))
@@ -491,7 +491,7 @@ def confine_launch(
         return None
     if scope is not None and scope.universe_dir is None:
         raise _refuse(
-            "this provider call has no owning universe, so there is no "
+            "this provider call has no owning command center, so there is no "
             "directory to confine it to; it will not run on the host"
         )
     if view is None:
@@ -504,9 +504,9 @@ def confine_launch(
         view.universe_dir.resolve(strict=False)
         != scope.universe_dir.resolve(strict=False)
     ):
-        raise _refuse("the adapter's view names a different universe than its call")
+        raise _refuse("the adapter's view names a different command center than its call")
     if not view.universe_dir.resolve(strict=False).is_dir():
-        raise _refuse("the owning universe directory does not exist")
+        raise _refuse("the owning command center directory does not exist")
     bwrap_path = BWRAP_RESOLVER()
     install_paths = [*_command_install_paths(str(argv[0]), env)] if argv else []
     if install_mounts is not None:

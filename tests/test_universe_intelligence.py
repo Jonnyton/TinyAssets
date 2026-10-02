@@ -472,7 +472,7 @@ def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
 
 def test_generic_identity_detector():
     assert ui._is_generic_identity_boilerplate("a blank slate, a newborn mind")
-    assert ui._is_generic_identity_boilerplate("I am a personified universe")
+    assert ui._is_generic_identity_boilerplate("I am a personified command center")
     assert ui._is_generic_identity_boilerplate("I have no name yet")
     assert not ui._is_generic_identity_boilerplate(
         "I am Atlas, Dana's climate-research companion."
@@ -484,7 +484,7 @@ def test_commit_learning_drops_generic_identity_boilerplate(tmp_path):
     proposed = {
         "soul": {
             "identity.md": (
-                "I am a personified universe that starts blank and learns who "
+                "I am a personified command center that starts blank and learns who "
                 "I am over time."
             ),
             "founder.md": "My founder is Dana, a documentary filmmaker.",

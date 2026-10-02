@@ -52,7 +52,7 @@ def test_every_founder_turn_says_where_long_running_work_belongs(tmp_path) -> No
     """The folder prompt told the agent what NOT to use bash for and nothing
     else; the service it then wrote under /u followed from that gap."""
     prompt = _flat(universe_tools.harness_prompt(tmp_path))
-    assert "workflows and automations in this universe" in prompt
+    assert "workflows and automations in this command center" in prompt
     assert "never a service hosted elsewhere" in prompt
     assert f"write_graph.{CHAPTER}" in prompt
     # And that name resolves by the route the index advertises.

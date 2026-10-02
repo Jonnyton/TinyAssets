@@ -160,7 +160,7 @@ def _key(actor_id: str, universe_id: str) -> tuple[str, str]:
     if not actor or not universe:
         # Never key a live turn on an empty subject: "" would be one shared
         # bucket every unauthenticated path fell into.
-        raise ValueError("an interactive turn needs an authenticated owner and a universe")
+        raise ValueError("an interactive turn needs an authenticated owner and a command center")
     return actor, universe
 
 
