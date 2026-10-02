@@ -29,6 +29,7 @@ from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
 from tinyassets.providers.native_agent_input import render_native_input
+from tinyassets.request_budget import WRAP_UP_REMAINING, budget_for_context
 from tinyassets.served_tools import granted_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
@@ -96,6 +97,7 @@ class AgentTurnCoordinator:
         self.router = router
         self.prompt = prompt
         self.system = system
+        self.inference_system = system
         self.context = universe_context
         self.config = config
         self.journal = None
@@ -114,6 +116,8 @@ class AgentTurnCoordinator:
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
         self.spent_attempts = []
+        self.request_limit = None
+        self.budget_wrap_up = False
 
     def _remaining(self, turn_deadline):
         """This turn's config with its absolute cap cut to what is left of the turn.
@@ -148,7 +152,8 @@ class AgentTurnCoordinator:
     def _begin(self, authority, reservation, config):
         candidate = self.adapter.round_input(
             authority, reservation, config, owner=self.owner, context=self.context,
-            prompt=self.prompt, system=self.system, native_input=None, kind="engine_inference",
+            prompt=self.prompt, system=self.inference_system,
+            native_input=None, kind="engine_inference",
         )
         self._accept(
             self.journal.begin_round(
@@ -426,6 +431,22 @@ class AgentTurnCoordinator:
                         self.context.model_selection,
                     )
                     if self.execution_kind == "engine_inference":
+                        budget = budget_for_context(self.context, owner=self.owner)
+                        if budget is not None:
+                            if self.request_limit is None:
+                                self.request_limit = min(budget.planned_requests, budget.remaining)
+                            used = len(self.turn.rounds)
+                            if budget.remaining <= 0 or used >= self.request_limit:
+                                raise ProviderAuthorityHeldError(
+                                    "the free request allowance is spent",
+                                )
+                            # Reserve the text-only inference INSIDE K, including failures.
+                            self.budget_wrap_up = (
+                                used >= self.request_limit - 1
+                                or budget.remaining <= WRAP_UP_REMAINING
+                            )
+                        else:
+                            self.budget_wrap_up = False
                         if engine is None:
                             actor_id, graph_id = self.adapter.engine_identity(
                                 self.context, self.config,
@@ -441,9 +462,16 @@ class AgentTurnCoordinator:
                             agent_request=AgentInferenceRequest(
                                 tools=codec.tool_definitions(engine.tools),
                                 history=self._history(),
+                                tool_choice="none" if self.budget_wrap_up else "auto",
                             ),
                         )
                         prompt, system, observer = self.prompt, self.system, self._begin
+                        if self.budget_wrap_up:
+                            system += (
+                                "\n\nThis is my final request within this turn's budget. "
+                                "I reply in text now: what I finished, where progress was "
+                                "saved, and what is left. I never claim an unsaved file exists."
+                            )
                     else:
                         self.native_input = render_native_input(
                             self.prompt, self.system, self._history(),
@@ -454,6 +482,7 @@ class AgentTurnCoordinator:
                             selected_model=None,
                         )
                         observer = self._begin_native
+                    self.inference_system = system
                     try:
                         inference = self.adapter.infer(
                             router=self.router, prompt=prompt, system=system, config=config,

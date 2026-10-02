@@ -183,3 +183,97 @@ def test_resume_pipeline_delivers_round_one_text_with_tools_and_resident_context
     system = next(message["content"] for message in messages if message["role"] == "system")
     assert HEADING in system
     assert 'write_graph target="app_ui" operation="add_ui"' in system
+
+
+def seed_budget(agent, monkeypatch, remaining):
+    """Give the synthetic host installed cap facts; retain real serving and journal IO."""
+    from datetime import datetime, timedelta, timezone
+
+    from tests.test_request_budget import PRESET, seed_requests
+    from tinyassets import daemon_server
+    from tinyassets.providers import free_sources
+    from tinyassets.providers.served_model_plan import apply_served_model_preferences
+
+    original = free_sources.source_for_host
+    monkeypatch.setattr(daemon_server, "get_founder_home", get_founder_home)
+    monkeypatch.setattr(free_sources, "source_for_host",
+                        lambda host: PRESET if host == "owned.example" else original(host))
+    agent.served.context = apply_served_model_preferences(agent.served.context)
+    selection = agent.served.context.model_selection
+    seed_requests(
+        agent.served.rig.base, 50 - remaining, source=selection.connection_id,
+        model=selection.model_id, created_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+
+
+def test_served_budget_wrap_up_includes_final_request_inside_k(agent, monkeypatch):
+    """Mutation sanity: ignoring K fails len(wires) <= planned_requests (4)."""
+    import hashlib
+    import json
+
+    from tinyassets.request_budget import budget_for_context
+
+    seed_budget(agent, monkeypatch, remaining=6)
+    initial = budget_for_context(agent.served.context)
+    assert initial.remaining == 6 and initial.planned_requests == 4
+    agent.requested_rounds = 12
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) <= initial.planned_requests
+    assert len(agent.wires) == 4 and len(agent.tools) == 3
+    assert agent.wires[-1][1]["body"]["tool_choice"] == "none"
+    assert agent.latest().state == "completed"
+    final_body = agent.wires[-1][1]["body"]
+    assert agent.latest().rounds[-1].candidate.request_digest == (
+        "sha256:" + hashlib.sha256(json.dumps(final_body).encode("utf-8")).hexdigest()
+    )
+    system = agent.wires[0][1]["body"]["messages"][0]["content"]
+    assert "used 44 of about 50 free requests on OpenRouter" in system
+    assert "within about 4 requests" in system
+    assert budget_for_context(agent.served.context).remaining == 2
+
+
+@pytest.mark.parametrize("remaining,requests", [(3, 2), (2, 1), (1, 1)])
+def test_wrap_up_reserves_last_daily_requests(agent, monkeypatch, remaining, requests):
+    seed_budget(agent, monkeypatch, remaining)
+    agent.requested_rounds = 12
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == requests <= remaining
+    assert agent.wires[-1][1]["body"]["tool_choice"] == "none"
+
+
+def test_unknown_budget_preserves_requested_rounds_and_omits_prompt(agent):
+    agent.requested_rounds = 5
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 6 and len(agent.tools) == 5
+    assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
+    assert "free requests" not in agent.wires[0][1]["body"]["messages"][0]["content"]
+
+
+@pytest.mark.parametrize("remaining,skipped", [(9, True), (10, False), (None, False)])
+def test_learning_budget_threshold(agent, monkeypatch, caplog, remaining, skipped):
+    import logging
+
+    if remaining is not None:
+        seed_budget(agent, monkeypatch, remaining)
+    calls = []
+    monkeypatch.setattr(universe_intelligence, "call_provider",
+                        lambda *a, **kw: calls.append(kw) or '{}')
+    with caplog.at_level(logging.INFO):
+        assert universe_intelligence.extract_learning("hello", "reply", agent.served.context) == {}
+    assert len(calls) == (0 if skipped else 1)
+    assert ("Skipping learning extraction" in caplog.text) == skipped
+
+
+def test_served_converse_skips_learning_after_budget_wrap_up(agent, monkeypatch, signed_in):
+    from tinyassets import daemon_server
+
+    seed_budget(agent, monkeypatch, remaining=6)
+    root = agent.served.context.universe_dir
+    agent.requested_rounds = 12
+    monkeypatch.setattr(daemon_server, "get_founder_home", get_founder_home)
+    signed_in("owner")
+    monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
+    assert run(agent, greeting=True) == "finished exact answer"
+    assert len(agent.wires) == 4
+    assert agent.wires[-1][1]["body"]["tool_choice"] == "none"
+    assert agent.latest().state == "completed"

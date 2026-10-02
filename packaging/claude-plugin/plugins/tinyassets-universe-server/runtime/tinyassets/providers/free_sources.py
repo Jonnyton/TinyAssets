@@ -35,7 +35,12 @@ def source_preset(source_id):
 
 
 def source_for_host(host):
-    return next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), {})
+    source = next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), None)
+    if source is not None:
+        return deepcopy(source)
+    presets = json.loads(Path(__file__).with_name("acquisition_presets.json").read_text("utf-8"))
+    return next((row for row in presets.values()
+                 if urlsplit(row["inference_url"]).netloc == host), {})
 
 
 def billing_url_for_host(host):

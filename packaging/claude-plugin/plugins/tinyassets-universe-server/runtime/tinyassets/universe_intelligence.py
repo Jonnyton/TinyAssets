@@ -809,6 +809,13 @@ def extract_learning(
     never blindly persisted. Returns a possibly-empty dict; grounding is enforced
     by the prompt and re-checked in :func:`commit_learning`.
     """
+    from tinyassets.request_budget import LEARNING_MIN_REMAINING, budget_for_context
+
+    budget = budget_for_context(ctx)
+    if budget is not None and budget.remaining < LEARNING_MIN_REMAINING:
+        logger.info("Skipping learning extraction: %s free requests remain on %s",
+                    budget.remaining, budget.source_name)
+        return {}
     raw = call_provider(
         f"Founder's latest message:\n{founder_message}\n\n"
         f"Your reply this turn:\n{reply}",
@@ -1163,6 +1170,11 @@ def _call_writer(
 
     http_turn = None
     selection = getattr(universe_context, "model_selection", None)
+    from tinyassets.request_budget import budget_for_context
+
+    budget = budget_for_context(universe_context)
+    if budget is not None:
+        system += "\n\n" + budget.prompt_line()
     if (selection is not None and universe_context.agent_model_plan is not None
             and not getattr(config, "engine_mcp_enabled", False)):
         from tinyassets.exceptions import ProviderAuthorityHeldError
