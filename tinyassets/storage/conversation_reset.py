@@ -4,7 +4,6 @@ Not a reset entry point: only the existing reviewed plan, maintenance barrier an
 committed witness authorize the caller. No home database is newly resettable.
 """
 
-import sqlite3
 import time
 
 from tinyassets.universe_files import connect_db

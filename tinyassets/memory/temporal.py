@@ -11,7 +11,6 @@ the same entity/attribute with overlapping validity periods.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path

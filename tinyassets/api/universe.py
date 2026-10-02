@@ -1143,7 +1143,6 @@ def _compute_accept_rate_from_db(
         return None, sample
 
     try:
-        import sqlite3
 
         conn = connect_db(str(db_path))
         try:

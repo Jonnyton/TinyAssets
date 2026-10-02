@@ -62,6 +62,8 @@ def _raw_ops(source: str) -> list[tuple[int, str, str]]:
                         what = f"os.{target.attr}()"
                     elif owner == "shutil" and target.attr in _RAW_SHUTIL:
                         what = f"shutil.{target.attr}()"
+                    elif owner in ("sqlite3", "_sqlite3") and target.attr == "connect":
+                        what = "sqlite3.connect()"
                     elif owner not in ("os", "shutil") and target.attr in _RAW_ATTRS:
                         what = f".{target.attr}()"
                 if what is not None:
@@ -182,7 +184,8 @@ PINNED: dict[str, list[str]] = {
         "_fsync_directory: os.open()",
         "_fsync_file: open()",
         "_on_disk_document_is_newer: .read_text()",
-        "_persist_credential_vault_file: open()",
+        "_persist_credential_vault_file: .unlink()",
+        "_persist_credential_vault_file: os.open()",
         "_read_credential_material: .read_bytes()",
         "_remove_snapshot_tree: .unlink()",
         "_remove_snapshot_tree: .unlink()",

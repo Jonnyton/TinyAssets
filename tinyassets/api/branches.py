@@ -865,7 +865,6 @@ def _branch_dependents(
     mints one, so counting them would make any edited branch undeletable.
     Version ids are read uncapped.
     """
-    import sqlite3
 
     from tinyassets import branch_versions, scheduler
     from tinyassets.automations import AutomationStore

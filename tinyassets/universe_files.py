@@ -504,12 +504,48 @@ def _identity(info: os.stat_result) -> str:
     return f"{info.st_dev}:{info.st_ino}"
 
 
+def _provenance_epoch(root: Path) -> float:
+    """When provenance first ran on this data dir (written once, exclusively)."""
+    import time
+
+    epoch = root / _SIDECARS_DIR / ".db-provenance-epoch"
+    try:
+        write_data_path(epoch, repr(time.time()), mode="exclusive")
+    except FileExistsError:
+        pass
+    return float((read_data_path(epoch) or b"0").decode("ascii"))
+
+
+def _registered_at(root: Path, uid: str) -> float | None:
+    """The universe's ``created_at`` from the data-root registry (which no jail
+    binds), or ``None`` for an unregistered directory."""
+    from tinyassets.daemon_server import get_universe
+
+    try:
+        return float(get_universe(root, universe_id=uid)["created_at"])
+    except KeyError:
+        return None
+
+
 def _grandfather_state_dbs(root: Path, uid: str, dir_fd: int) -> None:
-    """First sight of a universe since provenance landed: record the hidden
-    databases already there as daemon-made. A one-time window -- anything a
-    universe pre-seeded BEFORE this ran is trusted, nothing after."""
+    """First sight of a universe since provenance landed.
+
+    A universe registered BEFORE provenance existed (or an unregistered legacy
+    directory) has its hidden databases recorded as daemon-made: they predate
+    the check, a one-time window. A universe registered AFTER it gets nothing
+    grandfathered -- every state database it has must be one the daemon made,
+    so a file pre-seeded by its own processes before the daemon's first open
+    is refused rather than trusted.
+    """
     ready = _provenance_path(root, uid, _PROVENANCE_READY)
     if read_data_path(ready) is not None:
+        return
+    registered = _registered_at(root, uid)
+    if registered is not None and registered >= _provenance_epoch(root):
+        try:
+            write_data_path(ready, "1", mode="exclusive")
+        except FileExistsError:
+            pass
         return
     for entry in os.listdir(dir_fd):
         if not _is_universe_state_db([uid, entry]):
