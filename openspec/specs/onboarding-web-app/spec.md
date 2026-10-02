@@ -90,7 +90,13 @@ universe, whatever started the turn -- a typed message, an answered request, a
 queued line, another window, another device, or the connector -- and SHALL NOT
 depend on the current page having sent anything. `get_status` SHALL carry, gated
 on write access to the universe, whether a turn is progressing, since when, and
-its journal state, and no prompt, model or owner. A row past the cap the
+its journal state, and no prompt or owner; once the running turn has opened a
+round it SHALL also carry that step's number, the model id the step is asking
+(the same id those readers see on every reply's "Answered by" line) and how long
+it has waited. While a step waits on its model the indicator SHALL say which step,
+which model and for how long, and after a long wait SHALL offer the owner another
+model for their next message -- the owner's choice, never an automatic switch
+that abandons a reply still coming. A row past the cap the
 coordinator already enforces SHALL be reported as stale and SHALL NOT be painted
 as activity; a read that failed SHALL be reported as unreadable rather than as
 idle. A message queued behind an in-flight turn SHALL render in the order the
@@ -104,6 +110,11 @@ has for the step that died -- preserving what ran and what is merely uncertain,
 never claiming a killed turn completed. A boot owns a turn it created and has not
 finished, or one created after the boot began; ownership is process state and
 SHALL NOT be inferred from age alone.
+
+#### Scenario: A step waits a long time on its model
+- **WHEN** the running turn's step has waited minutes on one model request
+- **THEN** the indicator reads like "step 4 · waiting on qwen3.8 for 7 min"
+- **AND** after three minutes a "Try another model" action opens the model menu for the next message, and the request in flight is not stopped by it
 
 #### Scenario: A turn this page did not start
 - **WHEN** a turn is running for the universe and this page sent nothing
@@ -188,3 +199,36 @@ hide older turns without saying so.
 - **WHEN** an owner's thread holds more turns than one page
 - **THEN** the page reports `has_more: true` and a `next_before` cursor
 - **AND** following the cursor until `has_more` is false returns every turn exactly once
+
+### Requirement: The chat with an agent floats over the command center
+The app SHALL present the chat with an agent (thread, request rail, model bar,
+composer and status lines) as a floating "chat cloud" above the command-center
+stage, which the owner can drag, resize, and shrink to a bubble and expand
+again by pointer, touch or keyboard. It SHALL start open and filling the stage
+for an owner with no command-center layout, and as a bubble when a layout is
+active. Once the owner moves, resizes, shrinks or expands it, the app SHALL
+restore that last state instead, remembered per owner, per agent (`main` by
+default) and per viewport class (`phone` below 760 px, `wide` otherwise). The
+cloud and the bubble SHALL stay wholly on the stage whenever it resizes. The
+bubble SHALL show when the agent is working and when a reply arrived while it
+was shrunk.
+
+#### Scenario: A new owner signs in
+- **WHEN** an owner with no command-center layout and no saved cloud state opens the app
+- **THEN** the chat cloud is open and fills the stage
+
+#### Scenario: A command-center layout is active
+- **WHEN** a custom UI is mounted and the owner has never placed the cloud
+- **THEN** the chat is a bubble in the stage's corner over the layout
+
+#### Scenario: The owner placed it before
+- **WHEN** the owner moved, resized or shrank the cloud on this viewport class and reloads
+- **THEN** it reopens exactly as they left it, layout or not
+
+#### Scenario: The window shrinks
+- **WHEN** the stage becomes smaller than where the cloud or bubble sits
+- **THEN** it is moved and, if needed, shrunk to stay wholly visible
+
+#### Scenario: A bubble is dragged
+- **WHEN** the owner drags the bubble to a new place
+- **THEN** it moves there and does not also open
