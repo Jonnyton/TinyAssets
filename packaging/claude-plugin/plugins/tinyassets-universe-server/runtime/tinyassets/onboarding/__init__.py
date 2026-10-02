@@ -1565,23 +1565,32 @@ async def _handle_turn_pending(request: Any) -> Any:
     if not universe_id:
         return JSONResponse({"pending": []}, headers=_NO_STORE)
 
+    claim = data.get("claim")
+    if claim is not None and not (isinstance(claim, list) and len(claim) <= 50):
+        return JSONResponse({"error": "invalid_claim"}, status_code=400, headers=_NO_STORE)
+
     def _list():
         from tinyassets import agent_steering
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.api.permissions import universe_access_allows
 
         if not universe_access_allows(universe_id, write=True):
-            return []
-        return agent_steering.pending(
-            _universe_dir(universe_id), f"thread:principal:{identity.user_id}")
+            return None
+        udir, key = _universe_dir(universe_id), f"thread:principal:{identity.user_id}"
+        if claim is not None:
+            return {"claimed": agent_steering.claim(udir, key, claim)}
+        return {"pending": [
+            {"id": r.id, "text": r.text, "state": r.state, "created_at": r.created_at}
+            for r in agent_steering.pending(udir, key)],
+            "active": agent_steering.active(udir, key)}
 
     try:
-        rows = await run_in_threadpool(_list)
+        doc = await run_in_threadpool(_list)
     except ValueError:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
-    return JSONResponse({"universe_id": universe_id, "pending": [
-        {"id": r.id, "text": r.text, "state": r.state, "created_at": r.created_at}
-        for r in rows]}, headers=_NO_STORE)
+    if doc is None:
+        doc = {"claimed": []} if claim is not None else {"pending": [], "active": None}
+    return JSONResponse({"universe_id": universe_id, **doc}, headers=_NO_STORE)
 
 
 async def _handle_account_delete(request: Any) -> Any:

@@ -1887,8 +1887,12 @@
   function readServerTurn(payload){
     const wasLive=serverTurnLive();
     readServerTurnRow(payload);
-    // A turn this page did not start just ended: lines that waited for it go now.
-    if(wasLive && !serverTurnLive() && !activeTurn && sendQueue.length) flushSendQueue();
+    if(serverTurnLive() || activeTurn) return;
+    // A turn this page did not start just ended: its reply is drawn, and what it
+    // did not take (steered lines left undelivered) comes back from the server.
+    if(wasLive){ finishActiveTurn(); restoreHeldSteers(); return; }
+    // Idle and something waits: send it (a missed transition never strands it).
+    if(sendQueue.length) flushSendQueue();
   }
   function readServerTurnRow(payload){
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
@@ -3740,11 +3744,15 @@
     // AND the home, it cannot tell an own row from a stranger's, so it says
     // nothing and leaves every row on disk.
     if(queueRestored || !queueScope || !queueOwner) return; queueRestored=true;
+    // Read the device's own saved rows FIRST: restoring the server's lines
+    // saves the queue, and must keep every row this device was holding.
+    retainedItems=readSavedQueue();
     const offer=(serverLines)=>{
       const now=Date.now();
       // A line the server holds is already queued again above; its copy saved
       // on this device is not offered a second time.
-      retainedItems=readSavedQueue().filter(i=>!(ownsSavedRow(i)&&serverLines.includes(i.message)));
+      retainedItems=retainedItems.filter(i=>!(ownsSavedRow(i)&&serverLines.includes(i.message)));
+      saveQueue();
       retainedItems.forEach(i=>offerSavedLine(i, now));
     };
     if(typeof fetch!=="function"){ offer([]); return; }
@@ -3819,8 +3827,19 @@
     return group;
   }
   function flushBatch(){
-    const group=takeBatch();
+    const taken=takeBatch();
     saveQueue();
+    if(!taken.length) return flushSendQueue();
+    if(taken.some(item=>item.heldId)){
+      claimHeldLines(taken).then(kept=>{
+        taken.filter(item=>kept.indexOf(item)<0).forEach(alreadyHandled);
+        sendBatch(kept);
+      });
+      return;
+    }
+    sendBatch(taken);
+  }
+  function sendBatch(group){
     if(!group.length) return flushSendQueue();
     group.forEach(item=>unmarkQueued(item.bubble));
     const methods=group.map(item=>turnInputMethod(item.opts.inputMethod));
@@ -3838,6 +3857,8 @@
     // that also sits in this queue: nothing goes out until it does.
     if(pendingSteers>0){ steerHeldBatch=steerHeldBatch||batch===true; return; }
     if(sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
+    // A turn this page did not start is still running: everything waits for it.
+    if(!activeTurn && serverTurnLive()) return;
     if(batch===true) return flushBatch();
     const next=sendQueue.shift();
     // A queued line goes out only under the account and home that queued it.
@@ -3854,6 +3875,16 @@
     }
     if(claimedElsewhere(next)){ unmarkQueued(next.bubble); saveQueue(); return flushSendQueue(); }
     saveQueue();
+    if(next.heldId){
+      claimHeldLines([next]).then(kept=>{
+        if(kept.length){
+          unmarkQueued(next.bubble);
+          sendTurn(next.message, next.display, next.opts)
+            .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
+        }else{ alreadyHandled(next); flushSendQueue(); }
+      });
+      return;
+    }
     // Its turn starts now: from here it is a sent message like any other.
     unmarkQueued(next.bubble);
     // A rejection before sendTurn's own try/finally (a missing node) must not
@@ -3940,20 +3971,82 @@
     el.appendChild(note); el.heldNote=note;
     return el;
   }
-  // After a reload: what the server still holds for this thread comes back on
-  // screen -- a line saved for the next turn is queued again and goes out when
-  // the work ends; one already handed to the running turn shows as sent there.
-  async function restoreHeldSteers(){
-    const owner=queueOwner, scope=queueScope, epoch=MCP._loginEpoch;
+  // Held lines are removed from the server's keeping before this page sends
+  // them itself, atomically: a line another tab or a turn already took comes
+  // back unclaimed and is not sent again. Unreachable server: sent as before
+  // (the next turn's carryover check still drops an exact repeat).
+  async function claimHeldLines(items){
+    const ids=items.filter(i=>i.heldId).map(i=>i.heldId);
+    if(!ids.length) return items;
     let doc=null;
     try{
       const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({universe_id:scope})});
+        body:JSON.stringify({universe_id:queueScope,claim:ids})});
       doc=r.ok?await r.json():null;
     }catch(e){ doc=null; }
-    if(!doc||!Array.isArray(doc.pending)||epoch!==MCP._loginEpoch||
-       owner!==queueOwner||scope!==queueScope) return [];
+    if(!doc||!Array.isArray(doc.claimed)) return items;
+    return items.filter(i=>!i.heldId||doc.claimed.indexOf(i.heldId)>=0);
+  }
+  function alreadyHandled(item){
+    unmarkQueued(item.bubble);
+    if(item.bubble&&item.bubble.heldNote) item.bubble.heldNote.textContent=
+      "Already passed to your agent.";
+  }
+  // The message a running turn is answering, drawn after a reload with the
+  // working state on it (P2, live 2026-10-02: a reload mid-turn showed neither
+  // the message nor that it was being worked on, so it was sent twice).
+  let watchedActive=null, lastActiveText="";
+  function showActiveTurn(active){
+    if(!active||typeof active.text!=="string"||!active.text||watchedActive||
+       active.text===lastActiveText) return false;
+    lastActiveText=active.text;
+    const bubble=appendMessage("founder", active.text, null,
+      typeof active.started_at==="number"?active.started_at:Date.now()/1000);
+    if(bubble){
+      const note=document.createElement("span");
+      note.className="msg-steered-note";
+      note.textContent="Your agent is working on this.";
+      bubble.appendChild(note); bubble.workingNote=note;
+    }
+    watchedActive={text:active.text, bubble};
+    return true;
+  }
+  // That turn ended: its reply is drawn under the message, read from the store.
+  async function finishActiveTurn(){
+    const watched=watchedActive; if(!watched) return;
+    watchedActive=null;
+    if(watched.bubble&&watched.bubble.workingNote&&watched.bubble.workingNote.remove)
+      watched.bubble.workingNote.remove();
+    let r=null;
+    try{ r=await Owner.getConversation(); }catch(_e){ return; }
+    const turns=(r&&r.recent_conversation&&Array.isArray(r.recent_conversation.turns))
+      ? r.recent_conversation.turns : [];
+    let at=-1;
+    turns.forEach((t,i)=>{ if(t&&t.speaker==="founder"&&t.text===watched.text) at=i; });
+    if(at>=0) drawHistoryTurns(turns.slice(at+1));
+    const held=readInflight();
+    if(held&&held.message===watched.text) forgetInflightIf(held);
+  }
+  // What the server holds or is running for this thread, read once.
+  async function readPendingTurns(){
+    const owner=queueOwner, scope=queueScope, epoch=MCP._loginEpoch;
+    try{
+      const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:scope})});
+      const doc=r.ok?await r.json():null;
+      if(!doc||epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope) return null;
+      return doc;
+    }catch(e){ return null; }
+  }
+  // After a reload: what the server still holds for this thread comes back on
+  // screen -- a line saved for the next turn is queued again and goes out when
+  // the work ends; one already handed to the running turn shows as sent there.
+  async function restoreHeldSteers(){
+    const doc=await readPendingTurns();
+    if(!doc||!Array.isArray(doc.pending)) return [];
+    if(doc.active && !activeTurn) showActiveTurn(doc.active);
     const restored=[];
     for(const line of doc.pending){
       const text=line&&typeof line.text==="string"?line.text:"";
@@ -8295,6 +8388,13 @@
       (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
     if(already){ forgetInflightIf(pending); restoreQueue(); return; }
     inflightRestored = true;
+    // Still being answered on the server: shown with its working state, and its
+    // reply is drawn when that turn ends -- never offered as unconfirmed.
+    const running=await readPendingTurns();
+    if(running&&running.active&&running.active.text===pending.message&&
+       showActiveTurn(running.active)){
+      restoreQueue(); return;
+    }
     appendMessage("founder", pending.display, null,
       typeof pending.ts==="number"?pending.ts/1000:null);
     const again = document.createElement("button");

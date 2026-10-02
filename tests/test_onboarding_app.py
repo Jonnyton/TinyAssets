@@ -1859,6 +1859,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let Uploads=[^\n]*;",
                     r"let interruptRequested=[^\n]*;",
                     r"let steeredLines=[^\n]*;",
+                    r"let watchedActive=[^\n]*;",
                     r"let pendingSteers=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
@@ -1885,6 +1886,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered", "adoptSteered",
         # A held line (no turn could take it) and its return after a reload.
         "markHeld", "restoreHeldSteers", "readServerTurnRow",
+        "claimHeldLines", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
+        "readPendingTurns", "sendBatch",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))

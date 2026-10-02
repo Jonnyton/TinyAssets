@@ -528,7 +528,9 @@ const posts=[];
 globalThis.fetch=(url,init)=>{
   const method=(init&&init.method)||"GET";
   posts.push({url, method, body:init&&init.body?JSON.parse(init.body):null});
-  const doc=url==="/app/turn/steer"?SCENARIO.post:(SCENARIO.pending||{pending:[]});
+  const body=init&&init.body?JSON.parse(init.body):{};
+  const doc=url==="/app/turn/steer"?SCENARIO.post
+    :(body.claim?(SCENARIO.claim||{claimed:body.claim}):(SCENARIO.pending||{pending:[]}));
   return Promise.resolve({ok:true,status:200,json:async()=>doc});
 };
 // The page learns its account and home with the server answering, as on load.
@@ -578,3 +580,113 @@ def test_a_held_line_survives_a_reload_and_still_goes_out(tmp_path):
     assert "also check the invoice" in out["during"]["thread"], "back on screen after reload"
     assert out["during"]["queued"] == 1 and out["during"]["converse"] == []
     assert out["sent"] == ["also check the invoice"]
+
+
+# -- gpt-6-astra on #4290: ids, not text, decide what is sent once -------------
+
+
+def test_a_held_line_is_claimed_once_whatever_its_shape(tmp_path):
+    universe = _universe(tmp_path)
+    held = agent_steering.hold(universe, THREAD, "first part\n\nsecond part")
+    assert agent_steering.claim(universe, THREAD, [held.id]) == [held.id]
+    assert agent_steering.claim(universe, THREAD, [held.id]) == [], "a second tab gets nothing"
+    assert agent_steering.take_carryover(universe, THREAD, "anything") == [], "and no repeat"
+    other = agent_steering.hold(universe, "thread:principal:someone-else", "theirs")
+    assert agent_steering.claim(universe, THREAD, [other.id]) == [], "only your own thread"
+
+
+def test_the_running_turns_message_is_known_for_a_reload(tmp_path):
+    universe = _universe(tmp_path)
+    agent_steering.open_turn(universe, THREAD, "live-1", message="build the village map")
+    active = agent_steering.active(universe, THREAD)
+    assert active["text"] == "build the village map" and active["started_at"] > 0
+    agent_steering.settle(universe, THREAD, "live-1")
+    assert agent_steering.active(universe, THREAD) is None
+
+
+def test_a_held_line_another_tab_already_sent_is_not_sent_again(tmp_path):
+    held = {"pending": [{"id": 3, "text": "also check the invoice", "state": "held"}]}
+    out = _other_window(tmp_path, {"reload": True, "pending": held, "claim": {"claimed": []}})
+    assert out["sent"] == [], "the claim failed: someone else already sent it"
+
+
+_IDLE_FLUSH = r"""
+globalThis.authHeaders=()=>({});
+globalThis.fetch=()=>Promise.resolve({ok:true,status:200,json:async()=>({pending:[],claimed:[]})});
+setQueueOwner("p-1"); setQueueScope("u-1");
+queueTurn("waiting line","waiting line",{inputMethod:"typed"});
+// The busy window was never seen live by this page (a poll gap), then idle.
+readServerTurn({active_turn:null});
+await settle(); await settle();
+console.log(JSON.stringify({sent:converseCalls.slice()}));
+"""
+
+
+def test_an_idle_answer_sends_what_waits_even_without_seeing_the_turn_end(tmp_path):
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    if _NODE is None:
+        pytest.skip("node is required")
+    page, _csp = onboarding.render_app_html()
+    out = _run(tmp_path, page, {}, _IDLE_FLUSH)
+    assert out["sent"] == ["waiting line"]
+
+
+_KEEP_LOCAL = r"""
+globalThis.authHeaders=()=>({});
+globalThis.fetch=()=>Promise.resolve({ok:true,status:200,json:async()=>(
+  {pending:[{id:3,text:"from the server",state:"held"}]})});
+localStorage.setItem(QUEUE_KEY, JSON.stringify([{message:"only on this device",
+  display:"only on this device", owner:"p-1", scope:"u-1", ts:Date.now(), inputMethod:"typed"}]));
+readServerTurn({active_turn:{turn_id:"t9",state:"inference_started",age_s:5,stale:false}});
+setQueueOwner("p-1"); setQueueScope("u-1");
+queueRestored=false; restoreQueue();
+await settle(); await settle(); await settle();
+console.log(JSON.stringify({saved:readSavedQueue().map(i=>i.message).sort()}));
+"""
+
+
+def test_restoring_the_servers_lines_keeps_the_devices_own(tmp_path):
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    if _NODE is None:
+        pytest.skip("node is required")
+    page, _csp = onboarding.render_app_html()
+    out = _run(tmp_path, page, {}, _KEEP_LOCAL)
+    assert out["saved"] == ["from the server", "only on this device"]
+
+
+_RELOAD_MID_TURN = r"""
+globalThis.authHeaders=()=>({});
+globalThis.fetch=()=>Promise.resolve({ok:true,status:200,json:async()=>(
+  {pending:[], active:{text:"build the village map", started_at:Date.now()/1000-30}})});
+const working={active_turn:{turn_id:"t9",state:"inference_started",age_s:30,stale:false}};
+readServerTurn(working);
+setQueueOwner("p-1"); setQueueScope("u-1");
+queueRestored=false; restoreQueue();
+await settle(); await settle(); await settle();
+const during=bubbles().map(b=>b.text+"|"+(els.thread.children.find(n=>n.workingNote)?"working":""));
+readServerTurn({active_turn:null});
+await settle(); await settle(); await settle();
+console.log(JSON.stringify({during, after:bubbles().map(b=>b.text), sent:converseCalls.slice()}));
+"""
+
+
+def test_a_reload_mid_turn_shows_the_message_being_worked_on_then_its_reply(tmp_path):
+    """P2, live 2026-10-02: the reloaded page showed neither the message nor that
+    it was being worked on, so the owner sent it again."""
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    if _NODE is None:
+        pytest.skip("node is required")
+    page, _csp = onboarding.render_app_html()
+    out = _run(tmp_path, page, {"history": [
+        {"speaker": "founder", "text": "build the village map", "ts": 1},
+        {"speaker": "universe", "text": "Here is the village map.", "ts": 2}]},
+        _RELOAD_MID_TURN)
+    assert out["during"] == ["build the village map|working"]
+    assert out["after"] == ["build the village map", "Here is the village map."]
+    assert out["sent"] == [], "nothing sent again"
