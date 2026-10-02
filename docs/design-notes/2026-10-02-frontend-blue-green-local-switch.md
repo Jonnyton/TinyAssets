@@ -22,9 +22,15 @@ consumer, the turn journal and reconcile. Running an old and a new daemon side b
 seconds, runs two schedulers and two consumers over the same SQLite stores. target-architecture
 S8 is explicit: the owner/frontend split "must land before any second writer exists".
 
-**So frontend blue-green depends on S8.3** (frontend/owner RPC with queueing during handover).
-Until that lands, the honest state is the measured stop/start window. No interim blue-green is
+**So frontend blue-green depends on C1a** (turn-handover, branch `spec/execution-owner-lease`, "C1
+design addendum"). C1a puts the owner behind a Unix socket and ships a separate frontend image.
+Until it lands, the honest state is the measured stop/start window. No interim blue-green is
 proposed, because any overlap before the split is a double-writer bug.
+
+**What a frontend is (C1, revised 2026-10-02):** a plain reverse proxy plus the static app shell.
+It does not authenticate, holds no envelope key, and builds no app. Everything except the shell
+assets goes byte-for-byte to the owner over `/run/tinyassets/owner.sock`. The owner keeps today's
+whole server: FastMCP, tools, sessions and turns.
 
 ## The switch
 
@@ -35,7 +41,7 @@ dashboard ingress does not change. It forwards to whichever frontend colour is l
 cloudflared (host net) --> 127.0.0.1:8001  local switch (HAProxy, host net)
                                               |-- 127.0.0.1:8011  frontend-blue
                                               '-- 127.0.0.1:8012  frontend-green
-                           frontends --RPC--> execution owner (one, leased; S8)
+                           frontends --unix socket, byte-for-byte--> owner (today's server)
 ```
 
 **Choice: HAProxy**, over Caddy, Envoy and a SO_REUSEPORT trick.
@@ -54,32 +60,37 @@ cloudflared (host net) --> 127.0.0.1:8001  local switch (HAProxy, host net)
 
 ## Deploy protocol (frontend-only deploy)
 
-1. **Start the idle colour**, say green on 8012, with the new image. It connects to the owner over
-   the local RPC and completes an explicit **ready handshake** (S8a, turn-handover, agreed
-   2026-10-02) before the switch may route to it. It owns nothing.
+1. **Start the idle colour**, say green on 8012, with the new frontend image. It is **ready**
+   when a proxied `/mcp/pulse` round trip to the owner socket succeeds, using the canary
+   bearer (C1). The switch's health check is that round trip. The colour owns nothing, and
+   it stamps every response `X-TA-Frontend: <colour>/<sha>`.
 2. **Health gate:** the switch's health check, plus a loopback canary through 8012 directly
-   (`mcp_public_canary.py --url http://127.0.0.1:8012/mcp`, as the canary principal). On failure:
-   stop green, leave blue alone. That is a failed deploy with zero user impact, and no rollback is
-   needed.
+   (`mcp_public_canary.py --url http://127.0.0.1:8012/mcp`, as the canary principal). It asserts
+   `X-TA-Frontend: green/<new sha>`, because `/mcp/pulse` alone cannot tell the colours apart:
+   both reach the same owner. On failure: stop green, leave blue alone. That is a failed deploy
+   with zero user impact, and no rollback is needed.
 3. **Switch:** `set server be/green state ready` then `set server be/blue state drain`. New
    requests go to green at once, and blue keeps its open streams.
-4. **Drain blue:** wait until the switch reports blue's current sessions = 0, **capped at 10
-   minutes**, then stop blue. The cap governs only open client streams. Turn lifetime is the
-   owner's drain bound (turn-handover's), and once frontends are split, a turn runs in the owner,
-   not in the frontend. So a stream cut at the cap does **not** end its turn: the turn keeps
-   running, and the client reads the answer from the thread, as it already does after a dropped
-   stream. 10 minutes covers ordinary MCP/app streams without letting one hour-long stream hold a
-   deploy. It is measured as "streams cut at cap per deploy" and revised from that number.
+4. **Drain blue, with no automatic cap:** blue is out of the pool for new connections, but stays
+   alive until its last proxied stream ends. Only then is it stopped. An explicit operator stop is
+   the only thing that may cut it short.
+
+   The earlier draft capped this at 10 minutes. That was wrong. MCP response streams are not
+   resumable: there is no event store, and sse-starlette cancels the response on disconnect.
+   So a cut stream loses its reply, even though the tool keeps running in the owner (C1 shape
+   review; the same reasoning as the lead's condition 4). The deploy reports
+   "blue still draining: N streams" and does not block the next deploy, which drains blue and
+   green alike.
 5. **Verify through the public path:** `mcp_public_canary.py --url https://tinyassets.io/mcp
    --assert-handles` and `deployed_sha.py --assert-contains`.
 6. **Rollback** at any point before blue is stopped is one API call (`blue ready`,
    `green drain`). After blue is stopped, rollback is the same protocol run in reverse with the
    previous image.
 
-**Owner changes are not frontend deploys.** When the execution owner's code changes, S8's owner
-handover runs: stop admitting, drain up to the bound, journal, release the lease, successor at
-generation+1. Frontends queue during it. This switch is not involved. The deploy workflow decides
-which path from the diff: frontend modules, owner modules, or both (S8.8).
+**Owner changes are not frontend deploys.** Owner deploys keep phase 1's whole-process wait (the
+in-flight-turn wait in deploy-prod). Owner handover and frontend queueing are **deferred** (C1).
+This switch is not involved in an owner deploy. Which path a change takes is decided from the
+diff: frontend image, owner image, or both.
 
 ## Failure modes
 
@@ -89,17 +100,18 @@ which path from the diff: frontend modules, owner modules, or both (S8.8).
 | The admin socket is reachable by a tenant | traffic hijack | a unix socket, root-owned 0600, on the host only; never in a jail bind |
 | Both colours unhealthy | 502 | the same as today's failed boot; the deploy stops at step 2, before blue is touched |
 | A colour/port mix-up | the new image never gets traffic | step 5 asserts the public `deployed_sha` matches the new image, not just green |
-| The cap is hit with streams still open on blue | those streams end | measured and reported, the same metric S8 uses for interrupted turns |
+| Blue still has streams when the next deploy starts | two colours draining at once | allowed: drain is per colour; the deploy reports both counts and never cuts a stream automatically |
 
-## Tasks: a separate change after S8.3's RPC lands (deploy-incident lane)
+## Tasks: a separate change, landing in either order with C1a (deploy-incident lane)
 
-Agreed with turn-handover 2026-10-02: one owner per change. These five ship as their own change
-once S8.3 lands, not folded into the S8 handover PR.
+Agreed with turn-handover 2026-10-02: one owner per change. C1a delivers the owner socket, the
+frontend image and its compose services. The switch ships as its own change.
 
 1. A `switch` service in `deploy/compose.yml` (haproxy, host net, binds 127.0.0.1:8001). Frontend
    services `frontend-blue`/`frontend-green` on 8011/8012. The daemon stops publishing 8001.
-2. `deploy/haproxy.cfg`: one backend, two servers, health checks, the admin socket, and
-   `load-server-state-from-file`.
+2. `deploy/haproxy.cfg`: one backend, two servers; the health check is the proxied pulse
+   round trip; the admin socket; `load-server-state-from-file`; and **`retry-on none`**. Forwarded
+   requests are never retried, because MCP ids are not idempotency keys.
 3. `deploy_fail_safe.sh`: the colour protocol above for frontend-only deploys. The
    host-mutation lock covers the whole sequence.
 4. Watchdogs probe through 8001 (unchanged) and stand down while the lock is held (already true
