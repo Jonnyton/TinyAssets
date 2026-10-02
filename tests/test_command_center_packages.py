@@ -664,7 +664,8 @@ def test_often_private_words_are_flagged_for_review_not_hidden(home: Path):
     _write(home / UNIVERSE, "notes/pricing.md", "CONFIDENTIAL: launch pricing\n")
     ask = _ask(OWNER, UNIVERSE, _publish_action())
     assert "Worth a look before you confirm" in ask["body"]
-    assert 'notes/pricing.md: mentions "CONFIDENTIAL"' in ask["body"]
+    assert ('1 mentions an often-private word: notes/pricing.md ("CONFIDENTIAL")'
+            in ask["body"])
     assert "  - notes/pricing.md\n" in ask["body"] + "\n"
 
 
@@ -814,14 +815,15 @@ def test_an_id_named_field_is_not_a_blind_spot(home: Path):
     from tinyassets.daemon_server import get_branch_definition, save_branch_definition
 
     raw = get_branch_definition(home, branch_def_id=SCOUT)
-    raw["node_defs"][0]["customer_id"] = "0123456789abcdef"
-    raw["state_schema"] = [{"name": "x", "type": "str", "default": {"id": "0123456789abcdef"}}]
+    raw["node_defs"][0]["customer_id"] = "Zq8rT2vX9mK4pL7nB3wE"
+    raw["state_schema"] = [{"name": "x", "type": "str",
+                            "default": {"id": "Hq2Lp9XvB4nZm8KdRtW3"}}]
     save_branch_definition(home, branch_def=raw)
     ask = _ask(OWNER, UNIVERSE, _publish_action())
     # A random-looking value is listed for review, wherever it sits; a schema
     # id key nested in user data is NOT exempt (gpt-6-astra, code r3).
-    assert "node_defs[0].customer_id: holds a long random-looking string" in ask["body"]
-    assert "state_schema[0].default.id: holds a long random-looking string" in ask["body"]
+    assert "node_defs[0].customer_id" in ask["body"]
+    assert "state_schema[0].default.id" in ask["body"]
     raw["node_defs"][0]["customer_id"] = "415-555-1212"
     save_branch_definition(home, branch_def=raw)
     out = _ask(OWNER, UNIVERSE, _publish_action())
@@ -836,9 +838,10 @@ def test_a_secret_named_line_makes_an_opaque_run_certain():
 
 def test_a_platform_id_is_exempt_only_at_its_schema_location():
     notes: list[str] = []
-    ccp.scan_public({"node_defs": [{"node_id": "0123456789abcdef"}]}, "w", notes)
+    ccp.scan_public({"node_defs": [{"node_id": "Zq8rT2vX9mK4pL7nB3wE"}]}, "w", notes)
     assert notes == []
-    ccp.scan_public({"state_schema": [{"default": {"node_id": "0123456789abcdef"}}]}, "w", notes)
+    ccp.scan_public({"state_schema": [{"default": {"node_id": "Zq8rT2vX9mK4pL7nB3wE"}}]},
+                    "w", notes)
     assert notes == ["w.state_schema[0].default.node_id"]
 
 
@@ -895,9 +898,61 @@ def test_a_bare_opaque_run_is_listed_for_review_not_dropped():
     assert ccp.review_note(data) == ccp.N_OPAQUE
 
 
-def test_a_one_class_value_assigned_to_a_secret_name_is_only_a_suspect():
-    # A one-class run the parser reads as opaque, assigned to a secret name:
-    # in the live village these were minified-code identifiers, not keys.
+def test_a_one_class_value_is_neither_excluded_nor_flagged():
+    # A one-class run the parser reads as opaque, even assigned to a secret
+    # name: in the live village these were minified-code identifiers, not keys.
     line = 'token: "qwzx-plmk-vbtr-hgfd"'
-    assert ccp.text_detection(line) is None and ccp.text_suspect(line)
+    assert ccp.text_detection(line) is None and not ccp.text_suspect(line)
     assert ccp.text_detection('token: "Punc9Before7Expression3"') == ccp.R_CREDENTIAL
+
+
+# ---------------------------------------------------------------------------
+# 11. Published key formats are certain anywhere; id-shaped hex is never flagged
+# ---------------------------------------------------------------------------
+
+KEY_FORMATS = [
+    "sk-proj-" + "9dKq3fZmRvT8yXaLpQwE2nBcHjUiOsAb12",
+    "sk-ant-api03-" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+    "sk-or-v1-" + "0123456789abcdef" * 4,
+    "ghp_" + "16C7e42F292c6912E7710c838347Ae178B4a",
+    "github_pat_" + "11ABCDEFG0" + "aBcDeFgHiJ" * 7 + "kL",
+    "AKIA" + "IOSFODNN7EXAMPLE",
+    "xoxb-" + "2345678901-2345678901234-AbCdEfGhIjKlMnOpQrStUvWx",
+    "AIza" + "SyD-abcdefghijklmnopqrstuvwxyz01234",
+    "glpat-" + "AbCdEfGhIjKlMnOpQrSt",
+    "sk_live_" + "51H8ZqKLmNoPqRsTuVwXyZaBcDe",
+    "rk_live_" + "51H8ZqKLmNoPqRsTuVwXyZaBcDe",
+    "hf_" + "QwErTyUiOpAsDfGhJkLzXcVbNmQwErTyUi",
+    "npm_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+]
+
+
+@pytest.mark.parametrize("key", KEY_FORMATS)
+def test_a_published_key_format_pasted_bare_is_certain(key):
+    data = f"remember to rotate {key} next week\n".encode()
+    assert ccp.classify("notes/todo.md", data, exclude=[], memory_items={}) == (
+        None, ccp.R_CREDENTIAL)
+
+
+@pytest.mark.parametrize("line", [
+    "run_id: 0123456789abcdef",
+    "commit 0123456789abcdef0123456789abcdef01234567",
+    "sha256 9f6463eefbeb574f3f803e643307ff7b88ece9decc0bf8caaeebfc9d70b5a8de",
+    "uuid4 hex c5a83ff1d2f0475ea9c232101dc4cbce",
+])
+def test_id_shaped_hex_is_not_even_flagged(line):
+    assert ccp.text_detection(line) is None and not ccp.text_suspect(line)
+
+
+def test_the_review_list_is_grouped_and_short():
+    flagged = [{"path": f"notes/n{i}.md", "note": ccp.N_OPAQUE} for i in range(40)]
+    flagged += [{"path": "notes/pay.md", "note": 'mentions "salary"'}]
+    groups = ccp.review_groups(flagged)
+    assert [g["count"] for g in groups] == [1, 40]
+    assert all(len(g["shown"]) <= ccp.REVIEW_SHOWN for g in groups)
+
+
+@pytest.mark.parametrize("line", ["sk-skeleton-loader-component-header-title-extra-long",
+                                  "sk-proj-settings-panel-header-title-row"])
+def test_a_kebab_identifier_starting_sk_is_not_a_key(line):
+    assert ccp.text_detection(line) is None

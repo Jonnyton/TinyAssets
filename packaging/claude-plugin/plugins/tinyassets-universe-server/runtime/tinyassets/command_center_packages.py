@@ -165,6 +165,44 @@ _SECRET_ASSIGN = re.compile(
     r"(?i)(?:api[_-]?key|access[_-]?key|secret|token|passw(?:or)?d|\bpwd|credential|"
     r"private[_-]?key|authorization|\bauth|cookie|session[_-]?id|\bkeys?)"
     r"[\"'\]]?\s*(?:[:=]|=>|\bis\b)\s*[\"'\[]?([^\s\"',;\])}]+)")
+#: Published key FORMATS, certain wherever they appear. Lifted from the gitleaks
+#: default ruleset (MIT; github.com/gitleaks/gitleaks, config/gitleaks.toml),
+#: keeping only the high-precision rules: each needs its exact issued prefix AND
+#: a body of the issued length and alphabet. The lead's rule (2026-10-01): the
+#: review list a person can actually read is short, so a key pasted bare must
+#: not depend on it. Named by FORMAT, never by service, so the substrate names
+#: no channel (``check_channel_agnostic``).
+_MIXED_BODY = (r"(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[a-z])"
+               r"[A-Za-z0-9_-]{{{n},}}")
+_KEY_FORMATS = (
+    # The open-alphabet ``sk-`` bodies must also mix a digit with upper and
+    # lower case, so a kebab-case identifier that happens to start ``sk-`` is not
+    # taken for a key.
+    re.compile(r"(?<![A-Za-z0-9])sk-(?:ant-(?:api|admin)\d{2}-|proj-|svcacct-|admin-)"
+               + _MIXED_BODY.format(n=20)),
+    re.compile(r"(?<![A-Za-z0-9])sk-or-v1-[0-9a-f]{64}(?![0-9a-f])"),
+    re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}"),
+    re.compile(r"(?<![A-Za-z0-9])sk-" + _MIXED_BODY.format(n=40)),
+    re.compile(r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,255}(?![A-Za-z0-9])"),
+    # A fine-grained personal access token: ``<issuer>_pat_`` and an 82-character
+    # body. Matched by that shape, not by the issuer's name.
+    re.compile(r"(?<![A-Za-z0-9])[a-z]{3,12}_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Z0-9])(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}(?![A-Z0-9])"),
+    re.compile(r"(?<![A-Za-z0-9])xox[abposr]-[0-9]{10,13}-[0-9A-Za-z-]{10,}"),
+    re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])"),
+    re.compile(r"(?<![A-Za-z0-9])glpat-[0-9A-Za-z_-]{20}(?![0-9A-Za-z_-])"),
+    re.compile(r"(?<![A-Za-z0-9])(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{24,99}(?![0-9A-Za-z])"),
+    re.compile(r"(?<![A-Za-z0-9])hf_[A-Za-z]{34}(?![A-Za-z])"),
+    re.compile(r"(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])"),
+    re.compile(r"(?<![A-Za-z0-9])SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"),
+    re.compile(r"(?<![0-9])[0-9]{8,10}:AA[0-9A-Za-z_-]{33}(?![0-9A-Za-z_-])"),
+    re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----"),
+)
+#: Lowercase hex of an id's or digest's length is an id, not a key: a run id
+#: (16), an md5 or uuid4 hex (32), a git sha (40), a sha256 (64). Not flagged
+#: for review at all (lead, 2026-10-01: 289 flags is a list nobody reads).
+_HEX_ID = re.compile(r"^(?:[0-9a-f]{16}|[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$")
+
 #: Review notes, as the tab words them.
 N_OPAQUE = ("holds a long random-looking string: usually an id or a hash, but check it "
             "is not a key")
@@ -301,6 +339,8 @@ def _line_verdict(line: str) -> str:
     """
     from tinyassets.credential_shape import credential_shape
 
+    if any(rule.search(line) for rule in _KEY_FORMATS):
+        return "certain"
     label = credential_shape(line)
     if label is None:
         return ""
@@ -309,7 +349,21 @@ def _line_verdict(line: str) -> str:
     if any(credential_shape(m.group(1)) and _mixed_classes(m.group(1))
            for m in _SECRET_ASSIGN.finditer(line)):
         return "certain"
-    return "suspect"
+    return "suspect" if not _only_benign_runs(line) else ""
+
+
+def _only_benign_runs(line: str) -> bool:
+    """Every opaque run the parser flags on this line is an id-length hex string
+    or a one-class run (a kebab-case identifier, a constant): neither is worth
+    an owner's attention (lead, 2026-10-01: a review list must stay short
+    enough to be read)."""
+    from tinyassets.credential_shape import _TOKEN_SPLIT_RE, credential_shape
+
+    flagged = [t.strip("\"'`.,;:()[]{}") for t in _TOKEN_SPLIT_RE.split(line)
+               if credential_shape(t)]
+    words = [w for t in flagged for w in re.split(r"[=:,;]", t) if credential_shape(w)]
+    return bool(words) and all(
+        _HEX_ID.match(w.strip("\"'`.,;:()[]{}")) or not _mixed_classes(w) for w in words)
 
 
 def _mixed_classes(value: str) -> bool:
@@ -512,6 +566,27 @@ def review_note(data: bytes) -> str:
     if word:
         return f'mentions "{word}"'
     return N_OPAQUE if text_suspect(data.decode("utf-8", "replace")) else ""
+
+
+#: The tab's review list is a summary a person can read: grouped by kind, with
+#: a count and the first few, never one line per file (the full file list is
+#: above it).
+REVIEW_SHOWN = 5
+
+
+def review_groups(flagged: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Flags grouped by kind: often-private words, then random-looking strings."""
+    words = [f for f in flagged if f["note"].startswith("mentions")]
+    opaque = [f for f in flagged if not f["note"].startswith("mentions")]
+    groups = []
+    if words:
+        groups.append({"kind": "mentions an often-private word", "count": len(words),
+                       "shown": [f"{f['path']} ({f['note'][len('mentions '):]})"
+                                 for f in words[:REVIEW_SHOWN]]})
+    if opaque:
+        groups.append({"kind": N_OPAQUE, "count": len(opaque),
+                       "shown": [f["path"] for f in opaque[:REVIEW_SHOWN]]})
+    return groups
 
 
 def collect(universe_dir: Path, *, exclude: list[str],

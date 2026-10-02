@@ -340,3 +340,23 @@ the runtime for a roster agent is D8.
     reads the list before confirming; the tab says detection cannot prove
     a file holds no secret.
 
+- **Lead tightening (2026-10-01).** A list of 289 is one nobody reads, so a key
+  pasted bare must not depend on it.
+  - **Published key formats are certain anywhere.** These are the
+    high-precision subset of the gitleaks default ruleset (MIT), matched by
+    format and never by service name:
+    - model-provider `sk-` keys (their open-alphabet bodies must mix a digit
+      with upper and lower case);
+    - `gh?_` and `<issuer>_pat_` tokens; `AKIA`/`ASIA`; `xox?-`; `AIza`;
+      `glpat-`; `sk_live_`/`rk_live_`; `hf_`; `npm_`; `SG.`; bot tokens;
+      private-key blocks.
+  - **Never flagged:** lowercase hex of an id's length (16, 32, 40 or 64:
+    run ids, uuid4 hex, git shas, sha256), and one-class runs (kebab-case
+    identifiers, constants).
+  - **The review list is grouped.** One line per kind (often-private words,
+    random-looking strings), with a count and the first five files.
+  - **Dry run after these changes, same village:** 322 files included and 46
+    excluded, 8 of them certain credentials. 269 files are flagged: 217 for
+    random-looking strings and 52 for words. On the tab that is two grouped
+    lines. All GTM workflows still pass.
+

@@ -229,11 +229,16 @@ def _package_lines(package: dict[str, Any]) -> list[str]:
         for entry in package["excluded"]:
             lines.append(f"  - {_shown(entry['path'], _FULL)}: {entry['reason']}")
     if package.get("flagged"):
+        from tinyassets.command_center_packages import review_groups
+
         lines.append(f"Worth a look before you confirm ({len(package['flagged'])}): these "
                      "are included, but hold something that is often private. Leave any "
                      "out below.")
-        for entry in package["flagged"]:
-            lines.append(f"  - {_shown(entry['path'], _FULL)}: {entry['note']}")
+        for group in review_groups(package["flagged"]):
+            more = group["count"] - len(group["shown"])
+            tail = f", and {more} more" if more > 0 else ""
+            lines.append(f"  - {group['count']} {group['kind']}: "
+                         + "; ".join(_shown(s, _FULL) for s in group["shown"]) + tail)
     if package["connections"]:
         lines.append("Whoever installs it connects their own: "
                      + ", ".join(_shown(c, 60) for c in package["connections"]))
