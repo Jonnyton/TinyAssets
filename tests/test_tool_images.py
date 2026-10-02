@@ -347,3 +347,48 @@ def test_the_decode_runs_in_a_child_whose_memory_limit_bites(monkeypatch):
     assert isinstance(bound_image(_png(8, 8), "small.png"), ToolImage)
     refused = bound_image(data, "big.png")
     assert isinstance(refused, str) and refused.startswith("error:"), refused
+
+
+def test_a_version_one_image_row_keeps_the_rule_it_was_written_under():
+    """Codex round 3 (P1): reclassifying stored rows made them fail re-validation.
+    A result written before images were presentable is version 1 and stays
+    `non_text` (its turn was held); new image results are version 2."""
+    import json
+
+    from mcp.types import CallToolResult
+
+    from tinyassets.storage import agent_turn_records as records
+
+    shown = bound_image(_png(8, 8), "a.png")
+    raw, kind, _ = records.result_json(CallToolResult(content=shown.content_blocks(),
+                                                      isError=False))
+    assert json.loads(raw)["version"] == 2 and kind == "text_only"
+    legacy = json.loads(raw)
+    legacy["version"] = 1
+    _, legacy_kind, _ = records.load_result(json.dumps(legacy, separators=(",", ":")))
+    assert legacy_kind == "non_text"
+    text_only = json.loads(raw)
+    text_only["content"] = text_only["content"][:1]
+    with pytest.raises(ValueError):  # version 2 is only ever an image result
+        records.load_result(json.dumps(text_only, separators=(",", ":")))
+
+
+def test_unprojected_image_bytes_cannot_reach_a_model_body():
+    """Codex round 3 (P2): only tool_outcome maps an image to a line; the body
+    builder and history validation still accept text only."""
+    import json
+
+    from tinyassets.providers import agent_chat_codec as codec
+
+    raw = {"content": [{"type": "image", "data": "YWJj", "mimeType": "image/png"}],
+           "structuredContent": None, "isError": False}
+    with pytest.raises(codec.ProtocolDecodeError, match="non-text"):
+        codec._result_projection(json.loads(json.dumps(raw)))
+
+
+def test_a_cmyk_jpeg_is_shown_in_rgb():
+    image = Image.new("CMYK", (20, 20), (0, 255, 255, 0))  # red in CMYK
+    shown = bound_image(_encode(image, "JPEG"), "print.jpg")
+    assert isinstance(shown, ToolImage)
+    red, green, blue = _shown(shown).convert("RGB").getpixel((5, 5))
+    assert red > 200 and green < 60 and blue < 60

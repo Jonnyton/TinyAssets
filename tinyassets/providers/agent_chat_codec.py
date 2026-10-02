@@ -529,22 +529,21 @@ def _result_projection(raw: dict[str, Any]) -> dict[str, Any]:
         raw["structuredContent"] is not None and not isinstance(raw["structuredContent"], dict)
     ):
         raise _bad("invalid tool result envelope")
-    if not isinstance(raw["content"], list):
-        raise _bad("non-text tool content is unsupported")
-    content = [_presented(block) for block in raw["content"]]
-    if any(
+    if not isinstance(raw["content"], list) or any(
         not isinstance(block, dict) or block.get("type") != "text"
         or not isinstance(block.get("text"), str)
         or set(block) - {"type", "text", "annotations"}
-        for block in content
+        for block in raw["content"]
     ):
         raise _bad("non-text tool content is unsupported")
-    return _object(_dump({**raw, "content": content}))
+    return _object(_dump(raw))
 
 
 #: What a text-only connection is told in place of an image block. The exact
 #: result (image included) stays in the turn journal; only the model's view of
-#: it is this line, so the agent knows it could not see it.
+#: it is this line, so the agent knows it could not see it. Mapped ONCE, in
+#: ``tool_outcome``; every later boundary (the body builder, history validation)
+#: still accepts text only, so unprojected image bytes cannot reach a model.
 IMAGE_NOT_SHOWN = "[image not shown: this model connection carries text only]"
 
 
@@ -560,9 +559,9 @@ def tool_outcome(request: ToolRequest, result: CallToolResult) -> ToolOutcome:
     if not isinstance(result, CallToolResult):
         raise _bad("MCP tool result required")
     projected = {
-        "content": [block.model_dump(
+        "content": [_presented(block.model_dump(
             mode="json", by_alias=True, exclude_none=True, include={"type", "text", "annotations"},
-        ) for block in result.content],
+        )) for block in result.content],
         "structuredContent": result.structuredContent,
         "isError": result.isError,
     }

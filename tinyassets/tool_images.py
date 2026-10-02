@@ -261,8 +261,7 @@ def _shown(data: bytes, mime: str) -> tuple[dict, bytes]:
         frame = ImageOps.exif_transpose(image)
         alpha = frame.mode in ("RGBA", "LA", "PA") or "transparency" in frame.info
         icc = frame.info.get("icc_profile")
-        frame = frame.convert("RGBA" if alpha else "RGB")
-        frame = _to_srgb(frame, icc)
+        frame = _to_srgb(frame, icc, "RGBA" if alpha else "RGB")
         frame.info = {}  # no metadata leaves: ICC, EXIF, text chunks, comments
     # The source size as the person sees it: EXIF orientation may turn it.
     turned = (frame.size[0] >= frame.size[1]) != (source[0] >= source[1])
@@ -280,19 +279,24 @@ def _shown(data: bytes, mime: str) -> tuple[dict, bytes]:
     raise ValueError(f"is still over {MAX_IMAGE_BYTES} bytes after scaling")
 
 
-def _to_srgb(frame: Any, icc: bytes | None) -> Any:
-    """Pixels converted from an embedded colour profile to sRGB, so dropping the
-    profile does not change how the image looks; unconvertible stays as is."""
-    if not icc:
-        return frame
-    try:
-        from PIL import ImageCms
+def _to_srgb(frame: Any, icc: bytes | None, mode: str) -> Any:
+    """``frame`` in ``mode`` (RGB/RGBA), its embedded colour profile applied from
+    its OWN colour mode (a CMYK profile needs CMYK pixels), so dropping the
+    profile does not change how the image looks. A profile that cannot be
+    applied falls back to a plain conversion."""
+    if icc:
+        try:
+            from PIL import ImageCms
 
-        source = ImageCms.ImageCmsProfile(io.BytesIO(icc))
-        return ImageCms.profileToProfile(frame, source, ImageCms.createProfile("sRGB"),
-                                         outputMode=frame.mode)
-    except Exception:  # noqa: BLE001 - a broken profile is ignored, not fatal
-        return frame
+            source = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+            native = frame if frame.mode in ("RGB", "RGBA", "CMYK", "L") else frame.convert(mode)
+            if native.mode == "RGBA" or mode == "RGBA":
+                native = native.convert("RGBA")
+            return ImageCms.profileToProfile(native, source, ImageCms.createProfile("sRGB"),
+                                             outputMode=mode)
+        except Exception:  # noqa: BLE001 - a broken profile is ignored, not fatal
+            pass
+    return frame.convert(mode)
 
 
 def _encode(image: Any, alpha: bool) -> tuple[bytes | None, str]:
