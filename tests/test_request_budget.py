@@ -20,7 +20,9 @@ def seed_requests(base, count, *, owner="owner", source="connection", model="mod
     with sqlite3.connect(base / DB_FILENAME) as conn:
         ensure_schema(conn)
         conn.execute(
-            "INSERT INTO agent_turns VALUES (?, 'seed-universe', ?, 1, 1, 'completed', ?, '{}', ?)",
+            "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, generation, "
+            "state, round_ordinal, input_json, created_at) "
+            "VALUES (?, 'seed-universe', ?, 1, 1, 'completed', ?, '{}', ?)",
             (owner, turn_id, count, created_at.isoformat()),
         )
         for ordinal in range(1, count + 1):
