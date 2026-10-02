@@ -1,24 +1,24 @@
-"""A REAL proof that a codex command runs inside our jail with its OWN sandbox
-off, and that the jail then refuses what a nested sandbox would have needed.
+"""REAL proofs of the provider jail's two seccomp profiles with the real codex.
 
-The provider jail is the boundary. The codex adapter stops nesting codex's own
-``--sandbox workspace-write`` bubblewrap for a confined launch
-(``--dangerously-bypass-approvals-and-sandbox``), so the jail's seccomp filter
-can deny new user namespaces and symlinks the same as the tool jail. This runs a
-real codex command through the shipping ``confine_launch`` and proves: the
-command runs and writes its own universe, ``ln`` is refused (the planted-link
-cross-user vector is closed), and the daemon's per-universe state at the root is
-unreadable. The contrast case keeps codex's own sandbox (workspace-write) and
-shows ``ln`` SUCCEEDS, so the deny is live rather than vacuous.
+NON-SERVED: the codex adapter runs a confined non-served call with its own
+sandbox off (``--dangerously-bypass-approvals-and-sandbox``), so the jail loads
+the full deny profile. A codex command runs, writes the agent workspace, cannot
+write or read the masked platform state at the root, and ``ln`` is refused.
 
-Uses ``codex sandbox`` with an explicit ``sandbox_mode`` as a stand-in for what
-``codex exec`` does per command (run with or without its own sandbox) -- it needs
-no model call. Linux + bwrap + the codex CLI only.
+SERVED: a served turn keeps codex's ``--sandbox workspace-write``, whose native
+``apply_patch`` runs through a filesystem sandbox helper that builds a nested
+sandbox. The adapter declares that, the jail loads the permissive profile, and a
+real ``apply_patch`` edit lands. The detection control shows the deny profile
+would break it. The served path's link residual is covered daemon-side by the
+link-refusing reader/writer (#4254) until platform state moves out of the
+universe dir.
+
+``codex sandbox`` stands in for what ``codex exec`` does per tool call, so no
+model call is needed. Linux + bwrap + the codex CLI only.
 """
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -106,62 +106,54 @@ def test_codex_runs_with_its_sandbox_off_and_the_jail_refuses_a_planted_link(wor
     assert not (universe / "notes" / "lnk").is_symlink(), out
 
 
-def test_detection_control_codex_own_sandbox_would_allow_the_link(world):
-    """With codex's OWN workspace-write sandbox (a nested bubblewrap), the jail
-    must allow userns + symlink, and the link SUCCEEDS -- which is exactly the
-    surface this change removes by turning that nested sandbox off."""
-    from tinyassets.providers import jail_seccomp
+def _codex_binary() -> str:
+    """The real codex executable (the npm wrapper execs this musl binary)."""
+    found = sorted(Path("/opt/codex-install").glob("**/vendor/*/bin/codex"))
+    if not found:
+        pytest.skip("the codex native binary is not installed here")
+    return str(found[0])
 
-    universe, _other = world
-    # The permissive profile a nested codex sandbox needed (symlink + userns
-    # allowed), kept here only as the detection control for the deny case above.
-    permissive = _compile_without(
-        jail_seccomp, drop={88, 266, 36, 272, 56, 97, 220, 435},
+
+def _served_apply_patch(universe: Path, *, nested_sandbox: bool) -> str:
+    """codex's own workspace-write sandbox running its native apply_patch helper,
+    as a served turn's apply_patch tool does, inside our jail."""
+    from tinyassets.providers.provider_jail import confine_launch, provider_launch_scope
+
+    env = {
+        "PATH": _PATH, "HOME": "/tmp", "TMPDIR": "/tmp",
+        "CODEX_HOME": str(universe / ".runtime" / "codex"),
+    }
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: notes/patched.txt\n"
+        "+patched\n"
+        "*** End Patch\n"
     )
-    original = jail_seccomp.program_fd
+    argv = ["codex", "sandbox", "-c", 'sandbox_mode="workspace-write"', "--",
+            _codex_binary(), "--codex-run-as-apply-patch", patch]
+    with provider_launch_scope(universe):
+        launch = confine_launch(argv, env=env, nested_sandbox=nested_sandbox)
     try:
-        jail_seccomp.program_fd = lambda: _fd(permissive)
-        out = _run_codex(universe, "workspace-write")
+        r = subprocess.run(launch.argv, env=env, capture_output=True, text=True,
+                           timeout=120, pass_fds=launch.pass_fds, cwd="/")
     finally:
-        jail_seccomp.program_fd = original
-    assert "RUNCMD" in out, out
-    assert "LINKED" in out and "LINK_BLOCKED" not in out, out
+        launch.close()
+    return r.stdout + r.stderr
 
 
-def _fd(program: bytes) -> int:
-    read_end, write_end = os.pipe()
-    try:
-        os.write(write_end, program)
-    finally:
-        os.close(write_end)
-    return read_end
+def test_a_served_codex_apply_patch_edit_works_under_the_served_profile(world):
+    """A served turn keeps codex's own sandbox, and its apply_patch helper builds
+    a nested one. Under the served (permissive) profile the edit lands."""
+    universe, _other = world
+    out = _served_apply_patch(universe, nested_sandbox=True)
+    patched = universe / "notes" / "patched.txt"
+    assert patched.read_text(encoding="utf-8") == "patched\n", out
 
 
-def _compile_without(jail_seccomp, *, drop: set[int]) -> bytes:
-    """A seccomp program like the shipping one but WITHOUT the dropped syscalls
-    in the denylist -- the permissive profile a nested codex sandbox needs. Only
-    the plain denials are reproduced (enough for the detection control)."""
-    import struct
-
-    X86, ARM, X32 = 0xC000003E, 0xC00000B7, 0x40000000
-    denied_x86 = [n for n in jail_seccomp.DENIED_X86_64 if n not in drop]
-    denied_arm = [n for n in jail_seccomp.DENIED_AARCH64 if n not in drop]
-    LD, JEQ, JGE, RET = 0x20, 0x15, 0x35, 0x06
-    prog: list[tuple[int, int, int, int]] = []
-    # x86 arch check
-    arm_at = 4 + len(denied_x86) + 1
-    deny_at = arm_at + 2 + len(denied_arm) + 1
-    prog += [(LD, 0, 0, 4), (JEQ, 0, arm_at - 2, X86), (LD, 0, 0, 0),
-             (JGE, deny_at - 4, 0, X32)]
-    for nr in denied_x86:
-        prog.append((JEQ, deny_at - (len(prog) + 1), 0, nr))
-    prog.append((RET, 0, 0, 0x7FFF0000))
-    assert len(prog) == arm_at
-    prog.append((JEQ, 0, deny_at - (len(prog) + 1), ARM))
-    prog.append((LD, 0, 0, 0))
-    for nr in denied_arm:
-        prog.append((JEQ, deny_at - (len(prog) + 1), 0, nr))
-    prog.append((RET, 0, 0, 0x7FFF0000))
-    assert len(prog) == deny_at
-    prog.append((RET, 0, 0, 0x00050001))
-    return b"".join(struct.pack("=HBBI", *i) for i in prog)
+def test_detection_control_the_deny_profile_would_break_served_apply_patch(world):
+    """Why the served exception exists: under the full deny profile the same
+    apply_patch cannot build its nested sandbox, and nothing is written."""
+    universe, _other = world
+    out = _served_apply_patch(universe, nested_sandbox=False)
+    assert not (universe / "notes" / "patched.txt").exists(), out
+    assert "namespace" in out or "Operation not permitted" in out, out

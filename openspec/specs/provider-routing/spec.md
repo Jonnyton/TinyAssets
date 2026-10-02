@@ -344,7 +344,14 @@ includes `--skip-git-repo-check` and `--ephemeral`. A call with
 `sandbox_workspace=True` SHALL require a universe directory, a directly
 executable CLI, available Bubblewrap, and an auth home inside that universe;
 otherwise it SHALL refuse before starting a subprocess. Accepted served calls
-use `--sandbox workspace-write` inside the outer OS sandbox.
+use `--sandbox workspace-write` inside the outer OS sandbox and SHALL declare a
+nested sandbox to the provider jail, because codex's native `apply_patch` runs
+through a filesystem sandbox helper that needs a nested user namespace; that
+launch SHALL get the jail's permissive seccomp profile, which keeps new user
+namespaces and symlinks open. Every other provider launch SHALL get the full
+deny profile. On the served path a provider can still create a link in its
+universe; the daemon-side link-refusing reader and writer covers that residual
+until per-universe platform state moves out of the universe directory.
 This probe is a CLI-readiness heuristic, not an OS backend or proof that the
 subsequent workload is confined. In particular, an unavailable ordinary call
 bypasses Codex approvals and sandboxing rather than failing closed.
@@ -360,6 +367,12 @@ bypasses Codex approvals and sandboxing rather than failing closed.
 - **WHEN** an ordinary Codex call is made inside a launch scope that names an owning universe
 - **THEN** it includes `--dangerously-bypass-approvals-and-sandbox` and omits `--sandbox workspace-write`
 - **AND** the provider jail's seccomp filter refuses new user namespaces and symlinks for every process the call starts
+
+#### Scenario: A served call keeps codex's sandbox and gets the permissive jail profile
+
+- **WHEN** a Codex call with `sandbox_workspace=True` is accepted
+- **THEN** it includes `--sandbox workspace-write` and declares a nested sandbox to the provider jail
+- **AND** the jail's seccomp profile for that launch allows new user namespaces and symlinks, so codex's `apply_patch` edit succeeds
 
 #### Scenario: An unavailable probe selects the dangerous bypass
 

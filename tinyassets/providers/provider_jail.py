@@ -638,6 +638,7 @@ def confine_launch(
     env: Mapping[str, str] | None = None,
     view: UniverseView | None = None,
     install_mounts: Callable[[], Iterable[Path]] | None = None,
+    nested_sandbox: bool = False,
 ) -> ConfinedLaunch | None:
     """The jailed launch, ``None`` when no jail applies, or refuse.
 
@@ -645,6 +646,12 @@ def confine_launch(
     reads only the bound scope and the adapter's optional view -- never the
     vendor, the config or the command. Inside the jail the command runs under
     ``prlimit``, behind the egress forwarder, with the seccomp filter loaded.
+
+    ``nested_sandbox=True`` is the adapter declaring that its CLI builds its
+    own sandbox inside this one (a served codex turn keeps ``--sandbox
+    workspace-write`` for its ``apply_patch`` helper). That launch gets the
+    filter profile keeping new user namespaces and symlinks open; every other
+    launch gets the full deny profile (:mod:`tinyassets.providers.jail_seccomp`).
     """
     scope = _SCOPE.get()
     if scope is None and view is None:
@@ -690,13 +697,13 @@ def confine_launch(
         prlimit, *_limit_args(), "--",
         *universe_egress.forwarder_argv(python, list(argv), engine_port=engine_port),
     ]
-    # No provider CLI nests a sandbox of its own inside this jail: the codex
-    # adapter drops its workspace-write sandbox for commands when
-    # launch_is_confined, its served turns disable the shell tool entirely, and
-    # claude never had one. So the filter denies new user namespaces and
-    # symlinks, the same as the tool jail: a provider can no longer plant a link
-    # the daemon follows out of the universe (jail_seccomp).
-    filter_fd = program_fd()
+    # The full deny profile (no new user namespaces, no symlinks) unless the
+    # adapter declared a nested sandbox: a non-served codex call runs its
+    # commands directly here with its own sandbox off, and claude has none, so
+    # neither can plant a link the daemon would follow out of the universe. A
+    # served codex turn keeps its own sandbox (apply_patch needs it); its link
+    # residual is the daemon-side link-refusing reader/writer's (#4254).
+    filter_fd = program_fd(nested_sandbox=nested_sandbox)
     try:
         jailed = jail_argv(
             inner, view, bwrap_path=bwrap_path, install_paths=install_paths, env=env,

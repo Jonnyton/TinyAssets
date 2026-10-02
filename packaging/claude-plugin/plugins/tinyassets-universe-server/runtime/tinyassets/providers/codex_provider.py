@@ -798,6 +798,8 @@ class CodexProvider(BaseProvider):
         # and let codex run its commands directly in our jail. Off the jail (a
         # host-authority call with no owning universe) codex keeps its own
         # sandbox, falling back to bypass only where bwrap is unavailable.
+        # A served turn (sandbox_workspace) replaces these arguments below and
+        # keeps its own sandbox: apply_patch needs it.
         if provider_jail.launch_is_confined():
             sandbox_args = ["--dangerously-bypass-approvals-and-sandbox"]
         else:
@@ -999,6 +1001,12 @@ class CodexProvider(BaseProvider):
                 env=proc_env,
                 universe_view=universe_view,
                 install_mounts=lambda: _codex_sandbox_mounts(base_cmd),
+                # A served turn keeps codex's own --sandbox workspace-write: its
+                # native apply_patch runs through a filesystem sandbox helper
+                # that needs a nested user namespace, so the jail loads its
+                # permissive seccomp profile for it. A non-served call runs
+                # with its sandbox off and gets the full deny profile.
+                nested_sandbox=bool(config.sandbox_workspace),
             )
         except BaseException:
             session_hold.close()

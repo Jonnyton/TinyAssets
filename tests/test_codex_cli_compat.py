@@ -86,6 +86,9 @@ async def test_real_provider_nonzero_paths_keep_json_reason_and_confinement(
     # The adapter hands the shared spawn point codex's own argv plus its view of
     # the universe; the jail wraps it there (provider_jail).
     assert launch.call_args.kwargs["universe_view"] is not None
+    # A served turn keeps codex's own sandbox (apply_patch needs it), so it
+    # declares the nested sandbox and gets the jail's permissive profile.
+    assert launch.call_args.kwargs["nested_sandbox"] is True
     inner = launch.call_args.args
     pairs = list(zip(inner, inner[1:]))
     assert ("--sandbox", "workspace-write") in pairs
@@ -142,6 +145,9 @@ async def test_a_non_served_codex_node_drops_its_own_sandbox_only_inside_our_jai
         assert "--dangerously-bypass-approvals-and-sandbox" not in inner
     # A non-served node never disables the shell tool -- it is a coding turn.
     assert ("--disable", "shell_tool") not in pairs
+    # It never declares a nested sandbox, so a confined one gets the jail's full
+    # deny profile (no new user namespaces, no symlinks).
+    assert launch.call_args.kwargs["nested_sandbox"] is False
 
 
 def test_image_pin_is_catalogue_compatible_and_no_host_keepalive_remains():
