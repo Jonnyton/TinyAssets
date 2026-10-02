@@ -71,10 +71,11 @@ def agent_of_session(session_id: str, owner: str) -> str | None:
     """The agent a memory session belongs to, for ``owner``; None if not theirs."""
     if session_id == f"principal:{owner}":
         return MAIN_AGENT
-    suffix = f":principal:{owner}"
-    if session_id.startswith(_AGENT_PREFIX) and session_id.endswith(suffix):
-        agent_id = session_id[len(_AGENT_PREFIX):-len(suffix)]
-        return agent_id or None
+    if session_id.startswith(_AGENT_PREFIX):
+        agent_id, separator, session_owner = session_id[len(_AGENT_PREFIX):].partition(
+            ":principal:")
+        if separator and agent_id and ":" not in agent_id and session_owner == owner:
+            return agent_id
     return None
 
 

@@ -1762,3 +1762,30 @@ def test_served_guidance_teaches_the_code_node_and_promises_no_approval():
     )
     assert "approves the source in the browser" not in whole
     assert "approves it in the browser" not in whole
+
+
+@pytest.mark.parametrize("identity_only", [False, True])
+def test_custom_agent_write_brain_refuses_main_identity_but_writes_shared_fields(
+    monkeypatch, tmp_path, identity_only,
+):
+    from types import SimpleNamespace
+    from urllib.parse import parse_qsl, urlsplit
+
+    from fastmcp.server import dependencies
+
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.engine_steering import route_with_session
+
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    before = (udir / "identity.md").read_bytes()
+    route = route_with_session("http://localhost/mcp", "thread:agent:weaver:principal:sub-brain")
+    monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
+        query_params=dict(parse_qsl(urlsplit(route).query))))
+    out = json.loads(s.write_brain(identity="I am Weaver.", name="Weaver",
+                                  founder="" if identity_only else "My founder studies tidepools."))
+    assert "may not" in out["error"] and "identity.md" in out["error"]
+    assert (udir / "identity.md").read_bytes() == before
+    assert json.loads(s.read_brain())["self_model"].get("name") != "Weaver"
+    if not identity_only:
+        assert out["written"]
+        assert "tidepools" in (udir / "founder.md").read_text(encoding="utf-8")

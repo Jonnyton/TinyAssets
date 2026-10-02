@@ -3819,6 +3819,12 @@ def write_brain(
     err = _binding_error()
     if err is not None:
         return err
+    from tinyassets.engine_steering import _session_key
+
+    refused = ""
+    if _session_key().startswith("thread:agent:") and (identity.strip() or name.strip()):
+        refused = "custom agent turns may not set the main agent's name or write identity.md"
+        identity = name = ""
     section_values = {
         "identity": identity,
         "founder": founder,
@@ -3852,7 +3858,7 @@ def write_brain(
         })
     if not (soul or learned_name):
         return json.dumps({
-            "error": (
+            "error": refused or (
                 "nothing to write; pass a section body "
                 "(identity/founder/origin/body/orgchart) or a name."
             ),
@@ -3879,7 +3885,8 @@ def write_brain(
                     "rejected (e.g. a section that is not governed-editable)."
                 ),
             })
-        return json.dumps({"ok": True, "written": result})
+        return json.dumps({"ok": not refused, "written": result,
+                           **({"error": refused} if refused else {})})
     finally:
         _current_identity.reset(token)
 

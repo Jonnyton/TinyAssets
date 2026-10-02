@@ -297,3 +297,71 @@ def test_a_steer_goes_to_the_agent_the_owner_is_talking_to(world, monkeypatch):
         assert status == 404 and body["error"] == "agent_not_found"
         assert [m.text for m in agent_steering.take(udir, weaver_thread, live.live_id)] == [
             "focus on methods"]
+
+
+def test_owner_delimiters_never_alias_another_owners_agent_session(tmp_path):
+    from tinyassets.conversation_store import load_recent_agent_turns, record_turn
+
+    alice = "alice:principal:bob"
+    key = addressed_agents.memory_session(alice, "weaver")
+    assert addressed_agents.agent_of_session(key, "bob") is None
+    assert addressed_agents.agent_of_session(key, alice) == "weaver"
+    for malformed in ("agent::principal:bob", "agent:x:y:principal:bob"):
+        assert addressed_agents.agent_of_session(malformed, "bob") is None
+    record_turn(tmp_path, addressed_agents.memory_session("bob", "mine"),
+                "founder", "bob's line", ts=1)
+    record_turn(tmp_path, key, "founder", "alice's private line", ts=2)
+    assert [(a, m.text) for a, m in load_recent_agent_turns(tmp_path, "bob", limit=1)] == [
+        ("mine", "bob's line")]
+    assert [(a, m.text) for a, m in load_recent_agent_turns(tmp_path, alice)] == [
+        ("weaver", "alice's private line")]
+
+
+def test_huge_agent_activity_preserves_the_main_threads_newest_exchange(world):
+    from tinyassets.conversation_memory import Msg, format_history
+    from tinyassets.conversation_store import record_turn
+
+    for ts in range(3, 9):
+        record_turn(world["udir"], addressed_agents.memory_session(OWNER, world["weaver"]),
+                    "universe", "enormous reply " * 10000, ts=ts)
+    history = [Msg("founder", "main newest question", 1), Msg("universe", "main newest answer", 2)]
+    combined = us._with_agent_activity(history, world["udir"], "u-home", OWNER)
+    rendered = format_history(combined)
+    assert "main newest question" in rendered and "main newest answer" in rendered
+    notices = [m for m in combined if m.speaker == "platform"]
+    assert sum(len(m.text) for m in notices) <= us._AGENT_ACTIVITY_TOTAL_CHARS
+    assert all(len(m.text) <= us._AGENT_ACTIVITY_NOTICE_CHARS for m in notices)
+
+
+def test_long_message_expansion_reads_only_the_addressed_agents_thread(world):
+    from tinyassets.api.graph_reads import read_graph
+    from tinyassets.conversation_store import record_turn
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(
+        world["base"], founder_sub=OWNER, universe_id="u-home", platform_generated=True)
+    text = "weaver's long reply " * 600
+    record_turn(world["udir"], addressed_agents.memory_session(OWNER, world["weaver"]),
+                "universe", text)
+    args = dict(target="conversation", graph_id="u-home", agent_binding_id=world["weaver"])
+    page = json.loads(read_graph(**args))
+    message_id = str(page["messages"][0]["id"])
+    chunks = []
+    offset = 0
+    while offset is not None:
+        part = json.loads(read_graph(**args, field_name=message_id, output_offset=offset))
+        chunks.append(part["chunk"])
+        offset = part["next_offset"]
+    assert "".join(chunks) == text
+    assert json.loads(read_graph(target="conversation", graph_id="u-home", field_name=message_id))[
+        "error"] == "conversation_message_not_found"
+    foreign = _agent(world["base"], "u-home", "stranger", "Foreign")
+    assert json.loads(read_graph(**dict(args, agent_binding_id=foreign)))["agent_not_found"]
+
+
+def test_public_status_forwards_the_addressed_agent(world):
+    _converse(message="weaver only", agent_id=world["weaver"])
+    out = json.loads(us.get_status(command_center_id="u-home", include_conversation=True,
+                                  conversation_agent=world["weaver"]))
+    assert out["recent_conversation"]["agent"]["agent_id"] == world["weaver"]
+    assert out["recent_conversation"]["turns"][0]["text"] == "weaver only"

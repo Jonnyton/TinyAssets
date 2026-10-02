@@ -730,7 +730,7 @@ def read_graph(
         agent_definition_id: Public agent definition identifier for
             target=agent. Falls back to graph_id.
         agent_binding_id: Private command center binding identifier for
-            target=agent_binding.
+            target=agent_binding, or your addressed agent for target=conversation.
         agent_stage_id: Private import stage identifier for target=agent.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
@@ -3206,10 +3206,10 @@ def _steering_receipt(delivered, undelivered):
     }
 
 
-#: Other-agent turns the main agent sees each turn. The memory block keeps its
-#: newest ``DEFAULT_LIMIT`` lines, so this many is what the main thread's own
-#: oldest lines can lose to them at most.
+#: Other-agent awareness has its own budget within the main thread's memory block.
 _AGENT_ACTIVITY_TURNS = 6
+_AGENT_ACTIVITY_NOTICE_CHARS = 300
+_AGENT_ACTIVITY_TOTAL_CHARS = 1500
 
 
 def _with_agent_activity(history, universe_dir, universe_id, owner):
@@ -3237,10 +3237,16 @@ def _with_agent_activity(history, universe_dir, universe_id, owner):
         logger.warning("converse: other agents' activity unreadable", exc_info=True)
         return history
     notices = []
-    for agent_id, msg in turns:
+    remaining = _AGENT_ACTIVITY_TOTAL_CHARS
+    for agent_id, msg in reversed(turns):
+        if remaining <= 0:
+            break
         name = names.get(agent_id, "an agent you no longer have")
         who = "your founder" if msg.speaker == "founder" else name
-        notices.append(Msg("platform", f"[{name}'s conversation] {who}: {msg.text}", msg.ts))
+        text = f"[{name}'s conversation] {who}: {msg.text}"
+        text = text[:min(_AGENT_ACTIVITY_NOTICE_CHARS, remaining)]
+        remaining -= len(text)
+        notices.append(Msg("platform", text, msg.ts))
     return sorted([*history, *notices], key=lambda m: m.ts or 0.0)
 
 
@@ -4156,6 +4162,7 @@ def get_status(
     include_conversation: bool = False,
     conversation_before: int | None = None,
     conversation_limit: int = 30,
+    conversation_agent: str = "",
 ) -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
@@ -4187,6 +4194,7 @@ def get_status(
         conversation_before: The ``next_before`` a previous peek returned; the
             page then holds the turns just before it. Omit for the newest page.
         conversation_limit: Turns per page, 1 to 30 (default 30).
+        conversation_agent: Which of your agents' threads to read: "main" (default) or its id.
     """
     universe_id = command_center_id  # internal name until C3
     # The model door's projection: a page a model's context can hold. get_status
@@ -4196,6 +4204,7 @@ def get_status(
     return _get_status_impl(
         universe_id=universe_id, include_conversation=include_conversation,
         conversation_before=conversation_before, conversation_limit=page,
+        conversation_agent=conversation_agent,
     )
 
 

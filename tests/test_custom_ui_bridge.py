@@ -665,3 +665,22 @@ def test_bundle_bridge_is_a_closed_allowlist_acting_as_the_viewer(tmp_path):
 def test_a_real_bundle_reaches_the_frame_exactly_as_its_author_wrote_it(tmp_path):
     out = _run(tmp_path, "custom_ui_sample.js", SAMPLE_CHECKS, extra=OFFICE_BUNDLE)
     assert "office sample checks passed" in out
+
+
+def test_send_message_refuses_a_switch_during_addressing_and_pins_agent(tmp_path):
+    _run(tmp_path, "address_race.js", r'''
+(async()=>{
+AppUI.agentNamed=async()=>({agent_id:'weaver',name:'Weaver'});
+let release;
+addressAgent=async agent=>{addressed=agent.agent_id;await new Promise(r=>release=r);};
+const sending=AppUI.sendMessage({text:'for Weaver',agent:'weaver'});
+await settle(); addressed='main'; release();
+await assert.rejects(sending,/the chat switched to another agent; nothing was sent/);
+assert.equal(sends.length,0);
+addressAgent=async agent=>{addressed=agent.agent_id;};
+await AppUI.sendMessage({text:'for Weaver',agent:'weaver'});
+assert.equal(sends[0].opts.agentId,'weaver');
+await AppUI.sendMessage({text:'still Weaver'});
+assert.equal(sends[1].opts.agentId,'weaver');
+})().catch(err=>{console.error(err);process.exit(1);});
+''')

@@ -317,29 +317,28 @@ def load_recent_agent_turns(
     db_path = _db_path(universe_dir)
     if not db_path.exists():
         return []
-    suffix = f":principal:{owner}"
+    out = []
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
-            # A range on the session index, never a scan of the main thread.
+            # Filter ownership before limiting; an owner's id can contain the delimiter.
             rows = conn.execute(
                 "SELECT session_id, speaker, content, ts FROM conversation_turns "
                 "WHERE session_id >= 'agent:' AND session_id < 'agent;' "
-                "AND substr(session_id, -?) = ? "
-                "ORDER BY ts DESC, turn_no DESC LIMIT ?",
-                (len(suffix), suffix, max(1, int(limit))),
-            ).fetchall()
+                "ORDER BY ts DESC, turn_no DESC",
+            )
+            for session_id, speaker, content, ts in rows:
+                agent_id = agent_of_session(str(session_id), owner)
+                if agent_id is None or agent_id == MAIN_AGENT:
+                    continue
+                out.append((agent_id, Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts))))
+                if len(out) >= max(1, int(limit)):
+                    break
         finally:
             conn.close()
     except Exception:  # noqa: BLE001 - awareness is a bonus, never a blocker
         return []
-    out = []
-    for session_id, speaker, content, ts in reversed(rows):
-        agent_id = agent_of_session(str(session_id), owner)
-        if agent_id is None or agent_id == MAIN_AGENT:
-            continue
-        out.append((agent_id, Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts))))
-    return out
+    return list(reversed(out))
 
 
 def record_turn(

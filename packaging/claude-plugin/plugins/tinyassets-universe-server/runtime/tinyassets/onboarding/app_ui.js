@@ -413,11 +413,15 @@
       if(this.sending) throw new Error("a message from this UI is already in flight");
       this.sending=true;
       try{
+        let agentId=typeof addressedAgentId==="function"?addressedAgentId():"main";
         if(wanted){
           const match=await this.agentNamed(wanted);
-          await addressAgent({agent_id:match.agent_id,name:match.name});
+          agentId=match.agent_id;
+          await addressAgent({agent_id:agentId,name:match.name});
         }
-        await sendTurn(text,text,{inputMethod:"app_action"});
+        if(typeof addressedAgentId==="function"&&addressedAgentId()!==agentId)
+          throw new Error("the chat switched to another agent; nothing was sent");
+        await sendTurn(text,text,{inputMethod:"app_action",agentId});
       }finally{ this.sending=false; }
       return {sent:true};
     },

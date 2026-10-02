@@ -1683,8 +1683,10 @@
     // — never by its text or timestamp — and continued ONLY from the offset the
     // server returned: JS String#length counts UTF-16 code units, so a client
     // computing its own offset desynchronises on the first emoji.
-    readConversationChunk(id,offset,scope){
-      return this.read({target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset});
+    readConversationChunk(id,offset,scope,agent){
+      agent=agent||(typeof addressedAgentId==="function"?addressedAgentId():"main");
+      return this.read({target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset,
+        ...(agent!=="main"?{agent_binding_id:agent}:{})});
     },
     // The agent's pending asks: EVERY one. Same read from every surface, which
     // is what makes them answerable from the phone with no second mechanism.
@@ -3598,6 +3600,9 @@
     if(id!==addressedAgent.agent_id){
       if(activeTurn||sendQueue.length||interruptPending||pendingSteers)
         throw new Error("finish or stop the current message first, then switch agents");
+      if(typeof Voice!=="undefined"&&typeof Voice.stop==="function")
+        Voice.stop(Boolean(Voice.browserDraftUtterance||Voice.browserPendingUtterance||Voice.browserRecognizing),
+          "The chat switched agents; unsent voice input was discarded.");
       addressedAgent={agent_id:id,name};
       historyLoaded=false; inflightRestored=false; queueRestored=false;
       renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
@@ -3612,6 +3617,7 @@
   function paintAddressedAgent(){
     const label=addressedAgent.agent_id==="main"?"Your agent":addressedAgent.name;
     const cloud=$("chat-cloud"); if(cloud) cloud.dataset.agent=addressedAgent.agent_id;
+    if(typeof refreshChatCloud==="function") refreshChatCloud();
     const title=$("chat-cloud-title"); if(title) title.textContent=label;
     const input=$("composer-input");
     if(input) input.setAttribute("aria-label","Message "+label);
@@ -4348,11 +4354,13 @@
     // after a sign-out or an account switch belongs to the PREVIOUS account: it
     // paints nothing here and stops the load.
     const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const agent=typeof addressedAgentId==="function"?addressedAgentId():"main";
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+      agent===(typeof addressedAgentId==="function"?addressedAgentId():"main");
     let failed=null;
     more.addEventListener("click", ()=>{
       more.disabled=true; more.textContent="Loading the rest…";
-      loadFullMessage(id,stillOwner,scope).then(full=>{
+      loadFullMessage(id,stillOwner,scope,agent).then(full=>{
         if(!stillOwner()) return;
         if(typeof full!=="string"){
           // The preview stays exactly as it was and the control is re-armed:
@@ -4378,12 +4386,12 @@
   // Pages one message by the SERVER's offsets. Returns the whole text, or null
   // when it could not be recovered - it never returns a partial answer as if it
   // were the message.
-  async function loadFullMessage(id,stillOwner,scope){
+  async function loadFullMessage(id,stillOwner,scope,agent){
     const parts=[]; let offset=0, total=null;
     try{
       while(true){
         if(!stillOwner()) return null;
-        const r=await Owner.readConversationChunk(id,offset,scope);
+        const r=await Owner.readConversationChunk(id,offset,scope,agent);
         if(!stillOwner()) return null;            // previous account's response
         if(!r||r.available!==true||typeof r.chunk!=="string"||r.error||
            r.offset!==offset||r.offset_unit!=="unicode_code_points"||
@@ -8006,7 +8014,8 @@
     if(pending.consumerRequest){
       inflightRestored=true;
       const epoch=MCP._loginEpoch, scope=queueScope, owner=queueOwner;
-      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner;
+      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner&&
+        (pending.agent||"main")===(typeof addressedAgentId==="function"?addressedAgentId():"main");
       try{
         const observed=await Owner.read({target:"conversation_turn",
           request_key:pending.consumerRequest.request_key});
@@ -8031,14 +8040,14 @@
           // Keep this exact request available for a user-requested observation
           // or terminal projection repair, never a new workflow invocation.
           offerResend(pending.message,pending.display,new Error("Conversation is still pending."),
-            {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+            {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
              consumerRequest:pending.consumerRequest});
           restoreQueue();return;
         }
       }catch(_e){ /* Unknown status retains the exact durable local request. */ }
       if(!stillOwner())return;
       offerResend(pending.message,pending.display,new Error("Conversation status is unavailable."),
-        {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+        {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
          consumerRequest:pending.consumerRequest});
       restoreQueue();return;
     }
@@ -8059,13 +8068,14 @@
     const again = document.createElement("button");
     again.className = "btn btn--link"; again.textContent = pending.consumerRequest?"Check this conversation":"Send it again";
     again.addEventListener("click", ()=>{
-      if(!ownsSavedRow(pending)) return;
+      if(!ownsSavedRow(pending)||
+         (pending.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")) return;
       // The bubble is already drawn above, so do not echo it a second time.
       // Only THIS record is forgotten: a turn sent meanwhile owns the disk
       // slot now, and the resend queues behind it rather than erasing it.
       note.remove(); forgetInflightIf(pending);
       sendTurn(pending.message, pending.display,
-        {echoed:true,inputMethod:turnInputMethod(pending.inputMethod),
+        {echoed:true,agentId:pending.agent||"main",inputMethod:turnInputMethod(pending.inputMethod),
          consumerRequest:pending.consumerRequest||null,
          modelChoice:copyModelChoice(pending.modelChoice)});
     });

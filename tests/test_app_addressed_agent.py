@@ -199,3 +199,65 @@ console.log(JSON.stringify({onMain, onWeaver:all()}));
     assert "to weaver" not in out["onMain"]
     assert "Still waiting to be sent when the page reloaded" in out["onWeaver"]
     assert "to weaver" in out["onWeaver"]
+
+
+@pytest.mark.parametrize("read_fails", [False, True])
+def test_recovery_read_landing_after_agent_switch_paints_nothing(tmp_path, read_fails):
+    body = r"""
+setQueueOwner("p-1"); setQueueScope("u-1");
+let release;
+Owner.read=()=>new Promise((resolve,reject)=>{release=()=>READ_RESULT;});
+localStorage.setItem(INFLIGHT_KEY,JSON.stringify({message:"old message",display:"old message",
+  ts:Date.now(),owner:"p-1",scope:"u-1",agent:"main",consumerRequest:{request_key:"old-key"}}));
+const restoring=restoreInflight([]); await settle();
+addressedAgent={agent_id:"w1",name:"Weaver"};
+clearThread(); release(); await restoring; await settle();
+console.log(JSON.stringify({count:els.thread.children.length}));
+""".replace("READ_RESULT", 'reject(new Error("offline"))' if read_fails else
+            'resolve({consumer_turn:{turn_id:"old",projection:"committed"},reply:"old reply"})')
+    assert _run(tmp_path, {}, body)["count"] == 0
+
+
+def test_recovery_resends_always_pin_the_saved_agent():
+    page, _ = onboarding.render_app_html()
+    source = _js_function(page, "restoreInflight")
+    assert source.count('agentId:pending.agent||"main"') == 3
+    assert '(pending.agent||"main")!==(typeof addressedAgentId===' in source.split(
+        'again.addEventListener("click"', 1)[1]
+
+
+def test_switch_retires_buffered_browser_voice_before_changing_agent():
+    page, _ = onboarding.render_app_html()
+    source = _js_function(page, "addressAgent")
+    assert 'typeof Voice!=="undefined"&&typeof Voice.stop==="function"' in source
+    assert source.index("Voice.stop(") < source.index("addressedAgent={agent_id:id,name}")
+    assert "unsent voice input was discarded" in source
+    stop = page.split("stop(announce=true,detail){", 1)[1].split("\n    },", 1)[0]
+    assert "this.epoch++" in stop and "this._teardownTransport()" in stop
+    teardown = page.split("_teardownTransport(){", 1)[1].split("\n    },", 1)[0]
+    assert "clearTimeout(this.browserCommitTimer)" in teardown
+    assert 'this.browserDraftUtterance=""' in teardown
+    assert 'this.browserPendingUtterance=""' in teardown
+    commit = page.split("this.browserCommitTimer=setTimeout(()=>{", 1)[1].split("},900)", 1)[0]
+    assert "generation!==this.epoch" in commit
+
+
+def test_paint_agent_refreshes_its_saved_cloud_placement(tmp_path):
+    out = _run(tmp_path, {}, r'''
+const calls=[];
+globalThis.refreshChatCloud=()=>calls.push(addressedAgentId());
+addressedAgent={agent_id:"w1",name:"Weaver"}; paintAddressedAgent();
+console.log(JSON.stringify({calls}));
+''')
+    assert out["calls"] == ["w1"]
+
+
+def test_message_expansion_passes_the_addressed_agent(tmp_path):
+    page, _ = onboarding.render_app_html()
+    method = _method(page, "readConversationChunk(id,offset,scope", "readConversationChunk")
+    body = r'''
+addressedAgent={agent_id:"w1",name:"Weaver"};
+const args=await (__METHOD__).call({read:async a=>a},"12",4000,"u-1");
+console.log(JSON.stringify({args}));
+'''.replace("__METHOD__", method)
+    assert _run(tmp_path, {}, body)["args"]["agent_binding_id"] == "w1"
