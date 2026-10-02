@@ -1,5 +1,4 @@
 """Phone conversation geometry and controls in real Chromium."""
-from pathlib import Path
 
 import pytest
 
@@ -13,7 +12,7 @@ browser = _browser
 pytestmark = pytest.mark.real_browser
 
 
-def test_phone_conversation(app_url, browser):
+def test_phone_conversation(app_url, browser, tmp_path):
     context = browser.new_context(viewport={"width": 390, "height": 844},
                                   is_mobile=True, has_touch=True)
     page = context.new_page()
@@ -71,8 +70,8 @@ def test_phone_conversation(app_url, browser):
     page.locator('#btn-account').tap()
     assert page.locator('#btn-cloud-menu').get_attribute('aria-expanded') == 'false'
     page.evaluate("showView('chat'); refreshChatCloud();")
-    page.screenshot(path='C:/Users/Jonathan/AppData/Local/Temp/phone-p0.png')
-    Path('C:/Users/Jonathan/AppData/Local/Temp/phone-p0-measurements.txt').write_text(
+    page.screenshot(path=tmp_path / 'phone-p0.png')
+    (tmp_path / 'phone-p0-measurements.txt').write_text(
         f"cloud_bar={header['height']}, thread={thread['height']}, input={field['width']}")
     page.set_viewport_size({'width': 390, 'height': 500})
     page.wait_for_function(
@@ -85,7 +84,7 @@ def test_phone_conversation(app_url, browser):
     send = _box(page, '#btn-send')
     assert composer['y'] >= 0 and composer['y'] + composer['height'] <= 500
     assert send['y'] + send['height'] <= 500
-    with Path('C:/Users/Jonathan/AppData/Local/Temp/phone-p0-measurements.txt').open('a') as output:
+    with (tmp_path / 'phone-p0-measurements.txt').open('a') as output:
         output.write(f", composer_at_500={composer}, send_at_500={send}")
     # With nothing listed, the chip stays and "Add a key yourself" is one tap away;
     # renderRail, not the phone CSS, decides whether the rail shows at all.

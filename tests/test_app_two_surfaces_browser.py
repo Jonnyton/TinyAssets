@@ -61,12 +61,17 @@ def app_url():
 
 @pytest.fixture
 def browser():
-    sync_api = pytest.importorskip("playwright.sync_api")
+    sync_api = pytest.importorskip(
+        "playwright.sync_api", reason="owner=codex runs-in=real-browser-proof"
+    )
     with sync_api.sync_playwright() as p:
         try:
             chromium = p.chromium.launch()
         except Exception as exc:  # noqa: BLE001 - no browser binary on this host
-            pytest.skip(f"Chromium is not available here: {exc.__class__.__name__}")
+            pytest.skip(
+                "owner=codex runs-in=real-browser-proof Chromium is not available here: "
+                f"{exc.__class__.__name__}"
+            )
         try:
             yield chromium
         finally:
