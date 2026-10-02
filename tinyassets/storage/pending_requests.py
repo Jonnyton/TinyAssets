@@ -275,36 +275,6 @@ def _db(universe_dir: Path) -> sqlite3.Connection:
     return conn
 
 
-def refresh_system_request(universe_dir: Path, request_id: str, entry: dict | None) -> None:
-    """Upsert the platform's fixed setup card without making another request kind."""
-    if request_id != "sys_connect_llm":
-        raise ValueError("unknown system request")
-    if entry is None and not (Path(universe_dir) / _DB_NAME).exists():
-        return
-    try:
-        with _db(universe_dir) as conn:
-            if entry is None:
-                conn.execute(
-                    "UPDATE pending_requests SET status = 'withdrawn', resolved_at = ? "
-                    "WHERE request_id = ? AND origin = 'platform' AND status = 'pending'",
-                    (time.time(), request_id),
-                )
-                return
-            conn.execute(
-                "INSERT INTO pending_requests (request_id, kind, title, body, fields_json, "
-                "action_json, dedupe_key, status, created_at, origin) "
-                "VALUES (?, ?, ?, ?, '[]', ?, ?, 'pending', ?, 'platform') "
-                "ON CONFLICT(request_id) DO UPDATE SET body = excluded.body, "
-                "action_json = excluded.action_json, status = 'pending', resolved_at = NULL "
-                "WHERE pending_requests.origin = 'platform' "
-                "AND pending_requests.status IN ('pending', 'withdrawn')",
-                (request_id, entry["kind"], entry["title"], entry["body"],
-                 json.dumps(entry["action"]), request_id, time.time()),
-            )
-    except Exception:  # noqa: BLE001 - a recovery card must not fail its turn
-        logger.exception("pending_requests: system setup refresh failed")
-
-
 def create_request(
     universe_dir: Path,
     *,

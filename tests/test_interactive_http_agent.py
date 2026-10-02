@@ -59,6 +59,7 @@ def agent(served, monkeypatch):
         tools=[],
         requested_rounds=1,
         first_text=None,
+        tools_per_round=1,
         fail_tool=False,
         closed=False,
         before_reply=None,
@@ -94,7 +95,7 @@ def agent(served, monkeypatch):
             )
 
         async def call_tool_mcp(self, name, arguments):
-            assert latest().rounds[-1].tools[0].state == "started"
+            assert any(tool.state == "started" for tool in latest().rounds[-1].tools)
             state.tools.append((name, arguments))
             if state.fail_tool:
                 raise RuntimeError("synthetic post-dispatch disconnect")
@@ -139,13 +140,14 @@ def agent(served, monkeypatch):
                     message["content"] = state.first_text
                 message["tool_calls"] = [
                     {
-                        "id": "same-wire-id",
+                        "id": "same-wire-id" if index == 0 else f"wire-id-{index}",
                         "type": "function",
                         "function": {
                             "name": "read_graph",
                             "arguments": ' {"target": "status"} ',
                         },
                     }
+                    for index in range(state.tools_per_round)
                 ]
             return {
                 "status": 200,

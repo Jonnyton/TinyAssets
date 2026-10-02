@@ -169,6 +169,7 @@ def test_resume_pipeline_delivers_round_one_text_with_tools_and_resident_context
     root = agent.served.context.universe_dir
     seed(root)
     agent.first_text = "Hi! Picking up the office build now."
+    agent.tools_per_round = 3
     agent.requested_rounds = 1
     monkeypatch.setattr(daemon_server, "get_founder_home", get_founder_home)
     signed_in("owner")
@@ -177,11 +178,15 @@ def test_resume_pipeline_delivers_round_one_text_with_tools_and_resident_context
     first_round = agent.latest().rounds[0]
     assert first_round.ordinal == 1
     assert first_round.reply.text == agent.first_text
-    assert len(first_round.reply.tool_requests) == 1
-    assert len(agent.tools) == 1
+    assert len(first_round.reply.tool_requests) == 3
+    assert len(agent.tools) == 3
+    assert all(tool.state == "completed" for tool in first_round.tools)
     messages = agent.wires[0][1]["body"]["messages"]
     system = next(message["content"] for message in messages if message["role"] == "system")
     assert HEADING in system
+    assert "## My command center now" in system
+    assert 'Connections: ["compute:models"]' in system
+    assert "vault://" not in system and "credential_ref" not in system
     assert 'write_graph target="app_ui" operation="add_ui"' in system
 
 
@@ -221,6 +226,14 @@ def test_served_pool_reserves_exactly_the_last_request(agent, monkeypatch):
     assert len(agent.wires) == 5 and len(agent.tools) == 4
     assert agent.wires[-1][1]["body"]["tool_choice"] == "none"
     assert agent.latest().state == "completed"
+    guidance = agent.wires[-1][1]["body"]["messages"][0]["content"]
+    assert "save progress to notes/<project>-progress.md" in guidance
+    assert "when budget returns:" in guidance
+    assert initial.next_reset.strftime("%Y-%m-%d %H:%M UTC") in guidance
+    assert "in about " in guidance and " hours" in guidance
+    assert "owner can connect another source to continue now" in guidance
+    penultimate = agent.wires[-2][1]["body"]["messages"][0]["content"]
+    assert "I save my current progress to notes/<project>-progress.md in this round" in penultimate
     final_body = agent.wires[-1][1]["body"]
     assert agent.latest().rounds[-1].candidate.request_digest == (
         "sha256:" + hashlib.sha256(json.dumps(final_body).encode("utf-8")).hexdigest()
@@ -286,18 +299,15 @@ def test_large_daily_pool_does_not_cap_a_long_turn(agent, monkeypatch):
     assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
 
 
-def test_low_pool_raises_one_connect_request_across_turns(agent, monkeypatch):
+def test_low_pool_never_stores_connect_request(agent, monkeypatch):
     from tinyassets.storage.pending_requests import list_pending
 
     seed_budget(agent, monkeypatch, remaining=9)
     agent.requested_rounds = 0
-    assert run(agent) == "finished exact answer"
-    first = list_pending(agent.served.context.universe_dir)
-    assert [row["request_id"] for row in first] == ["sys_connect_llm"]
-    assert run(agent) == "finished exact answer"
-    second = list_pending(agent.served.context.universe_dir)
-    assert len(second) == 1 and second[0]["created_at"] == first[0]["created_at"]
-    assert second[0]["action"]["type"] == "connect"
+    for _ in range(2):
+        assert run(agent) == "finished exact answer"
+        assert not any(row["request_id"] == "sys_connect_llm"
+                       for row in list_pending(agent.served.context.universe_dir))
 
 
 def add_second_source(agent, monkeypatch):
@@ -395,7 +405,7 @@ def test_spent_source_is_skipped_before_dispatch_and_between_rounds(agent, monke
     assert len(agent.tools) == 4
 
 
-def test_uncapped_member_makes_whole_pool_unbounded(agent, monkeypatch):
+def test_uncapped_member_makes_whole_pool_unbounded(agent, monkeypatch, signed_in):
     from tinyassets.request_budget import UNBOUNDED, pooled_budget
 
     seed_budget(agent, monkeypatch, remaining=3)
@@ -413,6 +423,13 @@ def test_uncapped_member_makes_whole_pool_unbounded(agent, monkeypatch):
     assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
     assert all("Compute today:" not in wire[1]["body"]["messages"][0]["content"]
                for wire in agent.wires)
+    from tinyassets.api.pending_requests import list_requests
+
+    signed_in("owner")
+    card = next(row for row in list_requests(
+        universe_id=agent.served.context.universe_dir.name,
+    )["pending"] if row["request_id"] == "sys_connect_llm")
+    assert card["status"] == "optional" and "suggestion" not in card
 
 
 def test_final_request_is_reserved_from_the_whole_pool(agent, monkeypatch):
@@ -435,3 +452,93 @@ def test_final_request_is_reserved_from_the_whole_pool(agent, monkeypatch):
     )
     assert agent.wires[-1][1]["body"]["tool_choice"] == "none"
     assert agent.latest().state == "completed"
+
+
+def test_new_served_turn_after_reset_has_full_pool(agent, monkeypatch):
+    from datetime import timedelta
+
+    from tinyassets import request_budget as budgets
+
+    seed_budget(agent, monkeypatch, remaining=0)
+    before = budgets.pooled_budget(agent.served.rig.base, "owner", agent.served.context)
+    assert before.remaining == 0
+    after_reset = before.next_reset + timedelta(seconds=1)
+    monkeypatch.setattr(budgets, "_now", lambda: after_reset)
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    monkeypatch.setattr(SQLiteProviderWorkAuthorityStore, "timestamp",
+                        lambda self: after_reset.isoformat().replace("+00:00", "Z"))
+    after = budgets.pooled_budget(agent.served.rig.base, "owner", agent.served.context)
+    assert after.remaining == 50
+    agent.requested_rounds = 15
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 16 and len(agent.tools) == 15
+    assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
+
+    after_turn = budgets.pooled_budget(agent.served.rig.base, "owner", agent.served.context)
+    assert after_turn.remaining == 34
+
+
+def test_resident_summary_omitted_on_failure(agent, monkeypatch):
+    from tinyassets import daemon_server
+
+    monkeypatch.setattr(daemon_server, "get_founder_home", get_founder_home)
+    def failed(*args, **kwargs):
+        raise OSError("unavailable")
+    monkeypatch.setattr(daemon_server, "list_branch_definitions", failed)
+    assert universe_tools.command_center_summary(agent.served.context.universe_dir, "owner") == ""
+
+
+@pytest.mark.parametrize("remaining", [9, 10, None])
+def test_real_rail_reads_current_served_pool(agent, monkeypatch, signed_in, remaining):
+    from tinyassets.api.pending_requests import list_requests
+    from tinyassets.storage.pending_requests import list_pending
+
+    if remaining is not None:
+        seed_budget(agent, monkeypatch, remaining)
+    signed_in("owner")
+    uid = agent.served.context.universe_dir.name
+    result = list_requests(universe_id=uid)
+    card = next(row for row in result["pending"] if row["request_id"] == "sys_connect_llm")
+    assert card["status"] == ("pending" if remaining == 9 else "optional")
+    if remaining == 9:
+        assert "(9 left)" in card["suggestion"]
+        assert "$10" in card["suggestion"] and "1000" in card["suggestion"]
+        assert "https://openrouter.ai/settings/credits" in card["suggestion"]
+    else:
+        assert "nearly used up" not in card.get("suggestion", "")
+    assert not any(row["request_id"] == "sys_connect_llm"
+                   for row in list_pending(agent.served.context.universe_dir))
+
+
+def test_final_reply_includes_reset_of_already_spent_source(agent, monkeypatch):
+    from dataclasses import replace
+    from datetime import datetime, timedelta, timezone
+
+    from tests.test_request_budget import seed_requests
+    from tinyassets import request_budget as budgets
+
+    seed_budget(agent, monkeypatch, remaining=2)
+    first, second = add_second_source(agent, monkeypatch)
+    seed_requests(agent.served.rig.base, 47, source=second.connection_id,
+                  model=second.model_id, turn_id="other-used",
+                  created_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    zones = sorted(("UTC", "Asia/Tokyo", "America/Los_Angeles"), key=lambda zone:
+                   budgets.RequestBudget(0, 50, "source", zone).next_reset)
+    original = budgets.budget_for_context
+
+    def source_budget(context, **kwargs):
+        value = original(context, **kwargs)
+        zone = zones[0] if context.model_selection == first else zones[-1]
+        return replace(value, reset_timezone=zone)
+
+    monkeypatch.setattr(budgets, "budget_for_context", source_budget)
+    # Coordinator imports this function directly as well.
+    monkeypatch.setattr("tinyassets.agent_turn_coordinator.budget_for_context", source_budget)
+    expected = budgets.pooled_budget(agent.served.rig.base, "owner", agent.served.context)
+    agent.requested_rounds = 15
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 5
+    assert agent.latest().rounds[-1].candidate.source_ref == second.connection_id
+    guidance = agent.wires[-1][1]["body"]["messages"][0]["content"]
+    assert expected.next_reset.strftime("%Y-%m-%d %H:%M UTC") in guidance

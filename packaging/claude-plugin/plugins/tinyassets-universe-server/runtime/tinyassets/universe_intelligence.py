@@ -1533,9 +1533,10 @@ def converse(
     # turn. Gated on the tools actually being wired, so a visitor, a flag-off
     # deploy or an unverified principal is never shown a folder it cannot reach.
     if turn_config.engine_mcp_enabled:
-        from tinyassets.universe_tools import harness_prompt
+        from tinyassets.universe_tools import command_center_summary, harness_prompt
 
-        system = system + "\n\n" + harness_prompt(udir)
+        system = (system + "\n\n" + harness_prompt(udir)
+                  + command_center_summary(udir, founder_principal))
     if history_block:
         system = system + "\n\n" + _CROSS_SURFACE_CONTINUITY
     system = system + "\n\n" + _turn_input_method_context(input_method)

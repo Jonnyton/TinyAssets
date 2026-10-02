@@ -57,6 +57,7 @@ def daily_cap_for_host(host):
         "reset_timezone": offer["reset_timezone"],
         "name": offer["name"],
         "credit_url": offer.get("credit_url", ""),
+        "credit_amount": offer.get("credit_amount"),
     }
 
 

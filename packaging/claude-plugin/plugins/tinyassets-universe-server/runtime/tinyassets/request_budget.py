@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -16,12 +17,19 @@ UNBOUNDED = None
 LEARNING_MIN_REMAINING = 10
 
 
+def _now():
+    return datetime.now(timezone.utc)
+
+
 @dataclass(frozen=True)
 class RequestBudget:
     used: int
     cap: int
     source_name: str
     reset_timezone: str
+    credit_amount: str | None = None
+    credit_url: str = ""
+    credit_requests_per_day: int | None = None
 
     @property
     def remaining(self):
@@ -29,7 +37,7 @@ class RequestBudget:
 
     @property
     def next_reset(self):
-        local = datetime.now(timezone.utc).astimezone(ZoneInfo(self.reset_timezone))
+        local = _now().astimezone(ZoneInfo(self.reset_timezone))
         return (local.replace(hour=0, minute=0, second=0, microsecond=0)
                 + timedelta(days=1)).astimezone(timezone.utc)
 
@@ -45,6 +53,25 @@ class PooledBudget:
     @property
     def next_reset(self):
         return min(budget.next_reset for _, budget in self.sources)
+
+    def reset_description(self):
+        reset = self.next_reset
+        hours = max(1, math.ceil((reset - _now()).total_seconds() / 3600))
+        return f"{reset:%Y-%m-%d %H:%M UTC} (in about {hours} hours)"
+
+    def connect_suggestion(self):
+        text = (
+            f"Today's free model requests are nearly used up ({self.remaining} left). "
+            "Connect another free AI source"
+        )
+        for _, budget in self.sources:
+            if (budget.credit_amount and budget.credit_url
+                    and budget.credit_requests_per_day
+                    and budget.credit_requests_per_day > budget.cap):
+                return (text + f", or add {budget.credit_amount} of credit at "
+                        f"{budget.source_name} ({budget.credit_url}) to raise its daily limit "
+                        f"to {budget.credit_requests_per_day}.")
+        return text + "."
 
     def prompt_line(self):
         split = ", ".join(
@@ -74,7 +101,7 @@ def requests_today(base_path, owner, source_ref, *, reset_timezone,
     Price-zero IDs come from the captured catalogue; suffix :free needs no price.
     """
     try:
-        current = now or datetime.now(timezone.utc)
+        current = now or _now()
         reset = current.astimezone(ZoneInfo(reset_timezone)).replace(
             hour=0, minute=0, second=0, microsecond=0,
         ).astimezone(timezone.utc)
@@ -125,7 +152,8 @@ def request_budget(base_path, owner, source_ref, model, *, preset, zero_priced_m
                 return None
         return RequestBudget(
             used, cap, preset["name"],
-            preset["reset_timezone"],
+            preset["reset_timezone"], preset.get("credit_amount"),
+            preset.get("credit_url", ""), preset.get("credit_requests_per_day"),
         )
     except Exception:  # noqa: BLE001 - advisory only
         return None
@@ -208,4 +236,38 @@ def pooled_budget(base_path, owner, universe_context, *, exhaustion=()):
             sources[candidate.ref.connection_id] = budget
         return PooledBudget(tuple(sources.items()))
     except Exception:  # noqa: BLE001 - unknown evidence must not throttle
+        return UNBOUNDED
+
+
+def budget_for_rail(base_path, owner, universe_dir):
+    """Rebuild the current owned pool for display; never store a setup request."""
+    try:
+        from tinyassets.config import load_universe_config
+        from tinyassets.provider_assignment import load_provider_assignment
+        from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+        from tinyassets.providers.base import UniverseContext
+        from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+
+        assignment = load_provider_assignment(base_path, universe_id=universe_dir.name)
+        if (assignment is None or assignment.owner_user_id != owner
+                or not assignment.candidates
+                or any(not member.provider.startswith("api_key_http:")
+                       for member in assignment.candidates)):
+            # Subscription/native sources have no installed daily request cap.
+            # Rail polling must not discover or initialize their executors.
+            return UNBOUNDED
+        agent = resolve_serving_agent_binding(
+            base_path, universe_id=universe_dir.name, owner_user_id=owner,
+        )
+        config = load_universe_config(universe_dir)
+        prepared = prepare_owned_model_plan(
+            base=base_path, universe=universe_dir, owner=owner, agent=agent,
+            config=config, allow_empty=True,
+        )
+        if prepared is None:
+            return UNBOUNDED
+        return pooled_budget(base_path, owner, UniverseContext(
+            universe_dir=universe_dir, config=config, agent_model_plan=prepared.plan,
+        ))
+    except Exception:  # noqa: BLE001 - unavailable advisory evidence omits the suggestion
         return UNBOUNDED

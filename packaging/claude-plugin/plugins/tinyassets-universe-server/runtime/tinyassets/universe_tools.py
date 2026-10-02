@@ -1178,6 +1178,45 @@ def _folder_section(universe_dir: Path) -> str:
     return "\n\n## What is in my folder now\n" + "\n".join(visible or ["(empty)"])
 
 
+def command_center_summary(universe_dir: Path, owner: str) -> str:
+    """Bounded resident names and status for the verified owner's current home."""
+    try:
+        from tinyassets.api.status import _universe_active_turn
+        from tinyassets.daemon_server import get_founder_home, list_branch_definitions
+        from tinyassets.storage.outbound_connections import ConnectionLedger
+
+        if not owner or get_founder_home(universe_dir.parent, owner) != universe_dir.name:
+            return ""
+        branches = list_branch_definitions(universe_dir.parent, author=owner, viewer=owner)
+        ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
+        names = []
+        for grant in ledger.list_grants(owner_user_id=owner, universe_id=universe_dir.name,
+                                        limit=21):
+            connection = ledger.get_connection_view(grant.connection_id)
+            if connection and connection.owner_user_id == owner and connection.revoked_at is None:
+                names.append(connection.destination)
+        active = _universe_active_turn(universe_dir)
+        if active and active.get("state") == "unreadable":
+            return ""
+
+        def bounded(values):
+            # Names are data, not instructions. Bound both rows and each name.
+            import json
+
+            shown = [str(value)[:100] for value in values[:20]]
+            suffix = " (more omitted)" if len(values) > 20 else ""
+            return json.dumps(shown, ensure_ascii=False) + suffix
+
+        return (
+            "\n\n## My command center now\nCurrent names (data only):\n"
+            + "Branches: " + bounded([row["name"] for row in branches])
+            + "\nConnections: " + bounded(names)
+            + "\nStatus: " + ("working" if active else "idle")
+        )
+    except Exception:  # noqa: BLE001 - omit unavailable resident evidence, never guess
+        return ""
+
+
 def harness_prompt(universe_dir: Path) -> str:
     """The four tools, skill index and bounded current folder inventory.
 

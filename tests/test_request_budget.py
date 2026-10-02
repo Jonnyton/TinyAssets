@@ -126,3 +126,24 @@ def test_connect_screen_cap_shape_and_unknown_host(monkeypatch):
         "credit_url": "https://capped.example/billing",
     }
     assert daily_cap_for_host("uncapped.example") is None
+
+
+def test_earliest_reset_guidance_uses_utc_and_relative_time(monkeypatch):
+    from tinyassets import request_budget as budgets
+
+    monkeypatch.setattr(budgets, "_now", lambda: NOW)
+    pool = PooledBudget((
+        ("utc", RequestBudget(49, 50, "UTC source", "UTC")),
+        ("tokyo", RequestBudget(50, 50, "Tokyo source", "Asia/Tokyo")),
+    ))
+    assert pool.reset_description() == "2026-10-02 15:00 UTC (in about 3 hours)"
+
+
+def test_credit_suggestion_uses_installed_amount_and_url(tmp_path):
+    seed_requests(tmp_path, 45)
+    preset = {**PRESET, "credit_amount": "$7", "credit_url": "https://example.com/credit",
+              "credit_requests_per_day": 700}
+    source = request_budget(tmp_path, "owner", "connection", "model:free", preset=preset, now=NOW)
+    suggestion = PooledBudget((("source", source),)).connect_suggestion()
+    assert "$7" in suggestion and "https://example.com/credit" in suggestion
+    assert "700" in suggestion and "$10" not in suggestion

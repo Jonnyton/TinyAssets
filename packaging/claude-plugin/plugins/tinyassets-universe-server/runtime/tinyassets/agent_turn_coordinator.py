@@ -425,14 +425,12 @@ class AgentTurnCoordinator:
 
     def _daily_budget(self):
         """Recompute between rounds and exclude spent accounts before dispatch."""
-        from tinyassets.api.pending_requests import refresh_connect_llm_request
         from tinyassets.providers.model_policy import Exhaustion
 
         budget = pooled_budget(
             self.context.universe_dir.parent, self.owner, self.context,
             exhaustion=self.exhaustion,
         )
-        refresh_connect_llm_request(self.context.universe_dir, budget)
         while True:
             selected = budget_for_context(self.context, owner=self.owner)
             if selected is None or selected.remaining > 0:
@@ -513,13 +511,18 @@ class AgentTurnCoordinator:
                                     "in this round; the next inference has no tools."
                                 )
                         if self.budget_wrap_up:
+                            # Spent sources still have reset times even after the
+                            # account exhaustion policy excludes them from dispatch.
+                            reset_pool = pooled_budget(
+                                self.context.universe_dir.parent, self.owner, self.context,
+                            ) or budget
                             system += (
                                 "\n\nThis is the last request in my pooled daily allowance. "
                                 "I reply in text now: what I finished, where progress was "
                                 "saved in notes/<project>-progress.md, what is left, and "
-                                "when I can continue (earliest reset "
-                                f"{budget.next_reset.isoformat()} "
-                                "or when my founder connects more compute). "
+                                f"when budget returns: {reset_pool.reset_description()}. "
+                                "I explicitly say the owner can connect another source "
+                                "to continue now. "
                                 "I never claim an unsaved file exists or an automatic "
                                 "wake is armed."
                             )
@@ -618,12 +621,6 @@ class AgentTurnCoordinator:
                     # The model answered: whatever refused it before does not now.
                     self._forget_refusal()
                     if self.turn.state == "completed":
-                        from tinyassets.api.pending_requests import refresh_connect_llm_request
-
-                        refresh_connect_llm_request(self.context.universe_dir, pooled_budget(
-                            self.context.universe_dir.parent, self.owner, self.context,
-                            exhaustion=self.exhaustion,
-                        ))
                         return response
                     if self.turn.state != "tools_pending":
                         raise ProviderProtocolError(
