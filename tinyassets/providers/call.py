@@ -105,7 +105,7 @@ def make_interactive_agent_turn(*, prompt, system, universe_context, config):
     from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter, thin_loop_selected
 
     # Only the thin loop names an adapter; unselected, the call is today's.
-    thin = {"adapter": ThinLoopChatAdapter()} if thin_loop_selected() else {}
+    thin = {"adapter": ThinLoopChatAdapter()} if thin_loop_selected(universe_context) else {}
     return InteractiveHttpAgentTurn(
         router=_real_router, prompt=prompt, system=system,
         universe_context=universe_context, config=config, **thin,

@@ -8,7 +8,7 @@
 - [x] 1.3 Owner reads `history`/`activity` in the loop, read-only, never
       forwarded to the box.
 - [x] 1.4 Tool router + coordinator hook (`open_tools`, `op_id`); journal
-      unchanged; switch `TINYASSETS_AGENT_LOOP=thin`.
+      unchanged; per-account owner setting `agent_loop=thin` (default `engine`).
 - [x] 1.5 Memory per waiting turn: 500 concurrent against a mock SSE server
       (`design.md` § Measurement).
 
@@ -58,12 +58,15 @@
 - [ ] 3.1 A fresh cross-family review of the whole thin path, including the
       two post-cap fixes of PR 1 (c6418af3), gates turning the switch on in
       production.
-- [ ] 3.2 Turning it on goes through deploy configuration that reaches the
-      droplet (a compose/env flag is inert unless the deploy syncs it); verify
-      the running process reads it before claiming it is on.
+- [ ] 3.2 The harness owner flips the founder's account first through
+      `scripts/set_agent_loop.py --owner <owner_user_id> --loop thin` on the
+      production host, targeting the production data root. Verify by reading
+      the owner's stored setting back from that root before claiming it is on;
+      other accounts follow once proven.
 - [ ] 3.3 Live proof: a rendered conversation through the live app with the
       switch on, plus `mcp_public_canary.py`.
-- [ ] 3.4 Remove the switch: once proven, the thin loop is the only path for
-      HTTP turns, for every account (one code path); delete
-      `TINYASSETS_AGENT_LOOP` and the code only the old path used.
+- [ ] 3.4 Remove the per-account setting: once proven, the thin loop is the
+      only path for HTTP turns, for every account (one code path); delete the
+      `account_agent_loop` store, maintainer script, and engine path code that
+      only the old HTTP path used.
 - [ ] 3.5 Spec sync to `openspec/specs/control-plane-agent-loop/` and archive.

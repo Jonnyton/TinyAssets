@@ -97,8 +97,23 @@ POSIX shell.
 
 ### 5. Switch, and the failure when it is on without a box
 
-`TINYASSETS_AGENT_LOOP=thin` selects `ThinLoopChatAdapter` in
-`make_interactive_agent_turn`. With the switch on and no box provider
+`account_agent_loop` stores one typed `engine` or `thin` value per
+`owner_user_id` in the data root database, with `updated_at` and `updated_by`.
+Missing rows default to `engine`; reads do not create a missing database.
+Rejected values leave the previous setting alone. The turn resolves its owner
+through `check_served_agent_tool_authority`, just as the coordinator does;
+unresolved owners keep today's path, never a guessed account. Only that owner's
+`thin` setting selects `ThinLoopChatAdapter` in `make_interactive_agent_turn`.
+
+The harness owner flips the founder's account first on the production host:
+`python scripts/set_agent_loop.py --owner <owner_user_id> --loop thin --data-root <production-root>`.
+The script records `updated_by="maintainer-script"`; verify the write by reading
+`account_agent_loop` back from that root for the same owner. Other accounts
+follow once proven. Rollback writes `engine` for that account. Task 3.4 deletes
+the setting, its maintainer script, and the engine path once every HTTP turn
+uses the thin loop. Account deletion discovers the table by `owner_user_id`.
+
+With the account on `thin` and no box provider
 configured, a turn granted a box tool is refused before its first inference
 (`box_unavailable`). It is never served by the tool jail instead: a fallback
 that looks like the new path would make the switch unfalsifiable.
@@ -142,8 +157,8 @@ share is two to three orders of magnitude smaller, inside the ~1 MB D6 estimated
   its thread and its slot. The S4 driver must give `stream` an I/O deadline
   (or end it on `cancel`), so a dead box host surfaces as an unknown outcome
   instead of a slot leak.
-- **Two tool routes during the cutover.** While the switch is off the engine
-  route serves the four tools; while it is on, the box does. No turn ever has
+- **Two tool routes during the cutover.** While an account is on `engine` the engine
+  route serves the four tools; while it is on `thin`, the box does. No turn ever has
   both.
 
 ## Appendix R. Cross-family refute (gpt-6-astra), three rounds, cap reached

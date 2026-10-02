@@ -1,10 +1,11 @@
 """The thin loop for served chat, and the switch that selects it.
 
-``TINYASSETS_AGENT_LOOP=thin`` routes an HTTP-protocol chat turn through the
+The owner's account setting ``agent_loop=thin`` routes an HTTP chat turn through the
 thin loop: the same :class:`AgentTurnCoordinator` and journal, with its tools
 opened by :func:`~.tool_session.open_loop_tools` -- box tools on a handle bound
-at turn start, owner reads in the loop, the rest on the engine route. Unset, or any
-other value, keeps today's path. Native (CLI) turns are untouched either way:
+at turn start, owner reads in the loop, the rest on the engine route. Accounts
+default to ``engine``; unresolved owners keep today's path. Native (CLI) turns
+are untouched either way:
 command adapters and file-OAuth CLIs keep running as CLIs (D6).
 
 The switch is a temporary rollout aid: once the thin loop is proven it becomes
@@ -17,22 +18,29 @@ jail instead.
 
 from __future__ import annotations
 
-import os
 import threading
 from typing import Any
 
 from tinyassets.agent_loop.box_tools import BOX_ROOT, BoxExecutor, BoxTools
 from tinyassets.agent_loop.owner_reads import OWNER_READ_TOOLS
 from tinyassets.agent_loop.tool_session import open_loop_tools
+from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.interactive_http_agent import ServedChatAgentAdapter
+from tinyassets.provider_assignment import check_served_agent_tool_authority
 from tinyassets.served_tools import granted_tools
-
-ENV_SWITCH = "TINYASSETS_AGENT_LOOP"
-THIN = "thin"
+from tinyassets.storage.account_agent_loop import account_agent_loop
 
 
-def thin_loop_selected() -> bool:
-    return (os.environ.get(ENV_SWITCH) or "").strip().lower() == THIN
+def thin_loop_selected(universe_context) -> bool:
+    try:
+        owner = check_served_agent_tool_authority(universe_context)
+    except (PermissionError, ProviderAuthorityHeldError):
+        return False
+    if not owner:
+        return False
+    return account_agent_loop(
+        universe_context.universe_dir.parent, owner_user_id=owner,
+    ) == "thin"
 
 
 _box_lock = threading.Lock()

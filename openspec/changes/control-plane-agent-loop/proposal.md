@@ -34,9 +34,10 @@ handle bound at turn start; no model credential ever enters the box.
   today.
 - `AgentTurnCoordinator` opens its tools through the adapter when the adapter
   provides them and passes the `op_id`; the journal is unchanged.
-- Opt-in switch `TINYASSETS_AGENT_LOOP=thin`. Unset, every path is today's.
-  The switch is a temporary rollout aid, removed once the thin loop is
-  proven (`tasks.md` 3.4): one code path for every account.
+- Per-account owner setting `agent_loop`, defaulting to `engine`. The harness
+  owner flips the founder's account to `thin` first through the maintainer
+  script on the production data root, then reads it back to verify. Other
+  accounts follow once proven. Task 3.4 removes the setting and engine path.
 - `scripts/measure_agent_loop_memory.py`: resident memory per waiting turn,
   500 concurrent turns against a mock SSE server.
 
@@ -51,7 +52,8 @@ engine route for the four tools in production, the live proof and spec sync.
   owner the coordinator already checked; owner reads re-check founder home and
   run under a read-only identity. A granted box tool with no box provider is
   refused before the first inference, never served by the tool jail instead.
-- Storage: none. The journal schema is untouched.
+- Storage: typed `account_agent_loop` table in the data root database, keyed by
+  `owner_user_id` and swept with account deletion. The journal is untouched.
 - Public MCP surface: unchanged. `history`/`activity` exist only inside the
   thin loop's turn, not on the connector or the engine route.
-- Rollback: unset the switch.
+- Rollback: the maintainer script sets the affected account back to `engine`.
