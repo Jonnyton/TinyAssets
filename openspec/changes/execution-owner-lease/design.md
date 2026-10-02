@@ -147,6 +147,16 @@ Its end decrements the count. The end is settled terminal, cancelled, or reconci
 
 The deploy's in-flight probe (phase 1) becomes, per key, `open_executions`. Seats remain as concurrency limits only.
 
+### D5a. State shared across command centers never lives in owner memory; frontends route by command center
+These are openshell-spike's conditions for per-command-center ownership, from the #4263 D11 amendment (61d124eb on spec/target-architecture-amend-1).
+
+**Shared state stays in shared stores.** During a handover, one account's command centers can sit in two owner processes. Anything counted per account or per host therefore stays in a shared store, written under `BEGIN IMMEDIATE`, and is never cached in a process:
+- **Seats.** They live in `.account_seats.db`, already shared, with per-account counting and leases.
+- **Host-capacity admission.** This is boxhostd's single queue in S4.
+- **Meter rows.** They are append-only and owner-fenced per command center, and aggregated per account.
+
+**Frontends route by command center.** Each turn start and cancel goes to that command center's current owner, through a `cc → (owner endpoint, generation)` map kept in the lease store. Queueing is per command center. A cancel always reaches the owner that holds the turn: it is routed by the turn's `owner_generation`, not by the current map entry.
+
 ### D6. Request authority: an explicit, accepted trust boundary plus owner-side resolution
 **The trust boundary is accepted, and named.** The frontend is the platform's authentication authority, as the monolith is today. A compromised frontend can assert any user. That is no wider than a compromised monolith, which can already forge process-local authority. It is still a real concentration of trust, recorded as such (round-1 finding 2).
 
