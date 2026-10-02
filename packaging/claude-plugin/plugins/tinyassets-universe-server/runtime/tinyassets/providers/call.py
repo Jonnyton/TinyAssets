@@ -102,10 +102,22 @@ def make_interactive_agent_turn(*, prompt, system, universe_context, config):
     if _force_mock or _real_router is None:
         raise ProviderAuthorityHeldError("interactive agent requires a real provider router")
     _register_open_providers_for(universe_context)
+    adapter = None
+    if thin_loop_selected():
+        from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter
+
+        adapter = ThinLoopChatAdapter()
     return InteractiveHttpAgentTurn(
         router=_real_router, prompt=prompt, system=system,
-        universe_context=universe_context, config=config,
+        universe_context=universe_context, config=config, adapter=adapter,
     )
+
+
+def thin_loop_selected() -> bool:
+    """Whether chat turns run on the thin loop (``tinyassets.agent_loop``)."""
+    from tinyassets.agent_loop.served_chat import thin_loop_selected as selected
+
+    return selected()
 
 
 def call_interactive_agent_turn(turn, *, response_observer=None) -> str:
@@ -113,7 +125,15 @@ def call_interactive_agent_turn(turn, *, response_observer=None) -> str:
     import asyncio
 
     global _last_provider
-    result = asyncio.run(turn.run())
+    from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter
+
+    if isinstance(getattr(turn, "adapter", None), ThinLoopChatAdapter):
+        # A task on the execution owner's loop, not an event loop of its own.
+        from tinyassets.agent_loop.execution_owner import execution_owner
+
+        result = execution_owner().run(turn.run())
+    else:
+        result = asyncio.run(turn.run())
     _last_provider = result.provider
     if response_observer is not None:
         try:

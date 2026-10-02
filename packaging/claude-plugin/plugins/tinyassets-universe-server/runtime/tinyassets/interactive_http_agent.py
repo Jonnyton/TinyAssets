@@ -82,12 +82,13 @@ class ServedChatAgentAdapter:
 class InteractiveHttpAgentTurn(AgentTurnCoordinator):
     """Compatibility entry point for the ordinary served-chat provider bridge."""
 
-    def __init__(self, *, router, prompt, system, universe_context, config):
+    def __init__(self, *, router, prompt, system, universe_context, config, adapter=None):
         from tinyassets.turn_interrupt import current
 
         # The served handler registered this turn under its verified caller;
         # only that caller's stop request can reach it (tinyassets/turn_interrupt).
         super().__init__(
-            adapter=ServedChatAgentAdapter(), router=router, prompt=prompt, system=system,
-            universe_context=universe_context, config=config, interrupt=current(),
+            adapter=adapter or ServedChatAgentAdapter(), router=router, prompt=prompt,
+            system=system, universe_context=universe_context, config=config,
+            interrupt=current(),
         )
