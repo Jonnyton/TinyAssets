@@ -24,12 +24,14 @@ from tinyassets.work_targets import WorkTarget
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
-    """Each test starts with an empty registry, and leaves the one it found.
+    """Each test starts with an empty registry, and the process gets its
+    registry BACK afterwards.
 
-    A bare reset on teardown left every later test in the same process with no
-    producers: the fantasy domain registers its producers once, at import, so
-    ``test_work_targets``'s authorial review then selected nothing whenever it
-    ran after this file (CI shard reshuffle on #4282, 2026-10-02).
+    Resetting to empty at teardown (as this used to) left every later test in
+    the process with no producers at all. The authorial phase reads the live
+    registry, so test_work_targets'
+    test_authorial_review_returns_one_target_and_alternates then selected
+    nothing -- on two unrelated PRs' affected-tests runs, 2026-10-02.
     """
     import tinyassets.producers as producers
 
