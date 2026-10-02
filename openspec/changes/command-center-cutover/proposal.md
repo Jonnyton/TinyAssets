@@ -17,7 +17,14 @@ decisions: D6 (code), D7 (storage safety contract), D10 (one cutover), D11
 ## What Changes
 
 One image, one freeze window, and one locked, resumable migration at container
-start. Phases run in this order:
+start. Storage moves **once**, straight into the target on-disk layout agreed
+with `target-architecture` (#4263; design E6):
+
+- `cc-<ulid>/` holds user content and becomes the future box volume.
+- `.platform/cc-<ulid>/` holds platform state, daemon-only.
+- `.platform/accounts/` is new and holds per-account state.
+
+Phases run in this order:
 
 1. **Names.** Tables, columns, values, `CHECK` literals, marker files,
    serialized keys, checkpoints, LanceDB and JSON. Also the stored

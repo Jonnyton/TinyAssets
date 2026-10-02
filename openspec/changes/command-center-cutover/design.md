@@ -86,3 +86,46 @@ visible text. It also checks two more things:
 
 It lands with or after notify-prompt's app-header fix, which removes the one
 known place the raw id shows today.
+
+## E6. The target on-disk layout: storage moves once
+
+*Agreed with openshell-spike on 2026-10-02 and written as the shared text in
+`target-architecture` design §"Target on-disk layout (agreed with
+command-center-cutover)" (#4263). The founder's rule: "do things correct the
+first time". This cutover moves storage straight into the target layout, so
+the later sealed-box slice is an image build, not a second data migration.*
+
+**One rule decides every item.** Anything the daemon *trusts* (authority,
+identity, owner settings, records) is **platform** state. Anything the person
+or their agent may write is **user content**, which the daemon treats as
+untrusted.
+
+Under `data_dir()`:
+
+| Path | Holds | Mounted into the jail/box |
+|---|---|---|
+| `cc-<ulid>/` | User content: brain files (identity, founder, origin, body, orgchart, projects, goals, index, log, voice, `AGENTS.md`), harness dirs (skills, prompts, extensions, workflows, bin, notes, wiki), upload bytes (verbatim, Hard Rule 9), run output files, permanent workspaces, anything the agent creates | Yes. It is the future box volume (`/cc`) |
+| `.platform/cc-<ulid>/` | Per-command-center platform state: the credential vault and file-OAuth CLI credentials (`.credentials/`); the per-home DBs (runs, consent, usage, attention, conversation custody and journals, checkpoints, `outbound.db`, `knowledge.db`, `story.db`, `lancedb`); rules, auto-review, activity, pending effects, proposals, import quarantine, browser profile; the `.command_center_id` marker, lease/seat/slot/lock/stamp files, worker-supervisor state and the egress proxy socket (today's `.universe-sidecars/<id>/` folds in here); upload custody records; and the owner-door files `soul.md` and `config.yaml` | Never. The agent gets a read-only projection of `soul.md` and `config.yaml`, refreshed at wake and never read back |
+| `.platform/accounts/<account_id>/` | Per-account platform state: storage allocation ledger, compute-hour meter, seats. Created empty by the cutover | Never |
+| root DBs (`.tinyassets.db`, `.runs.db`, `.langgraph_runs.db`, ...) | Unchanged location; tables and columns renamed (D7) | Never |
+
+**Answers that set the split:**
+
+- **Permanent workspaces** are user content.
+- **Conversation history** is platform state; the agent sees it only through
+  read-only projections.
+- **Run output files** are user content, while run records, receipts and
+  checkpoints are platform state.
+
+**One resolver** builds every path: `command_center_dir(id)`,
+`platform_dir(id)` and `account_platform_dir(account_id)`. A test fails on
+any hand-built path (D11).
+
+**What this adds to the migration.** Phase 1 (names) also *moves* each item
+to its target place. The move is a same-filesystem rename, made atomic per
+item, with progress recorded. The inventory (E1) classifies every entry of
+every home into one of the four rows above. An entry it cannot classify stops
+the run, so nothing is guessed into the box.
+
+Once this lands, target-architecture's S2 ("platform state out of the home
+dir") is delivered by this cutover.

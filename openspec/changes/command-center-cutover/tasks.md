@@ -3,11 +3,15 @@
 Prerequisite: C4a (#4234) is in production for at least one day.
 
 - [ ] 1. `scripts/command_center_inventory.py` (read-only, E1), with fixture
-      tests. Attach a production-copy report.
+      tests. It classifies every home entry by the E6 layout, and an entry it
+      cannot classify fails the run. Attach a production-copy report.
 - [ ] 2. Codemod `scripts/rename_command_center.py`: identifiers, modules, env
       vars and the plugin id. Deterministic, with a non-mechanical report.
 - [ ] 3. Migration phase 1 (names), including stored branch fields,
-      custom-UI bundle bridge keys, and default-definition re-points.
+      custom-UI bundle bridge keys, and default-definition re-points. Each
+      home entry moves to its target place (E6): user content in
+      `cc-<ulid>/`, platform state in `.platform/cc-<ulid>/`, and an empty
+      `.platform/accounts/`. One resolver builds every path.
 - [ ] 4. Migration phase 2 (ids, `u-` to `cc-`), including derived
       identities and folders.
 - [ ] 5. Phase 3 verification: zero operational old names and ids, decoded
