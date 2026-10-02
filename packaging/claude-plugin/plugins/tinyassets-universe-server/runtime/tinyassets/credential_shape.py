@@ -70,6 +70,12 @@ word, which is the bug. Conversely an opaque identifier that is not secret -- a
 git sha, a UUID, a ULID, a 16-digit number -- is still refused, because by shape
 it is key material; the refusal says to put it in words, which is answerable.
 
+An ISO-8601 date-time IS taken out before a run is judged (2026-10-01): its
+``T`` glued two digit groups into a part that was neither a number nor a word,
+so every timestamp in a stored row read as key material. Only a delimited
+stamp with valid fields is taken out (``_ISO_STAMP_RE``), and what sits beside
+it is still judged on its own length.
+
 Screening the shapes above is what was asked for (founder, 2026-09-30: "keep
 refusing real secrets: sk-…, long high-entropy tokens, URLs with secret
 path/query segments").
@@ -211,6 +217,28 @@ _SEPARATOR_RE = re.compile(r"[-_./\\|'’:@+,;]+")
 #: so ``51ABCDEFSECRET`` cannot claim to be one.
 _SHORT_SUFFIXED_RE = re.compile(r"^[A-Za-z]{1,4}\d{1,4}$")
 
+#: An ISO-8601 date-time, extended (``2026-10-01T12:00:00.5+00:00``) or basic
+#: (``20261001T120000Z``), as written by every log line, board, file name and
+#: stored row. Its ``T`` glues a digit group to a digit group, so the part
+#: ``01T12`` was neither a number nor a word and the whole stamp read as an
+#: opaque run (2026-10-01: every timestamp in a published workflow row was
+#: "a credential"). Matched only DELIMITED -- never glued to a letter or digit,
+#: and atomically, so a stamp glued on the right cannot backtrack to a shorter
+#: stamp and shed the glued part -- and only with valid calendar and clock fields (`_valid_stamp`), so a key
+#: cannot claim to be one, and a key with a stamp glued to it is still judged
+#: whole. What a stamp can carry is digits: at most the fraction's nine plus
+#: the clock, no more than the fifteen-digit number `_MAX_DIGIT_RUN` already
+#: lets through.
+_ISO_STAMP_RE = re.compile(
+    r"(?<![0-9A-Za-z])(?>"
+    r"(?:(?P<y>\d{4})-(?P<mo>\d{2})-(?P<d>\d{2})[T ](?P<h>\d{2})(?P<sep>[:-])(?P<mi>\d{2})"
+    r"(?:(?P=sep)(?P<s>\d{2}))?"
+    r"|(?P<by>\d{4})(?P<bmo>\d{2})(?P<bd>\d{2})T(?P<bh>\d{2})(?P<bmi>\d{2})(?P<bs>\d{2})?)"
+    r"(?:[.,]\d{1,9})?"
+    r"(?:Z|[+-](?P<oh>\d{2})(?::?(?P<om>\d{2}))?)?"
+    r")(?![0-9A-Za-z])"
+)
+
 #: One CamelCase segment. A word's worth of letters, not a fragment.
 _CAMEL_SPLIT_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])")
 _MIN_CAMEL_SEGMENT_CHARS = 3
@@ -328,6 +356,11 @@ def _slot_shape(value: str) -> str | None:
 
 def _opaque_shape(token: str, *, minimum: int) -> str | None:
     """Judge one run: encoding, then word shape, then entropy."""
+    unstamped = _without_stamps(token)
+    if unstamped != token:
+        # Judge what is left once each delimited date-time is taken out: a stamp
+        # is writing, and whatever sits beside it is judged on its own length.
+        return _opaque_shape(unstamped, minimum=minimum)
     core = token.strip("._-")
     if not core:
         return None
@@ -354,6 +387,28 @@ def _opaque_shape(token: str, *, minimum: int) -> str | None:
     if _entropy_bits_per_char(core) < _MIN_ENTROPY_BITS:
         return None
     return "opaque_high_entropy"
+
+
+def _valid_stamp(match: re.Match[str]) -> bool:
+    """Real calendar and clock fields: month 1-12, day 1-31, hour 0-23, minute
+    0-59, second 0-60 (a leap second), offset hour 0-14."""
+    g = match.groupdict()
+
+    def num(*keys: str) -> int | None:
+        value = next((g[k] for k in keys if g.get(k) is not None), None)
+        return int(value) if value is not None else None
+
+    month, day = num("mo", "bmo"), num("d", "bd")
+    hour, minute, second = num("h", "bh"), num("mi", "bmi"), num("s", "bs")
+    offset = num("oh")
+    return (month is not None and 1 <= month <= 12 and day is not None and 1 <= day <= 31
+            and hour is not None and hour <= 23 and minute is not None and minute <= 59
+            and (second is None or second <= 60) and (offset is None or offset <= 14))
+
+
+def _without_stamps(token: str) -> str:
+    """``token`` with every valid, delimited ISO-8601 date-time replaced by ``-``."""
+    return _ISO_STAMP_RE.sub(lambda m: "-" if _valid_stamp(m) else m.group(0), token)
 
 
 def _word_shaped(core: str) -> bool:
