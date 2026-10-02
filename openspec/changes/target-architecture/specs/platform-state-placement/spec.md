@@ -2,16 +2,22 @@
 
 ### Requirement: Platform state lives outside every agent environment, in the agreed layout
 
-Every platform-owned record SHALL live under the cell's `.platform/` root,
-resolved only through the platform path resolver. Per-command-center state
-SHALL live under `.platform/cc-<ulid>/`. That covers the credential vault and
-CLI credentials; the run, consent, usage, attention, conversation and session
-stores; rules; auto-review results; activity records; pending effects;
-proposals; import quarantine; the browser profile; the id marker; lease, seat,
-slot, lock and stamp state; upload custody records; and the owner-door files
-`soul.md` and `config.yaml`. Per-account state SHALL live under
-`.platform/accounts/<account_id>/`. User content SHALL live under
-`cc-<ulid>/`. No box, jail, extension process or browser sandbox SHALL mount
+Every per-command-center and per-account platform record SHALL live under the
+cell's `.platform/` root, resolved only through the platform path resolver.
+The shared root databases keep their location.
+
+Per-command-center state SHALL live under `.platform/cc-<ulid>/`. It covers:
+the trusted policy files `soul.edit.md` and `dispatcher_config.yaml`; the
+credential vault and CLI credentials; the run, consent, usage, attention,
+conversation and session stores; rules; auto-review results; activity records;
+pending effects; proposals; import quarantine; the browser profile; the id
+marker; lease, seat, slot, lock and stamp state; and upload custody records.
+
+Per-account state SHALL live under `.platform/accounts/<account_id>/`.
+
+User content, including the agent-editable `soul.md`, `soul_versions/` and
+`config.yaml`, SHALL live under `cc-<ulid>/`, and the daemon SHALL read it as
+untrusted. No box, jail, extension process or browser sandbox SHALL mount
 or reach `.platform/`. The platform SHALL refuse to open a platform store found
 inside user content.
 

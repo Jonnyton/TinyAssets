@@ -61,8 +61,11 @@ affected. New box storage SHALL be fresh, never-reused space that reads as
 zeros. The box host SHALL keep a durable reservation ledger covering every
 box's bound plus its checkpoint and runtime space. It SHALL refuse to grow a
 bound past the host's free-space floor. Grows SHALL be idempotent by operation
-id and reconciled on startup. An account's storage usage SHALL count its boxes'
-used bytes plus its user-attributable platform bytes, not the bounds. At the
+id and reconciled on startup. An account's storage usage SHALL count logical bytes as
+the account storage quota defines them: file sizes, hard links counted once,
+runtime and scratch excluded. It covers its boxes' content plus its
+user-attributable platform bytes, never the bounds or filesystem block usage.
+A Firecracker box's bound SHALL be grown only while its image is unmounted. At the
 quota, new user-driven writes SHALL be refused visibly with the inline Upgrade
 link, and bounds SHALL stop growing.
 
@@ -111,10 +114,17 @@ per-box connection cap.
 Account deletion SHALL destroy the box of every command center that the
 deletion set deletes, removing its image, its checkpoints and its backup set.
 Command centers that survive the person SHALL keep their boxes under the
-opaque-fingerprint owner. Each account's backups SHALL be encrypted under a
-per-account key, which deletion SHALL destroy. Every restore SHALL consult a
+opaque-fingerprint owner. Each command center's backups SHALL be encrypted
+under its own data key, wrapped by its owning account's key. Before the
+deleted account's key is destroyed, every surviving command center's data key
+SHALL be re-wrapped under its new custody, and a backup under that custody
+SHALL be verified. The deleted command centers' data keys SHALL be destroyed. Every restore SHALL consult a
 tombstone list, and SHALL NOT bring back a deleted account. Deletion SHALL
 complete only when every destroy receipt and the key destruction are recorded.
+
+#### Scenario: A surviving command center stays recoverable
+- **WHEN** an account is deleted while one of its non-home command centers survives, and that command center's primary disk is later lost
+- **THEN** the command center restores from a backup readable under its new custody
 
 #### Scenario: An old backup does not resurrect a deleted account
 - **WHEN** a restore runs from a backup taken before an account was deleted

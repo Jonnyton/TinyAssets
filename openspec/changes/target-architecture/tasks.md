@@ -20,8 +20,8 @@ paid resource is created. Dependencies are in `design.md`.
       droplet $12–24/mo, Cloudflare LB ~$5/mo. Verify: drill green from
       off-region; promotion drill ≤5 min after detection.
 - [ ] S2 Platform state out of the universe directory into the D8a layout
-      (`PlatformStatePaths`, §4.16, concern #4258). The moves are delivered by
-      `command-center-cutover` (#4262) if it lands first; S2 then keeps the
+      (`PlatformStatePaths`, §4.16, concern #4258). **Moves delivered by
+      `command-center-cutover` (#4262, design E6)**; S2 keeps only the
       refusal, oracle proof and deletion-set tasks. Verify: the three #4258 reproductions fail in the
       Linux oracle; no jail mounts the platform root.
 - [ ] S8 One execution owner under a generation-fenced lease (turn journal,
@@ -52,8 +52,9 @@ paid resource is created. Dependencies are in `design.md`.
 - [ ] S6 Credential broker extension (sole vault-key holder, in-box
       endpoints for API-key CLIs, file-OAuth copy-back, rotation), per-process
       secret scope, owner-scoped Claude subscription gate (default off).
-      Depends on S4. Verify: no credential in the loop or any box process
-      except a file-OAuth CLI's own token in its owner's box during its run.
+      Depends on S4, S1 (key escrow). Includes per-command-center DEKs and the plaintext-vault
+      migration. Verify: no credential in the loop or any box process except a
+      file-OAuth CLI's own token in its owner's box during its run.
 - [ ] S7 Thin agent loop in the control plane (HTTP protocols, box handle bound
       at turn start, CLI-in-box only where a credential needs it). Depends on
       S4, S6, S8. Verify: live rendered conversation (`ui-test`); waiting-turn
@@ -73,10 +74,10 @@ paid resource is created. Dependencies are in `design.md`.
       Postgres ($15.15–30.30/mo; self-hosted $0). Verify: a stale-generation
       request is refused, a duplicate webhook runs once, a lost-ack outbox
       delivery applies once.
-- [ ] S11 Cutover from shared `/data/<universe>` to sealed boxes, in the
-      `command-center-cutover` window if open: derived inventory, locked
+- [ ] S11 Cutover from the D8a user-content folders to sealed boxes: derived inventory, locked
       verified run, flip, rollback rehearsal, export and deletion through the
       box, retire bwrap jails and host-path drivers. Depends on the cutover
-      (#4262) or S2, plus S1, S3, S4/S5 (per S0's decision), S6, S7, S8, S9. Verify: every command center serves from its box; public canary
+      (#4262) or S2, plus S1, S3, S4/S5 (per S0's decision), S6, S7, S8, S9,
+      S10. Runs in its own declared freeze window. Verify: every command center serves from its box; public canary
       `--assert-handles` and a rendered conversation green; DR drill restores
       boxes; then sync specs and archive this change.

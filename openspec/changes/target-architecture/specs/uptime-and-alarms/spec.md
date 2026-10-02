@@ -5,18 +5,31 @@
 The control plane SHALL run exactly one execution owner at a time, under a
 lease fenced by generation. The execution owner covers the agent loop, the turn
 journal writer and its reconciliation, the scheduler, triggers, the outbox
-pump, metering and the storage allocator. Every owner-side mutation SHALL check
-the lease generation. Reconciliation SHALL run only after the lease is
-acquired. Frontends SHALL hold no turn ownership, and SHALL be replaced
+pump, metering and the storage allocator. Every owner-side mutation SHALL re-check
+the lease generation inside its own transaction. Box and broker effects SHALL
+carry the generation and SHALL be refused below the highest generation seen.
+Every turn row SHALL record the generation that created it. Reconciliation
+SHALL run only after the lease is acquired, and SHALL settle only rows of older
+generations. Frontends SHALL hold no turn ownership, and SHALL be replaced
 blue-green. While the owner hands over, frontends SHALL queue requests rather
 than fail them. A handover SHALL drain the old owner first: it stops admitting,
 finishes in-flight turns up to the drain bound, journals the rest, cancels
-outstanding box executions and releases the lease. Schema-changing cutovers
+outstanding box executions and releases the lease. A turn still running at the
+bound SHALL reconcile into a visible held state, and SHALL NOT be replayed. A
+frontend-only deploy SHALL interrupt no turn. Schema-changing cutovers
 SHALL be declared maintenance windows under the cutover exclusion protocol.
 
-#### Scenario: A deploy during a chat turn
-- **WHEN** a deploy runs while a user's turn is streaming
-- **THEN** the turn either finishes on the old owner or is journaled and reconciled after the handover, no live turn is settled as interrupted, and no request fails
+#### Scenario: A frontend deploy during a chat turn
+- **WHEN** only the frontends are deployed while a user's turn is streaming
+- **THEN** the old frontend keeps the stream until it ends, the turn completes, and no request fails
+
+#### Scenario: An owner handover with a turn longer than the drain bound
+- **WHEN** the execution owner is replaced while a turn runs past the drain bound
+- **THEN** that turn reconciles into a held state the user can see and resume, it is not replayed, and new requests queue instead of failing
+
+#### Scenario: A standby successor does not misjudge live turns
+- **WHEN** a successor owner starts in standby, the old owner then creates a turn, and the old owner dies
+- **THEN** the successor, after acquiring the lease at a higher generation, settles that turn as interrupted, because its generation is older
 
 #### Scenario: A stalled old owner cannot write
 - **WHEN** an old owner resumes after the new owner acquired the lease at a higher generation

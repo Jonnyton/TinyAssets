@@ -25,7 +25,10 @@ The loop SHALL make model and API calls through the credential broker, with
 each request bound to its exact owner, connection and grant. The broker SHALL
 perform the upstream call itself. A CLI in a box that uses an API-key
 credential SHALL reach its provider through a broker endpoint inside that box,
-with no key in its environment. The loop process SHALL hold no model or API
+with no key in its environment. That endpoint SHALL derive its principal from
+the authenticated box identity, never from the caller. It SHALL check the exact
+active grant, owner, command center, connection and revocation on every
+request, exactly as the loop's path does. The loop process SHALL hold no model or API
 credential. So SHALL every box process, with one exception: a CLI that must
 hold and refresh its own token file, during its run, inside its owner's box.
 
@@ -45,6 +48,14 @@ which SHALL default to off.
 #### Scenario: A subscription stays with its owner
 - **WHEN** any account other than the subscription's owner asks a turn to use that Claude subscription
 - **THEN** the turn refuses to use it
+
+#### Scenario: A box cannot use another account's connection
+- **WHEN** a CLI in account A's box sends a request naming a connection id that belongs to account B
+- **THEN** the broker refuses it, and no upstream call is made
+
+#### Scenario: Two launches never rotate one file-OAuth token concurrently
+- **WHEN** two runs of one command center each launch the same file-OAuth CLI
+- **THEN** the second waits for the first's credential lease, and a copy-back whose generation is stale is discarded
 
 #### Scenario: A file-OAuth CLI's credential reaches only its own box
 - **WHEN** a command center connects Codex through its own login and runs it
