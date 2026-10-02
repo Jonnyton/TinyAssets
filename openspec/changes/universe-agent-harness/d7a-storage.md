@@ -22,3 +22,11 @@ an explicitly supplied different home. POST requires same-origin JSON.
 Agent tool history is deferred: jailed writes and later workspace promotion do
 not currently provide a single atomic snapshot/write hook. `MEMORY.md` joins
 the brain-file mount list so owner memory is available to the agent.
+
+Verification (2026-10-02): the six requested/added Windows test files passed
+172 tests, with two symlink-privilege skips. The Linux oracle passed the 25
+memory/history tests present at its snapshot, including both symlink cases,
+without skips; the subsequently added write-failure rollback test also passed
+on Windows. Ruff and plugin build/import checks passed. The post-app-commit
+brand render left `generated-assets.json` unchanged; other renderer changes
+were reverted. Local commits only; no live proof or deployment was attempted.
