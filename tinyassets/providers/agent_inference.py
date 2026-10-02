@@ -61,7 +61,11 @@ class AgentInferenceRequest:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        return path, contract.constrain_inference(body, selection.cost_caps)
+        # Streamed, so the broker can judge the reply by inactivity, never by
+        # length. Added after the contract's own constraint (which knows only the
+        # canonical fields) and before anything hashes or measures the body, so
+        # the journal records the request exactly as sent.
+        return path, {**contract.constrain_inference(body, selection.cost_caps), "stream": True}
 
 
 def _encoded(prompt, system, config) -> bytes:

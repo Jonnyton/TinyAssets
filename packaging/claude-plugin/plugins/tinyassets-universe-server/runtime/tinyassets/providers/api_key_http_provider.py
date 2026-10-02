@@ -347,12 +347,9 @@ class ApiKeyHttpProvider(BaseProvider):
         # broker applies it from the connection's auth_scheme (x-api-key for Claude).
         from tinyassets.providers.protocol_encoders import static_headers_for
 
-        if agent_request is not None:
-            # Every agent wire is the chat_messages dialect, whose servers stream
-            # on request; the decoder folds events and plain JSON alike, so a
-            # server that ignores the flag still answers. Streaming is what lets
-            # the broker judge the reply by inactivity instead of total time.
-            body = {**body, "stream": True}
+        # An agent body already asks to stream (``AgentInferenceRequest.encode``):
+        # every agent wire is chat_messages, whose servers stream on request, and
+        # the decoder folds events and plain JSON alike.
         wire_request: dict[str, Any] = {"url": f"https://{host}{path}", "body": body}
         # Ask for as long as the turn itself may still run. The broker grants it
         # only because this connection is a model source, and never beyond its

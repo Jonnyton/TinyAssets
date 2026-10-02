@@ -632,3 +632,34 @@ def test_partial_text_survives_the_stored_record_round_trip(tmp_path):
     row = store.load_recent_readonly(tmp_path, "principal:a")[-1]
     assert row.failure == record and row.failure.requests == 7
     assert row.failure.partial_text.startswith("...")
+
+
+
+def test_a_worst_case_record_stays_readable():
+    """Codex: every field at its bound used to pass 4096 and drop the record."""
+    from tinyassets.conversation_failure import read_turn_failure, turn_failure
+
+    record = turn_failure("provider_stalled", stage="model_reply", effects="some",
+                          ref="a" * 64, requests=10000, provider_detail=chr(0x1F600) * 200,
+                          partial_text=chr(0x1F600) * 1500)
+    stored = json.dumps(record_dict(record))
+    assert len(stored) <= 4096
+    assert read_turn_failure("platform", stored) == record
+
+
+def record_dict(record):
+    from tinyassets.conversation_failure import normalize_turn_failure
+
+    return normalize_turn_failure(record)
+
+
+def test_the_journal_records_the_request_exactly_as_sent(agent):
+    """Codex: ``stream`` was added after hashing, so the digest named another request."""
+    import hashlib
+
+    integration.run(agent)
+    rounds = agent.latest().rounds
+    for (_verb, document), previous in zip(agent.wires, rounds):
+        assert document["body"]["stream"] is True
+        sent = "sha256:" + hashlib.sha256(json.dumps(document["body"]).encode()).hexdigest()
+        assert previous.candidate.request_digest == sent

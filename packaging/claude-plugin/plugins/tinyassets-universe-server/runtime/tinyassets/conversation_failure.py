@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 STAGES = ("before_send", "connection", "model_request", "model_reply", "tool", "platform")
 EFFECTS = ("none", "some", "unknown")
@@ -261,12 +261,34 @@ def clean_partial(value: object) -> str:
     return line
 
 
+#: ``read_turn_failure`` drops a stored record longer than this, so a record is
+#: never built longer: the partial text gives way first.
+RECORD_LIMIT = 4096
+
+
 def turn_failure(
     code: object, *, stage: object = None, effects: object = "unknown",
     provider_detail: object = "", ref: object = "", retry_after_s: object = None,
     requests: object = None, partial_text: object = "",
 ) -> TurnFailure:
     """Build a record; any field outside its closed set degrades, never raises."""
+    record = _turn_failure(
+        code, stage=stage, effects=effects, provider_detail=provider_detail, ref=ref,
+        retry_after_s=retry_after_s, requests=requests, partial_text=partial_text,
+    )
+    # Measured as the store writes it (``json.dumps`` of the normalized record).
+    while record.partial_text and len(json.dumps(normalize_turn_failure(record))) > RECORD_LIMIT:
+        text = record.partial_text
+        record = replace(record, partial_text=(
+            "" if len(text) <= 64 else "..." + text[len(text) // 4 + 3:]
+        ))
+    return record
+
+
+def _turn_failure(
+    code: object, *, stage: object, effects: object, provider_detail: object,
+    ref: object, retry_after_s: object, requests: object, partial_text: object,
+) -> TurnFailure:
     return TurnFailure(
         version=1, kind="turn_failed", code=failure_code(code),
         stage=stage if stage in STAGES else None,
