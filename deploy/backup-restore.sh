@@ -20,6 +20,11 @@
 #   BACKUP_VOLUME    Docker volume name (default: tinyassets-data)
 #   DRY_RUN          "1" to skip all mutations
 #   BACKUP_LOG       log file (default: /var/log/tinyassets-backup.log)
+#   ESCROW_FILE      absolute path of a host-key escrow file (scripts/host_key_escrow.py).
+#                    After the data swap, its keys are installed set-once into the
+#                    host env files and checked against the restored archive's
+#                    .escrow-key-hashes manifest: proof the key strings match those
+#                    recorded when the archive was taken. Values are never printed.
 #
 # Exit codes:
 #   0  restore complete (or DRY_RUN=1); caller starts services
@@ -28,6 +33,8 @@
 #   3  remote download failed
 #   4  archive validation, extraction, stop, or swap failed
 #   5  reserved legacy restart failure; never emitted
+#   6  data restored, but the escrowed keys could not be installed or do not
+#      match the restored archive's manifest (do NOT start services)
 
 set -euo pipefail
 
@@ -309,6 +316,41 @@ if ! mv -- "${STAGE_DIR}" "${VOLUME_DIR}"; then
     exit 4
 fi
 STAGE_DIR=""
+
+# ----- 4b. restore the escrowed host keys (optional) ----------------------
+if [[ -n "${ESCROW_FILE:-}" ]]; then
+    script_dir="$(dirname "$(realpath "$0")")"
+    escrow_tool="${script_dir}/../scripts/host_key_escrow.py"
+    env_helper="${script_dir}/install-tinyassets-env.sh"
+    ulimit -c 0
+    if [[ ! -f "${ESCROW_FILE}" || -L "${ESCROW_FILE}" ]] \
+        || [[ "$(stat -c '%U %a' "${ESCROW_FILE}")" != "root 600" ]]; then
+        log "ERROR: ESCROW_FILE must be a regular, non-symlink, root-owned 0600 file"
+        exit 6
+    fi
+    manifest="$(docker volume inspect --format '{{ .Mountpoint }}' "${BACKUP_VOLUME}")/.escrow-key-hashes"
+    # Fail closed: without the archive's manifest there is nothing to check the
+    # escrow against, so nothing is installed (Codex refute).
+    if [[ ! -f "${manifest}" ]]; then
+        log "ERROR: archive has no .escrow-key-hashes manifest; refusing to install unverified keys"
+        exit 6
+    fi
+    # Check BEFORE installing, so a wrong escrow never becomes set-once state.
+    if ! python3 "${escrow_tool}" check-escrow "${manifest}" < "${ESCROW_FILE}"; then
+        log "ERROR: escrow does not match the keys this archive was written under; nothing installed"
+        exit 6
+    fi
+    log "installing escrowed host keys (values are never printed)..."
+    if ! python3 "${escrow_tool}" install "${env_helper}" < "${ESCROW_FILE}"; then
+        log "ERROR: escrowed keys could not be installed; do not start services"
+        exit 6
+    fi
+    if ! python3 "${escrow_tool}" check-manifest "${manifest}"; then
+        log "ERROR: installed keys do not match the archive's manifest; do not start services"
+        exit 6
+    fi
+    log "  installed keys match the archive's key manifest"
+fi
 
 # ----- 5. done — caller verifies, starts, and later removes old data ----
 

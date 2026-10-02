@@ -1,0 +1,78 @@
+name: Verify escrowed keys
+
+# Proves that the host-key escrow in the off-region bucket holds exactly the
+# keys the production host runs with (scripts/host_key_escrow.py,
+# docs/design-notes/2026-10-02-vault-key-escrow.md). The escrow is written by
+# the nightly backup job, as root, on the droplet. No human or agent ever
+# handles a value.
+#
+# Read-only. The comparison runs ON the host: the escrow object is streamed
+# from the bucket into the comparer there, and only per-key verdicts come back
+# (match / MISMATCH / not-in-escrow / not-on-host / *-format-unsupported). No
+# value or hash leaves the droplet or reaches this log.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily at 05:41 UTC, after the 03:00 nightly backup has refreshed the escrow.
+    - cron: '41 5 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+      DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s' "$SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Compare the off-region escrow with the host, on the host
+        run: |
+          set -euo pipefail
+          stage="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" "mktemp -d /tmp/tinyassets-escrow-verify.XXXXXX")"
+          [[ "${stage}" =~ ^/tmp/tinyassets-escrow-verify[.][A-Za-z0-9]+$ ]]
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes scripts/host_key_escrow.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${stage}/"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash -s -- $(printf '%q' "${stage}")" <<'ESCROW_VERIFY'
+          set -euo pipefail
+          stage="$1"
+          trap 'rm -rf -- "${stage}"' EXIT
+          ulimit -c 0
+          read_env() {
+            awk -F= -v k="$1" '$1 == k { v = substr($0, index($0, "=") + 1) } END { print v }' /etc/tinyassets/env
+          }
+          dest="$(read_env BACKUP_OFFREGION_DEST)"
+          if [[ -z "${dest}" ]]; then
+            echo "off-region store is not configured on this host (BACKUP_OFFREGION_DEST unset)"
+            exit 1
+          fi
+          # The same destination backup.sh writes, including its override.
+          escrow_dest="$(read_env BACKUP_ESCROW_DEST)"
+          escrow_dest="${escrow_dest:-${dest%/*}/escrow}"
+          unset_args=()
+          while IFS= read -r name; do
+            case "${name}" in
+              RCLONE_DUMP*|RCLONE_LOG*|RCLONE_VERBOSE*) unset_args+=(-u "${name}") ;;
+            esac
+          done < <(compgen -e)
+          env "${unset_args[@]}" \
+              rclone --log-level ERROR cat "${escrow_dest}/host-keys.env" \
+            | python3 "${stage}/host_key_escrow.py" verify
+          ESCROW_VERIFY
