@@ -509,6 +509,15 @@ class ApiKeyHttpProvider(BaseProvider):
                         item["function"]["name"] for item in agent_request.tools()
                     ),
                 )
+                if (agent_reply.stop == "truncated" and agent_reply.text is None
+                        and not agent_reply.tool_requests):
+                    # "Succeeded with nothing": a cold start, or a reasoning
+                    # model that spent its whole output on thinking. Nothing to
+                    # keep, and the next attempt usually answers.
+                    raise ProviderUnreadableReplyError(
+                        "the model stopped at its output limit before replying "
+                        "(finish_reason length, no content)"
+                    )
                 text = agent_reply.text or ""
                 in_tok, out_tok = agent_reply.input_tokens, agent_reply.output_tokens
             else:

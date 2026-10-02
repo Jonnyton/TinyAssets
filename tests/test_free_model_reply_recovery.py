@@ -64,6 +64,11 @@ STREAM_ERROR = "\n".join([
     "data: [DONE]", "",
 ])
 EMPTY_CHOICES = json.dumps({"model": "m", "choices": []})
+#: 200, finish_reason "length", empty content: a cold start or a reasoning
+#: model that spent max_tokens thinking ("succeeded with nothing").
+EMPTY_LENGTH = json.dumps({"model": "m", "choices": [{
+    "finish_reason": "length", "message": {"role": "assistant", "content": ""},
+}]})
 CUT_TOOL_BATCH = json.dumps({"model": "m", "choices": [{
     "finish_reason": "length",
     "message": {"role": "assistant", "content": None, "tool_calls": [{
@@ -112,8 +117,10 @@ def test_an_in_band_source_error_after_real_work_is_retried_and_the_turn_finishe
     assert len(set(_models(agent))) == 1
 
 
-@pytest.mark.parametrize("body", [EMPTY_CHOICES, CUT_TOOL_BATCH, "", "<html>bad gateway</html>"],
-                         ids=["empty_choices", "length_cut_tool_batch", "empty_body", "not_json"])
+@pytest.mark.parametrize(
+    "body", [EMPTY_CHOICES, CUT_TOOL_BATCH, EMPTY_LENGTH, "", "<html>bad gateway</html>"],
+    ids=["empty_choices", "length_cut_tool_batch", "empty_length", "empty_body", "not_json"],
+)
 def test_an_unreadable_2xx_reply_is_retried_and_its_calls_never_run(agent, body):
     agent.requested_rounds = 2  # the retry asks for the tool; the next answers
     _fail(agent, [1], body)
@@ -472,3 +479,29 @@ def test_the_sources_words_are_scrubbed_whole_before_any_clip(agent):
     record, notice = refusal._record(error.value)
     for text in [a.detail for a in error.value.attempts] + [record.provider_detail, notice]:
         assert "PRIVATE_TOKEN" not in text
+
+
+def test_dense_tool_output_is_not_underestimated():
+    """Codex R2: a 40k base64 result estimated 13.6k tokens against 28.6k real."""
+    import base64
+    import random
+
+    from tinyassets.providers.agent_inference import estimate_tokens
+
+    rng = random.Random(7)
+    blob = base64.b64encode(bytes(rng.getrandbits(8) for _ in range(30000)))[:40000]
+    body = json.dumps({"content": json.dumps({"text": blob.decode()})}).encode()
+    # Measured offline: cl100k 28,803 and o200k 27,414 tokens for this blob.
+    assert estimate_tokens(body) >= 28_803
+    hexed = "".join(rng.choice("0123456789abcdef") for _ in range(40000)).encode()
+    assert estimate_tokens(hexed) >= 22_672  # cl100k, measured offline
+
+
+def test_prose_and_schemas_still_get_most_of_their_window():
+    from tinyassets.providers.agent_inference import estimate_tokens
+
+    prose = json.dumps({"messages": [{"role": "user", "content": "Build me a command "
+                        "center themed on The Office, with a sales board. " * 400}]}).encode()
+    estimate = estimate_tokens(prose)
+    # Never below the measured 3.86-4.07 bytes per token, never back to bytes.
+    assert len(prose) / 3.86 <= estimate <= len(prose) / 2.9

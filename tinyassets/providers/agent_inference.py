@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -62,11 +64,11 @@ class AgentInferenceRequest:
         return path, contract.constrain_inference(body, selection.cost_caps)
 
 
-def input_size(prompt, system, config) -> int:
-    """Conservative byte estimate shared by context checks and reservation."""
+def _encoded(prompt, system, config) -> bytes:
+    """The request exactly as the broker encodes it, every wire field included."""
     request = config.agent_request
     if request is None:
-        return len((f"{system}\n\n{prompt}" if system else prompt).encode("utf-8"))
+        return (f"{system}\n\n{prompt}" if system else prompt).encode("utf-8")
     if type(request) is not AgentInferenceRequest:
         raise PermissionError("invalid internal agent inference request")
     _, body = request.encode(
@@ -77,7 +79,12 @@ def input_size(prompt, system, config) -> int:
         max_tokens=config.max_tokens,
     )
     # Use the broker's ordinary JSON encoding, including every wire field.
-    return len(json.dumps(body).encode("utf-8"))
+    return json.dumps(body).encode("utf-8")
+
+
+def input_size(prompt, system, config) -> int:
+    """Conservative byte estimate shared by context checks and reservation."""
+    return len(_encoded(prompt, system, config))
 
 
 #: Encoded request bytes per token, for fitting a model's WINDOW only. Measured
@@ -87,11 +94,24 @@ def input_size(prompt, system, config) -> int:
 #: raw bytes against the window made a 131k-token model "overflow" at ~37k real
 #: tokens (turn 8dc8ada5). Reservation keeps the byte measure: that is money.
 CONTEXT_BYTES_PER_TOKEN = 3
+#: Long unbroken runs of base64/hex-like characters tokenize far denser than
+#: prose: measured 1.39 characters per token for base64 and 1.76 for hex
+#: (cl100k), so such runs count at 1.25 (Codex, 2026-10-02: a 40k base64 tool
+#: result estimated at 13.6k tokens against 28.6k real).
+DENSE_CHARS_PER_TOKEN = 1.25
+_DENSE_RUN = re.compile(rb"[A-Za-z0-9+/=_-]{64,}")
 
 
 def context_tokens(prompt, system, config) -> int:
     """Conservative token estimate of the encoded request, for the window fit."""
-    return -(-input_size(prompt, system, config) // CONTEXT_BYTES_PER_TOKEN)
+    return estimate_tokens(_encoded(prompt, system, config))
+
+
+def estimate_tokens(data: bytes) -> int:
+    """Tokens a request's encoded bytes may cost, erring high."""
+    dense = sum(len(run) for run in _DENSE_RUN.findall(data))
+    return (-(-(len(data) - dense) // CONTEXT_BYTES_PER_TOKEN)
+            + math.ceil(dense / DENSE_CHARS_PER_TOKEN))
 
 
 def output_for_settlement(response) -> str:
