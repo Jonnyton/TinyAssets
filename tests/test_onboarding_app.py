@@ -231,6 +231,8 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/turn/interrupt", "/app/turn/steer",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
+        # The app's own ES modules (app_modules.py), static and allowlisted.
+        "/app/m/{build}/{name}",
         # The owner door: every read the app renders, complete.
         "/app/api/read", "/app/api/status",
     }

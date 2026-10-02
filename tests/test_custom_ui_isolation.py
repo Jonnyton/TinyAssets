@@ -130,8 +130,12 @@ def test_app_page_grants_frames_but_keeps_nonce_only_script() -> None:
 
     # Deliberately unchanged: even a bug that inserted bundle script into this
     # page would not execute it, because nothing carries the per-request nonce.
-    assert len(app["script-src"]) == 1
-    assert app["script-src"][0].startswith("'nonce-")
+    # The only other entry allowed is the app's own ES-module path
+    # (app_modules.script_source): a path-restricted source, never a bare
+    # origin, 'self' or 'strict-dynamic'.
+    nonce, *rest = app["script-src"]
+    assert nonce.startswith("'nonce-")
+    assert len(rest) <= 1 and all(r.endswith("/app/m/") and "://" in r for r in rest), rest
     assert "'unsafe-inline'" not in app["script-src"]
     assert "'unsafe-eval'" not in app["script-src"]
 
