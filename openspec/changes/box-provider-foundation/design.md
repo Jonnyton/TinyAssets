@@ -23,6 +23,9 @@ bug is fixed.
 
 - **Epochs.** A box's epoch starts at 1. `destroy` bumps it, as re-import will later. A handle with a stale epoch is refused.
 - **Generations.** Every write, remove, import and finished exec bumps the generation. An exec can change files the driver cannot see, so its completion bumps the generation conservatively. `committed_generation` reads this record and never contacts the box.
+- **One box host at a time.** The state directory is owned through an exclusive `flock` held for the host's lifetime. A second host refuses to start while the first is alive, and a crashed host's lock dies with it.
+- **A new host reaps what a crashed one left running.** Each exec records its process group and that leader's kernel start time. At startup, every exec still `running` whose leader is the same process has its whole group killed, before it is marked unknown. Matching the start time means a reused pid is never killed.
+- **Refusals that provably never ran** share one base, `BoxOperationRefused`: `BoxAuthError`, `StaleHandle` and `OpIdReuse`. Callers may treat only this family as "no effect".
 - **Operation outcomes, fenced to the host incarnation.**
   - Each host start takes a new incarnation number and marks every operation still `running` as `unknown_after_restore`.
   - An operation records the incarnation it began under. Its completion is written only if it is still `running` under that same incarnation, so a supervisor surviving from an older host cannot overwrite "unknown" with "done".
@@ -43,7 +46,7 @@ The local driver has no kernel isolation. Construction refuses unless the caller
 
 **Every operation re-authenticates under the box lock.** It checks the owner, the epoch, and that the box is not being destroyed. A destroy marks the box *destroying*, cancels its execs, waits until each supervisor has killed and reaped its process group, removes the files, and bumps the epoch. An operation that authenticated earlier cannot interleave. A replayed `destroy`, with the same `op_id` through the original handle, returns the recorded receipt even though that handle's epoch is now stale.
 
-**Mutation evidence, against the Linux oracle.** I removed each of fifteen guards in turn, and each removal turned its test red:
+**Mutation evidence, against the Linux oracle.** I removed each of eighteen guards in turn, and each removal turned its test red. A run where no tests were selected is not counted as red. The incarnation fence on completion is defence in depth behind the exclusive host lock; a crash kills its supervisors, so no test can provoke it, and it is not counted:
 
 | Guard | Test that goes red without it |
 |---|---|
@@ -52,8 +55,11 @@ The local driver has no kernel isolation. Construction refuses unless the caller
 | `O_NOFOLLOW` on the leaf | planted links are never followed (read, read_many, download, list, stat, write, remove) |
 | op-id replay | a retried write or exec runs once |
 | `killpg` | cancel kills the whole process tree |
-| restart sweep | an old host cannot overwrite unknown with done |
-| incarnation fence on completion | same |
+| restart sweep | a restart reaps what the crashed host left running |
+| survivor reaping | same (a real crash: the first host is a subprocess killed without shutdown) |
+| exclusive host lock | one box host at a time |
+| published create is not a failure | a published create is never reported as failed |
+| partial destroy stales every handle | a failed partial destroy stales every handle and is recorded |
 | stdin on its own thread | stdin a child never reads cannot stall the wall clock |
 | group kill when the leader exits | the exec ends with its leader and takes its group with it |
 | output check after exit | a fast exit over the output limit is still `output_limit` |
@@ -67,6 +73,7 @@ The local driver has no kernel isolation. Construction refuses unless the caller
 
 - **Working directory.** It is opened by descriptor, with no link followed, and handed to the child as `/proc/self/fd/N` through a tiny `sh` shim. It is never re-resolved by name, so swapping the directory for a link after the check changes nothing.
 - **A missing program is an exec result, not a refusal.** The shell exits with 127.
+- **No child is ever left unsupervised.** The exec is registered before spawning. If any bookkeeping fails after the spawn, the process group is killed and reaped, and the failure is recorded. A supervisor that hits an error kills the group before it records completion.
 - **Output.** Stdout and stderr are merged in order. `stream` never yields bytes past the output limit, and an exec that exits fast over the limit is truncated and reported as `output_limit`.
 - **Stdin** is fed by its own thread.
 - **The exec ends when its leader exits.** Whatever else remains in its process group is killed.

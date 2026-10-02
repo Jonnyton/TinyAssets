@@ -42,6 +42,7 @@ __all__ = [
     "BoxError",
     "BoxHandle",
     "BoxNotFound",
+    "BoxOperationRefused",
     "BoxPathError",
     "BoxProvider",
     "BoxUsage",
@@ -77,7 +78,15 @@ class BoxError(OSError):
     """A box operation was refused or failed. Never a silent fallback."""
 
 
-class BoxAuthError(BoxError):
+class BoxOperationRefused(BoxError):
+    """The operation provably never ran: a stale epoch, a foreign handle, or a reused op id.
+
+    Callers may treat ONLY this family as "no effect". Any other error, including a
+    `BoxError` raised after an operation started, is an unknown outcome.
+    """
+
+
+class BoxAuthError(BoxOperationRefused):
     """The handle's account does not own the command center it names."""
 
 
@@ -85,7 +94,7 @@ class BoxBusy(BoxError):
     """The box stayed busy (a running exec or mutation) past the caller's wait bound."""
 
 
-class StaleHandle(BoxError):
+class StaleHandle(BoxOperationRefused):
     """The handle's placement epoch is no longer current (destroyed or re-imported)."""
 
 
@@ -97,7 +106,7 @@ class BoxNotFound(BoxError, FileNotFoundError):
     """The box path names nothing."""
 
 
-class OpIdReuse(BoxError):
+class OpIdReuse(BoxOperationRefused):
     """An operation id was reused for a different operation."""
 
 
@@ -293,3 +302,6 @@ class BoxProvider(Protocol):
     def usage(self, handle: BoxHandle) -> BoxUsage: ...
     def suspend(self, handle: BoxHandle) -> None: ...
     def destroy(self, handle: BoxHandle, op_id: str) -> DestroyReceipt: ...
+
+    # host lifecycle
+    def close(self) -> None: ...

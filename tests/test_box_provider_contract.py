@@ -59,7 +59,9 @@ DRIVERS = {"local": _local}
 def provider(request, tmp_path):
     if not POSIX:
         pytest.skip("box drivers need POSIX openat semantics")
-    return DRIVERS[request.param](tmp_path)
+    driver = DRIVERS[request.param](tmp_path)
+    yield driver
+    driver.close()
 
 
 def _drain(provider, handle, exec_id, timeout=15.0):

@@ -6,6 +6,13 @@ mutation idempotent by operation id.
 
 Three rules:
 
+* **One box host at a time.** The state directory is owned through an exclusive
+  ``flock`` held for the host's whole life. A second host over the same state
+  refuses to start while the first is alive. A crashed host's lock dies with it.
+* **A new host reaps what the old one left running.** Each exec records its
+  process group and that leader's start time. At startup, every exec still
+  ``running`` whose leader is the same process (same start time, so not a reused
+  pid) has its whole group killed. Only then is it marked unknown.
 * **Outcomes are fenced to the host incarnation that started them.** Every time
   the box host starts, it takes a new incarnation number and marks every
   operation still ``running`` as ``unknown_after_restore``. An operation records
@@ -24,15 +31,18 @@ Three rules:
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import json
+import os
+import signal
 import sqlite3
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from tinyassets.boxes.provider import OpIdReuse
+from tinyassets.boxes.provider import BoxError, OpIdReuse
 
 __all__ = ["BoxHostState", "op_digest"]
 
@@ -72,6 +82,17 @@ class BoxHostState:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._pending: dict[str, int] = {}
+        self._owner_fd: int | None = os.open(
+            self._path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600
+        )
+        try:
+            fcntl.flock(self._owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(self._owner_fd)
+            self._owner_fd = None
+            raise BoxError(
+                f"another box host owns {self._path.parent}; one host at a time"
+            ) from None
         with self._conn() as conn:
             for stmt in _SCHEMA:
                 conn.execute(stmt)
@@ -82,10 +103,21 @@ class BoxHostState:
                 " ON CONFLICT(k) DO UPDATE SET v = excluded.v",
                 (self.incarnation,),
             )
-            # A restart: whatever was in flight has an unknown outcome now.
+            # A restart: kill whatever the old host left running, then mark it unknown.
+            for (outcome,) in conn.execute(
+                "SELECT outcome FROM ops WHERE state = 'running' AND kind = 'exec'"
+            ):
+                data = json.loads(outcome) if outcome else {}
+                _reap_survivor(data.get("pgid"), data.get("start_time"))
             conn.execute(
                 "UPDATE ops SET state = 'unknown_after_restore' WHERE state = 'running'"
             )
+
+    def close(self) -> None:
+        """Give up ownership of the state directory (a clean host shutdown)."""
+        if self._owner_fd is not None:
+            fd, self._owner_fd = self._owner_fd, None
+            os.close(fd)
 
     @contextlib.contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -260,3 +292,25 @@ class BoxHostState:
             return None
         return {"op_id": row[0], "state": row[1],
                 "outcome": json.loads(row[2]) if row[2] else {}}
+
+
+def process_start_time(pid: int) -> int | None:
+    """The kernel's start time (clock ticks since boot) for ``pid``, or None if it is gone."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    fields = raw[raw.rindex(")") + 2:].split()
+    return int(fields[19])  # field 22 overall: starttime
+
+
+def _reap_survivor(pgid: object, start_time: object) -> None:
+    """Kill a group the previous host left running, if its leader is still that same process."""
+    if not isinstance(pgid, int) or pgid <= 1 or not isinstance(start_time, int):
+        return
+    if process_start_time(pgid) != start_time:
+        return  # gone, or the pid now belongs to an unrelated process
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass

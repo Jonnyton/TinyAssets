@@ -40,6 +40,27 @@ def _local(tmp_path: Path, **kw):
                             owner_of=OWNERS.get, allow_unisolated=True, **kw)
 
 
+def test_a_published_create_is_never_reported_as_failed(tmp_path, monkeypatch):
+    host = _local(tmp_path)
+    handle = host.bind("cc-a", account_id="acct-a")
+    real_unlink = os.unlink
+
+    def unlink_tmp_fails(path, *a, **k):
+        if str(path).startswith(".boxtmp-"):
+            raise OSError(2, "temp already gone")
+        return real_unlink(path, *a, **k)
+
+    monkeypatch.setattr(os, "unlink", unlink_tmp_fails)
+    wrote = host.write(handle, "w1", "/cc/new.txt", b"hi", max_bytes=10,
+                       mode=WriteMode.CREATE)
+    monkeypatch.setattr(os, "unlink", real_unlink)
+    assert wrote.generation == 1
+    assert host.read(handle, "/cc/new.txt", max_bytes=10).data == b"hi"
+    assert host.write(handle, "w1", "/cc/new.txt", b"hi", max_bytes=10,
+                      mode=WriteMode.CREATE) == wrote  # recorded, not forgotten
+    host.close()
+
+
 def test_unacknowledged_construction_is_refused(tmp_path):
     from tinyassets.boxes.local import LocalBoxProvider
 
@@ -49,22 +70,90 @@ def test_unacknowledged_construction_is_refused(tmp_path):
     assert not (tmp_path / "b").exists()
 
 
-def test_an_old_host_cannot_overwrite_unknown_with_done(tmp_path):
+_CRASHING_HOST = """
+import os, sys, time
+from pathlib import Path
+from tinyassets.boxes.local import LocalBoxProvider
+root = Path(sys.argv[1])
+host = LocalBoxProvider(boxes_root=root / "boxes", state_dir=root / "state",
+                        owner_of={"cc-a": "acct-a"}.get, allow_unisolated=True)
+h = host.bind("cc-a", account_id="acct-a")
+host.start_exec(h, "e1", ["sh", "-c", "echo $$ > leader.pid; sleep 60"])
+leader = root / "boxes" / "cc-a" / "leader.pid"
+for _ in range(500):
+    if leader.exists() and leader.read_text().strip():
+        break
+    time.sleep(0.01)
+os._exit(0)  # a crash: no clean shutdown, the exec's group is left running
+"""
+
+
+def _dead_or_zombie(pid: int) -> bool:
+    stat_file = Path(f"/proc/{pid}/stat")
+    return not stat_file.exists() or stat_file.read_text().split(") ")[1][0] == "Z"
+
+
+def test_one_box_host_at_a_time(tmp_path):
     first = _local(tmp_path)
-    handle = first.bind("cc-a", account_id="acct-a")
-    exec_id = first.start_exec(handle, "e1", ["sleep", "1"], limits=ExecLimits(wall_seconds=30))
-    second = _local(tmp_path)  # a restart while the old host's supervisor is still alive
-    assert second.exec_status(handle, "e1").state is ExecState.UNKNOWN_AFTER_RESTORE
-    time.sleep(2.0)  # the old supervisor finishes and tries to record "done"
-    status = second.exec_status(handle, "e1")
-    assert status.state is ExecState.UNKNOWN_AFTER_RESTORE
-    # a retry is never a second run, and the op id stays bound to the exec
-    assert second.start_exec(handle, "e1", ["sleep", "1"],
-                             limits=ExecLimits(wall_seconds=30)) == exec_id
-    events = list(second.stream(handle, exec_id, timeout=2))
-    assert events[-1].killed == ExecState.UNKNOWN_AFTER_RESTORE.value
-    with pytest.raises(OpIdReuse):
-        second.write(handle, "e1", "/cc/x", b"x", max_bytes=10)
+    with pytest.raises(BoxError):
+        _local(tmp_path)
+    first.close()
+    _local(tmp_path).close()  # after a clean shutdown the next host starts
+
+
+def test_a_restart_reaps_what_the_crashed_host_left_running(tmp_path):
+    import subprocess
+
+    repo = Path(__file__).resolve().parent.parent
+    subprocess.run([sys.executable, "-c", _CRASHING_HOST, str(tmp_path)], check=True,
+                   cwd=repo, env={**os.environ, "PYTHONPATH": str(repo)}, timeout=60)
+    leader = int((tmp_path / "boxes" / "cc-a" / "leader.pid").read_text())
+    assert not _dead_or_zombie(leader), "the crashed host's exec should still be running"
+    host = _local(tmp_path)  # the restart
+    try:
+        handle = host.bind("cc-a", account_id="acct-a")
+        status = host.exec_status(handle, "e1")
+        assert status.state is ExecState.UNKNOWN_AFTER_RESTORE
+        time.sleep(0.2)
+        assert _dead_or_zombie(leader), "the restart must kill the survivor's process group"
+        # with nothing left running, snapshots and cas are admitted again
+        assert host.read_many(handle, ["/cc/leader.pid"], max_total=100).files
+        # a retry is never a second run, and the op id stays bound to the exec
+        assert host.start_exec(handle, "e1", ["sh", "-c", "echo $$ > leader.pid; sleep 60"]
+                               ) == status.exec_id
+        with pytest.raises(OpIdReuse):
+            host.write(handle, "e1", "/cc/x", b"x", max_bytes=10)
+    finally:
+        host.close()
+
+
+def test_a_failed_partial_destroy_stales_every_handle_and_is_recorded(tmp_path, monkeypatch):
+    from tinyassets.boxes import local as local_mod
+
+    host = _local(tmp_path)
+    handle = host.bind("cc-a", account_id="acct-a")
+    for i in range(3):
+        host.write(handle, f"w{i}", f"/cc/f{i}.txt", b"x", max_bytes=10)
+    real = local_mod._remove_beneath
+    calls = {"n": 0}
+
+    def flaky(parent_fd, name, path, depth=0):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise OSError(5, "simulated I/O error")
+        return real(parent_fd, name, path, depth)
+
+    monkeypatch.setattr(local_mod, "_remove_beneath", flaky)
+    with pytest.raises(OSError):
+        host.destroy(handle, "d1")
+    monkeypatch.setattr(local_mod, "_remove_beneath", real)
+    with pytest.raises(BoxError):  # old handle: the epoch moved because part of the box is gone
+        host.read(handle, "/cc/f2.txt", max_bytes=10)
+    fresh = host.bind("cc-a", account_id="acct-a")
+    with pytest.raises(BoxError):  # the failed op id never re-runs
+        host.destroy(fresh, "d1")
+    assert host.destroy(fresh, "d2").new_epoch == fresh.epoch + 1
+    host.close()
 
 
 def test_read_many_refuses_while_an_exec_may_be_changing_files(tmp_path):

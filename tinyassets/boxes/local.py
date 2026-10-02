@@ -78,7 +78,7 @@ from tinyassets.boxes.provider import (
     WriteMode,
     box_relpath,
 )
-from tinyassets.boxes.state import BoxHostState, op_digest
+from tinyassets.boxes.state import BoxHostState, op_digest, process_start_time
 
 __all__ = ["LocalBoxProvider"]
 
@@ -204,6 +204,7 @@ class LocalBoxProvider:
         self._busy_wait_s = busy_wait_s
         self._destroy_wait_s = destroy_wait_s
         self._running: dict[str, _Running] = {}
+        self._running_guard = threading.Lock()
         self._destroying: set[str] = set()
         self._locks: dict[str, threading.RLock] = {}
         self._locks_guard = threading.Lock()
@@ -538,9 +539,12 @@ class LocalBoxProvider:
                             follow_symlinks=False)
                 except FileExistsError:
                     raise WriteConflict(f"{path!r} already exists") from None
-                os.unlink(tmp, dir_fd=parent)
-            else:
-                os.rename(tmp, leaf, src_dir_fd=parent, dst_dir_fd=parent)
+                try:  # published: the temp name is cleanup only, never a failure
+                    os.unlink(tmp, dir_fd=parent)
+                except OSError:
+                    pass
+                return
+            os.rename(tmp, leaf, src_dir_fd=parent, dst_dir_fd=parent)
         except BaseException:
             try:
                 os.unlink(tmp, dir_fd=parent)
@@ -608,6 +612,10 @@ class LocalBoxProvider:
             if self._state.begin(cc, op_id, "exec", op_digest("exec", payload)) is not None:
                 return exec_id  # done, running or unknown: never run twice
             out_path = self._exec_dir / f"{exec_id}.out"
+            self._state.register_exec(cc, op_id, exec_id)
+            self._state.update(cc, op_id, {"exec_id": exec_id,
+                                           "output_bytes": limits.output_bytes})
+            proc = None
             try:
                 box = self._box_fd(cc)
                 try:
@@ -632,18 +640,31 @@ class LocalBoxProvider:
                     os.close(cwd_fd)
             except BaseException:
                 out_path.unlink(missing_ok=True)
+                self._state.forget_exec(cc, exec_id)
                 self._state.abandon(cc, op_id)  # nothing ran
                 raise
-            self._state.register_exec(cc, op_id, exec_id)
-            self._state.update(cc, op_id, {"exec_id": exec_id,
-                                           "output_bytes": limits.output_bytes})
-            running = _Running(cc, proc)
-            self._running[exec_id] = running
-            self._state.hold(cc)  # a running exec may change files at any moment
-        threading.Thread(
-            target=self._supervise, args=(cc, op_id, exec_id, running, stdin, limits, out_path),
-            daemon=True, name=f"box-exec-{exec_id[:8]}",
-        ).start()
+            try:
+                self._state.update(cc, op_id, {
+                    "exec_id": exec_id, "output_bytes": limits.output_bytes,
+                    "pgid": proc.pid, "start_time": process_start_time(proc.pid)})
+                running = _Running(cc, proc)
+                with self._running_guard:
+                    self._running[exec_id] = running
+                self._state.hold(cc)  # a running exec may change files at any moment
+                threading.Thread(
+                    target=self._supervise,
+                    args=(cc, op_id, exec_id, running, stdin, limits, out_path),
+                    daemon=True, name=f"box-exec-{exec_id[:8]}",
+                ).start()
+            except BaseException as exc:
+                # It is running but cannot be supervised: kill it, then record the failure.
+                _kill_group(proc.pid)
+                proc.wait()
+                with self._running_guard:
+                    self._running.pop(exec_id, None)
+                self._state.finish(cc, op_id, {"exec_id": exec_id, "error": str(exc),
+                                               "output_bytes": limits.output_bytes})
+                raise
         return exec_id
 
     def _supervise(self, cc: str, op_id: str, exec_id: str, running: _Running,
@@ -671,6 +692,10 @@ class LocalBoxProvider:
                 with open(out_path, "r+b") as fh:
                     fh.truncate(limits.output_bytes)
                 killed = killed or "output_limit"
+        except BaseException:
+            _kill_group(proc.pid)  # never record completion for a child still running
+            code = proc.wait()
+            killed = killed or "supervisor_error"
         finally:
             with self._lock(cc):
                 generation = self._state.bump_generation(cc)  # the command may have changed files
@@ -678,7 +703,8 @@ class LocalBoxProvider:
                                                "killed": killed, "generation": generation,
                                                "output_bytes": limits.output_bytes})
                 self._state.release(cc)
-                self._running.pop(exec_id, None)
+                with self._running_guard:
+                    self._running.pop(exec_id, None)
             running.done.set()
 
     def stream(self, handle: BoxHandle, exec_id: str, *,
@@ -723,7 +749,8 @@ class LocalBoxProvider:
             cc = self._auth_locked(handle)
             if self._state.find_exec(cc, exec_id) is None:
                 raise BoxNotFound(errno.ENOENT, f"no exec {exec_id!r} in this box")
-            running = self._running.get(exec_id)
+            with self._running_guard:
+                running = self._running.get(exec_id)
         if running is not None:
             running.cancel.set()
 
@@ -811,6 +838,7 @@ class LocalBoxProvider:
             if done is not None:
                 return ImportReport(done["files"], done["bytes"], tuple(done["refused"]))
             files = size = 0
+            effected = False
             refused: list[str] = []
             self._state.hold(cc)
             try:
@@ -823,6 +851,7 @@ class LocalBoxProvider:
                                 if not rel:
                                     raise BoxPathError(f"{member.name!r} names the box root")
                                 if member.isdir():
+                                    effected = True
                                     box = self._box_fd(cc)
                                     try:
                                         os.close(self._walk(box, rel, member.name, create=True))
@@ -831,6 +860,7 @@ class LocalBoxProvider:
                                 elif member.isreg():
                                     src = tar.extractfile(member)
                                     body = src.read() if src is not None else b""
+                                    effected = True  # parents may be created before a failure
                                     self._place(cc, rel, member.name, body, WriteMode.REPLACE)
                                     files += 1
                                     size += len(body)
@@ -839,7 +869,7 @@ class LocalBoxProvider:
                             except (BoxPathError, WriteConflict):
                                 refused.append(member.name)
                 except BaseException as exc:
-                    if files:
+                    if effected:
                         self._state.bump_generation(cc)
                         self._state.finish(cc, op_id, {"error": str(exc)})
                     else:
@@ -860,22 +890,27 @@ class LocalBoxProvider:
             if (recorded is not None and recorded["kind"] == "destroy"
                     and recorded["state"] == "done"):
                 outcome = recorded["outcome"] or {}
+                if "error" in outcome:
+                    raise BoxError(f"destroy {op_id!r} failed partway and is not re-run: "
+                                   f"{outcome['error']}")
                 return DestroyReceipt(cc, op_id, outcome["files_removed"], outcome["new_epoch"])
             self._auth_locked(handle)
             if self._begin(cc, op_id, "destroy", {}) is not None:
                 raise BoxError(f"destroy {op_id!r} has an earlier record")
             self._destroying.add(cc)  # every other operation on this box now refuses
-            victims = [r for r in self._running.values() if r.cc == cc]
+        removing = False
         try:
+            with self._running_guard:
+                victims = [r for r in self._running.values() if r.cc == cc]
             for running in victims:
                 running.cancel.set()
             for running in victims:  # supervisors kill and reap the whole group, then finish
                 if not running.done.wait(self._destroy_wait_s):
-                    self._state.abandon(cc, op_id)  # nothing removed yet: a retry may run
                     raise BoxError(
                         f"an exec in {cc!r} did not stop within {self._destroy_wait_s}s"
                     )
             with self._lock(cc):
+                removing = True
                 root = self._root_fd()
                 try:
                     try:
@@ -886,10 +921,30 @@ class LocalBoxProvider:
                     os.close(root)
                 new_epoch = self._state.bump_epoch(cc)
                 self._state.finish(cc, op_id, {"files_removed": removed, "new_epoch": new_epoch})
+        except BaseException as exc:
+            with self._lock(cc):
+                if removing:
+                    # Part of the box may be gone: every old handle is now stale, and the
+                    # failure is recorded so this op id never re-runs.
+                    self._state.bump_epoch(cc)
+                    self._state.finish(cc, op_id, {"error": str(exc)})
+                else:
+                    self._state.abandon(cc, op_id)  # nothing removed: a retry may run
+            raise
         finally:
             with self._lock(cc):
                 self._destroying.discard(cc)
         return DestroyReceipt(cc, op_id, removed, new_epoch)
+
+    def close(self) -> None:
+        """A clean host shutdown: kill every running exec, then give up the state directory."""
+        with self._running_guard:
+            victims = list(self._running.values())
+        for running in victims:
+            running.cancel.set()
+        for running in victims:
+            running.done.wait(self._destroy_wait_s)
+        self._state.close()
 
 
 def _feed(proc: subprocess.Popen, stdin: bytes) -> None:
