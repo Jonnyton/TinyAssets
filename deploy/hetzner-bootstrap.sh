@@ -218,6 +218,8 @@ if [[ ! -f "${ENV_DIR}/env" ]]; then
 else
     log "${ENV_DIR}/env already present; leaving contents alone"
 fi
+# The daemon loads a copy of env with the platform's own secrets removed.
+bash "${TINYASSETS_HOME}/deploy/install-tinyassets-env.sh" render-daemon-env
 
 if [[ ! -f "${ENV_DIR}/agent-interchange.env" ]]; then
     log "creating ${ENV_DIR}/agent-interchange.env from daemon-only template..."
@@ -311,8 +313,10 @@ cat <<EOF
 
 Next steps (host action required):
 
-  1. Fill in secrets:
+  1. Fill in secrets, then render the daemon's copy (the unit refuses to
+     start on a copy older than the source):
        sudo nano ${ENV_DIR}/env
+       sudo bash ${TINYASSETS_HOME}/deploy/install-tinyassets-env.sh render-daemon-env
      (See deploy/DEPLOY.md for which values go where.)
 
   2. Generate the daemon-only agent interchange key:

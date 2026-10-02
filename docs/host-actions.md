@@ -12,6 +12,21 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Rotate the DigitalOcean API token, then drop it from the box (2026-10-02)
+
+**Why:** an account-wide `DO_API_TOKEN` sat in `/etc/tinyassets/env` and so in the
+daemon's process environment and every engine MCP child
+(`docs/concerns/2026-10-02-platform-secrets-in-daemon-env.md`). The env split keeps it
+out of the daemon from the next deploy on, but the value was exposed for as long as the
+daemon ran with it. Nothing on the box reads it; the workflows use the GitHub secret.
+
+1. DigitalOcean → API → Tokens: create a replacement, then revoke the old one.
+2. `gh secret set DO_API_TOKEN` with the new value (the workflows need it).
+3. On the droplet: `sudo bash /opt/tinyassets/deploy/install-tinyassets-env.sh delete DO_API_TOKEN`.
+
+Optional, same concern: swap `STRIPE_SECRET_KEY` for a restricted `rk_live_` key scoped
+to Checkout, Subscriptions and webhook reads. The daemon must still hold a Stripe key.
+
 ## Expose your patch intake as a receiver, so new users can be offered it (2026-09-30)
 
 **Why:** PR #4121 seeds a consent request in every new user's rail — "Let your universe

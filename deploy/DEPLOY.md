@@ -549,8 +549,11 @@ cd /opt/tinyassets && git pull --ff-only origin main
 sudo install -m 0644 -o tinyassets -g tinyassets \
   /opt/tinyassets/deploy/compose.yml /opt/tinyassets/compose.yml
 
-# B — a host-only env value (image pin, secret, quick flag): edit the env file.
+# B — a host-only env value (image pin, secret, quick flag): edit the env file,
+#     then re-render the daemon's copy (it loads daemon.env, which is env minus
+#     the platform's own secrets; the unit refuses to start on a stale copy).
 printf '\nTINYASSETS_SOME_FLAG=value\n' >> /etc/tinyassets/env
+sudo bash /opt/tinyassets/deploy/install-tinyassets-env.sh render-daemon-env
 
 # Recreate ONLY the daemon so it re-reads config (brief MCP-surface blip):
 systemctl restart tinyassets-daemon

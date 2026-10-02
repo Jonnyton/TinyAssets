@@ -35,6 +35,20 @@
 #   # Set an immutable key once; a different existing value fails closed:
 #   printf '%s' "$SECRET" | sudo bash install-tinyassets-env.sh set-once KEY
 #
+#   # Re-render the daemon's copy after a hand edit of /etc/tinyassets/env:
+#   sudo bash install-tinyassets-env.sh render-daemon-env
+#
+# The daemon's own env file
+# -------------------------
+# /etc/tinyassets/env is the box's whole secret store and compose's
+# interpolation source: the tunnel token and the log-shipping token reach their
+# sidecars from it, and an account-wide DigitalOcean token has lived in it. The
+# daemon must hold none of those (docs/concerns/
+# 2026-10-02-platform-secrets-in-daemon-env.md), so it loads
+# /etc/tinyassets/daemon.env instead: the same file minus DAEMON_FORBIDDEN_ENV.
+# Every `set` / `set-once` / `delete` of the main file re-renders it, so the two
+# cannot drift through this helper; a hand edit needs `render-daemon-env`.
+#
 # Idempotency
 # -----------
 # `set` is idempotent — running twice with the same value is a no-op
@@ -62,6 +76,9 @@
 #   5  set-once refused replacement of an existing non-empty value.
 #   6  assert-absent found a Compose-recognized target assignment or could
 #      not read the target file.
+#   7  render-daemon-env could not produce a daemon file free of every
+#      DAEMON_FORBIDDEN_ENV name (unreadable source, or a forbidden value that
+#      continues past its own line and so cannot be removed line-wise).
 
 set -euo pipefail
 
@@ -72,9 +89,25 @@ ENV_MODE="${TINYASSETS_ENV_MODE-640}"
 ENV_READ_USER="${TINYASSETS_ENV_READ_USER-tinyassets}"
 ENV_READ_USER_HOME="${TINYASSETS_ENV_READ_USER_HOME-/opt/tinyassets}"
 ENV_READ_USER_SHELL="${TINYASSETS_ENV_READ_USER_SHELL-/usr/sbin/nologin}"
+DAEMON_ENV_FILE="${TINYASSETS_DAEMON_ENV_FILE-/etc/tinyassets/daemon.env}"
+DAEMON_ENV_SOURCE="${TINYASSETS_DAEMON_ENV_SOURCE-/etc/tinyassets/env}"
 COMPOSE_ASSIGNMENT=""
 COMPOSE_TRIMMED=""
 ATOMIC_TEMP=""
+
+# Platform secrets the daemon container must never receive. Nothing under
+# tinyassets/ reads them; the host, a sidecar, or nobody does. This is the shell
+# copy of tinyassets/platform_secrets.py DAEMON_FORBIDDEN_ENV, and
+# tests/test_platform_secret_scope.py holds the two equal. deploy_fail_safe.sh
+# reads it through `daemon-forbidden-names` rather than keeping a third copy.
+DAEMON_FORBIDDEN_ENV=(
+    DO_API_TOKEN
+    CLOUDFLARE_TUNNEL_TOKEN
+    BETTERSTACK_SOURCE_TOKEN
+    SUPABASE_DB_URL
+    SUPABASE_SERVICE_ROLE_KEY
+    GITHUB_OAUTH_CLIENT_SECRET
+)
 
 usage() {
     cat >&2 <<'EOF'
@@ -83,6 +116,8 @@ Usage:
   install-tinyassets-env.sh set-once <KEY>      # immutable value on stdin
   install-tinyassets-env.sh delete <KEY> [KEY...]
   install-tinyassets-env.sh assert-absent <KEY> # read-only Compose-aware check
+  install-tinyassets-env.sh render-daemon-env   # daemon.env = env minus platform secrets
+  install-tinyassets-env.sh daemon-forbidden-names
 EOF
     exit 1
 }
@@ -462,6 +497,7 @@ cmd_set() {
     atomic_install "${new_content}"
     assert_readable
     echo "set ${key} (${ENV_FILE} $(owner_label) ${ENV_MODE})"
+    render_daemon_env_if_source
 }
 
 cmd_delete() {
@@ -490,6 +526,7 @@ cmd_delete() {
     atomic_install "${new_content}"
     assert_readable
     echo "deleted: $* (${ENV_FILE} $(owner_label) ${ENV_MODE})"
+    render_daemon_env_if_source
 }
 
 cmd_assert_absent() {
@@ -507,6 +544,79 @@ cmd_assert_absent() {
         fi
     done < "${ENV_FILE}"
     echo "absent ${key} (${ENV_FILE})"
+}
+
+# Is this line an assignment of a DAEMON_FORBIDDEN_ENV name? Sets
+# FORBIDDEN_MATCH to the name (and COMPOSE_ASSIGNMENT, via the matcher).
+FORBIDDEN_MATCH=""
+line_assigns_forbidden() {
+    local name
+    for name in "${DAEMON_FORBIDDEN_ENV[@]}"; do
+        if compose_line_assigns_key "$1" "${name}"; then
+            FORBIDDEN_MATCH="${name}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Write DAEMON_ENV_FILE: DAEMON_ENV_SOURCE line for line, minus every
+# assignment of a forbidden name, through the same atomic transaction, owner
+# and mode as the source. Names are reported; values never are.
+cmd_render_daemon_env() {
+    if [ ! -r "${DAEMON_ENV_SOURCE}" ]; then
+        echo "::error::cannot render ${DAEMON_ENV_FILE}: ${DAEMON_ENV_SOURCE} is unreadable" >&2
+        exit 7
+    fi
+    local new_content="# GENERATED from ${DAEMON_ENV_SOURCE} by install-tinyassets-env.sh"$'\n'
+    new_content+="# render-daemon-env. Edit the source, never this file. Removed names:"$'\n'
+    new_content+="# ${DAEMON_FORBIDDEN_ENV[*]}"$'\n'
+    local line value removed=()
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if line_assigns_forbidden "${line}"; then
+            # A quoted value that does not close on its own line continues onto
+            # the following lines, and Compose reads those as the value. A
+            # line-wise filter would leave them behind, so refuse instead.
+            value="${COMPOSE_ASSIGNMENT#"${FORBIDDEN_MATCH}"}"
+            strip_compose_leading_space "${value}"
+            value="${COMPOSE_TRIMMED#[=:]}"
+            strip_compose_leading_space "${value}"
+            value="${COMPOSE_TRIMMED}"
+            value="${value%"${value##*[![:space:]]}"}"
+            case "${value}" in
+                \"*|\'*)
+                    if [ "${#value}" -lt 2 ] || [ "${value: -1}" != "${value:0:1}" ]; then
+                        echo "::error::${FORBIDDEN_MATCH} in ${DAEMON_ENV_SOURCE} has a quoted value that continues past its line; cannot remove it line-wise" >&2
+                        exit 7
+                    fi
+                    ;;
+            esac
+            removed+=("${FORBIDDEN_MATCH}")
+            continue
+        fi
+        new_content+="${line}"$'\n'
+    done < "${DAEMON_ENV_SOURCE}"
+
+    local ENV_FILE="${DAEMON_ENV_FILE}"
+    atomic_install "${new_content}"
+    # Read back what landed, not what was meant to.
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if line_assigns_forbidden "${line}"; then
+            echo "::error::${FORBIDDEN_MATCH} survived into ${DAEMON_ENV_FILE}" >&2
+            exit 7
+        fi
+    done < "${DAEMON_ENV_FILE}"
+    assert_readable
+    echo "rendered ${DAEMON_ENV_FILE} from ${DAEMON_ENV_SOURCE} (removed: ${removed[*]:-none})"
+}
+
+# A write to the main env file keeps the daemon's copy current. Any other
+# target (request-idempotency.env, agent-interchange.env, a test's temp file)
+# is not the daemon's source and renders nothing.
+render_daemon_env_if_source() {
+    if [ -n "${DAEMON_ENV_FILE}" ] && [ "${ENV_FILE}" = "${DAEMON_ENV_SOURCE}" ]; then
+        cmd_render_daemon_env
+    fi
 }
 
 [ $# -ge 1 ] || usage
@@ -529,6 +639,14 @@ case "${subcmd}" in
     assert-absent)
         [ $# -eq 1 ] || usage
         cmd_assert_absent "$1"
+        ;;
+    render-daemon-env)
+        [ $# -eq 0 ] || usage
+        cmd_render_daemon_env
+        ;;
+    daemon-forbidden-names)
+        [ $# -eq 0 ] || usage
+        printf '%s\n' "${DAEMON_FORBIDDEN_ENV[@]}"
         ;;
     *)
         usage

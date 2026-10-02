@@ -1,0 +1,55 @@
+"""Which platform secrets each process may hold.
+
+The host env file ``/etc/tinyassets/env`` carries every secret the box needs,
+and until 2026-10-02 the daemon container received all of it, and handed all of
+it to the per-universe engine MCP children (``engine_mcp_http``). A daemon RCE
+or an environment leak then meant the whole DigitalOcean account and live
+billing (docs/concerns/2026-10-02-platform-secrets-in-daemon-env.md).
+
+Two tiers, each the smallest set proved by reading the code:
+
+``DAEMON_FORBIDDEN_ENV``
+    Nothing under ``tinyassets/`` reads these. The host and the sidecars do
+    (the tunnel token, the log-shipping token), or nothing does at all. They
+    never enter the daemon container: ``deploy/install-tinyassets-env.sh``
+    renders ``/etc/tinyassets/daemon.env`` without them, and the deploy refuses
+    a daemon whose environment carries one. The shell copy of this list lives
+    in that script; ``tests/test_platform_secret_scope.py`` holds them equal.
+
+``DAEMON_ONLY_ENV``
+    The daemon's own HTTP routes need these (checkout, the Stripe webhook and
+    account deletion, all in ``tinyassets/onboarding``). No child does, so
+    :func:`child_env` removes them before any child launch that inherits the
+    daemon's environment.
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+DAEMON_FORBIDDEN_ENV: frozenset[str] = frozenset({
+    # Account-wide DigitalOcean token. Only GitHub workflows use one, and they
+    # read their own repository secret.
+    "DO_API_TOKEN",
+    # The cloudflared sidecar's credential; compose interpolates it there.
+    "CLOUDFLARE_TUNNEL_TOKEN",
+    # The logs sidecar's Better Stack ingest token.
+    "BETTERSTACK_SOURCE_TOKEN",
+    # Template placeholders no code reads (``host_pool`` is never imported).
+    "SUPABASE_DB_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "GITHUB_OAUTH_CLIENT_SECRET",
+})
+
+DAEMON_ONLY_ENV: frozenset[str] = frozenset({
+    "STRIPE_SECRET_KEY",
+    "STRIPE_WEBHOOK_SECRET",
+    "TINYASSETS_BILLING_ENTITLEMENT_KEY",
+    "WORKOS_API_KEY",
+})
+
+CHILD_FORBIDDEN_ENV: frozenset[str] = DAEMON_FORBIDDEN_ENV | DAEMON_ONLY_ENV
+
+
+def child_env(source: Mapping[str, str]) -> dict[str, str]:
+    """A copy of *source* with every platform secret a child must not hold removed."""
+    return {name: value for name, value in source.items() if name not in CHILD_FORBIDDEN_ENV}
