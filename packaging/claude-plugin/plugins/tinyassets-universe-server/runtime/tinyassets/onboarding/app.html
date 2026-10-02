@@ -273,9 +273,53 @@
     /* A custom UI replaces the chat body rather than sitting beside it, and the
        frame itself carries no border: whatever is inside is somebody's own
        design, so the app does not frame it with its own chrome. */
-    #ui-frame-host{flex:1;display:flex;min-height:0}
+    #ui-frame-host{position:absolute;inset:0;display:flex;min-height:0}
     .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
-    .ui-custom-active>.chat-body{display:none!important}
+    /* The chat cloud: the conversation floats over the command center. */
+    .chat-stage{position:relative;flex:1;min-height:0;overflow:hidden}
+    .chat-cloud{position:absolute;display:flex;flex-direction:column;min-width:0;min-height:0;
+      background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
+      box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;z-index:5}
+    .chat-cloud[data-mode="bubble"]{display:none}
+    .chat-cloud-bar{display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem .3rem .9rem;
+      background:var(--surface);border-bottom:1px solid var(--line);cursor:grab;touch-action:none;
+      user-select:none;flex:0 0 auto}
+    .chat-cloud-bar:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+    .chat-cloud.is-dragging .chat-cloud-bar{cursor:grabbing}
+    .chat-cloud-title{flex:1;font-size:.82rem;color:var(--ink-dim);white-space:nowrap;overflow:hidden;
+      text-overflow:ellipsis}
+    .chat-cloud-btn{background:none;border:0;color:var(--ink);font-size:1.1rem;line-height:1;
+      padding:.25rem .55rem;border-radius:8px;cursor:pointer}
+    .chat-cloud-btn:hover,.chat-cloud-btn:focus-visible{background:var(--surface-2)}
+    .chat-cloud-body{flex:1;min-height:0;display:flex;flex-direction:column}
+    /* The rail stacks under the thread when the CLOUD is narrow, not only the window. */
+    .chat-cloud{container-type:inline-size}
+    @container (max-width:760px){
+      .chat-body{flex-direction:column}
+      .rail{width:auto;max-height:45%;border-left:0;border-top:1px solid var(--line)}
+      .rail--setup{width:auto;max-height:none;order:-1}
+    }
+    /* A narrow CLOUD gets the compact composer too, so Send/Stop never clip. */
+    @container (max-width:520px){
+      .composer{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto}
+      .composer .voice-output-select{grid-column:1/-1;grid-row:1;width:100%;max-width:none;min-width:0}
+      .composer .btn--attach{grid-column:1;grid-row:2}
+      .composer .btn--voice{grid-column:2;grid-row:2}
+      .composer .composer-input{grid-column:3;grid-row:2;min-width:0}
+      .composer .btn--send{grid-column:4;grid-row:2}
+      .composer .btn--stop{grid-column:4;grid-row:2}
+    }
+    .chat-cloud-resize{position:absolute;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;
+      touch-action:none;background:linear-gradient(135deg,transparent 50%,var(--line) 50%)}
+    .chat-cloud-bubble{position:absolute;width:56px;height:56px;border-radius:50%;border:1px solid var(--line);
+      background:var(--surface);color:var(--ink);font-size:1.5rem;cursor:pointer;touch-action:none;
+      box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:6;padding:0}
+    .chat-cloud-bubble:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .chat-cloud-badge{position:absolute;top:2px;right:2px;min-width:14px;height:14px;border-radius:7px;
+      background:var(--accent);border:2px solid var(--surface)}
+    .chat-cloud-bubble.is-thinking{animation:cloud-pulse 1.4s ease-in-out infinite}
+    @keyframes cloud-pulse{0%,100%{box-shadow:0 0 0 0 rgba(120,140,255,.55)}50%{box-shadow:0 0 0 8px rgba(120,140,255,0)}}
+    @media (prefers-reduced-motion:reduce){.chat-cloud-bubble.is-thinking{animation:none;outline:2px dashed var(--accent)}}
     #ui-mode{font-size:.8rem}
   </style>
 </head>
@@ -321,6 +365,25 @@
         <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
         <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
       </div>
+      <!-- The stage is the command center: a custom UI fills it, and the chat with
+           your agent floats above it as a movable, resizable "chat cloud" that can
+           shrink to a bubble. Every element of the chat keeps its id. -->
+      <div id="chat-stage" class="chat-stage">
+      <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
+           sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
+           bundle markup, style or script is ever assigned into this document. -->
+      <div id="ui-frame-host" hidden></div>
+      <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
+               aria-label="Chat with your agent">
+      <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
+           aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
+           aria-describedby="chat-cloud-title">
+        <span id="chat-cloud-title" class="chat-cloud-title">Your agent</span>
+        <button id="btn-cloud-shrink" class="chat-cloud-btn" type="button"
+                aria-label="Shrink the chat to a bubble" aria-controls="chat-cloud-body"
+                aria-expanded="true" title="Shrink">&#8211;</button>
+      </div>
+      <div id="chat-cloud-body" class="chat-cloud-body">
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
@@ -485,12 +548,21 @@
       </form>
       <div id="status-line" class="status-line" role="status" aria-live="polite"
            aria-label="Conversation status"></div>
+      <div id="deploy-pending-line" class="status-line" role="status"
+           aria-live="polite" hidden></div>
+      <button id="btn-try-model" class="btn btn--link" type="button" hidden
+              title="Pick another model for your next message. Stop this turn if you want to switch now; it is still working.">Try another model</button>
       <div id="voice-status-line" class="status-line status-line--voice" role="status"
            aria-live="polite" aria-label="Voice status" hidden></div>
-      <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
-           sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
-           bundle markup, style or script is ever assigned into this document. -->
-      <div id="ui-frame-host" hidden></div>
+      </div>
+      <div id="chat-cloud-resize" class="chat-cloud-resize" aria-hidden="true"></div>
+      </section>
+      <button id="chat-cloud-bubble" class="chat-cloud-bubble" type="button" hidden
+              aria-label="Open the chat with your agent" aria-controls="chat-cloud">
+        <span class="chat-cloud-bubble-icon" aria-hidden="true">&#128172;</span>
+        <span id="chat-cloud-badge" class="chat-cloud-badge" hidden></span>
+      </button>
+      </div>
     </section>
 
     <dialog id="ui-dialog" class="ui-dialog" aria-labelledby="ui-title">
@@ -1812,11 +1884,14 @@
   const STATUS_IDLE_MS=30000, STATUS_WORKING_MS=10000;
   let statusBeatMs=STATUS_IDLE_MS;
   let serverTurn=null;
+  let deployPending=false;
   // This command center's chat waiting for one of the account's seats (`seats` in the
   // status payload, owner-only). Its line carries the upgrade link inline.
   let seatWait=null;
   let seatLineShown=false;
   function readServerTurn(payload){
+    const deploy=payload&&payload.deploy_pending;
+    deployPending=!!deploy&&typeof deploy==="object"&&deploy.pending===true;
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
       ?payload.seats:null;
     const row=payload&&payload.active_turn;
@@ -1829,9 +1904,51 @@
     const age=(typeof row.age_s==="number"&&Number.isFinite(row.age_s)&&row.age_s>0)?row.age_s:0;
     // Anchored to THIS page's clock. The row's own stamp is the server's, and a
     // device with a skewed clock would otherwise report a nonsense elapsed time.
+    // Which step, on which model, since when -- present once the turn opened a
+    // round. A ten-minute wait on one model request read exactly like a hang
+    // (live 2026-10-02); saying where the turn is lets the owner decide.
+    const roundAge=(typeof row.round_age_s==="number"&&Number.isFinite(row.round_age_s)
+      &&row.round_age_s>=0)?row.round_age_s:null;
     serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
       startedMs:Date.now()-age*1000,observedAt:Date.now(),
-      tools:Array.isArray(row.tools)?row.tools:[]};
+      tools:Array.isArray(row.tools)?row.tools:[],
+      round:(Number.isInteger(row.round)&&row.round>0)?row.round:0,
+      model:(typeof row.model==="string")?row.model:"",
+      roundSinceMs:roundAge===null?0:Date.now()-roundAge*1000};
+  }
+  // A model id as a person says it: no vendor prefix or ":variant" tag, and a
+  // very long name cut at a hyphen ("nemotron-3-ultra-550b-a55b" ->
+  // "nemotron-3-ultra-550b"), never down to a family word that names nothing.
+  function shortModelName(id){
+    let tail=String(id||"").split("/").pop().replace(/:[^:]*$/,"");
+    while(tail.length>24&&tail.lastIndexOf("-")>0) tail=tail.slice(0,tail.lastIndexOf("-"));
+    return tail;
+  }
+  // Minutes this step has waited on its model, or 0 when the server did not say.
+  function waitMinutes(){
+    if(!serverTurnLive()||!serverTurn.roundSinceMs) return 0;
+    return Math.floor((Date.now()-serverTurn.roundSinceMs)/60000);
+  }
+  // "step 4 · waiting on qwen3.8 for 7 min" while the model is being asked;
+  // "" when the server has not said, or when the step is running tools (that
+  // line belongs to the live tool painter).
+  function waitDetail(){
+    if(!serverTurnLive()||!serverTurn.round||
+       (serverTurn.state!=="inference_started"&&serverTurn.state!=="native_started"))
+      return "";
+    const mins=waitMinutes();
+    return "step "+serverTurn.round+(serverTurn.model
+      ? " \u00b7 waiting on "+shortModelName(serverTurn.model) : "")+
+      (mins>=1?" for "+mins+" min":"");
+  }
+  // After this long on one request the owner is offered another model. Their
+  // choice, never ours: a slow reply that is still coming is not abandoned
+  // (founder, 2026-10-02), and switching does not stop the request in flight.
+  const TRY_MODEL_AFTER_MIN=3;
+  function renderTryModel(){
+    const button=$("btn-try-model");
+    if(!button) return;
+    button.hidden=!(waitDetail()&&waitMinutes()>=TRY_MODEL_AFTER_MIN);
   }
   // What the agent's tools are doing, newest call first (harness S4): said on
   // the ONE status line, after the sentence it already shows, never as a second
@@ -1852,7 +1969,7 @@
   function paintToolLine(){
     const line=$("status-line");
     const text=String(line.textContent||"");
-    if(!THINKING_LINE.test(text)) return;
+    if(!THINKING_LINE.test(text)||waitDetail()) return;
     const base=text.split(TOOL_SEP)[0], tl=toolLine();
     const next=tl?base+TOOL_SEP+tl:base;
     if(next!==text) setStatusLine(next);
@@ -1877,6 +1994,8 @@
   // sentence is; a queue count, an attachment notice or a failure line belongs to
   // whoever wrote it and is never touched here.
   let serverStatusLine=false;
+  // This page's own turn line carries the server's step detail.
+  let ownDetailLine=false;
   // ---- Stop (founder 2026-09-30: "just like it works in claude code") --------
   // While the agent is working, Send gives its place to Stop; Escape does the
   // same. The server stops the turn at its next safe point (a tool call already
@@ -1981,6 +2100,14 @@
   }
   function renderWorking(){
     renderStop();
+    renderTryModel();
+    const updateLine=$("deploy-pending-line");
+    if(updateLine){
+      const pending=serverTurnLive()&&deployPending;
+      const text=pending?"An update is waiting for this turn to finish; it installs right after.":"";
+      if(updateLine.textContent!==text) updateLine.textContent=text;
+      updateLine.hidden=!pending;
+    }
     if(seatWait){
       // The waiting line, with the Upgrade link INSIDE it -- never a banner, card
       // or modal (founder, 2026-09-30). No link on the top tier: the server sends
@@ -2018,7 +2145,25 @@
     // The flag is dropped on the way out: a local turn has taken the line, so our
     // sentence is no longer on screen and we must not later "clear" what that path
     // wrote (a queue count outlives the turn it was queued behind).
-    if(turnStartedAt){ serverStatusLine=false; paintToolLine(); return; }
+    if(turnStartedAt){
+      serverStatusLine=false;
+      // This page's own sentence, with WHERE the turn is when the server says.
+      // Never over a queue count, the seat line or a Stop in progress, which
+      // know more; and never rewritten unchanged, so a screen reader hears the
+      // minute change and nothing else.
+      const detail=waitDetail();
+      const mine=!sendQueue.length&&!seatLineShown&&!interruptRequested;
+      if(detail&&mine){
+        const text="Your agent is thinking... "+detail;
+        if($("status-line").textContent!==text) setStatusLine(text);
+        ownDetailLine=true;
+      }else if(ownDetailLine&&!detail&&mine){
+        setStatusLine("Your agent is thinking..."); ownDetailLine=false;
+      }
+      paintToolLine();
+      return;
+    }
+    ownDetailLine=false;
     if(!serverTurnLive()){
       // Ours to clear, or nobody's. A line another path wrote stays.
       if(serverStatusLine){ serverStatusLine=false; setStatusLine(""); }
@@ -2028,7 +2173,7 @@
     const elapsed=workingElapsed(workingSince());
     // Said because this page did NOT start it: without it the founder is looking
     // at a turn they have no other evidence of.
-    const detail=[elapsed,"started in another window, by a request you answered, "+
+    const detail=[elapsed,waitDetail(),"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
     const tl=toolLine();
     setStatusLine("Your agent is thinking... " + detail + (tl?TOOL_SEP+tl:""));
@@ -4344,8 +4489,6 @@
       const host=s.active_host, alive=host&&host!=="none";
       dot.className="dot "+(alive?"dot--ok":"dot--warn");
       dot.title=alive?("host: "+host):"no active host";
-      const name=s.universe_name||s.universe||s.universe_id||"";
-      if(name) $("universe-name").textContent=name;
       if(ModelPicker.snapshot&&s.universe_id&&ModelPicker.snapshot.universe_id!==s.universe_id) ModelPicker.reset();
       setQueueScope(s.universe_id || s.universe);
       // The command center's own working state, whatever started the turn. This is the
@@ -4437,6 +4580,19 @@
   // lands in its normal chat with that request first in the rail, never on a
   // separate full-page screen.
   let engineConnected = null;   // null = unknown yet
+  // The header names the command center, never its id. The server sends a name
+  // only once one is learned; anything id-shaped is refused here as well, so no
+  // reader that falls back to an id can ever put one in front of the owner.
+  const COMMAND_CENTER_FALLBACK="Your command center";
+  function commandCenterName(value){
+    const name=typeof value==="string" ? value.trim() : "";
+    if(!name || /^(u|cc)-[0-9a-z]{8,}$/i.test(name)) return COMMAND_CENTER_FALLBACK;
+    return name;
+  }
+  function showCommandCenterName(value){
+    const node=$("universe-name");
+    if(node) node.textContent=commandCenterName(value);
+  }
   async function fetchMe(){
     try{
       await ensureFreshToken();
@@ -4467,6 +4623,205 @@
       });
     }catch(_e){ /* a clock we could not report is not a broken sign-in */ }
   }
+  // ---- Chat cloud -------------------------------------------------------------
+  // The chat with an agent floats over the command center as a "chat cloud" the
+  // owner can move, resize and shrink to a bubble (founder, 2026-10-02). It
+  // starts BIG for an owner with no command-center layout and SMALL when a
+  // layout is active; once the owner moves, resizes or shrinks it, their last
+  // state is restored instead. Remembered per owner, per agent and per viewport
+  // class, because a phone and a desktop want different windows. There is no
+  // server store for UI preferences, so this device remembers it.
+  const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
+        CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
+  let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
+  function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
+  function cloudStorageKey(owner, agentId, viewport){
+    return CLOUD_KEY_PREFIX+":"+(owner||"")+":"+(agentId||"main")+":"+viewport;
+  }
+  // Keeps the window and the bubble wholly on the stage, and the window no
+  // smaller than usable (or the stage, when the stage itself is smaller).
+  function cloudClamp(state, stage){
+    const fit=(v,lo,hi)=>Math.min(Math.max(v,lo),Math.max(lo,hi));
+    const w=fit(state.open.w, Math.min(CLOUD_MIN_W,stage.w), stage.w);
+    const h=fit(state.open.h, Math.min(CLOUD_MIN_H,stage.h), stage.h);
+    return {
+      mode:state.mode==="bubble" ? "bubble" : "open",
+      open:{x:fit(state.open.x,0,stage.w-w), y:fit(state.open.y,0,stage.h-h), w:w, h:h},
+      bubble:{x:fit(state.bubble.x,0,stage.w-CLOUD_BUBBLE), y:fit(state.bubble.y,0,stage.h-CLOUD_BUBBLE)},
+      userSet:!!state.userSet,
+    };
+  }
+  function cloudDefaultState(hasLayout, stage){
+    const m=cloudViewportClass(stage.w)==="phone" ? 0 : CLOUD_MARGIN;
+    return cloudClamp({
+      mode:hasLayout ? "bubble" : "open",
+      open:{x:m, y:m, w:stage.w-2*m, h:stage.h-2*m},
+      bubble:{x:stage.w-CLOUD_BUBBLE-CLOUD_MARGIN, y:stage.h-CLOUD_BUBBLE-CLOUD_MARGIN},
+      userSet:false,
+    }, stage);
+  }
+  // A saved state exists only because the owner moved, resized or shrank the
+  // cloud, so a valid one always wins over the default.
+  function cloudParseSaved(raw){
+    let doc=null;
+    try{ doc=JSON.parse(raw); }catch(_error){ return null; }
+    const num=v=>typeof v==="number" && isFinite(v);
+    if(!doc || doc.v!==1 || !doc.open || !doc.bubble) return null;
+    if(doc.mode!=="open" && doc.mode!=="bubble") return null;
+    const o=doc.open, b=doc.bubble;
+    if(![o.x,o.y,o.w,o.h,b.x,b.y].every(num)) return null;
+    return {mode:doc.mode, open:{x:o.x,y:o.y,w:o.w,h:o.h}, bubble:{x:b.x,y:b.y}, userSet:true};
+  }
+  function cloudResolveState(saved, hasLayout, stage){
+    return saved ? cloudClamp(saved, stage) : cloudDefaultState(hasLayout, stage);
+  }
+  function cloudStageSize(){ const s=$("chat-stage"); return {w:s.clientWidth, h:s.clientHeight}; }
+  function cloudHasLayout(){ const v=$("view-chat"); return !!(v && v.classList.contains("ui-custom-active")); }
+  // Re-reads the right saved state (owner, agent and viewport class may all have
+  // changed) and lays the cloud out. Called on sign-in, on a stage resize and
+  // when a command-center layout comes or goes.
+  function refreshChatCloud(){
+    const stageEl=$("chat-stage"), cloud=$("chat-cloud");
+    if(!stageEl || !cloud) return;
+    if(!cloudWired) wireChatCloud();
+    const stage=cloudStageSize();
+    if(!stage.w || !stage.h) return;             // not laid out yet; the resize observer retries
+    const key=cloudStorageKey(queueOwner, cloud.dataset.agent, cloudViewportClass(stage.w));
+    if(key===cloudStoreKey && cloudState && cloudState.userSet){
+      // Same owner, agent and viewport class, and the owner has placed it: the
+      // live state is the truth (it may be mid-drag, or storage may be off).
+      cloudState=cloudClamp(cloudState, stage);
+    }else{
+      cloudStoreKey=key;
+      let saved=null;
+      try{ saved=cloudParseSaved(localStorage.getItem(key)); }catch(_error){ saved=null; }
+      cloudState=cloudResolveState(saved, cloudHasLayout(), stage);
+    }
+    applyChatCloud();
+  }
+  function applyChatCloud(){
+    const cloud=$("chat-cloud"), bubble=$("chat-cloud-bubble"), s=cloudState;
+    if(!cloud || !bubble || !s) return;
+    cloud.dataset.mode=s.mode;
+    cloud.style.left=s.open.x+"px"; cloud.style.top=s.open.y+"px";
+    cloud.style.width=s.open.w+"px"; cloud.style.height=s.open.h+"px";
+    bubble.style.left=s.bubble.x+"px"; bubble.style.top=s.bubble.y+"px";
+    const stage=cloudStageSize(), size=Math.min(CLOUD_BUBBLE, stage.w, stage.h);
+    bubble.style.width=size+"px"; bubble.style.height=size+"px";
+    // Shrinking on its own (a layout arrived) must not strand focus inside a
+    // hidden window: it moves to the bubble.
+    const strand=s.mode==="bubble" && bubble.hidden && document.activeElement && cloud.contains(document.activeElement);
+    bubble.hidden=s.mode!=="bubble";
+    if(strand) bubble.focus();
+    $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
+    if(s.mode==="open") setCloudUnread(false);
+  }
+  function saveChatCloud(){
+    if(!cloudState || !cloudStoreKey) return;
+    cloudState.userSet=true;
+    try{
+      localStorage.setItem(cloudStoreKey, JSON.stringify(
+        {v:1, mode:cloudState.mode, open:cloudState.open, bubble:cloudState.bubble}));
+    }catch(_error){ /* storage full or disabled: the cloud still works, unremembered */ }
+  }
+  function setChatCloudMode(mode){
+    if(!cloudState) return;
+    cloudState.mode=mode;
+    applyChatCloud(); saveChatCloud();
+    const target=mode==="open" ? $("composer-input") : $("chat-cloud-bubble");
+    if(target) target.focus();
+  }
+  // Moves (dx, dy) and resizes (dw, dh) from a starting state, clamped.
+  function cloudShifted(from, dx, dy, dw, dh){
+    const s={mode:from.mode, open:Object.assign({}, from.open), bubble:Object.assign({}, from.bubble),
+             userSet:from.userSet};
+    if(s.mode==="bubble"){ s.bubble.x+=dx; s.bubble.y+=dy; }
+    else{ s.open.x+=dx; s.open.y+=dy; s.open.w+=dw; s.open.h+=dh; }
+    return cloudClamp(s, cloudStageSize());
+  }
+  function setCloudUnread(on){
+    const badge=$("chat-cloud-badge"); if(badge) badge.hidden=!on;
+    paintCloudBubbleLabel();
+  }
+  function paintCloudBubbleLabel(){
+    const bubble=$("chat-cloud-bubble"), badge=$("chat-cloud-badge");
+    if(!bubble) return;
+    const parts=["Open the chat with your agent"];
+    if(bubble.classList.contains("is-thinking")) parts.push("your agent is working");
+    if(badge && !badge.hidden) parts.push("new message");
+    bubble.setAttribute("aria-label", parts.join(", "));
+  }
+  // One pointer gesture (mouse, pen or touch): drag the window, drag its resize
+  // corner, or drag the bubble. A bubble that moved is not also a click.
+  function wireCloudDrag(handle, kind){
+    handle.addEventListener("pointerdown", ev=>{
+      if(ev.button!==0 || !cloudState) return;
+      if(kind==="move" && ev.target.closest && ev.target.closest(".chat-cloud-btn")) return;
+      const start={x:ev.clientX, y:ev.clientY}, origin=cloudState;
+      let moved=false;
+      try{ handle.setPointerCapture(ev.pointerId); }catch(_error){ /* synthetic pointer */ }
+      const move=e=>{
+        const dx=e.clientX-start.x, dy=e.clientY-start.y;
+        if(!moved && Math.abs(dx)+Math.abs(dy)<4) return;
+        moved=true;
+        $("chat-cloud").classList.add("is-dragging");
+        cloudState=kind==="resize" ? cloudShifted(origin,0,0,dx,dy) : cloudShifted(origin,dx,dy,0,0);
+        applyChatCloud();
+        e.preventDefault();
+      };
+      const end=e=>{
+        handle.removeEventListener("pointermove",move);
+        handle.removeEventListener("pointerup",end);
+        handle.removeEventListener("pointercancel",end);
+        $("chat-cloud").classList.remove("is-dragging");
+        // Only a completed drag produces a click to swallow; a cancelled one does not.
+        if(moved){ saveChatCloud(); if(kind==="bubble" && e.type==="pointerup") cloudSuppressClick=true; }
+      };
+      handle.addEventListener("pointermove",move);
+      handle.addEventListener("pointerup",end);
+      handle.addEventListener("pointercancel",end);
+    });
+  }
+  // Arrow keys move the window or bubble; Shift and an arrow resize the window.
+  function cloudKeydown(ev){
+    const arrows={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]};
+    const dir=arrows[ev.key];
+    if(!dir || !cloudState) return;
+    ev.preventDefault();
+    const dx=dir[0]*CLOUD_STEP, dy=dir[1]*CLOUD_STEP;
+    cloudState=ev.shiftKey && cloudState.mode==="open"
+      ? cloudShifted(cloudState,0,0,dx,dy) : cloudShifted(cloudState,dx,dy,0,0);
+    applyChatCloud(); saveChatCloud();
+  }
+  function wireChatCloud(){
+    cloudWired=true;
+    wireCloudDrag($("chat-cloud-bar"),"move");
+    wireCloudDrag($("chat-cloud-resize"),"resize");
+    wireCloudDrag($("chat-cloud-bubble"),"bubble");
+    $("btn-cloud-shrink").addEventListener("click",()=>setChatCloudMode("bubble"));
+    $("chat-cloud-bubble").addEventListener("click",()=>{
+      if(cloudSuppressClick){ cloudSuppressClick=false; return; }
+      setChatCloudMode("open");
+    });
+    $("chat-cloud-bar").addEventListener("keydown",cloudKeydown);
+    $("chat-cloud-bubble").addEventListener("keydown",cloudKeydown);
+    if(typeof ResizeObserver==="function") new ResizeObserver(()=>refreshChatCloud()).observe($("chat-stage"));
+    window.addEventListener("resize",()=>refreshChatCloud());
+    // The bubble still says what the agent is doing: working while Stop is
+    // showing, and a badge for a reply that arrived while it was shrunk.
+    if(typeof MutationObserver==="function"){
+      const stop=$("btn-stop"), bubble=$("chat-cloud-bubble");
+      if(stop) new MutationObserver(()=>{
+        bubble.classList.toggle("is-thinking", !stop.hidden); paintCloudBubbleLabel();
+      }).observe(stop,{attributes:true,attributeFilter:["hidden"]});
+      new MutationObserver(records=>{
+        if(!cloudState || cloudState.mode!=="bubble") return;
+        for(const r of records) for(const node of r.addedNodes){
+          if(node.classList && node.classList.contains("msg--universe")){ setCloudUnread(true); return; }
+        }
+      }).observe($("thread"),{childList:true});
+    }
+  }
   async function enterSignedIn(){
     ModelPicker.reset();
     // The login this answer is FOR. A /app/me that lands after a sign-out
@@ -4481,6 +4836,7 @@
     // before anything this page may restore (held lines, the in-flight record,
     // saved attachments), which is readable only once owner and home are known.
     if(me&&me.universe_id) setQueueScope(me.universe_id);
+    if(typeof showCommandCenterName === "function") showCommandCenterName(me&&me.name);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
     // In this order: a reply left by a previous owner is discarded by the rebind
@@ -4506,6 +4862,7 @@
     // Powered or not, this is the command center's own chat. The owner and home were
     // taken above, from the same verified `me`.
     showView("chat"); startHeartbeat(); warmSession();
+    if(typeof refreshChatCloud === "function") refreshChatCloud();
     // Build 3's App Review Notes and submitted product surface are voice-dark.
     // The hosted web app may expose Voice, but a Capacitor shell must not make it
     // reachable until a later store submission declares and verifies that surface.
@@ -5792,6 +6149,8 @@
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
     $("btn-stop").addEventListener("click",()=>interruptTurn());
+    // Opens the model menu for the NEXT message; Stop stays the owner's call.
+    $("btn-try-model").addEventListener("click",()=>{ $("btn-models").click(); });
     // Escape stops the turn, as in Claude Code -- unless something else on the
     // page already used this Escape (a menu or dialog closing handles it first).
     document.addEventListener("keydown",(e)=>{

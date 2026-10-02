@@ -261,3 +261,31 @@ def test_the_status_line_says_a_failed_tool_and_why(tmp_path):
 def test_no_tool_activity_leaves_the_original_line(tmp_path):
     out = _page(tmp_path, [])
     assert out["line"] == "Your agent is thinking..."
+
+
+def test_model_wait_survives_tool_painter_then_yields_to_running_tool(tmp_path):
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    if _NODE is None:
+        pytest.skip("node is required to execute the page's own source")
+    page, _csp = onboarding.render_app_html()
+    out = _run(tmp_path, page, {}, r"""
+setQueueOwner("p-1");
+const first=sendTurn("continue the task"); await settle();
+readServerTurn({active_turn:{turn_id:"t",state:"inference_started",age_s:300,
+  round:4,model:"vendor/example-model",round_age_s:240,
+  tools:[{tool:"bash",summary:"old command",state:"done"}]}});
+renderWorking(); const waiting=indicator().line;
+readServerTurn({active_turn:{turn_id:"t",state:"tools_pending",age_s:301,
+  round:4,model:"vendor/example-model",round_age_s:241,
+  tools:[{tool:"bash",summary:"pytest",state:"running"}]}});
+renderWorking(); const running=indicator().line;
+gates[0].resolve({reply:"Done."}); await first; await settle();
+console.log(JSON.stringify({waiting,running}));
+""")
+    assert "step 4" in out["waiting"]
+    assert "waiting on example-model for 4 min" in out["waiting"]
+    assert "old command" not in out["waiting"]
+    assert "running bash: pytest" in out["running"]
+    assert "waiting on" not in out["running"]
