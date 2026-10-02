@@ -61,11 +61,35 @@ counts, and a test that fails on any surviving operational old name or id.
 
 Any of these stops the cutover:
 
+- the **measured migration duration** from the production-copy dry run, times
+  3, does not fit the cutover deploy's deadlines. The migration runs before
+  the port binds, and `deploy_fail_safe.sh` fails health after 180 s by
+  default (`:190`, `:272`). The deploy job stops at 15 min
+  (`deploy-prod.yml:68`). The cutover deploy sets both explicitly from the
+  measurement, and the external phase is included in the count;
+- **old-layout fixtures are missing.** The migration's tests need data roots
+  built by the **pre-cutover** creators, with real 26-character ids
+  (`ids.py:33`). Those fixtures are generated and committed, with a
+  creator-coverage manifest naming every schema creator, **before** the
+  codemod changes the creators. Today's deletion tests hand-build simplified
+  schemas with 16-character ids (`test_account_deletion.py:97`, `:39`), so
+  they cannot stand in;
+
 - an inventory category the migration does not handle;
 - a dry-run count or reader mismatch;
 - an unrehearsed rollback;
 - C4a not in production for at least a day;
 - a WorkOS record holding an id that the live check finds.
+
+## E4b. Credential custody digests move with the id (refute #5)
+
+The vault is not id-independent. Both custody-reference formulas hash the
+universe id (`credential_vault.py:1234`, `:1256`), and the reader rejects a
+mismatched reference (`:1645`). Phase 2 (ids) therefore recomputes every
+custody reference and every downstream copy of it. The dry run proves each
+credential still **resolves and is usable** through the vault reader. Loading
+the JSON file is not enough. D11's statement that nothing in the vault is
+derived from the id is corrected here.
 
 ## E5. Ids are never shown to people (founder, 2026-10-02)
 
@@ -73,8 +97,13 @@ Any of these stops the cutover:
 form after the cutover. It is a machine value only.
 
 **Covered surfaces:** the app (`app.html`, `app_ui.js`), the website, push and
-in-app notification text, and served agent guidance about how to refer to the
-command center. None of them renders an id. They show the command center's
+in-app notification text, served agent guidance about how to refer to the
+command center, the **desktop** launcher, tray and tray notifications, and
+**human-readable error text**. None of them renders an id. The refute found
+that the desktop uses the home directory's basename as the name
+(`desktop/launcher.py:479`), shows it in the tray (`tray.py:332`) and prefixes
+desktop notifications with it (`host_tray.py:208`), and that error text
+interpolates the id (`api/universe.py:3916`). They show the command center's
 name, falling back to **"Your command center"**.
 
 **Guard test:** `tests/test_ids_never_shown.py`. It drives the app's render
@@ -84,8 +113,9 @@ visible text. It also checks two more things:
 - served descriptions and instructions, which must never instruct the agent to
   speak or show an id.
 
-It lands with or after notify-prompt's app-header fix, which removes the one
-known place the raw id shows today.
+The guard also drives the desktop name path and scans error-message
+templates. It lands with or after notify-prompt's app-header fix. The desktop
+and error-text fixes ship in the cutover image.
 
 ## E6. The target on-disk layout: storage moves once
 
@@ -104,10 +134,38 @@ Under `data_dir()`:
 
 | Path | Holds | Mounted into the jail/box |
 |---|---|---|
-| `cc-<ulid>/` | User content: brain files (identity, founder, origin, body, orgchart, projects, goals, index, log, voice, `AGENTS.md`), harness dirs (skills, prompts, extensions, workflows, bin, notes, wiki), upload bytes (verbatim, Hard Rule 9), run output files, permanent workspaces, anything the agent creates | Yes. It is the future box volume (`/cc`) |
-| `.platform/cc-<ulid>/` | Per-command-center platform state: the credential vault and file-OAuth CLI credentials (`.credentials/`); the per-home DBs (runs, consent, usage, attention, conversation custody and journals, checkpoints, `outbound.db`, `knowledge.db`, `story.db`, `lancedb`); rules, auto-review, activity, pending effects, proposals, import quarantine, browser profile; the `.command_center_id` marker, lease/seat/slot/lock/stamp files, worker-supervisor state and the egress proxy socket (today's `.universe-sidecars/<id>/` folds in here); upload custody records; and the owner-door files `soul.md` and `config.yaml` | Never. The agent gets a read-only projection of `soul.md` and `config.yaml`, refreshed at wake and never read back |
+| `cc-<ulid>/` | User content: brain files (identity, founder, origin, body, orgchart, projects, goals, index, log, voice, `AGENTS.md`), **`soul.md`, `soul_versions/` and `config.yaml`**, harness dirs (skills, prompts, extensions, workflows, bin, notes, wiki) and `notes.json`, upload bytes (verbatim, Hard Rule 9), run output files, permanent workspaces, anything the agent creates | Yes. It is the future box volume (`/cc`). The daemon reads every file here as untrusted |
+| `.platform/cc-<ulid>/` | Per-command-center platform state: the credential vault and file-OAuth CLI credentials (`.credentials/`); the per-home DBs (runs, consent, usage, attention, conversation custody and journals, checkpoints, `outbound.db`, `knowledge.db`, `story.db`, `lancedb`); rules, auto-review, activity, pending effects, proposals, import quarantine, browser profile; the `.command_center_id` marker, lease/seat/slot/lock/stamp files, worker-supervisor state and the egress proxy socket (today's `.universe-sidecars/<id>/` folds in here); upload custody records; and the **trusted policies** `soul.edit.md` (which learning edits are allowed, `soul_edit.py:133`) and `dispatcher_config.yaml` (external-request and paid-bid acceptance, `dispatcher.py:449`) | Never |
 | `.platform/accounts/<account_id>/` | Per-account platform state: storage allocation ledger, compute-hour meter, seats. Created empty by the cutover | Never |
 | root DBs (`.tinyassets.db`, `.runs.db`, `.langgraph_runs.db`, ...) | Unchanged location; tables and columns renamed (D7) | Never |
+
+**`soul.md` and `config.yaml` stay agent-editable** (lead, 2026-10-02). The
+agent is self-improving: it edits its own persona, instructions, config and
+skills, with versioning, and writes its brain continuously. That is
+founder-approved harness behaviour. Moving these files to platform state with a
+read-only copy, as the first draft of this table did, would take that away. The
+refute found no trust reason to do so: the daemon already reads these files as
+untrusted (`daemon-reads-universe-files-as-untrusted`). What the daemon *does*
+trust about them is the edit **policy**, `soul.edit.md`, and that moves to
+platform state, so the agent can change its soul but not the rules for changing
+it.
+
+**Mixed consumers get both roots explicitly** (refute #1). These readers span
+both sides and are adapted, then tested end to end:
+
+- **soul editing** reads its policy from `platform_dir(id)` and writes brain
+  files under `command_center_dir(id)` (`soul_edit.py:149`, `:375`);
+- **self-model and persona** read `soul.md` from `command_center_dir(id)`
+  (`universe_self_model.py:46`);
+- **config** reads `config.yaml` from `command_center_dir(id)` (`config.py:158`);
+- **the dispatcher** reads `dispatcher_config.yaml` from `platform_dir(id)`;
+- **vault ownership lookup** finds the root database through the resolver, not
+  `universe.parent`, which would become `.platform`
+  (`credential_vault.py:273`).
+
+No caller passes one directory and expects both kinds of file under it. A test
+fails if a trusted policy is read from `command_center_dir`, or a user file
+from `platform_dir`.
 
 **Answers that set the split:**
 
@@ -122,8 +180,23 @@ Under `data_dir()`:
 any hand-built path (D11).
 
 **What this adds to the migration.** Phase 1 (names) also *moves* each item
-to its target place. The move is a same-filesystem rename, made atomic per
-item, with progress recorded. The inventory (E1) classifies every entry of
+to its target place, with progress recorded:
+
+- **Database families move as one journaled unit** (refute #2). The storage
+  helper documents committed-data loss when a primary moves without its WAL
+  (`storage/__init__.py:323`), and knowledge storage runs in WAL
+  (`knowledge_graph.py:143`). So each SQLite database is checkpointed
+  (`wal_checkpoint(TRUNCATE)`) and closed. Its `-wal`/`-shm` family then moves
+  under a journal entry, and a crash between any two renames resumes to a
+  consistent family. Tests crash between every pair.
+- **The migration releases its own handles,** including the cached LanceDB
+  connection (`retrieval/vector_store.py:47`), before moving a store.
+- **Preflight:** every source and destination is on the same device
+  (`st_dev`), and no submount survives under a home. Today's jail binds
+  individual entries (`universe_tools.py:303`), and the server is down, so
+  none should exist, but the run checks rather than assumes.
+- **No symlinks** are used to relocate anything. The file API rejects links
+  (`universe_files.py:105`), so every reader is moved to the resolver instead. The inventory (E1) classifies every entry of
 every home into one of the four rows above. An entry it cannot classify stops
 the run, so nothing is guessed into the box.
 
