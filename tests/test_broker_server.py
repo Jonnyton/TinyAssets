@@ -1,0 +1,283 @@
+"""The broker process over a real Unix socket (S6, I14).
+
+POSIX only: the server classifies peers by ``SO_PEERCRED``. The ledger, op
+store and fence are real; the upstream is an injected dispatch returning a
+scripted stream, so these tests pin the protocol: authorization per stream,
+the fence, op_id records, credit, cancel and the request/close client.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import socket
+import sys
+import threading
+import time
+
+import pytest
+
+from tinyassets import rpc_frames as rf
+from tinyassets.broker.client import BrokerClient, BrokerRefused
+from tinyassets.broker.fence import Fence
+from tinyassets.broker.ops import OpStore
+from tinyassets.broker.server import OWNER, BrokerServer
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
+    reason="the broker serves a Unix socket and reads peer credentials",
+)
+
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def new_op_id(tail: str = "0" * 16) -> str:
+    ms, head = int(time.time() * 1000), ""
+    for _ in range(10):
+        head = _CROCKFORD[ms % 32] + head
+        ms //= 32
+    return head + tail
+
+
+class Script:
+    """A scripted upstream stream with the BrokerStream surface."""
+
+    def __init__(self, pieces, *, status=200, gate=None):
+        self.pieces = list(pieces)
+        self.status, self.reason, self.headers, self.redirect_count = status, "OK", {}, 0
+        self.gate = gate
+        self.closed = threading.Event()
+
+    def read(self, max_bytes):
+        if self.gate is not None:
+            if not self.gate.wait(10) or self.closed.is_set():
+                raise RuntimeError("closed")
+        if self.closed.is_set():
+            raise RuntimeError("closed")
+        if not self.pieces:
+            return None
+        piece = self.pieces.pop(0)
+        return piece[:max_bytes] if piece is not None else b""
+
+    def close(self):
+        self.closed.set()
+        if self.gate is not None:
+            self.gate.set()
+
+
+class Lease:
+    def __init__(self):
+        self.generation, self.proof = 1, "proof-1"
+
+    def verify(self, generation, proof):
+        return (generation, proof) == (self.generation, self.proof)
+
+
+class Ledger:
+    """authorize_exact as the real ledger would answer for one owner's grant."""
+
+    def __init__(self, principal):
+        self.principal = principal
+
+    def authorize_exact(self, *, universe_id, grant_id, connection_id):
+        from tinyassets.storage.outbound_connections import GrantResolutionError
+
+        if (self.principal, universe_id, grant_id, connection_id) != (
+            "alice", "cc-alice", "grant-a", "conn-a",
+        ):
+            raise GrantResolutionError("outbound connection grant identity mismatch")
+        return object(), object()
+
+
+@pytest.fixture
+def broker(tmp_path):
+    lease = Lease()
+    fence = Fence(tmp_path / "fence.json", verify_lease_proof=lease.verify)
+    ops = OpStore(tmp_path / "ops.db")
+    sent = []
+    upstreams = {"next": lambda: Script([b"data: hello\n\n", b"data: [DONE]\n\n"])}
+
+    def dispatch_for(principal, command_center, grant_id, resource):
+        def dispatch(grant, verb, request, *, stream, idle_s=None):
+            sent.append((principal, grant, verb, request))
+            return upstreams["next"]()
+
+        return dispatch
+
+    server = BrokerServer(ledger_for=Ledger, dispatch_for=dispatch_for, ops=ops, fence=fence,
+                          roles={os.getuid(): OWNER})
+    path = tmp_path / "b.sock"
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def run():
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(server.serve(path))
+        started.set()
+        loop.run_forever()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert started.wait(5)
+    generation, token = fence.barrier(1, "proof-1")
+    state = {"generation": generation, "token": token}
+    client = BrokerClient(path, principal="alice", command_center="cc-alice",
+                          fence=lambda: (state["generation"], state["token"]), timeout=10)
+    yield type("B", (), dict(server=server, path=path, client=client, sent=sent, lease=lease,
+                             fence=fence, ops=ops, state=state, upstreams=upstreams,
+                             loop=loop))
+    loop.call_soon_threadsafe(loop.stop)
+
+
+def _call(broker, op_id=None, **overrides):
+    kwargs = dict(grant_id="grant-a", connection_id="conn-a", verb="POST",
+                  request={"url": "https://models.example.com/v1/chat", "body": {}},
+                  op_id=op_id or new_op_id())
+    kwargs.update(overrides)
+    return broker.client.request(**kwargs)
+
+
+def test_a_request_streams_through_the_broker_and_collects_like_request_close(broker):
+    result = _call(broker)
+    assert result["status"] == 200 and result["body"] == "data: hello\n\ndata: [DONE]\n\n"
+    assert len(broker.sent) == 1
+
+
+def test_another_principals_grant_is_refused_before_anything_is_sent(broker):
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    with pytest.raises(GrantResolutionError):
+        _call(broker, grant_id="grant-b")
+    assert broker.sent == []
+
+
+def test_a_reused_op_id_is_never_sent_twice(broker):
+    op = new_op_id()
+    _call(broker, op_id=op)
+    with pytest.raises(BrokerRefused) as refused:
+        _call(broker, op_id=op)
+    assert refused.value.side_effect_state == "unknown"
+    assert len(broker.sent) == 1
+
+
+def test_a_stream_below_the_fence_is_refused_with_no_network(broker):
+    stale = dict(broker.state)
+    broker.lease.generation, broker.lease.proof = 2, "proof-2"
+    generation, token = broker.fence.barrier(2, "proof-2")
+    broker.state.update(stale)  # the old owner keeps its old pair
+    with pytest.raises(BrokerRefused) as refused:
+        _call(broker)
+    assert refused.value.side_effect_state == "none"
+    assert broker.sent == []
+    broker.state.update(generation=generation, token=token)
+    assert _call(broker)["status"] == 200
+
+
+def test_the_barrier_cancels_a_stream_of_the_old_generation(broker):
+    gate = threading.Event()
+    script = Script([b"never"], gate=gate)
+    broker.upstreams["next"] = lambda: script
+    errors = []
+
+    def call():
+        try:
+            _call(broker)
+        except Exception as exc:  # noqa: BLE001 - inspected below
+            errors.append(exc)
+
+    thread = threading.Thread(target=call)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not broker.sent and time.monotonic() < deadline:
+        time.sleep(0.05)
+    broker.lease.generation, broker.lease.proof = 2, "proof-2"
+    broker.fence.barrier(2, "proof-2", cancel_older=broker.server._cancel_older,
+                         close_older=broker.server._close_older)
+    thread.join(5)
+    assert script.closed.is_set() and errors
+
+
+def test_status_reports_an_operation_that_may_have_sent(broker):
+    op = new_op_id()
+    _call(broker, op_id=op)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5)
+        sock.connect(str(broker.path))
+        sock.sendall(rf.control(rf.CONNECTION, {"op": "STATUS", "op_id": op,
+                                                "principal": "alice",
+                                                "command_center": "cc-alice"}))
+        answer = rf.read_frame_blocking(sock).control()
+    assert answer["state"] == "completed" and answer["side_effect_state"] == "unknown"
+
+
+def test_a_cancel_closes_the_upstream_and_ends_the_stream(broker):
+    gate = threading.Event()
+    script = Script([b"x"], gate=gate)
+    broker.upstreams["next"] = lambda: script
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5)
+        sock.connect(str(broker.path))
+        sock.sendall(rf.control(1, {
+            "op": "OPEN", "op_id": new_op_id(), "principal": "alice",
+            "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+            "verb": "POST", "request": {"url": "u", "body": {}}, "credit": 10,
+            **broker.state,
+        }))
+        frames = [rf.read_frame_blocking(sock).control()["op"]]  # ADMITTED
+        frames.append(rf.read_frame_blocking(sock).control()["op"])  # HEAD
+        sock.sendall(rf.control(1, {"op": "CANCEL"}))
+        end = rf.read_frame_blocking(sock).control()
+    assert frames == ["ADMITTED", "HEAD"]
+    assert end["op"] == "END" and end["outcome"] == "cancelled"
+    assert end["side_effect_state"] == "unknown" and script.closed.is_set()
+
+
+def test_data_never_exceeds_the_credit_granted(broker):
+    broker.upstreams["next"] = lambda: Script([b"a" * 100, b"b" * 100])
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5)
+        sock.connect(str(broker.path))
+        sock.sendall(rf.control(1, {
+            "op": "OPEN", "op_id": new_op_id(), "principal": "alice",
+            "command_center": "cc-alice", "grant_id": "grant-a", "connection_id": "conn-a",
+            "verb": "POST", "request": {"url": "u", "body": {}}, "credit": 30,
+            **broker.state,
+        }))
+        received = 0
+        while True:
+            frame = rf.read_frame_blocking(sock)
+            if frame.kind == rf.DATA:
+                received += len(frame.payload)
+                continue
+            if frame.control()["op"] == "HEAD":
+                break
+        sock.settimeout(0.5)
+        try:
+            while True:
+                frame = rf.read_frame_blocking(sock)
+                assert frame.kind == rf.DATA
+                received += len(frame.payload)
+        except TimeoutError:
+            pass
+        assert received == 30
+        sock.settimeout(5)
+        sock.sendall(rf.control(1, {"op": "CREDIT", "n": 1000}))
+        while True:
+            frame = rf.read_frame_blocking(sock)
+            if frame.kind == rf.DATA:
+                received += len(frame.payload)
+            elif frame.control()["op"] == "END":
+                break
+    assert received == 200
+
+
+def test_an_unmapped_uid_is_dropped_before_any_frame(broker):
+    broker.server._roles = {}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5)
+        sock.connect(str(broker.path))
+        sock.sendall(rf.control(rf.CONNECTION, {"op": "STATUS", "op_id": new_op_id()}))
+        try:
+            answer = rf.read_frame_blocking(sock)
+        except ConnectionResetError:  # closed with our frame unread: also a drop
+            answer = None
+        assert answer is None

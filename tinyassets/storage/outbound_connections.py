@@ -5470,6 +5470,29 @@ class ConnectionLedger:
         connection_id: str,
     ) -> ScopedConnectionProxy:
         """Resolve one named current grant and connection for the principal."""
+        grant, resource = self.authorize_exact(
+            universe_id=universe_id, grant_id=grant_id, connection_id=connection_id,
+        )
+        return self._start_scoped_proxy(
+            grant_id=grant.grant_id,
+            universe_id=grant.universe_id,
+            provider=resource.provider,
+            destination=resource.destination,
+            scopes=resource.scopes,
+            owner_user_id=resource.owner_user_id,
+            connection_type=resource.connection_type,
+        )
+
+    def authorize_exact(
+        self, *, universe_id: str, grant_id: str, connection_id: str,
+    ) -> tuple[ConnectionGrant, ConnectionResource]:
+        """The exact checks every broker request runs (I14 decision 2).
+
+        The authenticated principal, an active grant, the grant's owner and
+        command center, the connection's identity and owner, and revocation.
+        ``resolve_exact_scoped_proxy`` and the broker process both call this one
+        definition.
+        """
         owner_user_id = self.require_authenticated_principal_id()
         grant = self.require_active_grant(_required("grant_id", grant_id))
         resource = self._get_connection_resource(_required("connection_id", connection_id))
@@ -5484,15 +5507,27 @@ class ConnectionLedger:
         )
         if not all(exact):
             raise GrantResolutionError("outbound connection grant identity mismatch")
-        return self._start_scoped_proxy(
-            grant_id=grant.grant_id,
-            universe_id=grant.universe_id,
-            provider=resource.provider,
-            destination=resource.destination,
-            scopes=resource.scopes,
-            owner_user_id=resource.owner_user_id,
-            connection_type=resource.connection_type,
-        )
+        return grant, resource
+
+    def broker_dispatch_config(
+        self, *, grant_id: str, universe_id: str, provider: str, destination: str,
+        owner_user_id: str, connection_type: str = "",
+    ) -> dict[str, Any]:
+        """The trusted dispatcher's configuration for one grant (worker or broker)."""
+        grant_runtime_id = hashlib.sha256(grant_id.encode("utf-8")).hexdigest()
+        return {
+            "allow_test_fixtures": self._allow_test_fixtures,
+            "allow_http_connections": _outbound_http_enabled(),
+            "ledger_db_path": str(self._db_path.resolve()),
+            "universe_dir": str((self._db_path.parent / universe_id).resolve()),
+            "provider": provider,
+            "destination": destination,
+            "connection_type": (connection_type or "").strip().lower(),
+            "owner_user_id": owner_user_id,
+            "runtime_root": str(
+                (self._db_path.parent / ".outbound-proxy" / grant_runtime_id).resolve()
+            ),
+        }
 
     def _start_scoped_proxy(
         self,
@@ -5506,26 +5541,11 @@ class ConnectionLedger:
         connection_type: str = "",
     ) -> ScopedConnectionProxy:
         factory_reference = "credential_broker_v1"
-        grant_runtime_id = hashlib.sha256(
-            grant_id.encode("utf-8")
-        ).hexdigest()
-        factory_config = {
-            "allow_test_fixtures": self._allow_test_fixtures,
-            "allow_http_connections": _outbound_http_enabled(),
-            "ledger_db_path": str(self._db_path.resolve()),
-            "universe_dir": str((self._db_path.parent / universe_id).resolve()),
-            "provider": provider,
-            "destination": destination,
-            "connection_type": (connection_type or "").strip().lower(),
-            "owner_user_id": owner_user_id,
-            "runtime_root": str(
-                (
-                    self._db_path.parent
-                    / ".outbound-proxy"
-                    / grant_runtime_id
-                ).resolve()
-            ),
-        }
+        factory_config = self.broker_dispatch_config(
+            grant_id=grant_id, universe_id=universe_id, provider=provider,
+            destination=destination, owner_user_id=owner_user_id,
+            connection_type=connection_type,
+        )
         # Resolve the budget BEFORE spawning: a validation failure here must not
         # leak an already-started child (Codex FIX C).
         timeout = _proxy_startup_timeout_seconds()
