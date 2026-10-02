@@ -121,8 +121,25 @@ so a bundle exists only when the native shell changes.
 | Code | Name | Target date | Native change | State |
 |---|---|---|---|---|
 | 6 | `1.0.5` | 2026-10-04 (day 3) | the back gesture gets a policy: walk WebView history, then one confirmation before leaving, and leave without tearing down the signed-in WebView | checked in |
-| 7 | `1.0.6` | 2026-10-09 (day 8) | keyboard + window-inset behaviour, so the composer is never under the keyboard or the system bars | planned |
-| 8 | `1.0.7` | 2026-10-13 (day 12) | splash hand-off: hold the splash until the first page actually paints instead of a fixed 1200 ms | planned |
+| 7 | `1.0.6` | 2026-10-09 (day 8) | the bundled offline page becomes reachable — `server.errorPath` plus a Try again that returns to the live app | planned |
+| 8 | `1.0.7` | 2026-10-13 (day 12) | launch colour: the shell's window and splash background match what the app actually renders, so opening it has no colour flash | planned |
+
+Two candidates were dropped after reading the shipped dependency rather than
+assuming, and they are recorded here so nobody re-proposes them:
+
+- **Keyboard and safe-area insets are already handled natively.** Capacitor 8
+  registers `com.getcapacitor.plugin.SystemBars` from `Bridge` unconditionally.
+  It pads the WebView's parent by the IME inset while the keyboard is visible and
+  injects `--safe-area-inset-*` custom properties into the page. Anything left is
+  the page *using* those properties, which is a web change that ships instantly
+  and is not a bundle at all.
+- **Notification tap already opens the right request.** `MainActivity.notificationTarget`
+  has resolved `/app?request=<id>[&item=<id>]`, cold start included, since 1.0.4.
+
+`mobile/www/index.html` is the reason 1.0.6 exists: it is a finished offline and
+loading page that **nothing can currently display**, because Capacitor only falls
+back to the bundled `webDir` when `server.errorPath` is set, and it is not. An
+offline tester gets the WebView's own error page with the raw URL on it instead.
 
 Nothing in a window update may touch sign-in, `server.url`, or push. Bump the code
 and the name together, one update per bundle; a code Play has seen is refused even
