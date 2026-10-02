@@ -16,7 +16,7 @@ type Row = {
 };
 
 const baked = snapshot as Snapshot;
-const bakedRows: Row[] = discoverableRows(baked.universes);
+const bakedRows: Row[] = discoverableRows(baked.command_centers);
 const bakedStamp = `checked-in snapshot from ${fmtStampStable(baked.fetched_at)}`;
 
 /**
