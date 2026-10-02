@@ -406,3 +406,24 @@ C1 adds no holding queue and makes no new durability claim. A frontend that cann
 - **14. Payoff.** Of the last 25 commits touching `app.html`, 19 also changed owner files, and only about 6 were shell-only. "Frontend-only deploys" is a real but SMALL class; it does not mean "most deploys interrupt nothing".
 
 **Proposed (sent to the lead):** park C1. Phase 1 already keeps turns alive through owner deploys under its cap. The remaining cost is deploy latency during long turns, and its real fix is the per-command-center handover, deferred to S4.
+
+### C1 revision 3: round-2 findings 12 and 13, and deploy-incident's four points
+
+**C1-6. Trusted forwarding on the socket only (finding 12).** The owner's Unix-socket listener runs a small ASGI middleware that rewrites `scope["scheme"]`, `scope["server"]`/`Host` and `scope["client"]` from frontend-set headers.
+- **The headers:** `X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Forwarded-For`.
+- **Normalisation:** the frontend strips any incoming copies first. It then sets the scheme to `https`, the host from the edge Worker's `X-Forwarded-Host` (or its own configured public host), and the client from the connecting peer or the edge's forwarded-for.
+- **Scope:** the middleware is applied ONLY to the socket listener. uvicorn's `forwarded_allow_ips` stays at its default on TCP, so a TCP client cannot spoof these headers.
+- **Test:** an HTTPS request through the frontend to a slash-redirecting route returns an `https` Location.
+
+**C1-7. The frontend renders the shell with the owner's own renderer (finding 13).**
+- **The frontend image is the daemon image,** run with a different entrypoint (`tinyassets.frontend`). It calls `onboarding.render_app_html` per request. That keeps today's config injection, bundled JS, theme values and fresh CSP nonce, without copying the renderer.
+- **The renderer's inputs must be stateless:** environment, public configuration and the build identity. Anything that reads an owner store is proxied instead. C1a lists every input and pins it with a test, which fails if the renderer opens a store.
+- **Discovery documents are proxied to the owner** (they depend on its auth config).
+- **Build identity:** the frontend serves `HEAD /app` itself and sets `X-TinyAssets-Build` to ITS OWN build, so `CFG.build` and the header come from one source and the browser's update check stays coherent.
+- **Classification:** because the frontend runs the same image, a "frontend-only" deploy still means a change confined to the shell's rendered assets and inputs. `runtime_paths` classifies by file, as in C1-5.
+
+**C1-8. Health, restarts and ordering (deploy-incident).**
+1. **Health.** A frontend serves a shallow `/healthz` for HAProxy and for its own container. The owner exposes `/mcp/pulse` on its socket for its own container healthcheck. The watchdogs' restart action targets the owner unit, never the frontends. An unhealthy owner must not read as "restart everything".
+2. **Key rotation.** Moot: there is no envelope key.
+3. **Owner restart while the frontends stay up.** The frontends do not queue in C1 (C1-4). They answer an honest "TinyAssets is restarting" error, and `/healthz` stays up, so HAProxy keeps the colour in rotation: the client gets a real message, not a 502.
+4. **Deploy ordering.** By diff, as #4272 assumed. A frontend-only diff takes the blue-green switch; an owner diff takes phase 1's whole-process wait. A diff touching both runs the owner deploy first, then the frontend switch.
