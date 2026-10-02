@@ -71,8 +71,8 @@ def test_read_graph_pins_graph_id_and_target(monkeypatch):
     assert captured == {"target": "graph", "graph_id": "u-pinned"}
 
 
-def test_get_status_pins_universe_id(monkeypatch):
-    """Codex #9: get_status keys off universe_id, not graph_id — pin the right arg."""
+def test_get_status_pins_command_center_id(monkeypatch):
+    """Codex #9: get_status keys off command_center_id, not graph_id — pin the right arg."""
     import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
@@ -83,7 +83,7 @@ def test_get_status_pins_universe_id(monkeypatch):
     mock_engine_admission(monkeypatch, {s._GRAPH_ID})
 
     s.get_status()
-    assert captured == {"universe_id": "u-pinned"}
+    assert captured == {"command_center_id": "u-pinned"}
 
 
 def test_handlers_refused_when_unbound(monkeypatch):
