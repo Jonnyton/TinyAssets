@@ -151,6 +151,8 @@ box it would be in. A leaderless group is just more processes in the box. Tests:
 ## D8. Bounded calls and the owner fence (every driver)
 
 **Bounded calls.** No caller-facing call waits without bound.
+In the dev/test-only local driver the bound covers waiting for the box, not filesystem work
+once the lock is held; in the gVisor driver the host's watchdog bounds the whole call.
 - Every call takes the box lock with a deadline: the provider's `call_timeout_s` (default 30
   s), or a tighter one set by `with provider.bounded(s):` for calls made on that thread.
 - A call that times out before it could have had any effect raises `BoxDeadlineBeforeStart`.
@@ -174,6 +176,8 @@ generation for the command center (`target-architecture` D11, `execution-owner-l
 - An exec racing the fence therefore either starts first, and the fence sees it, or arrives
   after, and is refused. The contract test runs that race 20 times. Exactly one side wins each
   time.
+  In gVisor, a busy reply delays handover; an idle reply requires verified sandbox death before
+  raising the fence, so detached processes cannot survive a successful handover.
 
 ## D9. The gVisor driver: identify, forward, kill the box
 
@@ -196,6 +200,9 @@ those replies: ownership, epochs, the owner fence, op-id records and kill-the-bo
 host-side. A forged reply can only misreport its own box, to its own owner. Error classes are
 mapped from a fixed set, and a refusal counts as "never ran" only when the reply also says
 `side_effect_state: none`.
+An op id whose refusal is reported by the box is freed on the box's word, so a hostile box
+can make the host re-forward its own operation to itself; that is box-scoped (the exec could
+run it directly) and accepted.
 
 The wire keeps `rpc_frames`' conventions: upper-case ops; one `END` frame with `outcome`,
 `error_class` and `side_effect_state`; `deadline_ms` on the request. With one request per

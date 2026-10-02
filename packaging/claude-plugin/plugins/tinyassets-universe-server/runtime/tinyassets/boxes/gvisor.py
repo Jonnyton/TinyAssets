@@ -233,10 +233,11 @@ class GVisorBoxProvider:
             cc = self._auth(handle)
             if not self._running(cc):
                 return self._state.generation(cc)  # a stopped box changes nothing
-            return self._host_gen(cc, self._rpc(cc, "generation", {}))
+            base = self._state.generation_base(cc)
+            return self._host_gen(cc, self._rpc(cc, "generation", {}), base)
 
-    def _host_gen(self, cc: str, box_generation: int) -> int:
-        generation = self._state.generation_base(cc) + int(box_generation)
+    def _host_gen(self, cc: str, box_generation: int, base: int) -> int:
+        generation = base + int(box_generation)
         self._state.observe_generation(cc, generation)
         return generation
 
@@ -273,11 +274,12 @@ class GVisorBoxProvider:
             raise BoxError(f"{self._quota_mount} is not XFS with project quotas enforced "
                            "(mount it with prjquota): the disk bound would not hold")
 
-    def _apply_disk_bound(self, cc: str, data: Path) -> None:
+    def _apply_disk_bound(self, cc: str, data: Path, sock: Path) -> None:
         if self._disk_bound is None:
             return
         project = self._state.slot(cc)
         self._xfs_quota(f"project -s -p {data} {project}",
+                        f"project -s -p {sock} {project}",
                         f"limit -p bhard={int(self._disk_bound)} {project}")
 
     def _running(self, cc: str) -> bool:
@@ -285,30 +287,47 @@ class GVisorBoxProvider:
 
     def _kill_box(self, cc: str) -> None:
         """End the whole sandbox: every process in the box dies with it."""
-        name = self._container(cc)
-        subprocess.run([*self._runsc, "kill", name, "KILL"], capture_output=True, timeout=10)
-        subprocess.run([*self._runsc, "delete", "--force", name], capture_output=True,
-                       timeout=30)
+        self._kill_container(self._container(cc))
         if cc in self._live:
             self._live.discard(cc)
             # It may have changed files after anyone last asked: a later start counts
             # from past this.
             self._state.bump_generation(cc)
 
-    def _kill_all_boxes(self) -> None:
-        r = subprocess.run([*self._runsc, "list", "--format=json"], capture_output=True,
-                           text=True, timeout=30)
+    def _kill_container(self, name: str) -> None:
         try:
-            listed = json.loads(r.stdout or "[]") or []
-        except json.JSONDecodeError:
-            listed = []
-        for entry in listed:
-            name = entry.get("id", "")
-            if name.startswith("box-"):
-                subprocess.run([*self._runsc, "kill", name, "KILL"], capture_output=True,
-                               timeout=10)
+            subprocess.run([*self._runsc, "kill", name, "KILL"], capture_output=True,
+                           timeout=10)
+            for _ in range(2):
                 subprocess.run([*self._runsc, "delete", "--force", name],
                                capture_output=True, timeout=30)
+                state = subprocess.run([*self._runsc, "state", name], capture_output=True,
+                                       text=True, timeout=10)
+                if state.returncode != 0 or "does not exist" in state.stdout + state.stderr:
+                    return
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise BoxError(f"cannot verify teardown of {name!r}: {exc}") from exc
+        raise BoxError(f"container {name!r} still exists after teardown")
+
+    def _kill_all_boxes(self) -> None:
+        try:
+            r = subprocess.run([*self._runsc, "list", "--format=json"], capture_output=True,
+                               text=True, timeout=30)
+            if r.returncode != 0:
+                raise BoxError(f"runsc list failed: {r.stderr.strip()}")
+            listed = json.loads(r.stdout)
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            raise BoxError(f"cannot list runsc containers: {exc}") from exc
+        if listed is None:  # runsc encodes its empty state slice as null
+            listed = []
+        if not isinstance(listed, list) or any(
+                not isinstance(entry, dict) or not isinstance(entry.get("id"), str)
+                for entry in listed):
+            raise BoxError("runsc list returned an invalid container listing")
+        for entry in listed:
+            name = entry["id"]
+            if name.startswith("box-"):
+                self._kill_container(name)
 
     def _ensure_box(self, cc: str) -> None:
         if cc in self._live:
@@ -320,7 +339,7 @@ class GVisorBoxProvider:
             d.mkdir(parents=True, exist_ok=True)
         os.chown(data, uid, uid)
         os.chmod(data, 0o700)
-        self._apply_disk_bound(cc, data)
+        self._apply_disk_bound(cc, data, sock)
         os.chown(sock, uid, uid)
         for leftover in sock.iterdir():
             leftover.unlink()
@@ -365,13 +384,17 @@ class GVisorBoxProvider:
         (bundle / "config.json").write_text(json.dumps(spec))
         # A detached sandbox inherits pipes it never closes: capture to a file, not a pipe.
         log = bundle / "start.log"
-        with open(log, "wb") as out:
-            r = subprocess.run([*self._runsc, "run", "--detach", "--bundle", str(bundle),
-                                self._container(cc)], stdout=out, stderr=out,
-                               stdin=subprocess.DEVNULL, timeout=self._start_timeout_s)
-        if r.returncode != 0:
-            tail = log.read_bytes()[-400:].decode("utf-8", "replace")
-            raise BoxError(f"box {cc!r} failed to start: {tail}")
+        try:
+            with open(log, "wb") as out:
+                r = subprocess.run([*self._runsc, "run", "--detach", "--bundle", str(bundle),
+                                    self._container(cc)], stdout=out, stderr=out,
+                                   stdin=subprocess.DEVNULL, timeout=self._start_timeout_s)
+            if r.returncode != 0:
+                tail = log.read_bytes()[-400:].decode("utf-8", "replace")
+                raise BoxError(f"box {cc!r} failed to start: {tail}")
+        except (OSError, subprocess.TimeoutExpired, BoxError) as exc:
+            self._kill_box(cc)
+            raise BoxError(f"box {cc!r} failed to start: {exc}") from exc
         deadline = time.monotonic() + self._start_timeout_s
         while time.monotonic() < deadline:
             try:
@@ -422,6 +445,13 @@ class GVisorBoxProvider:
             raise
         except OSError as exc:
             raise _BoxKilled(f"box {cc!r}: cannot reach boxd for {op} ({exc})") from None
+        def expire() -> None:
+            with contextlib.suppress(OSError):
+                conn.shutdown(socket.SHUT_RDWR)
+
+        watchdog = threading.Timer(max(0.0, deadline - time.monotonic()), expire)
+        watchdog.daemon = True
+        watchdog.start()
         try:
             request = {"op": op.upper(), "args": args,
                        "deadline_ms": int((time.time() + (deadline - time.monotonic())) * 1000)}
@@ -434,6 +464,8 @@ class GVisorBoxProvider:
                     conn.sendall(rpc_frames.control(_STREAM, {"op": "END",
                                                               "outcome": "completed"}))
                 while True:
+                    if time.monotonic() >= deadline:
+                        raise BoxDeadline(f"box {cc!r}: {op} exceeded its deadline")
                     conn.settimeout(max(0.01, deadline - time.monotonic()))
                     try:
                         frame = rpc_frames.read_frame_blocking(conn)
@@ -441,6 +473,8 @@ class GVisorBoxProvider:
                         raise BoxDeadline(f"box {cc!r}: {op} did not answer in time; "
                                           "outcome unknown") from None
                     if frame is None:
+                        if time.monotonic() >= deadline:
+                            raise BoxDeadline(f"box {cc!r}: {op} exceeded its deadline")
                         raise _BoxKilled(f"box {cc!r} closed the connection during {op}")
                     if frame.kind == rpc_frames.DATA:
                         if output is not None:
@@ -462,6 +496,8 @@ class GVisorBoxProvider:
                         yield "result", _unb64(doc.get("value"))
                         return
                     elif doc["op"] == "END":
+                        if doc.get("outcome") not in ("refused", "failed", "cancelled"):
+                            raise _BoxKilled(f"box {cc!r}: unknown END outcome")
                         cls = _ERRORS.get(doc.get("error_class"), BoxError)
                         if doc.get("side_effect_state") != "none" and issubclass(
                                 cls, P.BoxOperationRefused):
@@ -470,7 +506,7 @@ class GVisorBoxProvider:
                             raise P.BoxNotFound(errno.ENOENT, doc.get("message", ""))
                         raise cls(doc.get("message", ""))
                     else:
-                        raise BoxError(f"unexpected reply {doc['op']!r} from box {cc!r}")
+                        raise _BoxKilled(f"unexpected reply {doc['op']!r} from box {cc!r}")
             except BoxError:
                 raise
             except (OSError, rpc_frames.FrameError) as exc:
@@ -479,6 +515,7 @@ class GVisorBoxProvider:
                                       "unknown") from None
                 raise _BoxKilled(f"box {cc!r}: {op} lost its connection ({exc})") from None
         finally:
+            watchdog.cancel()
             conn.close()
 
     def _mutate(self, handle: BoxHandle, op_id: str, op: str, args: dict,
@@ -499,10 +536,11 @@ class GVisorBoxProvider:
                 raise BoxError(f"{op} {op_id!r} has an unknown outcome; it is not re-run")
             try:
                 self._ensure_box(cc)
+                base = self._state.generation_base(cc)
                 if expect_generation is not None:
                     # cas is checked INSIDE the box, atomically with the write and with
                     # "no exec running"; the host only translates its generation.
-                    box_expect = expect_generation - self._state.generation_base(cc)
+                    box_expect = expect_generation - base
                     if box_expect < 0:
                         raise P.WriteConflict(f"box generation is not {expect_generation}")
                     args = {**args, "mode": WriteMode.CAS.value,
@@ -525,31 +563,34 @@ class GVisorBoxProvider:
                 self._state.finish(cc, op_id, {"error": str(exc)})
                 raise
             if isinstance(value, dict) and "generation" in value:
-                value = {**value, "generation": self._host_gen(cc, value["generation"])}
+                value = {**value, "generation": self._host_gen(cc, value["generation"], base)}
             self._state.finish(cc, op_id, {"value": value})
             return value
 
-    def _awake(self, handle: BoxHandle) -> str:
+    def _awake(self, handle: BoxHandle) -> tuple[str, int]:
         with self._lock(handle.command_center_id):
             cc = self._auth(handle)
             self._ensure_box(cc)
-        return cc
+            return cc, self._state.generation_base(cc)
 
     def _read(self, handle: BoxHandle, op: str, args: dict) -> Any:
-        cc = self._awake(handle)
+        cc, base = self._awake(handle)
         try:
-            return self._rpc(cc, op, args)
+            value = self._rpc(cc, op, args)
         except _BoxKilled:
-            # The box died on its own (boxd out of memory, say). A read has no effect, so
-            # it is safe to start the box again and ask once more.
+            # End the untrusted box before retrying a read.
             with self._lock(cc):
                 self._kill_box(cc)
-            return self._rpc(self._awake(handle), op, args)
+            cc, base = self._awake(handle)
+            value = self._rpc(cc, op, args)
+        if isinstance(value, dict) and "generation" in value:
+            value = {**value, "generation": self._host_gen(cc, value["generation"], base)}
+        return value
 
     def _data(self, handle: BoxHandle, op: str, args: dict) -> Iterator[bytes]:
         """Streamed bytes. The first reply is read now, so a refusal (a link, a missing
         file, a busy box) raises at the call, as with every other driver."""
-        cc = self._awake(handle)
+        cc, _base = self._awake(handle)
         replies = self._exchange(cc, op, args, deadline=self._deadline())
         first = next(replies)
 
@@ -576,14 +617,14 @@ class GVisorBoxProvider:
         box_relpath(path)
         v = self._read(handle, "read", {"path": path, "offset": offset, "max_bytes": max_bytes})
         return FileRead(data=v["data"], size=v["size"],
-                        generation=self._host_gen(handle.command_center_id, v["generation"]))
+                        generation=v["generation"])
 
     def read_many(self, handle: BoxHandle, paths: Sequence[str], *, max_total: int) -> Snapshot:
         for p in paths:
             box_relpath(p)
         v = self._read(handle, "read_many", {"paths": list(paths), "max_total": max_total})
         return Snapshot(files=v["files"], missing=tuple(v["missing"]),
-                        generation=self._host_gen(handle.command_center_id, v["generation"]))
+                        generation=v["generation"])
 
     def write(self, handle: BoxHandle, op_id: str, path: str, data: StreamIn, *,
               max_bytes: int, mode: WriteMode = WriteMode.REPLACE,
@@ -597,7 +638,7 @@ class GVisorBoxProvider:
             raise ValueError("a cas write needs expect_generation")
         v = self._mutate(handle, op_id, "write", {
             "path": path, "max_bytes": max_bytes,
-            "mode": WriteMode.REPLACE.value if mode is WriteMode.CAS else mode.value},
+            "mode": mode.value, "expect_generation": expect_generation},
             payload=body, expect_generation=expect_generation if mode is WriteMode.CAS else None)
         return FileWrite(path=path, size=v["size"], generation=v["generation"])
 
@@ -636,7 +677,7 @@ class GVisorBoxProvider:
         """Events as the box produces them. A timeout ends the stream with no exit event
         (stream again from the last offset), as with every driver. If the box dies
         mid-stream the exec's outcome is unknown, and the stream ends saying so."""
-        cc = self._awake(handle)  # refusals raise here, at the call
+        cc, _base = self._awake(handle)  # refusals raise here, at the call
         wait = timeout if timeout is not None else self._call_timeout_s
 
         def events() -> Iterator[ExecEvent]:
@@ -679,7 +720,7 @@ class GVisorBoxProvider:
     def usage(self, handle: BoxHandle) -> BoxUsage:
         v = self._read(handle, "usage", {})
         return BoxUsage(logical_bytes=v["logical_bytes"], bound_bytes=self._disk_bound,
-                        generation=self._host_gen(handle.command_center_id, v["generation"]))
+                        generation=v["generation"])
 
     def export(self, handle: BoxHandle, *, profile: ExportProfile) -> Iterator[bytes]:
         return self._data(handle, "export", {"profile": ExportProfile(profile).value})
@@ -692,13 +733,16 @@ class GVisorBoxProvider:
         return ImportReport(v["files"], v["bytes"], tuple(v["refused"]))
 
     def try_fence_idle(self, command_center_id: str, *, owner_generation: int) -> bool:
+        """Fence after verified sandbox death; boxd can report busy, but cannot prove idle."""
         cc = self._check_cc(command_center_id)
         with self._lock(cc):  # no forwarded mutation can start while this is held
             fence = self._state.owner_fence(cc)
             if fence is not None and owner_generation < fence:
                 raise StaleOwner(f"command center {cc!r} is already fenced at {fence}")
-            if self._running(cc) and not self._rpc(cc, "idle", {})["idle"]:
-                return False
+            if self._running(cc):
+                if not self._rpc(cc, "idle", {})["idle"]:
+                    return False
+                self._kill_box(cc)
             return self._state.raise_owner_fence(cc, owner_generation)
 
     def destroy(self, handle: BoxHandle, op_id: str) -> DestroyReceipt:

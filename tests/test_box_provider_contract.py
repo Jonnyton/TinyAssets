@@ -178,6 +178,15 @@ def test_a_retried_write_with_the_same_op_id_runs_once(provider):
 
 
 @needs_posix
+def test_write_replay_rejects_changed_cas_arguments(provider):
+    handle = provider.bind("cc-a", account_id="acct-a")
+    wrote = provider.write(handle, "w1", "/cc/a.txt", b"one", max_bytes=10)
+    with pytest.raises(OpIdReuse):
+        provider.write(handle, "w1", "/cc/a.txt", b"one", max_bytes=10,
+                       mode=WriteMode.CAS, expect_generation=wrote.generation)
+
+
+@needs_posix
 def test_create_and_cas_conflicts_change_nothing(provider):
     handle = provider.bind("cc-a", account_id="acct-a")
     w = provider.write(handle, "w1", "/cc/a.txt", b"one", max_bytes=10)
