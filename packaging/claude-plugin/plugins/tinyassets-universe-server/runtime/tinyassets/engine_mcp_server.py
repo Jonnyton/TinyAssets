@@ -3786,7 +3786,6 @@ def read_brain(section: str = "") -> str:
         _current_identity.reset(token)
 
 
-@mcp.tool
 def _acting_agent() -> str:
     """The agent this engine call acts for, from the launch's own session key.
 
@@ -3804,6 +3803,7 @@ def _acting_agent() -> str:
     return agent if agent and agent != MAIN_AGENT else "unresolved-agent"
 
 
+@mcp.tool
 def write_brain(
     identity: str = "",
     founder: str = "",
