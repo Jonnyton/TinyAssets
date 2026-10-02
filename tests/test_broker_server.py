@@ -112,10 +112,12 @@ def broker(tmp_path):
             raise RuntimeError("thread exhaustion")
 
         def dispatch(grant, verb, request, *, stream, idle_s=None, guard=None,
-                     on_connect=None):
+                     on_connect=None, checkpoint=None, deadline_at=None):
+            maker = upstreams["next"]
+            if getattr(maker, "raw_dispatch", False):
+                return maker(guard=guard, on_connect=on_connect, sent=sent)
             with guard():
                 sent.append((principal, grant, verb, request))
-                maker = upstreams["next"]
                 return maker(on_connect) if getattr(maker, "wants_socket", False) else maker()
 
         return dispatch
@@ -400,3 +402,51 @@ def test_a_stream_that_cannot_start_is_refused_and_never_sent(broker):
     assert end["outcome"] == "refused" and end["side_effect_state"] == "none"
     assert broker.ops.status("alice|cc-alice", op).state == "refused"
     assert broker.server._streams == {}
+
+
+def test_a_cancel_during_name_resolution_never_reaches_the_write(broker):
+    fake = _FakeSocket()
+    resolving = threading.Event()
+
+    def dispatch(*, guard, on_connect, sent):
+        with guard():
+            resolving.set()
+            time.sleep(0.5)          # DNS: no socket exists yet
+            on_connect(fake)         # must refuse: the stream was cancelled meanwhile
+            sent.append("WROTE")     # the request write
+        return Script([b"x"])
+
+    dispatch.raw_dispatch = True
+    broker.upstreams["next"] = dispatch
+    with _connect(broker) as sock:
+        _open_raw(broker, sock)
+        assert rf.read_frame_blocking(sock).control()["op"] == "ADMITTED"
+        assert resolving.wait(5)
+        sock.sendall(rf.control(1, {"op": "CANCEL"}))
+        end = rf.read_frame_blocking(sock).control()
+    assert "WROTE" not in broker.sent
+    assert end["outcome"] == "cancelled" and fake.down.is_set()
+
+
+def test_a_failure_before_any_write_reports_stream_sent_false(broker):
+    def dispatch(*, guard, on_connect, sent):
+        from tinyassets.storage.outbound_connections import SsrfValidationError
+
+        raise SsrfValidationError("resolved to a private address")
+
+    dispatch.raw_dispatch = True
+    broker.upstreams["next"] = dispatch
+    with _connect(broker) as sock:
+        _open_raw(broker, sock)
+        rf.read_frame_blocking(sock)  # ADMITTED
+        end = rf.read_frame_blocking(sock).control()
+    assert end["outcome"] == "failed" and end["stream_sent"] is False
+    # The operation recorded may_have_sent first, so its state stays unknown.
+    assert end["side_effect_state"] == "unknown"
+
+
+def test_an_enormous_budget_is_clamped_not_a_crash(broker):
+    result = broker.client.request(
+        grant_id="grant-a", connection_id="conn-a", verb="POST",
+        request={"url": "u", "body": {}, "reply_budget_s": 10**400}, op_id=new_op_id())
+    assert result["status"] == 200

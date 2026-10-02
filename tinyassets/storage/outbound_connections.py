@@ -1152,7 +1152,9 @@ class CredentialBlindBroker:
     def dispatch(self, grant_id: str, verb: str, request: object, *,
                  stream: bool = False, idle_s: float | None = None,
                  guard: Callable[[], Any] | None = None,
-                 on_connect: Callable[[Any], None] | None = None) -> Any:
+                 on_connect: Callable[[Any], None] | None = None,
+                 checkpoint: Callable[[], None] | None = None,
+                 deadline_at: float | None = None) -> Any:
         """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
         whose body is read as it arrives (I14); every check before the response
         is identical, and the body is scanned byte by byte instead of whole."""
@@ -1240,6 +1242,15 @@ class CredentialBlindBroker:
             wire_credential = bundle.access_token
             secrets_held = bundle.secret_values()
         streaming = {"stream": True, "idle_s": idle_s, "on_connect": on_connect} if stream else {}
+        if checkpoint is not None and revalidate_authority is not None:
+            # Each redirect hop re-checks the caller's cancellation and fence too.
+            authority_check = revalidate_authority
+
+            def revalidate_authority(deadline: float) -> None:
+                authority_check(deadline)
+                checkpoint()
+        if deadline_at is not None:
+            streaming["deadline_at"] = deadline_at
         response = self._send(resource, grant_id, verb, request, wire_credential,
                               revalidate_authority, reply_budget_s, guard=guard, **streaming)
         if oauth and _status_of(response) == 401:
@@ -1330,11 +1341,20 @@ class CredentialBlindBroker:
     def _send(
         self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
         credential: str, revalidate_authority: Any, reply_budget_s: float | None = None,
-        guard: Callable[[], Any] | None = None, **streaming: Any,
+        guard: Callable[[], Any] | None = None, deadline_at: float | None = None,
+        **streaming: Any,
     ) -> Any:
         """One network send. ``guard`` (the broker's fence and cancellation check)
         is held across it, so every send -- the first, an OAuth resend -- is
-        re-checked immediately before it leaves."""
+        re-checked immediately before it leaves. ``deadline_at`` (monotonic) is
+        the stream's one absolute deadline: every send gets only what is left
+        of it, so a resend never starts a fresh budget."""
+        if deadline_at is not None:
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0:
+                raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
+            reply_budget_s = remaining if reply_budget_s is None else min(reply_budget_s,
+                                                                           remaining)
         with guard() if guard is not None else contextlib.nullcontext():
             return self._send_unguarded(resource, grant_id, verb, request, credential,
                                         revalidate_authority, reply_budget_s, **streaming)
@@ -3651,9 +3671,9 @@ class UpstreamStream:
     destination's words.
     """
 
-    __slots__ = ("_closed", "_done", "_max_body", "_queued", "_read_bytes", "_reading",
-                 "_response", "_socket", "_deadline", "headers", "reason", "redirect_count",
-                 "sensitive", "status")
+    __slots__ = ("_closed", "_done", "_lifetime", "_max_body", "_queued", "_read_bytes",
+                 "_reading", "_response", "_socket", "_deadline", "headers", "reason",
+                 "redirect_count", "sensitive", "status")
 
     def __init__(self, *, status: int, reason: str, headers: dict[str, str],
                  sensitive: tuple[str, ...], response: Any = None, max_body_bytes: int = 0,
@@ -3673,6 +3693,9 @@ class UpstreamStream:
         self._closed = False
         self._reading = False
         self._socket = sock
+        #: Serializes aborting the socket against releasing it, so an abort can
+        #: never act on a descriptor number the kernel already gave to someone else.
+        self._lifetime = threading.Lock()
 
     @classmethod
     def complete(cls, result: dict[str, Any], sensitive: tuple[str, ...]) -> UpstreamStream:
@@ -3730,12 +3753,14 @@ class UpstreamStream:
         return piece
 
     def _release(self) -> None:
-        response, self._response = self._response, None
-        if response is not None:
-            try:
-                response.close()
-            except Exception:
-                pass
+        with self._lifetime:
+            response, self._response = self._response, None
+            self._socket = None
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
 
     def close(self) -> None:
         """Abort without blocking: shut the upstream socket down, so a read
@@ -3744,23 +3769,26 @@ class UpstreamStream:
         self._closed = True
         self._queued = b""
         self._done = True
-        abort_socket(self._socket)
-        response = self._response
-        if response is not None:
-            # The socket object the response's file reads through (on Windows,
-            # closing it is what wakes a blocked recv); closing it takes no lock
-            # a reader holds.
-            raw = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
-            if raw is not None:
-                try:
-                    raw.close()
-                except Exception:
-                    pass
+        with self._lifetime:
+            # Under the lifetime lock: the response (and so the descriptor) is
+            # still ours while we act on it.
+            abort_socket(self._socket, duplicate=True)
+            response = self._response
+            if response is not None:
+                # The socket object the response's file reads through (on
+                # Windows, closing it is what wakes a blocked recv).
+                raw = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock",
+                              None)
+                if raw is not None:
+                    try:
+                        raw.close()
+                    except Exception:
+                        pass
         if not self._reading:
             self._release()
 
 
-def abort_socket(sock: Any) -> None:
+def abort_socket(sock: Any, *, duplicate: bool = False) -> None:
     """Shut a socket down and close it; never blocks, never raises.
 
     ``shutdown`` is what wakes a ``recv`` blocked in another thread on Linux;
@@ -3771,9 +3799,11 @@ def abort_socket(sock: Any) -> None:
         return
     # http.client marks its socket object closed once the response holds the
     # connection through a file object; the descriptor lives on. ``shutdown``
-    # acts on the CONNECTION, so a duplicate of the descriptor reaches it.
+    # acts on the CONNECTION, so a duplicate of the descriptor reaches it. Only
+    # a caller that holds the descriptor's lifetime (``duplicate=True``) may
+    # take that path: otherwise the number could already belong to another socket.
     try:
-        fd = sock.fileno()
+        fd = sock.fileno() if duplicate else -1
     except Exception:
         fd = -1
     if fd >= 0:

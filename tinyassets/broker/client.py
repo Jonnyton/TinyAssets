@@ -101,12 +101,14 @@ class BrokerClient:
                 # Nothing was sent: the broker never saw this request.
                 raise ProxyRequestError("the credential broker is unavailable") from None
             try:
-                head, body = self._exchange(sock, open_doc)
-            except (ConnectionError, TimeoutError, rf.FrameError):
-                # The request may have reached the broker and left it. (Not
-                # OSError: the typed refusals below include PermissionError.)
+                head, body, end = self._exchange(sock, open_doc)
+            except (OSError, rf.FrameError):
+                # Transport only (typed ENDs are raised below, outside this
+                # try): the request may have reached the broker and left it.
                 raise AmbiguousProxyOutcome(
                     "the broker connection failed mid-request") from None
+        if end.get("outcome") != "completed" or head is None:
+            _raise_for(end)
         return {
             "status": head["status"], "reason": head.get("reason", ""),
             "headers": head.get("headers", {}),
@@ -117,8 +119,8 @@ class BrokerClient:
 
     @staticmethod
     def _exchange(sock: socket.socket, open_doc: dict[str, Any]
-                  ) -> tuple[dict[str, Any], bytearray]:
-        from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
+                  ) -> tuple[dict[str, Any] | None, bytearray, dict[str, Any]]:
+        """The stream to its END, raising only transport errors."""
 
         sock.sendall(rf.control(_STREAM_ID, open_doc))
         head: dict[str, Any] | None = None
@@ -126,7 +128,7 @@ class BrokerClient:
         while True:
             frame = rf.read_frame_blocking(sock)
             if frame is None:
-                raise AmbiguousProxyOutcome("the broker connection closed mid-request")
+                raise ConnectionResetError("the broker connection closed mid-request")
             if frame.kind == rf.DATA:
                 body += frame.payload
                 sock.sendall(rf.control(_STREAM_ID, {"op": "CREDIT",
@@ -136,6 +138,4 @@ class BrokerClient:
             if doc["op"] == "HEAD":
                 head = doc
             elif doc["op"] == "END":
-                if doc.get("outcome") != "completed" or head is None:
-                    _raise_for(doc)
-                return head, body
+                return head, body, doc

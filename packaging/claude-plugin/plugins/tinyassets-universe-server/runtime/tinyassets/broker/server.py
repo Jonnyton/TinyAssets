@@ -106,8 +106,11 @@ def request_digest(*, grant_id: str, connection_id: str, verb: str, request: Any
 
 def _stream_budget(request: dict[str, Any]) -> float:
     asked = request.get("reply_budget_s")
-    if type(asked) in (int, float) and asked == asked and asked > ORDINARY_BUDGET_S:
-        return min(float(asked), MAX_BUDGET_S) + RESEND_GRACE_S
+    # Clamp before converting: float() of an enormous int overflows.
+    if type(asked) is int and asked > ORDINARY_BUDGET_S:
+        return float(min(asked, int(MAX_BUDGET_S))) + RESEND_GRACE_S
+    if type(asked) is float and asked == asked and asked > ORDINARY_BUDGET_S:
+        return min(asked, MAX_BUDGET_S) + RESEND_GRACE_S
     return ORDINARY_BUDGET_S + RESEND_GRACE_S
 
 
@@ -121,7 +124,10 @@ class _Stream:
     deadline: float
     credit: int = 0
     cancelled: bool = False
-    sent: bool = False
+    #: ``may_have_sent`` is durable for the operation (conservative).
+    marked: bool = False
+    #: This stream reached a network write (a guarded send began).
+    wrote: bool = False
     upstream: Any = None
     sockets: list[Any] = field(default_factory=list)
     wake: threading.Condition = field(default_factory=threading.Condition)
@@ -157,12 +163,21 @@ class BrokerServer:
             return
         connection = _Connection(self, writer, role)
         pump = asyncio.ensure_future(connection.pump())
+        handler = asyncio.current_task()
+
+        def pump_ended(task: asyncio.Task) -> None:
+            # A write that failed means the peer is gone: tear the connection
+            # down even if its handler is waiting on a full queue.
+            if not task.cancelled() and task.exception() is not None and handler is not None:
+                handler.cancel()
+
+        pump.add_done_callback(pump_ended)
         try:
             while (frame := await rf.read_frame(reader)) is not None:
                 await connection.handle(frame)
         except rf.FrameError:
             _LOG.warning("broker peer broke the framing; dropping it")
-        except (ConnectionError, OSError):
+        except (ConnectionError, OSError, asyncio.CancelledError):
             pass
         finally:
             connection.abandon()
@@ -180,17 +195,23 @@ class BrokerServer:
 
     @staticmethod
     def cancel(stream: _Stream) -> None:
-        """Never blocks: marks the stream cancelled and shuts its sockets down."""
+        """Never blocks: marks the stream cancelled and shuts its sockets down.
+
+        Once a response exists its own ``close`` owns the socket's lifetime;
+        before that, the connecting socket is shut down directly (no descriptor
+        duplication, which only the lifetime owner may do).
+        """
         from tinyassets.storage.outbound_connections import abort_socket
 
         with stream.wake:
             stream.cancelled = True
             stream.wake.notify_all()
-        for sock in list(stream.sockets):
-            abort_socket(sock)
         upstream = stream.upstream
         if upstream is not None:
             upstream.close()
+            return
+        for sock in list(stream.sockets):
+            abort_socket(sock)
 
 
 class _Connection:
@@ -211,20 +232,32 @@ class _Connection:
             self._writer.write(frame)
             await self._writer.drain()
 
-    def send(self, frame: bytes | list[bytes]) -> None:
-        """From a stream thread: queue frames, blocking while the queue is full."""
+    def send(self, frame: bytes | list[bytes], stream: _Stream | None = None,
+             *, final: bool = False) -> None:
+        """From a stream thread: queue frames, blocking while the queue is full.
+
+        A stream's producer stops waiting when the peer is gone, or (except for
+        its final END) when the stream is cancelled or past its deadline.
+        """
         for item in frame if isinstance(frame, list) else [frame]:
             if self._closed.is_set():
                 return
             future = asyncio.run_coroutine_threadsafe(self._queue.put(item), self._loop)
             while True:
                 try:
-                    future.result(timeout=1.0)
+                    future.result(timeout=0.25)
                     break
                 except TimeoutError:
                     if self._closed.is_set():
                         future.cancel()
                         return
+                    if stream is not None and not final:
+                        if stream.cancelled:
+                            future.cancel()
+                            raise _Cancelled
+                        if time.monotonic() >= stream.deadline:
+                            future.cancel()
+                            raise _Expired
 
     async def send_async(self, frame: bytes) -> None:
         await self._queue.put(frame)
@@ -365,15 +398,31 @@ class _Connection:
             await asyncio.to_thread(self._server._ops.finish, namespace, op_id, "refused")
             await refuse("refused")
 
+    def _checkpoint(self, stream: _Stream) -> None:
+        if stream.cancelled:
+            raise _Cancelled
+        if time.monotonic() >= stream.deadline:
+            raise _Expired
+        if not self._server._fence.admits(stream.generation, stream.token):
+            raise Fenced("this stream's generation is below the fence")
+
     @contextlib.contextmanager
     def _guard(self, stream: _Stream) -> Iterator[None]:
         """Held across each network send: fence and cancellation re-checked first."""
         with self._server._fence.send(stream.generation, stream.token):
-            if stream.cancelled:
-                raise _Cancelled
-            if time.monotonic() >= stream.deadline:
-                raise _Expired
+            self._checkpoint(stream)
+            stream.wrote = True
             yield
+
+    def _connected(self, stream: _Stream, sock: Any) -> None:
+        """The upstream socket exists, the request is not yet written: if the
+        stream was cancelled meanwhile (say, during DNS), abort before the write."""
+        from tinyassets.storage.outbound_connections import abort_socket
+
+        stream.sockets.append(sock)
+        if stream.cancelled:
+            abort_socket(sock)
+            raise _Cancelled
 
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
              request: dict[str, Any], idle_s: Any) -> None:
@@ -382,12 +431,16 @@ class _Connection:
             if stream.cancelled:
                 raise _Cancelled
             self._server._ops.mark_may_have_sent(stream.namespace, stream.op_id)
-            self.send(rf.control(stream.id, {"op": "ADMITTED", "op_id": stream.op_id}))
-            stream.sent = True
+            stream.marked = True
+            self.send(rf.control(stream.id, {"op": "ADMITTED", "op_id": stream.op_id}),
+                      stream)
             upstream = dispatch(
                 grant_id, verb, request, stream=True,
                 idle_s=idle_s if type(idle_s) in (int, float) else None,
-                guard=lambda: self._guard(stream), on_connect=stream.sockets.append,
+                guard=lambda: self._guard(stream),
+                on_connect=lambda sock: self._connected(stream, sock),
+                checkpoint=lambda: self._checkpoint(stream),
+                deadline_at=stream.deadline,
             )
             stream.upstream = upstream
             if stream.cancelled:
@@ -395,7 +448,7 @@ class _Connection:
             self.send(rf.control(stream.id, {
                 "op": "HEAD", "status": upstream.status, "reason": upstream.reason,
                 "headers": upstream.headers, "redirect_count": upstream.redirect_count,
-            }))
+            }), stream)
             self._pump_body(stream, upstream)
             outcome, error_class = "completed", None
         except _Cancelled:
@@ -422,14 +475,15 @@ class _Connection:
                 self._server._streams.pop((self._key, stream.id), None)
             try:
                 self._server._ops.finish(stream.namespace, stream.op_id,
-                                         outcome if stream.sent else "refused")
+                                         outcome if stream.marked else "refused")
             except Exception:  # noqa: BLE001 - the record keeps may_have_sent: unknown
                 _LOG.warning("could not record the end of operation %s", stream.op_id)
             self.send(rf.control(stream.id, {
                 "op": "END", "outcome": outcome, "error_class": error_class,
-                "stream_sent": stream.sent,
-                "side_effect_state": "unknown" if stream.sent else "none", **extra,
-            }))
+                "stream_sent": stream.wrote,
+                # The operation's state: may_have_sent was durable, so unknown.
+                "side_effect_state": "unknown" if stream.marked else "none", **extra,
+            }), stream, final=True)
 
     def _pump_body(self, stream: _Stream, upstream: Any) -> None:
         buffered = bytearray()
@@ -452,7 +506,7 @@ class _Connection:
                 del buffered[:len(piece)]
                 with stream.wake:
                     stream.credit -= len(piece)
-                self.send(rf.data(stream.id, piece))
+                self.send(rf.data(stream.id, piece), stream)
                 continue
             if finished:
                 return
