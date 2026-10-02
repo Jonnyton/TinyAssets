@@ -22,13 +22,16 @@ during a long tool call.
 - The new container cannot bind 8001 until the old one is gone.
 - So downtime = drain bound (20s with a turn in flight, about 1s without) + boot (about 3 to 12s to the
   first answer).
-- **A deploy ends any in-flight turn.** Observed 2026-10-02 at 01:30Z: the founder's village turn showed
-  "reply was cut off in transit". `agent_turn_reconcile` settles the row truthfully at boot, but the
-  turn's work is lost.
-- **Turn survival is not reachable by tuning the drain.** It needs the target architecture's
-  single-execution-owner handover (#4263 S7/S8), so a turn can move to, or keep running beside, the
-  new process instead of dying with the old one. Until then, the user-visible notice must say that
-  the turn was interrupted by a deploy, never imply it completed.
+- **A container swap can end an in-flight turn.** Observed 2026-10-02 at 01:30Z: the
+  founder's village turn showed "reply was cut off in transit". Current deploys first run
+  `deploy/wait_for_turns.sh` and wait while the live-work probe reports busy. That reduces
+  interruptions, but the wait is bounded and yields to recovery; a turn can also begin
+  after the final idle poll. A swap that reaches a running turn can still cut it off.
+  `agent_turn_reconcile` settles the row truthfully at boot; it does not resume the lost work.
+- **Guaranteed turn survival is not reachable by tuning the drain alone.** It needs the
+  target architecture's single-execution-owner handover (#4263 S7/S8), so a turn can move
+  to, or keep running beside, the new process. Any interrupted turn's user-visible notice
+  must say it was interrupted by a deploy, never imply it completed.
 
 ## Shape of the fix
 
