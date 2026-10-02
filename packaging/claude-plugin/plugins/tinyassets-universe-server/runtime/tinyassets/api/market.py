@@ -64,6 +64,7 @@ from typing import Any
 
 from tinyassets.api.helpers import _base_path
 from tinyassets.catalog import CommitFailedError, DirtyFileError
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger("universe_server.market")
 
@@ -736,7 +737,7 @@ def _outcome_connect(base_path: "Path") -> Any:
     from tinyassets.outcomes.schema import migrate_outcome_schema
     db = _outcome_db_path(base_path)
     db.parent.mkdir(parents=True, exist_ok=True)
-    conn = _sqlite3.connect(str(db), timeout=30.0)
+    conn = connect_db(str(db), timeout=30.0)
     conn.row_factory = _sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
@@ -985,7 +986,7 @@ def _attribution_connect(base_path: "Path") -> Any:
 
     db = base_path / ".runs.db"
     db.parent.mkdir(parents=True, exist_ok=True)
-    conn = _sqlite3.connect(str(db), timeout=30.0)
+    conn = connect_db(str(db), timeout=30.0)
     conn.row_factory = _sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

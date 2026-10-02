@@ -52,6 +52,7 @@ from tinyassets.graph_compiler import (
     seed_initial_state,
 )
 from tinyassets.principals import has_named_principal, named_principal
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ def runs_db_path(base_path: str | Path) -> Path:
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     db = runs_db_path(base_path)
     db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db, timeout=30.0)
+    conn = connect_db(db, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
@@ -810,7 +811,7 @@ def _run_statuses_recorded_at_root(
         db = runs_db_path(root)
         if not db.exists():
             return {}
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+        conn = connect_db(f"file:{db}?mode=ro", uri=True, timeout=5.0)
         try:
             placeholders = ",".join("?" for _ in run_ids)
             rows = conn.execute(
@@ -3050,7 +3051,7 @@ def latest_run_activity_for_universe(
         return None
     conn: sqlite3.Connection | None = None
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        conn = connect_db(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
         row = conn.execute(
             LATEST_RUN_ACTIVITY_SQL,
             (uid, RUN_STATUS_RUNNING, RUN_STATUS_COMPLETED),

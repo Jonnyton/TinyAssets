@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class SeriesPromiseTracker:
         universe_id: str = "default",
     ) -> None:
         self._universe_id = universe_id
-        self._conn = sqlite3.connect(str(db_path), timeout=30)
+        self._conn = connect_db(str(db_path), timeout=30)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=30000")
         self._conn.executescript(_SCHEMA)

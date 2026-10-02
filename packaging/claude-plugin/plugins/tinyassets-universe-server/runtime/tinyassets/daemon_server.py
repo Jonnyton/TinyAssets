@@ -69,6 +69,7 @@ from tinyassets.storage import (  # noqa: F401  (re-exports for in-flight R7 spl
 from tinyassets.universe_files import (
     MAX_CONFIG_BYTES,
     MAX_PLATFORM_FILE_BYTES,
+    connect_db,
     read_data_path,
     write_data_path,
 )
@@ -4529,7 +4530,7 @@ def goal_leaderboard(
         placeholders = ",".join("?" for _ in branch_ids)
         import sqlite3 as _sqlite3
 
-        conn = _sqlite3.connect(runs_db, timeout=10.0)
+        conn = connect_db(runs_db, timeout=10.0)
         conn.row_factory = _sqlite3.Row
         try:
             rows = conn.execute(

@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.universe_files import connect_db
+
 
 def _db_path(base_path: str | Path) -> Path:
     return Path(base_path) / ".project_memory.db"
@@ -37,7 +39,7 @@ def _db_path(base_path: str | Path) -> Path:
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     db = _db_path(base_path)
     db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db), timeout=30.0)
+    conn = connect_db(str(db), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

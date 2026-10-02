@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tinyassets.exceptions import CheckpointError
+from tinyassets.universe_files import connect_db
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -67,7 +68,7 @@ def _ensure_wal_mode(db_path: str) -> None:
     if db_path == ":memory:":
         return
 
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = connect_db(db_path, timeout=30)
     try:
         conn.execute("PRAGMA busy_timeout=30000")
         result = conn.execute("PRAGMA journal_mode=WAL;").fetchone()

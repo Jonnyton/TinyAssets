@@ -46,6 +46,7 @@ from tinyassets.provider_work_authority import (
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
 )
+from tinyassets.universe_files import connect_db
 
 _PROVIDER_SERVICE = {
     "claude-code": "claude",
@@ -1274,7 +1275,7 @@ def list_serving_universes(base_path: str | Path) -> list[str]:
     from tinyassets.storage import db_path
 
     base = Path(base_path)
-    conn = sqlite3.connect(db_path(base))
+    conn = connect_db(db_path(base))
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(

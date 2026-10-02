@@ -34,6 +34,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tinyassets.universe_files import connect_db
+
 logger = logging.getLogger(__name__)
 
 #: First loopback port; each serving universe gets the next free one.
@@ -211,7 +213,7 @@ def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list
     from tinyassets.storage.current_home import CurrentHomeChanged, check_principal_not_deleted
 
     try:
-        conn = sqlite3.connect(db_path(base).as_uri() + "?mode=ro", uri=True)
+        conn = connect_db(db_path(base).as_uri() + "?mode=ro", uri=True)
         try:
             conn.execute("BEGIN")
             rows = conn.execute(

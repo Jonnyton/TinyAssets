@@ -40,6 +40,8 @@ import time
 from contextlib import closing
 from pathlib import Path
 
+from tinyassets.universe_files import connect_db
+
 OWNER_SPEAKER = "founder"
 
 #: 2026-09-30T00:00:00Z. Owner messages recorded before the counter shipped are
@@ -132,7 +134,7 @@ def returned_page(text):
 
 def _owner_ids(transcript: Path, session_id: str, epoch: float) -> set[int]:
     # The transcript is read-only, including for old databases with no migrations.
-    with closing(sqlite3.connect(
+    with closing(connect_db(
         transcript.as_uri() + "?mode=ro", uri=True, timeout=5.0,
     )) as history:
         rows = history.execute(
@@ -157,7 +159,7 @@ def acknowledge(root, session_id, page, *, epoch: float = UNREAD_EPOCH) -> None:
     # Only the owner's own message in THIS thread can be acknowledged.
     if ident not in _owner_ids(transcript, session_id, epoch):
         return
-    with closing(sqlite3.connect(_path(root, _RECEIPTS), timeout=5.0)) as conn:
+    with closing(connect_db(_path(root, _RECEIPTS), timeout=5.0)) as conn:
         conn.execute(_SCHEMA)
         conn.execute("BEGIN IMMEDIATE")
         previous = conn.execute(
@@ -198,7 +200,7 @@ def unread_count(root, session_id, *, epoch: float = UNREAD_EPOCH) -> int | None
     owner = _owner_ids(transcript, session_id, epoch)
     read: set[int] = set()
     if owner and receipts.exists():
-        with closing(sqlite3.connect(
+        with closing(connect_db(
             receipts.as_uri() + "?mode=ro", uri=True, timeout=5.0,
         )) as conn:
             try:

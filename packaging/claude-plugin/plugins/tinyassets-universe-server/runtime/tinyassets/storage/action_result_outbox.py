@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.storage import db_path
+from tinyassets.universe_files import connect_db
 
 #: Defense-in-depth against a caller cramming a credential/body into an id field:
 #: every stored field is an identifier-shaped value and is length-capped. A Slack
@@ -120,7 +121,7 @@ def _migrate_state_check(conn: sqlite3.Connection) -> None:
 
 
 def _connect(base_path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path(Path(base_path)))
+    conn = connect_db(db_path(Path(base_path)))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
     # Rebuild a table whose state CHECK predates 'in_flight' (must run before the

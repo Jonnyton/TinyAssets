@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from tinyassets.universe_files import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +385,7 @@ class HandoffStore:
         # Python 3.12+ it does NOT close the connection, leaving the file
         # handle open until GC. On Windows that breaks tempdir cleanup.
         # Close explicitly via try/finally.
-        conn = sqlite3.connect(self._db_path)
+        conn = connect_db(self._db_path)
         try:
             conn.execute(
                 """
@@ -431,7 +432,7 @@ class HandoffStore:
         except (TypeError, ValueError):
             created_ts = time.time()
 
-        conn = sqlite3.connect(self._db_path)
+        conn = connect_db(self._db_path)
         try:
             conn.execute(
                 """
@@ -472,7 +473,7 @@ class HandoffStore:
             Matching artifacts, sorted by created_at descending.
         """
         # For simple scope matching, filter in Python
-        conn = sqlite3.connect(self._db_path)
+        conn = connect_db(self._db_path)
         try:
             cursor = conn.execute(
                 """
@@ -538,7 +539,7 @@ class HandoffStore:
         else:
             before_time = before_timestamp
 
-        conn = sqlite3.connect(self._db_path)
+        conn = connect_db(self._db_path)
         try:
             cursor = conn.execute(
                 "DELETE FROM handoff_artifacts WHERE created_at_timestamp < ?",

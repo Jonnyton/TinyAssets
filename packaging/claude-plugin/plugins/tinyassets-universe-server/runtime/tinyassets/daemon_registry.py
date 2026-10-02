@@ -31,6 +31,7 @@ from tinyassets.storage.request_admissions import (
     OPERATOR_CAPABILITY,
     QUEUE_PROTOCOL_VERSION,
 )
+from tinyassets.universe_files import connect_db
 
 SOULLESS_SOUL_TEXT = "Default soulless daemon. Uses the platform dispatcher policy."
 VALID_SOUL_MODES = {"soul", "soulless"}
@@ -105,7 +106,7 @@ def plan_stale_cloud_worker_runtime_retirement(
     if not database.is_file():
         return []
     uri = f"{database.resolve().as_uri()}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as conn:
+    with connect_db(uri, uri=True) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only = ON")
         has_task_store = conn.execute(

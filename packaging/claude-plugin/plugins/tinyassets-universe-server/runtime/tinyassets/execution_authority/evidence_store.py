@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from tinyassets.universe_files import connect_db
+
 
 class EvidenceSchemaError(RuntimeError):
     """The evidence schema is absent, partial, shadowed, or not exact."""
@@ -492,7 +494,7 @@ class ExecutionEvidenceStore:
                 raise EvidenceSchemaError(
                     "evidence database is absent; explicit initialization is required"
                 )
-            connection = sqlite3.connect(
+            connection = connect_db(
                 path,
                 timeout=30,
                 isolation_level=None,

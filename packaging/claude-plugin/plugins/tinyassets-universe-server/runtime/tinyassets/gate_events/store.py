@@ -28,6 +28,7 @@ from tinyassets.gate_events.schema import (
     GateEventCite,
     migrate_gate_event_schema,
 )
+from tinyassets.universe_files import connect_db
 
 
 def _now() -> str:
@@ -40,7 +41,7 @@ def _runs_db(base_path: str | Path) -> Path:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn = connect_db(str(db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

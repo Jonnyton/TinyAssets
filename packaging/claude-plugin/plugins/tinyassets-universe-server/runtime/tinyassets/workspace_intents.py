@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tinyassets.universe_files import connect_db
+
 __all__ = [
     "INTENT_STATES",
     "PushIntent",
@@ -97,7 +99,7 @@ def _db(base_path: str | Path) -> Path:
 
 
 def _connect(base_path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(_db(base_path), timeout=30)
+    conn = connect_db(_db(base_path), timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
 

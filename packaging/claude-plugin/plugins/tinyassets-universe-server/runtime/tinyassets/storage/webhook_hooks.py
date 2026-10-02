@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.storage import db_path
+from tinyassets.universe_files import connect_db
 
 #: Bound the ids we persist — a webhook binding is identifiers, never a body/secret.
 MAX_ID_LEN = 256
@@ -98,7 +99,7 @@ def _hash_token(token: str) -> str:
 
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     path = db_path(Path(base_path))
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = connect_db(path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 30000")
     key = str(path)

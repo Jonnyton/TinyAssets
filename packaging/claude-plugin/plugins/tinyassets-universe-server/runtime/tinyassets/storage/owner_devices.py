@@ -46,6 +46,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from tinyassets.universe_files import connect_db
+
 logger = logging.getLogger(__name__)
 
 _DB_NAME = ".owner_devices.db"
@@ -226,7 +228,7 @@ def _migrate_destination_digests(conn: sqlite3.Connection) -> int:
 def _connect(base_path: str | Path) -> Iterator[sqlite3.Connection]:
     db = owner_devices_db_path(base_path)
     db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db, timeout=30.0)
+    conn = connect_db(db, timeout=30.0)
     try:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 30000")

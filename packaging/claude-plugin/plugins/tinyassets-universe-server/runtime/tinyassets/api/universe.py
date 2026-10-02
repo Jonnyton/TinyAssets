@@ -77,6 +77,7 @@ from tinyassets.universe_bundle import seed_okf_bundle
 from tinyassets.universe_files import (
     MAX_CONFIG_BYTES,
     MAX_PLATFORM_FILE_BYTES,
+    connect_db,
     load_untrusted_yaml,
     read_data_path,
     write_data_path,
@@ -1142,9 +1143,8 @@ def _compute_accept_rate_from_db(
         return None, sample
 
     try:
-        import sqlite3
 
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_db(str(db_path))
         try:
             row = conn.execute(
                 "SELECT name FROM sqlite_master "
@@ -4595,7 +4595,7 @@ def _query_world_db(
         if not db_path.exists():
             continue
         try:
-            probe = sqlite3.connect(str(db_path))
+            probe = connect_db(str(db_path))
             try:
                 row = probe.execute(
                     "SELECT name FROM sqlite_master "
@@ -4634,7 +4634,7 @@ def _query_world_db(
     db_path = udir / dbname
 
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_db(str(db_path))
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 

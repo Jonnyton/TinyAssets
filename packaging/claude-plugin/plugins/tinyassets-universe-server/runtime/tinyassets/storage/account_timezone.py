@@ -21,6 +21,7 @@ from pathlib import Path
 
 from tinyassets.schedule_timezone import UnknownTimezone, normalize_timezone
 from tinyassets.storage import DB_FILENAME
+from tinyassets.universe_files import connect_db
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS account_timezone (
@@ -36,7 +37,7 @@ def _connect(base_path: str | Path, *, create: bool) -> sqlite3.Connection | Non
     if not create and not path.is_file():
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = connect_db(path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

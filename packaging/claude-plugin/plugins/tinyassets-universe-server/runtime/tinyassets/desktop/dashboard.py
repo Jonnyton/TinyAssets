@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from tinyassets.universe_files import connect_db
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,7 +74,7 @@ class DashboardMetrics:
         seeded = False
         if Path(db_path).exists():
             try:
-                conn = sqlite3.connect(db_path)
+                conn = connect_db(db_path)
                 try:
                     row = conn.execute(
                         "SELECT COUNT(*), COALESCE(SUM(word_count), 0), "

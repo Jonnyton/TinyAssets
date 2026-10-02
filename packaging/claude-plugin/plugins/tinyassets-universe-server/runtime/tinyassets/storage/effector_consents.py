@@ -37,6 +37,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tinyassets.universe_files import connect_db
+
 _DB_FILENAME = ".effector_consents.db"
 
 
@@ -49,7 +51,7 @@ def _connect(universe_dir: str | Path) -> sqlite3.Connection:
     """Open the consents DB with WAL + 30s busy timeout."""
     path = consents_db_path(universe_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = connect_db(path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

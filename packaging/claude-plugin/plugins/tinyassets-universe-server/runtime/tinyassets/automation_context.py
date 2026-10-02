@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tinyassets.conversation_failure import failure_column_sql, project_failure_row
+from tinyassets.universe_files import connect_db
 
 CONTEXT_REF = {"$automation_context": "v1"}
 MAX_CONTEXT_BYTES = 1024 * 1024
@@ -50,7 +51,7 @@ def _conversation(root: Path, owner_principal_id: str) -> dict[str, Any]:
     if not path.exists():
         return {"available": False, "messages": [], "older_messages_omitted": False}
     # No schema writes, migrations, caller-selected session or foreign path.
-    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
+    with closing(connect_db(path.as_uri() + "?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         failure_column = failure_column_sql(conn)
         rows = conn.execute(
@@ -80,7 +81,7 @@ def _previous_run_id(base: Path, automation: Any) -> str:
     path = base / ".automations.db"
     if not path.is_file():
         raise ValueError("automation_context_previous_run_missing")
-    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
+    with closing(connect_db(path.as_uri() + "?mode=ro", uri=True)) as conn:
         rows = conn.execute(
             "SELECT run_id, status, reason FROM automation_attempts "
             "WHERE automation_id = ? AND due_at <= ? ORDER BY due_at DESC",
@@ -135,7 +136,7 @@ def _last_completed_snapshot(base, automation, previous, inputs, get_run):
     path = base / ".automations.db"
     if not path.is_file():
         raise ValueError("automation_context_attempt_history_missing")
-    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
+    with closing(connect_db(path.as_uri() + "?mode=ro", uri=True)) as conn:
         row = conn.execute(
             "SELECT run_id FROM automation_attempts "
             "WHERE automation_id = ? AND due_at <= ? AND status = 'completed' "

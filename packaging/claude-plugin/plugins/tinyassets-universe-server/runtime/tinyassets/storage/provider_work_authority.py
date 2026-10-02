@@ -51,6 +51,7 @@ from tinyassets.provider_work_authority import (
     provider_work_receipt_id,
 )
 from tinyassets.storage import db_path
+from tinyassets.universe_files import connect_db
 
 _PROVIDER_INVOCATION_STORE_MINT_LOCK = threading.Lock()
 _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS: dict[str, tuple[str, int]] = {}
@@ -1690,7 +1691,7 @@ class SQLiteProviderWorkAuthorityStore:
     def connection(self) -> Iterator[sqlite3.Connection]:
         path = db_path(self.base_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(
+        conn = connect_db(
             path,
             timeout=self._busy_timeout_ms / 1000,
             isolation_level=None,

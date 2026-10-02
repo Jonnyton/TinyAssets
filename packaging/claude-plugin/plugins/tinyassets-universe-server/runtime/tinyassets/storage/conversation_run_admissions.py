@@ -24,6 +24,7 @@ from tinyassets.conversation_failure import failure_notice, normalize_turn_failu
 from tinyassets.runs import _insert_run_in_transaction, initialize_runs_db, runs_db_path
 from tinyassets.storage import db_path
 from tinyassets.storage.current_home import check_current_home
+from tinyassets.universe_files import connect_db
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversation_run_admissions (
@@ -97,7 +98,7 @@ def initialize(base):
     # Source authorization reads branch_versions.public; migrate that table
     # (column + one-time publication-mark backfill) before any admission.
     initialize_branch_versions_db(base)
-    with sqlite3.connect(runs_db_path(base), timeout=5) as conn:
+    with connect_db(runs_db_path(base), timeout=5) as conn:
         conn.executescript(_SCHEMA)
 
 
@@ -130,7 +131,7 @@ def _authorized_scope_locked(base, *, owner, universe):
         raise PermissionError("canonical scope is invalid")
     author_path = db_path(base)
     _plain(author_path)
-    conn = sqlite3.connect(author_path.as_uri() + "?mode=rw", uri=True, timeout=5)
+    conn = connect_db(author_path.as_uri() + "?mode=rw", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
     scope = None
     try:
@@ -160,7 +161,7 @@ def runs_transaction(scope):
         raise RuntimeError("nested runs transaction is forbidden")
     path = runs_db_path(scope.base)
     _plain(path)
-    conn = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=5)
+    conn = connect_db(path.as_uri() + "?mode=rw", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys=ON")
@@ -234,7 +235,7 @@ def authorize_source(scope, version_id, content_hash):
         raise PermissionError("consumer source unavailable")
     path = runs_db_path(scope.base)
     _plain(path)
-    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
+    conn = connect_db(path.as_uri() + "?mode=ro", uri=True, timeout=5)
     try:
         metadata = conn.execute("SELECT branch_def_id, public FROM branch_versions "
                                 "WHERE branch_version_id=?", (version_id,)).fetchone()

@@ -33,6 +33,7 @@ from tinyassets.custom_agents import (
     _read_definition_row,
 )
 from tinyassets.ids import new_ulid
+from tinyassets.universe_files import connect_db
 
 ADAPTER_SCHEMA = "agent-interchange-adapter/v1"
 MAX_SOURCE_BYTES = 1024 * 1024
@@ -1064,7 +1065,7 @@ def _ensure_interchange_schema(base_path: str | Path) -> Path:
     with _SCHEMA_LOCK:
         if key in _SCHEMA_INITIALIZED:
             return path
-        conn = sqlite3.connect(path, timeout=30.0)
+        conn = connect_db(path, timeout=30.0)
         try:
             conn.execute("PRAGMA busy_timeout = 30000")
             conn.execute("PRAGMA foreign_keys = ON")
@@ -1087,7 +1088,7 @@ def _ensure_interchange_schema(base_path: str | Path) -> Path:
 @contextmanager
 def _interchange_connect(base_path: str | Path) -> Iterator[sqlite3.Connection]:
     path = _ensure_interchange_schema(base_path)
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = connect_db(path, timeout=30.0)
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")

@@ -4,8 +4,9 @@ Not a reset entry point: only the existing reviewed plan, maintenance barrier an
 committed witness authorize the caller. No home database is newly resettable.
 """
 
-import sqlite3
 import time
+
+from tinyassets.universe_files import connect_db
 
 TABLE = "conversation_run_admissions"
 _COLUMNS = frozenset({
@@ -81,7 +82,7 @@ def expire_committed(root, operation, actions):
     if (not path.is_file() or _is_link_or_reparse(path) or path.stat().st_nlink != 1
             or path.resolve() != path):
         raise ScopedResetRecoveryError("canonical expiry run store is unavailable or linked")
-    conn = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=5)
+    conn = connect_db(path.as_uri() + "?mode=rw", uri=True, timeout=5)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _validate(conn)

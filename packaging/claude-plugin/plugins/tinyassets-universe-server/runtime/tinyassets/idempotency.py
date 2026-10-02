@@ -34,6 +34,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from tinyassets.universe_files import connect_db
+
 logger = logging.getLogger(__name__)
 
 _IDEMPOTENCY_TTL = timedelta(days=30)
@@ -160,7 +162,7 @@ class IdempotencyStore:
 
     @contextlib.contextmanager
     def _connect(self):
-        conn = sqlite3.connect(str(self._path), timeout=30.0)
+        conn = connect_db(str(self._path), timeout=30.0)
         try:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode = WAL")

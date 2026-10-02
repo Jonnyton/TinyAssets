@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tinyassets.universe_files import connect_db
+
 logger = logging.getLogger("universe_server.node_eval")
 
 
@@ -166,7 +168,7 @@ class NodeEvaluator:
         self._initialize_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path), timeout=10)
+        conn = connect_db(str(self._db_path), timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
         return conn

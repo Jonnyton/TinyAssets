@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from tinyassets.principals import named_principal
+from tinyassets.universe_files import connect_db
 
 _log = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ def _sum_sql(db: Path, sql: str, params: tuple) -> int:
     if not db.exists():
         return 0
     uri = f"file:{db.as_posix()}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, timeout=30.0)
+    conn = connect_db(uri, uri=True, timeout=30.0)
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
         try:
@@ -329,7 +330,7 @@ def _checkpoints(base: Path, account_id: str) -> int:
     if not runs_db.exists() or not cp_db.exists():
         return 0
     mine, params = _mine_clause(base, account_id)
-    conn = sqlite3.connect(f"file:{runs_db.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    conn = connect_db(f"file:{runs_db.as_posix()}?mode=ro", uri=True, timeout=30.0)
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
         try:
@@ -409,7 +410,7 @@ def _commons_pages(base: Path, account_id: str) -> int:
     ledger = ledger_path(base)
     if not ledger.exists():
         return 0
-    conn = sqlite3.connect(f"file:{ledger.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    conn = connect_db(f"file:{ledger.as_posix()}?mode=ro", uri=True, timeout=30.0)
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
         try:
@@ -442,7 +443,7 @@ def _commons_pages(base: Path, account_id: str) -> int:
             continue
         if current == digest:
             total += st.st_size
-    conn = sqlite3.connect(f"file:{ledger.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    conn = connect_db(f"file:{ledger.as_posix()}?mode=ro", uri=True, timeout=30.0)
     try:
         try:
             row = conn.execute(
@@ -532,7 +533,8 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"
     ),
-    ".universe-sidecars": "platform: per-universe daemon sockets (egress proxy)",
+    ".universe-sidecars": "platform: per-universe daemon sockets and DB provenance records",
+    ".db-provenance-epoch": "platform: inside .universe-sidecars, when DB provenance began",
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
@@ -642,7 +644,7 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
     if path.is_symlink():
         raise RuntimeError(f"refusing a symlinked storage ledger: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_S, isolation_level=None)
+    conn = connect_db(path, timeout=_BUSY_TIMEOUT_S, isolation_level=None)
     try:
         _enable_wal(conn)
         conn.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_S * 1000)}")

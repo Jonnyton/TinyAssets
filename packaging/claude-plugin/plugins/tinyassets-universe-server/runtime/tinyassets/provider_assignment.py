@@ -21,6 +21,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tinyassets.universe_files import connect_db
+
 if TYPE_CHECKING:
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
@@ -758,7 +760,7 @@ def finalize_served_provider_budget(
         or actual_total > authority.max_tokens
         or measured_cost > authority.max_cost_microunits
     )
-    conn = sqlite3.connect(db_path(base_path), isolation_level=None)
+    conn = connect_db(db_path(base_path), isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_served_budget_schema(conn)
@@ -846,7 +848,7 @@ def abandon_served_provider_budget(
     exhausts its own budget one failed turn at a time.
     """
 
-    conn = sqlite3.connect(db_path(base_path), isolation_level=None)
+    conn = connect_db(db_path(base_path), isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_served_budget_schema(conn)
@@ -879,7 +881,7 @@ def release_served_provider_budget(
     window aging then keeps even a burst of failed launches from bricking.
     """
 
-    conn = sqlite3.connect(db_path(base_path), isolation_level=None)
+    conn = connect_db(db_path(base_path), isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_served_budget_schema(conn)
@@ -1265,7 +1267,7 @@ def load_provider_assignment(
     *,
     universe_id: str,
 ) -> ProviderAssignment | None:
-    conn = sqlite3.connect(db_path(base_path))
+    conn = connect_db(db_path(base_path))
     try:
         ensure_provider_assignment_schema(conn)
         conn.execute("BEGIN")  # Root and children must come from one read snapshot.

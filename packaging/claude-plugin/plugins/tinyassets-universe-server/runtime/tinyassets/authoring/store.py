@@ -49,6 +49,7 @@ from tinyassets.authoring.models import (
     canonical_json,
 )
 from tinyassets.ids import new_ulid
+from tinyassets.universe_files import connect_db
 
 DB_FILENAME = ".authoring.db"
 BLOB_DIRNAME = ".authoring_blobs"
@@ -180,7 +181,7 @@ class AuthoringStore:
         if not existing:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         target = self.path.resolve().as_uri() + "?mode=rw" if existing else self.path
-        conn = sqlite3.connect(target, timeout=timeout, isolation_level=None, uri=existing)
+        conn = connect_db(target, timeout=timeout, isolation_level=None, uri=existing)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute(f"PRAGMA busy_timeout = {max(1, int(timeout * 1000))}")

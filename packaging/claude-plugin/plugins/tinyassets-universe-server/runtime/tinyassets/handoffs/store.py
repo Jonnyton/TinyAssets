@@ -65,6 +65,7 @@ from tinyassets.handoffs.models import (
     normalize_external_ref,
 )
 from tinyassets.ids import new_ulid
+from tinyassets.universe_files import connect_db
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS handoff (
@@ -165,7 +166,7 @@ class HandoffStore:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+        conn = connect_db(self.path, timeout=30.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 30000")
