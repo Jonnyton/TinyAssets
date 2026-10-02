@@ -5,6 +5,18 @@ Prerequisite: C4a (#4234) is in production for at least one day.
 - [ ] 1. `scripts/command_center_inventory.py` (read-only, E1), with fixture
       tests. It classifies every home entry by the E6 layout, and an entry it
       cannot classify fails the run. Attach a production-copy report.
+
+      **First result, 2026-10-02.** This was a names-and-schema pass
+      (`--no-values`), read-only, against live production via
+      `scripts/droplet.py`. The value scan runs on the dry-run copy (task 8).
+      - Homes: 3. Unclassified entries: 3, all `.conversation_memory.db.bak-premigrate-*`
+        database backups, now classified as platform state.
+      - All 3 `config.yaml` files hold all four authority fields (E6 split).
+      - SQLite: 22 files with findings, 27 `universe*` tables, 209 `universe*`
+        columns, and 100 index / trigger / view / CHECK objects naming it.
+      - JSON: 750 files with findings, mostly `.worker_supervisor.*.json`
+        platform state.
+      - LanceDB: scanned (schemas read).
 - [ ] 2. First, commit old-layout fixtures built by the pre-cutover creators
       (26-character ids) with a creator-coverage manifest (E4). Then the codemod
       `scripts/rename_command_center.py`: identifiers, modules, env vars and the
