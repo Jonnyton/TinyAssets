@@ -24,10 +24,20 @@ from tinyassets.work_targets import WorkTarget
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
-    """Each test starts with an empty registry."""
+    """Each test starts with an empty registry, and leaves the one it found.
+
+    A bare reset on teardown left every later test in the same process with no
+    producers: the fantasy domain registers its producers once, at import, so
+    ``test_work_targets``'s authorial review then selected nothing whenever it
+    ran after this file (CI shard reshuffle on #4282, 2026-10-02).
+    """
+    import tinyassets.producers as producers
+
+    saved = list(producers._REGISTRY)
     reset_registry()
     yield
     reset_registry()
+    producers._REGISTRY.extend(saved)
 
 
 # ─── Protocol shape ────────────────────────────────────────────────────
