@@ -323,7 +323,9 @@
     #ui-mode{font-size:.8rem}
     #btn-header-menu{display:none}
     @media (max-width:600px){
-      #view-chat > .chat-header{position:relative;flex:0 0 auto;height:52px;padding:8px 12px;gap:8px;z-index:20}
+      #view-chat > .chat-header{position:relative;flex:0 0 auto;min-height:52px;box-sizing:border-box;
+        padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));
+        gap:8px;z-index:20}
       #view-chat .chat-title{min-width:0;flex:1}
       #universe-name{max-width:none;min-width:0}
       #btn-header-menu{display:block;flex:none;padding:6px 10px}
@@ -336,13 +338,16 @@
       #chat-cloud-body > .chat-body{flex:1;min-height:0;flex-direction:column}
       #thread{flex:1;min-height:0;padding:12px}
       #request-rail{flex:0 0 auto;width:auto;padding:0 8px;gap:0;max-height:45%;overflow-y:auto}
-      #request-rail[data-phone-empty="true"]{display:none}
-      #request-rail:not(.rail--open) > :not(#rail-head){display:none}
+      /* Collapsed, the chip and any load error stay; everything else (items,
+         "Add a key yourself") is one tap away. renderRail still decides when
+         the rail shows at all. */
+      #request-rail:not(.rail--open) > :not(#rail-head):not(#rail-error){display:none}
       #rail-head{padding:8px 0;margin:0;white-space:nowrap;cursor:pointer;text-transform:none;letter-spacing:normal}
       #model-bar{flex-wrap:nowrap;gap:8px;padding:4px 8px;white-space:nowrap}
       #model-next{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px}
       #btn-models{flex:none;font-size:12px;padding:5px 8px;white-space:nowrap}
-      #composer{grid-template-columns:36px 36px minmax(0,1fr) auto;gap:4px;padding:4px 8px}
+      #composer{grid-template-columns:36px 36px minmax(0,1fr) auto;gap:4px;padding:4px 8px;
+        padding-bottom:max(4px,env(safe-area-inset-bottom))}
       #composer #voice-output-select{display:none}
       #composer #btn-attach{grid-column:1;grid-row:1;width:36px;height:36px;padding:0}
       #composer #btn-voice{grid-column:2;grid-row:1;width:36px;height:36px;min-width:0;padding:0;font-size:0}
@@ -6067,8 +6072,11 @@
   function fitToVisualViewport(){
     // Height x scale: the on-screen keyboard shrinks the visual viewport, a
     // pinch-zoom only rescales it, and only the keyboard should shrink the app.
-    const vv=window.visualViewport;
-    if(vv) document.documentElement.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
+    // Phones only: desktop and the Electron app keep 100dvh exactly as before.
+    const vv=window.visualViewport, root=document.documentElement;
+    if(vv && window.matchMedia("(max-width:600px)").matches)
+      root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
+    else root.style.removeProperty("--app-h");
   }
   function setHeaderMenu(open){
     const button=$("btn-header-menu");
@@ -6118,7 +6126,7 @@
     new MutationObserver(()=>{
       if(window.matchMedia("(max-width:600px)").matches) paintRailChip();
     }).observe($("rail-head"),{childList:true});
-    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();setHeaderMenu(false);});
+    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();setHeaderMenu(false);fitToVisualViewport();});
     paintRailChip();
   }
   function wire(){

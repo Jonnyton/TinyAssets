@@ -80,11 +80,16 @@ def test_phone_conversation(app_url, browser):
     page.wait_for_function(
         "() => document.getElementById('composer-input').getBoundingClientRect().bottom <= 500"
     )
-    page.evaluate("document.getElementById('rail-items').replaceChildren()")
+    # With nothing listed, the chip stays and "Add a key yourself" is one tap away;
+    # renderRail, not the phone CSS, decides whether the rail shows at all.
+    page.evaluate("""() => { railCache = [];
+        document.getElementById('rail-items').replaceChildren(); }""")
     page.wait_for_function(
-        "() => document.getElementById('request-rail').dataset.phoneEmpty === 'true'"
+        "() => document.getElementById('rail-head').textContent === 'Nothing waiting on you'"
     )
-    assert page.locator('#request-rail').is_hidden()
+    assert page.locator('#request-rail').is_visible()
+    page.locator('#rail-head').tap()
+    assert page.locator('#btn-rail-add').is_visible()
     context.close()
 
 
@@ -97,4 +102,6 @@ def test_wide_header_stays_inline(app_url, browser, width):
     assert account['y'] == signout['y']
     assert account['x'] + account['width'] <= signout['x']
     assert page.locator('#rail-head').text_content() == 'Waiting on you'
+    # Desktop and the Electron app keep 100dvh: no visual-viewport height.
+    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ''
     page.close()
