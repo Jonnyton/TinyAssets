@@ -2,9 +2,10 @@
 
 C0 of `openspec/changes/rename-universe-to-command-center`: every word a person
 or the agent reads says "command center". Machine names (`universe_id`,
-`target="universe"`, `universe_files`, CSS ids, storage) are renamed later behind
-aliases (C1) or not at all (design D6/D7), so this guard strips exactly those
-retained machine tokens and refuses any other "universe".
+`target="universe"`, `universe_files`, CSS ids, storage) move in later slices:
+the public MCP names in C1 (`tests/test_command_center_names.py`), code in C3,
+storage in C4. So this guard strips exactly those machine tokens and refuses
+any other "universe".
 """
 
 from __future__ import annotations

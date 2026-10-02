@@ -514,8 +514,12 @@ def _parse_anchor_ready(first_line: bytes, leader_pid: int) -> int:
     return reported_anchor
 
 
-async def _aspawn_anchored(argv: list[str], **kwargs):
-    """POSIX spawn: wrapper + anchor + control pipe, or nothing at all."""
+async def _aspawn_anchored(argv: list[str], *, extra_fds=(), **kwargs):
+    """POSIX spawn: wrapper + anchor + control pipe, or nothing at all.
+
+    ``extra_fds`` are inherited by the command as well (the jail's seccomp
+    filter); the caller owns and closes them.
+    """
     bag = _FdBag()
     try:
         ctrl_r, ctrl_w = os.pipe()
@@ -534,7 +538,7 @@ async def _aspawn_anchored(argv: list[str], **kwargs):
     try:
         proc = await asyncio.create_subprocess_exec(
             *_wrapper_argv(ctrl_r, ready_w, argv),
-            pass_fds=(ctrl_r, ready_w),
+            pass_fds=(ctrl_r, ready_w, *extra_fds),
             **owned_spawn_kwargs(),
             **kwargs,
         )
@@ -642,7 +646,14 @@ async def aspawn_owned(
         # bwrap sets the child's working directory itself (--chdir); the host
         # side only needs a directory that exists.
         kwargs["cwd"] = "/"
-        return await _aspawn_anchored(jailed, **kwargs)
+        try:
+            return await _aspawn_anchored(
+                jailed.argv, extra_fds=jailed.pass_fds, **kwargs,
+            )
+        finally:
+            # The child holds its own copies (bwrap reads the seccomp filter
+            # from them); ours are released whatever the spawn did.
+            jailed.close()
     if os.name == "posix":
         return await _aspawn_anchored(argv, **kwargs)
     if shell:
