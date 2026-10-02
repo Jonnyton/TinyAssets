@@ -1256,15 +1256,30 @@ def test_missing_manifest_source_fails_before_systemd(tmp_path):
     assert not (tmp_path / "runtime" / "current").exists()
 
 
+def _change_runtime_content(source: Path) -> None:
+    """Give the next install something to do.
+
+    Since the idempotence gate (#3989), a repeat install of byte-identical
+    content exits "already current" before it ever reads service state, so a
+    test of the service-state refusal must change the bundle first -- the
+    refusal only guards a run that would mutate the host.
+    """
+    (source / "scripts" / "watchdog.py").write_text(
+        "WATCH = 2\n", encoding="utf-8", newline="\n"
+    )
+
+
 @pytest.mark.parametrize(
     "active_state", ["active", "activating", "reloading", "deactivating"]
 )
 def test_active_service_timeout_reactivates_timers_before_file_mutation(
     tmp_path, active_state
 ):
-    env = _install_env(tmp_path)
+    source = _copy_source(tmp_path)
+    env = _install_env(tmp_path, source)
     first = _run_installer(env)
     assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+    _change_runtime_content(source)
     current_before = _bash_readlink(tmp_path / "runtime" / "current")
     units_before = {
         unit: (tmp_path / "systemd" / unit).read_bytes()
@@ -1288,9 +1303,11 @@ def test_active_service_timeout_reactivates_timers_before_file_mutation(
 
 
 def test_unknown_service_state_fails_closed_before_file_mutation(tmp_path):
-    env = _install_env(tmp_path)
+    source = _copy_source(tmp_path)
+    env = _install_env(tmp_path, source)
     first = _run_installer(env)
     assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+    _change_runtime_content(source)
     current_before = _bash_readlink(tmp_path / "runtime" / "current")
     units_before = {
         unit: (tmp_path / "systemd" / unit).read_bytes()
@@ -1314,9 +1331,11 @@ def test_unknown_service_state_fails_closed_before_file_mutation(tmp_path):
 
 
 def test_partial_timer_stop_failure_reactivates_every_timer(tmp_path):
-    env = _install_env(tmp_path)
+    source = _copy_source(tmp_path)
+    env = _install_env(tmp_path, source)
     first = _run_installer(env)
     assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+    _change_runtime_content(source)
     env["FAIL_STOP_UNIT"] = TIMERS[2]
 
     result = _run_installer(env)
@@ -1596,6 +1615,7 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
         "deploy/install-host-uptime-services.sh",
         *(f"deploy/{unit}" for unit in UNIT_FILES),
         *RUNTIME_FILES,
+        JOURNALD_DROPIN_SOURCE,
     ]
     restart_checkout = restart["jobs"]["restart"]["steps"][0]
     assert restart_checkout["with"]["ref"] == "${{ github.sha }}"

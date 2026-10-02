@@ -836,10 +836,10 @@ class CodexProvider(BaseProvider):
             try:
                 codex_home.relative_to(universe_root)
             except ValueError as exc:
-                raise ProviderError("codex auth home is outside the served universe") from exc
+                raise ProviderError("codex auth home is outside the served command center") from exc
             if not bwrap_path or not codex_home.is_dir():
                 raise ProviderError(
-                    "codex served turns require an available OS sandbox and universe auth"
+                    "codex served turns require an available OS sandbox and command center auth"
                 )
             sandbox_args = [
                 "--sandbox",

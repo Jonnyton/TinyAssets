@@ -36,7 +36,7 @@ from typing import Any
 BOOTSTRAP_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Universe UI</title>
+<title>Command Center UI</title>
 <style>
 html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;color:#111;background:#fff}
 #ta-ui-root{min-height:100%}

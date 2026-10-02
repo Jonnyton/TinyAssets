@@ -366,7 +366,7 @@ const mismatched=await (async()=>{const before=pinnedFrame.posts.length;
  for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
  return pinnedFrame.posts[pinnedFrame.posts.length-1];})();
 assert.equal(mismatched.ok,false,'an answer about another universe is refused');
-assert(/another universe/.test(mismatched.error),mismatched.error);
+assert(/another command center/.test(mismatched.error),mismatched.error);
 assert.equal(JSON.stringify(mismatched).includes('BOBS PRIVATE TURN'),false);
 statusUniverseOverride='';
 

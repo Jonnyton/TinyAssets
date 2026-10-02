@@ -70,7 +70,7 @@ def test_first_contact_tool_descriptions_match_the_opening_instruction() -> None
 
     assert "pure, idempotent read" in status_description
     assert "never creates or repairs" in status_description
-    assert "founder's home universe" in converse_description
+    assert "founder's home command center" in converse_description
     assert "creates and binds a blank seed" in converse_description
 
 
