@@ -582,14 +582,25 @@ def test_a_live_claim_refuses_a_second_activation(tmp_path: Path):
     request_id = ccp.pin(tmp_path, universe_id="u", kind="install", agent="main",
                          digest="d", record={})
     pin_id = ccp.pin_for_request(tmp_path, universe_id="u", request_id=request_id)["pin_id"]
-    assert ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=1000.0) == "pinned"
+    state, first = ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=1000.0)
+    assert state == "pinned"
     with pytest.raises(ccp.PackageError):
         ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=1001.0)
-    # A crashed activation's claim is taken over (resumed) once its lease lapses.
+    # A crashed activation's claim is taken over (resumed) once its lease lapses...
     later = 1000.0 + ccp.CLAIM_LEASE_S + 1
-    assert ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=later) == "activating"
-    ccp.finish(tmp_path, universe_id="u", pin_id=pin_id, progress={})
-    assert ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=later + 1) == "activated"
+    state, second = ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=later)
+    assert state == "activating" and second != first
+    # ...and the superseded holder is fenced out of every write.
+    with pytest.raises(ccp.LostClaim):
+        ccp.record_progress(tmp_path, universe_id="u", pin_id=pin_id, progress={"x": 1},
+                            token=first)
+    with pytest.raises(ccp.LostClaim):
+        ccp.finish(tmp_path, universe_id="u", pin_id=pin_id, progress={}, token=first)
+    ccp.unclaim(tmp_path, universe_id="u", pin_id=pin_id, token=first)
+    with pytest.raises(ccp.PackageError):  # the stale release changed nothing
+        ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=later + 1)
+    ccp.finish(tmp_path, universe_id="u", pin_id=pin_id, progress={}, token=second)
+    assert ccp.claim(tmp_path, universe_id="u", pin_id=pin_id, now=later + 2)[0] == "activated"
 
 
 # ---------------------------------------------------------------------------
@@ -755,3 +766,100 @@ def test_a_resumed_ui_add_never_duplicates_the_screen(home: Path):
         _add_ui(BOB_UNIVERSE, UI, "village")
     library = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"]
     assert [u["ui_id"] for u in library] == ["village"]
+
+
+# ---------------------------------------------------------------------------
+# 10. Code refute round 2
+# ---------------------------------------------------------------------------
+
+
+def test_narrowing_keeps_every_remaining_byte_as_verified():
+    files = {"AGENTS.md": b"lead", "notes/a.md": b"alpha", "notes/b.md": b"beta",
+             "wiki/pages/w.md": b"wiki"}
+    manifest = ccp.build_manifest(profile=ccp.PROFILE_PUBLISH, name="P", description="",
+                                  files=files, workflows=[], ui="", automations=[],
+                                  connections=[])
+    narrowed = ccp.narrow_package(ccp.build_blob(manifest, files), ["notes", "wiki/pages/w.md"])
+    _, kept = ccp.check_blob(narrowed["blob"])
+    assert kept == {"AGENTS.md": b"lead"}
+    with pytest.raises(ccp.PackageError):
+        ccp.narrow_package(ccp.build_blob(manifest, files), ["AGENTS.md", "notes", "wiki"])
+
+
+def test_a_switch_publishes_the_verified_bytes_not_a_later_edit(home: Path, monkeypatch):
+    from tinyassets.api import publish_requests
+
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    real = publish_requests.build_snapshot
+    calls = []
+
+    def edit_after_the_check(uid, action):
+        snap = real(uid, action)
+        calls.append(1)
+        # The board changes right after the verified read.
+        _write(home / UNIVERSE, "notes/board.md", "# Board\n- EDITED AFTER CONSENT\n")
+        return snap
+
+    monkeypatch.setattr(publish_requests, "build_snapshot", edit_after_the_check)
+    done = _answer(OWNER, UNIVERSE, ask["request_id"],
+                   {_switch(ask, "wiki/"): "Leave out"})
+    assert done.get("published") is True, done
+    assert len(calls) == 1
+    files = _blob_files(home, done["agent_definition_id"])
+    assert files["notes/board.md"] == TRAVELS["notes/board.md"].encode()
+    assert "wiki/pages/village.md" not in files
+
+
+@pytest.mark.parametrize("value", ["0123456789abcdef", "415-555-1212"])
+def test_an_id_named_field_is_not_a_blind_spot(home: Path, value):
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+
+    raw = get_branch_definition(home, branch_def_id=SCOUT)
+    raw["node_defs"][0]["customer_id"] = value
+    save_branch_definition(home, branch_def=raw)
+    out = _ask(OWNER, UNIVERSE, _publish_action())
+    assert "request_id" not in out, out
+
+
+def test_a_phone_number_under_a_schema_id_key_is_refused():
+    with pytest.raises(ccp.PackageError):
+        ccp.scan_public({"node_id": "415-555-1212"})
+    ccp.scan_public({"node_id": "01m3x4ycgknx933dfx03y93qhe", "author": "u-01ky3zh1arr8qth8"})
+
+
+def test_the_tab_lists_every_file_however_many(home: Path):
+    for n in range(260):
+        _write(home / UNIVERSE, f"notes/many/n{n:03d}.md", f"note {n}\n")
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    for n in range(260):
+        assert f"  - notes/many/n{n:03d}.md\n" in ask["body"], n
+    assert "more" not in ask["body"].split("Left out")[0].split("These")[-1]
+
+
+def test_a_blob_write_that_fails_records_no_ownership(tmp_path: Path, monkeypatch):
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ccp.os, "replace", boom)
+    with pytest.raises(OSError):
+        ccp.store_blob(tmp_path, author_id="acct_a", blob=b"{}")
+    monkeypatch.undo()
+    sha = hashlib.sha256(b"{}").hexdigest()
+    assert not ccp.blob_owned(tmp_path, "acct_a", sha)
+    assert ccp.measure_packages(tmp_path, ["acct_a"]) == 0
+
+
+def test_an_unrelated_screen_at_the_intended_id_is_never_adopted(home: Path):
+    from tinyassets.api.package_requests import _add_ui
+    from tinyassets.custom_agents import get_app_ui, save_app_ui
+
+    bobs = {**UI, "name": "Bob's own", "markup": "<p>mine</p>"}
+    save_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE, expected_revision=0,
+                changes={"ui_library": [bobs]})
+    with _as(BOB):
+        landed = _add_ui(BOB_UNIVERSE, UI, "village")
+    assert landed != "village"
+    library = {u["ui_id"]: u for u in get_app_ui(home, owner_user_id=BOB,
+                                                 universe_id=BOB_UNIVERSE)["ui_library"]}
+    assert library["village"]["markup"] == "<p>mine</p>"
+    assert library[landed]["markup"] == UI["markup"]

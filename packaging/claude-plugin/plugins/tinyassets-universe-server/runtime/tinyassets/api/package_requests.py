@@ -42,7 +42,8 @@ INSTALL_SENTENCE = (
     "one. Files already here stay yours and are not replaced."
 )
 
-_SHOWN_FILES = 200
+#: Wider than any package path: the install tab lists every destination in full.
+_FULL = 1000
 
 
 def _shown(value: Any, limit: int = 80) -> str:
@@ -198,13 +199,11 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
         lines.append("Automations, paused until you resume them:")
         lines.extend(f"- {_shown(a['name'])}" for a in plan["automations"])
     lines.append(f"Files ({len(placement['land'])}) written into this command center:")
-    for entry in placement["land"][:_SHOWN_FILES]:
-        lines.append(f"  - {_shown(entry['to'], 160)}")
-    if len(placement["land"]) > _SHOWN_FILES:
-        lines.append(f"  - and {len(placement['land']) - _SHOWN_FILES} more")
+    for entry in placement["land"]:
+        lines.append(f"  - {_shown(entry['to'], _FULL)}")
     if placement["keep"]:
         lines.append(f"Already here, so kept as yours ({len(placement['keep'])}):")
-        lines.extend(f"  - {_shown(p, 160)}" for p in placement["keep"][:_SHOWN_FILES])
+        lines.extend(f"  - {_shown(p, _FULL)}" for p in placement["keep"])
     if any(p["to"].startswith("agents/") for p in placement["land"]):
         lines.append(f"Its agent's instructions and skills go under "
                      f"agents/{placement['agent_slug']}/, beside your own.")
@@ -239,6 +238,7 @@ def execute_action(uid: str, pinned: dict[str, Any]) -> dict[str, Any]:
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path
     from tinyassets.command_center_packages import (
+        LostClaim,
         PackageError,
         claim,
         finish,
@@ -258,7 +258,7 @@ def execute_action(uid: str, pinned: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(_CHANGED)
     base = _base_path()
     try:
-        state = claim(base, universe_id=uid, pin_id=pinned["pin_id"])
+        state, token = claim(base, universe_id=uid, pin_id=pinned["pin_id"])
     except PackageError as exc:
         raise ValueError(str(exc)) from None
     if state == "activated":
@@ -287,7 +287,7 @@ def execute_action(uid: str, pinned: dict[str, Any]) -> dict[str, Any]:
             nbytes=remaining)
     except storage_accounting.StorageRefused as refused:
         detail = storage_accounting.visible_record(refused).get("error", "")
-        _release(uid, pinned["pin_id"], progress)
+        _release(uid, pinned["pin_id"], progress, token)
         raise ValueError(f"Installing writes {human(remaining)}, more than your storage "
                          f"has room for, so nothing was installed. {detail}") from None
 
@@ -295,12 +295,13 @@ def execute_action(uid: str, pinned: dict[str, Any]) -> dict[str, Any]:
         return sum(sizes.get(p, 0) for p in progress["files"]) - landed_before
 
     try:
-        _materialise(uid, actor, pinned["pin_id"], plan, files, progress)
+        _materialise(uid, actor, pinned["pin_id"], plan, files, progress, token)
     except BaseException as exc:
         # What landed stays charged (a partial install keeps its files); only
         # the unwritten rest of the reservation is given back.
         storage_accounting.commit(reservation, min(landed_now(), remaining))
-        _release(uid, pinned["pin_id"], progress)
+        if not isinstance(exc, LostClaim):
+            _release(uid, pinned["pin_id"], progress, token)
         if isinstance(exc, (PackageError, OSError)):
             raise ValueError(f"the install stopped part way ({exc}); what landed is listed "
                              "in your command center, and confirming again resumes it"
@@ -309,44 +310,58 @@ def execute_action(uid: str, pinned: dict[str, Any]) -> dict[str, Any]:
     storage_accounting.commit(reservation, min(landed_now(), remaining))
     receipt = {"installed": True, "package": plan["name"], "version": plan["version"],
                **progress}
-    finish(base, universe_id=uid, pin_id=pinned["pin_id"], progress=receipt)
+    try:
+        finish(base, universe_id=uid, pin_id=pinned["pin_id"], progress=receipt, token=token)
+    except LostClaim as exc:
+        raise ValueError(str(exc)) from None
     return receipt
 
 
-def _release(uid: str, pin_id: str, progress: dict[str, Any]) -> None:
+def _release(uid: str, pin_id: str, progress: dict[str, Any], token: str) -> None:
     """Keep the progress for a resume; the pin stays ``activating``, unheld."""
     from tinyassets.api.helpers import _base_path
-    from tinyassets.command_center_packages import record_progress, unclaim
+    from tinyassets.command_center_packages import LostClaim, record_progress, unclaim
 
-    record_progress(_base_path(), universe_id=uid, pin_id=pin_id, progress=progress)
-    unclaim(_base_path(), universe_id=uid, pin_id=pin_id)
+    try:
+        record_progress(_base_path(), universe_id=uid, pin_id=pin_id, progress=progress,
+                        token=token)
+    except LostClaim:
+        return
+    unclaim(_base_path(), universe_id=uid, pin_id=pin_id, token=token)
 
 
 def _materialise(uid: str, actor: str, pin_id: str, plan: dict[str, Any],
-                 files: dict[str, bytes], progress: dict[str, Any]) -> None:
-    """Each component once, recording its new id as it lands."""
+                 files: dict[str, bytes], progress: dict[str, Any], token: str) -> None:
+    """Each component once, recording its new id as it lands.
+
+    ``save`` runs before AND after every effect: it renews the lease and raises
+    `LostClaim` if another confirm took over, so no effect runs after that.
+    """
     from tinyassets.api.helpers import _base_path
     from tinyassets.command_center_packages import record_progress
 
     def save() -> None:
-        record_progress(_base_path(), universe_id=uid, pin_id=pin_id, progress=progress)
+        record_progress(_base_path(), universe_id=uid, pin_id=pin_id, progress=progress,
+                        token=token)
 
     for workflow in plan["workflows"]:
         if workflow["key"] not in progress["workflows"]:
+            save()
             progress["workflows"][workflow["key"]] = _remix(pin_id, workflow)
             save()
     if plan["ui"] and "ui" not in progress:
         if "ui_intended" not in progress:
             progress["ui_intended"] = _free_ui_id(uid, plan["ui"])
-            save()
+        save()
         progress["ui"] = _add_ui(uid, plan["ui"], progress["ui_intended"])
         save()
     for automation in plan["automations"]:
         if automation["key"] not in progress["automations"]:
+            save()
             progress["automations"][automation["key"]] = _automation(
                 uid, actor, pin_id, automation, progress["workflows"])
             save()
-    _write_files(uid, plan, files, progress)
+    _write_files(uid, plan, files, progress, save)
     save()
 
 
@@ -381,11 +396,15 @@ def _remix(pin_id: str, workflow: dict[str, str]) -> str:
     return str(branch_id)
 
 
-def _library_ids(uid: str) -> set[str]:
+def _library(uid: str) -> dict[str, dict[str, Any]]:
     from tinyassets.api.app_ui import read_app_ui
 
     library = (read_app_ui(universe_id=uid).get("app_ui") or {}).get("ui_library") or []
-    return {str(c.get("ui_id")) for c in library if isinstance(c, dict)}
+    return {str(c.get("ui_id")): c for c in library if isinstance(c, dict)}
+
+
+def _library_ids(uid: str) -> set[str]:
+    return set(_library(uid))
 
 
 def _free_ui_id(uid: str, ui: dict[str, Any]) -> str:
@@ -400,12 +419,21 @@ def _free_ui_id(uid: str, ui: dict[str, Any]) -> str:
 
 
 def _add_ui(uid: str, ui: dict[str, Any], ui_id: str) -> str:
-    """The screen, added under the id recorded before this call. Already there
-    (a crash after the add, before it was recorded): nothing more is added."""
-    from tinyassets.api.app_ui import change_app_ui
+    """The screen, added under the id recorded before this call.
 
-    if ui_id in _library_ids(uid):
-        return ui_id
+    Already there with THIS screen's content (a crash after the add, before it
+    was recorded): nothing more is added. Already there with other content (the
+    owner added a screen meanwhile): that one is theirs, so this one goes under
+    a fresh id rather than being silently taken for it (gpt-6-astra, code r2 #8).
+    """
+    from tinyassets.api.app_ui import change_app_ui
+    from tinyassets.custom_agents import app_ui_etag
+
+    library = _library(uid)
+    if ui_id in library:
+        if app_ui_etag(library[ui_id]) == app_ui_etag({**ui, "ui_id": ui_id}):
+            return ui_id
+        ui_id = _free_ui_id(uid, {**ui, "ui_id": ui_id})
     outcome = change_app_ui(universe_id=uid, operation="add_ui",
                             payload={"component": {**ui, "ui_id": ui_id}})
     if outcome.get("error"):
@@ -453,7 +481,7 @@ def _automation(uid: str, actor: str, pin_id: str, spec: dict[str, Any],
 
 
 def _write_files(uid: str, plan: dict[str, Any], files: dict[str, bytes],
-                 progress: dict[str, Any]) -> None:
+                 progress: dict[str, Any], save: Any) -> None:
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.command_center_packages import write_new_file
 
@@ -463,6 +491,7 @@ def _write_files(uid: str, plan: dict[str, Any], files: dict[str, bytes],
     for entry in plan["placement"]["land"]:
         if entry["to"] in done:
             continue
+        save()
         if write_new_file(udir, entry["to"], files[entry["path"]]):
             progress["files"].append(entry["to"])
         elif entry["to"] not in kept:

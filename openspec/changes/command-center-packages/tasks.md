@@ -27,7 +27,8 @@
 - [ ] 2.3 gpt-6-astra refute (at most 3 rounds):
   - design round 1: ADAPT, folded (see the design's review log);
   - code round 1: ADAPT, all 10 folded (the design's review log);
-  - code round 2: pending.
+  - code round 2: ADAPT, 7 of 8 folded, 1 DISAGREE_CONCERN (the design's review log);
+  - code round 3 (last): pending.
 - [ ] 2.4 Linux oracle on the changed tests and their importers; deploy; `deployed_sha.py --assert-contains`; the lead's founder-account village test.
 
 ## 3. Land

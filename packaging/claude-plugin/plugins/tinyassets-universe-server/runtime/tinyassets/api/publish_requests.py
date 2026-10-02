@@ -203,10 +203,6 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
             "\n".join(lines))
 
 
-#: Files shown per list before "and N more": the tab stays readable and the
-#: counts stay exact.
-_SHOWN_FILES = 200
-
 #: The platform's sentence about what a scrub can and cannot prove (§4.17).
 PACKAGE_SENTENCE = (
     "Every file listed above becomes public. Files with a detected credential or "
@@ -216,24 +212,27 @@ PACKAGE_SENTENCE = (
 )
 
 
+#: Wider than any package path (``MAX_PATH_CHARS``): a listed path is never cut.
+_FULL = 1000
+
+
 def _package_lines(package: dict[str, Any]) -> list[str]:
     lines = [f"- These {package['file_count']} files of your command center "
              f"({package['size']}, version {package['version']}):"]
-    for path in package["files"][:_SHOWN_FILES]:
-        lines.append(f"  - {_shown(path, 160)}")
-    if package["file_count"] > _SHOWN_FILES:
-        lines.append(f"  - and {package['file_count'] - _SHOWN_FILES} more")
+    # EVERY path, in full: default-include is acceptable only because the tab
+    # lists all of it (lead, 2026-10-01). Paths are checked package paths, so
+    # flattening cannot change one; the bound is the path limit, never a cut.
+    for path in package["files"]:
+        lines.append(f"  - {_shown(path, _FULL)}")
     if package["excluded"]:
         lines.append(f"Left out ({len(package['excluded'])}):")
-        for entry in package["excluded"][:_SHOWN_FILES]:
-            lines.append(f"  - {_shown(entry['path'], 160)}: {entry['reason']}")
-        if len(package["excluded"]) > _SHOWN_FILES:
-            lines.append(f"  - and {len(package['excluded']) - _SHOWN_FILES} more")
+        for entry in package["excluded"]:
+            lines.append(f"  - {_shown(entry['path'], _FULL)}: {entry['reason']}")
     if package.get("flagged"):
         lines.append(f"Worth a look before you confirm ({len(package['flagged'])}): these "
                      "mention something that is often private. Leave any out below.")
-        for entry in package["flagged"][:_SHOWN_FILES]:
-            lines.append(f"  - {_shown(entry['path'], 160)}: mentions "
+        for entry in package["flagged"]:
+            lines.append(f"  - {_shown(entry['path'], _FULL)}: mentions "
                          f"\"{_shown(entry['word'], 40)}\"")
     if package["connections"]:
         lines.append("Whoever installs it connects their own: "
@@ -504,7 +503,7 @@ def answer_publish(uid: str, pinned: dict[str, Any], values: dict[str, Any], *,
     extra = _left_out(action, values) if action.get("package") else []
     base = _base_path()
     try:
-        state = claim(base, universe_id=uid, pin_id=pinned["pin_id"])
+        state, token = claim(base, universe_id=uid, pin_id=pinned["pin_id"])
     except PackageError as exc:
         raise ValueError(str(exc)) from None
     if state == "activated":
@@ -512,9 +511,12 @@ def answer_publish(uid: str, pinned: dict[str, Any], values: dict[str, Any], *,
     try:
         receipt = execute_action(uid, action, request_id=request_id, leave_out=extra)
     except BaseException:
-        unclaim(base, universe_id=uid, pin_id=pinned["pin_id"])
+        unclaim(base, universe_id=uid, pin_id=pinned["pin_id"], token=token)
         raise
-    finish(base, universe_id=uid, pin_id=pinned["pin_id"], progress=receipt)
+    try:
+        finish(base, universe_id=uid, pin_id=pinned["pin_id"], progress=receipt, token=token)
+    except PackageError as exc:
+        raise ValueError(str(exc)) from None
     return receipt
 
 
@@ -632,16 +634,11 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str,
     snap = build_snapshot(uid, action)
     if snap["digest"] != action.get("snapshot_digest"):
         raise ValueError(_CHANGED)
-    if leave_out and action.get("package"):
-        # The owner switched some of it off. Rebuilt from the live folder with
-        # those left out, and it must be a strict subset of what they were
-        # shown: a switch can only narrow.
-        shown_files = set(snap["shown"]["package"]["files"])
-        exclude = sorted(set(action["package"]["exclude"]) | set(leave_out))
-        snap = build_snapshot(uid, {**action, "package": {**action["package"],
-                                                         "exclude": exclude}})
-        if not set(snap["shown"]["package"]["files"]) <= shown_files:
-            raise ValueError(_CHANGED)
+    if leave_out and snap.get("package"):
+        # The owner switched some of it off. Narrowed from THIS verified
+        # snapshot, never rebuilt from the live folder: what remains is
+        # byte-for-byte what they were shown (gpt-6-astra, code r2 #1).
+        snap = _narrowed(snap, list(leave_out))
 
     package = snap.get("package")
     if package:
@@ -659,6 +656,25 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str,
             drop_version(_base_path(), author_id=actor, name=action["name"],
                          version=package["version"])
         raise
+
+
+def _narrowed(snap: dict[str, Any], leave_out: list[str]) -> dict[str, Any]:
+    from tinyassets.command_center_packages import PackageError, narrow_package
+
+    package = snap["package"]
+    try:
+        narrowed = narrow_package(package["blob"], leave_out)
+    except PackageError as exc:
+        raise ValueError(str(exc)) from None
+    manifest = narrowed["manifest"]
+    component = {**package["component"], "blob_sha256": narrowed["sha256"],
+                 "size_bytes": len(narrowed["blob"]), "file_count": len(manifest["files"]),
+                 "agents": manifest["agents"], "needs": manifest["needs"]}
+    definition = {**snap["definition"],
+                  "components": {**snap["definition"]["components"], "package": component}}
+    return {**snap, "definition": definition,
+            "package": {**package, "component": component, "blob": narrowed["blob"],
+                        "sha256": narrowed["sha256"]}}
 
 
 def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], *,

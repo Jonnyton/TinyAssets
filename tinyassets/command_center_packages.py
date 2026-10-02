@@ -49,7 +49,6 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Iterator
 
-from tinyassets import workspace_fs as fs
 from tinyassets.universe_files import (
     MAX_UNIVERSE_FILE_BYTES,
     list_universe_dir,
@@ -68,7 +67,9 @@ _BLOBS = "blobs"
 _DB = "packages.db"
 
 # -- the ingestion boundary's bounds -------------------------------------------
-MAX_FILES = 5000
+#: Also the preview's bound: the tab lists every file, so a package is never
+#: larger than a list an owner can read in full (gpt-6-astra, code r2 #4).
+MAX_FILES = 2000
 MAX_DEPTH = 24
 MAX_PATH_CHARS = 400
 MAX_FILE_BYTES = MAX_UNIVERSE_FILE_BYTES
@@ -117,19 +118,25 @@ _PHONE = re.compile(
     r"(?<![\w+])(?:\+\d{1,3}[\s.-]?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}"
     r"|\(\d{3}\)\s?\d{3}[-.\s]\d{4}|\d{3}[-.]\d{3}[-.]\d{4})(?!\w)"
 )
-_ISO_TIME = re.compile(
-    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?")
 _MEMORY_ID = re.compile(r"m_[A-Za-z0-9]{1,32}")
 _MEMORY_ITEM = re.compile(r"^\s*[-*]\s*\[(m_[A-Za-z0-9]{1,32})\]")
 _CONNECTION_NAME = re.compile(r"^[a-z0-9][a-z0-9._:-]{1,126}$")
 _CONNECTION_KEYS = frozenset({"destination", "connection", "connection_name"})
 _SLUG = re.compile(r"[^a-z0-9]+")
 _AGENT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-#: Identifier and digest fields: ids and hex digests are key-shaped by design,
-#: so the final scan skips a string under such a key when it LOOKS like an id
-#: (no spaces, no email). Anything sentence-shaped under it is still scanned.
-_ID_KEY = re.compile(r"(?:^|_)(?:id|ids|hash|digest|sha256|fingerprint|etag)$")
-_ID_VALUE = re.compile(r"^[A-Za-z0-9._:@/+=-]{1,200}$")
+#: Schema-known identifier fields: platform ids (ULIDs, hex uuids, actor ids)
+#: and digests are key-shaped by construction, so under exactly these keys an
+#: id-shaped value skips the CREDENTIAL test. Contact detection always runs, and
+#: any key not named here is scanned in full (gpt-6-astra, code r2 #2: a
+#: suffix rule let ``customer_id: "0123456789abcdef"`` through).
+_ID_FIELDS = frozenset({
+    "author", "author_id", "approved_by", "approved_source_hash", "branch_def_id",
+    "branch_version_id", "parent_def_id", "fork_from", "goal_id", "domain_id",
+    "entry_point", "node_id", "node_def_id", "id", "from_node", "to_node",
+    "published_version_id", "blob_sha256", "sha256", "ui_id", "workflow",
+    "agent_definition_id",
+})
+_ID_VALUE = re.compile(r"^[A-Za-z0-9._:@-]{1,200}$")
 #: Words that often mark private material. A hit is NOT an exclusion: it puts
 #: the file on the tab's "worth a look" list, so the owner reviews it before
 #: confirming rather than it being silently included.
@@ -262,10 +269,7 @@ def text_detection(text: str) -> str | None:
     from tinyassets.credential_shape import credential_shape
 
     for line in text.splitlines() or [text]:
-        # The shared parser reads an ISO-8601 timestamp as an opaque run
-        # (`2026-10-01T12:00:00+00:00` -> opaque_high_entropy); every board and
-        # every workflow row carries them, so they are taken out first.
-        if credential_shape(_ISO_TIME.sub(" ", line)):
+        if credential_shape(line):
             return R_CREDENTIAL
     if _EMAIL.search(text) or _PHONE.search(text):
         return R_CONTACT
@@ -337,6 +341,16 @@ def select_memory(data: bytes, wanted: list[str], rel: str = MEMORY_FILE) -> byt
     return ("# Memory\n\n" + "\n".join(chosen) + "\n").encode("utf-8")
 
 
+def _strings(value: Any) -> list[str]:
+    return [value] if isinstance(value, str) else [v for v in value if isinstance(v, str)]
+
+
+def _id_shaped(value: Any) -> bool:
+    """A string, or a list of strings, that each look like an identifier."""
+    values = [value] if isinstance(value, str) else value if isinstance(value, list) else None
+    return bool(values) and all(isinstance(v, str) and _ID_VALUE.match(v) for v in values)
+
+
 def scan_public(value: Any, where: str = "") -> None:
     """The final-output check: every string in ``value`` (keys included) must
     pass the credential parser and the contact detector. Hex digest fields the
@@ -347,8 +361,10 @@ def scan_public(value: Any, where: str = "") -> None:
             if text_detection(str(key)):
                 raise PackageError(f"{where or 'the package'} has a field name that "
                                    "carries a credential or contact details")
-            if (_ID_KEY.search(str(key)) and isinstance(child, str)
-                    and _ID_VALUE.match(child) and not _EMAIL.search(child)):
+            if str(key) in _ID_FIELDS and _id_shaped(child):
+                if any(_EMAIL.search(v) or _PHONE.search(v) for v in _strings(child)):
+                    raise PackageError(f"{here}: {R_CONTACT}; nothing was published. "
+                                       "Remove it and ask again")
                 continue
             scan_public(child, here)
     elif isinstance(value, list):
@@ -559,6 +575,26 @@ def build_publish_package(universe_dir: Path, *, name: str, description: str,
             "excluded": excluded, "flagged": flagged}
 
 
+def narrow_package(blob: bytes, leave_out: list[str]) -> dict[str, Any]:
+    """The verified package with ``leave_out`` paths (files or folders) removed.
+
+    Built from the blob already pinned and verified, never from the live
+    folder: what remains is byte-for-byte what the owner was shown.
+    """
+    manifest, files = check_blob(blob)
+    kept = {p: b for p, b in files.items()
+            if not any(p == x or p.startswith(x + "/") for x in leave_out)}
+    if not kept:
+        raise PackageError("that leaves nothing to publish as files")
+    narrowed = build_manifest(
+        profile=PROFILE_PUBLISH, name=manifest["name"], description=manifest["description"],
+        files=kept, workflows=manifest["workflows"], ui=manifest["ui"],
+        automations=manifest["automations"], connections=manifest["needs"]["connections"])
+    new_blob = build_blob(narrowed, kept)
+    return {"blob": new_blob, "sha256": hashlib.sha256(new_blob).hexdigest(),
+            "manifest": narrowed}
+
+
 def human(size: int | float) -> str:
     value = float(size)
     for unit in ("bytes", "KiB", "MiB"):
@@ -655,6 +691,7 @@ CREATE TABLE IF NOT EXISTS pins (
                  CHECK (state IN ('pinned', 'activating', 'activated')),
     progress_json TEXT NOT NULL DEFAULT '{}',
     claimed_at   REAL,
+    claim_token  TEXT NOT NULL DEFAULT '',
     created_at   REAL NOT NULL,
     activated_at REAL,
     PRIMARY KEY (universe_id, pin_id)
@@ -696,34 +733,37 @@ def _blob_path(base_path: str | Path, sha256: str) -> Path:
 
 
 def blob_owned(base_path: str | Path, author_id: str, sha256: str) -> bool:
+    """Already paid for: owned by this author AND on disk."""
     with _db(base_path) as conn:
-        return conn.execute(
+        owned = conn.execute(
             "SELECT 1 FROM blobs WHERE author_id = ? AND blob_sha256 = ?",
             (author_id, sha256)).fetchone() is not None
+    return owned and _blob_path(base_path, sha256).exists()
 
 
 def store_blob(base_path: str | Path, *, author_id: str, blob: bytes) -> str:
-    """Record ``author_id`` as an owner of ``blob``, then write it once.
+    """Write ``blob`` once, then record ``author_id`` as an owner of it.
 
-    Ownership first: a crash between the two leaves a charged row and no file
-    (an over-count), never an uncharged file. Content-addressed, so a second
-    write of identical bytes is a no-op.
+    The write first, under the caller's storage reservation: ownership is the
+    "already paid for" record, so it exists only once the bytes do (gpt-6-astra,
+    code r2 #6). A crash between the two leaves an unowned file and no record,
+    and the retry reserves again. Content-addressed, so rewriting identical
+    bytes is a no-op.
     """
     sha = hashlib.sha256(blob).hexdigest()
     path = _blob_path(base_path, sha)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        tmp = path.with_name(f".{sha}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+        with open(tmp, "xb") as handle:
+            handle.write(blob)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
     with _db(base_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO blobs (author_id, blob_sha256, size_bytes, created_at) "
             "VALUES (?, ?, ?, ?)", (author_id, sha, len(blob), time.time()))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        return sha
-    tmp = path.with_name(f".{sha}.{os.getpid()}.{time.monotonic_ns()}.tmp")
-    with open(tmp, "xb") as handle:
-        handle.write(blob)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, path)
     return sha
 
 
@@ -851,12 +891,25 @@ def pin_for_request(base_path: str | Path, *, universe_id: str,
 CLAIM_LEASE_S = 600.0
 
 
+class LostClaim(PackageError):
+    """Another confirm took this activation over; the holder must stop."""
+
+
 def claim(base_path: str | Path, *, universe_id: str, pin_id: str,
-          now: float | None = None) -> str:
-    """Claim a pin for activation, atomically. Returns ``pinned`` (claimed
-    fresh), ``activating`` (a stale claim taken over: resume), or
-    ``activated`` (done already). A live claim raises `PackageError`."""
+          now: float | None = None) -> tuple[str, str]:
+    """Claim a pin for activation, atomically: ``(state, token)``.
+
+    ``state`` is ``pinned`` (claimed fresh), ``activating`` (a lapsed claim
+    taken over: resume) or ``activated`` (done already; no token). A live claim
+    raises `PackageError`. The token FENCES the holder: progress, release and
+    finish all require it, and every progress write renews the lease, so a slow
+    activation that was taken over cannot write over its successor
+    (gpt-6-astra, code r2 #7).
+    """
+    import uuid
+
     moment = time.time() if now is None else now
+    token = uuid.uuid4().hex
     with _db(base_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -869,21 +922,23 @@ def claim(base_path: str | Path, *, universe_id: str, pin_id: str,
             if state == "activating" and moment - float(row["claimed_at"] or 0) < CLAIM_LEASE_S:
                 raise PackageError("this is already being installed; wait a moment")
             if state != "activated":
-                conn.execute("UPDATE pins SET state = 'activating', claimed_at = ? "
-                             "WHERE universe_id = ? AND pin_id = ?",
-                             (moment, universe_id, pin_id))
+                conn.execute("UPDATE pins SET state = 'activating', claimed_at = ?, "
+                             "claim_token = ? WHERE universe_id = ? AND pin_id = ?",
+                             (moment, token, universe_id, pin_id))
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")
             raise
-    return state
+    return state, ("" if state == "activated" else token)
 
 
-def unclaim(base_path: str | Path, *, universe_id: str, pin_id: str) -> None:
-    """Let the next confirm resume at once: a failed activation stops holding."""
+def unclaim(base_path: str | Path, *, universe_id: str, pin_id: str, token: str) -> None:
+    """Let the next confirm resume at once: a failed activation stops holding.
+    Only the current holder can release; a superseded one changes nothing."""
     with _db(base_path) as conn:
         conn.execute("UPDATE pins SET claimed_at = 0 WHERE universe_id = ? AND pin_id = ? "
-                     "AND state = 'activating'", (universe_id, pin_id))
+                     "AND state = 'activating' AND claim_token = ?",
+                     (universe_id, pin_id, token))
 
 
 def pin_progress(base_path: str | Path, *, universe_id: str, pin_id: str) -> dict[str, Any]:
@@ -894,20 +949,30 @@ def pin_progress(base_path: str | Path, *, universe_id: str, pin_id: str) -> dic
 
 
 def record_progress(base_path: str | Path, *, universe_id: str, pin_id: str,
-                    progress: dict[str, Any]) -> None:
+                    progress: dict[str, Any], token: str) -> None:
+    """Save progress and renew the lease, as the current holder only.
+    Raises `LostClaim` when another confirm has taken over."""
     with _db(base_path) as conn:
-        conn.execute("UPDATE pins SET progress_json = ? WHERE universe_id = ? AND pin_id = ?",
-                     (json.dumps(progress, sort_keys=True, default=str), universe_id, pin_id))
+        cur = conn.execute(
+            "UPDATE pins SET progress_json = ?, claimed_at = ? WHERE universe_id = ? "
+            "AND pin_id = ? AND state = 'activating' AND claim_token = ?",
+            (json.dumps(progress, sort_keys=True, default=str), time.time(), universe_id,
+             pin_id, token))
+    if cur.rowcount != 1:
+        raise LostClaim("another confirm took this over; this one stopped")
 
 
 def finish(base_path: str | Path, *, universe_id: str, pin_id: str,
-           progress: dict[str, Any]) -> None:
+           progress: dict[str, Any], token: str) -> None:
     with _db(base_path) as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE pins SET state = 'activated', progress_json = ?, activated_at = ? "
-            "WHERE universe_id = ? AND pin_id = ?",
+            "WHERE universe_id = ? AND pin_id = ? AND state = 'activating' "
+            "AND claim_token = ?",
             (json.dumps(progress, sort_keys=True, default=str), time.time(), universe_id,
-             pin_id))
+             pin_id, token))
+    if cur.rowcount != 1:
+        raise LostClaim("another confirm took this over; this one stopped")
 
 
 # --------------------------------------------------------------------------- #
@@ -1045,55 +1110,18 @@ def plan_install(universe_dir: Path, manifest: dict[str, Any],
 
 
 def write_new_file(universe_dir: Path, rel: str, data: bytes) -> bool:
-    """Create ``rel`` holding ``data``. False if it already exists.
+    """Create ``rel`` holding ``data``. False if anything is already there.
 
-    Every directory is created and then opened through its parent without
-    following a link; the file is created ``O_EXCL | O_NOFOLLOW``. A link
-    planted anywhere on the path refuses (``OSError``) rather than redirecting.
+    The platform's one link-free writer (``universe_files.write_universe_file``,
+    mode ``exclusive``): every directory is created and opened without following
+    a link and the file is created ``O_EXCL | O_NOFOLLOW``, so a link planted
+    anywhere on the path refuses (``OSError``) rather than redirecting.
     """
+    from tinyassets.universe_files import write_universe_file
+
     check_path(rel)
-    parts = rel.split("/")
-    if getattr(fs, "_POSIX", False):
-        current = fs.open_dir_nofollow(Path(universe_dir).resolve(strict=False))
-        try:
-            for part in parts[:-1]:
-                with contextlib.suppress(FileExistsError):
-                    os.mkdir(part, 0o755, dir_fd=current)
-                child = fs.open_subdir_nofollow(current, part)
-                os.close(current)
-                current = child
-            try:
-                fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                             | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o644,
-                             dir_fd=current)
-            except FileExistsError:
-                return False
-            try:
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(data)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    os.unlink(parts[-1], dir_fd=current)
-                raise
-            return True
-        finally:
-            os.close(current)
-    # Non-POSIX (a single-tenant tray): refuse a link at any component.
-    current = Path(universe_dir)
-    for part in parts[:-1]:
-        current = current / part
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
-            current.mkdir()
-            info = current.lstat()
-        if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0)
-                or not stat.S_ISDIR(info.st_mode)):
-            raise OSError(f"{part!r} is a link or not a folder")
-    target = current / parts[-1]
     try:
-        with open(target, "xb") as handle:  # noqa: PTH123 - parents link-checked above
-            handle.write(data)
+        write_universe_file(universe_dir, rel, data, make_parents=True, mode="exclusive")
     except FileExistsError:
         return False
     return True

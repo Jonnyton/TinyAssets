@@ -274,3 +274,30 @@ the runtime for a roster agent is D8.
   - 9: the UI's id is recorded before it is added, and a resume adds nothing
     if the id is already there.
   - 10: a publish or install ask needs no agent-written kind or title.
+
+- **gpt-6-astra code refute, round 2 (2026-10-01): ADAPT.** Eight findings.
+  Seven adopted:
+  - 1: a switch narrows the already-verified blob (`narrow_package`) and never
+    rebuilds from the live folder, so an edit after the check cannot ride in.
+  - 2: the identifier exemption is an exact list of schema fields, not a
+    suffix rule. Contact detection always runs, even under those keys.
+  - 3: the local timestamp strip is gone. The shared parser now owns it,
+    after URL and header parsing (separate PR `fix/credential-shape-timestamps`).
+  - 4: the tab lists every path in full, with no count cap and no cut.
+    `MAX_FILES` drops to 2,000, so a package is never bigger than a list an
+    owner can read.
+  - 6: a blob is written first and owned second. An "already paid" record
+    exists only once its bytes do, and a failed write leaves nothing that
+    skips the next reservation.
+  - 7: claims carry a token. Progress, release and finish require it; every
+    progress write renews the lease; a save runs before and after every effect.
+    A superseded activation stops at its next step.
+  - 8: on replay, a screen at the intended id is adopted only if its content
+    matches. Otherwise the package's screen goes under a fresh id.
+
+  Not adopted:
+  - 5: DISAGREE_CONCERN. The writer IS now the shared
+    `write_universe_file(mode="exclusive")` from #4254. Its non-POSIX branch is
+    check-then-use, and that PR's author owns it as the single-tenant tray's
+    containment. This lane does not fork a second writer for one platform: one
+    definition of safe file IO is the lead's rule.
