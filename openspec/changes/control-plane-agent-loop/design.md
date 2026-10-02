@@ -227,3 +227,54 @@ removes that cause rather than adding another layer.
   with a busy timeout. The coordinator awaits them through
   `asyncio.to_thread`, without editing the journal module, which #4228 is
   changing.
+
+### Shape review (gpt-6-astra, 310570b5): ADAPT, and what PR 2 builds instead
+
+**2.1: the bounded-call premise is false today.** #4274's local driver:
+- takes an untimed per-box `RLock` in all four calls;
+- starts the stream deadline only after the lock and authentication;
+- can `proc.wait()` without a timeout on a failed start;
+- holds the same lock through export and import.
+
+So PR 2:
+- **Keeps an owned, capacity-bounded blocking boundary,** with cancel
+  capacity independent of stuck reads, and keeps ownership of a late start's
+  result. Collection becomes a slice loop now.
+- **Asks the box contract** (#4274 / S4) to bound queueing, lock
+  acquisition, launch and I/O. PR 1's thread machinery is deleted only once
+  the driver guarantees that.
+- **Preserves these rules:**
+  - a cancel acknowledgement means the request was accepted, not that the
+    execution ended;
+  - an exit event with `killed="unknown_after_restore"` HOLDS, never
+    completes;
+  - resume from `offset + len(data)`.
+
+**2.2: the hold protects launch authority, not only credential snapshots.**
+- **What the hold covers.** Assignment and serving-binding writers take the
+  exclusive admission (`provider_serving_binding.py:563`, `:1040`). The
+  shared hold excludes them across reservation, the provider-slot wait,
+  invocation consumption, `after_provider_claim` and the call itself.
+- **What breaks without it.** After reservation nothing rechecks the
+  provider binding's generation. A binding-only change made after
+  reservation passes every remaining check. An unlocked "recheck right
+  before" is insufficient, because `provider.complete(...)` only creates a
+  coroutine.
+
+So PR 2 defines a **launch-commit section**, a synchronous unit run start to
+finish on ONE worker thread, which acquires and releases the admission
+itself:
+1. Take the shared admission.
+2. Revalidate the request, the agent revision, the assignment and selected
+   member, the exact provider-binding generation, digest, state, scope and
+   expiry, custody, and selected-model access.
+3. Reserve against that state.
+4. Consume the invocation and journal the round.
+5. **Commit the launch:** for HTTP, the I14 stream's `OPEN` is admitted and
+   its operation is durably `may_have_sent`.
+6. Release the admission.
+
+The coroutine awaits only the stream's bytes, outside the lock. No task ever
+holds the admission across an `await`, and the loop thread never blocks on
+it. This couples the shared loop (2.2) to S6's streaming client: the launch
+commit IS the broker `OPEN`.
