@@ -353,7 +353,7 @@ infer additional callable tools from legacy action names in old conversations.
    | Give direct daemon guidance    | Call                                    |
    |                                | `write_graph target="request" text=... idempotency_key=...` |
    |                                | with directed_daemon_id/instruction     |
-   | Add another command center     | `write_graph target="universe"`         |
+   | Add another command center     | `write_graph target="command_center"`   |
    | Read/search shared knowledge   | `read_page page=...` / `read_page query=...` |
    | Save shared reference notes    | `write_page page=... content=...`       |
    | File a platform issue/request  | `write_page kind=... title=...`         |
@@ -400,7 +400,7 @@ equivalent.
   its governed soul for who-it-and-its-founder-are, its own private canon for the
   world — in its own voice. Do NOT route identity or private canon to a graph
   or page write; those are the command center's to write. A plain
-  `write_page` that targets a command center returns a `relay_to_universe` directive for
+  `write_page` that targets a command center returns a `relay_to_command_center` directive for
   exactly this reason — pass its content to `converse`. First-conversation
   getting-to-know-you facts are the command center's to persist, not yours.
 - "Run / execute my workflow" → `run_graph`. If that handle is unavailable,
