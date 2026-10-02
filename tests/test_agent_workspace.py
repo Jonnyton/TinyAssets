@@ -98,10 +98,17 @@ def test_every_explicit_provider_view_masks_the_workspace():
     source = Path(codex_provider.__file__).read_text(encoding="utf-8")
     assert 'JailMount("tmpfs", f"/workspace/{AGENT_WORKSPACE_DIR}")' in source
     assert "ensure_agent_workspace(universe_root)" in source
+    # Every other construction DERIVES from a view it was given and keeps that
+    # view's mounts first (the egress wrapper in provider_jail, #4245), so the
+    # given view's workspace mask survives; a fresh explicit view would not.
     builders = []
     for path in Path(codex_provider.__file__).resolve().parents[1].rglob("*.py"):
         text = path.read_text(encoding="utf-8", errors="replace")
-        builders += [path.name for _ in re.finditer(r"=\s*UniverseView\(", text)]
+        for found in re.finditer(r"=\s*UniverseView\(", text):
+            body = text[found.end():found.end() + 400]
+            if re.search(r"mounts=\(\s*\*view\.mounts\b", body):
+                continue
+            builders.append(path.name)
     assert builders == ["codex_provider.py"], builders
 
 
