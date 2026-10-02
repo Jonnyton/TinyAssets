@@ -9,11 +9,14 @@ loaded yet.
 * **Allowlist, not a path.** Only basenames of ``.js`` files present in the
   module directory are served (``[a-z0-9_]+.js``); there is no path join of
   request input, so ``..``, ``/`` or an encoded variant can only ever 404.
-* **Build-keyed.** ``<build>`` must equal the deployed build. The page embeds
-  its build and reloads itself when the server moves on (the existing
-  ``X-TinyAssets-Build`` check), so a stale page never imports another build's
-  modules: a mismatch is a 404, not newer code under an older page. With a real
-  build the response is cacheable forever (``immutable``); in dev it is not.
+* **Content-keyed.** ``<build>`` is a hash of the module files THIS process
+  serves (``build_segment``), not the deployment receipt: during a deploy the
+  new image runs before the receipt moves, and a receipt-keyed URL would have
+  cached the new bytes forever under the old key (Codex on #4281). A request
+  for another hash is a 404, never newer code under an older page's URL, so the
+  response is cacheable forever (``immutable``). S1 must make a failed module
+  load reload the page, because code that never started cannot run the
+  existing build check.
 * **Public.** Like ``/app`` and ``/app/sw.js`` the modules load before any
   bearer exists. They are static, carry no secret and no identity; the auth
   middleware exempts exactly this path shape (``is_module_path``).
@@ -21,33 +24,41 @@ loaded yet.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
 
 MODULE_DIR = Path(__file__).resolve().parent / "app"
 _NAME_RE = re.compile(r"^[a-z0-9_]{1,64}\.js$")
-_BUILD_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 #: Exactly one build segment and one module basename; nothing deeper.
 _PATH_RE = re.compile(r"^/app/m/[A-Za-z0-9._-]{1,64}/[a-z0-9_]{1,64}\.js$")
-DEV_BUILD = "dev"
 
 
 def module_names() -> frozenset[str]:
     """The servable basenames: ``.js`` files present in the module directory."""
     if not MODULE_DIR.is_dir():
         return frozenset()
+    # Never a symlink: the contract is "files inside this directory", and a
+    # link could publish a file from anywhere else (Codex on #4281).
     return frozenset(
-        p.name for p in MODULE_DIR.iterdir() if p.is_file() and _NAME_RE.fullmatch(p.name)
+        p.name for p in MODULE_DIR.iterdir()
+        if not p.is_symlink() and p.is_file() and _NAME_RE.fullmatch(p.name)
     )
 
 
+@functools.lru_cache(maxsize=1)
 def build_segment() -> str:
-    """The URL segment for the deployed build, or ``dev`` when it is unknown."""
-    from tinyassets.onboarding import build_sha
+    """A hash of the module files this process serves: their names and bytes.
 
-    sha = build_sha()
-    return sha if sha and _BUILD_RE.fullmatch(sha) else DEV_BUILD
+    Computed once per process, so it names exactly the code this image runs.
+    """
+    digest = hashlib.sha256()
+    for name in sorted(module_names()):
+        digest.update(name.encode("utf-8") + b"\0")
+        digest.update((MODULE_DIR / name).read_bytes() + b"\0")
+    return digest.hexdigest()[:16]
 
 
 def module_url(name: str) -> str:
@@ -89,13 +100,14 @@ async def handle_app_module(request: Any) -> Any:
     current = build_segment()
     if not onboarding_enabled() or build != current or name not in module_names():
         return PlainTextResponse("Not Found", status_code=404)
+    body = (MODULE_DIR / name).read_bytes()
     headers = {
         "X-Content-Type-Options": "nosniff",
-        "Cache-Control": (
-            "no-cache" if current == DEV_BUILD else "public, max-age=31536000, immutable"
-        ),
+        "Cache-Control": "public, max-age=31536000, immutable",
     }
     media = "text/javascript; charset=utf-8"
     if request.method == "HEAD":
+        # The GET representation's length, not 0 (RFC 9110 section 8.6).
+        headers["Content-Length"] = str(len(body))
         return Response(status_code=200, media_type=media, headers=headers)
-    return Response((MODULE_DIR / name).read_bytes(), media_type=media, headers=headers)
+    return Response(body, media_type=media, headers=headers)

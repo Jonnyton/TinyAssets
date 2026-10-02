@@ -6,13 +6,13 @@ module yet; these pin the serving contract S1 relies on.
 
 from __future__ import annotations
 
+import os
+
 import anyio
 import pytest
 
 from tinyassets.auth.middleware import _auth_challenge_path
 from tinyassets.onboarding import _csp, app_modules, onboarding_routes
-
-SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 class _Request:
@@ -28,18 +28,35 @@ def _get(build: str, name: str, method: str = "GET"):
 @pytest.fixture
 def live(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
-    monkeypatch.setattr("tinyassets.onboarding.build_sha", lambda: SHA)
-    return SHA
+    return app_modules.build_segment()
 
 
 def test_the_entry_module_is_served_as_cacheable_javascript(live):
     response = _get(live, "main.js")
+    body = (app_modules.MODULE_DIR / "main.js").read_bytes()
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/javascript")
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "immutable" in response.headers["cache-control"]
-    assert bytes(response.body) == (app_modules.MODULE_DIR / "main.js").read_bytes()
-    assert _get(live, "main.js", "HEAD").status_code == 200
+    assert bytes(response.body) == body
+
+
+def test_head_advertises_the_get_length(live):
+    """Codex on #4281: an empty HEAD response said Content-Length: 0."""
+    head = _get(live, "main.js", "HEAD")
+    assert head.status_code == 200
+    assert head.headers["content-length"] == str(
+        len((app_modules.MODULE_DIR / "main.js").read_bytes())
+    )
+
+
+def test_the_key_is_a_hash_of_the_served_files_not_the_deploy_receipt(live, monkeypatch):
+    """The new image runs before the receipt moves; a receipt key would have
+    cached the new bytes forever under the old URL (Codex on #4281)."""
+    monkeypatch.setattr("tinyassets.onboarding.build_sha", lambda: "a-different-receipt")
+    assert app_modules.build_segment() == live
+    assert len(live) == 16 and int(live, 16) >= 0
+    assert app_modules.module_url("main.js") == f"/app/m/{live}/main.js"
 
 
 @pytest.mark.parametrize(
@@ -51,24 +68,28 @@ def test_only_allowlisted_basenames_are_served(live, name):
     assert _get(live, name).status_code == 404
 
 
-def test_another_builds_modules_are_refused(live):
-    """A stale page reloads on the build check; it never imports newer code."""
-    assert _get("f" * 40, "main.js").status_code == 404
-    assert _get(app_modules.DEV_BUILD, "main.js").status_code == 404
+def test_another_hash_is_refused(live):
+    """A stale page never imports newer code under its old URL."""
+    assert _get("f" * 16, "main.js").status_code == 404
 
 
-def test_dev_build_is_served_uncached(monkeypatch):
-    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
-    monkeypatch.setattr("tinyassets.onboarding.build_sha", lambda: "")
-    response = _get(app_modules.DEV_BUILD, "main.js")
-    assert response.status_code == 200
-    assert response.headers["cache-control"] == "no-cache"
+def test_a_symlink_in_the_module_dir_is_never_served(tmp_path, monkeypatch):
+    target = tmp_path / "outside.txt"
+    target.write_text("not a module", encoding="utf-8")
+    modules = tmp_path / "app"
+    modules.mkdir()
+    (modules / "real.js").write_text("export {};\n", encoding="utf-8")
+    try:
+        os.symlink(target, modules / "linked.js")
+    except OSError:
+        pytest.skip("this host cannot create symlinks")
+    monkeypatch.setattr(app_modules, "MODULE_DIR", modules)
+    assert app_modules.module_names() == frozenset({"real.js"})
 
 
 def test_the_dark_flag_hides_modules(monkeypatch):
     monkeypatch.delenv("TINYASSETS_ONBOARDING_APP", raising=False)
-    monkeypatch.setattr("tinyassets.onboarding.build_sha", lambda: SHA)
-    assert _get(SHA, "main.js").status_code == 404
+    assert _get(app_modules.build_segment(), "main.js").status_code == 404
 
 
 def test_the_route_is_registered_for_reads_only():
@@ -78,11 +99,12 @@ def test_the_route_is_registered_for_reads_only():
 
 
 def test_the_auth_carve_out_is_exactly_the_module_shape():
-    assert not _auth_challenge_path(f"/app/m/{SHA}/main.js")
+    key = "0123456789abcdef"
+    assert not _auth_challenge_path(f"/app/m/{key}/main.js")
     for near in (
-        f"/app/m/{SHA}/main.js/x", f"/app/m/{SHA}/../me", f"/app/m/{SHA}/main.json",
-        f"/app/m/{SHA}/sub/main.js", "/app/m/main.js", f"/app/m/{SHA}/", "/app/m",
-        f"/app/m/{SHA}/Main.js", "/app/me",
+        f"/app/m/{key}/main.js/x", f"/app/m/{key}/../me", f"/app/m/{key}/main.json",
+        f"/app/m/{key}/sub/main.js", "/app/m/main.js", f"/app/m/{key}/", "/app/m",
+        f"/app/m/{key}/Main.js", "/app/me",
     ):
         assert _auth_challenge_path(near), near
 
