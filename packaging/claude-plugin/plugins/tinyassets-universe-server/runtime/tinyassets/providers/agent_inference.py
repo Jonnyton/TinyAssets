@@ -94,12 +94,24 @@ def input_size(prompt, system, config) -> int:
 #: raw bytes against the window made a 131k-token model "overflow" at ~37k real
 #: tokens (turn 8dc8ada5). Reservation keeps the byte measure: that is money.
 CONTEXT_BYTES_PER_TOKEN = 3
-#: Long unbroken runs of base64/hex-like characters tokenize far denser than
-#: prose: measured 1.39 characters per token for base64 and 1.76 for hex
-#: (cl100k), so such runs count at 1.25 (Codex, 2026-10-02: a 40k base64 tool
-#: result estimated at 13.6k tokens against 28.6k real).
+#: Three content classes tokenize far denser than prose, so each is counted on
+#: its own (cl100k/o200k, measured 2026-10-02 on what the model sees):
+#:
+#: * base64/hex-like runs, wrapped or not: 1.39 characters per token for base64,
+#:   1.76 for hex -> counted at 1.25 (Codex: a 40k base64 tool result, plain or
+#:   wrapped at 60 columns, estimated at 13.6-14k tokens against 28.6-29.6k);
+#: * JSON's ``\uXXXX`` escapes of non-ASCII text (emoji are two): 1.6 tokens each;
+#: * punctuation-dense code (minified JS ran 1.95 bytes per token): never fewer
+#:   than 1.1 tokens per punctuation character.
+#:
+#: Against prose, Python, HTML, minified JS, base64, hex, JSON schemas, CJK and
+#: emoji this estimate is 1.04-1.72x the larger tokenizer's count.
 DENSE_CHARS_PER_TOKEN = 1.25
-_DENSE_RUN = re.compile(rb"[A-Za-z0-9+/=_-]{64,}")
+ESCAPE_TOKENS = 1.6
+PUNCT_TOKENS = 1.1
+_DENSE_RUN = re.compile(rb"(?:[A-Za-z0-9+/=_-]{16,}(?:\\+[nr]|\s)?){4,}")
+_ESCAPE = re.compile(rb"\\+u[0-9a-fA-F]{4}")
+_PUNCT = re.compile(rb"[^A-Za-z0-9\s\\]")
 
 
 def context_tokens(prompt, system, config) -> int:
@@ -110,8 +122,12 @@ def context_tokens(prompt, system, config) -> int:
 def estimate_tokens(data: bytes) -> int:
     """Tokens a request's encoded bytes may cost, erring high."""
     dense = sum(len(run) for run in _DENSE_RUN.findall(data))
-    return (-(-(len(data) - dense) // CONTEXT_BYTES_PER_TOKEN)
-            + math.ceil(dense / DENSE_CHARS_PER_TOKEN))
+    escapes = len(_ESCAPE.findall(data))
+    rest = _DENSE_RUN.sub(b"", _ESCAPE.sub(b"", data))
+    general = max(-(-len(rest) // CONTEXT_BYTES_PER_TOKEN),
+                  math.ceil(len(_PUNCT.findall(rest)) * PUNCT_TOKENS))
+    return (general + math.ceil(dense / DENSE_CHARS_PER_TOKEN)
+            + math.ceil(escapes * ESCAPE_TOKENS))
 
 
 def output_for_settlement(response) -> str:

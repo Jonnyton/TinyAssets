@@ -481,20 +481,41 @@ def test_the_sources_words_are_scrubbed_whole_before_any_clip(agent):
         assert "PRIVATE_TOKEN" not in text
 
 
-def test_dense_tool_output_is_not_underestimated():
-    """Codex R2: a 40k base64 result estimated 13.6k tokens against 28.6k real."""
+def _dense_cases():
     import base64
     import random
-
-    from tinyassets.providers.agent_inference import estimate_tokens
+    import textwrap
 
     rng = random.Random(7)
-    blob = base64.b64encode(bytes(rng.getrandbits(8) for _ in range(30000)))[:40000]
-    body = json.dumps({"content": json.dumps({"text": blob.decode()})}).encode()
-    # Measured offline: cl100k 28,803 and o200k 27,414 tokens for this blob.
-    assert estimate_tokens(body) >= 28_803
-    hexed = "".join(rng.choice("0123456789abcdef") for _ in range(40000)).encode()
-    assert estimate_tokens(hexed) >= 22_672  # cl100k, measured offline
+    blob = base64.b64encode(bytes(rng.getrandbits(8) for _ in range(30000))).decode()[:40000]
+    return {
+        "base64": blob,
+        "base64_wrapped": "\n".join(textwrap.wrap(blob, 60)),
+        "hex": "".join(rng.choice("0123456789abcdef") for _ in range(40000)),
+        "minified_js": "for(let i=0;i<100;i++){a[i]=b[i]*2+c[i];}" * 1000,
+        "cjk": "汉字测试内容，这是一个句子。" * 1500,
+        "emoji": "🪐✨🚀 ok " * 3000,
+    }
+
+
+#: The larger of cl100k_base and o200k_base for each case's tool-result content,
+#: measured offline with tiktoken 0.12 (not a runtime dependency).
+MEASURED_TOKENS = {
+    "base64": 28_830, "base64_wrapped": 29_626, "hex": 22_775,
+    "minified_js": 21_027, "cjk": 19_527, "emoji": 27_027,
+}
+
+
+@pytest.mark.parametrize("case", sorted(MEASURED_TOKENS))
+def test_dense_tool_output_is_not_underestimated(case):
+    """Codex R2/R3: base64 (plain and wrapped) and minified JS were admitted into
+    windows they overflow; escaped non-ASCII is counted by escape too."""
+    from tinyassets.providers.agent_inference import estimate_tokens
+
+    content = json.dumps({"content": [{"type": "text", "text": _dense_cases()[case]}],
+                          "structuredContent": None, "isError": False}, ensure_ascii=False)
+    wire = json.dumps({"messages": [{"role": "tool", "content": content}]}).encode()
+    assert estimate_tokens(wire) >= MEASURED_TOKENS[case]
 
 
 def test_prose_and_schemas_still_get_most_of_their_window():
@@ -505,3 +526,18 @@ def test_prose_and_schemas_still_get_most_of_their_window():
     estimate = estimate_tokens(prose)
     # Never below the measured 3.86-4.07 bytes per token, never back to bytes.
     assert len(prose) / 3.86 <= estimate <= len(prose) / 2.9
+
+
+@pytest.mark.parametrize("finish,message", [
+    ("length", {"role": "assistant", "content": "a partial answer"}),
+    ("length", {"role": "assistant", "content": None, "refusal": "not this"}),
+    ("content_filter", {"role": "assistant", "content": ""}),
+], ids=["truncated_with_text", "refusal_at_length", "content_filter"])
+def test_a_reply_with_something_in_it_is_not_retried_as_empty(agent, finish, message):
+    """Only the empty "length" reply is a slip; these say something and stand."""
+    _fail(agent, [1], json.dumps({"model": "m", "choices": [
+        {"finish_reason": finish, "message": message},
+    ]}))
+    with pytest.raises(Exception):  # noqa: B017 - each ends the turn its own way
+        integration.run(agent)
+    assert len(agent.wires) == 1
