@@ -1601,11 +1601,12 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert "Resolved requested source ${REQUESTED_SOURCE_REF}" in workflow_text
     assert '[[ "${source_sha}" == "${REQUESTED_SOURCE_REF}" ]]' in workflow_text
     assert "install-host-uptime-services.sh" in workflow_text
+    # sfo3 backup install, off-region backup install (S1a.3), bundle install.
     assert (
         workflow_text.count(
             "guard-host-mutation --command-timeout 300 -- /bin/bash -se --"
         )
-        == 2
+        == 3
     )
     assert workflow_text.count("<<'REMOTE'") == 1
     assert workflow_text.count("<<'BACKUP_REMOTE'") == 1
