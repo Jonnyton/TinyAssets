@@ -70,7 +70,8 @@ def test_confirmation_reads_real_pytest_ids(tmp_path):
 
 def test_act_uses_the_trusted_number_and_head_never_the_artifacts():
     trusted = {"number": 5, "head": "h5"}
-    forged = {"number": 9, "head": "h5", "verdict": "semantic-conflict", "why": "x"}
+    forged = {"number": 9, "head": "h5", "verdict": "semantic-conflict", "why": "x",
+              "failures": ["t::y"]}
     assert qf.actionable(trusted, forged)["number"] == 5
     assert qf.actionable(trusted, {**forged, "head": "other"}) is None
     assert qf.actionable(trusted, {**forged, "verdict": "fresh"}) is None
@@ -117,7 +118,7 @@ def test_selection_imports_conftests_without_tokens(monkeypatch, tmp_path):
 def test_candidates_paginate_filter_base_and_order_by_queue(monkeypatch):
     def pr(n, *, armed=False, draft=False, base="main"):
         return {"id": f"id{n}", "number": n, "isDraft": draft, "headRefOid": f"h{n}",
-                "baseRefName": base, "author": {"login": "u"},
+                "baseRefOid": "b", "baseRefName": base, "author": {"login": "u"},
                 "autoMergeRequest": {"enabledAt": "t"} if armed else None}
 
     queue = {"entries": {"nodes": [{"pullRequest": {"number": 7}},
@@ -191,9 +192,9 @@ def test_the_workflow_gives_pr_code_no_token_and_names_artifacts_from_the_matrix
 
 
 def test_list_output_is_capped_json(monkeypatch, capsys):
-    many = [{"number": i, "head": f"h{i}", "author": ""} for i in range(20)]
+    many = [{"number": i, "head": f"h{i}", "base": "b", "author": ""} for i in range(20)]
     monkeypatch.setattr(qf, "candidates", lambda repo: many)
-    monkeypatch.setattr(qf, "stamped", lambda repo, head: True)
+    monkeypatch.setattr(qf, "has_receipt", lambda *a: True)
     monkeypatch.setattr(sys, "argv", ["qf", "list", "--repo", "o/r"])
     assert qf.main() == 0
     assert len(json.loads(capsys.readouterr().out)) == qf.MAX_PROBES
@@ -222,7 +223,8 @@ def _fake_act(monkeypatch, tmp_path, verdicts, lives, main="m1"):
 
 def test_a_malformed_artifact_skips_only_its_own_pr(monkeypatch, tmp_path):
     """Codex on #4293 round 2: one bad artifact aborted every later action."""
-    good = json.dumps({"head": "h", "verdict": "semantic-conflict", "why": "w"})
+    good = json.dumps({"head": "h", "verdict": "semantic-conflict", "why": "w",
+                       "failures": ["t::x"]})
     calls = _fake_act(monkeypatch, tmp_path, {1: "{not json", 2: good},
                       [_pr(), _pr(), _pr(queued=False), _pr(queued=False, armed=False)])
     matrix = [{"number": 1, "head": "h"}, {"number": 2, "head": "h"}]
@@ -232,7 +234,8 @@ def test_a_malformed_artifact_skips_only_its_own_pr(monkeypatch, tmp_path):
 
 
 def test_a_head_that_moves_between_dequeue_and_disarm_is_not_disarmed(monkeypatch, tmp_path):
-    good = json.dumps({"head": "h", "verdict": "semantic-conflict", "why": "w"})
+    good = json.dumps({"head": "h", "verdict": "semantic-conflict", "why": "w",
+                       "failures": ["t::x"]})
     calls = _fake_act(monkeypatch, tmp_path, {2: good},
                       [_pr(), _pr(), _pr(head="new", queued=False)])
     qf.act("o/r", "m1", [{"number": 2, "head": "h"}], tmp_path)
@@ -242,20 +245,41 @@ def test_a_head_that_moves_between_dequeue_and_disarm_is_not_disarmed(monkeypatc
 
 
 def test_a_semantic_verdict_is_dropped_once_main_moved(monkeypatch, tmp_path):
-    good = json.dumps({"head": "h", "verdict": "semantic-conflict", "why": "w"})
+    good = json.dumps({"head": "h", "verdict": "semantic-conflict", "why": "w",
+                       "failures": ["t::x"]})
     calls = _fake_act(monkeypatch, tmp_path, {2: good}, [], main="m2")
     qf.act("o/r", "m1", [{"number": 2, "head": "h"}], tmp_path)
     assert calls == []
 
 
-def test_only_a_stamped_head_is_a_candidate(monkeypatch):
-    monkeypatch.setattr(qf, "_gh", lambda *a: json.dumps(
-        [{"id": 1, "conclusion": "success"}, {"id": 2, "conclusion": "cancelled"}]))
-    assert qf.stamped("o/r", "h") is False, "the newest run decides"
-    monkeypatch.setattr(qf, "_gh", lambda *a: json.dumps([{"id": 3, "conclusion": "success"}]))
-    assert qf.stamped("o/r", "h") is True
-    monkeypatch.setattr(qf, "_gh", lambda *a: "[]")
-    assert qf.stamped("o/r", "h") is False
+def test_receipt_check_fails_closed(monkeypatch):
+    def boom(*a):
+        raise subprocess.CalledProcessError(1, "gh", stderr="nope")
+
+    monkeypatch.setattr(qf, "_gh", boom)
+    assert qf.has_receipt("o/r", 1, "h", "b") is False
+
+
+def test_a_verdict_missing_fields_is_never_acted_on():
+    """Codex on #4293 r3: a verdict without `why` dequeued, then crashed."""
+    t = {"number": 5, "head": "h"}
+    assert qf.actionable(t, {"head": "h", "verdict": "conflict"}) is None
+    assert qf.actionable(t, {"head": "h", "verdict": "conflict", "why": "w", "failures": 1}) is None
+    assert qf.actionable(t, {"head": "h", "verdict": "semantic-conflict", "why": "w"}) is None
+    ok = qf.actionable(t, {"head": "h", "verdict": "conflict", "why": "w", "x": "junk"})
+    assert ok == {"number": 5, "head": "h", "verdict": "conflict", "why": "w", "failures": []}
+
+
+def test_main_moving_between_dequeue_and_disarm_stops_the_removal(monkeypatch, tmp_path):
+    good = json.dumps({"head": "h", "verdict": "semantic-conflict", "why": "w",
+                       "failures": ["t::x"]})
+    calls = _fake_act(monkeypatch, tmp_path, {2: good}, [_pr(), _pr(), _pr(queued=False)])
+    mains = iter(["m1", "m1", "m2"])
+    monkeypatch.setattr(qf, "_main_sha", lambda repo: next(mains))
+    qf.act("o/r", "m1", [{"number": 2, "head": "h"}], tmp_path)
+    assert "$id:ID!){dequeuePullRequest" in calls
+    assert "$id:ID!){disablePullRequestAutoMerge" not in calls
+    assert not any(c.startswith("pr comment") for c in calls)
 
 
 def test_a_failed_gate_with_nothing_to_blame_is_unchecked_not_fresh():

@@ -22,9 +22,9 @@ When main moves, the first few queued or armed PRs (queue order) are checked:
 Three commands, three trust levels (.github/workflows/queue-freshness.yml):
 
     list   trusted: picks the candidates; its output is the matrix. Only a
-           head whose "Diff scope declared" check passed is a candidate: since
-           #4255 that means a reviewer stamped this exact code, which the merge
-           queue would run with its own tokens anyway. Codex (#4293 round 2)
+           head with a valid Drain-Review receipt NOW (has_receipt: the same
+           drain_review_gate.py decision pr-scope-guard makes) is a candidate,
+           i.e. a reviewer stamped this exact code. Codex (#4293 round 2)
            showed a probe job cannot be a hard boundary: PR code runs as the
            runner user and can rewrite the upload action that follows it. So
            the boundary is "only reviewed code runs here"; the split below is
@@ -61,7 +61,6 @@ LABEL = "stale-vs-main"
 MARKER = "<!-- queue-freshness:{head}:{main} -->"
 GH_TIMEOUT = 60
 STALE = ("conflict", "semantic-conflict")
-STAMP_CHECK = "Diff scope declared"
 # Never handed to PR code (Codex on #4293: the conftest import inherited them).
 _SECRET_ENV = (
     "GH_TOKEN", "GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
@@ -71,7 +70,7 @@ _CANDIDATES_Q = """query($owner:String!,$name:String!,$after:String){
 repository(owner:$owner,name:$name){
 mergeQueue(branch:"main"){entries(first:100){nodes{pullRequest{number}}}}
 pullRequests(states:OPEN,first:100,after:$after){pageInfo{hasNextPage endCursor}
-nodes{id number isDraft headRefOid baseRefName author{login}
+nodes{id number isDraft headRefOid baseRefOid baseRefName author{login}
 autoMergeRequest{enabledAt}}}}}"""
 
 _ONE_Q = """query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){
@@ -125,9 +124,16 @@ def actionable(trusted: dict, verdict: dict | None) -> dict | None:
     """
     if not verdict or verdict.get("head") != trusted["head"]:
         return None
-    if verdict.get("verdict") not in STALE:
+    if verdict.get("verdict") not in STALE or not isinstance(verdict.get("why"), str):
         return None
-    return {**verdict, "number": trusted["number"]}
+    failures = verdict.get("failures", [])
+    if not (isinstance(failures, list) and all(isinstance(f, str) for f in failures)):
+        return None
+    if verdict["verdict"] == "semantic-conflict" and not failures:
+        return None
+    return {"number": trusted["number"], "head": trusted["head"],
+            "verdict": verdict["verdict"], "why": verdict["why"][:500],
+            "failures": failures}
 
 
 def render_comment(author: str, verdict: dict, main: str) -> str:
@@ -198,21 +204,44 @@ def candidates(repo: str) -> list[dict]:
             continue
         if pr["number"] in queued or pr["autoMergeRequest"]:
             out.append({"number": pr["number"], "head": pr["headRefOid"],
+                        "base": pr["baseRefOid"],
                         "author": (pr.get("author") or {}).get("login", "")})
     return sorted(out, key=lambda p: order.index(p["number"]) if p["number"] in queued
                   else len(order))
 
 
-def stamped(repo: str, head: str) -> bool:
-    """True if the newest "Diff scope declared" run on this head passed."""
-    try:
-        out = _gh("api", "-X", "GET", f"repos/{repo}/commits/{head}/check-runs",
-                  "-f", f"check_name={STAMP_CHECK}", "-f", "filter=latest",
-                  "--jq", "[.check_runs[] | {id, conclusion}]")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return False  # unknown is not stamped
-    runs = sorted(json.loads(out or "[]"), key=lambda r: r["id"])
-    return bool(runs) and runs[-1]["conclusion"] == "success"
+def has_receipt(repo: str, number: int, head: str, base: str) -> bool:
+    """True if this PR carries a valid Drain-Review receipt for ``head`` NOW.
+
+    The same decision pr-scope-guard makes (scripts/drain_review_gate.py
+    --blocking-review over the body and trusted comments), run here on
+    default-branch code. A passing check NAME is not enough: a head can keep a
+    success from before #4255 made receipts universal (Codex on #4293 r3).
+    Any failure to decide is "no receipt".
+    """
+    with tempfile.TemporaryDirectory(prefix="ta-receipt-") as tmp:
+        try:
+            body = json.loads(_gh("api", f"repos/{repo}/pulls/{number}", "--jq", "{b: .body}"))
+            (Path(tmp) / "body.md").write_text(body.get("b") or "", encoding="utf-8")
+            comments = Path(tmp) / "comments.ndjson"
+            with comments.open("w", encoding="utf-8") as fh:
+                for endpoint in (f"issues/{number}/comments", f"pulls/{number}/comments",
+                                 f"pulls/{number}/reviews"):
+                    fh.write(_gh("api", "--paginate", f"repos/{repo}/{endpoint}", "--jq",
+                                 ".[] | {url: .html_url, association: .author_association,"
+                                 " body: (.body // \"\")}"))
+            _run("git", "fetch", "-q", "--no-tags", "--filter=blob:none", "origin",
+                 base, f"+refs/pull/{number}/head")
+            key = _run(sys.executable, "scripts/drain_review_gate.py", "--print-diff-key",
+                       base, head, check=False).stdout.strip()
+            decision = _run(
+                sys.executable, "scripts/drain_review_gate.py", "--blocking-review",
+                "--head", head, "--diff-key", key, "--body-file", str(Path(tmp) / "body.md"),
+                "--review-repo", repo, "--review-pr", str(number),
+                "--review-comments-file", str(comments), check=False, timeout=GH_TIMEOUT)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+            return False
+    return decision.returncode == 0
 
 
 def _selection(files: list[str], root: Path) -> list[str] | None:
@@ -373,7 +402,7 @@ def act(repo: str, main: str, matrix: list[dict], verdict_dir: Path) -> int:
                 and (before["isInMergeQueue"] or before["autoMergeRequest"])):
             print(f"#{n}: changed since the probe (head, state or queue); leaving it.")
             continue
-        if not _remove(repo, n, v["head"]):
+        if not _remove(repo, n, v["head"], current):
             continue
         after = _live(repo, n)
         if after["headRefOid"] != v["head"]:
@@ -394,12 +423,19 @@ def act(repo: str, main: str, matrix: list[dict], verdict_dir: Path) -> int:
     return 0
 
 
-def _remove(repo: str, number: int, head: str) -> bool:
-    """Dequeue, then disarm, re-reading the PR before each; False once it changed."""
+def _remove(repo: str, number: int, head: str, main: str) -> bool:
+    """Dequeue, then disarm, re-reading main and the PR before each.
+
+    False as soon as either moved: the verdict was for that pair, and the run
+    pending for the new main decides again (Codex on #4293 r3).
+    """
     for field, mutation, key in (
         ("isInMergeQueue", "dequeuePullRequest", "id"),
         ("autoMergeRequest", "disablePullRequestAutoMerge", "pullRequestId"),
     ):
+        if _main_sha(repo) != main:
+            print(f"#{number}: main moved before {mutation}; leaving it.")
+            return False
         pr = _live(repo, number)
         if not _unchanged(pr, head):
             print(f"#{number}: changed before {mutation} (head, state or base); leaving it.")
@@ -436,7 +472,7 @@ def main() -> int:
         for cand in candidates(args.repo):
             if len(picked) == MAX_PROBES:
                 break
-            if stamped(args.repo, cand["head"]):
+            if has_receipt(args.repo, cand["number"], cand["head"], cand["base"]):
                 picked.append(cand)
         print(json.dumps(picked))
         return 0
