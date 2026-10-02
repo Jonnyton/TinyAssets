@@ -704,6 +704,7 @@ def read_graph(
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings,
             agent_binding, app_ui (your own UI library and choice),
+            command_center_packages (working public packages to try in your own command center),
             command_center_files / command_center_file (the owner's own command center folder:
             query=<path under /u>; list a directory, or read a file in chunks
             with file_offset/file_max_bytes),
@@ -1464,7 +1465,7 @@ def write_graph(
                 )
             )
         if connection_operation in (
-            "request_from_user", "answer_request", "unmute_request",
+            "request_from_user", "answer_request", "unmute_request", "try_package",
             "withdraw_request",
         ):
             # ONE general primitive: the agent asks its user something and waits,

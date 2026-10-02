@@ -50,7 +50,7 @@
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
 
     epoch:0,home:"",principal:"",enabled:false,busy:false,
-    library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,
+    library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,platformDefault:null,
     // The conversation installation as last read (null: none, so default), the
     // reason it could not be read, and the selection it replaced this visit.
     conversation:null,conversationNote:"",previousTurn:null,selecting:false,ambiguous:false,
@@ -60,7 +60,7 @@
     // to the bundle that was on screen a moment ago cannot settle a promise in
     // the one that replaced it -- both bootstraps number requests from r1, so the
     // ids collide by construction (Codex, 2026-09-26).
-    frameGen:0,ready:false,sending:false,emitting:false,pending:0,
+    frameGen:0,ready:false,sending:false,emitting:false,trying:false,pending:0,
 
     bytes(value){ return new TextEncoder().encode(String(value)).length; },
 
@@ -78,7 +78,7 @@
       if(component.kind!==this.KIND) return this.unsupported("not a "+this.KIND+" component");
       if(component.version!==this.VERSION)
         return this.unsupported("UI version "+String(component.version)+" is not supported; this app renders version 1");
-      if(!this.text(component.ui_id,64)||!this.ID_RE.test(component.ui_id))
+      if(!this.text(component.ui_id,64)||(!this.ID_RE.test(component.ui_id)&&component.ui_id!=="platform:blank"))
         return this.unsupported("ui_id must be lowercase letters, digits or dashes");
       if(!this.text(component.name,this.MAX_NAME)||!component.name.trim())
         return this.unsupported("name must be a non-empty string of at most "+this.MAX_NAME+" characters");
@@ -147,6 +147,7 @@
       this.epoch++; this.unmount();
       this.enabled=false; this.home=""; this.principal="";
       this.library=[]; this.unreadable=""; this.selection=null; this.busy=false;
+      this.platformDefault=null;
       this.revision=0;
       this.conversation=null; this.conversationNote=""; this.previousTurn=null; this.selecting=false; this.ambiguous=false;
       $("btn-ui-switch").hidden=true;
@@ -217,6 +218,7 @@
     adopt(row){
       if(!this.enabled) return;
       this.revision=row.revision;
+      this.platformDefault=row.platform_default||null;
       const library=this.readLibrary(row),selection=this.readSelection(row);
       this.unmount();
       if(!library.ok){
@@ -236,11 +238,17 @@
         const entry=this.library.find(b=>b.ui_id===this.selection.ui_id);
         if(entry){ this.mount(entry); this.status("Using "+entry.name+"."); }
         else this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use.");
-      }else this.status(this.library.length?"Default chat is in use.":"");
+      }else{ this.mountDefault(); this.status(""); }
       this.paint();
     },
 
     // ---- rendering: the bundle never enters this document ------------------
+    mountDefault(){
+      if(!this.enabled||!this.platformDefault) return;
+      const parsed=this.parseBundle(this.platformDefault);
+      if(!parsed.ok) throw new Error("The blank command center is unavailable: "+parsed.reason);
+      this.mount(parsed.bundle);
+    },
     mount(entry){
       this.unmount();
       const host=$("ui-frame-host"),frame=document.createElement("iframe");
@@ -249,7 +257,7 @@
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
       this.frame=frame; this.active=entry; this.ready=false;
-      this.frameGen++; this.pending=0; this.sending=false; this.emitting=false;
+      this.frameGen++; this.pending=0; this.sending=false; this.emitting=false; this.trying=false;
       this.listener=event=>this.receive(event);
       window.addEventListener("message",this.listener);
       host.replaceChildren(frame);
@@ -263,6 +271,7 @@
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
+      this.trying=false;
       this.frameGen++;
       this.paintHeader();
     },
@@ -276,6 +285,7 @@
       list_automations:"listAutomations",list_runs:"listRuns",
       read_run:"readRun",read_run_output:"readRunOutput",
       list_files:"listFiles",read_file:"readFile",emit:"emit",
+      "packages.list_tryable":"listTryablePackages","packages.try":"tryPackage","chat.prefill":"prefillChat",
       conversation_design:"conversationDesign",set_conversation_design:"setConversationDesign"}),
     receive(event){
       // Only THIS frame's window is heard. Another frame, a popup, or the page
@@ -446,6 +456,46 @@
     //
     // The server scopes each of these to the named command center, so a run id from
     // anywhere else reads as not found rather than being returned.
+    async listTryablePackages(){
+      const doc=await Owner.read({target:"command_center_packages",graph_id:this.home});
+      if(!doc||doc.error||!Array.isArray(doc.packages)||doc.packages.length>12||
+        typeof doc.build_prompt!=="string"||doc.build_prompt.length>this.MAX_MESSAGE||
+        doc.can_try!==(doc.packages.length>=2)) throw new Error("command-center packages are unavailable");
+      const packages=doc.packages.map(p=>{
+        if(!p||!this.text(p.agent_definition_id,this.MAX_ID)||!p.agent_definition_id||
+          typeof p.name!=="string"||typeof p.description!=="string"||typeof p.author_id!=="string"||
+          !Number.isInteger(p.version)||p.version<1||typeof p.size!=="string"||
+          !Number.isInteger(p.file_count)||p.file_count<0||!p.needs||
+          typeof p.needs.model!=="string"||!Array.isArray(p.needs.connections)||
+          !p.needs.connections.every(c=>typeof c==="string"))
+          throw new Error("invalid command-center package");
+        return {agent_definition_id:p.agent_definition_id,name:p.name,description:p.description,
+          author_id:p.author_id,version:p.version,size:p.size,file_count:p.file_count,
+          needs:{model:p.needs.model,connections:p.needs.connections.slice()}};
+      });
+      return {packages,build_prompt:doc.build_prompt,can_try:doc.can_try};
+    },
+    async tryPackage(args){
+      const id=args.agent_definition_id;
+      if(!this.text(id,this.MAX_ID)||!id.trim()) throw new Error("agent_definition_id is required");
+      if(this.trying) throw new Error("a package request from this UI is already in flight");
+      const gen=this.frameGen;
+      this.trying=true;
+      try{
+        const doc=await MCP.callTool("write_graph",{target:"connection",operation:"try_package",
+          graph_id:this.home,payload_json:JSON.stringify({agent_definition_id:id})});
+        if(!doc||doc.error||!this.text(doc.request_id,this.MAX_ID)||!doc.request_id)
+          throw new Error((doc&&(doc.detail||doc.error))||"the install could not be requested");
+        return {request_id:doc.request_id};
+      }finally{ if(gen===this.frameGen) this.trying=false; }
+    },
+    prefillChat(args){
+      const text=args.text;
+      if(!this.text(text,this.MAX_MESSAGE)) throw new Error("chat text is too long or missing");
+      if(typeof chatCloudPrefill==="function") chatCloudPrefill(text);
+      else throw new Error("the chat is not available");
+      return {prefilled:true};
+    },
     async listAutomations(){
       const doc=await this.readWhole({target:"automations",graph_id:this.home},"automations");
       if(!doc||doc.error||!Array.isArray(doc.automations)) throw new Error("your automations are unavailable");
@@ -801,6 +851,7 @@
     async chooseDefault(){
       if(!this.enabled||this.busy) return;
       this.unmount();
+      this.mountDefault();
       await this.remember({version:1,state:"default"},
         "Default chat restored.","Default chat restored for this visit only");
     },
