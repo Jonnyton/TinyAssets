@@ -383,14 +383,22 @@ def test_a_stream_that_cannot_start_is_refused_and_never_sent(broker):
     assert broker.server._streams == {}
 
 
-def test_a_cancel_during_name_resolution_never_reaches_the_write(broker):
+def test_a_cancel_during_name_resolution_never_reaches_the_write(broker, monkeypatch):
     fake = _FakeSocket()
     resolving = threading.Event()
+    cancelled = threading.Event()
+    cancel = broker.server.cancel
+
+    def observe_cancel(stream):
+        cancel(stream)
+        cancelled.set()
+
+    monkeypatch.setattr(broker.server, "cancel", observe_cancel)
 
     def dispatch(*, guard, on_connect, sent):
         with guard():
             resolving.set()
-            time.sleep(0.5)          # DNS: no socket exists yet
+            assert cancelled.wait(5), "broker never processed cancellation during DNS"
             on_connect(fake)         # must refuse: the stream was cancelled meanwhile
             sent.append("WROTE")     # the request write
         return Script([b"x"])
@@ -476,14 +484,11 @@ def test_leaving_a_stream_early_cancels_it_in_the_broker(broker):
                                      request={"url": "u", "body": {}},
                                      op_id=new_op_id()) as stream:
                 await stream.head()
-            await asyncio.sleep(1.0)
+            assert await asyncio.to_thread(script.closed.wait, 5)
         finally:
             await client.close()
 
     asyncio.run(scenario())
-    deadline = time.monotonic() + 5
-    while not script.closed.is_set() and time.monotonic() < deadline:
-        time.sleep(0.05)
     assert script.closed.is_set()
 
 

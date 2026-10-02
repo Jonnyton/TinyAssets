@@ -91,19 +91,25 @@ def test_selected_but_not_running_is_a_loud_refusal(broker):
                                           connection_id="conn-a")
 
 
-def test_a_crashed_broker_is_restarted_with_the_same_owner_token(broker):
-    import time
+def test_a_crashed_broker_is_restarted_with_the_same_owner_token(broker, monkeypatch):
+    import threading
 
     _, supervisor, root = broker
     before = read_owner(root)
-    supervisor._process.kill()
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        process = supervisor._process
-        if process is not None and process.poll() is None and supervisor.socket_path.exists():
-            break
-        time.sleep(0.2)
-    time.sleep(0.5)
+    restarted = threading.Event()
+    fence = supervisor._fence
+
+    def observe_fence():
+        fence()
+        restarted.set()
+
+    monkeypatch.setattr(supervisor, "_fence", observe_fence)
+    crashed = supervisor._process
+    crashed.kill()
+    crashed.wait(timeout=10)
+    assert restarted.wait(20), "replacement broker never completed its fence barrier"
+    assert supervisor._process is not crashed
+    assert supervisor._process.poll() is None
     assert read_owner(root) == before
     assert os.path.exists(supervisor.socket_path)
 

@@ -50,8 +50,7 @@ def test_a_clean_stream_is_forwarded_whole_and_in_order(seed):
     rng = random.Random(seed)
     body = rng.randbytes(rng.randint(0, 3000))
     secret = "never-in-here-☃"
-    if secret.encode() in body:
-        pytest.skip("improbable collision")
+    assert secret.encode() not in body, "the seeded clean fixture must contain no secret"
     assert _stream([secret], _splits(body, rng)) == body
 
 
