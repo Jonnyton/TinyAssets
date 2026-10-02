@@ -1979,6 +1979,10 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
             "edits": [{"field": "script", "old": "<exact text, once>",
                        "new": "..."}]}               # small exact replacements
         operation="remove_ui"   {"ui_id": "..."}     # (its choice falls back to chat)
+        operation="put_asset"   {"ui_id": "...", "path": "img/grass.png",
+            "from_file": "art/grass.png"}            # a file under /u, or
+            # "text": "..." / "base64": "..." instead of from_file
+        operation="remove_asset" {"ui_id": "...", "path": "img/grass.png"}
 
     all as ``write_graph target="app_ui"``. No revision is needed: each applies
     to what is stored now and never overwrites anything else. Adding
@@ -1990,8 +1994,9 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``expected_revision`` and a whole ``ui_library`` rewrites everything; I do
     not need it.
 
-    **The UI component.** Exactly these seven fields, no others, or the app refuses
-    it and says which field it did not expect:
+    **The UI component.** These seven fields, plus the optional ``assets``,
+    ``libraries`` and ``script_type`` below, and no others, or the app refuses it
+    and says which field it did not expect:
 
         {"kind": "tinyassets.app-ui.v1", "version": 1,
          "ui_id": "office-tower",              # lowercase letters, digits, dashes
@@ -2001,15 +2006,33 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
          "script": "async function enter(room){...}"}
 
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
-    does NOT run -- the only code that runs is ``script``. Bounds: markup 32768,
-    style 16384, script 32768 characters, the whole component under 49152 UTF-8
-    bytes. Those bound ONE component. There is no limit on how many UIs my library
+    does NOT run -- the only code that runs is ``script``. Bounds: the component's
+    text (markup, style, script and the asset list) under 1048576 UTF-8 bytes;
+    each asset up to 16777216 bytes, a UI's assets up to 134217728 bytes and 500
+    files. Those bound ONE UI. There is no limit on how many UIs my library
     holds and none on its total size -- the bytes count toward my command center's
     storage, like everything else I keep. Nothing I write is rewritten, reformatted
     or sanitized on the way in or out.
 
+    **Graphics, sound, libraries.** A real game is fine. ``put_asset`` stores a
+    file in the UI at a path (images incl. SVG, audio, fonts, glTF/GLB, JS, CSS,
+    JSON): a file my agents or I wrote under /u (art rendered by code included)
+    goes in by ``from_file``, so the bytes never pass through me. The UI uses it
+    as ``ta-asset:img/grass.png`` in markup or style (``<img src="ta-asset:img/grass.png">``,
+    ``url(ta-asset:img/grass.png)``) and as ``tinyassets.asset("img/grass.png")``
+    in script -- a URL any loader takes, fetch included. Shared engines need no
+    vendoring: ``"libraries": ["three"]`` (also
+    ``"three/addons/controls/OrbitControls.js"``,
+    ``"three/addons/loaders/GLTFLoader.js"``, ``"pixi.js"`` -> ``PIXI``,
+    ``"phaser"`` -> ``Phaser``, ``"howler"`` -> ``Howl``), pinned versions served
+    by the app. With ``"script_type": "module"`` my script can
+    ``import * as THREE from "three"`` and import my own JS assets as
+    ``"./game/world.js"``; inside an asset module a sibling is ``"@ui/game/world.js"``.
+    Anything else I vendor myself as a JS asset.
+
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
-    token, no reach into the surrounding page, and NO network of its own -- fetch,
+    token, no reach into the surrounding page, and NO network of its own (only its
+    own assets and libraries load) -- fetch,
     WebSocket, form posts, remote images and WebRTC are all unavailable. Its only
     capability is these calls on a ``tinyassets`` object, acting as whoever is
     LOOKING at it, inside their own command center:
