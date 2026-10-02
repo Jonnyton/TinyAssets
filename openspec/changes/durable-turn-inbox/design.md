@@ -103,3 +103,18 @@ New table, created on first write. The hold is off unless a deploy sets it. Roll
 - **Q1 (authority).** Does any part of a served founder turn depend on the live request: an OAuth access token, a per-request provider grant, the request's session for consent, or the identity binding cache? If so, the replay must re-obtain it or settle the row `failed` with a "send it again" notice.
 - **Q2.** Should the drainer also run on a timer in the OLD daemon when a hold lapses without a swap? Proposed: yes, every 30s when no hold is set.
 - **Q3.** Does the default for `TURN_HOLD_AFTER_S` (600s) fit the founder's turn lengths? Proposed: 600s, so a single long turn is never held behind a fresh one for more than ten minutes before admission closes.
+
+## Review: Codex gpt-6-astra shape refute, 2026-10-02, ADAPT
+
+The design above is the version that was reviewed. Do not build it as written. These are the findings that change it:
+
+1. **P1, Q1 answered NO.** A served turn needs a live, process-local provider-request capability (`auth/middleware.py:297`, `_PROVIDER_REQUESTS`). The MCP wrapper revokes it before the response returns (`universe_server.py:385`), so it cannot survive a deploy. The identity ContextVar (`current_actor_id`, `api/permissions.py:236`) and the founder tier also come only from the live request: the tier is an admin-ACL check through the contextual actor (`api/interlocutor.py:184`). D5's re-checks would pass, and replay would still fail, or run at T0. Replay needs a new, reviewed deferred-execution authority path.
+2. **P1.** Execution success is not durable delivery: `record_exchange` is best-effort (`universe_server.py:3143`). A replay needs a frozen terminal and an idempotent, repairable thread projection (the pattern in `storage/conversation_run_admissions.py:460-537`). It also must not duplicate the `interrupted:<turn_id>` notice from `agent_turn_reconcile`.
+3. **P1.** D3's premise is wrong. Runs carrying `run_input_admissions` are excluded from orphan recovery (`runs.py:150`). Queued, unstarted `canonical_consumer` admissions are recovered (`run_input_origins.py:81`). Custom-consumer turns are asynchronous: a return means pending, not answered.
+4. **P1.** Account deletion sweeps by the CURRENT home (`account_deletion.py:350`), so rows queued under a former home survive.
+5. **P2.** D4 breaks ordering and the learned cursor. A running turn's `turn_began_at` predates queued rows, and `settle_learned_cursor` can advance across them.
+6. **P1.** Carryover and steering are deleted before they are persisted (`agent_steering.py:217,227`), so a crash mid-replay loses owner text.
+7. **P1 (concern).** There is no admission/cutover barrier. A request can pass the hold check, then miss both the inbox and the seat count before the swap.
+8. **AGREE.** The D6 claim-then-never-rerun rule is sound for at-most-once, as long as the drainer stays in the single writer process.
+
+**Proposed disposition (sent to the lead):** supersede this change with `execution-owner-lease` (#4263 S8). There, the frontend queues the LIVE request in memory for the seconds an owner handover takes, so no replay authority is needed.
