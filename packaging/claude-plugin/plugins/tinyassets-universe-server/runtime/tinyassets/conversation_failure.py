@@ -95,6 +95,19 @@ _CLASS_WORDS = {
         "the connected model replied in a format this command center could not read; "
         "try again, or choose another model"
     ),
+    "provider_reply_error": (
+        "your model's provider reported an error partway through its reply (its "
+        "own words are below), and trying it again and your other accepted "
+        "models did not get past it. Whatever the turn finished before that "
+        "stands, so asking it to continue usually works; choosing another "
+        "model also helps"
+    ),
+    "provider_unreadable_reply": (
+        "the connected model sent a reply this command center could not read, "
+        "and trying it again and your other accepted models did not get past "
+        "it. Whatever the turn finished before that stands, so asking it to "
+        "continue usually works; choosing another model also helps"
+    ),
     "provider_reply_timeout": (
         "your model took longer to answer than this command center waits for one "
         "reply, so that request was ended and whatever the turn finished before "
@@ -148,6 +161,8 @@ STAGE_OF_CLASS = {
     "provider_idle_timeout": "model_reply",
     "interactive_deadline": "model_reply",
     "provider_protocol_error": "model_reply",
+    "provider_reply_error": "model_reply",
+    "provider_unreadable_reply": "model_reply",
     "provider_refused": "model_request",
     "provider_reply_timeout": "model_request",
     "platform_fault": "platform",

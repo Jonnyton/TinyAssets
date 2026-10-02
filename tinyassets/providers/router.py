@@ -1534,7 +1534,13 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderProtocolError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                # An agent round's unreadable or in-band-error reply is about one
+                # MODEL's answer, not the connection: cooling it skipped every
+                # sibling model on the same key (live 2026-10-02, the free-only
+                # account's whole OpenRouter pool), and made the owner's very next
+                # "continue" a cooldown refusal. The turn coordinator bounds its
+                # own retries (``AgentTurnCoordinator._next_after_bad_reply``).
+                if cfg.agent_request is None and self._cool(cfg, provider_name, COOLDOWN_OTHER):
                     logger.warning(
                         "Provider %s protocol error, cooldown %ds",
                         provider_name, COOLDOWN_OTHER,

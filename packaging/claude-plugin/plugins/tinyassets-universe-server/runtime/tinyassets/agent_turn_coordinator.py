@@ -114,6 +114,14 @@ class AgentTurnCoordinator:
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
         self.spent_attempts = []
+        # Replies that failed in flight (in-band source error, unreadable
+        # body) retried so far this turn, and the models already given their
+        # one same-model retry. See ``_next_after_bad_reply``.
+        self.bad_reply_retries = 0
+        self.bad_reply_models = set()
+        # How hard the rendered history is compacted to fit a small window;
+        # 0 renders every completed result whole. See ``_compact_to_fit``.
+        self.compaction = 0
 
     def _remaining(self, turn_deadline):
         """This turn's config with its absolute cap cut to what is left of the turn.
@@ -440,7 +448,9 @@ class AgentTurnCoordinator:
                             self._remaining(turn_deadline),
                             agent_request=AgentInferenceRequest(
                                 tools=codec.tool_definitions(engine.tools),
-                                history=self._history(),
+                                history=codec.compact_history(
+                                    self._history(), self.compaction,
+                                ),
                             ),
                         )
                         prompt, system, observer = self.prompt, self.system, self._begin
@@ -489,6 +499,9 @@ class AgentTurnCoordinator:
                             or self._next_after_refusal(exc)
                             or self._next_after_overflow(exc)
                         ):
+                            continue
+                        if self._next_after_bad_reply(exc):
+                            await self._pause_before_retry(turn_deadline)
                             continue
                         raise
                     if self.execution_kind == "native_agent":
@@ -753,6 +766,8 @@ class AgentTurnCoordinator:
 
         failed = self.context.model_selection
         self.visited.add(failed)
+        # Kept to stay on THIS model if no larger one fits (``_compact_to_fit``).
+        before = (self.exhaustion, self.plan, getattr(self.adapter, "min_context", None))
         if self.plan is None:
             # The work adapter raises every interaction its order reads, for
             # THIS turn. No Exhaustion: a work run's exhaustion is shared by all
@@ -777,12 +792,112 @@ class AgentTurnCoordinator:
             )
         candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
+            self.exhaustion, self.plan = before[0], before[1]
+            if self.plan is None and hasattr(self.adapter, "min_context"):
+                self.adapter.min_context = before[2]
+            if self._compact_to_fit():
+                return True
             self._leave_hot_source(None)
             return False
         self._leave_hot_source(candidate)
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
+
+    #: Compaction levels: (rounds kept whole at the end, result characters,
+    #: argument-string characters) for every older round. Level 3 trims every
+    #: round, the last too. Three is the number of steps a small window needs to
+    #: drop from "a long build" to "the latest work, and the head and tail of the rest".
+    COMPACTION_LEVELS = codec.COMPACTION_LEVELS
+
+    def _compact_to_fit(self):
+        """Stay on this model and render older tool results shorter.
+
+        Only when no accepted model with a larger window exists (the caller
+        tried that first), and only while a stronger level still shrinks what
+        is sent. The journal keeps every result whole: this changes what the
+        model is SHOWN, never what ran or what is recorded, and a trimmed result
+        says so and that calling the tool again returns it in full.
+
+        Live 2026-09-26 (turn 8dc8ada5) a free model's turn died after four
+        tool rounds with nothing larger in the owner's order.
+        """
+        history = self._history()
+        current = codec.compact_history(history, self.compaction)
+        for level in range(self.compaction + 1, len(self.COMPACTION_LEVELS) + 1):
+            if codec.history_size(codec.compact_history(history, level)) < codec.history_size(
+                current,
+            ):
+                self.compaction = level
+                self.retrying_capacity = self.turn.state != "ready"
+                return True
+        return False
+
+    #: Classes of a reply that failed IN FLIGHT: the source reported an error
+    #: in place of a reply, or sent one we could not read. Transient far more
+    #: often than not on a free model.
+    BAD_REPLY_CLASSES = frozenset({"provider_reply_error", "provider_unreadable_reply"})
+    #: Per-turn bound on those retries, across every model: small, because each
+    #: is a fresh request under the same per-attempt ceiling.
+    MAX_BAD_REPLY_RETRIES = 3
+    #: Seconds before each retry; an upstream error is usually a moment's.
+    BAD_REPLY_BACKOFF_S = (2.0, 5.0, 10.0)
+
+    def _next_after_bad_reply(self, exc):
+        """Retry a reply that failed in flight: this model once, then the next one.
+
+        Live 2026-09-30 and 2026-10-02, the free-only account: nemotron served
+        7-19 good tool rounds of a build, then OpenRouter answered HTTP 200 with
+        an error object in place of the reply, and the turn ended there -- every
+        model in the order had already been visited, so only a retry of the SAME
+        model could have saved it.
+
+        Safe to repeat because a failed engine inference ran nothing: a tool is
+        dispatched only from a reply the journal accepted, and the history the
+        retry renders is the journal's completed rounds -- no tool is re-run.
+        What a retry can cost is a second generation, so each one is a fresh
+        request under the same per-attempt ceilings and the turn takes at most
+        ``MAX_BAD_REPLY_RETRIES`` of them. The NEXT model comes only from the
+        owner's accepted order, model-scoped (the reply is one model's), so this
+        never widens authority. Native agents are out of scope: their failures
+        can follow real work.
+        """
+        if (
+            self.execution_kind != "engine_inference"
+            or not isinstance(exc, AllProvidersExhaustedError)
+            or self.turn.state not in {"ready", "held_transport"}
+            or self.bad_reply_retries >= self.MAX_BAD_REPLY_RETRIES
+        ):
+            return False
+        attempts = tuple(exc.attempts or ())
+        if not attempts or any(a.failure_class not in self.BAD_REPLY_CLASSES for a in attempts):
+            return False
+        failed = self.context.model_selection
+        if failed in self.bad_reply_models:
+            if not self._has_candidate_order():
+                return False
+            from tinyassets.providers.model_policy import Exhaustion
+
+            self.visited.add(failed)
+            self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
+            candidate = self._next_candidate()
+            if candidate is None or candidate in self.visited:
+                self._leave_hot_source(None)
+                return False
+            self._leave_hot_source(candidate)
+            self.context = replace(self.context, model_selection=candidate)
+        self.bad_reply_models.add(failed)
+        self.bad_reply_retries += 1
+        self.spent_attempts += list(attempts)
+        self.retrying_capacity = self.turn.state != "ready"
+        return True
+
+    async def _pause_before_retry(self, turn_deadline):
+        """A short, growing wait before a bad-reply retry, inside the turn's time."""
+        index = min(self.bad_reply_retries, len(self.BAD_REPLY_BACKOFF_S)) - 1
+        delay = min(self.BAD_REPLY_BACKOFF_S[index], max(turn_deadline - time.monotonic(), 0.0))
+        if delay > 0:
+            await asyncio.sleep(delay)
 
     def _advance_past(self, exc, failure_class, scope):
         """Exclude the failed selection at ``scope`` and take the next candidate.

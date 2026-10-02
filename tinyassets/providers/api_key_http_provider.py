@@ -45,8 +45,10 @@ from tinyassets.exceptions import (
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
+    ProviderReplyError,
     ProviderReplyTimeoutError,
     ProviderUnavailableError,
+    ProviderUnreadableReplyError,
 )
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
 from tinyassets.providers.definition import ProviderDefinition
@@ -464,9 +466,14 @@ class ApiKeyHttpProvider(BaseProvider):
                 or f"compute provider returned HTTP {status}"
             )
 
+        # A 2xx we cannot read, on an agent round, is the model's slip rather
+        # than the source refusing the request: the turn may retry it.
+        unreadable = (
+            ProviderUnreadableReplyError if agent_request is not None else ProviderProtocolError
+        )
         body_str = result.get("body")
         if not isinstance(body_str, str) or not body_str:
-            raise ProviderProtocolError("compute response had an empty body")
+            raise unreadable("compute response had an empty body")
         try:
             if agent_request is not None:
                 from tinyassets.providers.agent_chat_codec import (
@@ -485,7 +492,7 @@ class ApiKeyHttpProvider(BaseProvider):
             else:
                 parsed = json.loads(body_str)
         except (TypeError, ValueError) as exc:
-            raise ProviderProtocolError(f"compute response was not JSON: {exc}") from exc
+            raise unreadable(f"compute response was not JSON: {exc}") from exc
         agent_reply = None
         cost = None
         try:
@@ -503,7 +510,16 @@ class ApiKeyHttpProvider(BaseProvider):
             if selection is not None and contract.usage_decoder is not None:
                 cost = contract.usage_decoder(body_str)
         except ProtocolDecodeError as exc:
-            raise ProviderProtocolError(str(exc)) from exc
+            words = getattr(exc, "source_error", None)
+            if isinstance(words, str):
+                # The source said generation failed; keep its own words.
+                from tinyassets.providers.diagnostics import redacted_failure_detail
+
+                raise ProviderReplyError(
+                    "the model's source reported an error instead of a reply: "
+                    + (redacted_failure_detail(words) or "no detail given")
+                ) from exc
+            raise ProviderUnreadableReplyError(str(exc)) from exc
 
         return ProviderResponse(
             text=text,

@@ -91,6 +91,8 @@ FailureClass = Literal[
     "provider_idle_timeout",
     "interactive_deadline",
     "provider_protocol_error",
+    "provider_reply_error",
+    "provider_unreadable_reply",
     "provider_refused",
     "provider_reply_timeout",
 ]
