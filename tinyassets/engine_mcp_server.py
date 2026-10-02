@@ -2640,6 +2640,13 @@ def _sanitize_served_patch_changes(changes: object) -> str:
     return json.dumps(changes, separators=(",", ":"))
 
 
+def _calling_session() -> str:
+    """The session key the platform routed this engine call from, or ""."""
+    from tinyassets.engine_steering import _session_key
+
+    return _session_key()
+
+
 def _write_served_automation(
     *, operation: str, automation_id: str, expected_revision: int, payload_json: str,
 ) -> str:
@@ -3020,7 +3027,9 @@ def write_graph(
         return json.dumps(write_activity(
             data_dir(), universe_id=_GRAPH_ID, actor_id=_ACTOR_ID, operation=operation,
             payload=document,
-            inside_activity=bool(os.environ.get("TINYASSETS_ENGINE_ACTIVITY_ID")),
+            # The calling session, as the platform routed this launch (S2): an
+            # activity's run continues `activity:<id>`, and may not start another.
+            inside_activity=_calling_session().startswith("activity:"),
         ), default=str)
     if t == "automation":
         return _write_served_automation(

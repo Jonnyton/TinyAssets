@@ -29,7 +29,7 @@ def pinned(tmp_path, monkeypatch):
     monkeypatch.setattr(activity_dispatcher, "dispatch_universe",
                         lambda base, uid: woken.append(uid))
     monkeypatch.setattr(activity_runner, "stop", lambda base, run_id: stopped.append(run_id))
-    monkeypatch.delenv("TINYASSETS_ENGINE_ACTIVITY_ID", raising=False)
+    monkeypatch.setattr(engine, "_calling_session", lambda: "thread:principal:acct_alice")
     return universe, woken, stopped
 
 
@@ -89,7 +89,7 @@ def test_refusals_are_named(pinned, monkeypatch):
     assert _write("dance")["error"] == "unknown_activity_operation"
     assert _write("stop", activity_id="act_0000000000000000")["error"] == "not_found"
     assert _write("start", title="", brief="b")["error"] == "activity_refused"
-    monkeypatch.setenv("TINYASSETS_ENGINE_ACTIVITY_ID", "act_1234567890abcdef")
+    monkeypatch.setattr(engine, "_calling_session", lambda: "activity:act_1234567890abcdef")
     assert _write("start", title="t", brief="b")["error"] == "nested_activity_unavailable"
 
 
