@@ -249,6 +249,7 @@
       this.unmount();
       const host=$("ui-frame-host"),frame=document.createElement("iframe");
       frame.id="ui-frame"; frame.className="ui-frame"; frame.title=entry.name;
+      frame.setAttribute("tabindex","0");
       frame.setAttribute("sandbox",this.SANDBOX);
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
@@ -259,8 +260,10 @@
       host.replaceChildren(frame);
       host.hidden=false;
       $("view-chat").classList.add("ui-custom-active");
-      // The chat cloud starts small over a layout and big without one.
+      // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
+      if(typeof focusCommandCenter === "function") focusCommandCenter();
       this.paintHeader();
     },
     unmount(){
@@ -268,8 +271,10 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
-      // The chat cloud starts small over a layout and big without one.
+      // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
+      if(typeof focusCommandCenter === "function") focusCommandCenter();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();
@@ -302,6 +307,7 @@
       this.ready=true;
       this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:{
         markup:this.active.markup,style:this.active.style,script:this.active.script}});
+      if(typeof focusCommandCenter === "function") focusCommandCenter();
     },
     post(payload){
       const frame=this.frame&&this.frame.contentWindow;

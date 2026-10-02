@@ -41,13 +41,13 @@ def test_no_layout_starts_big():
     state = call(f"cloudDefaultState(false, {json.dumps(WIDE)})")
 
     assert state["mode"] == "open" and state["userSet"] is False
-    assert state["open"] == {"x": 12, "y": 12, "w": 1256, "h": 716}
+    assert state["open"] == {"x": 828, "y": 108, "w": 440, "h": 620}
 
 
 def test_no_layout_on_a_phone_starts_as_the_whole_stage():
     state = call(f"cloudDefaultState(false, {json.dumps(PHONE)})")
 
-    assert state["open"] == {"x": 0, "y": 0, "w": 390, "h": 700}
+    assert state["open"] == {"x": 0, "y": 280, "w": 390, "h": 420}
 
 
 def test_a_layout_starts_small_in_the_corner():
@@ -206,4 +206,4 @@ layout=true; refreshChatCloud();
 console.log(JSON.stringify({mode:snap().mode, w:cloudState.open.w}));""")
 
     assert out["mode"] == "open"
-    assert out["w"] == 1256 - 16
+    assert out["w"] == 440 - 16

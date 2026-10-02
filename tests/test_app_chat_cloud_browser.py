@@ -91,21 +91,22 @@ def _drag(page, selector, dx, dy, *, at=(0.5, 0.5)):
     page.mouse.up()
 
 
-def test_it_starts_big_and_can_be_dragged_resized_and_remembered(app_url, browser):
+def test_it_starts_medium_and_can_be_dragged_resized_and_remembered(app_url, browser):
     context = browser.new_context(viewport={"width": 1280, "height": 800})
     page = context.new_page()
     _enter_chat(page, app_url)
     stage = _box(page, "#chat-stage")
     big = _box(page, "#chat-cloud")
-    assert big["width"] > stage["width"] * 0.9 and big["height"] > stage["height"] * 0.9
+    assert big["width"] == 440 and big["height"] == 620
+    assert big["x"] == stage["width"] - 452
 
-    _drag(page, "#chat-cloud-resize", -600, -300)
+    _drag(page, "#chat-cloud-resize", -100, -200)
     resized = _box(page, "#chat-cloud")
-    assert resized["width"] == pytest.approx(big["width"] - 600, abs=2)
-    _drag(page, "#chat-cloud-bar", 200, 120, at=(0.3, 0.5))
+    assert resized["width"] == pytest.approx(big["width"] - 100, abs=2)
+    _drag(page, "#chat-cloud-bar", -200, -120, at=(0.8, 0.5))
     moved = _box(page, "#chat-cloud")
-    assert moved["x"] == pytest.approx(resized["x"] + 200, abs=2)
-    assert moved["y"] == pytest.approx(resized["y"] + 120, abs=2)
+    assert moved["x"] == pytest.approx(resized["x"] - 200, abs=2)
+    assert moved["y"] == pytest.approx(resized["y"] - 120, abs=2)
 
     # A reload restores exactly where the owner left it.
     page.reload()
@@ -123,7 +124,7 @@ def test_shrink_to_a_bubble_that_drags_without_opening_and_opens_on_click(app_ur
     page.click("#btn-cloud-shrink")
     assert page.locator("#chat-cloud").is_hidden()
     assert page.locator("#chat-cloud-bubble").is_visible()
-    assert page.evaluate("document.activeElement.id") == "chat-cloud-bubble"
+    assert page.evaluate("document.activeElement.id") == "cc-blank"
 
     before = _box(page, "#chat-cloud-bubble")
     _drag(page, "#chat-cloud-bubble", -300, -200)
@@ -218,7 +219,7 @@ def test_a_cancelled_bubble_drag_does_not_swallow_the_next_click(app_url, browse
     assert page.locator("#chat-cloud").is_visible()
 
 
-def test_shrinking_on_its_own_moves_focus_to_the_bubble(app_url, browser):
+def test_shrinking_on_its_own_moves_focus_to_the_command_center(app_url, browser):
     page = browser.new_page(viewport={"width": 1280, "height": 800})
     _enter_chat(page, app_url)
     page.focus("#composer-input")
@@ -229,4 +230,4 @@ def test_shrinking_on_its_own_moves_focus_to_the_bubble(app_url, browser):
     }""")
 
     assert page.locator("#chat-cloud").is_hidden()
-    assert page.evaluate("document.activeElement.id") == "chat-cloud-bubble"
+    assert page.evaluate("document.activeElement.id") == "cc-blank"

@@ -136,6 +136,22 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     if (event.source !== parentWindow) { return; }
     var message = event.data;
     if (!message || typeof message !== "object" || message.ta_ui !== PROTOCOL) { return; }
+    if (message.type === "focus") {
+      window.focus();
+      if (!document.body.hasAttribute("tabindex")) document.body.setAttribute("tabindex", "-1");
+      document.body.focus();
+      return;
+    }
+    if (message.type === "key") {
+      if (message.phase !== "down" && message.phase !== "up") return;
+      (document.activeElement || document.body).dispatchEvent(new KeyboardEvent(
+        message.phase === "up" ? "keyup" : "keydown", {
+          key: message.key, code: message.code, shiftKey: !!message.shiftKey,
+          altKey: !!message.altKey, ctrlKey: !!message.ctrlKey, metaKey: !!message.metaKey,
+          repeat: !!message.repeat, bubbles: true
+        }));
+      return;
+    }
     if (message.type === "bundle") {
       var bundle = message.bundle;
       if (!bundle || typeof bundle !== "object") { fault("This UI arrived unreadable."); return; }

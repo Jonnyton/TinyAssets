@@ -77,8 +77,6 @@
     .model-dialog li{margin:.5rem 0;overflow-wrap:anywhere}
     .model-dialog .model-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin:.7rem 0}
     /* chat */
-    .chat-header{display:flex;align-items:center;justify-content:space-between;padding:.8rem 1rem;
-      border-bottom:1px solid var(--line);background:var(--surface);padding-top:max(.8rem,env(safe-area-inset-top))}
     .chat-title{display:flex;align-items:center;gap:.55rem;font-weight:600}
     .universe-name{max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .chat-actions{display:flex;gap:.3rem}
@@ -276,6 +274,11 @@
     #ui-frame-host{position:absolute;inset:0;display:flex;min-height:0}
     .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
     /* The chat cloud: the conversation floats over the command center. */
+    #cc-blank{position:absolute;inset:0;padding:2rem;box-sizing:border-box;background:var(--bg)}
+    #cc-blank[hidden]{display:none}
+    #cloud-menu{position:absolute;right:.5rem;top:2.5rem;z-index:10;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.4rem}
+    #cloud-menu button{display:block}
+    .chat-cloud-bar .universe-name{max-width:40%;font-size:.82rem}
     .chat-stage{position:relative;flex:1;min-height:0;overflow:hidden}
     .chat-cloud{position:absolute;display:flex;flex-direction:column;min-width:0;min-height:0;
       background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
@@ -321,17 +324,10 @@
     @keyframes cloud-pulse{0%,100%{box-shadow:0 0 0 0 rgba(120,140,255,.55)}50%{box-shadow:0 0 0 8px rgba(120,140,255,0)}}
     @media (prefers-reduced-motion:reduce){.chat-cloud-bubble.is-thinking{animation:none;outline:2px dashed var(--accent)}}
     #ui-mode{font-size:.8rem}
-    #btn-header-menu{display:none}
     @media (max-width:600px){
-      #view-chat > .chat-header{position:relative;flex:0 0 auto;min-height:52px;box-sizing:border-box;
-        padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));
-        gap:8px;z-index:20}
-      #view-chat .chat-title{min-width:0;flex:1}
-      #universe-name{max-width:none;min-width:0}
-      #btn-header-menu{display:block;flex:none;padding:6px 10px}
-      #view-chat .chat-actions{display:none;position:absolute;top:100%;right:8px;flex-direction:column;
-        padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #0008}
-      #view-chat .header-menu--open .chat-actions{display:flex}
+      #chat-cloud-bar{flex-wrap:nowrap;min-height:40px}
+      #chat-cloud-bar button{min-width:36px;min-height:36px}
+      #cloud-menu button{min-height:40px}
       #chat-cloud{border-radius:0}
       #chat-cloud-resize{display:none}
       #chat-cloud-body > *{flex:0 0 auto}
@@ -381,27 +377,6 @@
 
     <!-- Signed-in: the single chat thread. -->
     <section id="view-chat" class="view view--chat" hidden>
-      <header class="chat-header">
-        <div class="chat-title">
-          <span id="dot" class="dot" title="checking..."></span>
-          <span id="universe-name" class="universe-name">Your command center</span>
-        </div>
-        <button id="btn-header-menu" class="btn btn--ghost" type="button"
-                aria-haspopup="true" aria-expanded="false" aria-label="Menu">&#9776;</button>
-        <nav class="chat-actions">
-          <span id="ui-mode" hidden></span>
-          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
-          <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
-          <button id="btn-account" class="btn btn--link">Account</button>
-          <button id="btn-signout" class="btn btn--link">Sign out</button>
-        </nav>
-      </header>
-      <div id="history-error" class="muted history-error" role="status" hidden></div>
-      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
-        <span id="notify-prompt-text" class="notify-prompt-text"></span>
-        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
-        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
-      </div>
       <!-- The stage is the command center: a custom UI fills it, and the chat with
            your agent floats above it as a movable, resizable "chat cloud" that can
            shrink to a bubble. Every element of the chat keeps its id. -->
@@ -409,18 +384,42 @@
       <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
            sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
            bundle markup, style or script is ever assigned into this document. -->
+      <div id="cc-blank" tabindex="-1" aria-label="Command center">
+        <p>Your command center is empty.</p>
+        <p>Build your own with your agent, or try one.</p>
+        <button id="btn-cc-build" class="btn" type="button">Build one with my agent</button>
+        <button id="btn-cc-try" class="btn" type="button">Try one</button>
+        <div id="cc-blank-picker"></div>
+      </div>
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
       <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
            aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
            aria-describedby="chat-cloud-title">
+        <span id="dot" class="dot" title="checking..."></span>
+        <span id="universe-name" class="universe-name">Your command center</span>
+        <button id="btn-cloud-menu" class="chat-cloud-btn" type="button" aria-label="Command center menu" aria-haspopup="true" aria-expanded="false" aria-controls="cloud-menu">&#8943;</button>
+        <div id="cloud-menu" hidden>
+          <span id="ui-mode" hidden></span>
+          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
+          <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
+          <button id="btn-account" class="btn btn--link">Account</button>
+          <button id="btn-signout" class="btn btn--link">Sign out</button>
+        </div>
         <span id="chat-cloud-title" class="chat-cloud-title">Your agent</span>
         <button id="btn-cloud-shrink" class="chat-cloud-btn" type="button"
                 aria-label="Shrink the chat to a bubble" aria-controls="chat-cloud-body"
                 aria-expanded="true" title="Shrink">&#8211;</button>
       </div>
       <div id="chat-cloud-body" class="chat-cloud-body">
+      <div id="history-error" class="muted history-error" role="status" hidden></div>
+      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
+        <span id="notify-prompt-text" class="notify-prompt-text"></span>
+        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
+        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
+      </div>
+
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
@@ -4624,7 +4623,7 @@
   // ---- Chat cloud -------------------------------------------------------------
   // The chat with an agent floats over the command center as a "chat cloud" the
   // owner can move, resize and shrink to a bubble (founder, 2026-10-02). It
-  // starts BIG for an owner with no command-center layout and SMALL when a
+  // starts MEDIUM for an owner with no command-center layout and SMALL when a
   // layout is active; once the owner moves, resizes or shrinks it, their last
   // state is restored instead. Remembered per owner, per agent and per viewport
   // class, because a phone and a desktop want different windows. There is no
@@ -4632,6 +4631,76 @@
   const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
         CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
   let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
+  function refreshCommandCenter(){
+    $("cc-blank").hidden=!$("ui-frame-host").hidden;
+  }
+  function focusCommandCenter(){
+    const frame=$("ui-frame");
+    if(frame){
+      frame.setAttribute("tabindex","0"); frame.focus();
+      if(frame.contentWindow) frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
+    }else if($("cc-blank")) $("cc-blank").focus();
+  }
+  function forwardCommandCenterKey(event){
+    const frame=$("ui-frame"), host=$("ui-frame-host");
+    if(!frame || !host || host.hidden || !frame.contentWindow) return;
+    if(event.target!==document.body && event.target!==$("chat-stage") && event.target!==$("cc-blank")) return;
+    const {key,code,shiftKey,altKey,ctrlKey,metaKey,repeat}=event;
+    frame.contentWindow.postMessage({ta_ui:1,type:"key",key,code,shiftKey,altKey,ctrlKey,metaKey,repeat,
+      phase:event.type==="keyup" ? "up" : "down"},"*");
+    event.preventDefault();
+  }
+  function ccBlankBuild(){
+    if(cloudState && cloudState.mode==="bubble") setChatCloudMode("open");
+    const input=$("composer-input");
+    input.value="Build me a command center for "; input.focus();
+    input.setSelectionRange(input.value.length,input.value.length);
+  }
+  function ccBlankTryOne(){ $("btn-ui-switch").click(); }
+  function closeCloudMenu(){
+    if($("cloud-menu").hidden) return;
+    $("cloud-menu").hidden=true;
+    $("btn-cloud-menu").setAttribute("aria-expanded","false");
+    focusCommandCenter();
+  }
+  function wireCommandCenter(){
+    $("btn-cc-build").addEventListener("click",ccBlankBuild);
+    $("btn-cc-try").addEventListener("click",ccBlankTryOne);
+    $("chat-stage").addEventListener("pointerdown",event=>{
+      if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
+        // Avoid the pointer's default focus step undoing the handoff; buttons still click.
+        if(!event.target.closest("button")) event.preventDefault();
+        focusCommandCenter();
+      }
+    });
+    $("chat-cloud").addEventListener("pointerup",event=>{
+      if(event.target===$("chat-cloud")) focusCommandCenter();
+    });
+    $("btn-cloud-menu").addEventListener("click",()=>{
+      if(!$("cloud-menu").hidden){ closeCloudMenu(); return; }
+      $("cloud-menu").hidden=false;
+      $("btn-cloud-menu").setAttribute("aria-expanded","true");
+    });
+    $("cloud-menu").addEventListener("click",event=>{
+      if(event.target.closest("button")) closeCloudMenu();
+    });
+    document.addEventListener("click",event=>{
+      if(!event.target.closest("#cloud-menu, #btn-cloud-menu")) closeCloudMenu();
+    });
+    document.addEventListener("keydown",event=>{
+      if(event.key==="Escape" && !$("cloud-menu").hidden){
+        event.preventDefault(); event.stopImmediatePropagation(); closeCloudMenu();
+      }
+    },true);
+    // Clicks inside an opaque frame do not bubble into the parent document.
+    window.addEventListener("blur",()=>{
+      setTimeout(()=>{
+        if(document.activeElement===$("ui-frame")) closeCloudMenu();
+      },0);
+    });
+    document.addEventListener("keydown",forwardCommandCenterKey);
+    document.addEventListener("keyup",forwardCommandCenterKey);
+  }
   function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
   function cloudStorageKey(owner, agentId, viewport){
     return CLOUD_KEY_PREFIX+":"+(owner||"")+":"+(agentId||"main")+":"+viewport;
@@ -4653,9 +4722,11 @@
   }
   function cloudDefaultState(hasLayout, stage){
     const m=cloudViewportClass(stage.w)==="phone" ? 0 : CLOUD_MARGIN;
+    const w=hasLayout ? stage.w-2*m : (m ? Math.min(440,stage.w-2*m) : stage.w);
+    const h=hasLayout ? stage.h-2*m : (m ? Math.min(620,stage.h-2*m) : Math.round(stage.h*.6));
     return cloudClamp({
       mode:hasLayout ? "bubble" : "open",
-      open:{x:m, y:m, w:stage.w-2*m, h:stage.h-2*m},
+      open:{x:stage.w-w-m, y:stage.h-h-m, w:w, h:h},
       bubble:{x:stage.w-CLOUD_BUBBLE-CLOUD_MARGIN, y:stage.h-CLOUD_BUBBLE-CLOUD_MARGIN},
       userSet:false,
     }, stage);
@@ -4709,10 +4780,10 @@
     const stage=cloudStageSize(), size=Math.min(CLOUD_BUBBLE, stage.w, stage.h);
     bubble.style.width=size+"px"; bubble.style.height=size+"px";
     // Shrinking on its own (a layout arrived) must not strand focus inside a
-    // hidden window: it moves to the bubble.
+    // hidden window: it moves to the command center.
     const strand=s.mode==="bubble" && bubble.hidden && document.activeElement && cloud.contains(document.activeElement);
     bubble.hidden=s.mode!=="bubble";
-    if(strand) bubble.focus();
+    if(strand && typeof focusCommandCenter === "function") focusCommandCenter();
     $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
     if(s.mode==="open") setCloudUnread(false);
   }
@@ -4728,8 +4799,8 @@
     if(!cloudState) return;
     cloudState.mode=mode;
     applyChatCloud(); saveChatCloud();
-    const target=mode==="open" ? $("composer-input") : $("chat-cloud-bubble");
-    if(target) target.focus();
+    if(mode==="open") $("composer-input").focus();
+    else if(typeof focusCommandCenter === "function") focusCommandCenter();
   }
   // Moves (dx, dy) and resizes (dw, dh) from a starting state, clamped.
   function cloudShifted(from, dx, dy, dw, dh){
@@ -4756,7 +4827,7 @@
   function wireCloudDrag(handle, kind){
     handle.addEventListener("pointerdown", ev=>{
       if(ev.button!==0 || !cloudState) return;
-      if(kind==="move" && ev.target.closest && ev.target.closest(".chat-cloud-btn")) return;
+      if(kind==="move" && ev.target.closest && ev.target.closest("button, #cloud-menu, .chat-cloud-btn")) return;
       const start={x:ev.clientX, y:ev.clientY}, origin=cloudState;
       let moved=false;
       try{ handle.setPointerCapture(ev.pointerId); }catch(_error){ /* synthetic pointer */ }
@@ -4774,6 +4845,7 @@
         handle.removeEventListener("pointerup",end);
         handle.removeEventListener("pointercancel",end);
         $("chat-cloud").classList.remove("is-dragging");
+        if(e.type==="pointerup" && typeof focusCommandCenter === "function") focusCommandCenter();
         // Only a completed drag produces a click to swallow; a cancelled one does not.
         if(moved){ saveChatCloud(); if(kind==="bubble" && e.type==="pointerup") cloudSuppressClick=true; }
       };
@@ -4795,6 +4867,7 @@
   }
   function wireChatCloud(){
     cloudWired=true;
+    if(typeof wireCommandCenter === "function") wireCommandCenter();
     wireCloudDrag($("chat-cloud-bar"),"move");
     wireCloudDrag($("chat-cloud-resize"),"resize");
     wireCloudDrag($("chat-cloud-bubble"),"bubble");
@@ -6078,11 +6151,6 @@
       root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
     else root.style.removeProperty("--app-h");
   }
-  function setHeaderMenu(open){
-    const button=$("btn-header-menu");
-    button.setAttribute("aria-expanded",String(open));
-    button.closest("header").classList.toggle("header-menu--open",open);
-  }
   function paintRailChip(){
     const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
     const count=$("rail-items").children.length;
@@ -6113,20 +6181,13 @@
       window.visualViewport.addEventListener("resize",fitToVisualViewport);
       window.visualViewport.addEventListener("scroll",fitToVisualViewport);
     }
-    const button=$("btn-header-menu"), header=button.closest("header");
-    button.addEventListener("click",()=>setHeaderMenu(button.getAttribute("aria-expanded")!=="true"));
-    header.querySelector("nav").addEventListener("click",event=>{if(event.target.closest("button,a")) setHeaderMenu(false);});
-    document.addEventListener("click",event=>{if(!header.contains(event.target)) setHeaderMenu(false);});
-    document.addEventListener("keydown",event=>{if(event.key==="Escape" && button.getAttribute("aria-expanded")==="true"){
-      setHeaderMenu(false); button.focus();
-    }});
     $("rail-head").addEventListener("click",toggleRailChip);
     $("rail-head").addEventListener("keydown",toggleRailChip);
     new MutationObserver(paintRailChip).observe($("rail-items"),{childList:true,subtree:true});
     new MutationObserver(()=>{
       if(window.matchMedia("(max-width:600px)").matches) paintRailChip();
     }).observe($("rail-head"),{childList:true});
-    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();setHeaderMenu(false);fitToVisualViewport();});
+    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();fitToVisualViewport();});
     paintRailChip();
   }
   function wire(){
@@ -6205,7 +6266,8 @@
       if(turn.blocked){ setStatusLine(turn.reason); return; }
       if(!turn.send) return;            // nothing typed and no usable attachment
       Uploads.clear();
-      sendTurn(turn.send, turn.display, {inputMethod:"typed"}); });
+      sendTurn(turn.send, turn.display, {inputMethod:"typed"});
+      if(typeof focusCommandCenter === "function") focusCommandCenter(); });
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
@@ -6216,7 +6278,12 @@
     // page already used this Escape (a menu or dialog closing handles it first).
     document.addEventListener("keydown",(e)=>{
       if(e.key!=="Escape"||e.defaultPrevented||e.isComposing) return;
-      if($("btn-stop").hidden||$("btn-stop").disabled) return;
+      if($("btn-stop").hidden||$("btn-stop").disabled){
+        if($("chat-cloud").contains(e.target) && typeof focusCommandCenter === "function"){
+          e.preventDefault(); focusCommandCenter();
+        }
+        return;
+      }
       if(document.querySelector("dialog[open]")) return;
       e.preventDefault(); interruptTurn();
     });
