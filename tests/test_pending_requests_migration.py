@@ -203,3 +203,19 @@ def test_each_agent_asks_and_is_muted_on_its_own(tmp_path: Path):
     assert researcher["dedupe_key"] == "agent:researcher:github"
     assert researcher.get("agent") == "researcher" and main.get("agent") == "main"
     assert ask("researcher")["created"] is False, "same agent, same ask: one tab"
+
+
+def test_a_non_main_agents_request_still_reproduces_what_was_shown(tmp_path: Path):
+    """The execute pin re-derives the key from the row; an agent's prefix must
+    not make its own request refuse to run."""
+    from tinyassets.api.pending_requests import displayed_row_matches
+
+    universe = tmp_path / "u-alpha"
+    universe.mkdir()
+    import json as _json
+    key = _json.dumps(["API", "t", "b", [], {"type": "answer"}], sort_keys=True,
+                      separators=(",", ":"))
+    row = pr.create_request(universe, kind="API", title="t", body="b", fields=[],
+                            action={"type": "answer"}, dedupe_key=key, agent="researcher")
+    assert displayed_row_matches(row)
+    assert not displayed_row_matches({**row, "agent": "main"})

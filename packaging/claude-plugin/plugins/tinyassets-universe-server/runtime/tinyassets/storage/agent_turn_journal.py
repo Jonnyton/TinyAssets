@@ -80,9 +80,18 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     for statement in _SCHEMA:
         conn.execute(statement)
     # Which agent ran the turn (harness §4.18); rows from before are main's.
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}
-    if "agent_id" not in columns:
-        conn.execute("ALTER TABLE agent_turns ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'")
+    # Checked again under the write lock: another process may add it first.
+    if "agent_id" in {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if "agent_id" not in {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}:
+            conn.execute(
+                "ALTER TABLE agent_turns ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'")
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _scope(owner: str, universe: str, turn: str) -> tuple[str, str, str]:
