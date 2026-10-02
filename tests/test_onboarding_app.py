@@ -228,7 +228,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
         "/app/account/delete", "/app/account/timezone", "/app/rules",
-        "/app/turn/interrupt", "/app/turn/steer",
+        "/app/turn/interrupt", "/app/live", "/app/turn/steer",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
         # The owner door: every read the app renders, complete.
@@ -254,7 +254,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind",
         "/app/billing/checkout", "/app/billing/cancel",
         "/app/billing/webhook", "/app/account/delete",
-        "/app/turn/interrupt", "/app/turn/steer",
+        "/app/turn/interrupt", "/app/live", "/app/turn/steer",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
