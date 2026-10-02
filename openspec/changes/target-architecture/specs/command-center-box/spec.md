@@ -6,8 +6,10 @@ The platform SHALL give each command center exactly one box with its own kernel
 boundary (a microVM guest kernel on the primary driver, or the gVisor
 user-space kernel on the fallback driver), its own disk bound, and no network
 interface. The box SHALL hold the command center's user content. Every tool
-call and every CLI run on the command center's behalf SHALL execute inside that
-box and nowhere else. A box SHALL never hold another account's files or
+that touches command-center content or runs code, and every CLI run on the
+command center's behalf, SHALL execute inside that box and nowhere else.
+Owner-door read tools over platform history SHALL execute in the control plane,
+read-only and bound to the account. A box SHALL never hold another account's files or
 processes. Its host-side processes SHALL run under a host uid that no other
 account's box uses. The driver SHALL be box-host configuration, and no code
 path SHALL branch on it or on the account's tier.

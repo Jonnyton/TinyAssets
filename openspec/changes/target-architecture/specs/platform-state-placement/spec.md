@@ -13,7 +13,9 @@ conversation and session stores; rules; auto-review results; activity records;
 pending effects; proposals; import quarantine; the browser profile; the id
 marker; lease, seat, slot, lock and stamp state; and upload custody records.
 
-Per-account state SHALL live under `.platform/accounts/<account_id>/`.
+Per-account platform state SHALL live under `.platform/accounts/<account_id>/`.
+Account-owned rows in the shared root databases MAY stay there, served
+through account-scoped views.
 
 User content, including the agent-editable `soul.md`, `soul_versions/` and
 `config.yaml`, SHALL live under `cc-<ulid>/`, and the daemon SHALL read it as
@@ -36,7 +38,8 @@ The catalog, ledger, inbox and market SHALL be stored in Postgres behind
 the same SQLite database, and the same transaction, as its cause. The effect
 SHALL be delivered at least once. Postgres SHALL apply it idempotently,
 deduplicated by its origin store and outbox id. State owned by one account
-SHALL stay in that account's SQLite stores.
+SHALL be reached through `store_for(account)`, which MAY be an account-scoped
+view over a shared store or a per-account store.
 
 #### Scenario: A redelivered effect applies once
 - **WHEN** an outbox row is delivered, its acknowledgement is lost, and the pump delivers it again

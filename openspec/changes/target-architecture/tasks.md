@@ -46,7 +46,7 @@ paid resource is created. Dependencies are in `design.md`.
       box host (XFS reflink), consistent per-account-key box backups,
       box-inclusive DR drill, box-host operations (metrics, partition path,
       quarantine runbook, upgrade compatibility), co-tenancy test. Depends on
-      S0, S4. **Founder
+      S0, S4, and S6 (DEK key service) for backups. **Founder
       spend** if S0 picks bare metal (OVH RISE-S $77/mo). Verify: contract
       suite green on both drivers; restore p95 meets S0's rule.
 - [ ] S6 Credential broker extension (sole vault-key holder, in-box

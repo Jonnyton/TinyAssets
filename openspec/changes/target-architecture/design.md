@@ -1,6 +1,6 @@
 # Design: target architecture
 
-*Revision 3, 2026-10-02.* This revision folds in cross-family refute rounds 1 and 2 (gpt-6-astra, both **ADAPT**; see Appendix R). It also folds in the on-disk layout agreed with `command-center-cutover` (D8a), including the lead's correction that `soul.md` and `config.yaml` are agent-editable. Raw measurements are in `evidence.md`.
+*Revision 4, 2026-10-02.* This revision folds in cross-family refute rounds 1–3 (gpt-6-astra, all **ADAPT**; see Appendix R). Round 3 hit the three-round cap: its consistency fixes are folded without a fourth review, and its residual design tensions go to the founder (Appendix R, "Escalated"). It also folds in the on-disk layout agreed with `command-center-cutover` (D8a), including the lead's correction that `soul.md` and `config.yaml` are agent-editable. Raw measurements are in `evidence.md`.
 
 ## Context
 
@@ -171,13 +171,14 @@ Three separate concerns. Revision 3 corrects the accounting, the arithmetic and 
 - **Growth only happens at a supported quiesced boundary:**
   - *Firecracker:* Firecracker's block-update contract requires the device to be unmounted with no guest I/O. So a grow never touches a mounted drive. When `boxd` reports free space below the threshold, the next suspend marks the memory checkpoint invalid and stops the VM. `boxhostd` then grows the unmounted image on the host (`truncate` + `e2fsck -f` + `resize2fs`), and the next wake cold-boots. The cost is one cold boot per grow. Grows are rare, because headroom is 1 GiB.
   - *gVisor:* changing the XFS project quota is an online, supported operation.
+  - **Known-size writes and uploads that would exceed the bound are grown first.** The box suspends, grows and cold-boots before the write runs. An unknown-size execution that fills the bound below the account quota gets `ENOSPC`, with a typed note: "box disk growing, retry". It is not replayed (D2). Whether to start each box at the full remaining quota instead, which removes the mid-operation case but weakens host reservation, is escalated to the founder (Appendix R).
 - Shrinking happens only by offline compaction (export, then import).
 
 **2. Logical account quota — `account-storage-quota` semantics, unchanged.**
 - An account's usage is **logical bytes**, exactly as that change defines them: file sizes, hard links deduplicated, runtime and scratch excluded. It includes the user-attributable platform bytes that change counts.
 - `boxd` maintains the box's logical total incrementally from its change tracking, and recomputes it with a full walk at checkpoint. It is never `statfs` block usage.
 - At the quota, new user-driven writes are refused visibly with the inline Upgrade link, and bounds stop growing.
-- Several awake boxes of one account can overshoot by at most `headroom × (awake boxes − 1)`. That error is per account, never cross-user, and is corrected at the next grow or wake.
+- **The logical quota is enforced at admission and measurement, not by the physical bound.** Known-size writes and uploads are admitted against it. Unknown-size work (`bash`) is admitted with no reservation, as `account-storage-quota` already does, and is measured afterwards. Logical size can exceed physical size: a sparse `truncate` is one way. So the logical quota can be overshot until the next measurement, which then refuses new writes. The physical bound alone protects the host and other users. This is a per-account usage limit, never a floor invariant.
 
 **3. Physical host reservation — remaining commitments against free space.**
 - `boxhostd` keeps a durable ledger and admits a grow only while this holds:
@@ -186,6 +187,7 @@ Three separate concerns. Revision 3 corrects the accounting, the arithmetic and 
 
 - *In-flight temporaries* are the worst case of every operation under way: a checkpoint replacement (the memory size), reflink divergence of each in-progress backup copy (the image's bound), and an offline compaction or grow (the image size).
 - Each operation reserves its temporaries before it starts and releases them when it finishes. All operations are idempotent by `op_id`.
+- **A wake reserves its next checkpoint up front.** It is admitted only if space for its memory checkpoint (the memory ceiling) is reserved at the same time. A box that is awake can therefore always suspend.
 - At startup `boxhostd` reconciles the ledger against the images, checkpoints and in-flight operation records on disk, and cleans up partial operations.
 - A grow that would breach the floor is denied (the box meets its own `ENOSPC`) and pages.
 
@@ -258,10 +260,16 @@ The broker then performs the upstream HTTPS call itself, with upstream certifica
 - **One holder at a time.** A CLI launch takes the credential's **lease**. Only one running CLI holds a given file-OAuth credential at a time; a second launch **waits** and is never refused.
 - **Materialising.** The file is materialised into that box with its generation.
 - **Copy-back.** `boxd` watches the file with inotify. On every change it **copies back immediately**, conditionally: the write succeeds only if the stored generation still equals the materialised one. An owner's redeposit in the meantime wins, and a late copy-back is discarded.
+- **Custody transition.** A copy-back is an *adopted CLI rotation* under the existing custody rule (`credential-vault` "A same-account rotation carries custody forward", `spec.md:427-440`). It renews the accepted source and refuses in-flight receipts, atomically with the byte write, inside the same exclusive vault hold. The new generation is acknowledged back to the materialisation, so the next launch in that box passes its custody check. The lease is recovered at its expiry, and only after the owning box is confirmed stopped. S6 specifies the full transaction.
 - **Crash recovery.** If the host is lost after a rotation but before copy-back, the stored generation is stale. The next refresh may then be refused. That is reported as **needing a new sign-in** (existing sign-in-failure semantics), never as an outage. Immediate copy-back keeps the window to seconds.
 - This is the one sanctioned case of a real credential inside a box process: scoped to its owner's box, its run and its lease.
 
-**Owner-generation fencing of effects.** Broker requests and box operations carry the execution owner's **lease generation** (D11). The broker and `boxhostd` keep the highest generation seen per cell, and refuse lower ones. That stops a stalled former owner's effects downstream, not only in SQLite.
+**Owner-generation fencing of effects: an acknowledged barrier.** Broker requests and box operations carry the execution owner's lease generation (D11). Before a new owner at generation G becomes active, it runs a **fencing barrier**. It sends G to every effect executor (the broker, and every `boxhostd`), and waits for each to acknowledge that it has:
+- persisted G durably;
+- cancelled every execution and closed every upstream or egress stream opened under an older generation;
+- begun refusing any operation below G.
+
+An executor that cannot acknowledge blocks activation, and the new owner pages. An executor that restarts reloads its persisted fence before serving. "Highest seen" alone is not the fence; the acknowledged barrier is.
 
 ### D6. A thin vendor-neutral loop; CLI in a box only where the credential needs it
 
@@ -337,12 +345,23 @@ data_dir()/
 
 | # | Directory | Holds | Never holds |
 |---|---|---|---|
-| 1 | `cc-<ulid>/` | **Persona and config, agent-editable:** `soul.md`, `soul_versions/`, `config.yaml`. **Agent-owned brain files:** `identity.md`, `founder.md`, `origin.md`, `body.md`, `orgchart.md`, `projects.md`, `goals.md`, `index.md`, `log.md`, `voice.md`, `AGENTS.md`. **Harness dirs:** `skills/`, `prompts/`, `extensions/`, `workflows/`, `bin/`, `notes/`, `wiki/`. **Also:** upload **bytes** (verbatim, Hard Rule 9); files a run or the agent wrote; permanent workspace generations; anything else the agent creates | policy the daemon trusts |
-| 2 | `.platform/cc-<ulid>/` | **Trusted policy:** `soul.edit.md` (which persona edits are allowed), `dispatcher_config.yaml` (paid-bid acceptance). **Credentials:** the credential vault, file-OAuth CLI credentials (`.credentials/`, versioned, D5). **Per-home DBs:** runs, consent, usage, attention, conversation custody and session journals, checkpoints. **Records:** rules, auto-review, activity, pending effects, proposals, import quarantine, the browser profile. **Identity and coordination:** the id marker (`.command_center_id`), lease/seat/slot/lock/stamp state, the egress socket (formerly `.universe-sidecars/<id>/`). **Upload custody** records | agent-writable content |
+| 1 | `cc-<ulid>/` | **Persona and config, agent-editable:** `soul.md`, `soul_versions/`, `config.yaml`. **Agent-owned brain files:** `identity.md`, `founder.md`, `origin.md`, `body.md`, `orgchart.md`, `projects.md`, `goals.md`, `index.md`, `log.md`, `voice.md`, `AGENTS.md`. **Harness dirs:** `skills/`, `prompts/`, `extensions/`, `workflows/`, `bin/`, `notes/`, `wiki/`, plus `notes.json`. **Also:** upload **bytes** (verbatim, Hard Rule 9); files a run or the agent wrote; permanent workspace generations; anything else the agent creates | policy the daemon trusts |
+| 2 | `.platform/cc-<ulid>/` | **Trusted policy:** `soul.edit.md` (which persona edits are allowed), `dispatcher_config.yaml` (paid-bid acceptance). **Credentials:** the credential vault, file-OAuth CLI credentials (`.credentials/`, versioned, D5). **Per-home DBs:** runs, consent, usage, attention, conversation custody and session journals, checkpoints, `outbound.db`, `knowledge.db`, `story.db`, `lancedb`. **Worker-supervisor state.** **Records:** rules, auto-review, activity, pending effects, proposals, import quarantine, the browser profile. **Identity and coordination:** the id marker (`.command_center_id`), lease/seat/slot/lock/stamp state, the egress socket (formerly `.universe-sidecars/<id>/`). **Upload custody** records | agent-writable content |
 | 3 | `.platform/accounts/<account_id>/` | The storage ledger, the compute meter, seat state | — |
 | 4 | root DBs | Unchanged except for the rename. Catalog, ledger, inbox and market move to Postgres (S10). Per-account rows stay in these shared stores, served through **account-scoped views**. I5 `store_for(account)` is defined so that either an account-scoped view over a shared store or a per-account file is a valid implementation. Extraction is not required. A cell move exports the account's rows in the `migration` profile | — |
 
-**There are no projections into the box.** The agent reads platform-owned history (conversation custody, activity) through owner-door read tools that the loop serves. Nothing platform-owned is written into a box image, so checkpoint identity (D4) is never disturbed.
+**There are no projections into the box.** Nothing platform-owned is written into a box image, so checkpoint identity (D4) is never disturbed.
+
+**Tools have exactly two execution destinations** (refute round 3).
+1. **Box tools** run in the box: the four tools, and every command adapter or CLI.
+2. **Owner-door read tools** run in the control plane. They are read-only, account-bound, and serve platform history such as conversation custody and activity.
+
+A CLI inside a box reaches the owner-door read tools through a read-only route on the box's broker endpoint, authenticated by the box identity. Nothing else changes in the tool contract.
+
+**Field-level authority in `config.yaml`.** The file stays agent-editable, but it still carries server-owned authority today: `engine_assignment_state`, `engine_assignment_generation` and `provider_authority_bindings` (`config.py:60-66`). It also carries `allowed_providers`, the routing ceiling the router enforces (`providers/router.py:158-177`).
+- The cutover (#4262) moves these fields into `.platform/cc-<ulid>/`, either into an assignment record or into the policy file. They stop being read from `config.yaml` before the file becomes writable in a box.
+- Consumers read authority only from the platform copy.
+- What remains in `config.yaml` is the agent's own preference data, read as untrusted.
 
 **Cache validity** covers both kinds of input. The grounding cache key is `(box committed generation, platform revision of the platform inputs grounding reads)`, where those platform inputs are `soul.edit.md` policy and rules.
 
@@ -370,7 +389,7 @@ data_dir()/
   - `migration`: complete private state, re-encrypted credential custody, pending work, dedup history and ownership metadata.
   - They are one container format with distinct profiles. Only `share` is user-facing.
 - **The move protocol (I13).** It is specified now and built when the second cell's trigger fires:
-  1. close the account's admission;
+  1. close the account's admission, **and stop every non-turn writer for it**: credential refresh and copy-back, owner edits through the API, scheduler and trigger fires, and outbox pumping;
   2. drain and fence its turns;
   3. suspend its boxes (consistent checkpoints);
   4. snapshot its SQLite stores with the backup API, at one admission-closed point;
@@ -393,7 +412,8 @@ data_dir()/
 - `tests/test_orphaned_turn_reconcile.py` gains the standby-start case.
 
 **Atomic fencing.**
-- *SQLite:* every owner-side mutation of owner stores runs in a transaction that **re-checks the lease row** (same database, or one attached database in the same transaction). A stalled owner whose generation is stale commits nothing.
+- *SQLite:* every database the owner writes holds a **fence row**, and the barrier advances it with a write. Every owner-side mutation runs in a `BEGIN IMMEDIATE` transaction that takes the write lock, reads the fence row, and commits only if the fence still equals its own generation. Advancing the fence and the mutation therefore serialise, and there is no stale read of a WAL snapshot. A stalled owner commits nothing.
+- *Restore-safe incarnation.* After any restore or promotion, the new owner's generation is **greater than every generation found in any recovered store**: lease, fence rows, and `agent_turns.owner_generation`. It reconciles before serving. A recovered turn store that is ahead of the recovered lease store therefore cannot hide orphaned turns.
 - *Downstream:* broker requests and box operations carry the generation, and are refused below the highest seen (D5).
 - An owner handover does not change box placement epochs. The two fences are independent.
 
@@ -414,7 +434,11 @@ The metrics are failed requests (target 0) and interrupted turns per owner hando
 - **Promotion fences every primary execution host** before starting anything: the cell host, plus the box host if it is separate. Each host is fenced through **its own provider's** API with a CI-held credential (DigitalOcean for droplets; OVH's API for an OVH box host, delivered in S5), and blocked from auto-restart.
 - If fencing is unconfirmed, promotion stops and pages. Failback is manual.
 - Promotion also restores the broker's vault key from escrow (S1) and Postgres (PITR).
-- **Recovery points:** ~1 s for platform state; the last box backup for box files; box memory is lost (cold boot).
+- **Recovery points:**
+  - ~1 s for platform **SQLite** state (Litestream);
+  - for platform **files** (file-OAuth credentials, `soul.edit.md`, `dispatcher_config.yaml`, the browser profile): the restic interval, by default ≤15 min and on change for credentials;
+  - the last box backup for box files;
+  - box memory is lost (cold boot).
 - **Recovery times:** API ≤5 min after detection. A given command center's restore is size-dependent and measured in S5.
 
 **Consistent box backups.** They are taken only from suspended images, or from a `boxd` freeze plus a reflink copy (XFS reflink). restic reads the immutable copy. The reflink copy's divergence is reserved in D3.
@@ -581,6 +605,7 @@ S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───�
 
 ### S5. Firecracker driver, host build, box backups, box-host operations — **founder spend if S0 picks bare metal** — (multi)
 
+- **Depends on:** S0, S4, and S6 (key service) for the backup tasks.
 - **Tasks:**
   1. Firecracker + jailer at a pinned version, one uid per VMM, cgroup CPU/IO weights.
   2. The base rootfs plus a per-box image; images are fresh sparse files.
@@ -590,7 +615,7 @@ S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───�
   6. vsock `boxd` with reconnect.
   7. The quiesced grow procedure: invalidate the checkpoint, grow the unmounted image, cold boot (D3).
   8. The box host on Debian 13 with XFS reflink.
-  9. Consistent restic backups with a per-account key.
+  9. Consistent restic backups encrypted under the command center's DEK. This depends on S6's key service.
   10. The box-inclusive DR drill.
   11. Box-host operations:
       - metrics: awake boxes, admission wait, reservation headroom, restore p95;
@@ -724,6 +749,9 @@ S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───�
 4. **S9:** whether to add a compute-hour budget and spare lane to storage + seats.
 5. **S10:** self-hosted Postgres ($0) or DO managed ($15.15/$30.30 HA).
 6. **D6:** the Claude subscription stays owner-only (founder's command center) unless he decides otherwise.
+7. **D3 box disk sizing** (escalated from refute round 3):
+   - start each box at the full remaining account quota, so there is no mid-operation growth but host reservation is overcommitted; or
+   - keep used-plus-headroom with offline growth, accepting a rare typed `ENOSPC` below quota for unknown-size work. This is the current design.
 
 ## Appendix R. Cross-family refute, round 1 (gpt-6-astra, 2026-10-02): **ADAPT**
 
@@ -757,3 +785,22 @@ Round 2 found round-1 findings 1 and 3 **RESOLVED**, and the rest PARTIAL. It al
 | 8 | Placement spec contradicted the root DBs; reconciliation missed three vault requirements and the encryption migration | **Accepted.** The spec scopes per-command-center and per-account records explicitly; three vault rows were added; S6 migrates the plaintext vault |
 
 This is round 2 of at most 3.
+
+### Round 3 (gpt-6-astra, 2026-10-02): **ADAPT** — cap reached
+
+Round 3 found these round-2 findings **RESOLVED**: R2.4 (checkpoint order), R2.5 (deletion keys), R2.6 (projections) and R2.7 (dependencies). R2.1, R2.2, R2.3 and R2.8 were PARTIAL. These consistency fixes were folded **without a fourth review**:
+
+| # | Finding | Fold |
+|---|---|---|
+| 1 | "Highest seen" left an unfenced interval; the SQLite re-check could read a stale snapshot | Acknowledged fencing barrier at every executor (cancels older streams, durable fence, blocks activation); per-database fence rows with `BEGIN IMMEDIATE` (D5, D11) |
+| 2 | Restore order could hide orphaned turns; platform files lacked an RPO | Restore-safe incarnation above every recovered generation, reconciled before serving; file RPOs stated (D11) |
+| 3 | Copy-back had no custody transition (`credential-vault` `spec.md:427-440`) | Adopted-rotation renewal, atomic with the byte write, with an acknowledged generation and lease recovery; S6 owns the transaction (D5) |
+| 4 | The logical overshoot bound was false; checkpoint capacity was not guaranteed | Bound removed: logical quota enforced at admission and measurement. A wake reserves its checkpoint (D3) |
+| 5 | Offline grow causes `ENOSPC` below quota mid-operation | Pre-grow for known-size writes; typed `ENOSPC` for unknown-size work. **Escalated** (below) |
+| 6 | Owner-door tools sat outside the tool contract; `config.yaml` still carries authority | Two declared tool destinations plus a read-only in-box route; field-level audit moves authority fields out in the cutover (D8a) |
+| 7 | The placement spec contradicted account-scoped views; S5 per-account keys; the broker streaming contract | Spec permits views; S5 uses DEKs and depends on S6. The streaming and duplex broker contract is fixed in S6's design before S7 (**escalated as an open interface**) |
+
+**Escalated to the founder** (not reviewed in a fourth round, per AGENTS "three rounds, then escalate"):
+- **(a) Box disk sizing.** Start each box at the full remaining account quota, so no mid-operation growth is needed but host reservation becomes overcommitted. Or keep used-plus-headroom with offline growth, accepting a rare typed `ENOSPC` below quota for unknown-size work.
+- **(b) Fencing and custody contract detail.** The fencing barrier and the custody transition are specified at the contract level here. Their full protocols land in S8 and S6, and each gets its own cross-family review in those changes.
+- **(c) The broker streaming and duplex contract (I14).** It is an open interface until S6's design fixes it. S7 depends on it.

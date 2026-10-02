@@ -5,8 +5,9 @@
 The agent turn SHALL run in the cell's execution owner, as part of its shared
 asynchronous loop, for every connection that speaks a standard HTTP model
 protocol, not in a per-turn process inside the box. The loop SHALL forward each
-tool call over the turn's bound box handle with an operation id, and SHALL NOT
-execute model output itself. Only the execution owner SHALL write the turn
+box tool call over the turn's bound box handle with an operation id. It SHALL
+serve owner-door read tools itself, read-only. It SHALL NOT execute model output
+itself. Only the execution owner SHALL write the turn
 journal. After a failover or crash, an interrupted turn SHALL reconcile into a
 held state, its unknown-outcome operations SHALL stay unknown, and nothing
 SHALL be replayed.
