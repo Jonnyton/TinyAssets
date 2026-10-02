@@ -232,10 +232,6 @@ PINNED: dict[str, list[str]] = {
         "_write_routes: os.replace()",
         "read_engine_mcp_route: .read_text()",
     ],
-    "tinyassets/execution_authority/evidence_store.py": [
-        "_open_ancestors: os.open()",
-        "_open_ancestors: os.open()",
-    ],
     "tinyassets/idle_cycle.py": [
         "_read_stamp: .read_text()",
         "_try_lock_nonblocking: os.open()",
@@ -361,6 +357,16 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/storage/run_file_lock.py": [
         "try_file_operation_lock: os.open()",
+    ],
+    # Data-root files only (.layout.json, .layout.lock): no jail binds the data
+    # root, and the layout lock must be opened before anything else is.
+    "tinyassets/storage_layout.py": [
+        "_open_lock: os.open()",
+        "_open_lock: os.open()",
+        "_write_atomically: .unlink()",
+        "_write_atomically: os.open()",
+        "_write_atomically: os.replace()",
+        "read_marker: .read_text()",
     ],
     "tinyassets/storage_accounting.py": [
         "_commons_pages: .read_bytes()",
