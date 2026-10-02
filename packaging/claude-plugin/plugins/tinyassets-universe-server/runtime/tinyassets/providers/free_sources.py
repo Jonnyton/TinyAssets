@@ -1,5 +1,8 @@
 """Installed connection-card data; all sources use api_key_http / openai_chat.
 
+A source with a ``sign_in`` block is connected by OAuth (the generic
+``connect`` ask), never by a pasted key, so it is not a key card.
+
 Verified 2026-09-30. No key, account tier or runtime vendor adapter lives here.
 Models are an agent-capable allowlist intersected with the owner's /models
 response at connection time, not an invented catalogue or a claim of access.
@@ -23,42 +26,62 @@ from urllib.parse import urlsplit
 # https://docs.mistral.ai/getting-started/quickstarts/studio/activate-and-generate-api-key
 # https://docs.mistral.ai/api/endpoint/models
 # https://docs.mistral.ai/admin/billing-usage/usage-limits
+# https://huggingface.co/docs/hub/oauth (inference-api scope, PKCE, metadata docs)
+# https://huggingface.co/docs/inference-providers/pricing
 _SOURCES = json.loads(Path(__file__).with_name("free_source_presets.json").read_text("utf-8"))
+# What a provider's own free daily limit is, and what its credit buys, keyed by
+# inference host: https://openrouter.ai/docs/api/reference/limits (2026-10-01).
+_DAILY_CAPS = json.loads(Path(__file__).with_name("daily_cap_offers.json").read_text("utf-8"))
 
 
 def source_cards():
-    return deepcopy(list(_SOURCES))
+    """Key-paste cards. A source completed by signing in is never one of them."""
+    return deepcopy([row for row in _SOURCES if "sign_in" not in row])
 
 
 def source_preset(source_id):
     return next((row for row in source_cards() if row["id"] == source_id), None)
 
 
-# TEMPORARY until feat/connect-free-ai lands: same signature
+def sign_in_cards():
+    """Display data for sources the owner connects by signing in; no endpoints."""
+    return [{"id": row["id"], "name": row["name"], "offer": row["offer"],
+             "label": row["sign_in"]["label"], "billing_note": row["billing_note"],
+             "daily_cap": deepcopy(row.get("daily_cap"))}
+            for row in _SOURCES if "sign_in" in row]
+
+
+def sign_in_preset(source_id):
+    return next((deepcopy(row) for row in _SOURCES
+                 if row["id"] == source_id and "sign_in" in row), None)
+
+
 def daily_cap_for_host(host):
-    """Read connect-screen's installed daily caps, never acquisition metadata."""
-    source = next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), {})
-    cap = source.get("daily_cap")
-    if cap:
-        return {
-            "requests_per_day": cap.get("requests_per_day"),
-            "credit_requests_per_day": None,
-            "reset_timezone": cap.get("reset_timezone"),
-            "name": source["name"],
-            "credit_url": source.get("billing_url", ""),
-        }
-    offers = json.loads(Path(__file__).with_name("daily_cap_offers.json").read_text("utf-8"))
-    offer = offers.get(host)
-    if offer is None:
+    """The ONE reader of a source's daily limit, by inference host, or None.
+
+    Reads both installed files: the provider-stated credit tier for hosts in
+    ``daily_cap_offers.json`` and the per-card ``daily_cap``. None values mean
+    unconfirmed, never zero.
+    """
+    offer = _DAILY_CAPS.get(host)
+    if offer is not None:
+        return {"requests_per_day": offer.get("free_requests_per_day"),
+                "credit_requests_per_day": offer.get("credit_requests_per_day"),
+                "credit_amount": offer.get("credit_amount"),
+                "reset_timezone": offer.get("reset_timezone"), "name": offer["name"],
+                "credit_url": offer.get("credit_url")}
+    row = source_for_host(host)
+    cap = row.get("daily_cap") if row else None
+    if not isinstance(cap, dict):
         return None
-    return {
-        "requests_per_day": offer["free_requests_per_day"],
-        "credit_requests_per_day": offer.get("credit_requests_per_day"),
-        "reset_timezone": offer["reset_timezone"],
-        "name": offer["name"],
-        "credit_url": offer.get("credit_url", ""),
-        "credit_amount": offer.get("credit_amount"),
-    }
+    return {"requests_per_day": cap.get("requests_per_day"), "credit_requests_per_day": None,
+            "reset_timezone": cap.get("reset_timezone"), "name": row["name"],
+            "credit_url": row.get("billing_url")}
+
+
+def daily_cap_offers():
+    """Installed daily-limit facts the app words its daily-cap card from."""
+    return [{"host": host, **offer} for host, offer in sorted(_DAILY_CAPS.items())]
 
 
 def source_for_host(host):
