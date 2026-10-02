@@ -32,7 +32,7 @@ DEFAULT_READ_BYTES = 65_536
 #: One listing returns at most this many entries, sorted, with ``truncated``.
 MAX_LIST_ENTRIES = 500
 
-_NOT_FOUND = {"error": "not_found", "resource": "universe_file"}
+_NOT_FOUND = {"error": "not_found", "resource": "command_center_file"}
 
 
 def _owner_universe(universe_id: str) -> tuple[str, Path] | None:

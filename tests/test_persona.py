@@ -307,11 +307,11 @@ def test_server_instructions_carry_relay_markers() -> None:
     assert "read-only" in text
 
 
-def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
+def test_meet_command_center_prompt_registered_and_carries_bonding_markers() -> None:
     import tinyassets.universe_server as us
     from tinyassets.api.prompts import _MEET_UNIVERSE_PROMPT
 
-    assert hasattr(us, "meet_universe")  # spec-blessed user-invoked entry prompt
+    assert hasattr(us, "meet_command_center")  # spec-blessed user-invoked entry prompt
     text = _MEET_UNIVERSE_PROMPT
     assert "get_status" not in text          # status is not the main experience
     assert "converse" in text                # creates/loads + relays in one entry
@@ -344,7 +344,7 @@ def test_write_graph_persona_target_is_retired() -> None:
 # tool-delivered voice contract is read as prompt injection (the host cannot
 # verify its provenance) and gets refused. The behavior now lives in the
 # sanctioned channels: offer the universe's voice, ask, embody on yes; the
-# meet_universe prompt is itself the consent. Voice rules apply post-consent.
+# meet_command_center prompt is itself the consent. Voice rules apply post-consent.
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -392,7 +392,7 @@ def test_control_station_relays_brain_not_writes_it() -> None:
     mu = " ".join(_MEET_UNIVERSE_PROMPT.split())
     assert "relay" in mu.lower()
     assert "converse" in mu
-    # meet_universe: the command center persists what it learns itself (not the chatbot).
+    # meet_command_center: the command center persists what it learns itself (not the chatbot).
     assert "persists what it learns itself" in mu.lower()
 
 

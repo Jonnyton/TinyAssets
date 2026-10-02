@@ -99,12 +99,12 @@ test("the checked-in snapshot fails closed on visibility, like a live read", () 
 
   // The checked-in render path goes through it. Live reads belong to a
   // signed-in connector, not this public browser component.
-  assert.match(shapes, /const bakedRows: Row\[\] = discoverableRows\(baked\.universes\)/);
+  assert.match(shapes, /const bakedRows: Row\[\] = discoverableRows\(baked\.command_centers\)/);
 
   // And the checked-in snapshot itself carries only discoverable records.
   const snapshot = JSON.parse(readFileSync(resolve(siteRoot, "lib/mcp-snapshot.json"), "utf8"));
-  assert.ok(Array.isArray(snapshot.universes));
-  assert.equal(discoverableRows(snapshot.universes).length, snapshot.universes.length);
+  assert.ok(Array.isArray(snapshot.command_centers));
+  assert.equal(discoverableRows(snapshot.command_centers).length, snapshot.command_centers.length);
 });
 
 test("public pages never surface untrusted error detail", () => {

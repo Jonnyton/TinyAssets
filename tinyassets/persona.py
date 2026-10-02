@@ -92,7 +92,7 @@ class Persona:
         # model's seat — it cannot verify the first-party provenance claim, and
         # careful hosts (Claude.ai, observed live) correctly refuse it.
         # Embodiment behavior therefore lives ONLY in the sanctioned channels
-        # (server instructions + the user-invoked meet_universe prompt), and the
+        # (server instructions + the user-invoked meet_command_center prompt), and the
         # pattern there is USER CONSENT: offer, ask, embody on yes. First-party
         # app surfaces put the persona in the system prompt and need none of
         # this. (Host steer + docs/design-notes/2026-07-01-mcp-personification-

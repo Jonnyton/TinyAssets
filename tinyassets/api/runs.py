@@ -49,6 +49,7 @@ from tinyassets.api.helpers import (
     _request_universe,
     _universe_dir,
 )
+from tinyassets.command_center_names import present_actor
 
 logger = logging.getLogger("universe_server.runs")
 
@@ -1511,7 +1512,7 @@ def _compose_run_snapshot(
     summary = "\n".join([
         f"**Run on workflow `{header_branch}`** — status "
         f"`{run_record['status']}`",
-        f"Actor: {run_record['actor']}",
+        f"Actor: {present_actor(run_record['actor'])}",
         "",
         "Nodes:",
         *node_lines,
