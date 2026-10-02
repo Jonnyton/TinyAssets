@@ -548,6 +548,10 @@
       </form>
       <div id="status-line" class="status-line" role="status" aria-live="polite"
            aria-label="Conversation status"></div>
+      <div id="deploy-pending-line" class="status-line" role="status"
+           aria-live="polite" hidden></div>
+      <button id="btn-try-model" class="btn btn--link" type="button" hidden
+              title="Pick another model for your next message. Stop this turn if you want to switch now; it is still working.">Try another model</button>
       <div id="voice-status-line" class="status-line status-line--voice" role="status"
            aria-live="polite" aria-label="Voice status" hidden></div>
       </div>
@@ -1880,6 +1884,7 @@
   const STATUS_IDLE_MS=30000, STATUS_WORKING_MS=10000;
   let statusBeatMs=STATUS_IDLE_MS;
   let serverTurn=null;
+  let deployPending=false;
   // This command center's chat waiting for one of the account's seats (`seats` in the
   // status payload, owner-only). Its line carries the upgrade link inline.
   let seatWait=null;
@@ -1895,6 +1900,8 @@
     if(sendQueue.length) flushSendQueue();
   }
   function readServerTurnRow(payload){
+    const deploy=payload&&payload.deploy_pending;
+    deployPending=!!deploy&&typeof deploy==="object"&&deploy.pending===true;
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
       ?payload.seats:null;
     const row=payload&&payload.active_turn;
@@ -1907,8 +1914,75 @@
     const age=(typeof row.age_s==="number"&&Number.isFinite(row.age_s)&&row.age_s>0)?row.age_s:0;
     // Anchored to THIS page's clock. The row's own stamp is the server's, and a
     // device with a skewed clock would otherwise report a nonsense elapsed time.
+    // Which step, on which model, since when -- present once the turn opened a
+    // round. A ten-minute wait on one model request read exactly like a hang
+    // (live 2026-10-02); saying where the turn is lets the owner decide.
+    const roundAge=(typeof row.round_age_s==="number"&&Number.isFinite(row.round_age_s)
+      &&row.round_age_s>=0)?row.round_age_s:null;
     serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
-      startedMs:Date.now()-age*1000,observedAt:Date.now()};
+      startedMs:Date.now()-age*1000,observedAt:Date.now(),
+      tools:Array.isArray(row.tools)?row.tools:[],
+      round:(Number.isInteger(row.round)&&row.round>0)?row.round:0,
+      model:(typeof row.model==="string")?row.model:"",
+      roundSinceMs:roundAge===null?0:Date.now()-roundAge*1000};
+  }
+  // A model id as a person says it: no vendor prefix or ":variant" tag, and a
+  // very long name cut at a hyphen ("nemotron-3-ultra-550b-a55b" ->
+  // "nemotron-3-ultra-550b"), never down to a family word that names nothing.
+  function shortModelName(id){
+    let tail=String(id||"").split("/").pop().replace(/:[^:]*$/,"");
+    while(tail.length>24&&tail.lastIndexOf("-")>0) tail=tail.slice(0,tail.lastIndexOf("-"));
+    return tail;
+  }
+  // Minutes this step has waited on its model, or 0 when the server did not say.
+  function waitMinutes(){
+    if(!serverTurnLive()||!serverTurn.roundSinceMs) return 0;
+    return Math.floor((Date.now()-serverTurn.roundSinceMs)/60000);
+  }
+  // "step 4 · waiting on qwen3.8 for 7 min" while the model is being asked;
+  // "" when the server has not said, or when the step is running tools (that
+  // line belongs to the live tool painter).
+  function waitDetail(){
+    if(!serverTurnLive()||!serverTurn.round||
+       (serverTurn.state!=="inference_started"&&serverTurn.state!=="native_started"))
+      return "";
+    const mins=waitMinutes();
+    return "step "+serverTurn.round+(serverTurn.model
+      ? " \u00b7 waiting on "+shortModelName(serverTurn.model) : "")+
+      (mins>=1?" for "+mins+" min":"");
+  }
+  // After this long on one request the owner is offered another model. Their
+  // choice, never ours: a slow reply that is still coming is not abandoned
+  // (founder, 2026-10-02), and switching does not stop the request in flight.
+  const TRY_MODEL_AFTER_MIN=3;
+  function renderTryModel(){
+    const button=$("btn-try-model");
+    if(!button) return;
+    button.hidden=!(waitDetail()&&waitMinutes()>=TRY_MODEL_AFTER_MIN);
+  }
+  // What the agent's tools are doing, newest call first (harness S4): said on
+  // the ONE status line, after the sentence it already shows, never as a second
+  // indicator. Only this owner's own thread is reported by the server.
+  function toolLine(){
+    const t=serverTurnLive()&&serverTurn.tools&&serverTurn.tools[0];
+    if(!t||typeof t.tool!=="string"||!t.tool) return "";
+    const what=t.tool+(t.summary?": "+String(t.summary):"");
+    if(t.state==="running") return "running "+what;
+    if(t.state==="failed") return "ran "+what+" (failed"+(t.error?": "+String(t.error):"")+")";
+    return "ran "+what;
+  }
+  const TOOL_SEP=" \u00b7 ";
+  // The working sentence other paths write ("Your agent is thinking...", the
+  // agent being the actor). The older wording is still recognised so a line
+  // written before an update keeps its tool step.
+  const THINKING_LINE=/^Your (agent|universe) is thinking\.\.\./;
+  function paintToolLine(){
+    const line=$("status-line");
+    const text=String(line.textContent||"");
+    if(!THINKING_LINE.test(text)||waitDetail()) return;
+    const base=text.split(TOOL_SEP)[0], tl=toolLine();
+    const next=tl?base+TOOL_SEP+tl:base;
+    if(next!==text) setStatusLine(next);
   }
   function serverTurnLive(){
     return !!serverTurn && (Date.now()-serverTurn.observedAt)<3*STATUS_WORKING_MS;
@@ -1930,6 +2004,8 @@
   // sentence is; a queue count, an attachment notice or a failure line belongs to
   // whoever wrote it and is never touched here.
   let serverStatusLine=false;
+  // This page's own turn line carries the server's step detail.
+  let ownDetailLine=false;
   // ---- Stop (founder 2026-09-30: "just like it works in claude code") --------
   // While the agent is working, Send gives its place to Stop; Escape does the
   // same. The server stops the turn at its next safe point (a tool call already
@@ -2034,6 +2110,14 @@
   }
   function renderWorking(){
     renderStop();
+    renderTryModel();
+    const updateLine=$("deploy-pending-line");
+    if(updateLine){
+      const pending=serverTurnLive()&&deployPending;
+      const text=pending?"An update is waiting for this turn to finish; it installs right after.":"";
+      if(updateLine.textContent!==text) updateLine.textContent=text;
+      updateLine.hidden=!pending;
+    }
     if(seatWait){
       // The waiting line, with the Upgrade link INSIDE it -- never a banner, card
       // or modal (founder, 2026-09-30). No link on the top tier: the server sends
@@ -2071,7 +2155,25 @@
     // The flag is dropped on the way out: a local turn has taken the line, so our
     // sentence is no longer on screen and we must not later "clear" what that path
     // wrote (a queue count outlives the turn it was queued behind).
-    if(turnStartedAt){ serverStatusLine=false; return; }
+    if(turnStartedAt){
+      serverStatusLine=false;
+      // This page's own sentence, with WHERE the turn is when the server says.
+      // Never over a queue count, the seat line or a Stop in progress, which
+      // know more; and never rewritten unchanged, so a screen reader hears the
+      // minute change and nothing else.
+      const detail=waitDetail();
+      const mine=!sendQueue.length&&!seatLineShown&&!interruptRequested;
+      if(detail&&mine){
+        const text="Your agent is thinking... "+detail;
+        if($("status-line").textContent!==text) setStatusLine(text);
+        ownDetailLine=true;
+      }else if(ownDetailLine&&!detail&&mine){
+        setStatusLine("Your agent is thinking..."); ownDetailLine=false;
+      }
+      paintToolLine();
+      return;
+    }
+    ownDetailLine=false;
     if(!serverTurnLive()){
       // Ours to clear, or nobody's. A line another path wrote stays.
       if(serverStatusLine){ serverStatusLine=false; setStatusLine(""); }
@@ -2081,9 +2183,10 @@
     const elapsed=workingElapsed(workingSince());
     // Said because this page did NOT start it: without it the founder is looking
     // at a turn they have no other evidence of.
-    const detail=[elapsed,"started in another window, by a request you answered, "+
+    const detail=[elapsed,waitDetail(),"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
-    setStatusLine("Your agent is thinking... " + detail);
+    const tl=toolLine();
+    setStatusLine("Your agent is thinking... " + detail + (tl?TOOL_SEP+tl:""));
   }
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The command center's actual
@@ -6206,6 +6309,8 @@
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
     $("btn-stop").addEventListener("click",()=>interruptTurn());
+    // Opens the model menu for the NEXT message; Stop stays the owner's call.
+    $("btn-try-model").addEventListener("click",()=>{ $("btn-models").click(); });
     // Escape stops the turn, as in Claude Code -- unless something else on the
     // page already used this Escape (a menu or dialog closing handles it first).
     document.addEventListener("keydown",(e)=>{

@@ -48,7 +48,6 @@ from tinyassets.api.automations import automations as _automations_impl
 from tinyassets.api.branches import _branch_design_guide_prompt
 from tinyassets.api.cloud_connections import cloud_connections as _cloud_connections_impl
 from tinyassets.api.custom_agents import custom_agents as _custom_agents_impl
-from tinyassets.api.engine_helpers import _warn_if_no_upload_whitelist
 from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import gates as _gates_impl
 from tinyassets.api.market import goals as _goals_impl
@@ -503,10 +502,6 @@ async def _landing_index(request):  # type: ignore[no-untyped-def]
     from starlette.responses import HTMLResponse
 
     return HTMLResponse(_LANDING_HTML)
-
-
-# Preserve the at-server-start whitelist warning (Step 10 prep §3.5 Option B).
-_warn_if_no_upload_whitelist()
 
 
 # ---------------------------------------------------------------------------
@@ -2754,9 +2749,38 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
             retry_after_s=(
                 _attempt_wait_s(exc) if code in _WAITING_CLASSES else None
             ),
+            requests=_chain_attribute(exc, "turn_requests"),
+            partial_text=_stalled_partial(exc),
         )
     except Exception:  # noqa: BLE001 - a malformed diagnostic is not another failure
         return turn_failure("unknown", ref=uuid.uuid4().hex[:16])
+
+
+def _chain_attribute(exc: BaseException, name: str):
+    """The first value of ``name`` anywhere on the exception chain, or None."""
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        value = getattr(node, name, None)
+        if value is not None:
+            return value
+        node = node.__cause__ or node.__context__
+    return None
+
+
+def _stalled_partial(exc: BaseException) -> str:
+    """What the LAST failed attempt's stalled stream had written, scrubbed."""
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+
+    attempts = getattr(exc, "attempts", None)
+    if not isinstance(attempts, (list, tuple)):
+        return ""
+    failed = [a for a in attempts if getattr(a, "status", "") == "failed"]
+    partial = getattr(failed[-1], "partial_text", None) if failed else None
+    if not isinstance(partial, str) or not partial:
+        return ""
+    return redacted_failure_detail(_FS_PATH.sub("<path>", partial), limit=10**9)
 
 
 def _announce_owner_message(universe_dir) -> None:
@@ -3137,23 +3161,27 @@ def converse(
     execution = execution_receipt.projection()
     delivered, undelivered = _settle_steering(memory_universe_dir, memory_session, live_id)
     try:
-        from tinyassets.conversation_store import record_exchange
+        from tinyassets.conversation_store import record_exchange_turns
 
         # Both sides in ONE transaction: never a founder-only half-turn. The
         # owner's messages the agent received while it worked sit between them.
-        if record_exchange(
+        recorded = record_exchange_turns(
             memory_universe_dir, memory_session, message, str(reply), execution=execution,
             interjections=[(item.text, item.created_at) for item in delivered],
-        ):
+        )
+        if recorded is not None:
             _announce_owner_message(memory_universe_dir)
-        # Only now can the cursor name this turn. Settled -> the lesson is done and
-        # the next turn owes nothing for it; unsettled (a failed extraction) -> it
-        # stays owed, which is the retry state the deferred path will drain.
-        if lesson_settled and lesson_settled[0]:
+        # Only now can the cursor name this turn -- by the exact rows it wrote, never
+        # "the latest row", which with two turns in flight can be another turn's
+        # unlearned exchange. Settled -> the lesson is done; unsettled (a failed
+        # extraction, or an exchange that is not next after the cursor) -> it stays
+        # owed, which is the retry state the deferred path will drain.
+        if recorded is not None and lesson_settled and lesson_settled[0]:
             from tinyassets.conversation_store import settle_learned_cursor
 
             settle_learned_cursor(
                 memory_universe_dir, memory_session, from_turn=turn_began_at,
+                first_turn=recorded[0], through_turn=recorded[1],
             )
     except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
         logger.warning("converse: conversation memory could not record the turn", exc_info=True)
@@ -3267,7 +3295,6 @@ _mcp_converse = _register_structured_tool(
 _BRAIN_WRITE_RELAY_ACTIONS = frozenset({
     "set_premise",
     "add_canon",
-    "add_canon_from_path",
     "soul.edit",
 })
 
@@ -3323,7 +3350,7 @@ def universe(
         action: One of — reads: list, inspect, read_output, query_world,
             get_activity, get_recent_events, get_ledger, read_premise,
             list_canon, read_canon, list_sources, read_source; writes: submit_request,
-            give_direction, set_premise, set_visibility, add_canon, add_canon_from_path,
+            give_direction, set_premise, set_visibility, add_canon,
             create_universe, switch_universe; learning: soul.edit (teach the
             command center — inputs_json {changes: {governed file: new body},
             source, context, name?}; persists per its soul.edit.md policy);
