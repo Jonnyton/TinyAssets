@@ -53,12 +53,22 @@ class LoopToolSession:
     takes_op_id = True
 
     def __init__(self, *, tools: tuple[Tool, ...], box: BoxTools | None,
-                 reads: OwnerReads | None, engine: Any | None) -> None:
+                 reads: OwnerReads | None, engine: Any | None,
+                 steer: Callable[[], str | None] = lambda: None) -> None:
         self._tools = tools
         self._box = box
         self._reads = reads
         self._engine = engine
+        self._steer = steer
         self._names = frozenset(tool.name for tool in tools)
+
+    async def _steered(self, result: CallToolResult) -> CallToolResult:
+        """The owner's mid-turn messages ride on a loop-served result too, exactly
+        as the engine's ``OwnerSteering`` adds them to every engine result."""
+        block = await asyncio.to_thread(self._steer)
+        if block:
+            result.content = [*result.content, TextContent(type="text", text=block)]
+        return result
 
     @property
     def tools(self) -> tuple[Tool, ...]:
@@ -69,17 +79,19 @@ class LoopToolSession:
             raise EngineToolError("loop_tool_not_allowed")
         if name in BOX_TOOLS:
             try:
-                return _text_result(await self._box.call(name, op_id, arguments))
+                text = await self._box.call(name, op_id, arguments)
             except BoxOperationRefused:
                 # Refused before the operation existed: provably nothing ran.
                 raise EngineToolError("box_operation_refused") from None
+            return await self._steered(_text_result(text))
         if name in OWNER_READ_TOOLS:
             try:
                 text = await asyncio.to_thread(self._reads.call, name, arguments)
             except Exception:  # noqa: BLE001 - a failed read has no effect to hold
-                return _text_result(json.dumps({"error": f"{name}_read_failed"}),
-                                    is_error=True)
-            return _text_result(text)
+                return await self._steered(_text_result(
+                    json.dumps({"error": f"{name}_read_failed"}), is_error=True))
+            return await self._steered(_text_result(text))
+        # The engine route delivers steering itself (``engine_steering``).
         return await self._engine.call(name, arguments)
 
 
@@ -93,6 +105,8 @@ async def open_loop_tools(
     universe_dir: Path,
     engine_identity: Callable[[], tuple[str, str]],
     timeout: float,
+    session_key: str = "",
+    turn: str = "",
 ) -> AsyncIterator[LoopToolSession]:
     """Open the turn's tools. ``bind_box`` binds the handle once, here.
 
@@ -116,7 +130,7 @@ async def open_loop_tools(
             actor_id, graph_id = engine_identity()
             engine = await stack.enter_async_context(open_engine_tools(
                 actor_id=actor_id, graph_id=graph_id, enabled_tools=engine_names,
-                timeout=timeout,
+                timeout=timeout, session_key=session_key, turn=turn,
             ))
             engine_tools = {tool.name: tool for tool in engine.tools}
         box_definitions = box_tool_definitions(root)
@@ -131,4 +145,19 @@ async def open_loop_tools(
             tools=tools, box=box,
             reads=OwnerReads(owner=owner, universe_dir=universe_dir) if reads else None,
             engine=engine,
+            steer=lambda: _take_steering(universe_dir, session_key, turn),
         )
+
+
+def _take_steering(universe_dir: Path, session_key: str, turn: str) -> str | None:
+    """The engine's steering rule: only the owner's thread of a live turn."""
+    from tinyassets import agent_steering
+    from tinyassets.engine_steering import STEERED_PREFIX
+
+    if not (session_key.startswith(STEERED_PREFIX) and turn):
+        return None
+    try:
+        messages = agent_steering.take(Path(universe_dir), session_key, turn)
+    except Exception:  # noqa: BLE001 - a completed call never fails over steering
+        return None
+    return agent_steering.render(messages) if messages else None

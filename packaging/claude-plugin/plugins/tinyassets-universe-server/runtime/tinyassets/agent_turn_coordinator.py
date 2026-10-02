@@ -13,6 +13,7 @@ import time
 from contextlib import AsyncExitStack
 from dataclasses import replace
 
+from tinyassets.engine_steering import session_of, turn_of
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
@@ -341,7 +342,15 @@ class AgentTurnCoordinator:
         return open_engine_tools(
             actor_id=actor_id, graph_id=graph_id,
             enabled_tools=granted_tools(self.config), timeout=timeout,
+            **self.steering(),
         )
+
+    def steering(self):
+        """The session and live turn the owner's mid-turn messages are bound to."""
+        return {
+            "session_key": session_of(self.config),
+            "turn": getattr(self.interrupt, "live_id", "") or turn_of(),
+        }
 
     def _interrupted(self):
         return self.interrupt is not None and self.interrupt.requested()

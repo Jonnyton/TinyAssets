@@ -79,4 +79,5 @@ class ThinLoopChatAdapter(ServedChatAgentAdapter):
             engine_identity=lambda: self.engine_identity(coordinator.context,
                                                          coordinator.config),
             timeout=timeout,
+            **coordinator.steering(),
         )
