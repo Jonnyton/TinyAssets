@@ -280,6 +280,8 @@
     #cloud-menu button{display:block}
     .chat-cloud-bar .universe-name{max-width:40%;font-size:.82rem}
     .chat-stage{position:relative;flex:1;min-height:0;overflow:hidden}
+    /* With no header, the stage itself keeps clear of a phone's status bar. */
+    .view--chat{padding-top:env(safe-area-inset-top)}
     .chat-cloud{position:absolute;display:flex;flex-direction:column;min-width:0;min-height:0;
       background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
       box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;z-index:5}
@@ -4650,12 +4652,21 @@
       phase:event.type==="keyup" ? "up" : "down"},"*");
     event.preventDefault();
   }
-  function ccBlankBuild(){
+  // Puts text in the chat input without sending it, opening the cloud first if
+  // it is a bubble. The one entry point for "start this sentence for me": the
+  // blank command center's button, and the default bundle's chat.prefill.
+  function chatCloudPrefill(text){
     if(cloudState && cloudState.mode==="bubble") setChatCloudMode("open");
     const input=$("composer-input");
-    input.value="Build me a command center for "; input.focus();
+    if(!input) return;
+    input.value=String(text||""); input.focus();
     input.setSelectionRange(input.value.length,input.value.length);
   }
+  // TEMPORARY: #cc-blank and these two buttons stand in until cc-package's
+  // platform-default command-center bundle lands; that change mounts the bundle
+  // in the frame when no layout is active and deletes #cc-blank, so
+  // focusCommandCenter only ever targets the frame (one code path).
+  function ccBlankBuild(){ chatCloudPrefill("Build me a command center for "); }
   function ccBlankTryOne(){ $("btn-ui-switch").click(); }
   function closeCloudMenu(){
     if($("cloud-menu").hidden) return;

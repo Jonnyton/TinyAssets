@@ -138,8 +138,13 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     if (!message || typeof message !== "object" || message.ta_ui !== PROTOCOL) { return; }
     if (message.type === "focus") {
       window.focus();
-      if (!document.body.hasAttribute("tabindex")) document.body.setAttribute("tabindex", "-1");
-      document.body.focus();
+      // Hand the keyboard to this frame without taking it from a control the
+      // UI itself has focused (an input the owner is typing in keeps focus).
+      if (!document.activeElement || document.activeElement === document.body
+          || document.activeElement === document.documentElement) {
+        if (!document.body.hasAttribute("tabindex")) document.body.setAttribute("tabindex", "-1");
+        document.body.focus();
+      }
       return;
     }
     if (message.type === "key") {
