@@ -395,7 +395,7 @@ def test_import_refuses_traversal_and_link_members(provider):
 def test_box_disk_bound_contains_a_full_box(provider):
     handle = provider.bind("cc-a", account_id="acct-a")
     if provider.usage(handle).bound_bytes is None:
-        pytest.skip("this driver declares no disk bound (local dev driver)")
+        pytest.skip("this driver declares no disk bound (local dev driver) owner=Jonnyton runs-in=gvisor-driver")
     bound = provider.usage(handle).bound_bytes
     exec_id = provider.start_exec(handle, "e1", ["sh", "-c", f"head -c {bound + 4096} "
                                                  "/dev/zero > fill.bin"])
