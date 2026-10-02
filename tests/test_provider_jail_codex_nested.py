@@ -70,7 +70,10 @@ def _run_codex(universe: Path, sandbox_mode: str) -> str:
     }
     script = (
         "echo RUNCMD; "
-        f"touch {universe}/notes/made && echo WROTE_OWN; "
+        # Writes the agent workspace (RW) -- what a coding turn must do.
+        f"echo hi > {universe}/notes/made && echo WROTE_OWN; "
+        # ... but NOT the daemon's masked per-universe state at the root.
+        f"echo tamper > {universe}/.runs.db 2>&1 && echo DB_WRITE || echo DB_WRITE_BLOCKED; "
         f"cat {universe}/.runs.db 2>&1 | head -1; "
         f"ln -s {universe.parent}/u-bravo/secret.txt {universe}/notes/lnk "
         "2>&1 && echo LINKED || echo LINK_BLOCKED"
@@ -90,11 +93,14 @@ def _run_codex(universe: Path, sandbox_mode: str) -> str:
 def test_codex_runs_with_its_sandbox_off_and_the_jail_refuses_a_planted_link(world):
     universe, _other = world
     out = _run_codex(universe, "danger-full-access")
-    # The command ran and wrote its own universe (positive control).
+    # The command ran and wrote the agent workspace (RW) -- a coding turn.
     assert "RUNCMD" in out and "WROTE_OWN" in out, out
-    assert (universe / "notes" / "made").exists(), out
-    # The daemon's per-universe DB at the root is masked (reads empty, no secret).
+    assert (universe / "notes" / "made").read_text(encoding="utf-8") == "hi\n", out
+    # ... and NOTHING ELSE: the daemon's per-universe DB at the root is masked,
+    # unwritable and unreadable, and its host content is untouched.
+    assert "DB_WRITE_BLOCKED" in out and "DB_WRITE\n" not in out, out
     assert "OWN-DB-SECRET" not in out, out
+    assert (universe / ".runs.db").read_text(encoding="utf-8") == "OWN-DB-SECRET", out
     # The planted-link vector is closed: symlink creation is refused.
     assert "LINK_BLOCKED" in out and "LINKED" not in out, out
     assert not (universe / "notes" / "lnk").is_symlink(), out
