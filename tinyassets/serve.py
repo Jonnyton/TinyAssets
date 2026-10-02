@@ -18,6 +18,13 @@ not before.
 """
 
 if __name__ == "__main__":
+    # Production serving starts here and only here, so the SQLite floor is
+    # asserted here (target-architecture S1a.1): before the server, its storage
+    # and Litestream's replicated WAL are ever touched by an older library.
+    from tinyassets.sqlite_floor import require_sqlite_floor
+
+    require_sqlite_floor()
+
     from tinyassets.universe_server import main
 
     main()
