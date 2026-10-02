@@ -12,11 +12,15 @@ A proactive trigger fires when all of these hold (harness §4.5, design D7):
 * its due instant (``cadence.due_instant``: the decayed period, the idle wait
   after the owner's last interaction, active hours in the owner's clock) has
   passed;
+* the current time is inside the owner's active hours -- a fire owed at 20:00
+  and noticed at 23:00 waits for the morning;
 * its previous fire's run is no longer live -- single flight. A due fire that
   waits on a live run is the ONE pending fire; when the run outlives several
   windows they collapse onto the latest, and the count is recorded as
   coalesced;
-* the owner lease is still held at the moment of claiming.
+* the owner lease is still held at the moment of claiming, and the trigger is
+  still at the revision the decision was made on (an engagement or override
+  committed meanwhile voids the claim; the next tick decides again).
 
 Every input is platform state: the trigger rows, the owner's stored timezone
 (``storage.account_timezone``) and run status (the runs store). The tick never
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import statistics
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,9 +39,10 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from tinyassets.control_plane import cadence
-from tinyassets.control_plane.lease import LeaseLost, OwnerLease, owner_lease
+from tinyassets.control_plane.lease import LeaseLost, OwnerLease, current_owner_lease
 from tinyassets.control_plane.triggers import (
     DECLINED_PREFIX,
+    DEFAULT_AGENT_ID,
     FAILED_PREFIX,
     KIND_PROACTIVE,
     OUTCOME_LOST,
@@ -54,13 +60,27 @@ ZoneFor = Callable[[Path, str], ZoneInfo]
 
 
 def run_is_live(base_path: Path, run_id: str) -> bool:
-    """Whether ``run_id`` is still queued or running, from the runs store."""
-    from tinyassets.runs import _TERMINAL_STATUSES, get_run
+    """Whether ``run_id`` is still queued or running, from the ROOT runs store.
 
-    record = get_run(base_path, run_id)
-    if not record:
+    Reads the one status column directly, read-only. Not ``runs.get_run``: that
+    also resolves a queued run's workspace wait, which opens the command
+    center's own ``.runs.db`` -- a read inside the box (refute round 1, P1).
+    """
+    import sqlite3
+
+    from tinyassets.runs import _TERMINAL_STATUSES, runs_db_path
+
+    path = runs_db_path(base_path)
+    if not path.is_file():
         return False
-    return str(record.get("status") or "") not in _TERMINAL_STATUSES
+    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        row = conn.execute("SELECT status FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        conn.close()
+    return row is not None and str(row[0] or "") not in _TERMINAL_STATUSES
 
 
 def owner_zone(base_path: Path, owner_principal_id: str) -> ZoneInfo:
@@ -94,19 +114,20 @@ class ControlPlaneScheduler:
         lease: OwnerLease | None = None,
         live: RunIsLive = run_is_live,
         zone_for: ZoneFor = owner_zone,
-        started_at: datetime | None = None,
     ) -> None:
         self.base_path = Path(base_path)
         self.store = TriggerStore(self.base_path)
         self._lease = lease
         self._live = live
         self._zone_for = zone_for
-        self.started_at = started_at or datetime.now(timezone.utc)
+        # This instance's identity on every claim it makes; a successor settles
+        # every claim that is not its own (see ``settle_lost_claims``).
+        self.incarnation = uuid.uuid4().hex
         self._settled_generation: int | None = None
 
     @property
     def lease(self) -> OwnerLease:
-        return self._lease or owner_lease()
+        return self._lease or current_owner_lease()
 
     def tick(self, now: datetime | None = None) -> TickReport:
         moment = now or datetime.now(timezone.utc)
@@ -119,7 +140,7 @@ class ControlPlaneScheduler:
         if self._settled_generation != generation:
             # Once per owner generation, before this owner fires anything.
             report.lost_settled = self.store.settle_lost_claims(
-                owner_generation=generation, claimed_before=self.started_at,
+                owner_generation=generation, owner_incarnation=self.incarnation,
             )
             self._settled_generation = generation
         base = cadence.deploy_policy()
@@ -157,7 +178,7 @@ class ControlPlaneScheduler:
             last_due_at=trigger.last_due_at,
             now=moment,
         )
-        if due > moment:
+        if due > moment or not cadence.in_active_hours(moment, policy, zone):
             return
         if trigger.last_run_id and self._live(self.base_path, trigger.last_run_id):
             report.waiting_on_run.append(trigger.trigger_key)
@@ -166,8 +187,9 @@ class ControlPlaneScheduler:
         if not self.store.claim_fire(
             trigger.trigger_key,
             due_at=due,
-            expected_last_due_at=trigger.last_due_at,
+            expected_revision=trigger.revision,
             owner_generation=generation,
+            owner_incarnation=self.incarnation,
             collapsed=collapsed,
             now=moment,
         ):
@@ -176,6 +198,7 @@ class ControlPlaneScheduler:
             kind=trigger.kind,
             trigger_key=trigger.trigger_key,
             command_center_id=trigger.command_center_id,
+            agent_id=trigger.agent_id,
             owner_principal_id=trigger.owner_principal_id,
             due_at=due.strftime("%Y-%m-%dT%H:%M:%SZ"),
             owner_generation=generation,
@@ -208,7 +231,7 @@ class ControlPlaneScheduler:
 
 def ensure_proactive_trigger(
     base_path: str | Path, *, command_center_id: str, owner_principal_id: str,
-    now: datetime | None = None,
+    agent_id: str = DEFAULT_AGENT_ID, now: datetime | None = None,
 ) -> Trigger:
     """Enrol a command center's proactive wake (idempotent).
 
@@ -220,6 +243,7 @@ def ensure_proactive_trigger(
         KIND_PROACTIVE,
         command_center_id=command_center_id,
         owner_principal_id=owner_principal_id,
+        agent_id=agent_id,
         now=now or datetime.now(timezone.utc),
     )
 

@@ -11,6 +11,11 @@ calls ``ensure_awake(handle, reason=...)`` before executing in it; the
 scheduler, the trigger rows and the fence do not change. A box is woken only
 from here: nothing inside a box schedules itself (``tests/control_plane_timer_inventory.py``).
 
+Gates that need a command center's own state -- the agent is paused, it has
+an activity in progress, no compute is connected -- are the HANDLER's, which
+returns ``WakeResult(declined=...)``: the scheduler never reads a command
+center's files to decide (D7/D8a; agreed with harness D3, 2026-10-02).
+
 A kind with no registered handler is not fired at all -- its rows stay owed
 and nothing is claimed -- so a mechanism shipped ahead of its consumer leaves
 no fire rows that claim work which never ran.
@@ -29,6 +34,7 @@ class WakeRequest:
     kind: str
     trigger_key: str
     command_center_id: str
+    agent_id: str
     owner_principal_id: str
     due_at: str
     owner_generation: int

@@ -175,25 +175,30 @@ def due_instant(
     """
     anchor = engaged_at or created_at
     state = decay_state(policy, engaged_at=anchor, now=now)
-    period = policy.period_for(state)
-    step = timedelta(seconds=period)
+    step = timedelta(seconds=policy.period_for(state))
+    first = created_at if last_due_at is None else last_due_at + step
+    due = _into_active_hours(first, policy, zone)
     collapsed = 0
-    if last_due_at is None:
-        due = _into_active_hours(created_at, policy, zone)
-    else:
-        due = _into_active_hours(last_due_at + step, policy, zone)
-        # Walk the active-hours grid, so a night outside active hours is not
-        # counted as missed windows. Bounded: a year down at the shortest
-        # allowed period is ~105k cheap steps, once.
-        while True:
-            following = _into_active_hours(due + step, policy, zone)
-            if following > now:
-                break
-            due = following
-            collapsed += 1
+    # Walk the active-hours grid -- for the first fire too, or a trigger first
+    # served late would fire twice in a row -- so a night outside active hours
+    # is not counted as missed windows. Bounded: a year at the shortest allowed
+    # period is ~105k cheap steps, once.
+    while True:
+        following = _into_active_hours(due + step, policy, zone)
+        if following > now:
+            break
+        due = following
+        collapsed += 1
     due = max(due, anchor + timedelta(seconds=policy.idle_s))
     due = _into_active_hours(due, policy, zone).replace(microsecond=0)
     return due, state, collapsed
+
+
+def in_active_hours(moment: datetime, policy: CadencePolicy, zone: ZoneInfo) -> bool:
+    """Whether ``moment`` is inside the owner's active hours. A fire owed from
+    earlier still waits for this: active hours bound when a wake RUNS, not only
+    the timestamp it was owed at."""
+    return _into_active_hours(moment, policy, zone) == moment
 
 
 __all__ = [
@@ -207,6 +212,7 @@ __all__ = [
     "decay_state",
     "deploy_policy",
     "due_instant",
+    "in_active_hours",
     "policy_dict",
     "policy_with",
 ]

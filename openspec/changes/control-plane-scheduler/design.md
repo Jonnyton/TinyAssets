@@ -2,16 +2,17 @@
 
 ## Inventory (task 1)
 
-Scan: every `while` loop in `tinyassets/` containing a `sleep`/`wait` call,
-plus every `threading.Timer`. 53 sites on `origin/main` `5838d535`
-(2026-10-02). The authoritative list, with a note per site, is
+Scan: every `while`/`for`/`async for` in `tinyassets/` whose body calls
+`sleep`/`wait`, plus every call that schedules a callback later
+(`threading.Timer`, `call_later`, `call_at`); the n-th site in one function is
+its own key. 67 sites on `origin/main` `5838d535` (2026-10-02). The authoritative list, with a note per site, is
 `tests/control_plane_timer_inventory.py`; `tests/test_control_plane_inventory.py`
 holds it in lockstep with the code.
 
 | Class | Count | Sites |
 |---|---|---|
 | **control_plane** (always-on duty of the execution owner) | 7 | assigned-queue consumer poll (the owner tick: automations + triggers); served-budget/run-file/delivery reconciler; run-owner watcher; engine-MCP supervisor; workspace sweeper; workspace-staging sweeper; account-seat refresh |
-| **call_scoped** (bounded wait inside one call; ends with it) | 42 | lock acquisitions, slot/admission waits, WAL-switch retries, stream polls, the per-call tool-jail watcher, the per-batch automation lease refresher |
+| **call_scoped** (bounded wait inside one call; ends with it) | 56 | lock acquisitions, bounded retries, slot/admission waits, WAL-switch retries, stream polls, the per-call tool-jail watcher, the per-batch automation lease refresher |
 | **delete** (not in the target shape) | 3 | `host_pool` bid poller + heartbeat (no production importer), `claimed_branch_execution` heartbeat (fantasy_daemon only) |
 | **client** (owner's device) | 1 | desktop tray menu refresh |
 | **box** (forbidden) | 0 | — |
@@ -40,9 +41,22 @@ same transaction as the claim.
 **D3. At most once, never replayed.** A fire is claimed (fence row inserted,
 trigger advanced) before its handler runs. A process that dies between claim
 and handler leaves a `claimed` row, which the next owner settles
-`lost_on_restart` — the D2/D4 rule for an operation in flight across a crash
+`lost_on_restart`. A claim is the previous owner's when its generation is
+older or its `owner_incarnation` (a per-scheduler-instance id) is not the
+current one, so a claim made in the same second as the restart still settles.
+This is the D2/D4 rule for an operation in flight across a crash
 ("holds instead of re-issuing"). For a proactive wake a lost fire costs one
 window; a replay would cost a second turn the owner did not ask for.
+
+**D3a. Decisions are fenced by revision.** Every write that changes when a
+trigger is owed (engagement, enable, override, a claim) bumps `revision`; the
+claim compares it. An owner message committed between the tick's read and its
+claim voids the claim, and the next tick honours the idle wait.
+
+**D3b. Active hours bound when a wake runs.** A fire owed at 20:00 and noticed
+at 23:00 waits for 08:00; the missed window is counted as coalesced. The
+collapse walk applies to the first fire too, so a trigger first served late
+fires once.
 
 **D4. Coalescing.** Clock triggers: a due fire waits while the previous fire's
 run is live (single flight, run status from the runs store). Windows it
@@ -54,6 +68,11 @@ pending wake; `run_completed`, `pending_request_answered` and `app_event`
 wakes stay one per occurrence, because each carries a distinct fact the woken
 agent needs, and coalescing them would drop facts silently (Hard Rule 8). They
 remain deduplicated per occurrence and serialised per agent by the agent lease.
+Refute round 1 (DISAGREE_CONCERN) argued for one pending wake consuming a
+batch or cursor of durable facts. That changes the woken branch's input
+contract (`inputs.event` becomes a batch) — a public-surface change to
+user-built loops, outside S8b. Recorded as an open question for the founder;
+not built here.
 
 **D5. The cadence is a policy object.** `CadencePolicy` fields: engaged period
 (4 h), cooling threshold (7 d) and period (24 h), dormant threshold (30 d) and
@@ -72,19 +91,35 @@ mechanism ships with them as one default.
 sender; an older stamp never replaces a newer one. It never raises into the
 turn and creates no database on a root with no triggers.
 
+**D6a. Keyed by agent.** One trigger per `(kind, command_center_id,
+agent_id)` (harness §4.18), `main` seeded. The owner's message engages every
+agent of that command center.
+
 **D7. Wake through one seam.** `register_wake_handler(kind, fn)`; `fn(base,
 WakeRequest) -> WakeResult(run_id | declined)`. A second registration for a
 kind raises (two consumers racing one kind is the double fire this prevents).
 A declined fire spends its window (≤1 proactive turn per window, harness §4.5)
-and records its reason. Under S11 the handler binds the box and calls
+and records its reason. Gates that need a command center's own state — paused,
+an activity in progress, no compute — are the handler's (agreed with harness
+D3, 2026-10-02: `declined="paused"|"busy"|"no_compute"`); the scheduler never
+reads them from the command center. Under S11 the handler binds the box and calls
 `ensure_awake`; the scheduler is unchanged.
 
 **D8. Lease seam.** The tick checks `held()` before doing anything and
 `check()` immediately before each claim; every fire row stores the
 generation. Lost-claim settlement runs once per generation, before the first
-fire. S8a supplies the fenced lease; until then `SingleProcessLease` is
+fire. `OwnerLease.proof` is the plaintext secret minted per acquisition and
+`verify_lease_proof(generation, proof)` checks it against the installed
+authority (which stores only the hash): the S6 broker's `FENCE{G,
+lease_proof}` needs it, because same image and uid are not ownership. S8a
+supplies the fenced lease; until then `SingleProcessLease` is
 correct because exactly one process serves (`agent_turn_boot` pins the same
 invariant).
+
+**D8a. Liveness reads the root runs row only.** `run_is_live` reads
+`runs.status` from the root `.runs.db`, read-only; `runs.get_run` would also
+resolve a queued run's workspace wait from the command center's own
+`.runs.db` (refute round 1, P1). The audit test covers that path.
 
 **D9. Harness `settings.yaml` vs platform state.** Harness §4.14 lists
 "research cadence, idle period, active hours" in the agent-editable

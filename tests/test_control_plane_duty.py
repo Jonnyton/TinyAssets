@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tinyassets.control_plane import cadence
-from tinyassets.control_plane.lease import SingleProcessLease, install_owner_lease
+from tinyassets.control_plane.lease import SingleProcessLease, set_owner_lease
 from tinyassets.control_plane.scheduler import (
     ControlPlaneScheduler,
     ensure_proactive_trigger,
@@ -47,20 +47,19 @@ def _simulate(base: Path, days: int, *, policy_env: str | None, monkeypatch) -> 
                          or WakeResult(run_id=f"run-{len(fired)}")),
         replace=True,
     )
-    previous = install_owner_lease(SingleProcessLease())
+    previous = set_owner_lease(SingleProcessLease())
     try:
         ensure_proactive_trigger(base, command_center_id="cc-duty", owner_principal_id="u:o",
                                  now=START)
         note_owner_engagement(base, command_center_id="cc-duty", principal_id="u:o", at=START)
         sched = ControlPlaneScheduler(base, live=lambda _b, _r: False,
-                                      zone_for=lambda _b, _o: ZoneInfo("UTC"),
-                                      started_at=START - timedelta(seconds=1))
+                                      zone_for=lambda _b, _o: ZoneInfo("UTC"))
         moment = START
         while moment < START + timedelta(days=days):
             sched.tick(moment)
             moment += timedelta(hours=2)
     finally:
-        install_owner_lease(previous)
+        set_owner_lease(previous)
         unregister_wake_handler(KIND_PROACTIVE)
     return fired
 

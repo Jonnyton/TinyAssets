@@ -21,8 +21,8 @@ from tinyassets.control_plane import cadence
 from tinyassets.control_plane.lease import (
     LeaseLost,
     SingleProcessLease,
-    install_owner_lease,
-    owner_lease,
+    current_owner_lease,
+    set_owner_lease,
 )
 from tinyassets.control_plane.scheduler import (
     ControlPlaneScheduler,
@@ -81,17 +81,16 @@ def handler():
 @pytest.fixture(autouse=True)
 def _lease_and_policy(monkeypatch):
     monkeypatch.delenv(cadence.POLICY_ENV, raising=False)
-    previous = install_owner_lease(SingleProcessLease())
+    previous = set_owner_lease(SingleProcessLease())
     yield
-    install_owner_lease(previous)
+    set_owner_lease(previous)
 
 
-def _scheduler(base: Path, *, live=None, started_at=T0 - timedelta(days=1), lease=None):
+def _scheduler(base: Path, *, live=None, lease=None):
     return ControlPlaneScheduler(
         base,
         live=live or (lambda _b, _r: False),
         zone_for=_utc,
-        started_at=started_at,
         lease=lease,
     )
 
@@ -233,10 +232,12 @@ def test_a_claim_that_never_started_is_settled_lost_not_replayed(tmp_path, handl
     store = TriggerStore(tmp_path)
     trigger = store.get(key)
     due = T0 - timedelta(hours=1, minutes=30)
-    # The previous process claimed and died before calling its handler.
-    assert store.claim_fire(key, due_at=due, expected_last_due_at=trigger.last_due_at,
-                            owner_generation=1, collapsed=0, now=T0 - timedelta(hours=1))
-    restarted = _scheduler(tmp_path, started_at=T0 - timedelta(minutes=10))
+    # The previous process claimed and died before calling its handler -- in
+    # the SAME second the successor starts, under the same generation.
+    assert store.claim_fire(key, due_at=due, expected_revision=trigger.revision,
+                            owner_generation=1, owner_incarnation="dead-process",
+                            collapsed=0, now=T0)
+    restarted = _scheduler(tmp_path)
     report = restarted.tick(T0)
     assert report.lost_settled == 1
     assert report.fired == []  # the due instant was spent; the next is at +4 h
@@ -314,6 +315,66 @@ def test_a_raising_handler_is_recorded_and_does_not_stop_the_tick(tmp_path):
             "failed:RuntimeError"]
     finally:
         unregister_wake_handler(KIND_PROACTIVE)
+
+
+def test_a_trigger_first_served_late_fires_once_not_twice(tmp_path, handler):
+    """Enrolled 09:00, first tick 21:00: one fire, with the missed windows
+    counted -- not 09:30 now and 17:30 on the next tick (refute round 1)."""
+    key = _enrol(tmp_path, at=T0)
+    sched = _scheduler(tmp_path)
+    evening = T0 + timedelta(hours=12)
+    assert sched.tick(evening).fired == [key]
+    assert sched.tick(evening + timedelta(minutes=30)).fired == []
+    assert TriggerStore(tmp_path).get(key).coalesced_total == 3
+
+
+def test_a_fire_owed_in_the_evening_waits_for_active_hours(tmp_path, handler):
+    key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    sched = _scheduler(tmp_path)
+    assert sched.tick(T0).fired == [key]  # due 08:00, fired 09:00
+    sched.tick(T0 + timedelta(hours=3))  # 12:00 fire
+    sched.tick(T0 + timedelta(hours=7))  # 16:00 fire
+    late = datetime(2026, 10, 5, 23, 0, tzinfo=UTC)  # 20:00 owed, now outside hours
+    assert sched.tick(late).fired == []
+    morning = datetime(2026, 10, 6, 8, 0, tzinfo=UTC)
+    assert sched.tick(morning).fired == [key]
+    assert len(handler.calls) == 4
+
+
+def test_an_engagement_committed_after_the_decision_voids_the_claim(tmp_path, handler):
+    """The owner's message lands between the tick's read and its claim: the
+    claim's revision check refuses, and the next tick honours the idle wait."""
+    key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+
+    class _EngageAtCheck(SingleProcessLease):
+        def check(self) -> None:
+            note_owner_engagement(tmp_path, command_center_id=CC, principal_id=OWNER, at=T0)
+
+    report = _scheduler(tmp_path, lease=_EngageAtCheck()).tick(T0)
+    assert report.fired == [] and handler.calls == [] and _fires(tmp_path) == []
+    sched = _scheduler(tmp_path)
+    assert sched.tick(T0 + timedelta(minutes=10)).fired == []
+    assert sched.tick(T0 + timedelta(minutes=30)).fired == [key]
+
+
+def test_each_agent_has_its_own_trigger(tmp_path, handler):
+    main = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    other = ensure_proactive_trigger(tmp_path, command_center_id=CC, agent_id="scout",
+                                     owner_principal_id=OWNER,
+                                     now=T0 - timedelta(hours=2)).trigger_key
+    assert main != other
+    assert sorted(_scheduler(tmp_path).tick(T0).fired) == sorted([main, other])
+    assert {c.agent_id for c in handler.calls} == {"main", "scout"}
+
+
+def test_the_lease_proof_is_per_acquisition_and_verified():
+    from tinyassets.control_plane.lease import current_owner_lease, verify_lease_proof
+
+    lease = current_owner_lease()
+    assert verify_lease_proof(lease.generation, lease.proof)
+    assert not verify_lease_proof(lease.generation, SingleProcessLease().proof)
+    assert not verify_lease_proof(lease.generation + 1, lease.proof)
+    assert not verify_lease_proof(lease.generation, "")
 
 
 # -- owner controls and engagement ------------------------------------------
@@ -413,23 +474,40 @@ sys.addaudithook(_audit_hook)
 
 def test_the_tick_never_opens_a_command_center_directory(tmp_path, handler):
     """Scheduling reads platform state only (D7/D8a): a fire must not touch the
-    command center's own files -- under the sealed box that would wake it."""
-    cc_dir = tmp_path / CC
+    command center's own files -- under the sealed box that would wake it.
+
+    A canonical id with its own ``.runs.db``, and a queued run queued on it, so
+    the liveness read on the second tick takes the path where ``runs.get_run``
+    opens the command center's database (refute round 1, P1)."""
+    import sqlite3 as _sqlite3
+
+    from tinyassets.ids import new_universe_id
+    from tinyassets.runs import create_run
+
+    cc = new_universe_id()
+    cc_dir = tmp_path / cc
     (cc_dir / "notes").mkdir(parents=True)
-    (cc_dir / "settings.yaml").write_text("research: every 5 minutes\n", encoding="utf-8")
+    (cc_dir / "settings.yaml").write_text("research: every 5 minutes", encoding="utf-8")
     (cc_dir / ".pause").write_text("", encoding="utf-8")
-    _enrol(tmp_path, at=T0 - timedelta(hours=2))
-    sched = ControlPlaneScheduler(tmp_path, live=lambda _b, _r: False,
-                                  started_at=T0 - timedelta(days=1))
+    _sqlite3.connect(cc_dir / ".runs.db").close()
+    ensure_proactive_trigger(tmp_path, command_center_id=cc, owner_principal_id=OWNER,
+                             now=T0 - timedelta(hours=2))
+    run_id = create_run(tmp_path, branch_def_id="b", thread_id="t", inputs={},
+                        actor=OWNER, queue_universe_id=cc)
+    register_wake_handler(KIND_PROACTIVE, lambda _b, _r: WakeResult(run_id=run_id),
+                          replace=True)
+    sched = ControlPlaneScheduler(tmp_path, zone_for=_utc)
     _AUDIT["paths"].clear()
     _AUDIT["on"] = True
     try:
         report = sched.tick(T0)
+        waiting = sched.tick(T0 + timedelta(hours=5))
         scheduler_metrics(tmp_path, now=T0)
     finally:
         _AUDIT["on"] = False
     assert report.fired
-    touched = [p for p in _AUDIT["paths"] if CC in p]
+    assert waiting.waiting_on_run  # the second tick really read the live run
+    touched = [p for p in _AUDIT["paths"] if cc in p]
     assert touched == []
     assert any(DB_FILENAME in p for p in _AUDIT["paths"])
 
@@ -466,10 +544,10 @@ def test_the_consumer_tick_runs_triggers_only_while_holding_the_lease(tmp_path, 
     try:
         consumer.poll_once()
         assert calls == {"automations": 1, "triggers": 1}
-        install_owner_lease(_NotHeld())
+        set_owner_lease(_NotHeld())
         consumer.poll_once()
         assert calls == {"automations": 1, "triggers": 1}
     finally:
-        install_owner_lease(SingleProcessLease())
+        set_owner_lease(SingleProcessLease())
         consumer.stop()
-    assert isinstance(owner_lease(), SingleProcessLease)
+    assert isinstance(current_owner_lease(), SingleProcessLease)

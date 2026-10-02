@@ -26,11 +26,12 @@ holds if nothing inside a box keeps time, and if the control plane can decide
 
 1. **Inventory.** Every clock-driven loop in `tinyassets/` is classified in
    `tests/control_plane_timer_inventory.py` as `control_plane`, `call_scoped`,
-   `delete`, `client` or `box`. A test scans the package and fails on an
+   `delete`, `client` or `box` (67 sites). A test scans the package and fails on an
    unclassified loop, a stale entry, or any `box` entry (forbidden). See design
    §Inventory.
 2. **Lease seam.** `tinyassets/control_plane/lease.py`: `OwnerLease`
-   (`generation`, `held()`, `check()`), with `SingleProcessLease` installed
+   (`generation`, `held()`, `check()`, `proof`, `verify()`) plus
+   `verify_lease_proof`, with `SingleProcessLease` installed
    today (generation 1, always held). S8a replaces it via
    `install_owner_lease`. The owner tick (assigned-queue consumer poll) pumps
    automations and control-plane triggers only while the lease is held.

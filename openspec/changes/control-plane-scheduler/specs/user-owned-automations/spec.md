@@ -22,7 +22,7 @@ Every clock-driven loop in the platform SHALL be classified as a control-plane d
 - **THEN** the inventory test fails
 
 ### Requirement: A trigger due instant fires at most once
-The control plane SHALL claim each fire by recording `(trigger_key, due_at)` in the same transaction that advances the trigger, and SHALL NOT fire a claimed due instant again. A claim whose handler never ran because the owner process died SHALL be recorded `lost_on_restart` by the next owner and SHALL NOT be replayed.
+The control plane SHALL claim each fire by recording `(trigger_key, due_at)` in the same transaction that advances the trigger, only if the trigger is still at the revision the decision was made on, and SHALL NOT fire a claimed due instant again. A claim whose handler never ran because the owner process died SHALL be recorded `lost_on_restart` by the next owner and SHALL NOT be replayed.
 
 #### Scenario: Two owners either side of a restart
 - **WHEN** two owner processes evaluate the same trigger at the same instant
@@ -41,7 +41,7 @@ A trigger whose previous fire's run is still live SHALL wait rather than fire ag
 - **THEN** one fire follows and the trigger's coalesced count rises by the windows folded into it
 
 ### Requirement: The proactive cadence decays with owner engagement, as a policy
-A command center's proactive wake SHALL follow a cadence policy that defaults to every 4 hours inside 08:00 to 22:00 in the owner's clock while the owner interacted within 7 days, daily after 7 days without interaction, weekly after 30, and back to the engaged cadence on the owner's next message, and SHALL wait 30 minutes after the owner's last interaction. The values SHALL come from one default, overridable for the deploy by `TINYASSETS_PROACTIVE_CADENCE` and for one command center by its owner; a malformed value SHALL be refused, not ignored. Only the command center's owner SHALL count as engagement.
+A command center's proactive wake SHALL follow a cadence policy that defaults to every 4 hours inside 08:00 to 22:00 in the owner's clock while the owner interacted within 7 days, daily after 7 days without interaction, weekly after 30, and back to the engaged cadence on the owner's next message, and SHALL wait 30 minutes after the owner's last interaction. A wake SHALL start only inside active hours, even when it was owed earlier. Each agent of a command center SHALL have its own proactive trigger. The values SHALL come from one default, overridable for the deploy by `TINYASSETS_PROACTIVE_CADENCE` and for one command center by its owner; a malformed value SHALL be refused, not ignored. Only the command center's owner SHALL count as engagement.
 
 #### Scenario: A dormant account
 - **GIVEN** an owner who has not interacted for more than 30 days
@@ -51,6 +51,11 @@ A command center's proactive wake SHALL follow a cadence policy that defaults to
 #### Scenario: The owner returns
 - **WHEN** a dormant owner sends a message in their command center
 - **THEN** the cadence returns to every 4 hours inside active hours, starting 30 minutes after the message
+
+#### Scenario: Owed in the evening, noticed at night
+- **GIVEN** a wake owed at 20:00 in the owner's clock that the owner tick first sees at 23:00
+- **WHEN** the owner tick runs
+- **THEN** the wake starts at 08:00 the next morning, once
 
 #### Scenario: A visitor's message
 - **WHEN** someone other than the owner messages the command center

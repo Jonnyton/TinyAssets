@@ -1,7 +1,8 @@
 """No timer lives in a box or jail; every platform timer is classified (design D7).
 
-The scan finds every loop that waits on a clock (a ``while`` containing a
-``sleep``/``wait`` call) and every ``threading.Timer`` in ``tinyassets/``, and
+The scan finds every loop that waits on a clock (a ``while``/``for`` whose body
+calls ``sleep``/``wait``) and every call that schedules a callback for later in
+``tinyassets/``, and
 requires each to be classified in ``tests/control_plane_timer_inventory.py``.
 A ``box`` classification is forbidden outright, and the jails that run a
 command center's code cannot outlive the call that started them, so nothing
@@ -33,28 +34,72 @@ def _waits(node: ast.AST) -> bool:
     return any(isinstance(n, ast.Call) and _call_name(n) in _WAITS for n in ast.walk(node))
 
 
+#: Calls that schedule a callback for later: a self-rescheduling timer needs no
+#: loop at all.
+_SCHEDULERS = {"Timer", "call_later", "call_at"}
+
+
 def _scan() -> set[str]:
+    """Every clock-driven site, one key each.
+
+    A ``while``/``for``/``async for`` whose body sleeps or waits, and every call
+    that schedules a callback later (``threading.Timer``, ``loop.call_later``/
+    ``call_at``). The n-th such site in one
+    function is ``<qualname>#n``, so a second loop added beside a classified one
+    is a new key.
+    """
     found: set[str] = set()
     for path in sorted(PACKAGE.rglob("*.py")):
         rel = path.relative_to(ROOT).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
-        stack: list[str] = []
-
-        def visit(node: ast.AST) -> None:
-            scoped = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            if scoped:
-                stack.append(node.name)
-            if isinstance(node, ast.While) and _waits(node):
-                found.add(f"{rel}::{'.'.join(stack) or '<module>'}")
-            if isinstance(node, ast.Call) and _call_name(node) == "Timer":
-                found.add(f"{rel}::{'.'.join(stack) or '<module>'} [Timer]")
-            for child in ast.iter_child_nodes(node):
-                visit(child)
-            if scoped:
-                stack.pop()
-
-        visit(tree)
+        found |= _sites_in(path.read_text(encoding="utf-8"), rel)
     return found
+
+
+def _sites_in(source: str, rel: str) -> set[str]:
+    found: set[str] = set()
+    tree = ast.parse(source, filename=rel)
+    stack: list[str] = []
+    seen: dict[str, int] = {}
+
+    def record(suffix: str) -> None:
+        base = f"{rel}::{'.'.join(stack) or '<module>'}{suffix}"
+        seen[base] = seen.get(base, 0) + 1
+        found.add(base if seen[base] == 1 else f"{base}#{seen[base]}")
+
+    def visit(node: ast.AST) -> None:
+        scoped = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        if scoped:
+            stack.append(node.name)
+        if isinstance(node, (ast.While, ast.For, ast.AsyncFor)) and _waits(node):
+            record("")
+        if isinstance(node, ast.Call) and _call_name(node) in _SCHEDULERS:
+            record(f" [{_call_name(node)}]")
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+        if scoped:
+            stack.pop()
+
+    visit(tree)
+    return found
+
+
+def test_the_scan_sees_loops_without_while_and_self_rescheduling_callbacks():
+    source = """
+import asyncio, itertools, threading
+async def ticker():
+    for _ in itertools.count():
+        await asyncio.sleep(60)
+def again(loop):
+    loop.call_later(60, again, loop)
+def two():
+    while True:
+        threading.Event().wait(1)
+    while True:
+        threading.Event().wait(1)
+"""
+    assert _sites_in(source, "m.py") == {
+        "m.py::ticker", "m.py::again [call_later]", "m.py::two", "m.py::two#2",
+    }
 
 
 def test_every_periodic_loop_is_classified_and_none_is_stale():

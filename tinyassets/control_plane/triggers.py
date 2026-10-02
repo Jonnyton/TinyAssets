@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS triggers (
     trigger_key        TEXT PRIMARY KEY,
     kind               TEXT NOT NULL,
     command_center_id  TEXT NOT NULL,
+    agent_id           TEXT NOT NULL,
     owner_principal_id TEXT NOT NULL,
     enabled            INTEGER NOT NULL DEFAULT 1,
     policy_override    TEXT NOT NULL DEFAULT '',
@@ -55,8 +56,12 @@ CREATE TABLE IF NOT EXISTS triggers (
     last_due_at        TEXT NOT NULL DEFAULT '',
     last_run_id        TEXT NOT NULL DEFAULT '',
     coalesced_total    INTEGER NOT NULL DEFAULT 0,
+    -- Bumped by every write that changes when the trigger is owed (engagement,
+    -- enable, override, a claim): the claim's compare-and-set reads it, so a
+    -- decision made on a stale snapshot never fires.
+    revision           INTEGER NOT NULL DEFAULT 1,
     updated_at         TEXT NOT NULL,
-    UNIQUE (kind, command_center_id)
+    UNIQUE (kind, command_center_id, agent_id)
 );
 CREATE TABLE IF NOT EXISTS trigger_fires (
     trigger_key      TEXT NOT NULL,
@@ -64,6 +69,9 @@ CREATE TABLE IF NOT EXISTS trigger_fires (
     -- The person the fire acted for: account deletion sweeps by this column.
     owner_principal_id TEXT NOT NULL,
     owner_generation INTEGER NOT NULL,
+    -- The claiming scheduler instance: a successor settles every claim that is
+    -- not its own, even one made in the same second under the same generation.
+    owner_incarnation TEXT NOT NULL,
     claimed_at       TEXT NOT NULL,
     started_at       TEXT NOT NULL DEFAULT '',
     run_id           TEXT NOT NULL DEFAULT '',
@@ -86,8 +94,13 @@ def parse_stamp(stamp: str) -> datetime | None:
     return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
-def trigger_key(kind: str, command_center_id: str) -> str:
-    return f"{kind}:{command_center_id}"
+DEFAULT_AGENT_ID = "main"
+
+
+def trigger_key(kind: str, command_center_id: str, agent_id: str = DEFAULT_AGENT_ID) -> str:
+    """One trigger per kind, command center and agent (harness §4.18: every
+    per-agent record is keyed by agent; "main" is the seeded default)."""
+    return f"{kind}:{command_center_id}:{agent_id}"
 
 
 @dataclass(frozen=True)
@@ -95,6 +108,7 @@ class Trigger:
     trigger_key: str
     kind: str
     command_center_id: str
+    agent_id: str
     owner_principal_id: str
     enabled: bool
     policy_override: dict[str, Any]
@@ -103,6 +117,7 @@ class Trigger:
     last_due_at: datetime | None
     last_run_id: str
     coalesced_total: int
+    revision: int
 
     def policy(self, base: CadencePolicy) -> CadencePolicy:
         return policy_with(base, self.policy_override)
@@ -116,6 +131,7 @@ def _row(row: sqlite3.Row) -> Trigger:
         trigger_key=row["trigger_key"],
         kind=row["kind"],
         command_center_id=row["command_center_id"],
+        agent_id=row["agent_id"],
         owner_principal_id=row["owner_principal_id"],
         enabled=bool(row["enabled"]),
         policy_override=override,
@@ -124,6 +140,7 @@ def _row(row: sqlite3.Row) -> Trigger:
         last_due_at=parse_stamp(row["last_due_at"]),
         last_run_id=row["last_run_id"],
         coalesced_total=int(row["coalesced_total"]),
+        revision=int(row["revision"]),
     )
 
 
@@ -170,7 +187,13 @@ class TriggerStore:
     # -- enrolment and owner controls --------------------------------------
 
     def ensure(
-        self, kind: str, *, command_center_id: str, owner_principal_id: str, now: datetime,
+        self,
+        kind: str,
+        *,
+        command_center_id: str,
+        owner_principal_id: str,
+        now: datetime,
+        agent_id: str = DEFAULT_AGENT_ID,
     ) -> Trigger:
         """The trigger for ``kind`` on this command center, created if absent.
 
@@ -180,15 +203,16 @@ class TriggerStore:
         """
         if kind not in TRIGGER_KINDS:
             raise ValueError(f"unknown trigger kind {kind!r}")
-        if not command_center_id or not owner_principal_id:
-            raise ValueError("a trigger needs a command center and an owner")
-        key = trigger_key(kind, command_center_id)
+        if not command_center_id or not owner_principal_id or not agent_id:
+            raise ValueError("a trigger needs a command center, an agent and an owner")
+        key = trigger_key(kind, command_center_id, agent_id)
         stamp = _iso(now)
         with self._write() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO triggers (trigger_key, kind, command_center_id, "
-                "owner_principal_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (key, kind, command_center_id, owner_principal_id, stamp, stamp),
+                "agent_id, owner_principal_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (key, kind, command_center_id, agent_id, owner_principal_id, stamp, stamp),
             )
             row = conn.execute(
                 "SELECT * FROM triggers WHERE trigger_key = ?", (key,)
@@ -245,7 +269,8 @@ class TriggerStore:
     def set_enabled(self, key: str, *, principal_id: str, enabled: bool, now: datetime) -> Trigger:
         return self._owner_update(
             key, principal_id,
-            "UPDATE triggers SET enabled = ?, updated_at = ? WHERE trigger_key = ?",
+            "UPDATE triggers SET enabled = ?, updated_at = ?, revision = revision + 1 "
+            "WHERE trigger_key = ?",
             (1 if enabled else 0, _iso(now)),
         )
 
@@ -267,7 +292,8 @@ class TriggerStore:
         encoded = json.dumps(overrides, sort_keys=True) if overrides else ""
         return self._owner_update(
             key, principal_id,
-            "UPDATE triggers SET policy_override = ?, updated_at = ? WHERE trigger_key = ?",
+            "UPDATE triggers SET policy_override = ?, updated_at = ?, "
+            "revision = revision + 1 WHERE trigger_key = ?",
             (encoded, _iso(now)),
         )
 
@@ -284,7 +310,7 @@ class TriggerStore:
         stamp = _iso(at)
         try:
             cursor = conn.execute(
-                "UPDATE triggers SET engaged_at = ?, updated_at = ? "
+                "UPDATE triggers SET engaged_at = ?, updated_at = ?, revision = revision + 1 "
                 "WHERE command_center_id = ? AND owner_principal_id = ? AND engaged_at < ?",
                 (stamp, stamp, command_center_id, principal_id, stamp),
             )
@@ -299,36 +325,38 @@ class TriggerStore:
         key: str,
         *,
         due_at: datetime,
-        expected_last_due_at: datetime | None,
+        expected_revision: int,
         owner_generation: int,
+        owner_incarnation: str,
         collapsed: int,
         now: datetime,
     ) -> bool:
         """Claim the fire for ``due_at``. False when it is not this caller's.
 
-        One transaction: the trigger must still be where the caller read it
-        (``expected_last_due_at``) and the ``(trigger_key, due_at)`` row must
-        not exist. Both pass, or nothing is written.
+        One transaction: the trigger must still be at the revision the caller
+        decided on -- no engagement, enable or override change, and no other
+        claim, since -- and the ``(trigger_key, due_at)`` row must not exist.
+        Both pass, or nothing is written.
         """
         due = _iso(due_at)
-        expected = _iso(expected_last_due_at) if expected_last_due_at else ""
         with self._write() as conn:
             row = conn.execute(
-                "SELECT last_due_at, enabled, owner_principal_id FROM triggers "
+                "SELECT revision, enabled, owner_principal_id FROM triggers "
                 "WHERE trigger_key = ?", (key,)
             ).fetchone()
-            if row is None or not row["enabled"] or row["last_due_at"] != expected:
+            if row is None or not row["enabled"] or int(row["revision"]) != int(expected_revision):
                 return False
             inserted = conn.execute(
                 "INSERT OR IGNORE INTO trigger_fires (trigger_key, due_at, owner_principal_id, "
-                "owner_generation, claimed_at, outcome, collapsed) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (key, due, row["owner_principal_id"], int(owner_generation), _iso(now),
-                 OUTCOME_CLAIMED, int(collapsed)),
+                "owner_generation, owner_incarnation, claimed_at, outcome, collapsed) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, due, row["owner_principal_id"], int(owner_generation), owner_incarnation,
+                 _iso(now), OUTCOME_CLAIMED, int(collapsed)),
             ).rowcount
             if not inserted:
                 return False
             conn.execute(
-                "UPDATE triggers SET last_due_at = ?, last_run_id = '', "
+                "UPDATE triggers SET last_due_at = ?, last_run_id = '', revision = revision + 1, "
                 "coalesced_total = coalesced_total + ?, updated_at = ? WHERE trigger_key = ?",
                 (due, int(collapsed), _iso(now), key),
             )
@@ -352,13 +380,14 @@ class TriggerStore:
                     (run_id, _iso(now), key, due),
                 )
 
-    def settle_lost_claims(self, *, owner_generation: int, claimed_before: datetime) -> int:
+    def settle_lost_claims(self, *, owner_generation: int, owner_incarnation: str) -> int:
         """Settle claims an earlier owner never started. Returns how many.
 
         A claim is an earlier owner's when its generation is older, or -- under
         today's single-process lease, where the generation never moves -- when
-        it was claimed before this owner started. Its handler may or may not
-        have run, so it is recorded lost, never fired again.
+        another scheduler instance made it. Only one owner runs at a time, so
+        such a claim is not in flight. Its handler may or may not have run, so
+        it is recorded lost, never fired again.
         """
         conn = self._connect(create=False)
         if conn is None:
@@ -366,8 +395,8 @@ class TriggerStore:
         try:
             cursor = conn.execute(
                 "UPDATE trigger_fires SET outcome = ? WHERE outcome = ? "
-                "AND (owner_generation < ? OR claimed_at < ?)",
-                (OUTCOME_LOST, OUTCOME_CLAIMED, int(owner_generation), _iso(claimed_before)),
+                "AND (owner_generation < ? OR owner_incarnation != ?)",
+                (OUTCOME_LOST, OUTCOME_CLAIMED, int(owner_generation), owner_incarnation),
             )
             return int(cursor.rowcount or 0)
         finally:
@@ -394,6 +423,7 @@ def window_start(now: datetime, hours: int = 24) -> datetime:
 __all__ = [
     "DB_FILENAME",
     "DECLINED_PREFIX",
+    "DEFAULT_AGENT_ID",
     "FAILED_PREFIX",
     "KIND_PROACTIVE",
     "OUTCOME_CLAIMED",

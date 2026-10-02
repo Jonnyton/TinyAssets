@@ -416,9 +416,9 @@ class AssignedQueueConsumer:
         # that does not hold the owner lease still beats -- liveness is not
         # activity -- but starts nothing. Today's lease is the single-process
         # adapter (always held); S8a installs the generation-fenced one.
-        from tinyassets.control_plane.lease import owner_lease
+        from tinyassets.control_plane.lease import current_owner_lease
 
-        lease_held = owner_lease().held()
+        lease_held = current_owner_lease().held()
         automation_submitted = 0
         if lease_held:
             automation_submitted, _automation_universes = self._submit_due_automations(

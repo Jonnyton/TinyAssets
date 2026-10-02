@@ -34,7 +34,8 @@ CLIENT = "client"
 BOX = "box"
 CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 
-#: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]`` marks a Timer site.
+#: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
+#: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 SITES: dict[str, tuple[str, str]] = {
     # -- always-on duties of the execution owner ------------------------------
     "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._run": (
@@ -121,6 +122,33 @@ SITES: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "broker shutdown wait",
     ),
     "tinyassets/workspace_staging.py::_lock_tree_exclusive": (CALL_SCOPED, "lock acquisition"),
+    # Bounded retry loops (``for attempt in range(n): ... sleep``).
+    "tinyassets/api/wiki.py::_wiki_file_bug": (CALL_SCOPED, "bounded retry"),
+    "tinyassets/conversation_store.py::_record_pair": (CALL_SCOPED, "bounded retry"),
+    "tinyassets/conversation_store.py::backfill_once": (CALL_SCOPED, "bounded retry"),
+    "tinyassets/conversation_store.py::record_turn": (CALL_SCOPED, "bounded retry"),
+    "tinyassets/credential_refresh.py::file_lock#2": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/graph_compiler.py::_call_policy_router_with_retry": (
+        CALL_SCOPED, "bounded retry",
+    ),
+    "tinyassets/memory/versioning.py::OutputVersionStore.save_draft": (
+        CALL_SCOPED, "bounded retry",
+    ),
+    "tinyassets/process_liveness.py::hold_liveness": (CALL_SCOPED, "bounded retry"),
+    "tinyassets/provider_assignment.py::_acquire_windows_file_lock": (
+        CALL_SCOPED, "lock acquisition",
+    ),
+    "tinyassets/run_file_upload.py::StreamBridge.chunks#2": (CALL_SCOPED, "upload stream"),
+    "tinyassets/run_file_upload.py::StreamBridge.push#2": (CALL_SCOPED, "upload stream"),
+    "tinyassets/storage/automation_activations.py::AutomationActivationStore.connection": (
+        CALL_SCOPED, "bounded retry",
+    ),
+    "tinyassets/storage/run_execution_lock.py::RunExecutionGuard._retire_uses#2": (
+        CALL_SCOPED, "drain wait",
+    ),
+    "tinyassets/workspace_staging.py::_lock_tree_exclusive#2": (
+        CALL_SCOPED, "lock acquisition",
+    ),
     # -- should not exist in the target shape ----------------------------------
     "tinyassets/host_pool/bid_poller.py::BidPoller.run": (
         DELETE, "host-pool fleet client; no production importer (dark code)",
