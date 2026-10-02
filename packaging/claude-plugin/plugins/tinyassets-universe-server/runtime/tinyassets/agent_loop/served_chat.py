@@ -7,7 +7,9 @@ at turn start, owner reads in the loop, the rest on the engine route. Unset, or 
 other value, keeps today's path. Native (CLI) turns are untouched either way:
 command adapters and file-OAuth CLIs keep running as CLIs (D6).
 
-The switch is opt-in and fails loudly: with the thin loop selected and no box
+The switch is a temporary rollout aid: once the thin loop is proven it becomes
+the only path for HTTP turns and the switch is deleted (change
+``control-plane-agent-loop`` task 3.4). It is opt-in and fails loudly: with the thin loop selected and no box
 provider configured, a turn that is granted a box tool is refused before
 anything runs, never quietly served by the tool jail instead.
 """

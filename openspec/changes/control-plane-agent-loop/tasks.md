@@ -14,18 +14,38 @@
 
 ## 2. Production path (PR 2, after S4's driver, S6's streaming contract, S8a)
 
-- [ ] 2.1 One shared loop: task-aware, non-blocking provider-assignment
+- [ ] 2.1 Shape first: three REJECT rounds on PR 1 are a shape signal. Before
+      adding to it, re-derive the concurrency shape (one asyncio task per
+      turn, box operations as awaitables on an async `BoxProvider` client)
+      and delete the thread/slot/cancel layering it makes unnecessary.
+- [ ] 2.2 One shared loop: task-aware, non-blocking provider-assignment
       admission; journal writes off the loop; then turns as tasks on it.
-- [ ] 2.2 Configure the `BoxProvider` (S4 local driver) in the daemon; adopt
+- [ ] 2.3 Configure the `BoxProvider` (S4 local driver) in the daemon; adopt
       its module types in place of `BoxExec`; its `stream` honours an I/O
       deadline and its image ships `flock` (design Risks).
-- [ ] 2.3 Model stream to the app: broker streaming (S6) -> loop -> the
+- [ ] 2.4 Model stream to the app over the S6 contract
+      (`openspec/changes/broker-streaming-contract`) -> loop -> the
       frontend's SSE response, cancellation propagated both ways.
-- [ ] 2.4 Owner generation on journal writes through S8a's lease interface.
-- [ ] 2.5 Retire the per-turn provider jail and the engine route's four tools
-      for HTTP turns on the thin loop; keep both for CLI paths.
-- [ ] 2.6 CLI-in-box only for command adapters and file-OAuth CLIs; Claude
+- [ ] 2.5 Owner generation from `control_plane.lease.current_owner_lease()
+      .generation`, passed through to the journal unchanged (S8a wires the
+      fence inside `AgentTurnJournal`).
+- [ ] 2.6 Retire the tool jail and the engine route's four tools for HTTP
+      turns on the thin loop (HTTP model calls never used the provider jail);
+      keep both for CLI paths.
+- [ ] 2.7 CLI-in-box only for command adapters and file-OAuth CLIs; Claude
       subscription serving stays owner-only (D6).
-- [ ] 2.7 Live proof: a rendered conversation through the live app with the
+
+## 3. Rollout (the switch is temporary)
+
+- [ ] 3.1 A fresh cross-family review of the whole thin path, including the
+      two post-cap fixes of PR 1 (c6418af3), gates turning the switch on in
+      production.
+- [ ] 3.2 Turning it on goes through deploy configuration that reaches the
+      droplet (a compose/env flag is inert unless the deploy syncs it); verify
+      the running process reads it before claiming it is on.
+- [ ] 3.3 Live proof: a rendered conversation through the live app with the
       switch on, plus `mcp_public_canary.py`.
-- [ ] 2.8 Spec sync to `openspec/specs/control-plane-agent-loop/` and archive.
+- [ ] 3.4 Remove the switch: once proven, the thin loop is the only path for
+      HTTP turns, for every account (one code path); delete
+      `TINYASSETS_AGENT_LOOP` and the code only the old path used.
+- [ ] 3.5 Spec sync to `openspec/specs/control-plane-agent-loop/` and archive.

@@ -35,6 +35,8 @@ handle bound at turn start; no model credential ever enters the box.
 - `AgentTurnCoordinator` opens its tools through the adapter when the adapter
   provides them and passes the `op_id`; the journal is unchanged.
 - Opt-in switch `TINYASSETS_AGENT_LOOP=thin`. Unset, every path is today's.
+  The switch is a temporary rollout aid, removed once the thin loop is
+  proven (`tasks.md` 3.4): one code path for every account.
 - `scripts/measure_agent_loop_memory.py`: resident memory per waiting turn,
   500 concurrent turns against a mock SSE server.
 
