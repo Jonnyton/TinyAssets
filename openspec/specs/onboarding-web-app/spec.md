@@ -188,3 +188,36 @@ hide older turns without saying so.
 - **WHEN** an owner's thread holds more turns than one page
 - **THEN** the page reports `has_more: true` and a `next_before` cursor
 - **AND** following the cursor until `has_more` is false returns every turn exactly once
+
+### Requirement: The chat with an agent floats over the command center
+The app SHALL present the chat with an agent (thread, request rail, model bar,
+composer and status lines) as a floating "chat cloud" above the command-center
+stage, which the owner can drag, resize, and shrink to a bubble and expand
+again by pointer, touch or keyboard. It SHALL start open and filling the stage
+for an owner with no command-center layout, and as a bubble when a layout is
+active. Once the owner moves, resizes, shrinks or expands it, the app SHALL
+restore that last state instead, remembered per owner, per agent (`main` by
+default) and per viewport class (`phone` below 760 px, `wide` otherwise). The
+cloud and the bubble SHALL stay wholly on the stage whenever it resizes. The
+bubble SHALL show when the agent is working and when a reply arrived while it
+was shrunk.
+
+#### Scenario: A new owner signs in
+- **WHEN** an owner with no command-center layout and no saved cloud state opens the app
+- **THEN** the chat cloud is open and fills the stage
+
+#### Scenario: A command-center layout is active
+- **WHEN** a custom UI is mounted and the owner has never placed the cloud
+- **THEN** the chat is a bubble in the stage's corner over the layout
+
+#### Scenario: The owner placed it before
+- **WHEN** the owner moved, resized or shrank the cloud on this viewport class and reloads
+- **THEN** it reopens exactly as they left it, layout or not
+
+#### Scenario: The window shrinks
+- **WHEN** the stage becomes smaller than where the cloud or bubble sits
+- **THEN** it is moved and, if needed, shrunk to stay wholly visible
+
+#### Scenario: A bubble is dragged
+- **WHEN** the owner drags the bubble to a new place
+- **THEN** it moves there and does not also open

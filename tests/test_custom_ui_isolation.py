@@ -39,7 +39,9 @@ def test_frame_document_is_an_opaque_origin_with_no_network() -> None:
     # grant the frame would share the app's origin and could read the access
     # token out of sessionStorage.
     assert "sandbox" in frame, FRAME_CSP
-    assert frame["sandbox"] == ["allow-scripts"], frame["sandbox"]
+    # allow-forms only lets a <form> fire `submit` for the bundle's handler;
+    # form-action 'none' (below) refuses every real submission.
+    assert frame["sandbox"] == ["allow-scripts", "allow-forms"], frame["sandbox"]
 
     # No network of its own, so the only way out is the bridge. An image URL is a
     # GET a bundle could smuggle data through, so remote images are refused too.
@@ -166,7 +168,7 @@ def test_bundle_source_never_enters_the_app_document() -> None:
     sandbox = re.search(r'SANDBOX:"([^"]*)"', APP_UI)
     assert sandbox, "AppUI must declare the sandbox it applies"
     grants = sandbox.group(1).split()
-    assert grants == ["allow-scripts"], grants
+    assert grants == ["allow-scripts", "allow-forms"], grants
     assert 'setAttribute("sandbox",this.SANDBOX)' in APP_UI
 
 
