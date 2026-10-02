@@ -296,6 +296,52 @@ def load_recent_readonly(
         return []
 
 
+def load_recent_agent_turns(
+    universe_dir: "str | Path",
+    owner: str,
+    *,
+    limit: int = 12,
+) -> list[tuple[str, "Msg"]]:
+    """The newest turns of ``owner``'s threads with their OTHER agents, oldest first.
+
+    ``(agent_id, message)`` pairs from every ``agent:<id>:principal:<owner>``
+    session (harness §4.18), so the main agent's turn can see what the owner's
+    other agents and the owner said to each other. Only this owner's sessions,
+    and only in this universe's own store. Read-only and fail-open like
+    ``load_recent_readonly``: it is awareness, never a blocker.
+    """
+    from tinyassets.addressed_agents import MAIN_AGENT, agent_of_session
+
+    if not owner:
+        return []
+    db_path = _db_path(universe_dir)
+    if not db_path.exists():
+        return []
+    suffix = f":principal:{owner}"
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            # A range on the session index, never a scan of the main thread.
+            rows = conn.execute(
+                "SELECT session_id, speaker, content, ts FROM conversation_turns "
+                "WHERE session_id >= 'agent:' AND session_id < 'agent;' "
+                "AND substr(session_id, -?) = ? "
+                "ORDER BY ts DESC, turn_no DESC LIMIT ?",
+                (len(suffix), suffix, max(1, int(limit))),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - awareness is a bonus, never a blocker
+        return []
+    out = []
+    for session_id, speaker, content, ts in reversed(rows):
+        agent_id = agent_of_session(str(session_id), owner)
+        if agent_id is None or agent_id == MAIN_AGENT:
+            continue
+        out.append((agent_id, Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts))))
+    return out
+
+
 def record_turn(
     universe_dir: "str | Path",
     session_id: str,
