@@ -6065,7 +6065,10 @@
   }
 
   function fitToVisualViewport(){
-    if(window.visualViewport) document.documentElement.style.setProperty("--app-h",window.visualViewport.height+"px");
+    // Height x scale: the on-screen keyboard shrinks the visual viewport, a
+    // pinch-zoom only rescales it, and only the keyboard should shrink the app.
+    const vv=window.visualViewport;
+    if(vv) document.documentElement.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
   }
   function setHeaderMenu(open){
     const button=$("btn-header-menu");
@@ -6077,7 +6080,11 @@
     const count=$("rail-items").children.length;
     rail.dataset.phoneEmpty=String(count===0);
     if(phone){
-      const label=count+" waiting on you";
+      // Only what is outstanding counts: an offered row ("Connect another LLM")
+      // is not waiting on anyone (the same rule as the desktop heading).
+      const waiting=typeof railCache!=="undefined"
+        ? railCache.filter(r=>!(typeof isOptionalRequest==="function" && isOptionalRequest(r))).length : count;
+      const label=waiting ? waiting+" waiting on you" : "Nothing waiting on you";
       if(head.textContent!==label) head.textContent=label;
       head.setAttribute("role","button"); head.tabIndex=0;
       head.setAttribute("aria-expanded",String(rail.classList.contains("rail--open")));

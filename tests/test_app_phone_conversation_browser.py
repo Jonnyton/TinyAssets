@@ -26,6 +26,8 @@ def test_phone_conversation(app_url, browser):
         cloudState.open = {x:20,y:30,w:320,h:360};
         cloudState.userSet = true; refreshChatCloud();
         document.getElementById('request-rail').hidden = false;
+        railCache = [{request_id:'a', status:'pending'}, {request_id:'b', status:'pending'},
+                     {request_id:'c', status:'pending'}];
         document.getElementById('rail-items').innerHTML =
             '<div>First request</div><div>Second request</div><div>Third request</div>';
     }""")
@@ -50,6 +52,12 @@ def test_phone_conversation(app_url, browser):
     page.locator('#rail-head').tap()
     assert page.locator('#rail-items').is_visible()
     page.locator('#rail-head').tap()
+    # An offered row ("Connect another LLM") is not waiting on anyone.
+    page.evaluate("""() => { railCache = [{request_id:'x', status:'optional'}];
+        document.getElementById('rail-items').innerHTML = '<div>Connect another LLM</div>'; }""")
+    page.wait_for_function(
+        "() => document.getElementById('rail-head').textContent === 'Nothing waiting on you'"
+    )
     page.locator('#btn-header-menu').tap()
     assert page.locator('#btn-account').is_visible()
     assert page.locator('#btn-signout').is_visible()
