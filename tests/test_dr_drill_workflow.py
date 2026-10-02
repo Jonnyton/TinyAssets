@@ -106,16 +106,85 @@ def test_dr_drill_yml_parses():
 
 
 # ---------------------------------------------------------------------------
-# (b) Only workflow_dispatch trigger
+# (b) Triggers: weekly schedule + manual dispatch (target-architecture S1a.5)
 # ---------------------------------------------------------------------------
 
-def test_only_workflow_dispatch_trigger():
+def test_drill_runs_weekly_and_on_dispatch_only():
+    """Inverted 2026-10-02. The drill used to be dispatch-only and last ran
+    2026-07-24 (docs/concerns/2026-10-02-dr-drill-is-dispatch-only.md); the
+    uptime-and-alarms spec requires a weekly scheduled drill."""
     wf = _load()
     triggers = _triggers(wf)
     assert "workflow_dispatch" in triggers, "must have workflow_dispatch trigger"
-    assert "schedule" not in triggers, "dr-drill must NEVER auto-run on schedule"
+    crons = [entry["cron"] for entry in triggers.get("schedule") or []]
+    assert len(crons) == 1, "exactly one schedule"
+    minute, hour, dom, month, dow = crons[0].split()
+    assert dom == "*" and month == "*" and dow.isdigit(), "weekly: one fixed weekday"
     assert "push" not in triggers, "dr-drill must not run on push"
     assert "pull_request" not in triggers, "dr-drill must not run on PR"
+
+
+def test_a_scheduled_run_is_the_off_region_drill():
+    """A schedule carries no inputs; the origin must then default to offregion,
+    never to the primary's own tarball."""
+    wf = _load()
+    assert wf["env"]["BACKUP_ORIGIN"] == "${{ inputs.backup_origin || 'offregion' }}"
+    origin = _dispatch_inputs(wf)["backup_origin"]
+    assert origin["default"] == "offregion"
+    assert origin["options"] == ["offregion", "primary"]
+
+
+def test_the_off_region_origin_never_touches_the_primary():
+    """Every primary contact is behind the `primary` origin, so the drill would
+    still run with the primary host gone."""
+    for name in ("Install SSH key", "Validate selected backup",
+                 "Resolve immutable production daemon image",
+                 "Transfer verified backup to drill Droplet"):
+        run = _step(name)["run"]
+        if "DO_DROPLET_HOST" not in run:
+            continue
+        offregion = run.split('if [ "${BACKUP_ORIGIN}" = "offregion" ]; then', 1)
+        if len(offregion) == 2:
+            # The offregion branch is everything up to its `else`.
+            assert "DO_DROPLET_HOST" not in offregion[1].split("\nelse\n", 1)[0], name
+        else:
+            assert 'if [ "${BACKUP_ORIGIN}" = "primary" ]; then' in run, name
+
+
+def test_an_unconfigured_off_region_store_fails_loudly():
+    run = _step("Verify secrets present")["run"]
+    assert 'missing+=("OFFREGION_BACKUP_REMOTE")' in run
+    assert 'missing+=("OFFREGION_BACKUP_RCLONE_CONFIG")' in run
+    assert "red on purpose" in run
+    assert "exit 1" in run
+
+
+def test_off_region_names_are_checked_before_rclone_uses_them():
+    run = _step("Validate selected backup")["run"]
+    grammar_check = run.index('if [[ ! "${name}" =~ ${grammar} ]]; then')
+    copy = run.index("rclone --config \"${rclone_conf}\" copyto")
+    assert grammar_check < copy
+    assert "umask 077" in run, "the rclone credential must not be world-readable"
+    assert 'rm -f "${rclone_conf}"' in run
+
+
+def test_one_validator_binds_to_the_origin_s_root():
+    run = _step("Validate selected backup")["run"]
+    assert "backup_root = Path(sys.argv[2]).resolve(strict=True)" in run
+    assert 'python3 - "${candidate}" "${backup_root}"' in run
+    assert '/var/backups/tinyassets").resolve' not in run
+
+
+def test_off_region_image_comes_from_ghcr_not_the_primary():
+    run = _step("Resolve immutable production daemon image")["run"]
+    marker = 'if [ "${BACKUP_ORIGIN}" = "offregion" ]; then'
+    offregion = run.split(marker, 1)[1].split("\nelse\n", 1)[0]
+    assert "docker buildx imagetools inspect" in offregion
+    assert "git rev-list --max-count=20 HEAD" in offregion
+    drill_job = _load()["jobs"]["drill"]
+    checkout = drill_job["steps"][0]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout.get("with", {}).get("fetch-depth", 1) >= 20
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +384,11 @@ def test_dr_drill_log_exists():
     assert _LOG.exists(), f"Missing: {_LOG}"
 
 
-def test_dr_drill_runbook_mentions_quarterly():
-    assert "quarterly" in _RUNBOOK.read_text(encoding="utf-8").lower()
+def test_dr_drill_runbook_mentions_weekly_off_region():
+    text = _RUNBOOK.read_text(encoding="utf-8")
+    assert "Weekly" in text
+    assert "off-region" in text
+    assert "Quarterly" not in text, "the cadence is weekly now (S1a.5)"
 
 
 def test_dr_drill_runbook_mentions_pass_fail():
@@ -454,7 +526,7 @@ def test_mid_job_cleanup_checks_probe_color_empty():
 def test_primary_archive_preflight_precedes_droplet_provisioning():
     steps = _steps(_load())
     names = [step.get("name") for step in steps]
-    preflight_index = names.index("Validate selected backup on primary")
+    preflight_index = names.index("Validate selected backup")
     provision_index = names.index("Provision drill Droplet")
     assert preflight_index < provision_index
 
@@ -476,7 +548,7 @@ def test_primary_archive_preflight_precedes_droplet_provisioning():
 
 
 def test_primary_archive_filename_grammar_rejects_output_protocol_injection():
-    run = _step("Validate selected backup on primary")["run"]
+    run = _step("Validate selected backup")["run"]
     grammar_block = run[run.index("re.fullmatch("):run.index("selected.name,")]
     fragments = re.findall(r'r"([^"]+)"', grammar_block)
     grammar = "".join(fragments)
@@ -695,7 +767,7 @@ def test_cleanup_only_dispatch_is_identity_guarded_and_cannot_provision():
     )
     assert "Provision drill Droplet" not in names
     assert "Install SSH key" not in names
-    assert "Validate selected backup on primary" not in names
+    assert "Validate selected backup" not in names
 
     identity = next(
         step for step in steps
