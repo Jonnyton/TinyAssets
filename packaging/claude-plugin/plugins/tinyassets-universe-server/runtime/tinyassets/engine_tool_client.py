@@ -169,38 +169,13 @@ class EngineToolSession:
         try:
             # MCP may validate/reject structured output AFTER the effect happened.
             # Session-terminated and all other unavailable outcomes are ambiguous.
-            result = await self._client.call_tool_mcp(name, arguments)
+            return await self._client.call_tool_mcp(name, arguments)
         except asyncio.CancelledError:
             self._active = False
             raise
         except Exception:
             self._active = False
             raise EngineToolError("engine_tool_outcome_unknown", outcome="unknown") from None
-        return text_only(result)
-
-
-def text_only(result: Any) -> Any:
-    """``result`` with each image block replaced by one line saying so.
-
-    This loop's tool results are text by contract (the chat codec and the turn
-    journal hold any other content as unsupported), but ``read`` shows an image
-    file as an image (tinyassets/tool_images.py). Holding the whole turn because
-    the agent looked at a picture is the wrong failure; the line keeps the turn
-    going and tells the agent it could not see it. Text blocks pass unchanged.
-    """
-    content = getattr(result, "content", None)
-    if not content or all(getattr(block, "type", "") == "text" for block in content):
-        return result
-    from mcp.types import TextContent
-
-    projected = [
-        block if getattr(block, "type", "") == "text" else TextContent(
-            type="text",
-            text=f"[{getattr(block, 'type', 'non-text')} content not shown: this model "
-                 "connection carries text only]")
-        for block in content
-    ]
-    return result.model_copy(update={"content": projected})
 
 
 @asynccontextmanager

@@ -201,23 +201,29 @@ def bound_image(data: bytes, path: str = "") -> ToolImage | str:
     return ToolImage(note, meta["mime_type"], encoded, meta["width"], meta["height"])
 
 
-def _limit_child() -> None:  # pragma: no cover - runs in the child, POSIX only
-    import resource
+def _limit_self(memory_bytes: int, cpu_seconds: int) -> None:
+    """Child side, first thing: cap this process before it reads a byte.
 
-    resource.setrlimit(resource.RLIMIT_AS, (DECODE_MEMORY_BYTES, DECODE_MEMORY_BYTES))
-    resource.setrlimit(resource.RLIMIT_CPU, (DECODE_CPU_SECONDS, DECODE_CPU_SECONDS))
+    Applied in the fresh interpreter, never as a ``preexec_fn``: that runs
+    between fork and exec in a threaded daemon, where Python documents it can
+    deadlock -- before the parent's wall clock even starts (Codex, 2026-10-02).
+    """
+    try:
+        import resource
+    except ImportError:  # Windows dev hosts: the wall clock is the only bound
+        return
+    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
 def _decode_in_child(data: bytes, mime: str) -> tuple[dict, bytes] | str:
-    import os
-
     try:
         done = subprocess.run(
-            [sys.executable, "-m", "tinyassets.tool_images", mime],
+            [sys.executable, "-m", "tinyassets.tool_images", mime,
+             str(DECODE_MEMORY_BYTES), str(DECODE_CPU_SECONDS)],
             input=data, capture_output=True, timeout=DECODE_WALL_SECONDS,
             cwd=str(Path(__file__).resolve().parents[1]),
-            preexec_fn=_limit_child if os.name == "posix" else None,
         )
     except subprocess.TimeoutExpired:
         return f"took longer than {DECODE_WALL_SECONDS:.0f} s to decode"
@@ -246,13 +252,18 @@ def _shown(data: bytes, mime: str) -> tuple[dict, bytes]:
         if source[0] * source[1] > MAX_SOURCE_PIXELS:
             raise ValueError(f"is {source[0]}x{source[1]} pixels once opened")
         animated = bool(getattr(image, "is_animated", False))
-        image.seek(0)
+        # An APNG may carry a poster image that is not part of the animation;
+        # Pillow exposes it as frame 0. Show the animation's first frame.
+        image.seek(1 if animated and getattr(image, "default_image", False) else 0)
         if mime == "image/jpeg":
             image.draft("RGB", (MAX_EDGE, MAX_EDGE))  # decode at a reduced scale
         image.load()  # every pixel, so a corrupt stream fails HERE, not later
         frame = ImageOps.exif_transpose(image)
         alpha = frame.mode in ("RGBA", "LA", "PA") or "transparency" in frame.info
+        icc = frame.info.get("icc_profile")
         frame = frame.convert("RGBA" if alpha else "RGB")
+        frame = _to_srgb(frame, icc)
+        frame.info = {}  # no metadata leaves: ICC, EXIF, text chunks, comments
     # The source size as the person sees it: EXIF orientation may turn it.
     turned = (frame.size[0] >= frame.size[1]) != (source[0] >= source[1])
     oriented = (source[1], source[0]) if turned else source
@@ -267,6 +278,21 @@ def _shown(data: bytes, mime: str) -> tuple[dict, bytes]:
                      "animated": animated, "bytes": len(encoded)}, encoded)
         scale *= 0.75  # keep transparency: smaller, never flattened
     raise ValueError(f"is still over {MAX_IMAGE_BYTES} bytes after scaling")
+
+
+def _to_srgb(frame: Any, icc: bytes | None) -> Any:
+    """Pixels converted from an embedded colour profile to sRGB, so dropping the
+    profile does not change how the image looks; unconvertible stays as is."""
+    if not icc:
+        return frame
+    try:
+        from PIL import ImageCms
+
+        source = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        return ImageCms.profileToProfile(frame, source, ImageCms.createProfile("sRGB"),
+                                         outputMode=frame.mode)
+    except Exception:  # noqa: BLE001 - a broken profile is ignored, not fatal
+        return frame
 
 
 def _encode(image: Any, alpha: bool) -> tuple[bytes | None, str]:
@@ -300,7 +326,12 @@ __all__ = [
 
 
 def main() -> int:  # pragma: no cover - exercised through bound_image
-    mime = sys.argv[1] if len(sys.argv) > 1 else ""
+    args = sys.argv[1:]
+    if len(args) != 3 or not args[1].isdigit() or not args[2].isdigit():
+        sys.stdout.buffer.write(json.dumps({"error": "decoder misconfigured"}).encode() + b"\n")
+        return 2
+    _limit_self(int(args[1]), int(args[2]))
+    mime = args[0]
     data = sys.stdin.buffer.read()
     out = sys.stdout.buffer
     if mime not in _PILLOW:

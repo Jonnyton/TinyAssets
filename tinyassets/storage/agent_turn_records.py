@@ -259,6 +259,11 @@ def result_json(result: CallToolResult) -> tuple[str, str, bool]:
     return raw, *load_result(raw)[1:]
 
 
+#: Content block types a text-only model connection can be given (an image as a
+#: line saying it was not shown).
+_PRESENTABLE = frozenset({"text", "image"})
+
+
 def load_result(raw: str) -> tuple[CallToolResult, str, bool]:
     value = fields(document(raw), {"version", "content", "structuredContent", "isError"})
     if (
@@ -277,7 +282,12 @@ def load_result(raw: str) -> tuple[CallToolResult, str, bool]:
             != source
         ):
             raise invalid()
-    kind = "text_only" if all(block.type == "text" for block in content) else "non_text"
+    # "text_only" means the model can be shown it as text. An image block counts:
+    # the chat codec presents it as one line saying it was not shown
+    # (agent_chat_codec._result_projection), while THIS record keeps the exact
+    # result. Any other non-text block still holds the turn as unsupported.
+    kind = ("text_only" if all(block.type in _PRESENTABLE for block in content)
+            else "non_text")
     return (
         CallToolResult(
             content=content, structuredContent=value["structuredContent"], isError=value["isError"]

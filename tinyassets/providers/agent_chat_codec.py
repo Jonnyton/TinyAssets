@@ -529,14 +529,29 @@ def _result_projection(raw: dict[str, Any]) -> dict[str, Any]:
         raw["structuredContent"] is not None and not isinstance(raw["structuredContent"], dict)
     ):
         raise _bad("invalid tool result envelope")
-    if not isinstance(raw["content"], list) or any(
+    if not isinstance(raw["content"], list):
+        raise _bad("non-text tool content is unsupported")
+    content = [_presented(block) for block in raw["content"]]
+    if any(
         not isinstance(block, dict) or block.get("type") != "text"
         or not isinstance(block.get("text"), str)
         or set(block) - {"type", "text", "annotations"}
-        for block in raw["content"]
+        for block in content
     ):
         raise _bad("non-text tool content is unsupported")
-    return _object(_dump(raw))
+    return _object(_dump({**raw, "content": content}))
+
+
+#: What a text-only connection is told in place of an image block. The exact
+#: result (image included) stays in the turn journal; only the model's view of
+#: it is this line, so the agent knows it could not see it.
+IMAGE_NOT_SHOWN = "[image not shown: this model connection carries text only]"
+
+
+def _presented(block: Any) -> Any:
+    if isinstance(block, dict) and block.get("type") == "image":
+        return {"type": "text", "text": IMAGE_NOT_SHOWN}
+    return block
 
 
 def tool_outcome(request: ToolRequest, result: CallToolResult) -> ToolOutcome:

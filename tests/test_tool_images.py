@@ -280,21 +280,58 @@ def test_the_engine_read_returns_image_content_the_client_accepts(tmp_path, monk
     assert not text.is_error and text.content[0].text.startswith("text body")
 
 
-def test_the_http_loop_gets_a_line_instead_of_an_image():
-    """The engine-owned HTTP loop's results are text by contract; an image block
-    would hold the turn as unsupported (Codex, 2026-10-02). It becomes a line."""
-    from mcp.types import CallToolResult, TextContent
+def test_the_http_loop_keeps_the_exact_result_and_shows_the_model_a_line():
+    """The engine-owned HTTP loop's model connection is text-only. An image
+    result must neither hold the turn nor be lost from the journal: the record
+    keeps the exact result and classifies it presentable; the codec gives the
+    model one line saying the image was not shown (Codex, 2026-10-02)."""
+    import json
 
-    from tinyassets.engine_tool_client import text_only
+    from mcp.types import AudioContent, CallToolResult, TextContent
+
+    from tinyassets.providers import agent_chat_codec as codec
+    from tinyassets.storage import agent_turn_records as records
 
     shown = bound_image(_png(8, 8), "a.png")
     result = CallToolResult(content=shown.content_blocks(), isError=False)
-    projected = text_only(result)
-    assert [b.type for b in projected.content] == ["text", "text"]
-    assert projected.content[0].text == shown.text
-    assert "carries text only" in projected.content[1].text
+    raw, kind, is_error = records.result_json(result)
+    assert kind == "text_only" and is_error is False
+    assert json.loads(raw)["content"][1]["data"] == shown.base64, "journal keeps the image"
+    outcome = codec.tool_outcome(codec.ToolRequest("c1", "read", "{}"), result)
+    model_view = json.loads(outcome.result_json)["content"]
+    assert model_view == [{"type": "text", "text": shown.text},
+                          {"type": "text", "text": codec.IMAGE_NOT_SHOWN}]
+    # Any other non-text block still holds the turn, as before.
+    audio = CallToolResult(content=[AudioContent(type="audio", data="AAAA",
+                                                 mimeType="audio/wav")], isError=False)
+    assert records.result_json(audio)[1] == "non_text"
     plain = CallToolResult(content=[TextContent(type="text", text="x")], isError=False)
-    assert text_only(plain) is plain
+    assert records.result_json(plain)[1] == "text_only"
+
+
+def test_metadata_and_colour_profile_do_not_leave():
+    from PIL import ImageCms
+
+    srgb = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    image = Image.new("RGBA", (30, 30), (10, 200, 30, 128))
+    data = _encode(image, "PNG", icc_profile=srgb)
+    shown = bound_image(data, "profiled.png")
+    assert isinstance(shown, ToolImage)
+    reopened = _shown(shown)
+    assert "icc_profile" not in reopened.info, "the profile is converted, then dropped"
+    assert reopened.getpixel((5, 5))[1] > 150
+
+
+def test_an_apng_poster_is_skipped_for_the_first_animation_frame():
+    poster = Image.new("RGB", (16, 16), (0, 0, 0))
+    first = Image.new("RGB", (16, 16), (250, 0, 0))
+    second = Image.new("RGB", (16, 16), (0, 250, 0))
+    data = _encode(poster, "PNG", save_all=True, append_images=[first, second],
+                   default_image=True, duration=50)
+    shown = bound_image(data, "walk.png")
+    assert isinstance(shown, ToolImage) and "(first frame)" in shown.text
+    red, green, _ = _shown(shown).convert("RGB").getpixel((5, 5))
+    assert red > 240 and green < 16, "the animation's first frame, not the poster"
 
 
 @pytest.mark.skipif(__import__("os").name != "posix", reason="rlimits are POSIX")
