@@ -36,7 +36,16 @@ def _fake(bin_dir: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
-def _run(tmp_path: Path, *, offregion: str | None, fail_offregion: bool = False):
+ESCROW_VALUES = {
+    "TINYASSETS_SESSION_SEAL_KEY": "seal-value-not-to-be-logged-0123456789abcdef",
+    "TINYASSETS_BILLING_ENTITLEMENT_KEY": "billing-value-not-to-be-logged-0123456789",
+    "TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\\nVAPIDVALUE\\n-----END",
+    "TINYASSETS_APP_INGRESS_HMAC_KEY": "ingress-value-not-to-be-logged-0123456789",
+}
+
+
+def _run(tmp_path: Path, *, offregion: str | None, fail_offregion: bool = False,
+         escrow_complete: bool = True):
     volume = tmp_path / "volume"
     volume.mkdir()
     con = sqlite3.connect(volume / ".tinyassets.db")
@@ -66,6 +75,16 @@ esac
     (root / "scripts").mkdir()
     shutil.copy(BACKUP_SH, root / "deploy" / "backup.sh")
     shutil.copy(REPO / "scripts" / "backup_prune.py", root / "scripts" / "backup_prune.py")
+    shutil.copy(REPO / "scripts" / "host_key_escrow.py", root / "scripts" / "host_key_escrow.py")
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    keys = dict(ESCROW_VALUES)
+    if not escrow_complete:
+        keys.pop("TINYASSETS_APP_INGRESS_HMAC_KEY")
+    (etc / "env").write_text("".join(
+        f"{k}={v}\n" for k, v in keys.items() if "INGRESS" not in k), encoding="utf-8")
+    (etc / "app-ingress.env").write_text("".join(
+        f"{k}={v}\n" for k, v in keys.items() if "INGRESS" in k), encoding="utf-8")
     (root / "scripts" / "backup_ship_gh.py").write_text(
         f"import sys\nopen({str(shipped)!r}, 'a').write(sys.argv[1] + '\\n')\n",
         encoding="utf-8",
@@ -77,6 +96,7 @@ esac
         "BACKUP_DEST": "spaces:sfo3-bucket/backups",
         "BACKUP_LOG": str(tmp_path / "backup.log"),
         "GH_TOKEN": "x",
+        "TINYASSETS_ESCROW_ETC": str(etc),
     }
     if offregion is not None:
         env["BACKUP_OFFREGION_DEST"] = offregion
@@ -92,7 +112,8 @@ esac
 def test_both_tiers_go_off_region_and_are_pruned_there(tmp_path):
     result, calls, _ = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups")
     assert result.returncode == 0, result.stdout + result.stderr
-    off = [c for c in calls if c.startswith("copyto") and "offregion:" in c]
+    off = [c for c in calls
+           if c.startswith("copyto") and "offregion:" in c and "/escrow/" not in c]
     assert len(off) == 2
     assert any("/tinyassets-brain-" in c for c in off)
     assert any("/tinyassets-data-" in c for c in off)
@@ -123,3 +144,42 @@ def test_github_gets_the_brain_tier_only(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert len(ships) == 1
     assert "/tinyassets-brain-" in ships[0]
+
+
+# --- host-key escrow ---------------------------------------------------------
+
+def test_the_escrow_goes_to_its_own_prefix_content_addressed_and_latest(tmp_path):
+    result, calls, _ = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups")
+    assert result.returncode == 0, result.stdout + result.stderr
+    escrow = [c for c in calls if c.startswith("copyto") and "/escrow/" in c]
+    assert len(escrow) == 2
+    assert any("offregion:tinyassets-offregion/escrow/history/host-keys-" in c for c in escrow)
+    assert any(c.endswith("offregion:tinyassets-offregion/escrow/host-keys.env") for c in escrow)
+    assert "host-key escrow OK" in result.stdout
+
+
+def test_no_escrowed_value_reaches_the_output_or_the_log(tmp_path):
+    result, _, _ = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups")
+    log = (tmp_path / "backup.log").read_text(encoding="utf-8")
+    for value in ESCROW_VALUES.values():
+        assert value not in result.stdout + result.stderr + log
+
+
+def test_a_partial_key_set_is_never_escrowed_and_fails_the_backup(tmp_path):
+    result, calls, _ = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups",
+                            escrow_complete=False)
+    assert result.returncode == 3
+    assert not [c for c in calls if "/escrow/" in c]
+    assert "host-key escrow refused" in result.stdout
+
+
+def test_the_archive_carries_the_key_hash_manifest_not_the_keys(tmp_path):
+    result, _, _ = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups")
+    assert result.returncode == 0, result.stdout + result.stderr
+    manifest = (tmp_path / "volume" / ".escrow-key-hashes").read_text(encoding="utf-8")
+    import hashlib
+
+    for name, value in ESCROW_VALUES.items():
+        assert f"{name} {hashlib.sha256(value.encode()).hexdigest()}" in manifest
+        assert value not in manifest
+

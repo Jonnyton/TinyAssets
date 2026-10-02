@@ -58,6 +58,7 @@ RUNTIME_FILES=(
     scripts/rotate_run_transcripts.py
     scripts/backup_ship_gh.py
     scripts/backup_prune.py
+    scripts/host_key_escrow.py
     tinyassets/__init__.py
     tinyassets/ttl_memo.py
     tinyassets/storage/__init__.py

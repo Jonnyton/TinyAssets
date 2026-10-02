@@ -39,6 +39,9 @@
 #                          failed copy is fatal (exit 3): this is the copy the weekly
 #                          DR drill restores from. Converged by install-host-services
 #                          ("Ensure off-region backup configuration").
+#   BACKUP_ESCROW_DEST     where the host-key escrow goes (default: the off-region
+#                          bucket's escrow/ prefix, derived from BACKUP_OFFREGION_DEST).
+#                          See scripts/host_key_escrow.py; values are never logged.
 #   BACKUP_VOLUME          Docker volume name (default: tinyassets-data)
 #   BACKUP_RETAIN_DAILY    keep last N daily archives (default: 7)
 #   BACKUP_RETAIN_WEEKLY   keep first archive per week, last N weeks (default: 4)
@@ -155,7 +158,7 @@ TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 BRAIN_NAME="tinyassets-brain-${TS}.tar.gz"
 BRAIN_PATH="/tmp/${BRAIN_NAME}"
 BRAIN_STAGE="$(mktemp -d /tmp/tinyassets-brain-stage.XXXXXX)"
-trap 'rm -rf "${BRAIN_STAGE}"' EXIT
+trap 'rm -rf "${BRAIN_STAGE}" "${escrow_dir:-}"' EXIT
 
 log "staging brain tier (wiki, daemon_wikis, ledgers, SQLite DBs)..."
 for d in wiki daemon_wikis; do
@@ -187,6 +190,15 @@ PY
     fi
 done
 
+# Hashes (never values) of the keys this data was written under, inside the
+# archive. A restore installs the escrowed keys and checks them against this
+# manifest, so it can prove the keys it restored are the keys this data needs.
+ESCROW_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/host_key_escrow.py"
+if ! python3 "${ESCROW_SCRIPT}" hashes-host > "${BRAIN_STAGE}/escrow-key-hashes.txt"; then
+    log "ERROR: could not record the escrow key-hash manifest"
+    exit 2
+fi
+
 log "creating brain archive ${BRAIN_PATH}..."
 if ! tar -czf "${BRAIN_PATH}" -C "${BRAIN_STAGE}" .; then
     log "ERROR: brain tar failed"
@@ -205,6 +217,14 @@ fi
 log "  brain upload OK"
 
 # ----- 4. full tier — whole volume, live (tar exit 1 tolerated) ---------
+
+# The same key-hash manifest, inside the volume, so the FULL archive carries
+# it too (its members must all live under _data/). Hashes only; root-owned;
+# nothing in the platform reads it.
+if ! python3 "${ESCROW_SCRIPT}" hashes-host > "${VOLUME_DIR}/.escrow-key-hashes"; then
+    log "ERROR: could not write the escrow key-hash manifest into the volume"
+    exit 2
+fi
 
 TAR_NAME="tinyassets-data-${TS}.tar.gz"
 TAR_PATH="/tmp/${TAR_NAME}"
@@ -256,6 +276,32 @@ if [[ -n "${BACKUP_OFFREGION_DEST:-}" ]]; then
     if [[ "${OFFREGION_FAILED}" -eq 0 ]]; then
         log "  off-region upload OK"
     fi
+
+    # Host-key escrow (scripts/host_key_escrow.py): the keys a restored host
+    # needs to read this data, written by root and never logged. History is
+    # content-addressed, so an unchanged set writes the same object again and a
+    # rotation adds one; latest is what a restore reads. A host missing a key
+    # REFUSES to escrow rather than overwrite a good copy with a partial one.
+    ESCROW_DEST="${BACKUP_ESCROW_DEST:-${BACKUP_OFFREGION_DEST%/*}/escrow}"
+    escrow_dir="$(mktemp -d /tmp/tinyassets-escrow.XXXXXX)"
+    chmod 0700 "${escrow_dir}"
+    escrow_file="${escrow_dir}/host-keys.env"
+    if python3 "${ESCROW_SCRIPT}" write "${escrow_file}"; then
+        escrow_id="$(sha256sum "${escrow_file}" | cut -c1-16)"
+        if rclone copyto --contimeout 60s --timeout 300s \
+                "${escrow_file}" "${ESCROW_DEST}/history/host-keys-${escrow_id}.env" \
+            && rclone copyto --contimeout 60s --timeout 300s \
+                "${escrow_file}" "${ESCROW_DEST}/host-keys.env"; then
+            log "  host-key escrow OK"
+        else
+            log "ERROR: host-key escrow upload failed"
+            OFFREGION_FAILED=1
+        fi
+    else
+        log "ERROR: host-key escrow refused (a key is missing or unsupported on this host)"
+        OFFREGION_FAILED=1
+    fi
+    rm -rf "${escrow_dir}"
 else
     log "WARN: BACKUP_OFFREGION_DEST is not set; this backup has NO off-region copy"
 fi
