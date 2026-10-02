@@ -1063,3 +1063,18 @@ The system SHALL record a model that the owner's source refused during a served 
 #### Scenario: The mark expires
 - **WHEN** the mark's lifetime has passed
 - **THEN** the model is ordered as if it had never been refused
+
+### Requirement: A reply that fails in flight is retried within a bound, and a small window compacts
+The system SHALL treat an HTTP 2xx agent reply that carries an in-band source error (`provider_reply_error`, with the source's own message and code as detail) or that cannot be decoded (`provider_unreadable_reply`) as transient for an engine-inference round: the turn SHALL retry the same model once, then move to the next model in the owner's accepted order with only that model excluded, at most three such retries per turn, re-rendering only the journal's completed rounds so no tool is re-run; the connection SHALL NOT be cooled for such a failure; an unrecognized non-2xx status SHALL remain `provider_protocol_error` and SHALL NOT be retried. When a turn no longer fits its model's window and no accepted model with a larger window exists, the turn SHALL render older tool results and call arguments clipped (each clip saying what it left out) and retry on the same model, while the journal keeps every round whole.
+
+#### Scenario: An upstream error after real work does not end the build
+- **WHEN** a source answers HTTP 200 with an error object in place of the reply after earlier tool rounds completed
+- **THEN** the same model is asked again with the completed rounds' results, no completed tool runs again, and the turn continues
+
+#### Scenario: The error persists
+- **WHEN** the same model and the remaining accepted models keep failing in flight past the bound
+- **THEN** the record is `code=provider_reply_error` (or `provider_unreadable_reply`), `stage=model_reply`, its detail is the source's own words, and the notice offers asking the turn to continue rather than saying a reply was unreadable
+
+#### Scenario: The turn outgrows its only model
+- **WHEN** the next request would exceed the selected model's window and no accepted model is larger
+- **THEN** older tool results are sent clipped with a marker saying the tool can be called again for the whole result, and only when clipping no longer shrinks the request is the record `context_window_exceeded`
