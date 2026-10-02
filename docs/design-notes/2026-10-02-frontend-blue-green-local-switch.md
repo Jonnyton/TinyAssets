@@ -54,16 +54,22 @@ cloudflared (host net) --> 127.0.0.1:8001  local switch (HAProxy, host net)
 
 ## Deploy protocol (frontend-only deploy)
 
-1. **Start the idle colour**, say green on 8012, with the new image. It registers with the owner
-   over RPC (S8.3); it owns nothing.
+1. **Start the idle colour**, say green on 8012, with the new image. It connects to the owner over
+   the local RPC and completes an explicit **ready handshake** (S8a, turn-handover, agreed
+   2026-10-02) before the switch may route to it. It owns nothing.
 2. **Health gate:** the switch's health check, plus a loopback canary through 8012 directly
    (`mcp_public_canary.py --url http://127.0.0.1:8012/mcp`, as the canary principal). On failure:
    stop green, leave blue alone. That is a failed deploy with zero user impact, and no rollback is
    needed.
 3. **Switch:** `set server be/green state ready` then `set server be/blue state drain`. New
    requests go to green at once, and blue keeps its open streams.
-4. **Drain blue:** wait until the switch reports blue's current sessions = 0, capped at the
-   longest legitimate stream. The cap is S8's to choose. Then stop blue.
+4. **Drain blue:** wait until the switch reports blue's current sessions = 0, **capped at 10
+   minutes**, then stop blue. The cap governs only open client streams. Turn lifetime is the
+   owner's drain bound (turn-handover's), and once frontends are split, a turn runs in the owner,
+   not in the frontend. So a stream cut at the cap does **not** end its turn: the turn keeps
+   running, and the client reads the answer from the thread, as it already does after a dropped
+   stream. 10 minutes covers ordinary MCP/app streams without letting one hour-long stream hold a
+   deploy. It is measured as "streams cut at cap per deploy" and revised from that number.
 5. **Verify through the public path:** `mcp_public_canary.py --url https://tinyassets.io/mcp
    --assert-handles` and `deployed_sha.py --assert-contains`.
 6. **Rollback** at any point before blue is stopped is one API call (`blue ready`,
@@ -85,7 +91,10 @@ which path from the diff: frontend modules, owner modules, or both (S8.8).
 | A colour/port mix-up | the new image never gets traffic | step 5 asserts the public `deployed_sha` matches the new image, not just green |
 | The cap is hit with streams still open on blue | those streams end | measured and reported, the same metric S8 uses for interrupted turns |
 
-## Tasks (to fold into S8.7/S8.8, owned by turn-handover)
+## Tasks: a separate change after S8.3's RPC lands (deploy-incident lane)
+
+Agreed with turn-handover 2026-10-02: one owner per change. These five ship as their own change
+once S8.3 lands, not folded into the S8 handover PR.
 
 1. A `switch` service in `deploy/compose.yml` (haproxy, host net, binds 127.0.0.1:8001). Frontend
    services `frontend-blue`/`frontend-green` on 8011/8012. The daemon stops publishing 8001.
