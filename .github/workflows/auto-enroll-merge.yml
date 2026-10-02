@@ -133,7 +133,11 @@ jobs:
               "$BASE_OID" "$HEAD_OID")" || DIFF_KEY=""
           fi
 
-          if python scripts/drain_review_gate.py \
+          # EVERY PR, not only drain/ branches (2026-10-02): on 2026-10-01 this
+          # step armed #4247 -- a superseded head with a known data-loss bug and
+          # no review receipt -- and the queue accepted it, because the receipt
+          # was only demanded of drain branches and authority paths.
+          if python scripts/drain_review_gate.py --require-receipt \
               --branch "$HEAD_REF" \
               --head "$HEAD_OID" \
               --diff-key "$DIFF_KEY" \
@@ -146,14 +150,14 @@ jobs:
           if [ "$REVIEW_GATE" = "deny" ]; then
             if [ "$STATE" = "yes" ]; then
               gh pr merge "$PR" --repo "$REPO" --disable-auto
-              echo "Disabled stale or unreviewed drain auto-merge."
+              echo "Disabled auto-merge: no current review receipt for this head."
             else
-              echo "Drain PR remains unenrolled pending exact-head review."
+              echo "PR remains unenrolled pending a review receipt for this head."
             fi
             {
               echo "### Auto-merge"
               echo ""
-              echo "Not enrolled: drain PR needs exactly one current review receipt:"
+              echo "Not enrolled: every PR needs exactly one current review receipt:"
               echo "\`Drain-Review-Verdict: APPROVE\`"
               echo "\`Drain-Review-Head: <40-character lowercase head SHA>\`"
               echo "\`Drain-Review-Artifact: <docs path or GitHub URL>\`"

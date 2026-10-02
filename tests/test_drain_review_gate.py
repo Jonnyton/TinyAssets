@@ -1826,3 +1826,25 @@ def test_a_submodule_change_ignored_by_config_still_changes_the_key(pr_repo: _Re
     pr_repo.git("update-index", "--cacheinfo", f"160000,{'2' * 40},sub")
     pr_repo.git("commit", "-q", "-m", "move gitlink")
     assert pr_repo.key() != added
+
+
+def test_every_pr_needs_a_review_receipt_to_enroll_or_pass_the_scope_guard() -> None:
+    """Not only drain/ branches: #4247 was armed and queued unreviewed on 2026-10-01.
+
+    The scope guard is the required check, and the merge queue does not re-run
+    its receipt step, so both callers must pass --require-receipt.
+    """
+    import yaml
+
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    enroll = yaml.safe_load((root / "auto-enroll-merge.yml").read_text("utf-8"))
+    enable = next(
+        s for s in enroll["jobs"]["enroll"]["steps"] if s.get("name") == "Enable auto-merge"
+    )
+    assert "python scripts/drain_review_gate.py --require-receipt" in enable["run"]
+
+    guard = yaml.safe_load((root / "pr-scope-guard.yml").read_text("utf-8"))
+    step = next(s for s in guard["jobs"]["scope"]["steps"]
+                if s.get("name") == "Require a current review receipt for every PR")
+    assert step["if"] == "github.event_name == 'pull_request_target'"
+    assert "python scripts/drain_review_gate.py --require-receipt" in step["run"]

@@ -119,7 +119,7 @@ jobs:
           echo "diff key: ${KEY:-<none>}"
           echo "key=${KEY}" >> "$GITHUB_OUTPUT"
 
-      - name: Require exact-head review for drain PRs
+      - name: Require a current review receipt for every PR
         if: github.event_name == 'pull_request_target'
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -130,7 +130,12 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body.md"
-          python scripts/drain_review_gate.py \
+          # EVERY PR (2026-10-02). This is a REQUIRED check and the merge
+          # queue does not re-run it (a merge-group run would grade itself),
+          # so PR time is the only place an unreviewed head can be stopped.
+          # Before, only drain/ branches needed a receipt here, and #4247 was
+          # queued unreviewed with a known data-loss bug.
+          python scripts/drain_review_gate.py --require-receipt \
             --branch "${HEAD_REF}" \
             --head "${HEAD_OID}" \
             --diff-key "${DIFF_KEY}" \
