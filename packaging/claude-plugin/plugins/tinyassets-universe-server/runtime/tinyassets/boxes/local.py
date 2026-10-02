@@ -315,6 +315,13 @@ class LocalBoxProvider:
         try:
             return os.open(name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=parent_fd)
         except FileNotFoundError:
+            # A dangling link reads as "not found" under some kernels (gVisor resolves it
+            # before honouring O_NOFOLLOW). It is a link either way: refuse it as one.
+            try:
+                if stat.S_ISLNK(os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode):
+                    raise BoxPathError(f"box path {path!r} crosses a link") from None
+            except FileNotFoundError:
+                pass
             if not create:
                 raise BoxNotFound(errno.ENOENT, f"no such box path: {path}") from None
             try:
@@ -397,6 +404,14 @@ class LocalBoxProvider:
         cc = self._check_cc(command_center_id)
         self._require_owner(cc, account_id)
         return BoxHandle(cc, account_id, self._state.epoch(cc), turn_id, owner_generation)
+
+    def is_idle(self, command_center_id: str) -> bool:
+        """Nothing runs and nothing is pending in this box right now (a snapshot)."""
+        cc = self._check_cc(command_center_id)
+        if self._state.pending(cc):
+            return False
+        with self._running_guard:
+            return not any(r.cc == cc for r in self._running.values())
 
     def try_fence_idle(self, command_center_id: str, *, owner_generation: int) -> bool:
         """Atomically: if nothing runs or is pending in the box, fence it at the generation.

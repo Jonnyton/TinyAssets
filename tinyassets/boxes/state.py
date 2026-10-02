@@ -60,6 +60,12 @@ _SCHEMA = (
     " incarnation INTEGER NOT NULL,"
     " outcome TEXT,"
     " PRIMARY KEY (command_center_id, op_id))",
+    "CREATE TABLE IF NOT EXISTS slots ("
+    " command_center_id TEXT PRIMARY KEY,"
+    " slot INTEGER NOT NULL UNIQUE)",
+    "CREATE TABLE IF NOT EXISTS generation_bases ("
+    " command_center_id TEXT PRIMARY KEY,"
+    " base INTEGER NOT NULL)",
     "CREATE TABLE IF NOT EXISTS fences ("
     " command_center_id TEXT PRIMARY KEY,"
     " owner_generation INTEGER NOT NULL)",
@@ -282,6 +288,51 @@ class BoxHostState:
             return None
         return {"kind": row[0], "state": row[1],
                 "outcome": json.loads(row[2]) if row[2] else None}
+
+    def observe_generation(self, cc: str, generation: int) -> None:
+        """Raise the box's generation to ``generation`` if it is higher (never lowers it)."""
+        with self._lock, self._conn() as conn:
+            _, gen = self._row(conn, cc)
+            if generation > gen:
+                conn.execute("UPDATE boxes SET generation = ? WHERE command_center_id = ?",
+                             (generation, cc))
+
+    def bump_all_generations(self) -> None:
+        """A new box host: anything a box did after it was last observed is unknown."""
+        with self._lock, self._conn() as conn:
+            conn.execute("UPDATE boxes SET generation = generation + 1")
+
+    def slot(self, cc: str) -> int:
+        """A small integer that is this box's alone, for as long as the host keeps state.
+
+        Isolating drivers derive per-box host identities from it (a uid range, a disk
+        quota project), so two boxes never share one. Allocated once, never reused.
+        """
+        with self._lock, self._conn() as conn:
+            row = conn.execute(
+                "SELECT slot FROM slots WHERE command_center_id = ?", (cc,)).fetchone()
+            if row is not None:
+                return int(row[0])
+            top = conn.execute("SELECT COALESCE(MAX(slot), 0) FROM slots").fetchone()[0]
+            conn.execute("INSERT INTO slots (command_center_id, slot) VALUES (?, ?)",
+                         (cc, int(top) + 1))
+            return int(top) + 1
+
+    def generation_base(self, cc: str) -> int:
+        """For drivers whose box counts its own generation: the host's offset for it."""
+        with self._lock, self._conn() as conn:
+            row = conn.execute(
+                "SELECT base FROM generation_bases WHERE command_center_id = ?", (cc,)
+            ).fetchone()
+        return 0 if row is None else int(row[0])
+
+    def set_generation_base(self, cc: str, base: int) -> None:
+        with self._lock, self._conn() as conn:
+            conn.execute(
+                "INSERT INTO generation_bases (command_center_id, base) VALUES (?, ?)"
+                " ON CONFLICT(command_center_id) DO UPDATE SET base = excluded.base",
+                (cc, base),
+            )
 
     def owner_fence(self, cc: str) -> int | None:
         with self._lock, self._conn() as conn:

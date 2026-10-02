@@ -100,6 +100,12 @@ The local driver declares no bound (`bound_bytes is None`), so the bound test sk
 stated reason. Drivers that declare a bound must pass it: gVisor through an XFS project quota,
 Firecracker through the image size.
 
+The gVisor driver takes `disk_bound_bytes` and the XFS mount that holds the boxes. It refuses to
+start if `xfs_quota` reports project-quota enforcement off, because a bound that would not hold
+must not be declared. Each box's directory becomes its own quota project (the box's slot), set
+inheriting, with `bhard` at the bound. The bound test passes on a loop-mounted XFS with
+`prjquota`: the full box fails its write, and the neighbour still writes.
+
 ## D7. Refute record and known limitations (three rounds, then escalate)
 
 **Refute history.** The gpt-6-astra refute returned REJECT in all three rounds.
@@ -130,3 +136,113 @@ The real containment is the next PR's job:
 - on the host side, each box runs in its own cgroup, killed as a unit.
 
 Until then, the local driver is documented as dev/test-only with these two gaps.
+
+**Closed by construction in the gVisor driver (PR 2).** Both gaps need the host to find
+processes it may not have recorded. The gVisor host never looks for processes. Every exec runs
+inside the box's sandbox, so it looks for boxes:
+- a new box host kills every sandbox under its runsc root before it serves anything;
+- destroy, and any call whose outcome is unknown, kill the whole sandbox.
+
+The spawn-to-record window cannot leak a process past a restart, because the restart ends the
+box it would be in. A leaderless group is just more processes in the box. Tests:
+`test_a_new_host_kills_every_box_the_crashed_host_left` (a SIGKILLed host subprocess) and
+`test_destroy_ends_a_detached_background_process_with_the_box` (`setsid sleep 300 &`).
+
+## D8. Bounded calls and the owner fence (every driver)
+
+**Bounded calls.** No caller-facing call waits without bound.
+- Every call takes the box lock with a deadline: the provider's `call_timeout_s` (default 30
+  s), or a tighter one set by `with provider.bounded(s):` for calls made on that thread.
+- A call that times out before it could have had any effect raises `BoxDeadlineBeforeStart`.
+  That is both a `BoxDeadline` and a `BoxOperationRefused`, so it never ran and its op id is
+  free.
+- A call that times out after it may have started raises `BoxDeadline`, whose outcome is
+  unknown. The gVisor host then ends the box, so nothing it was doing continues.
+- `cancel` never takes the box lock. It authenticates from the host record and signals the
+  exec, so a long export or a stuck call cannot delay it.
+
+The host's own bookkeeping (exec supervisors, destroy's continuation) uses the raw lock. It is
+never on a caller's path.
+
+**The owner fence.** `BoxHandle.owner_generation` carries the execution owner's lease
+generation for the command center (`target-architecture` D11, `execution-owner-lease`).
+- Writes, removes, imports, execs and destroy raise `StaleOwner` if the handle's generation is
+  below the box's fence. Reads are not fenced.
+- `try_fence_idle(cc, owner_generation)` is the handover's idle proof. Under the box lock, no
+  exec can start or finish. If nothing is pending or running, it raises the fence and returns
+  `True`. Otherwise it changes nothing and returns `False`.
+- An exec racing the fence therefore either starts first, and the fence sees it, or arrives
+  after, and is refused. The contract test runs that race 20 times. Exactly one side wins each
+  time.
+
+## D9. The gVisor driver: identify, forward, kill the box
+
+The host side does three things, and nothing that would make it a second supervisor.
+- **Identify.** Owner, epoch, owner fence and op id are checked on the host, against the host's
+  own record. `boxd` trusts the host and does no authorization.
+- **Forward.** Each call is one connection to `boxd` over a socket bound into the sandbox
+  (`--host-uds=create`), framed by `tinyassets/rpc_frames.py`, the shared framing from
+  `control-plane-agent-loop` (#4299). The wire format is documented in `boxd.py`.
+  - Inside the box, `boxd` runs the local driver's core rooted at `/cc`. Path safety, exec
+    supervision, atomic writes and in-box CAS are the same code under gVisor's kernel.
+  - `stream`, `download` and `export` yield as frames arrive. Each first reply is read at the
+    call, so a refusal raises there, as with the local driver.
+- **Kill the box.** On destroy, on an unknown outcome, on host start, and on `suspend` (v1:
+  suspend is stop; checkpoint/restore is S5's).
+
+**`boxd` is not trusted.** It shares the box with the commands it runs, so a hostile command can
+replace it and forge replies. Nothing that crosses boxes, or that the host enforces, depends on
+those replies: ownership, epochs, the owner fence, op-id records and kill-the-box are all
+host-side. A forged reply can only misreport its own box, to its own owner. Error classes are
+mapped from a fixed set, and a refusal counts as "never ran" only when the reply also says
+`side_effect_state: none`.
+
+The wire keeps `rpc_frames`' conventions: upper-case ops; one `END` frame with `outcome`,
+`error_class` and `side_effect_state`; `deadline_ms` on the request. With one request per
+connection, cancelling a request is closing its connection, and cancelling an exec is its own
+request (`CANCEL_EXEC`).
+
+**Generations.** The box counts its own generation, atomically with each change, inside the
+box. The host adds a per-box base, so the generation a caller sees is base plus the box's
+count, and it only ever moves up:
+- every stop of a running box advances the host's last-reported generation, because the box
+  may have changed files after anyone last asked;
+- a restarted box counts from that point;
+- a new host advances every box's generation.
+
+CAS is checked inside the box, atomically with the write and with "no exec running"; the host
+only translates the expected generation. Contract tests: a CAS from before an exec wrote is a
+conflict, and an exec's change shows in the generation even after a suspend.
+
+**Per-box identity.** Each box gets a slot from the host record (`slots` table, allocated once,
+never reused). The slot gives the box its uid range (user-namespace mappings) and its XFS
+quota project. An earlier draft hashed the command-center id into 10,000 slots. That collides
+by the birthday bound at around 100 boxes, and a shared uid range is a shared identity.
+
+**Findings from the container runs (2026-10-02):**
+- The rootfs must be a dedicated tree. Pointed at `/`, the sandbox's bind mounts were reported
+  mounted but not visible, and `boxd` could not import. A python-slim export works.
+- A cgroup memory limit without a swap limit is not a limit. A 1 GiB allocation succeeded in a
+  256 MiB box until `memory.swap` was set equal to the limit.
+- No network is three independent layers: `--network=none`, the box's own network namespace,
+  and gVisor not passing host interfaces into a user-namespaced sandbox. Removing any one, or
+  the first two together, still leaves the box with no interfaces. The no-network test can only
+  go red with all three gone, and that is by design.
+
+**Measured** (privileged container on the dev host, nested, runsc systrap, python-slim rootfs,
+512 MiB box):
+
+| Operation | p50 | max |
+|---|---|---|
+| box start to first answer | 468 ms | 1,927 ms |
+| exec `true`, start to exit | 41 ms | 46 ms |
+| 4 KiB write | 15 ms | 40 ms |
+| 4 KiB read | 3.5 ms | 4.7 ms |
+| stat | 1.6 ms | 3.2 ms |
+| committed_generation | 2.6 ms | 6.5 ms |
+| try_fence_idle | 4.2 ms | 7.0 ms |
+| destroy | 42 ms | (one run) |
+
+Against the spike (E4, a bare `runsc` start of 42–59 ms), box start is dominated by `boxd`'s
+python start inside the sandbox. A warm box pays per-call costs only. S5's snapshot restore is
+the answer to the start cost, not this driver.

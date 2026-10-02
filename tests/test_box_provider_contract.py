@@ -52,7 +52,33 @@ def _local(tmp_path: Path):
     )
 
 
-DRIVERS = {"local": _local}
+def _gvisor(tmp_path: Path):
+    """Rootful runsc on a Linux box host. Opt in with TINYASSETS_BOX_GVISOR_ROOTFS=<rootfs
+    holding python3>; the repo is bound read-only into each box as the boxd package."""
+    from tinyassets.boxes.gvisor import GVisorBoxProvider
+
+    rootfs = os.environ.get("TINYASSETS_BOX_GVISOR_ROOTFS")
+    if not rootfs or not POSIX or os.geteuid() != 0:
+        pytest.skip("gVisor driver: needs root and TINYASSETS_BOX_GVISOR_ROOTFS")
+    # Given an XFS mount with project quotas, the boxes live there with a hard bound.
+    xfs = os.environ.get("TINYASSETS_BOX_XFS_ROOT")
+    boxes = Path(xfs) / tmp_path.name if xfs else tmp_path / "boxes"
+    driver = GVisorBoxProvider(
+        boxes_root=boxes, state_dir=tmp_path / "state", owner_of=OWNERS.get,
+        disk_bound_bytes=(8 << 20) if xfs else None, quota_mount=Path(xfs) if xfs else None,
+        rootfs=Path(rootfs), package_dir=Path(__file__).resolve().parents[1],
+        runsc=os.environ.get("TINYASSETS_BOX_RUNSC", "runsc"),
+        python=os.environ.get("TINYASSETS_BOX_PYTHON", "/usr/bin/python3"),
+        extra_runsc_flags=tuple(os.environ.get("TINYASSETS_BOX_RUNSC_FLAGS", "").split()),
+    )
+    if xfs:  # every test's host counts slots from 1: free the shared quota projects
+        import shutil
+
+        driver.test_cleanups = [lambda: shutil.rmtree(boxes, ignore_errors=True)]
+    return driver
+
+
+DRIVERS = {"local": _local, "gvisor": _gvisor}
 
 
 @pytest.fixture(params=sorted(DRIVERS))
@@ -62,6 +88,8 @@ def provider(request, tmp_path):
     driver = DRIVERS[request.param](tmp_path)
     yield driver
     driver.close()
+    for cleanup in getattr(driver, "test_cleanups", ()):
+        cleanup()
 
 
 def _drain(provider, handle, exec_id, timeout=15.0):
@@ -395,7 +423,7 @@ def test_import_refuses_traversal_and_link_members(provider):
 def test_box_disk_bound_contains_a_full_box(provider):
     handle = provider.bind("cc-a", account_id="acct-a")
     if provider.usage(handle).bound_bytes is None:
-        pytest.skip("this driver declares no disk bound (local dev driver)")
+        pytest.skip("this driver, as configured here, declares no disk bound")
     bound = provider.usage(handle).bound_bytes
     exec_id = provider.start_exec(handle, "e1", ["sh", "-c", f"head -c {bound + 4096} "
                                                  "/dev/zero > fill.bin"])
@@ -485,3 +513,27 @@ def test_an_exec_racing_the_fence_never_both_proceed(provider):
             provider.cancel(old, results["exec"])
             _drain(provider, old, results["exec"])
             assert provider.try_fence_idle("cc-a", owner_generation=11 + i) is True
+
+
+@needs_posix
+def test_a_cas_from_before_an_exec_wrote_is_a_conflict(provider):
+    handle = provider.bind("cc-a", account_id="acct-a")
+    seen = provider.write(handle, "w1", "/cc/a.txt", b"mine", max_bytes=10).generation
+    exec_id = provider.start_exec(handle, "e1", ["sh", "-c", "echo theirs > a.txt"])
+    _drain(provider, handle, exec_id)
+    # the exec changed the file after `seen`: a cas on `seen` must not overwrite it
+    with pytest.raises(WriteConflict):
+        provider.write(handle, "w2", "/cc/a.txt", b"lost", max_bytes=10, mode=WriteMode.CAS,
+                       expect_generation=seen)
+    assert provider.read(handle, "/cc/a.txt", max_bytes=10).data == b"theirs\n"
+    assert provider.committed_generation(handle) > seen
+
+
+@needs_posix
+def test_what_an_exec_changed_shows_in_the_generation_even_after_a_suspend(provider):
+    handle = provider.bind("cc-a", account_id="acct-a")
+    seen = provider.write(handle, "w1", "/cc/a.txt", b"mine", max_bytes=10).generation
+    exec_id = provider.start_exec(handle, "e1", ["sh", "-c", "echo more > b.txt"])
+    _drain(provider, handle, exec_id)
+    provider.suspend(handle)  # nobody asked for the generation before the box stopped
+    assert provider.committed_generation(handle) > seen
