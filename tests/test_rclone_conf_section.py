@@ -74,3 +74,28 @@ def test_refuses_to_write_through_a_symlink(tmp_path):
                             capture_output=True, text=True)
     assert result.returncode != 0
     assert target.read_text(encoding="utf-8") == SPACES
+
+
+def test_untouched_crlf_sections_survive_byte_for_byte(tmp_path):
+    conf = tmp_path / "rclone.conf"
+    original = SPACES.replace("\n", "\r\n").encode("utf-8")
+    conf.write_bytes(original)
+    section = tmp_path / "s"
+    section.write_text(OFFREGION, encoding="utf-8")
+    subprocess.run([sys.executable, str(SCRIPT), "add", str(conf), str(section)], check=True)
+    assert conf.read_bytes().startswith(original)
+
+
+def test_headers_are_recognised_the_way_rclone_trims_them():
+    """goconfig trims whitespace around a header and its name (Codex on #4279)."""
+    messy = SPACES + "  [ offregion ]  \ntype = s3\naccess_key_id = OLD\n"
+    out = rcs.add(messy, OFFREGION)
+    assert out.count("offregion") == 1, "the messy spelling must be replaced, not duplicated"
+    assert "OLD" not in out
+    assert rcs.remove(messy, "offregion").strip() == SPACES.strip()
+
+
+def test_removing_offregion_keeps_an_indented_spaces_section():
+    conf = OFFREGION + " [spaces]\ntype = s3\n"
+    out = rcs.remove(conf, "offregion")
+    assert "[spaces]" in out and "type = s3" in out

@@ -239,6 +239,10 @@ log "  upload OK"
 # copy a regional loss leaves nothing to restore. Not configured is loud but
 # not fatal, because install-host-services converges it and the lag alarm
 # reports its age.
+# The failure is recorded, not raised here: the GitHub brain copy and both
+# destinations' retention below are independent of it and still run. The exit
+# status is set at the very end (Codex on #4279).
+OFFREGION_FAILED=0
 if [[ -n "${BACKUP_OFFREGION_DEST:-}" ]]; then
     for offregion_path in "${BRAIN_PATH}" "${TAR_PATH}"; do
         offregion_name="$(basename "${offregion_path}")"
@@ -246,11 +250,12 @@ if [[ -n "${BACKUP_OFFREGION_DEST:-}" ]]; then
         if ! rclone copyto --contimeout 60s --timeout 900s \
                 "${offregion_path}" "${BACKUP_OFFREGION_DEST}/${offregion_name}"; then
             log "ERROR: off-region rclone upload failed: ${offregion_name}"
-            rm -f "${TAR_PATH}" "${BRAIN_PATH}"
-            exit 3
+            OFFREGION_FAILED=1
         fi
     done
-    log "  off-region upload OK"
+    if [[ "${OFFREGION_FAILED}" -eq 0 ]]; then
+        log "  off-region upload OK"
+    fi
 else
     log "WARN: BACKUP_OFFREGION_DEST is not set; this backup has NO off-region copy"
 fi
@@ -323,6 +328,10 @@ if [[ -n "${BACKUP_OFFREGION_DEST:-}" ]]; then
 fi
 set -eo pipefail
 
+if [[ "${OFFREGION_FAILED}" -ne 0 ]]; then
+    log "ERROR: backup finished WITHOUT its off-region copy (see the upload error above)"
+    exit 3
+fi
 if [[ "${prune_status}" -ne 0 ]]; then
     log "WARN: retention prune exited ${prune_status} (backup itself succeeded)"
     exit 4

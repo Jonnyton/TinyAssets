@@ -391,7 +391,9 @@ jobs:
               END { print value }
             ' "${env_file}" 2>/dev/null || true
           )"
-          section_count="$(grep -c '^\[offregion\]$' "${config}" 2>/dev/null || true)"
+          # rclone (goconfig) trims whitespace around a header, so count every
+          # spelling it would treat as [offregion], not just the canonical one.
+          section_count="$(grep -cE '^[[:space:]]*\[[[:space:]]*offregion[[:space:]]*\][[:space:]]*$' "${config}" 2>/dev/null || true)"
           section_count="${section_count:-0}"
           if [[ "${assignment_count}" == "1" &&
             "${configured_destination}" == "${expected_destination}" &&
@@ -446,12 +448,58 @@ jobs:
             # $1 = access key id; prints nothing secret; returns non-zero unless 204.
             local status rc
             status="$(
-              curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+              curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X DELETE \
                 -H @"${api_header_file}" \
                 "https://api.digitalocean.com/v2/spaces/keys/$1"
             )"
             rc=$?
             [[ "${rc}" -eq 0 && "${status}" == "204" ]]
+          }
+
+          reconcile_bootstrap_keys() {
+            # Independent of any tracked id: delete EVERY key whose name marks it a
+            # bootstrap key, from this run or an earlier one that was cancelled,
+            # lost its runner, or lost the POST response (Codex on #4279). Returns
+            # non-zero if any such key could not be listed or deleted.
+            local list_file listed rc
+            list_file="$(mktemp)"
+            chmod 600 "${list_file}"
+            listed="$(
+              curl -sS --max-time 30 --max-filesize 1048576 -o "${list_file}" \
+                -w '%{http_code}' -H @"${api_header_file}" \
+                "https://api.digitalocean.com/v2/spaces/keys?per_page=200"
+            )"
+            rc=$?
+            if [[ "${rc}" -ne 0 || "${listed}" != "200" ]]; then
+              rm -f "${list_file}"
+              echo "::error::Could not list Spaces keys to reconcile bootstrap keys (HTTP ${listed})."
+              return 1
+            fi
+            local failed=0 key_id
+            while read -r key_id; do
+              [[ -n "${key_id}" ]] || continue
+              echo "::add-mask::${key_id}"
+              if ! delete_key "${key_id}"; then
+                echo "::error::A leftover bootstrap fullaccess key could not be deleted; delete keys named tinyassets-offregion-bootstrap-* in the DO console."
+                failed=1
+              fi
+            done < <(python - "${list_file}" <<'OFFREGION_LIST_PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              payload = json.load(handle)
+          for key in payload.get("keys") or []:
+              name = key.get("name") if isinstance(key, dict) else None
+              access = key.get("access_key") if isinstance(key, dict) else None
+              if (isinstance(name, str) and name.startswith("tinyassets-offregion-bootstrap-")
+                      and isinstance(access, str) and re.fullmatch(r"[A-Za-z0-9]{8,128}", access)):
+                  print(access)
+          OFFREGION_LIST_PY
+            )
+            rm -f "${list_file}"
+            return "${failed}"
           }
 
           cleanup() {
@@ -464,9 +512,17 @@ jobs:
                 cleanup_failed=1
               fi
             fi
+            # Also by name: covers a POST whose response was lost before the id
+            # was recorded.
+            if [[ "${bootstrap_minted}" == "1" ]] && ! reconcile_bootstrap_keys; then
+              cleanup_failed=1
+            fi
             if [[ "${rc}" -ne 0 && -n "${created_access_key}" ]]; then
               if [[ -n "${remote_stage}" ]]; then
-                rollback_command="python3 $(printf '%q' "${remote_stage}/rclone_conf_section.py") remove /root/.config/rclone/rclone.conf offregion; bash $(printf '%q' "${remote_stage}/install-tinyassets-env.sh") delete BACKUP_OFFREGION_DEST"
+                # set -e: a failed section removal must not be reported as a
+                # rollback just because the env delete after it succeeded. The
+                # final checks verify the state the rollback claims.
+                rollback_command="set -euo pipefail; python3 $(printf '%q' "${remote_stage}/rclone_conf_section.py") remove /root/.config/rclone/rclone.conf offregion; bash $(printf '%q' "${remote_stage}/install-tinyassets-env.sh") delete BACKUP_OFFREGION_DEST; if grep -qE '^[[:space:]]*\\[[[:space:]]*offregion[[:space:]]*\\]' /root/.config/rclone/rclone.conf; then exit 1; fi; if grep -q '^BACKUP_OFFREGION_DEST=' /etc/tinyassets/env; then exit 1; fi"
                 if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                     "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                     "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 120 -- /bin/bash -lc $(printf '%q' "${rollback_command}")" \
@@ -484,10 +540,16 @@ jobs:
               fi
             fi
             if [[ -n "${remote_stage}" ]]; then
-              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              # The staged section holds a live readwrite credential: a failed
+              # removal is a failure, not a shrug (Codex on #4279).
+              if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                   "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                  "rm -rf -- $(printf '%q' "${remote_stage}")" \
-                  >/dev/null 2>&1 || true
+                  "rm -rf -- $(printf '%q' "${remote_stage}") && test ! -e $(printf '%q' "${remote_stage}")" \
+                  >/dev/null 2>&1
+              then
+                echo "::error::Could not remove the staged off-region credential at ${remote_stage} on the droplet; remove it by hand."
+                cleanup_failed=1
+              fi
             fi
             rm -f -- \
               "${response_file}" "${credentials_file}" "${section_file}" \
@@ -498,6 +560,10 @@ jobs:
             exit "${rc}"
           }
           trap cleanup EXIT
+          # A cancelled job gets SIGTERM; route it through the same cleanup.
+          trap 'exit 143' TERM
+          trap 'exit 130' INT
+          bootstrap_minted=0
 
           mint_key() {
             # $1 = JSON payload. Writes "access\nsecret" to credentials_file.
@@ -536,6 +602,9 @@ jobs:
           }
 
           # 1. Bucket: a short-lived fullaccess key, used once on the runner.
+          # First remove any bootstrap key an earlier, interrupted run left behind.
+          reconcile_bootstrap_keys
+          bootstrap_minted=1
           mint_key "$(printf '{"name":"%s","grants":[{"bucket":"","permission":"fullaccess"}]}' "${bootstrap_key_name}")"
           mapfile -t credentials < "${credentials_file}"
           [[ "${#credentials[@]}" -eq 2 ]]
@@ -561,12 +630,27 @@ jobs:
             echo "::error::Could not create or reach bucket ${bucket} in nyc3 (name taken by another account, or key propagation)."
             exit 1
           fi
+          # rclone mkdir also succeeds on BucketAlreadyExists (someone else's
+          # bucket), so prove ownership: our own bucket list must contain it.
+          if ! RCLONE_CONFIG_BOOT_TYPE=s3 RCLONE_CONFIG_BOOT_PROVIDER=DigitalOcean \
+              RCLONE_CONFIG_BOOT_ACCESS_KEY_ID="${credentials[0]}" \
+              RCLONE_CONFIG_BOOT_SECRET_ACCESS_KEY="${credentials[1]}" \
+              RCLONE_CONFIG_BOOT_ENDPOINT="${endpoint}" \
+              timeout --kill-after=1s 30s rclone lsd boot: --retries 1 --low-level-retries 1 2>/dev/null \
+              | awk '{print $NF}' | grep -qx "${bucket}"; then
+            echo "::error::Bucket ${bucket} exists but is not in this account's bucket list; refusing to use it."
+            exit 1
+          fi
           if ! delete_key "${bootstrap_access_key}"; then
             echo "::error::Bootstrap fullaccess Spaces key deletion failed."
             exit 1
           fi
           bootstrap_access_key=""
-          echo "Bucket ${bucket} (nyc3) ready; bootstrap key deleted."
+          if ! reconcile_bootstrap_keys; then
+            exit 1
+          fi
+          bootstrap_minted=0
+          echo "Bucket ${bucket} (nyc3) owned and ready; bootstrap key deleted."
 
           # 2. The droplet's per-bucket readwrite key.
           mint_key "$(printf '{"name":"%s","grants":[{"bucket":"%s","permission":"readwrite"}]}' "${key_name}" "${bucket}")"

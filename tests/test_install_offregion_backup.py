@@ -143,3 +143,46 @@ def test_state_classifier_is_fail_closed(tmp_path, env_text, conf_text, rclone_r
         capture_output=True, text=True,
     )
     assert result.stdout.strip() == expected, result.stderr
+
+
+def test_rollback_removes_the_section_fails_on_error_and_verifies_the_result():
+    cleanup = _run().split("cleanup() {", 1)[1].split("trap cleanup EXIT", 1)[0]
+    rollback = cleanup[cleanup.index("rollback_command="):].split("\n", 1)[0]
+    assert rollback.startswith('rollback_command="set -euo pipefail;')
+    assert 'rclone_conf_section.py") remove /root/.config/rclone/rclone.conf offregion' in rollback
+    assert "delete BACKUP_OFFREGION_DEST" in rollback
+    # verification runs as real commands, not `!`-negated ones set -e ignores
+    assert "then exit 1; fi" in rollback and "; ! grep" not in rollback
+
+
+def test_bootstrap_keys_are_reconciled_by_name_before_minting_and_on_cleanup():
+    run = _run()
+    main = run[run.index("trap cleanup EXIT"):]
+    assert main.index("reconcile_bootstrap_keys") < main.index('"permission":"fullaccess"')
+    cleanup = run.split("cleanup() {", 1)[1].split("trap cleanup EXIT", 1)[0]
+    assert "reconcile_bootstrap_keys" in cleanup
+    reconcile = run.split("reconcile_bootstrap_keys() {", 1)[1].split("\n}\n", 1)[0]
+    assert 'startswith("tinyassets-offregion-bootstrap-")' in reconcile
+    assert "--max-time 30" in reconcile
+
+
+def test_cancellation_and_hung_deletes_still_reach_cleanup():
+    run = _run()
+    assert "trap 'exit 143' TERM" in run and "trap 'exit 130' INT" in run
+    delete_fn = run.split("delete_key() {", 1)[1].split("\n}", 1)[0]
+    assert "--max-time 30" in delete_fn
+
+
+def test_bucket_ownership_is_proved_not_inferred_from_mkdir():
+    run = _run()
+    assert "rclone lsd boot:" in run
+    assert run.index("rclone lsd boot:") < run.index('"permission":"readwrite"')
+    assert "is not in this account's bucket list" in run
+
+
+def test_a_staged_credential_that_cannot_be_removed_is_a_failure():
+    cleanup = _run().split("cleanup() {", 1)[1].split("trap cleanup EXIT", 1)[0]
+    staged = cleanup[cleanup.index("# The staged section holds a live readwrite credential"):]
+    staged = staged.split("rm -f --", 1)[0]
+    assert "|| true" not in staged
+    assert "cleanup_failed=1" in staged

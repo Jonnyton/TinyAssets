@@ -100,11 +100,15 @@ def test_both_tiers_go_off_region_and_are_pruned_there(tmp_path):
     assert "lsf spaces:sfo3-bucket/backups/" in calls
 
 
-def test_a_failed_off_region_copy_fails_the_backup(tmp_path):
-    result, _, _ = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups",
-                        fail_offregion=True)
+def test_a_failed_off_region_copy_fails_the_backup_after_the_independent_work(tmp_path):
+    """The GitHub brain copy and retention still run; only then exit 3 (Codex on #4279)."""
+    result, calls, ships = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups",
+                                fail_offregion=True)
     assert result.returncode == 3
     assert "off-region rclone upload failed" in result.stdout
+    assert "WITHOUT its off-region copy" in result.stdout
+    assert len(ships) == 1, "the GitHub brain copy must still be shipped"
+    assert "lsf spaces:sfo3-bucket/backups/" in calls, "sfo3 retention must still run"
 
 
 def test_an_unconfigured_off_region_copy_is_loud(tmp_path):

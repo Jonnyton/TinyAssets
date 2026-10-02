@@ -20,7 +20,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-_HEADER = re.compile(r"^\[([^\]\r\n]+)\]\s*$")
+# rclone (goconfig) trims whitespace around the header and the name, so a
+# section rclone treats as [offregion] must be one this helper recognises too.
+_HEADER = re.compile(r"^\s*\[\s*([^\]\r\n]*?)\s*\]\s*$")
 
 
 def _split(text: str) -> list[tuple[str | None, list[str]]]:
@@ -56,12 +58,18 @@ def remove(text: str, name: str) -> str:
     return _join([b for b in _split(text) if b[0] != name])
 
 
+def _read(path: Path) -> str:
+    # newline="" keeps CRLF as written, so untouched sections stay byte-for-byte.
+    with path.open(encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
 def _write(path: Path, text: str) -> None:
     if path.is_symlink():
         raise SystemExit(f"refusing to write through a symlink: {path}")
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".rclone.conf.")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
@@ -80,9 +88,9 @@ def main(argv: list[str]) -> int:
     path = Path(conf)
     if action == "remove" and not path.exists():
         return 0
-    current = path.read_text(encoding="utf-8") if path.exists() else ""
+    current = _read(path) if path.exists() else ""
     if action == "add":
-        updated = add(current, Path(arg).read_text(encoding="utf-8"))
+        updated = add(current, _read(Path(arg)))
     else:
         updated = remove(current, arg)
     _write(path, updated)
