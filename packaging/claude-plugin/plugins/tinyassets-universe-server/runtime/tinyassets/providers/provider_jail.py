@@ -259,7 +259,13 @@ def default_view(
     mounts.extend(hidden_root_masks(root))
     if credential_dir is not None:
         own = credential_dir.resolve(strict=False)
-        if own.is_dir() and _within(own, root):
+        # A launch snapshot is a directory UNDER the platform runtime dir, never
+        # the universe root itself: a rebind of the root after the masks would
+        # re-expose every hidden entry the masks just hid (gpt-6-astra refute,
+        # 2026-10-01). So the rebind is accepted only for a strict descendant of
+        # ``.runtime``.
+        runtime = root / PLATFORM_RUNTIME_DIR
+        if own.is_dir() and own != root and _within(own, runtime):
             # Bound back read-write: the CLI writes its lock / session files
             # beside the credential exactly as it did before the jail.
             mounts.append(JailMount("bind", str(own), own))
