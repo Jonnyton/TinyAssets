@@ -10,21 +10,21 @@ Memory is the binding resource. Anthropic's Managed Agents split -- harness
 outside, sandbox for tools -- is the industry shape and cut p50 TTFT by 60%.
 
 The thin loop is that split, owned by us: the model loop runs as `asyncio`
-tasks in the always-on execution owner and calls the model only through the
-existing credential broker; tools run in the command center's box over a
+coroutines in the platform (the always-on execution owner once S8 lands) and
+calls the model only through the existing credential broker; tools run in the command center's box over a
 handle bound at turn start; no model credential ever enters the box.
 
 ## What Changes
 
-- `tinyassets/agent_loop/`: the execution owner's single event loop (turns are
-  tasks; the caller's context is carried in; cancelling the wait cancels the
-  turn; a loop-lag watchdog), the box tools, the owner reads, and the tool
-  router that sends each call to exactly one place.
+- `tinyassets/agent_loop/`: the box tools, the owner reads, and the tool
+  router that sends each call to exactly one place. Turns keep their own event
+  loop for now; one shared loop waits on a task-aware admission lock (design
+  decision 1).
 - `read`/`write`/`edit`/`bash` are forwarded to the turn's box through the
   `BoxProvider` contract (D2) by `op_id` = the call's journal position. A lost
   reply is asked about with the SAME `op_id`, once; anything unresolved is an
-  unknown outcome, the turn holds and nothing replays. `edit` writes only if
-  the file still has the bytes it read.
+  unknown outcome, the turn holds and nothing replays. `edit` refuses to write
+  when the file no longer has the bytes it read.
 - `history` and `activity` are answered by the loop, read-only, through the
   same domain reads and identity gates as the owner door and the engine; they
   never reach the box.
@@ -32,15 +32,14 @@ handle bound at turn start; no model credential ever enters the box.
   auto-review (harness D1) gate consequential actions exactly where they do
   today.
 - `AgentTurnCoordinator` opens its tools through the adapter when the adapter
-  provides them and passes the `op_id`; the journal is unchanged and is
-  written only by tasks on the owner loop.
+  provides them and passes the `op_id`; the journal is unchanged.
 - Opt-in switch `TINYASSETS_AGENT_LOOP=thin`. Unset, every path is today's.
 - `scripts/measure_agent_loop_memory.py`: resident memory per waiting turn,
   500 concurrent turns against a mock SSE server.
 
 Not in this change (owed by later PRs of this change, see `tasks.md`): model
-token streaming to the app (needs S6's streaming broker contract), the
-production box driver (S4), the S8a lease generation, CLI-in-box, retiring the
+token streaming to the app (needs S6's streaming broker contract), the shared
+loop (needs a task-aware admission lock), the production box driver (S4), the S8a lease generation, CLI-in-box, retiring the
 engine route for the four tools in production, the live proof and spec sync.
 
 ## Impact

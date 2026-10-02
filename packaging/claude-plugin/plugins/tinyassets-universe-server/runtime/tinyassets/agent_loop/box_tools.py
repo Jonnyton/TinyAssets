@@ -28,8 +28,10 @@ cancellation propagates.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
+import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -140,11 +142,17 @@ class BoxExecutor:
             except Exception:
                 raise _unknown() from None
 
-    def _collect(self, exec_id: Any, op_id: str, cap: int, stop: Callable[[], bool]) -> ExecOutcome:
-        """Read the execution's events to its end, resuming once by offset."""
+    def _collect(self, exec_id: Any, op_id: str, cap: int) -> ExecOutcome:
+        """Read the execution's events to its exit, resuming once by offset.
+
+        Only an ``exit`` event proves the execution ended. Past the output cap
+        the execution is cancelled and its remaining output discarded, but the
+        read continues until that exit arrives.
+        """
         output = bytearray()
         offset = 0
         resumed = False
+        capped = False
         while True:
             try:
                 for event in self._provider.stream(self._handle, exec_id, from_offset=offset):
@@ -152,16 +160,17 @@ class BoxExecutor:
                     if kind in ("stdout", "stderr"):
                         data = bytes(getattr(event, "data", b"") or b"")
                         offset = _event_offset(event, offset + len(data))
+                        if capped:
+                            continue
                         room = cap - len(output)
                         output += data[:max(room, 0)]
                         if len(data) > room:
+                            capped = True
                             self._provider.cancel(self._handle, exec_id)
-                            return ExecOutcome(bytes(output), None, "output_limit")
                     elif kind == "exit":
                         code = getattr(event, "code", None)
-                        return ExecOutcome(bytes(output), code if type(code) is int else None)
-                    if stop():
-                        return ExecOutcome(bytes(output), None, "cancelled")
+                        return ExecOutcome(bytes(output), code if type(code) is int else None,
+                                           "output_limit" if capped else None)
                 # A stream that ends without an exit event is a lost reply.
                 raise ConnectionError("box stream ended without an exit event")
             except Exception:
@@ -172,46 +181,83 @@ class BoxExecutor:
         status = None
         try:
             status = self._provider.exec_status(self._handle, op_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 - unresolved either way
             pass
         _LOG.warning("box execution outcome unresolved (status %r)", getattr(status, "state", None))
         raise _unknown()
 
     async def run(self, op_id: str, argv: Sequence[str], *, stdin: bytes | None = None,
                   wall_seconds: float, output_bytes: int = OUTPUT_BYTES) -> ExecOutcome:
-        """One execution; a timeout or a cancelled turn kills it in the box."""
+        """One execution; a timeout or a cancelled turn kills it in the box.
+
+        Every blocking provider call runs on a thread of its own, never a
+        shared executor, so a cancel can never queue behind the reads that are
+        waiting for it to land. A result that cannot be confirmed as ended is
+        an UNKNOWN outcome, never a completed one.
+        """
         if not isinstance(op_id, str) or not op_id:
             raise ValueError("an op_id is required")
-        exec_id = await asyncio.to_thread(self._start, op_id, argv, stdin)
-        stopping = False
-        collector = asyncio.ensure_future(asyncio.to_thread(
-            self._collect, exec_id, op_id, output_bytes, lambda: stopping,
-        ))
+        starting = _in_thread(self._start, op_id, argv, stdin)
+        try:
+            exec_id = await asyncio.shield(starting)
+        except asyncio.CancelledError:
+            # The box may accept the command after the turn was cancelled: wait
+            # for the reply (bounded) so the execution it names is cancelled too.
+            exec_id = await self._settle(starting)
+            if exec_id is not None:
+                await self._cancel(exec_id)
+            raise
+        collector = _in_thread(self._collect, exec_id, op_id, output_bytes)
         try:
             return await asyncio.wait_for(asyncio.shield(collector), wall_seconds)
         except TimeoutError:
-            stopping = True
             await self._cancel(exec_id)
-            outcome = await self._drain(collector)
-            output = outcome.output if outcome is not None else b""
-            return ExecOutcome(output, None, "timeout")
+            outcome = await self._settle(collector)
+            if outcome is None:
+                # Not confirmed ended: it may still be running, or have acted.
+                raise _unknown() from None
+            return ExecOutcome(outcome.output, outcome.exit_code, "timeout")
         except asyncio.CancelledError:
-            stopping = True
             await self._cancel(exec_id)
-            await self._drain(collector)
+            await self._settle(collector)
             raise
 
     async def _cancel(self, exec_id: Any) -> None:
         try:
-            await asyncio.to_thread(self._provider.cancel, self._handle, exec_id)
-        except Exception:  # noqa: BLE001 - the cancellation itself still propagates
+            await _in_thread(self._provider.cancel, self._handle, exec_id)
+        except Exception:  # noqa: BLE001 - an unconfirmed end is reported as unknown
             _LOG.warning("box cancel failed; the box host owns the execution now")
 
-    async def _drain(self, collector: asyncio.Future) -> ExecOutcome | None:
+    @staticmethod
+    async def _settle(future: asyncio.Future) -> Any:
+        """The future's result within the grace period, else ``None``."""
         try:
-            return await asyncio.wait_for(asyncio.shield(collector), _CANCEL_GRACE_SECONDS)
-        except BaseException:  # noqa: BLE001 - a stuck reader never blocks the turn's end
+            return await asyncio.wait_for(asyncio.shield(future), _CANCEL_GRACE_SECONDS)
+        except BaseException:  # noqa: BLE001 - a stuck call never blocks the turn's end
             return None
+
+
+def _in_thread(fn: Callable[..., Any], /, *args: Any) -> asyncio.Future:
+    """Run a blocking call on a fresh daemon thread; its result as a future."""
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+
+    def deliver(setter: Callable[[Any], None], value: Any) -> None:
+        if not future.done():
+            setter(value)
+
+    def work() -> None:
+        try:
+            result = fn(*args)
+        except BaseException as exc:  # noqa: BLE001 - delivered to the awaiting task
+            with contextlib.suppress(RuntimeError):  # the loop already closed
+                loop.call_soon_threadsafe(deliver, future.set_exception, exc)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(deliver, future.set_result, result)
+
+    threading.Thread(target=work, name="box-op", daemon=True).start()
+    return future
 
 
 # ── the four tools ──────────────────────────────────────────────────────────
@@ -243,8 +289,6 @@ def _trailer(outcome: ExecOutcome, wall: float, output_bytes: int) -> str:
         return f"[killed: ran longer than {wall:g}s]"
     if outcome.killed == "output_limit":
         return f"[killed: output passed {output_bytes} bytes]"
-    if outcome.killed == "cancelled":
-        return "[cancelled]"
     if outcome.exit_code is None:
         return "[exit code unknown]"
     if outcome.exit_code in (128 + 24, 128 + 9):
@@ -262,14 +306,22 @@ _READ = (
     'tail -n "+$2" -- "$1" | head -n "$3"'
 )
 _CAT = '[ -f "$1" ] || { echo "no such file: $1"; exit 1; }; cat -- "$1"'
-#: Temp file plus rename, so a reader never sees half a file. ``$2`` is the
-#: sha256 the file must still have (edit), or empty (write).
+#: The content lands in a temp file FIRST, then (edit only) the target's
+#: sha256 is checked and the temp file renamed over it, so a reader never sees
+#: half a file and the check sits right before the rename instead of before a
+#: transfer that can take seconds. ``$2`` is the sha256 the target must still
+#: have (edit), or empty (write). It narrows a concurrent writer's window to the
+#: check-to-rename gap; it is not an atomic compare-and-swap against an
+#: arbitrary process in the box. The atomic path is ``BoxProvider.write`` with
+#: ``expect_generation`` (D2) once the box host provides it.
 _WRITE = (
+    '[ -n "$2" ] || mkdir -p -- "$(dirname -- "$1")" || exit 1; '
+    't="$1.ta-write.$$"; cat > "$t" || { rm -f -- "$t"; exit 1; }; '
     'if [ -n "$2" ]; then '
     '[ -f "$1" ] && [ "$(sha256sum -- "$1" | cut -d" " -f1)" = "$2" ] '
-    '|| { echo "$1 changed while it was being edited; read it again"; exit 3; }; '
-    'else mkdir -p -- "$(dirname -- "$1")" || exit 1; fi; '
-    't="$1.ta-write.$$"; cat > "$t" && mv -f -- "$t" "$1" || { rm -f -- "$t"; exit 1; }'
+    '|| { rm -f -- "$t"; echo "$1 changed while it was being edited; read it again"; exit 3; }; '
+    'fi; '
+    'mv -f -- "$t" "$1" || { rm -f -- "$t"; exit 1; }'
 )
 
 

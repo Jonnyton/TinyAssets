@@ -14,24 +14,24 @@ turn lives and where its tools run.
 
 ## Decisions
 
-### 1. One event loop in the execution owner; a turn is a task on it
+### 1. Not yet one shared loop: each turn keeps its own event loop
 
-`ExecutionOwner` runs one `asyncio` loop on a daemon thread. A caller submits
-`turn.run()` and waits; the task is created with a copy of the caller's
-context, so the served request's identity, the owner's stop handle and the
-launch scope read exactly what `asyncio.run` on the caller's thread read.
-`run_coroutine_threadsafe` chains cancellation, so a cancelled wait cancels the
-task, which cancels the box execution and the model call under it.
+D6 wants every waiting turn as a task on ONE loop in the execution owner. The
+first head built that (`ExecutionOwner`: one loop thread, turns submitted in
+the caller's context) and the cross-family refute broke it with a reproduced
+failure: `ProviderAssignmentAdmission.shared()` is a reader/writer lock keyed
+by THREAD id and held across the whole provider call
+(`provider_assignment.py` `shared`, held from `served_provider_authority`).
+Two turns for one command center on one loop thread fail with "admission is
+not reentrant"; and once a writer (a credential deposit) is waiting, the next
+reader's `condition.wait()` blocks the loop thread itself, so the reader that
+holds the lock can never finish. The turn path also does synchronous SQLite
+work (journal, reservations) that would stall every turn on a shared loop.
 
-The broker is still request/close and synchronous, so a waiting round still
-holds an executor thread. The owner's default executor is sized for that
-(`TINYASSETS_AGENT_LOOP_THREADS`, default 512), not Python's ~32, which would
-queue the 33rd waiting turn. S6's streaming broker contract removes the thread.
-
-A shared loop has one new failure mode: synchronous work a turn does on the
-loop (a journal write waiting on SQLite's busy timeout) stalls every turn. The
-owner measures it rather than assuming it away: a watchdog records the worst
-scheduling lag and logs any stall over 1 s.
+So the thin loop runs where turns run today (`asyncio.run` on the claiming
+worker), and the shared loop is task 2.1: a task-aware, non-blocking admission
+plus journal writes off the loop, then turns as tasks on one loop. Nothing in
+the box or tool design depends on which loop a turn is on.
 
 ### 2. Tools are routed by name, once, never by the model
 
@@ -98,8 +98,10 @@ them (each folded by `agent_chat_codec.fold_chat_stream`):
 Command: `docker run --rm -v <tree>:/src:ro -w /src tinyassets-linux-oracle:<tag>
 python -B scripts/measure_agent_loop_memory.py --turns 500 [--context-kb 8]`.
 
-Read it with what it excludes: the transport is a direct streaming client to
-the mock, i.e. the loop side of S6's streaming broker. **Today's broker spawns
+Read it with what it excludes: the turns share one loop (the target shape;
+see decision 1 for why production turns do not yet), and the transport is a
+direct streaming client to the mock, i.e. the loop side of S6's streaming
+broker. **Today's broker spawns
 one worker process per in-flight round**: measured at 29 MiB RSS (18 MiB
 anonymous) just for its imports, before it resolves a credential. Until S6,
 that, not the loop, is the per-waiting-turn cost of an HTTP turn. Against the
@@ -108,13 +110,15 @@ share is two to three orders of magnitude smaller, inside the ~1 MB D6 estimated
 
 ## Risks
 
-- **Loop stalls.** Measured by the watchdog, not prevented. If production shows
-  stalls, the fix is moving the journal's SQLite writes off the loop, not a
-  loop per turn.
 - **Interface drift.** `BoxExec` is a structural subset of D2 written before
   the `BoxProvider` module landed; event and status attribute names
   (`kind`/`data`/`offset`/`code`, `state`) are assumptions to reconcile with
   the S4 driver.
+- **`edit` is not an atomic compare-and-swap against any process in the box.**
+  The temp file is filled before the hash check, so the window is the
+  check-to-rename gap, not the transfer; an arbitrary process writing in that
+  gap still loses. `BoxProvider.write(expect_generation=...)` is the atomic
+  path once the box host provides it.
 - **Two tool routes during the cutover.** While the switch is off the engine
   route serves the four tools; while it is on, the box does. No turn ever has
   both.

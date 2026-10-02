@@ -1,10 +1,9 @@
 """The thin loop for served chat, and the switch that selects it.
 
 ``TINYASSETS_AGENT_LOOP=thin`` routes an HTTP-protocol chat turn through the
-thin loop: the same :class:`AgentTurnCoordinator` and journal, run as a task on
-the execution owner (:mod:`.execution_owner`), with its tools opened by
-:func:`~.tool_session.open_loop_tools` -- box tools on a handle bound at turn
-start, owner reads in the loop, the rest on the engine route. Unset, or any
+thin loop: the same :class:`AgentTurnCoordinator` and journal, with its tools
+opened by :func:`~.tool_session.open_loop_tools` -- box tools on a handle bound
+at turn start, owner reads in the loop, the rest on the engine route. Unset, or any
 other value, keeps today's path. Native (CLI) turns are untouched either way:
 command adapters and file-OAuth CLIs keep running as CLIs (D6).
 

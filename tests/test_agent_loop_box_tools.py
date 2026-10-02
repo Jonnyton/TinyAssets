@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import inspect
 import os
 import shutil
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -131,6 +133,66 @@ def test_a_cancelled_turn_cancels_the_box_execution_then_propagates():
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+    run(scenario())
+    assert box.cancels == ["op"]
+
+
+def test_cancel_during_a_slow_start_still_cancels_what_the_box_accepted():
+    box = FakeBox()
+    box.hang = True
+    original = box.start_exec
+
+    def slow_start(*args, **kwargs):
+        time.sleep(0.5)  # the box accepts it, the reply is slow
+        return original(*args, **kwargs)
+
+    box.start_exec = slow_start
+
+    async def scenario():
+        task = asyncio.ensure_future(tools(box).bash("op", "make deploy"))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    run(scenario())
+    assert box.cancels == ["op"]
+
+
+def test_a_timeout_whose_end_is_unconfirmed_is_unknown_not_a_result(monkeypatch):
+    monkeypatch.setattr(box_tools, "_CANCEL_GRACE_SECONDS", 0.3)
+    box = FakeBox()
+    box.hang = True
+
+    def lost_cancel(h, exec_id):
+        box.cancels.append(exec_id)
+        raise ConnectionError("cancel reply lost")
+
+    box.cancel = lost_cancel
+    try:
+        with pytest.raises(EngineToolError) as raised:
+            run(tools(box).bash("op", "sleep 999", timeout=1))
+        assert raised.value.outcome == "unknown"
+        assert box.cancels == ["op"]
+    finally:
+        box.released.set()
+
+
+def test_cancel_never_queues_behind_the_reads_waiting_for_it():
+    box = FakeBox()
+    box.hang = True
+
+    async def scenario():
+        # One shared executor thread: a cancel on it would wait for the very
+        # read that is waiting for the cancel.
+        asyncio.get_running_loop().set_default_executor(
+            concurrent.futures.ThreadPoolExecutor(max_workers=1))
+        task = asyncio.ensure_future(tools(box).bash("op", "sleep 999"))
+        await asyncio.sleep(0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 3)
 
     run(scenario())
     assert box.cancels == ["op"]

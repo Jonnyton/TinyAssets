@@ -5,7 +5,6 @@ a scripted box and synthetic model wires (``test_interactive_http_agent``'s rig)
 from __future__ import annotations
 
 import json
-import threading
 
 import pytest
 
@@ -50,21 +49,6 @@ def test_box_tool_runs_in_the_bound_box_by_journal_op_id(agent):
     # Never forwarded to the engine route.
     assert agent.tools == []
     assert _last_tool_text(agent) == "box says hi\n[exit code 0]"
-
-
-def test_turn_runs_as_a_task_on_the_execution_owner(agent, monkeypatch):
-    seen = []
-    original = agent.box.start_exec
-
-    def spy(*args, **kwargs):
-        seen.append(threading.current_thread().name)
-        return original(*args, **kwargs)
-
-    agent.box.start_exec = spy
-    agent.tool_call = ("bash", '{"command": "true"}')
-    run(agent)
-    # The blocking box call ran on the owner's executor, not a turn-private loop.
-    assert seen and seen[0].startswith("agent-loop-io")
 
 
 def test_unknown_box_outcome_holds_the_turn_and_nothing_replays(agent):

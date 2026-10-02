@@ -4,7 +4,7 @@ These read the platform's own records of THIS command center -- its owner's
 retained conversation and its recent runs, through the same domain reads the
 owner door (``tinyassets.owner_door``) and the engine use. They are platform-visible records
 (target architecture D7: listing never wakes a box), so the loop serves them
-read-only in the execution owner and never forwards them to the box.
+read-only in the platform process and never forwards them to the box.
 
 Authority is the turn's: the owner the coordinator checked and the command
 center it is bound to. Neither tool takes a parameter naming either, and the

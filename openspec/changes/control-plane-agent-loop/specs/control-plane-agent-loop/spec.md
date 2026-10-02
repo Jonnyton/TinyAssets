@@ -1,21 +1,17 @@
 ## ADDED Requirements
 
-### Requirement: HTTP-protocol turns run as tasks in the execution owner
+### Requirement: Thin-loop turns call the model only through the broker
 When the thin loop is selected, a served turn on an HTTP model protocol SHALL
-run as an asyncio task on the execution owner's single event loop, with the
-submitting caller's context, and SHALL call the model only through the
-credential broker (`resolve_exact_scoped_proxy`). No model credential SHALL be
-held by the loop or passed to the box. Cancelling the caller's wait SHALL
-cancel the task.
+call the model only through the credential broker
+(`resolve_exact_scoped_proxy`). No model credential SHALL be held by the loop
+or passed to the box, and the loop SHALL NOT execute model output: it SHALL
+only route parsed tool calls by name.
 
-#### Scenario: a cancelled wait cancels the turn
-- **WHEN** the caller waiting on a thin-loop turn cancels its wait
-- **THEN** the turn's task is cancelled and any box execution it started is
-  cancelled in the box
-
-#### Scenario: the caller's context reaches the turn
-- **WHEN** two callers with different identities submit turns concurrently
-- **THEN** each turn reads its own caller's context and never the other's
+#### Scenario: a cancelled turn cancels its box execution
+- **WHEN** a thin-loop turn is cancelled while a box tool runs, including while
+  the box's reply to starting it is still outstanding
+- **THEN** the execution the box accepted is cancelled in the box and the call
+  is journaled as unknown
 
 ### Requirement: Box tools are forwarded to the turn's bound box by op_id
 The tools `read`, `write`, `edit` and `bash` SHALL execute in the turn's
@@ -23,9 +19,10 @@ command-center box through the `BoxProvider` contract, on a handle bound once
 at turn start for the turn's owner, command center and turn, and never looked
 up per call. Each call SHALL carry an `op_id` derived from its journal
 position. A lost reply SHALL be resolved only by asking again with the same
-`op_id`; an outcome still unresolved SHALL be recorded as unknown, the turn
-SHALL hold, and the operation SHALL NOT be re-issued. An `edit` SHALL write
-only if the file still holds the bytes it read.
+`op_id`; an outcome still unresolved, including a timed-out execution whose
+end the box does not confirm, SHALL be recorded as unknown, the turn SHALL
+hold, and the operation SHALL NOT be re-issued. An `edit` SHALL refuse to
+write when the file no longer holds the bytes it read.
 
 #### Scenario: a lost reply runs once
 - **WHEN** the reply to a box tool's `start_exec` is lost
