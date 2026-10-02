@@ -2012,8 +2012,10 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
 
         await tinyassets.whoami()                  -> {universe_id, universe_name}
         await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
-        await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
-        await tinyassets.readConversation(limit, before) -> {turns:[{speaker,text,at}],
+                  # "main" first; selected = the agent the chat talks to now
+        await tinyassets.openChat(agent)           -> opens the chat with that agent
+        await tinyassets.sendMessage(text, agent)  -> sends a turn, as them, to that agent
+        await tinyassets.readConversation(limit, before, agent) -> {turns:[{speaker,text,at}],
                   has_more, next_before}   # pass next_before as `before` for older
         await tinyassets.listAutomations()         -> {automations:[{automation_id,name,
                   branch_id,trigger,state,last_run_id,last_result,next_due_at,...}]}
@@ -2046,10 +2048,12 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     where every id differs, so a UI finds its agents by automation or workflow
     NAME, never by an id written into its code.
 
-    Anything else it calls is refused by name. ``sendMessage`` reaches the
-    command center's currently selected conversation; naming a different agent is refused
-    rather than quietly redirected, so a room-per-agent screen should call
-    ``listAgents()`` and act on ``selected`` instead of assuming. Arranging,
+    Anything else it calls is refused by name. Each agent has its own thread
+    and they share one brain. ``agent`` is an ``agent_id`` or name from
+    ``listAgents()``; omitted, it is the agent the chat talks to now. Naming
+    one opens the chat with that agent, so a room-per-agent screen calls
+    ``openChat(agent)`` when the person picks a room. A name that is not one of
+    their agents is refused, never sent to another. Arranging,
     spacing and choosing which conversation design answers are all things a UI
     I build can do; the app has no separate design or layout screen.
 
