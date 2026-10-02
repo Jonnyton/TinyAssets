@@ -164,3 +164,66 @@ share is two to three orders of magnitude smaller, inside the ~1 MB D6 estimated
   threads bypassed the bound. Both fixed in c6418af3 (directory lock, cancel
   slots), each with a test that is red on the old code; NOT re-reviewed, per
   the three-round cap. Taken to the lead with this list.
+
+## PR 2 shape (tasks 2.1, 2.2), proposed before any code
+
+PR 1's three REJECT rounds all came from one source. A **synchronous,
+possibly never-returning** box interface was wrapped in threads, and every
+round exposed another way a thread or a late reply could escape its turn. So
+the fixes layered: per-op threads, slots, a launch lock, cancel slots. PR 2
+removes that cause rather than adding another layer.
+
+### 2.1 Box operations are bounded awaitables, by contract
+
+- **The bound moves into the box contract.** #4274's `stream(timeout=)` ends
+  its iterator within the timeout, with no exit event if the execution is
+  still running. `start_exec` and `cancel` are short local operations on the
+  box host. PR 2 states the requirement explicitly, as a contract the driver
+  owns: **every `BoxProvider` call returns within a bounded time.**
+- **The executor collapses to one coroutine per execution:**
+  - `start_exec(op_id)` is awaited;
+  - then a loop of `stream(from_offset, timeout=SLICE)` slices, each awaited
+    on the turn's executor;
+  - the wall clock and the turn's cancellation are checked between slices;
+  - a timeout or cancel awaits `cancel` and keeps slicing to the exit event
+    within a grace period, else the outcome is unknown.
+- **No per-op threads, no slots, no `_Launch` lock.** A cancelled slice
+  strands a worker for at most `SLICE`. A cancel during start awaits the start
+  (bounded), then cancels what it named.
+- **Lost replies** keep PR 1's rule: same `op_id`, once, else unknown.
+- **What this deletes:** `_in_thread`, `_BOX_CALL_SLOTS`, `_BOX_CANCEL_SLOTS`
+  and `_Launch`. Their tests become slice-and-resume tests.
+
+### 2.2 The provider-assignment admission never spans an `await`
+
+- **The cause.** `_authorize_served_provider_call` holds
+  `ProviderAssignmentAdmission.shared()`, a thread-keyed reader/writer lock,
+  across `yield authority`, and so across the whole provider call. That hold
+  breaks a shared loop (decision 1).
+- **Proposal: shrink the critical section, don't redesign the lock.** For an
+  HTTP turn (no credential snapshot), the admission covers authorization and
+  the pre-launch fence, and is released before the coroutine awaits the
+  broker.
+  - **Why the hold isn't needed for HTTP.** The broker re-validates the grant,
+    the connection and revocation on its own request (I14 makes that per
+    stream).
+  - **What the hold still matters for.** It protects a CLI launch's
+    credential snapshot, so a CLI path keeps it, on the CLI's own thread.
+- **Consequence.** No task holds the lock across a suspension point, so tasks
+  sharing one loop thread can never interleave inside it. The thread-keyed
+  reentrancy guard stays correct, and the deadlock (a reader on the loop
+  waiting behind a writer that waits for another reader on the same loop) has
+  no holder to wait on.
+- **Writers.** A writer on another thread can still make a reader briefly
+  block the loop thread. That is a short synchronous section, measured by the
+  lag watchdog rather than assumed away.
+- **Open question for review: binding races.** With the hold released before
+  the launch, a binding generation changed by a concurrent
+  `provider_serving_binding` writer could interleave between authorization
+  and the HTTP request. PR 2 must show what catches that (the reservation's
+  binding digest, the broker's grant check, or a launch-time recheck) before
+  it ships. If nothing does, a recheck right before the broker call is added.
+- **Journal off the loop.** `AgentTurnJournal` writes are SQLite transactions
+  with a busy timeout. The coordinator awaits them through
+  `asyncio.to_thread`, without editing the journal module, which #4228 is
+  changing.
