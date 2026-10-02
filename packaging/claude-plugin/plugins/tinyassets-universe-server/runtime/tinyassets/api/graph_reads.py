@@ -32,6 +32,7 @@ from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import goals as _goals_impl
 from tinyassets.api.status import get_status as _get_status_impl
 from tinyassets.api.universe import _universe_impl
+from tinyassets.command_center_names import internal_value
 
 #: Targets that list rows and so take a page size. The dispatch has no default
 #: for it: a caller that lists names its page.
@@ -79,7 +80,7 @@ def read_graph(
     docstring is the public tool contract). ``limit`` has no default here; see
     ``PAGED_TARGETS``.
     """
-    normalized = (target or "status").strip().lower()
+    normalized = str(internal_value((target or "status").strip().lower()))
     if normalized in PAGED_TARGETS and limit is None:
         # No default page. A page size nobody asked for is a silent cut of the
         # owner's own rows; the caller names the page it wants (the connector
@@ -349,8 +350,8 @@ def read_graph(
             "agent_bindings",
             "agent_binding",
             "app_ui",
-            "universe_file",
-            "universe_files",
+            "command_center_file",
+            "command_center_files",
             "receiver",
             "receivers",
             "output_links",
