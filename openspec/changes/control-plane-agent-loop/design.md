@@ -62,10 +62,26 @@ Only `BoxOperationRefused` -- the box host refusing BEFORE the operation
 existed (stale epoch, foreign handle) -- is reported as not sent, and only on
 the first attempt: refused on the retry means the first may have run.
 
-`edit` is two executions (`op_id/read`, `op_id/write`). The write carries the
-sha256 of the bytes read and the box writes only if the file still has them,
-via temp file and rename, so a concurrent `bash` or another agent of the same
-command center wins instead of being overwritten.
+`edit` is two executions (`op_id/read`, `op_id/write`). The write fills a
+temp file, then, under an exclusive `flock` on the target, checks that the
+target still has the sha256 of the bytes read and renames the temp file over
+it. A plain `write` renames under the same lock. Every write through the box
+tools is therefore ordered: of two edits that read the same bytes, the second
+finds the hash changed and refuses, and neither is silently lost
+(`test_concurrent_edits_never_silently_lose_one`, red with the lock removed).
+
+Every wait on the box is bounded and owned:
+
+- each blocking provider call runs on its own thread, so a cancel never queues
+  behind the reads waiting for it;
+- a cancel the box does not acknowledge within the grace period, and an
+  execution whose end is not confirmed by an `exit` event, are unknown
+  outcomes;
+- a `start_exec` reply that arrives after the turn stopped waiting, however
+  late, is cancelled by the thread that receives it (exactly one side cancels);
+- box calls in flight per process are bounded (`MAX_BOX_CALLS`); a box host
+  that stops answering exhausts the bound and new calls are refused before
+  they are sent, rather than threads accumulating.
 
 ### 4. The scripts are the tool jail's
 
@@ -114,11 +130,14 @@ share is two to three orders of magnitude smaller, inside the ~1 MB D6 estimated
   the `BoxProvider` module landed; event and status attribute names
   (`kind`/`data`/`offset`/`code`, `state`) are assumptions to reconcile with
   the S4 driver.
-- **`edit` is not an atomic compare-and-swap against any process in the box.**
-  The temp file is filled before the hash check, so the window is the
-  check-to-rename gap, not the transfer; an arbitrary process writing in that
-  gap still loses. `BoxProvider.write(expect_generation=...)` is the atomic
-  path once the box host provides it.
+- **The write lock orders the box tools, not every process in the box.** A
+  `bash` command that writes a file without taking the lock is not ordered
+  against an edit of it, the same residual any editor has. `flock`
+  (util-linux) is a box-image requirement; without it a write fails loudly.
+- **Stream reads must not block forever.** A box call that never returns keeps
+  its thread and its slot. The S4 driver must give `stream` an I/O deadline
+  (or end it on `cancel`), so a dead box host surfaces as an unknown outcome
+  instead of a slot leak.
 - **Two tool routes during the cutover.** While the switch is off the engine
   route serves the four tools; while it is on, the box does. No turn ever has
   both.

@@ -54,9 +54,15 @@ DEFAULT_READ_LINES = 2000
 DEFAULT_WALL_SECONDS = 120.0
 MAX_BASH_SECONDS = 600.0
 OUTPUT_BYTES = 64 * 1024
-#: How long a cancelled execution may take to report its end before the
-#: cancellation propagates anyway (the box host owns the kill).
+#: How long a cancel, or a cancelled execution's end, may take before the turn
+#: stops waiting for it (and reports the outcome as unknown).
 _CANCEL_GRACE_SECONDS = 5.0
+#: Box calls (starts and stream reads) that may be in flight in this process.
+#: A call the box host never answers keeps its slot, so a host that stops
+#: answering exhausts this bound and new calls are refused loudly, instead of
+#: threads accumulating without limit. Cancels are never refused.
+MAX_BOX_CALLS = 512
+_BOX_CALL_SLOTS = threading.BoundedSemaphore(MAX_BOX_CALLS)
 
 
 class BoxOperationRefused(RuntimeError):
@@ -191,56 +197,112 @@ class BoxExecutor:
         """One execution; a timeout or a cancelled turn kills it in the box.
 
         Every blocking provider call runs on a thread of its own, never a
-        shared executor, so a cancel can never queue behind the reads that are
-        waiting for it to land. A result that cannot be confirmed as ended is
-        an UNKNOWN outcome, never a completed one.
+        shared executor, so a cancel can never queue behind the reads waiting
+        for it to land, and every wait on the box is bounded. A result that
+        cannot be confirmed as ended is an UNKNOWN outcome, never a completed
+        one.
         """
         if not isinstance(op_id, str) or not op_id:
             raise ValueError("an op_id is required")
-        starting = _in_thread(self._start, op_id, argv, stdin)
+        launch = _Launch(self, op_id, argv, stdin)
         try:
-            exec_id = await asyncio.shield(starting)
+            exec_id = await _wait(launch.future)
         except asyncio.CancelledError:
-            # The box may accept the command after the turn was cancelled: wait
-            # for the reply (bounded) so the execution it names is cancelled too.
-            exec_id = await self._settle(starting)
-            if exec_id is not None:
-                await self._cancel(exec_id)
+            # The box may accept the command after the turn was cancelled.
+            # Exactly one side cancels it: this one if the reply is in, else
+            # the launching thread when the reply arrives, however late.
+            launch.abandon()
             raise
-        collector = _in_thread(self._collect, exec_id, op_id, output_bytes)
+        collector = _in_thread(self._collect, exec_id, op_id, output_bytes, slot=True)
         try:
-            return await asyncio.wait_for(asyncio.shield(collector), wall_seconds)
+            return await _wait(collector, timeout=wall_seconds)
         except TimeoutError:
-            await self._cancel(exec_id)
-            outcome = await self._settle(collector)
-            if outcome is None:
-                # Not confirmed ended: it may still be running, or have acted.
+            if not await self._cancel(exec_id):
+                raise _unknown() from None
+            try:
+                outcome = await _wait(collector, timeout=_CANCEL_GRACE_SECONDS)
+            except Exception:  # noqa: BLE001 - not confirmed ended
                 raise _unknown() from None
             return ExecOutcome(outcome.output, outcome.exit_code, "timeout")
         except asyncio.CancelledError:
             await self._cancel(exec_id)
-            await self._settle(collector)
             raise
 
-    async def _cancel(self, exec_id: Any) -> None:
+    async def _cancel(self, exec_id: Any) -> bool:
+        """Ask the box to kill the execution; ``True`` only if it acknowledged in time."""
         try:
-            await _in_thread(self._provider.cancel, self._handle, exec_id)
-        except Exception:  # noqa: BLE001 - an unconfirmed end is reported as unknown
-            _LOG.warning("box cancel failed; the box host owns the execution now")
+            await _wait(_in_thread(self._provider.cancel, self._handle, exec_id),
+                        timeout=_CANCEL_GRACE_SECONDS)
+            return True
+        except Exception:  # noqa: BLE001 - an unacknowledged cancel is reported as unknown
+            _LOG.warning("box cancel was not acknowledged; the outcome is unknown")
+            return False
 
-    @staticmethod
-    async def _settle(future: asyncio.Future) -> Any:
-        """The future's result within the grace period, else ``None``."""
+    def cancel_quietly(self, exec_id: Any) -> None:
+        """Cancel from a thread that has no turn to report to."""
         try:
-            return await asyncio.wait_for(asyncio.shield(future), _CANCEL_GRACE_SECONDS)
-        except BaseException:  # noqa: BLE001 - a stuck call never blocks the turn's end
-            return None
+            self._provider.cancel(self._handle, exec_id)
+        except Exception:  # noqa: BLE001 - the turn already recorded an unknown outcome
+            _LOG.warning("box cancel of an abandoned execution failed")
 
 
-def _in_thread(fn: Callable[..., Any], /, *args: Any) -> asyncio.Future:
-    """Run a blocking call on a fresh daemon thread; its result as a future."""
+class _Launch:
+    """One ``start_exec`` whose late reply is never orphaned.
+
+    If the turn stops waiting before the box answers, whichever side sees the
+    other's state second cancels the execution the box accepted: the turn, if
+    the exec id is already in; else the launching thread, when it arrives.
+    """
+
+    def __init__(self, executor: BoxExecutor, op_id: str, argv: Sequence[str],
+                 stdin: bytes | None) -> None:
+        self._executor = executor
+        self._lock = threading.Lock()
+        self._abandoned = False
+        self._exec_id: Any = None
+        self._started = False
+        self.future = _in_thread(self._run, op_id, argv, stdin, slot=True)
+
+    def _run(self, op_id: str, argv: Sequence[str], stdin: bytes | None) -> Any:
+        exec_id = self._executor._start(op_id, argv, stdin)
+        with self._lock:
+            self._started, self._exec_id = True, exec_id
+            abandoned = self._abandoned
+        if abandoned:
+            self._executor.cancel_quietly(exec_id)
+        return exec_id
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+            started, exec_id = self._started, self._exec_id
+        if started:
+            threading.Thread(target=self._executor.cancel_quietly, args=(exec_id,),
+                             name="box-cancel", daemon=True).start()
+
+
+async def _wait(future: asyncio.Future, *, timeout: float | None = None) -> Any:
+    """Await ``future`` without cancelling it: a timeout or a cancelled caller
+    leaves the box call to finish on its own thread, which owns its cleanup."""
+    done, _ = await asyncio.wait({future}, timeout=timeout)
+    if not done:
+        raise TimeoutError
+    return future.result()
+
+
+def _in_thread(fn: Callable[..., Any], /, *args: Any, slot: bool = False) -> asyncio.Future:
+    """Run a blocking call on a fresh daemon thread; its result as a future.
+
+    ``slot`` calls take one of :data:`MAX_BOX_CALLS`; none free means the box
+    host has stopped answering, and the call is refused before it is sent.
+    """
+    if slot and not _BOX_CALL_SLOTS.acquire(blocking=False):
+        raise BoxOperationRefused(
+            f"{MAX_BOX_CALLS} box calls are already waiting on the box host")
     loop = asyncio.get_running_loop()
     future: asyncio.Future = loop.create_future()
+    # A call nobody waits for any more must not report its failure as unhandled.
+    future.add_done_callback(lambda done: done.cancelled() or done.exception())
 
     def deliver(setter: Callable[[Any], None], value: Any) -> None:
         if not future.done():
@@ -255,8 +317,16 @@ def _in_thread(fn: Callable[..., Any], /, *args: Any) -> asyncio.Future:
         else:
             with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(deliver, future.set_result, result)
+        finally:
+            if slot:
+                _BOX_CALL_SLOTS.release()
 
-    threading.Thread(target=work, name="box-op", daemon=True).start()
+    try:
+        threading.Thread(target=work, name="box-op", daemon=True).start()
+    except BaseException:
+        if slot:
+            _BOX_CALL_SLOTS.release()
+        raise
     return future
 
 
@@ -306,22 +376,29 @@ _READ = (
     'tail -n "+$2" -- "$1" | head -n "$3"'
 )
 _CAT = '[ -f "$1" ] || { echo "no such file: $1"; exit 1; }; cat -- "$1"'
-#: The content lands in a temp file FIRST, then (edit only) the target's
-#: sha256 is checked and the temp file renamed over it, so a reader never sees
-#: half a file and the check sits right before the rename instead of before a
-#: transfer that can take seconds. ``$2`` is the sha256 the target must still
-#: have (edit), or empty (write). It narrows a concurrent writer's window to the
-#: check-to-rename gap; it is not an atomic compare-and-swap against an
-#: arbitrary process in the box. The atomic path is ``BoxProvider.write`` with
-#: ``expect_generation`` (D2) once the box host provides it.
+#: The content lands in a temp file first; the rename then happens under an
+#: exclusive ``flock`` on the target, so a reader never sees half a file and
+#: every write through these tools is ordered. ``$2`` is the sha256 the target
+#: must still have (edit), checked under the same lock, or empty (write).
+#: Two edits, or an edit and a write, can therefore never silently overwrite
+#: each other: the later one finds the hash changed and refuses. A process in
+#: the box that writes the file WITHOUT the lock (an arbitrary ``bash``
+#: command) is not ordered by it; that residual is the same as for any editor.
+#: ``flock`` (util-linux) is a box-image requirement; without it the write
+#: fails loudly rather than racing.
 _WRITE = (
     '[ -n "$2" ] || mkdir -p -- "$(dirname -- "$1")" || exit 1; '
     't="$1.ta-write.$$"; cat > "$t" || { rm -f -- "$t"; exit 1; }; '
     'if [ -n "$2" ]; then '
-    '[ -f "$1" ] && [ "$(sha256sum -- "$1" | cut -d" " -f1)" = "$2" ] '
-    '|| { rm -f -- "$t"; echo "$1 changed while it was being edited; read it again"; exit 3; }; '
-    'fi; '
-    'mv -f -- "$t" "$1" || { rm -f -- "$t"; exit 1; }'
+    '[ -f "$1" ] || { rm -f -- "$t"; echo "no such file: $1"; exit 1; }; '
+    'flock -x "$1" sh -c '
+    '\'[ "$(sha256sum -- "$1" | cut -d" " -f1)" = "$2" ] || exit 3; mv -f -- "$3" "$1"\' '
+    'sh "$1" "$2" "$t"; '
+    'elif [ -e "$1" ]; then flock -x "$1" mv -f -- "$t" "$1"; '
+    'else mv -f -- "$t" "$1"; fi; '
+    'rc=$?; [ "$rc" -eq 0 ] && exit 0; rm -f -- "$t"; '
+    '[ "$rc" -eq 3 ] && echo "$1 changed while it was being edited; read it again"; '
+    'exit "$rc"'
 )
 
 

@@ -21,8 +21,9 @@ up per call. Each call SHALL carry an `op_id` derived from its journal
 position. A lost reply SHALL be resolved only by asking again with the same
 `op_id`; an outcome still unresolved, including a timed-out execution whose
 end the box does not confirm, SHALL be recorded as unknown, the turn SHALL
-hold, and the operation SHALL NOT be re-issued. An `edit` SHALL refuse to
-write when the file no longer holds the bytes it read.
+hold, and the operation SHALL NOT be re-issued. Writes through the box tools
+SHALL be ordered, so that an `edit` refuses rather than overwrites when another
+write through the box tools changed the file after the edit read it.
 
 #### Scenario: a lost reply runs once
 - **WHEN** the reply to a box tool's `start_exec` is lost
@@ -60,3 +61,9 @@ not selected, every turn SHALL behave exactly as before this change.
 #### Scenario: switch off is today's path
 - **WHEN** `TINYASSETS_AGENT_LOOP` is unset
 - **THEN** the four tools are served by the engine route and no box is bound
+
+#### Scenario: two edits never silently lose one
+- **WHEN** several edits of one file run concurrently, each having read the
+  same bytes
+- **THEN** every edit that reports success is present in the final file, and
+  every other edit reports that the file changed

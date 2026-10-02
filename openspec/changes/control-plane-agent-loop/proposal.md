@@ -23,8 +23,9 @@ handle bound at turn start; no model credential ever enters the box.
 - `read`/`write`/`edit`/`bash` are forwarded to the turn's box through the
   `BoxProvider` contract (D2) by `op_id` = the call's journal position. A lost
   reply is asked about with the SAME `op_id`, once; anything unresolved is an
-  unknown outcome, the turn holds and nothing replays. `edit` refuses to write
-  when the file no longer has the bytes it read.
+  unknown outcome, the turn holds and nothing replays. Writes through the box
+  tools are ordered by a lock, so of two edits that read the same bytes the
+  second refuses instead of silently overwriting the first.
 - `history` and `activity` are answered by the loop, read-only, through the
   same domain reads and identity gates as the owner door and the engine; they
   never reach the box.

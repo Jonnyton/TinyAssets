@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -157,6 +158,10 @@ def test_cancel_during_a_slow_start_still_cancels_what_the_box_accepted():
             await task
 
     run(scenario())
+    # Cancelled by the launching thread when the box's reply lands.
+    deadline = time.monotonic() + 5
+    while not box.cancels and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert box.cancels == ["op"]
 
 
@@ -196,6 +201,63 @@ def test_cancel_never_queues_behind_the_reads_waiting_for_it():
 
     run(scenario())
     assert box.cancels == ["op"]
+
+
+def test_a_start_reply_arriving_after_the_turn_ended_is_still_cancelled():
+    box = FakeBox()
+    box.hang = True
+    original = box.start_exec
+    replied = threading.Event()
+
+    def very_slow_start(*args, **kwargs):
+        time.sleep(1.0)  # longer than anything the turn waits for
+        try:
+            return original(*args, **kwargs)
+        finally:
+            replied.set()
+
+    box.start_exec = very_slow_start
+
+    async def scenario():
+        task = asyncio.ensure_future(tools(box).bash("op", "make deploy"))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    run(scenario())  # the turn's loop is gone before the box answers
+    assert replied.wait(5)
+    deadline = time.monotonic() + 5
+    while not box.cancels and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert box.cancels == ["op"]
+
+
+def test_a_cancel_the_box_never_acknowledges_is_bounded_and_unknown(monkeypatch):
+    monkeypatch.setattr(box_tools, "_CANCEL_GRACE_SECONDS", 0.3)
+    box = FakeBox()
+    box.hang = True
+    stuck = threading.Event()
+    box.cancel = lambda h, exec_id: stuck.wait(30)
+    started = time.monotonic()
+    try:
+        with pytest.raises(EngineToolError) as raised:
+            run(tools(box).bash("op", "sleep 999", timeout=1))
+        assert raised.value.outcome == "unknown"
+        assert time.monotonic() - started < 3.0
+    finally:
+        stuck.set()
+        box.released.set()
+
+
+def test_a_box_host_that_stops_answering_exhausts_a_bound_not_the_process(monkeypatch):
+    slots = threading.BoundedSemaphore(1)
+    slots.acquire()
+    monkeypatch.setattr(box_tools, "_BOX_CALL_SLOTS", slots)
+    box = FakeBox()
+    with pytest.raises(BoxOperationRefused):
+        run(tools(box).bash("op", "true"))
+    assert box.starts == []
 
 
 def test_output_past_the_cap_kills_the_execution():
@@ -329,3 +391,26 @@ def test_exit_event_codes_map_to_the_jails_trailers():
     box.script = lambda argv, stdin: (b"", 137)
     assert run(tools(box).bash("op", "x")).endswith("[killed: a cpu time or memory limit]")
     assert exit_event(0).kind == "exit"
+
+
+@posix
+def test_concurrent_edits_never_silently_lose_one(tmp_path):
+    """Every edit that reports success is in the final file (the flock orders them)."""
+    target = tmp_path / "f.txt"
+    tokens = [f"t{i:02d}" for i in range(12)]
+    target.write_text(" ".join(tokens))
+    box = LocalBox()
+    t = tools(box, str(tmp_path))
+
+    async def scenario():
+        return await asyncio.gather(*(
+            t.edit(f"e{i}", "f.txt", token, token.upper()) for i, token in enumerate(tokens)))
+
+    results = run(scenario())
+    final = target.read_text()
+    succeeded = [tok for tok, res in zip(tokens, results) if res.startswith("edited")]
+    assert succeeded, results
+    for token in succeeded:
+        assert token.upper() in final, (token, results)
+    for token, res in zip(tokens, results):
+        assert res.startswith("edited") or "changed while it was being edited" in res, res

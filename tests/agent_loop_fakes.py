@@ -56,16 +56,19 @@ class FakeBox:
     def start_exec(self, h, op_id, argv, *, stdin=None, env=None, cwd="/cc", limits=None):
         with self.lock:
             self.starts.append(op_id)
-            if op_id not in self.execs:
-                record = Exec(op_id, list(argv), stdin, cwd)
-                data, code = self.script(list(argv), stdin)
-                record.events = [out(data, len(data)), exit_event(code)] if data else [
-                    exit_event(code)]
-                self.execs[op_id] = record
+            first = op_id not in self.execs
+            if first:
+                self.execs[op_id] = Exec(op_id, list(argv), stdin, cwd)
+        if first:
+            # Outside the lock: concurrent executions really run concurrently.
+            data, code = self.script(list(argv), stdin)
+            self.execs[op_id].events = (
+                [out(data, len(data)), exit_event(code)] if data else [exit_event(code)])
+        with self.lock:
             if self.fail_start:
                 self.fail_start -= 1
                 raise ConnectionError("synthetic lost reply")
-            return op_id
+        return op_id
 
     def stream(self, h, exec_id, *, from_offset=0):
         record = self.execs[exec_id]
