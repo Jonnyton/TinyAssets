@@ -15,8 +15,6 @@ import shutil
 import subprocess
 import tempfile
 
-import pytest
-
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
 
@@ -76,8 +74,7 @@ OPENROUTER_DETAIL = ("Daily quota exhausted. Reset: 2026-10-02 00:00 UTC. "
 
 def _run(steps: str, setup=None, extra_source: str = "") -> dict:
     node = shutil.which("node")
-    if not node:  # pragma: no cover - the shipped page is JavaScript
-        pytest.skip("node is required to execute the shipped page")
+    assert node, "node is required to execute the shipped page"
     html, _ = render_app_html()
     source = html[html.index(_START) + len(_START):html.index(_END)] + extra_source
     program = (HARNESS.replace("__SETUP__", json.dumps(SETUP if setup is None else setup))
