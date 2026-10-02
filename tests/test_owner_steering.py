@@ -424,8 +424,7 @@ def _page_run(tmp_path, scenario):
     from tests.test_app_working_indicator import _NODE, _run
     from tinyassets import onboarding
 
-    if _NODE is None:
-        pytest.skip("node is required to execute the page's own source")
+    assert _NODE is not None, "node is required to execute the page's own source"
     page, _csp = onboarding.render_app_html()
     return _run(tmp_path, page, scenario, _STEER_PAGE)
 
@@ -553,8 +552,7 @@ def _other_window(tmp_path, scenario):
     from tests.test_app_working_indicator import _NODE, _run
     from tinyassets import onboarding
 
-    if _NODE is None:
-        pytest.skip("node is required to execute the page's own source")
+    assert _NODE is not None, "node is required to execute the page's own source"
     page, _csp = onboarding.render_app_html()
     return _run(tmp_path, page, scenario, _OTHER_WINDOW)
 
@@ -626,8 +624,7 @@ def test_an_idle_answer_sends_what_waits_even_without_seeing_the_turn_end(tmp_pa
     from tests.test_app_working_indicator import _NODE, _run
     from tinyassets import onboarding
 
-    if _NODE is None:
-        pytest.skip("node is required")
+    assert _NODE is not None, "node is required"
     page, _csp = onboarding.render_app_html()
     out = _run(tmp_path, page, {}, _IDLE_FLUSH)
     assert out["sent"] == ["waiting line"]
@@ -651,8 +648,7 @@ def test_restoring_the_servers_lines_keeps_the_devices_own(tmp_path):
     from tests.test_app_working_indicator import _NODE, _run
     from tinyassets import onboarding
 
-    if _NODE is None:
-        pytest.skip("node is required")
+    assert _NODE is not None, "node is required"
     page, _csp = onboarding.render_app_html()
     out = _run(tmp_path, page, {}, _KEEP_LOCAL)
     assert out["saved"] == ["from the server", "only on this device"]
@@ -680,8 +676,7 @@ def test_a_reload_mid_turn_shows_the_message_being_worked_on_then_its_reply(tmp_
     from tests.test_app_working_indicator import _NODE, _run
     from tinyassets import onboarding
 
-    if _NODE is None:
-        pytest.skip("node is required")
+    assert _NODE is not None, "node is required"
     page, _csp = onboarding.render_app_html()
     out = _run(tmp_path, page, {"history": [
         {"speaker": "founder", "text": "build the village map", "ts": 1},

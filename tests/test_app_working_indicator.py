@@ -586,6 +586,11 @@ def test_the_pending_update_line_clears(tmp_path, html, transition):
 
 _LOCAL_AND_SERVER = r"""
 setQueueOwner("p-1");
+// First show the remote-only line. That earlier turn finishes before this
+// tab starts its own: never manufacture a competing send while it is live.
+readServerTurnRow({active_turn:SCENARIO.activeTurn}); renderWorking();
+const serverOnly=indicator();
+readServerTurnRow({active_turn:null}); renderWorking();
 // This tab's own send starts first; the server then reports a turn too. (A
 // send made while ONLY another window's turn runs no longer starts a turn of
 // its own -- it steers or waits; test_owner_steering covers that, P1 of
@@ -598,7 +603,7 @@ renderWorking();                           // the 1s repaint tick, mid-turn
 const afterTick=indicator();
 gates[0].resolve({reply:"done"});
 await turn; await settle();
-console.log(JSON.stringify({both, afterTick, after:indicator()}));
+console.log(JSON.stringify({serverOnly, both, afterTick, after:indicator()}));
 """
 
 
@@ -607,6 +612,7 @@ def test_a_local_turn_and_a_server_turn_do_not_both_speak(tmp_path, html):
     out = _run(tmp_path, html, {
         "activeTurn": {"turn_id": "t-1", "state": "inference_started",
                        "age_s": 30.0, "stale": False}}, _LOCAL_AND_SERVER)
+    assert "another window" in out["serverOnly"]["line"]
     # The page's own send takes the line, and the server sentence does not ride
     # along behind it or get appended to it.
     assert out["both"]["line"] == "Your agent is thinking...", out["both"]["line"]
