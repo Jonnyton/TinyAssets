@@ -427,3 +427,13 @@ C1 adds no holding queue and makes no new durability claim. A frontend that cann
 2. **Key rotation.** Moot: there is no envelope key.
 3. **Owner restart while the frontends stay up.** The frontends do not queue in C1 (C1-4). They answer an honest "TinyAssets is restarting" error, and `/healthz` stays up, so HAProxy keeps the colour in rotation: the client gets a real message, not a 502.
 4. **Deploy ordering.** By diff, as #4272 assumed. A frontend-only diff takes the blue-green switch; an owner diff takes phase 1's whole-process wait. A diff touching both runs the owner deploy first, then the frontend switch.
+
+### C1 shape review (Codex, round 3, final): ADAPT with two minimal corrections, both applied here
+- **C1-6, corrected.** The socket middleware sets the scheme to `https` and the host to the CONFIGURED public host (`TINYASSETS_PUBLIC_HOST`, otherwise the configured public resource URL). It never takes the host from `X-Forwarded-Host`: the edge Worker passes caller-supplied values through (`worker.js:118,124`), so trusting that header would let a caller steer redirects to another host. The client is the frontend's connecting peer, passed in one frontend-set header that the frontend always overwrites.
+- **C1-7, corrected.** Today the renderer's `CFG.build` comes from `build_sha()`, which reads the owner's `<data_root>/release-state.json` (`onboarding/__init__.py:161,275`, `api/status.py:282`). The frontend instead supplies ONE immutable build identity from its own environment (`TINYASSETS_FRONTEND_BUILD`, baked at image build). It feeds both the render's `CFG.build` and its `HEAD /app` `X-TinyAssets-Build`, and the renderer never reads the owner receipt in the frontend.
+- The shape review is closed at three rounds. C1a is buildable.
+- **C1a scope.** C1a stays DARK: it adds no compose service and does not flip any public path. It covers:
+  - the owner Unix-socket listener (a second uvicorn server with lifespan off) and its socket-only middleware;
+  - the `tinyassets.frontend` entrypoint (shell render with the frontend build, `/healthz`, a byte-for-byte proxy to the socket);
+  - tests.
+- **C1b.** Compose, the public path flip, deploy-prod's frontend-only path and the build evidence land with #4272.
