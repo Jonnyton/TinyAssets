@@ -641,6 +641,45 @@ def needing_a_runner(universe_dir: Path, *, replaceable: Callable[[str], bool],
 
 
 @_when_absent(lambda: False)
+def wait_on(universe_dir: Path, activity_id: str, request_id: str, reason: str = "") -> bool:
+    """The yield (design D4): the running activity raised an owner request and
+    now waits on it, holding no run. False when it is not running."""
+    if not request_id:
+        return False
+    with _txn(universe_dir) as conn:
+        record = _get(conn, activity_id)
+        if record is None or record["status"] != IN_PROGRESS:
+            return False
+        changes = {"status": WAITING_ON_YOU, "waiting_request_id": _one_line(request_id, 80),
+                   "waiting_reason": _one_line(reason, MAX_REASON),
+                   "retiring_token": record["runner_token"] or record["retiring_token"],
+                   "runner_token": "", "updated_at": _bump(record),
+                   "revision": record["revision"] + 1}
+        conn.execute(
+            f"UPDATE activities SET {', '.join(f'{k} = ?' for k in changes)} "
+            "WHERE activity_id = ?", (*changes.values(), activity_id),
+        )
+        record.update(changes)
+        _event(conn, record, WAITING_ON_YOU, changes["waiting_reason"])
+    return True
+
+
+@_when_absent(lambda: None)
+def answered_request(universe_dir: Path, request_id: str) -> str | None:
+    """The owner resolved ``request_id``: re-queue the activity waiting on it.
+    Returns that activity's id, or None when none waits on it."""
+    if not request_id:
+        return None
+    with closing(_connect(universe_dir)) as conn:
+        row = conn.execute(
+            "SELECT activity_id FROM activities WHERE status = ? AND waiting_request_id = ?",
+            (WAITING_ON_YOU, request_id)).fetchone()
+    if row is None:
+        return None
+    return row[0] if answered(universe_dir, row[0], request_id) else None
+
+
+@_when_absent(lambda: False)
 def has_in_progress(universe_dir: Path, agent_id: str = "main") -> bool:
     """Whether one of ``agent_id``'s activities is running now (platform state
     only; the proactive scheduler's "no in-progress activity" rule)."""

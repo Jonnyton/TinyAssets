@@ -2640,6 +2640,27 @@ def _sanitize_served_patch_changes(changes: object) -> str:
     return json.dumps(changes, separators=(",", ":"))
 
 
+def _yield_activity(asked: dict) -> dict:
+    """Inside an activity, raising an owner request is the activity's yield
+    (harness D2, design D4): it waits on that request, holding no run, and the
+    owner's answer queues it again. Elsewhere the request is returned as is."""
+    session = _calling_session()
+    request_id = str((asked or {}).get("request_id") or "")
+    if not session.startswith("activity:") or not request_id or asked.get("error"):
+        return asked
+    from tinyassets import agent_activities
+    from tinyassets.storage import data_dir
+
+    activity_id = session.split(":", 1)[1]
+    if agent_activities.wait_on(data_dir() / _GRAPH_ID, activity_id, request_id,
+                                str(asked.get("title") or "")):
+        return {**asked, "activity_waiting": True,
+                "hint": ("This activity now waits on your owner's answer. Finish this turn "
+                         "with a one-line note of where you stopped; it resumes when they "
+                         "answer.")}
+    return asked
+
+
 def _calling_session() -> str:
     """The session key the platform routed this engine call from, or ""."""
     from tinyassets.engine_steering import _session_key
@@ -3072,9 +3093,8 @@ def write_graph(
                 return json.dumps(
                     withdraw_request(universe_id=_GRAPH_ID, payload=payload_json)
                 )
-            return json.dumps(
-                request_from_user(universe_id=_GRAPH_ID, payload=payload_json)
-            )
+            asked = request_from_user(universe_id=_GRAPH_ID, payload=payload_json)
+            return json.dumps(_yield_activity(asked))
         finally:
             _current_identity.reset(token)
     if t in {"model_preferences", "connection"}:

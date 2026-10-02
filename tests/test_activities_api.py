@@ -104,3 +104,45 @@ def test_a_stale_revision_is_refused(pinned):
 def test_the_contract_never_reaches_another_universe(tmp_path):
     with pytest.raises(acts.ActivityRefused):
         api.read(tmp_path, universe_id="../u-beta")
+
+
+def test_an_owner_request_inside_an_activity_is_its_yield(pinned, monkeypatch):
+    universe, _, _ = pinned
+    aid = _write("start", title="t", brief="b")["activity_id"]
+    generation = acts.claim(universe, aid, replaceable=lambda r: False)
+    acts.bind_run(universe, aid, generation, "run-1")
+    import tinyassets.api.pending_requests as pending
+
+    monkeypatch.setattr(pending, "request_from_user",
+                        lambda **kw: {"request_id": "req-1", "title": "Send the invoice?"})
+    monkeypatch.setattr(engine, "_calling_session", lambda: f"activity:{aid}")
+    out = json.loads(engine.write_graph(target="pending_request", operation="ask",
+                                        payload_json="{}"))
+    assert out["activity_waiting"] is True and "resumes when they answer" in out["hint"]
+    record = acts.get(universe, aid)
+    assert record["status"] == acts.WAITING_ON_YOU and record["waiting_request_id"] == "req-1"
+    # Outside an activity nothing changes.
+    monkeypatch.setattr(engine, "_calling_session", lambda: "thread:principal:acct_alice")
+    plain = json.loads(engine.write_graph(target="pending_request", operation="ask",
+                                          payload_json="{}"))
+    assert "activity_waiting" not in plain
+
+
+def test_answering_the_request_requeues_the_activity(tmp_path, monkeypatch):
+    from tinyassets import activity_dispatcher
+    from tinyassets.storage import pending_requests as pr
+
+    universe = tmp_path / "u-alpha"
+    universe.mkdir()
+    ticks = []
+    monkeypatch.setattr(activity_dispatcher, "tick_in_background", lambda base: ticks.append(base))
+    aid = acts.create(universe, owner_principal="acct_alice", title="t", brief="b",
+                      origin_kind="ask")["activity_id"]
+    generation = acts.claim(universe, aid, replaceable=lambda r: False)
+    acts.bind_run(universe, aid, generation, "run-1")
+    row = pr.create_request(universe, kind="API", title="ok?", body="b", fields=[],
+                            action={"type": "answer"}, dedupe_key="k")
+    acts.wait_on(universe, aid, row["request_id"])
+    assert pr.resolve_request(universe, row["request_id"], status="answered", answer={})
+    assert acts.get(universe, aid)["status"] == acts.SCHEDULED
+    assert ticks == [tmp_path]

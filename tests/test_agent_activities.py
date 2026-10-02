@@ -363,3 +363,16 @@ def test_has_in_progress_is_per_agent_and_never_creates_the_store(tmp_path):
     _running(universe)
     assert acts.has_in_progress(universe) is True
     assert acts.has_in_progress(universe, "researcher") is False
+
+
+def test_a_yield_waits_on_the_request_and_its_answer_requeues(tmp_path):
+    universe = _universe(tmp_path)
+    aid, _ = _running(universe, "run-a")
+    assert acts.wait_on(universe, aid, "req-9", "approve the invoice email")
+    record = acts.get(universe, aid)
+    assert record["status"] == acts.WAITING_ON_YOU and record["retiring_token"] == "run-a"
+    assert record["waiting_reason"] == "approve the invoice email"
+    assert not acts.wait_on(universe, aid, "req-10"), "only a running activity yields"
+    assert acts.answered_request(universe, "req-other") is None
+    assert acts.answered_request(universe, "req-9") == aid
+    assert acts.get(universe, aid)["status"] == acts.SCHEDULED
