@@ -230,10 +230,22 @@ def test_play_never_needs_a_second_click(app_url, browser):
     page.focus("#composer-input")
     page.mouse.click(5, 5)
     walk()
-    # Explicitly exercise the fallback independently of the native-focus play.
-    page.evaluate("""() => { const stage=document.getElementById('chat-stage');
-      stage.setAttribute('tabindex','-1'); stage.focus(); }""")
-    page.keyboard.press("ArrowRight")
+    # Exercise the fallback in one task: a pending frame-focus message must
+    # not turn this into another native walk between focus() and key dispatch.
+    forwarded = page.evaluate("""() => {
+      const stage=document.getElementById('chat-stage');
+      stage.setAttribute('tabindex','-1'); stage.focus();
+      const event=new KeyboardEvent('keydown', {
+        key:'ArrowRight', code:'ArrowRight', bubbles:true, cancelable:true
+      });
+      const focused=document.activeElement===stage;
+      stage.dispatchEvent(event);
+      stage.dispatchEvent(new KeyboardEvent('keyup', {
+        key:'ArrowRight', code:'ArrowRight', bubbles:true, cancelable:true
+      }));
+      return {focused, prevented:event.defaultPrevented};
+    }""")
+    assert forwarded == {"focused": True, "prevented": True}
     from playwright.sync_api import expect
     expect(hero).to_have_css("left", f"{position+10}px")
     expect(hero).to_have_attribute("data-trusted", "false")
@@ -318,7 +330,7 @@ def test_layout_arrival_preserves_typing_in_default_cloud(app_url, browser):
     page.close()
 
 
-def test_phone_play(app_url, browser):
+def test_phone_play(app_url, browser, tmp_path):
     from playwright.sync_api import expect
 
     context = browser.new_context(viewport={"width": 390, "height": 844},
@@ -356,13 +368,13 @@ def test_phone_play(app_url, browser):
     assert page.locator("#chat-cloud").is_hidden()
     assert _box(page, "#ui-frame") == pytest.approx(_box(page, "#chat-stage"), abs=1)
     walk()
-    page.screenshot(path="C:/Users/Jonathan/AppData/Local/Temp/two-surfaces-phone-bubble.png")
+    page.screenshot(path=tmp_path / "two-surfaces-phone-bubble.png")
     page.locator("#chat-cloud-bubble").tap()
     assert _box(page, "#chat-cloud") == pytest.approx(_box(page, "#chat-stage"), abs=1)
     for selector in ("#btn-cloud-shrink", "#btn-cloud-menu", "#btn-attach", "#btn-send"):
         box = _box(page, selector)
         assert box["width"] >= 36 and box["height"] >= 36
-    page.screenshot(path="C:/Users/Jonathan/AppData/Local/Temp/two-surfaces-phone.png")
+    page.screenshot(path=tmp_path / "two-surfaces-phone.png")
     page.locator("#composer-input").tap()
     page.set_viewport_size({"width": 390, "height": 500})
     page.wait_for_function(
