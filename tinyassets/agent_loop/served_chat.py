@@ -36,29 +36,30 @@ def thin_loop_selected() -> bool:
 
 _box_lock = threading.Lock()
 _box_provider: Any = None
-_box_limits: Any = None
 
 
-def configure_box_provider(provider: Any, *, limits: Any) -> None:
-    """Install the process's ``BoxProvider`` (D2) and its default exec limits."""
-    global _box_provider, _box_limits
+def configure_box_provider(provider: Any) -> None:
+    """Install the process's ``BoxProvider`` (D2, :mod:`tinyassets.boxes`)."""
+    global _box_provider
     with _box_lock:
-        _box_provider, _box_limits = provider, limits
+        _box_provider = provider
 
 
-def configured_box_provider() -> tuple[Any, Any]:
+def configured_box_provider() -> Any:
     with _box_lock:
-        return _box_provider, _box_limits
+        return _box_provider
 
 
 def bind_turn_box(*, owner: str, command_center: str, turn_id: str) -> tuple[BoxTools, str]:
-    """Bind the turn's box ONCE; every tool call of the turn uses this handle."""
-    provider, limits = configured_box_provider()
+    """Bind the turn's box ONCE; every tool call of the turn uses this handle.
+
+    Binding never wakes the box; its first execution does.
+    """
+    provider = configured_box_provider()
     if provider is None:
         raise LookupError("no box provider is configured")
-    handle = provider.bind(command_center, account=owner, turn=turn_id)
-    root = getattr(handle, "root", None) or BOX_ROOT
-    return BoxTools(BoxExecutor(provider, handle, limits=limits, cwd=root), root=root), root
+    handle = provider.bind(command_center, account_id=owner, turn_id=turn_id)
+    return BoxTools(BoxExecutor(provider, handle), root=BOX_ROOT), BOX_ROOT
 
 
 class ThinLoopChatAdapter(ServedChatAgentAdapter):
@@ -68,7 +69,7 @@ class ThinLoopChatAdapter(ServedChatAgentAdapter):
         owner = coordinator.owner
         universe_dir = coordinator.context.universe_dir
         turn_id = coordinator.turn.turn_id
-        provider, _ = configured_box_provider()
+        provider = configured_box_provider()
         return open_loop_tools(
             granted=granted_tools(coordinator.config),
             loop_reads=OWNER_READ_TOOLS,
