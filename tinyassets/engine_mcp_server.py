@@ -420,7 +420,24 @@ class RefusalsAreErrors(Middleware):
         raise ToolError(text if bounded is None else bounded)
 
 
-# First added is OUTERMOST: attention acknowledges only the final bounded
+class ResearchReadOnly(Middleware):
+    """Positive allowlist before any handler or response middleware runs."""
+
+    async def on_call_tool(self, context, call_next):
+        from fastmcp.exceptions import ToolError
+
+        from tinyassets.research_capability import research_refusal
+
+        message = context.message
+        refusal = research_refusal(message.name, message.arguments)
+        if refusal is not None:
+            raise ToolError(refusal)
+        return await call_next(context)
+
+
+# First added is OUTERMOST: new tools default to refused in research.
+mcp.add_middleware(ResearchReadOnly())
+# Attention acknowledges only the final bounded
 # result, then the ceiling wraps the refusal flag.
 mcp.add_middleware(OwnerSteering())
 mcp.add_middleware(ConversationAttention())
@@ -2761,6 +2778,10 @@ def write_graph(
 ) -> str:
     """Build or EDIT one of YOUR OWN command center's workflow shapes (branches).
 
+    target=proposal operation=propose takes payload_json {action, why, evidence}:
+    one planned action (one line, <=200 chars), reason (<=1000), and observations
+    (<=2000). Creates an owner approval request, including during research.
+
     FILE INPUTS, exact shape (an app attachment is already a six-field
     reference; full example under FILE INPUTS below). Create with
     ``"io_manifest": {"inputs": [{"name": "files", "io_type": "file_bundle",
@@ -2951,6 +2972,17 @@ def write_graph(
     # Each target delegates to its own confined adapter, never broad connector
     # write_graph. Raw connection secrets and person-only request answers stay out.
     t = (target or "").strip().lower()
+    if t == "proposal":
+        from tinyassets.api.pending_requests import propose
+        from tinyassets.auth.middleware import _current_identity
+
+        if (operation or "").strip().lower() != "propose":
+            return json.dumps({"error": "proposal supports operation='propose' only"})
+        token = _bind_founder_identity()
+        try:
+            return json.dumps(propose(universe_id=_GRAPH_ID, payload=payload_json))
+        finally:
+            _current_identity.reset(token)
     if t == "run_file":
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import write_graph as _write_file

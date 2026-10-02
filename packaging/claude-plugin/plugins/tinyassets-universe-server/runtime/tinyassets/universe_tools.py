@@ -944,6 +944,11 @@ def write_file(
     *, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Create or replace a file, making parent directories."""
+    from tinyassets.research_capability import research_refusal
+
+    refusal = research_refusal("write")
+    if refusal is not None:
+        return refusal
     target = _jail_path(path)
     payload = (content or "").encode("utf-8")
     if len(payload) > MAX_WRITE_BYTES:
@@ -965,6 +970,11 @@ def edit_file(
     *, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Replace the one exact occurrence of ``old_text`` with ``new_text``."""
+    from tinyassets.research_capability import research_refusal
+
+    refusal = research_refusal("edit")
+    if refusal is not None:
+        return refusal
     target = _jail_path(path)
     if not old_text:
         raise UniverseToolError("old_text is required: the exact passage to replace")
@@ -1016,6 +1026,13 @@ def bash(
     *, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome."""
+    from tinyassets.research_capability import research_refusal
+
+    # D3a refuses all bash, stricter than a read-only mount: no shell or egress
+    # is started during research, including when called below the MCP boundary.
+    refusal = research_refusal("bash")
+    if refusal is not None:
+        return refusal
     if not (command or "").strip():
         raise UniverseToolError("a command is required")
     wall = float(timeout) if timeout and float(timeout) > 0 else limits.wall_seconds
