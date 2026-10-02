@@ -799,6 +799,23 @@ async def _handle_openai_device_poll(request: Any) -> Any:
     )
 
 
+def _command_center_name(home: str) -> str:
+    """The command center's learned name, or "" -- never its id.
+
+    A universe row's ``display_name`` defaults to the id until a name is
+    learned, so that default is not a name and is not sent.
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import get_universe
+
+    try:
+        name = str(get_universe(_base_path(), universe_id=home).get("display_name") or "")
+    except KeyError:
+        return ""
+    name = name.strip()
+    return "" if name == home else name
+
+
 async def _handle_me(request: Any) -> Any:
     """What the signed-in user's app needs to route on: which universe they
     speak to and whether it has a mind (engine) connected yet. Login lands on
@@ -838,6 +855,7 @@ async def _handle_me(request: Any) -> Any:
                 "home_bound": True,
                 "engine_connected": setup == "connected",
                 "setup": setup,
+                "name": _command_center_name(home),
             }
 
     try:

@@ -192,7 +192,7 @@ assert.equal(u.revision,1);
 // ---- the frame is created with the isolation the boundary depends on ------
 const frame=u.frame;
 assert.equal(frame.tag,'iframe');
-assert.equal(frame.attrs.sandbox,'allow-scripts');          // no allow-same-origin, ever
+assert.equal(frame.attrs.sandbox,'allow-scripts allow-forms');   // no allow-same-origin, ever
 assert.equal(frame.attrs.src,'/app/ui-frame');
 assert.equal(frame.attrs.referrerpolicy,'no-referrer');
 assert.equal($('ui-frame-host').hidden,false);

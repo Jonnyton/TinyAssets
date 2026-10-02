@@ -119,3 +119,37 @@ Primary dependency sources:
 
 - 02:05Z: the #2698 deploy restarted the container while another session's heartbeat-automation turn was being served; the app showed the bubble as 'never confirmed' and the session had to resend in two steps.
 - 03:46Z: the #2705 deploy restarted the container while the founder's universe was mid-way through a one-line README edit (branches `auto/tiny-docs-touch-20260830e`/`f` already created on GitHub); the app showed 'the reply was cut off in transit'. Three more PRs from other sessions were armed with auto-merge at the time, so any resend had to wait for their deploys - with several sessions landing PRs, a 5-minute served turn has no clean window. The fix is on the deploy side (drain served turns before the swap, or hand the turn to the new container), not on the founder's side.
+
+## Phase 1, 2026-10-02: the deploy waits for in-flight work
+
+`deploy-prod.yml` step "Wait for in-flight turns" (`deploy/wait_for_turns.sh`) now runs
+before the swap. Each poll runs `scripts/turns_in_flight.py` in a throwaway sibling
+container (the daemon's image and uid, the data volume, no network; never an exec into
+the daemon) and holds the swap while anything is in flight. Two things count:
+- an account seat a live process holds, expired or not, which covers chat turns and graph
+  agent nodes;
+- a queued or running graph run whose owner is alive, which covers automations and code
+  nodes, since those hold no seat.
+
+The loop polls every 15s and proceeds on any of: idle, an unhealthy daemon, three
+unanswerable polls, a recovery workflow queued behind it, or the 45 min cap. The image is
+pulled before the wait. While it waits, `get_status` reports `deploy_pending`. Merges that
+land during the wait coalesce through the `production-host-mutation` concurrency group into
+one queued deploy of the newest sha. release-reconcile no longer treats a cancelled
+(displaced) dispatch as the failed retry.
+
+Evidence is the compose repro in `docs/audits/2026-10-02-deploy-waits-for-turns-repro/`.
+Codex refute: round 1 ADAPT (7 findings), round 2 ADAPT (3), all acted on; see PR #4278.
+
+What this does NOT close:
+- **Idle is a moment.** A turn that starts between the last poll and the swap is still
+  cut by the 20s drain. The prefetch shrinks that window but does not remove it.
+- **Past the 45 min cap, or on a yield to recovery, the turn is still cut.** The startup
+  reconcile notice is what the user then sees.
+- **Steady overlapping turns can hold every deploy to the cap.** The admission hold ships
+  only together with persist-and-replay of held messages (lead decision 2026-10-02).
+- **The real fix is Phase 2.** The new container serves while the old one finishes its
+  turns, which is the single-execution-owner handover in #4263 S8 (change
+  `execution-owner-lease`).
+
+Keep this file until a live turn has been seen to survive a production deploy.

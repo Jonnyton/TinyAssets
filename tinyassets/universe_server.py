@@ -2754,9 +2754,38 @@ def _served_failure_record(exc: BaseException, *, held: bool = False):
             retry_after_s=(
                 _attempt_wait_s(exc) if code in _WAITING_CLASSES else None
             ),
+            requests=_chain_attribute(exc, "turn_requests"),
+            partial_text=_stalled_partial(exc),
         )
     except Exception:  # noqa: BLE001 - a malformed diagnostic is not another failure
         return turn_failure("unknown", ref=uuid.uuid4().hex[:16])
+
+
+def _chain_attribute(exc: BaseException, name: str):
+    """The first value of ``name`` anywhere on the exception chain, or None."""
+    seen: set[int] = set()
+    node: BaseException | None = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        value = getattr(node, name, None)
+        if value is not None:
+            return value
+        node = node.__cause__ or node.__context__
+    return None
+
+
+def _stalled_partial(exc: BaseException) -> str:
+    """What the LAST failed attempt's stalled stream had written, scrubbed."""
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+
+    attempts = getattr(exc, "attempts", None)
+    if not isinstance(attempts, (list, tuple)):
+        return ""
+    failed = [a for a in attempts if getattr(a, "status", "") == "failed"]
+    partial = getattr(failed[-1], "partial_text", None) if failed else None
+    if not isinstance(partial, str) or not partial:
+        return ""
+    return redacted_failure_detail(_FS_PATH.sub("<path>", partial), limit=10**9)
 
 
 def _announce_owner_message(universe_dir) -> None:
