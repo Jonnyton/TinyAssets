@@ -446,3 +446,6 @@ C1 adds no holding queue and makes no new durability claim. A frontend that cann
 - Cost: 4 ms p50 on gVisor.
 
 When B2b resumes, a command center's key is released in the lease-store transaction that receives True from it. That replaces B2-1..B2-3's claim scan for executions that run in boxes.
+
+## Phase 1 live proof and sync (2026-10-02)
+Deploy run 36979226551 held the swap while the founder's turn `c5264d0a253a4d07b6ff7466a087b6cf` ran past 5 minutes. The lead read that turn's row from `/data/.tinyassets.db`: it ended `completed`. The phase-1 requirement is synced into `openspec/specs/uptime-and-alarms/spec.md` by PR #4325, which also resolves the 2026-08-29 deploy-kills-turns concern, so it is removed from this change's delta.
