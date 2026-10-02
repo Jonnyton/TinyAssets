@@ -4386,8 +4386,6 @@
       const host=s.active_host, alive=host&&host!=="none";
       dot.className="dot "+(alive?"dot--ok":"dot--warn");
       dot.title=alive?("host: "+host):"no active host";
-      const name=s.universe_name||s.universe||s.universe_id||"";
-      if(name) $("universe-name").textContent=name;
       if(ModelPicker.snapshot&&s.universe_id&&ModelPicker.snapshot.universe_id!==s.universe_id) ModelPicker.reset();
       setQueueScope(s.universe_id || s.universe);
       // The command center's own working state, whatever started the turn. This is the
@@ -4479,6 +4477,19 @@
   // lands in its normal chat with that request first in the rail, never on a
   // separate full-page screen.
   let engineConnected = null;   // null = unknown yet
+  // The header names the command center, never its id. The server sends a name
+  // only once one is learned; anything id-shaped is refused here as well, so no
+  // reader that falls back to an id can ever put one in front of the owner.
+  const COMMAND_CENTER_FALLBACK="Your command center";
+  function commandCenterName(value){
+    const name=typeof value==="string" ? value.trim() : "";
+    if(!name || /^(u|cc)-[0-9a-z]{8,}$/i.test(name)) return COMMAND_CENTER_FALLBACK;
+    return name;
+  }
+  function showCommandCenterName(value){
+    const node=$("universe-name");
+    if(node) node.textContent=commandCenterName(value);
+  }
   async function fetchMe(){
     try{
       await ensureFreshToken();
@@ -4722,6 +4733,7 @@
     // before anything this page may restore (held lines, the in-flight record,
     // saved attachments), which is readable only once owner and home are known.
     if(me&&me.universe_id) setQueueScope(me.universe_id);
+    if(typeof showCommandCenterName === "function") showCommandCenterName(me&&me.name);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
     // In this order: a reply left by a previous owner is discarded by the rebind
