@@ -149,17 +149,7 @@ SHALL NOT be inferred from age alone.
 - **AND** age alone never makes a live turn eligible for settlement
 
 ### Requirement: The app reads its owner's data through the owner door, complete
-
-Every read the app renders (the request rail, restore-access, bindings, the model
-picker, status, conversation history and message expansion, and the reads a
-custom UI bundle makes through the bridge) SHALL go through the owner door:
-`POST /app/api/read` (the `read_graph` arguments) and `POST /app/api/status`
-(the `get_status` arguments). The owner door SHALL be authenticated by the same
-bearer middleware as every other `/app` route, SHALL execute each read under the
-request identity through the same domain function and owner gate the connector
-uses, and SHALL return the complete document. The owner door SHALL contain no
-size, limit or truncation logic and SHALL NOT import the model-context ceiling or
-projection modules. Actions (`converse`, `write_graph`) MAY stay on the connector.
+ Every read the app renders (the request rail, restore-access, bindings, the model picker, status, conversation history and message expansion, and the reads a custom UI bundle makes through the bridge) SHALL go through the owner door: `POST /app/api/read` (the `read_graph` arguments) and `POST /app/api/status` (the `get_status` arguments). The owner door SHALL be authenticated by the same bearer middleware as every other `/app` route, SHALL execute each read under the request identity through the same domain function and owner gate the connector uses, and SHALL return the complete document. The owner door SHALL contain no size, limit or truncation logic and SHALL NOT import the model-context ceiling or projection modules. Actions (`converse`, `write_graph`) MAY stay on the connector.
 
 The phone app (Capacitor, `server.url` = the live `/app`) and the desktop app
 (Electron over the live SPA) load the same page and therefore the same doors.

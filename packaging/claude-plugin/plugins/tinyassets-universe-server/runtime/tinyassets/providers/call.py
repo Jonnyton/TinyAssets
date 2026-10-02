@@ -102,9 +102,13 @@ def make_interactive_agent_turn(*, prompt, system, universe_context, config):
     if _force_mock or _real_router is None:
         raise ProviderAuthorityHeldError("interactive agent requires a real provider router")
     _register_open_providers_for(universe_context)
+    from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter, thin_loop_selected
+
+    # Only the thin loop names an adapter; unselected, the call is today's.
+    thin = {"adapter": ThinLoopChatAdapter()} if thin_loop_selected() else {}
     return InteractiveHttpAgentTurn(
         router=_real_router, prompt=prompt, system=system,
-        universe_context=universe_context, config=config,
+        universe_context=universe_context, config=config, **thin,
     )
 
 
