@@ -3,26 +3,35 @@
 ``read``, ``write``, ``edit`` and ``bash`` are the same four tools as the tool
 jail serves today (:mod:`tinyassets.universe_tools`), with the same arguments
 and the same text answers. What changes is where they run: each call is one
-``start_exec`` on the command center's box through the :class:`BoxProvider`
-(target architecture D2), never a process the loop starts itself.
+``start_exec`` on the command center's box through the
+:class:`~tinyassets.boxes.BoxProvider` (target architecture D2), never a process
+the loop starts itself. The box enforces the wall clock and the output cap
+(``ExecLimits``); the loop only collects.
 
 Binding. The session is constructed with a handle the caller bound ONCE at
-turn start (``BoxProvider.bind(cc, account=..., turn=...)``). No call looks a
-box up by name, so a loop bug cannot route one owner's tool call into another
-owner's box; the box host refuses a handle minted for another command center
-or turn as well (D2 "Authentication of every operation").
+turn start (``BoxProvider.bind(cc, account_id=..., turn_id=...)``). No call
+looks a box up by name, so a loop bug cannot route one owner's tool call into
+another owner's box; the box host refuses a handle minted for another command
+center or turn as well (D2 "Authentication of every operation").
 
 Lost replies. Every call carries an ``op_id`` derived from the journal
 position of the call (turn, round, call). D2 makes ``start_exec`` idempotent by
-``op_id``: a retry returns the recorded execution and never re-runs it. So a
-transport failure is resolved by asking again with the SAME ``op_id``, once,
-and anything still unresolved -- including ``unknown_after_restore`` -- is
-reported as an UNKNOWN outcome. The coordinator journals it as unknown and the
-turn holds. Nothing here retries with a new ``op_id``.
+``op_id``: a retry with the same request returns the recorded execution and
+never re-runs it. So a transport failure is resolved by asking again with the
+SAME ``op_id`` and the same arguments, once, and anything still unresolved --
+including an exit the box reports as ``unknown_after_restore`` -- is an UNKNOWN
+outcome. The coordinator journals it as unknown and the turn holds.
 
-Cancellation. A cancelled turn cancels the execution in the box
-(``BoxProvider.cancel``, which kills the process tree there) before the
-cancellation propagates.
+Collection is a loop of bounded slices (``stream(timeout=SLICE_SECONDS)``),
+with the turn's cancellation and a backstop deadline checked between them.
+Each blocking provider call still runs inside an owned, capacity-bounded
+boundary (``_in_thread``): the local driver takes untimed per-box locks, so a
+call is not yet guaranteed to return (change ``control-plane-agent-loop``,
+"PR 2 shape"). When the box contract bounds every call, that boundary goes.
+
+Cancellation. A cancelled turn asks the box to cancel the execution
+(``BoxProvider.cancel``: request accepted, not execution ended) before the
+cancellation propagates; the coordinator records the call as unknown.
 """
 
 from __future__ import annotations
@@ -32,20 +41,25 @@ import contextlib
 import hashlib
 import logging
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Protocol
+from typing import Any
 
+from tinyassets.boxes import (
+    BOX_ROOT,
+    BoxHandle,
+    BoxOperationRefused,
+    BoxProvider,
+    ExecEvent,
+    ExecLimits,
+)
 from tinyassets.engine_tool_client import EngineToolError
 
 _LOG = logging.getLogger(__name__)
 
 #: The tool names this module serves, in canonical order.
 BOX_TOOLS: tuple[str, ...] = ("read", "write", "edit", "bash")
-
-#: Where the command center's content sits inside its box (D2 default ``cwd``).
-BOX_ROOT = "/cc"
 
 _MiB = 1024 * 1024
 MAX_WRITE_BYTES = 4 * _MiB
@@ -54,10 +68,15 @@ DEFAULT_READ_LINES = 2000
 DEFAULT_WALL_SECONDS = 120.0
 MAX_BASH_SECONDS = 600.0
 OUTPUT_BYTES = 64 * 1024
+#: One collection slice: the longest a ``stream`` call is asked to wait.
+SLICE_SECONDS = 1.0
+#: How far past the box's own wall clock the loop waits before it cancels
+#: itself (the box enforces ``ExecLimits.wall_seconds``; this is the backstop).
+_BACKSTOP_SECONDS = 10.0
 #: How long a cancel, or a cancelled execution's end, may take before the turn
 #: stops waiting for it (and reports the outcome as unknown).
 _CANCEL_GRACE_SECONDS = 5.0
-#: Box calls (starts and stream reads) that may be in flight in this process.
+#: Box calls (starts and stream slices) that may be in flight in this process.
 #: A call the box host never answers keeps its slot, so a host that stops
 #: answering exhausts this bound and new calls are refused loudly, instead of
 #: threads accumulating without limit.
@@ -68,31 +87,8 @@ _BOX_CALL_SLOTS = threading.BoundedSemaphore(MAX_BOX_CALLS)
 #: is reported unknown (the turn holds) rather than spawning another thread.
 MAX_BOX_CANCELS = 128
 _BOX_CANCEL_SLOTS = threading.BoundedSemaphore(MAX_BOX_CANCELS)
-
-
-class BoxOperationRefused(RuntimeError):
-    """The box host refused an operation BEFORE it existed.
-
-    The one exception a driver may raise to say "nothing ran": a stale
-    placement epoch, a handle for another command center, an account that does
-    not own it. Anything else a driver raises is a transport failure, whose
-    outcome is unknown until the box host says otherwise.
-    """
-
-
-class BoxExec(Protocol):
-    """The part of ``BoxProvider`` (D2) the box tools use. Structural, so the
-    real provider satisfies it without importing this module."""
-
-    def start_exec(self, h: Any, op_id: str, argv: Sequence[str], *,
-                   stdin: Any = None, env: Mapping[str, str] = ..., cwd: str = ...,
-                   limits: Any) -> Any: ...
-
-    def stream(self, h: Any, exec_id: Any, *, from_offset: int = 0) -> Iterator[Any]: ...
-
-    def cancel(self, h: Any, exec_id: Any) -> None: ...
-
-    def exec_status(self, h: Any, op_id: str) -> Any: ...
+#: ``killed`` values the box reports for an execution that provably ENDED.
+_ENDED_KILLS = frozenset({None, "timeout", "output_limit", "cancelled", "supervisor_error"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,108 +104,92 @@ def _unknown() -> EngineToolError:
     return EngineToolError("box_tool_outcome_unknown", outcome="unknown")
 
 
-def _event_kind(event: Any) -> str:
-    return str(getattr(event, "kind", "") or "")
+class _Collected:
+    """Output and offset across slices; turns an exit event into an outcome."""
 
+    def __init__(self, cap: int) -> None:
+        self.cap = cap
+        self.output = bytearray()
+        self.offset = 0
 
-def _event_offset(event: Any, fallback: int) -> int:
-    offset = getattr(event, "offset", None)
-    return offset if type(offset) is int and offset >= 0 else fallback
+    def feed(self, events: Sequence[ExecEvent]) -> ExecOutcome | None:
+        for event in events:
+            if event.kind == "output":
+                data = bytes(event.data or b"")
+                start = event.offset if type(event.offset) is int else self.offset
+                if start + len(data) <= self.offset:
+                    continue  # already have it (a resumed slice)
+                data = data[max(self.offset - start, 0):]
+                room = self.cap - len(self.output)
+                self.output += data[:max(room, 0)]
+                self.offset = max(self.offset, start + len(event.data or b""))
+            elif event.kind == "exit":
+                if event.killed not in _ENDED_KILLS:
+                    # unknown_after_restore, or anything the box cannot vouch
+                    # for: an exit event is not proof the effect is known.
+                    raise _unknown()
+                return ExecOutcome(bytes(self.output), event.exit_code, event.killed)
+        return None
 
 
 class BoxExecutor:
     """Runs argv in ONE bound box by ``op_id``; the only door the tools use."""
 
-    def __init__(self, provider: BoxExec, handle: Any, *, limits: Any,
+    def __init__(self, provider: BoxProvider, handle: BoxHandle, *,
                  cwd: str = BOX_ROOT) -> None:
         if handle is None:
             raise ValueError("a bound box handle is required")
         self._provider = provider
         self._handle = handle
-        self._limits = limits
         self._cwd = cwd
+        self._awake = False
 
     @property
-    def handle(self) -> Any:
+    def handle(self) -> BoxHandle:
         return self._handle
 
-    def _start(self, op_id: str, argv: Sequence[str], stdin: bytes | None) -> Any:
-        kwargs: dict[str, Any] = {"cwd": self._cwd, "limits": self._limits}
-        if stdin is not None:
-            kwargs["stdin"] = stdin
+    def _start(self, op_id: str, argv: Sequence[str], stdin: bytes,
+               limits: ExecLimits) -> str:
+        def start() -> str:
+            if not self._awake:
+                # bind() never wakes a box; the first execution does.
+                self._provider.ensure_awake(self._handle, reason="tool")
+                self._awake = True
+            return self._provider.start_exec(self._handle, op_id, list(argv), stdin=stdin,
+                                             cwd=self._cwd, limits=limits)
+
         try:
-            return self._provider.start_exec(self._handle, op_id, list(argv), **kwargs)
+            return start()
         except BoxOperationRefused:
             raise
         except Exception:
             # The reply was lost, not necessarily the operation. The same op_id
-            # returns the recorded execution and never starts a second one.
+            # with the same request returns the recorded execution, never a
+            # second one.
             _LOG.warning("box start_exec reply lost; asking again with the same op_id")
             try:
-                return self._provider.start_exec(self._handle, op_id, list(argv), **kwargs)
-            except BoxOperationRefused:
+                return start()
+            except Exception:
                 # Refused only on the retry: the first attempt may have run.
                 raise _unknown() from None
-            except Exception:
-                raise _unknown() from None
 
-    def _collect(self, exec_id: Any, op_id: str, cap: int) -> ExecOutcome:
-        """Read the execution's events to its exit, resuming once by offset.
-
-        Only an ``exit`` event proves the execution ended. Past the output cap
-        the execution is cancelled and its remaining output discarded, but the
-        read continues until that exit arrives.
-        """
-        output = bytearray()
-        offset = 0
-        resumed = False
-        capped = False
-        while True:
-            try:
-                for event in self._provider.stream(self._handle, exec_id, from_offset=offset):
-                    kind = _event_kind(event)
-                    if kind in ("stdout", "stderr"):
-                        data = bytes(getattr(event, "data", b"") or b"")
-                        offset = _event_offset(event, offset + len(data))
-                        if capped:
-                            continue
-                        room = cap - len(output)
-                        output += data[:max(room, 0)]
-                        if len(data) > room:
-                            capped = True
-                            self._provider.cancel(self._handle, exec_id)
-                    elif kind == "exit":
-                        code = getattr(event, "code", None)
-                        return ExecOutcome(bytes(output), code if type(code) is int else None,
-                                           "output_limit" if capped else None)
-                # A stream that ends without an exit event is a lost reply.
-                raise ConnectionError("box stream ended without an exit event")
-            except Exception:
-                if resumed:
-                    break
-                resumed = True
-                _LOG.warning("box stream interrupted; resuming from offset %d", offset)
-        status = None
-        try:
-            status = self._provider.exec_status(self._handle, op_id)
-        except Exception:  # noqa: BLE001 - unresolved either way
-            pass
-        _LOG.warning("box execution outcome unresolved (status %r)", getattr(status, "state", None))
-        raise _unknown()
+    def _slice(self, exec_id: str, offset: int) -> list[ExecEvent]:
+        """One bounded read: the events up to an exit, or until the slice ends."""
+        return list(self._provider.stream(self._handle, exec_id, from_offset=offset,
+                                          timeout=SLICE_SECONDS))
 
     async def run(self, op_id: str, argv: Sequence[str], *, stdin: bytes | None = None,
                   wall_seconds: float, output_bytes: int = OUTPUT_BYTES) -> ExecOutcome:
-        """One execution; a timeout or a cancelled turn kills it in the box.
+        """One execution; the box enforces its limits, the loop collects slices.
 
-        Every blocking provider call runs on a thread of its own, never a
-        shared executor, so a cancel can never queue behind the reads waiting
-        for it to land, and every wait on the box is bounded. A result that
-        cannot be confirmed as ended is an UNKNOWN outcome, never a completed
-        one.
+        A turn's cancellation, or the backstop past the box's own wall clock,
+        cancels it in the box. A result that cannot be confirmed as ended is an
+        UNKNOWN outcome, never a completed one.
         """
         if not isinstance(op_id, str) or not op_id:
             raise ValueError("an op_id is required")
-        launch = _Launch(self, op_id, argv, stdin)
+        limits = ExecLimits(wall_seconds=float(wall_seconds), output_bytes=int(output_bytes))
+        launch = _Launch(self, op_id, argv, bytes(stdin or b""), limits)
         try:
             exec_id = await _wait(launch.future)
         except asyncio.CancelledError:
@@ -218,23 +198,41 @@ class BoxExecutor:
             # the launching thread when the reply arrives, however late.
             launch.abandon()
             raise
+        loop = asyncio.get_running_loop()
+        collected = _Collected(limits.output_bytes)
+        deadline = loop.time() + limits.wall_seconds + _BACKSTOP_SECONDS
+        cancelled = False
+        failures = 0
         try:
-            collector = _in_thread(self._collect, exec_id, op_id, output_bytes,
-                                   slots=_BOX_CALL_SLOTS)
-        except BoxOperationRefused:
-            # The command is running; only reading it was refused. Never "not sent".
-            await self._cancel(exec_id)
-            raise _unknown() from None
-        try:
-            return await _wait(collector, timeout=wall_seconds)
-        except TimeoutError:
-            if not await self._cancel(exec_id):
-                raise _unknown() from None
-            try:
-                outcome = await _wait(collector, timeout=_CANCEL_GRACE_SECONDS)
-            except Exception:  # noqa: BLE001 - not confirmed ended
-                raise _unknown() from None
-            return ExecOutcome(outcome.output, outcome.exit_code, "timeout")
+            while True:
+                try:
+                    events = await _wait(_in_thread(self._slice, exec_id, collected.offset,
+                                                    slots=_BOX_CALL_SLOTS))
+                except BoxOperationRefused:
+                    # The command is running; only reading it was refused.
+                    await self._cancel(exec_id)
+                    raise _unknown() from None
+                except Exception:  # noqa: BLE001 - a lost slice is resumed once
+                    failures += 1
+                    if failures > 1:
+                        raise _unknown() from None
+                    _LOG.warning("box stream slice lost; resuming from offset %d",
+                                 collected.offset)
+                    continue
+                failures = 0
+                outcome = collected.feed(events)
+                if outcome is not None:
+                    if cancelled:
+                        return ExecOutcome(outcome.output, outcome.exit_code, "timeout")
+                    return outcome
+                if loop.time() > deadline:
+                    if cancelled:
+                        # Cancelled, and still no exit: it may still be running.
+                        raise _unknown()
+                    cancelled = True
+                    if not await self._cancel(exec_id):
+                        raise _unknown()
+                    deadline = loop.time() + _CANCEL_GRACE_SECONDS
         except asyncio.CancelledError:
             await self._cancel(exec_id)
             raise
@@ -285,16 +283,18 @@ class _Launch:
     """
 
     def __init__(self, executor: BoxExecutor, op_id: str, argv: Sequence[str],
-                 stdin: bytes | None) -> None:
+                 stdin: bytes, limits: ExecLimits) -> None:
         self._executor = executor
         self._lock = threading.Lock()
         self._abandoned = False
         self._exec_id: Any = None
         self._started = False
-        self.future = _in_thread(self._run, op_id, argv, stdin, slots=_BOX_CALL_SLOTS)
+        self.future = _in_thread(self._run, op_id, argv, stdin, limits,
+                                 slots=_BOX_CALL_SLOTS)
 
-    def _run(self, op_id: str, argv: Sequence[str], stdin: bytes | None) -> Any:
-        exec_id = self._executor._start(op_id, argv, stdin)
+    def _run(self, op_id: str, argv: Sequence[str], stdin: bytes,
+             limits: ExecLimits) -> Any:
+        exec_id = self._executor._start(op_id, argv, stdin, limits)
         with self._lock:
             self._started, self._exec_id = True, exec_id
             abandoned = self._abandoned
@@ -386,6 +386,10 @@ def _trailer(outcome: ExecOutcome, wall: float, output_bytes: int) -> str:
         return f"[killed: ran longer than {wall:g}s]"
     if outcome.killed == "output_limit":
         return f"[killed: output passed {output_bytes} bytes]"
+    if outcome.killed == "cancelled":
+        return "[cancelled]"
+    if outcome.killed == "supervisor_error":
+        return "[killed: the box could not supervise the command]"
     if outcome.exit_code is None:
         return "[exit code unknown]"
     if outcome.exit_code in (128 + 24, 128 + 9):
@@ -439,12 +443,22 @@ class BoxTools:
         self._exec = executor
         self._root = root
 
+    def _arg(self, target: str) -> str:
+        """The path as handed to the command: relative to the execution's cwd,
+        which IS the box root, whenever it is under the root. That resolves the
+        same in every driver, including the local one, whose root is not at
+        ``/cc`` on the host. Answers still name the full box path."""
+        if target == self._root:
+            return "."
+        prefix = self._root.rstrip("/") + "/"
+        return target[len(prefix):] if target.startswith(prefix) else target
+
     async def read(self, op_id: str, path: str, offset: int = 0, limit: int = 0) -> str:
         target = box_path(path, self._root)
         start = max(1, int(offset or 1))
         count = int(limit) if limit and int(limit) > 0 else DEFAULT_READ_LINES
         outcome = await self._exec.run(
-            op_id, ["/bin/sh", "-c", _READ, "sh", target, str(start), str(count)],
+            op_id, ["/bin/sh", "-c", _READ, "sh", self._arg(target), str(start), str(count)],
             wall_seconds=DEFAULT_WALL_SECONDS,
         )
         if outcome.killed == "output_limit":
@@ -456,7 +470,7 @@ class BoxTools:
 
     async def _put(self, op_id: str, target: str, payload: bytes, expect: str) -> ExecOutcome:
         return await self._exec.run(
-            op_id, ["/bin/sh", "-c", _WRITE, "sh", target, expect],
+            op_id, ["/bin/sh", "-c", _WRITE, "sh", self._arg(target), expect],
             stdin=payload, wall_seconds=DEFAULT_WALL_SECONDS,
         )
 
@@ -475,7 +489,7 @@ class BoxTools:
         if not old_text:
             return "error: old_text is required: the exact passage to replace"
         read = await self._exec.run(
-            op_id + "/read", ["/bin/sh", "-c", _CAT, "sh", target],
+            op_id + "/read", ["/bin/sh", "-c", _CAT, "sh", self._arg(target)],
             wall_seconds=DEFAULT_WALL_SECONDS, output_bytes=MAX_EDIT_BYTES,
         )
         if read.killed == "output_limit":

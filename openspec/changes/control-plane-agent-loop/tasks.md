@@ -14,14 +14,17 @@
 
 ## 2. Production path (PR 2, after S4's driver, S6's streaming contract, S8a)
 
-- [ ] 2.1 Shape first: three REJECT rounds on PR 1 are a shape signal. Before
+- [x] 2.1 Shape first: three REJECT rounds on PR 1 are a shape signal. Before
       adding to it, re-derive the concurrency shape (one asyncio task per
       turn, box operations as awaitables on an async `BoxProvider` client)
       and delete the thread/slot/cancel layering it makes unnecessary.
 - [ ] 2.2 One shared loop: task-aware, non-blocking provider-assignment
       admission; journal writes off the loop; then turns as tasks on it.
-- [ ] 2.3 Configure the `BoxProvider` (#4274, `tinyassets.boxes`) in the
-      daemon and adopt its types in place of `BoxExec`. Its shapes differ from
+- [ ] 2.3 Adopt `tinyassets.boxes` (#4274) in place of `BoxExec` (DONE on the
+      2.1 branch: slice collection, owned boundary, contract tests against
+      `LocalBoxProvider`); configure a production driver in the daemon once a
+      kernel-isolated one exists (the local driver refuses without
+      `allow_unisolated`). Its shapes differ from
       PR 1's assumptions:
       - events are `kind` "output"|"exit", merged in order;
       - `offset` is the chunk START, so resume from `offset + len(data)`;

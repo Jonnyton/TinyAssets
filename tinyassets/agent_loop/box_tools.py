@@ -443,12 +443,22 @@ class BoxTools:
         self._exec = executor
         self._root = root
 
+    def _arg(self, target: str) -> str:
+        """The path as handed to the command: relative to the execution's cwd,
+        which IS the box root, whenever it is under the root. That resolves the
+        same in every driver, including the local one, whose root is not at
+        ``/cc`` on the host. Answers still name the full box path."""
+        if target == self._root:
+            return "."
+        prefix = self._root.rstrip("/") + "/"
+        return target[len(prefix):] if target.startswith(prefix) else target
+
     async def read(self, op_id: str, path: str, offset: int = 0, limit: int = 0) -> str:
         target = box_path(path, self._root)
         start = max(1, int(offset or 1))
         count = int(limit) if limit and int(limit) > 0 else DEFAULT_READ_LINES
         outcome = await self._exec.run(
-            op_id, ["/bin/sh", "-c", _READ, "sh", target, str(start), str(count)],
+            op_id, ["/bin/sh", "-c", _READ, "sh", self._arg(target), str(start), str(count)],
             wall_seconds=DEFAULT_WALL_SECONDS,
         )
         if outcome.killed == "output_limit":
@@ -460,7 +470,7 @@ class BoxTools:
 
     async def _put(self, op_id: str, target: str, payload: bytes, expect: str) -> ExecOutcome:
         return await self._exec.run(
-            op_id, ["/bin/sh", "-c", _WRITE, "sh", target, expect],
+            op_id, ["/bin/sh", "-c", _WRITE, "sh", self._arg(target), expect],
             stdin=payload, wall_seconds=DEFAULT_WALL_SECONDS,
         )
 
@@ -479,7 +489,7 @@ class BoxTools:
         if not old_text:
             return "error: old_text is required: the exact passage to replace"
         read = await self._exec.run(
-            op_id + "/read", ["/bin/sh", "-c", _CAT, "sh", target],
+            op_id + "/read", ["/bin/sh", "-c", _CAT, "sh", self._arg(target)],
             wall_seconds=DEFAULT_WALL_SECONDS, output_bytes=MAX_EDIT_BYTES,
         )
         if read.killed == "output_limit":

@@ -24,7 +24,6 @@ def agent(base_agent, monkeypatch):
     monkeypatch.setenv(served_chat.ENV_SWITCH, served_chat.THIN)
     box = FakeBox(lambda argv, stdin: (b"box says hi", 0))
     monkeypatch.setattr(served_chat, "_box_provider", box)
-    monkeypatch.setattr(served_chat, "_box_limits", "limits")
     base_agent.box = box
     return base_agent
 
