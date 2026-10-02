@@ -398,3 +398,37 @@ def test_a_forked_child_inherits_no_membership_and_leaves_the_parents_intact(bas
         assert owner_lease.tree_alive(base, tree.tree_id) is True, (
             "the child's exit released the parent's membership")
     tree.leave()
+
+
+def test_a_restarted_daemon_recovers_idle_keys_before_its_children_need_them(base, monkeypatch):
+    """Round-2 finding 2: the previous daemon finished its turns but left its key
+    open. Reconcile skips it (nothing progressing), and a child cannot succeed a
+    dead owner -- so the founder takes it at start, before spawning anything."""
+    old = OwnerTree.start(base)
+    with using_tree(old):
+        acquire(base, A)
+    old.leave()  # exits with the key still open
+    monkeypatch.setenv(owner_lease.TREE_ENV, "")
+    monkeypatch.setattr(owner_lease, "_trees", {})
+    daemon = owner_lease.start_owner_tree(base)
+    try:
+        assert owner_lease.held_generation(base, A) == (2, daemon.tree_id)
+        child = OwnerTree(base, daemon.tree_id).join()
+        try:
+            with using_tree(child):
+                assert acquire(base, A, wait_s=0).generation == 2
+        finally:
+            child.leave()
+    finally:
+        daemon.leave()
+
+
+def test_a_live_holder_is_not_recovered(base, owner, monkeypatch):
+    acquire(base, A)
+    monkeypatch.setenv(owner_lease.TREE_ENV, "")
+    monkeypatch.setattr(owner_lease, "_trees", {})
+    second = owner_lease.start_owner_tree(base)
+    try:
+        assert owner_lease.held_generation(base, A) == (1, owner.tree_id)
+    finally:
+        second.leave()

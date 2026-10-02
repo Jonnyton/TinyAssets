@@ -343,6 +343,7 @@ def start_owner_tree(base_path: str | Path) -> OwnerTree:
         tree = OwnerTree.start(base_path)
         _trees[key] = tree
     os.environ[TREE_ENV] = tree.tree_id
+    recover_dead_keys(base_path)
     return tree
 
 
@@ -587,6 +588,35 @@ def record_fence(base_path: str | Path, owner_key: str, store_path: str | Path,
         )
 
 
+def recover_dead_keys(base_path: str | Path) -> list[str]:
+    """The founder's startup: take every key a DEAD owner tree still holds.
+
+    Children never succeed a dead owner (they would wait and fail), so a key the
+    previous daemon left open must be recovered here, before anything is
+    spawned -- whether or not it had progressing turns (round-2 B1 code review
+    finding 2). A key whose holder is still alive is left alone. Returns the
+    keys taken.
+    """
+    tree = current_tree(base_path)
+    if not tree.founder:
+        raise LeaseLost("only an owner tree's founder recovers keys")
+    if not lease_db_path(base_path).is_file():
+        return []
+    with lease_db(base_path) as conn:
+        open_keys = [row["owner_key"] for row in conn.execute(
+            "SELECT owner_key FROM owner_lease WHERE state = 'open' AND holder_tree != ?",
+            (tree.tree_id,),
+        )]
+    taken = []
+    for owner_key in open_keys:
+        try:
+            acquire(base_path, owner_key, wait_s=0)
+        except LeaseBusy:
+            continue  # its holder is alive
+        taken.append(owner_key)
+    return taken
+
+
 def release(lease: KeyLease) -> bool:
     """Voluntary release (D4: only at the command center's idle instant)."""
     with lease_db(lease.base_path) as conn:
@@ -642,6 +672,7 @@ __all__ = [
     "key_for",
     "record_fence",
     "register_store",
+    "recover_dead_keys",
     "release",
     "start_owner_tree",
     "store_kind",
