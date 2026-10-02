@@ -321,3 +321,18 @@ A start that carries `parent_exec_id`, whose parent claim is live, is a CONTINUA
 
 ### B2-4. Learning advances over a gap-free processed range (round-2 finding 11)
 Learning settlement uses explicit ranges. `settle_learned_cursor(from_turn, to_turn)` advances only across turns that are each either processed by this settlement or marked `learn_excluded`. Rows a turn did not process stop the advance at the first gap. Rows projected back from abandoned pending requests (C1) are marked `learn_excluded`: never claimed as learned, never blocking. A later turn that processes a gap row advances past it.
+
+### B2 addendum shape review (Codex gpt-6-astra, 2026-10-02): ADAPT
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | Per-store transactions exist, but a reservation is not an execution start; ordinary async runs take a separate route (`runs.py:5889`) | Accepted |
+| 2 | Closed stores do not make the claim set shrink: a continuation can land in a store the idle scan already read | Open, P1 |
+| 3 | Reaching a coordinator or run `finally` is not descendant teardown (claude 5s detach; codex kill without an acknowledgement; router backstop future; bounded sandbox joins) | Open, P1 |
+| 4 | The interactive execution extends past the coordinator (lesson extraction, recording, cursor) | Open, P1 |
+| 5-6 | There is no trusted parent carrier across workflow, engine `run_graph`, file-input dispatch, or fresh-Context workers; a parent id must be bound to key, generation and spawner | Open, P2 |
+| 7 | The learned cursor needs exact recorded bounds and persisted coverage, not just explicit endpoints | Open, P1. It fixes a live bug, so it is built now as B2a |
+
+**Proposed split (sent to the lead):**
+- **B2a, built now.** D9 steering and carryover read-then-acknowledge; exact learned-cursor coverage (finding 7); op-id attach (D6a).
+- **B2b, deferred.** Per-command-center idle moves (B2-1 to B2-3 and C2's per-command-center handover) wait until #4263 S4's per-command-center boxes make quiescence a box-level fact. Until then, owner deploys keep phase 1's whole-process wait.
