@@ -26,6 +26,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+LimitCORE=0
 EnvironmentFile=/etc/tinyassets/env
 ExecStart=/bin/bash /opt/tinyassets-host-uptime/current/deploy/backup.sh
 TimeoutStartSec=30min

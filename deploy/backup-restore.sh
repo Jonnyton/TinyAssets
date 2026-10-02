@@ -23,8 +23,8 @@
 #   ESCROW_FILE      absolute path of a host-key escrow file (scripts/host_key_escrow.py).
 #                    After the data swap, its keys are installed set-once into the
 #                    host env files and checked against the restored archive's
-#                    .escrow-key-hashes manifest: proof the restored sealed data
-#                    opens under the restored keys. Values are never printed.
+#                    .escrow-key-hashes manifest: proof the key strings match those
+#                    recorded when the archive was taken. Values are never printed.
 #
 # Exit codes:
 #   0  restore complete (or DRY_RUN=1); caller starts services

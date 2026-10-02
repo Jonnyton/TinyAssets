@@ -190,9 +190,9 @@ PY
     fi
 done
 
-# Hashes (never values) of the keys this data was written under, inside the
+# Hashes (never values) of the host's key strings at backup time, inside the
 # archive. A restore installs the escrowed keys and checks them against this
-# manifest, so it can prove the keys it restored are the keys this data needs.
+# manifest, proving only that the key strings match those recorded when the archive was taken.
 ESCROW_SCRIPT="$(dirname "$(realpath "$0")")/../scripts/host_key_escrow.py"
 if ! python3 "${ESCROW_SCRIPT}" hashes-host > "${BRAIN_STAGE}/escrow-key-hashes.txt"; then
     log "ERROR: could not record the escrow key-hash manifest"
@@ -288,7 +288,14 @@ if [[ -n "${BACKUP_OFFREGION_DEST:-}" ]]; then
     # escrow into the journal or a log (Codex on the escrow refute).
     ulimit -c 0
     escrow_rclone() {
-        env -u RCLONE_DUMP -u RCLONE_LOG_FILE -u RCLONE_VERBOSE -u RCLONE_LOG_LEVEL \
+        local name
+        local -a unset_args=()
+        while IFS= read -r name; do
+            case "${name}" in
+                RCLONE_DUMP*|RCLONE_LOG*|RCLONE_VERBOSE*) unset_args+=(-u "${name}") ;;
+            esac
+        done < <(compgen -e)
+        env "${unset_args[@]}" \
             rclone --log-level ERROR --contimeout 60s --timeout 300s "$@"
     }
     escrow_dir="$(mktemp -d /tmp/tinyassets-escrow.XXXXXX)"
@@ -296,20 +303,27 @@ if [[ -n "${BACKUP_OFFREGION_DEST:-}" ]]; then
     escrow_file="${escrow_dir}/host-keys.env"
     if python3 "${ESCROW_SCRIPT}" write "${escrow_file}"; then
         escrow_id="$(sha256sum "${escrow_file}" | cut -c1-16)"
-        if escrow_rclone copyto \
+        if escrow_rclone copyto --ignore-times \
                 "${escrow_file}" "${ESCROW_DEST}/history/host-keys-${escrow_id}.env" \
             && escrow_rclone copyto "${escrow_file}" "${ESCROW_DEST}/host-keys.env"; then
             log "  host-key escrow OK"
-            # Bounded history: the newest BACKUP_ESCROW_HISTORY sets (default 10)
-            # by modification time; enough to restore an archive from before a
-            # rotation, without keeping every superseded key forever.
-            escrow_rclone lsf --files-only --format tp --include 'host-keys-*.env' \
+            # Keep history for BACKUP_ESCROW_HISTORY_DAYS (default 200), covering
+            # six months of monthly archives. Force-upload the current set above
+            # to refresh its modtime nightly. Unknown timestamps are never pruned.
+            history_days="${BACKUP_ESCROW_HISTORY_DAYS:-200}"
+            [[ "${history_days}" =~ ^[0-9]{1,6}$ ]] || {
+                log "ERROR: invalid escrow history retention days"
+                exit 2
+            }
+            history_cutoff=$(( $(date -u +%s) - 10#${history_days} * 86400 ))
+            TZ=UTC escrow_rclone lsf --files-only --format tp --include 'host-keys-*.env' \
                     "${ESCROW_DEST}/history/" 2>/dev/null \
-                | LC_ALL=C sort -r \
-                | tail -n "+$(( ${BACKUP_ESCROW_HISTORY:-10} + 1 ))" \
-                | cut -d';' -f2 \
-                | while read -r old_set; do
+                | while IFS=';' read -r modified old_set; do
                     [[ "${old_set}" == host-keys-*.env ]] || continue
+                    [[ "${old_set}" != */* ]] || continue
+                    [[ "${modified}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]] || continue
+                    modified_epoch="$(date -u -d "${modified}" +%s 2>/dev/null)" || continue
+                    (( modified_epoch < history_cutoff )) || continue
                     escrow_rclone deletefile "${ESCROW_DEST}/history/${old_set}" \
                         || log "    WARN: could not prune escrow history ${old_set}"
                 done

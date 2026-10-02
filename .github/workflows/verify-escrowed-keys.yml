@@ -66,7 +66,13 @@ jobs:
           # The same destination backup.sh writes, including its override.
           escrow_dest="$(read_env BACKUP_ESCROW_DEST)"
           escrow_dest="${escrow_dest:-${dest%/*}/escrow}"
-          env -u RCLONE_DUMP -u RCLONE_LOG_FILE -u RCLONE_VERBOSE -u RCLONE_LOG_LEVEL \
+          unset_args=()
+          while IFS= read -r name; do
+            case "${name}" in
+              RCLONE_DUMP*|RCLONE_LOG*|RCLONE_VERBOSE*) unset_args+=(-u "${name}") ;;
+            esac
+          done < <(compgen -e)
+          env "${unset_args[@]}" \
               rclone --log-level ERROR cat "${escrow_dest}/host-keys.env" \
             | python3 "${stage}/host_key_escrow.py" verify
           ESCROW_VERIFY

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import fnmatch
 import os
 import shutil
 import stat
@@ -65,6 +66,12 @@ def _escrow_text() -> str:
 ])
 def test_ambiguous_shapes_are_unsupported_never_guessed(text):
     assert esc.parse_value(text, "TINYASSETS_SESSION_SEAL_KEY") is esc.UNSUPPORTED
+
+
+@pytest.mark.parametrize("declaration", ["NAME", "export NAME", "  NAME  ", "\texport NAME\t"])
+def test_bare_declarations_are_mentions(declaration):
+    assert esc.parse_value(declaration, "NAME") is esc.UNSUPPORTED
+    assert esc.parse_value("NAME=valid-key-value-long-enough\n" + declaration, "NAME") is esc.UNSUPPORTED
 
 
 def test_write_produces_exactly_the_four_keys_at_0600(host, tmp_path, capsys):
@@ -177,7 +184,7 @@ def test_the_verify_workflow_compares_on_the_host_and_never_traces():
     assert "host_key_escrow.py\" verify" in remote
     assert 'escrow_dest="${escrow_dest:-${dest%/*}/escrow}"' in remote, "honours the override"
     assert "ulimit -c 0" in remote
-    assert "env -u RCLONE_DUMP -u RCLONE_LOG_FILE" in remote
+    _assert_dynamic_rclone_sanitizer(remote)
     assert "trap 'rm -rf -- \"${stage}\"' EXIT" in remote
     for s in steps:
         text = s.get("run", "") or ""
@@ -218,6 +225,16 @@ def test_the_escrow_is_checked_against_the_manifest_before_install(host, capsys)
     assert "TINYASSETS_SESSION_SEAL_KEY: MISMATCH" in capsys.readouterr().out
 
 
+def test_check_escrow_fails_when_a_manifest_entry_is_missing(capsys):
+    missing = "TINYASSETS_SESSION_SEAL_KEY"
+    manifest = "".join(f"{k} {_h(v)}\n" for k, v in VALUES.items() if k != missing)
+    assert esc.check_escrow_against_manifest(_escrow_text(), manifest) == 1
+    out = capsys.readouterr().out
+    assert f"{missing}: not-in-manifest" in out
+    assert out.count(": match") == 3
+    assert not any(value in out for value in VALUES.values())
+
+
 def test_restore_checks_before_installing_and_fails_closed_without_a_manifest():
     restore = (REPO / "deploy" / "backup-restore.sh").read_text(encoding="utf-8")
     block = restore.split("# ----- 4b. restore the escrowed host keys", 1)[1]
@@ -228,14 +245,37 @@ def test_restore_checks_before_installing_and_fails_closed_without_a_manifest():
     assert "root 600" in block and "ulimit -c 0" in block
 
 
+def _assert_dynamic_rclone_sanitizer(block):
+    assert "compgen -e" in block
+    patterns = "RCLONE_DUMP*|RCLONE_LOG*|RCLONE_VERBOSE*"
+    assert patterns + ') unset_args+=(-u "${name}")' in block
+    for name in ("RCLONE_DUMP", "RCLONE_DUMP_BODIES", "RCLONE_DUMP_HEADERS",
+                 "RCLONE_LOG_FILE", "RCLONE_LOG_LEVEL", "RCLONE_VERBOSE"):
+        assert any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns.split("|"))
+    assert 'env "${unset_args[@]}"' in block
+    assert "rclone --log-level ERROR" in block
+
+
 def test_backup_neutralises_rclone_diagnostics_and_core_dumps_for_the_escrow():
     backup = (REPO / "deploy" / "backup.sh").read_text(encoding="utf-8")
     block = backup.split("# Host-key escrow", 1)[1].split('rm -rf "${escrow_dir}"', 1)[0]
     assert "ulimit -c 0" in block
-    assert "env -u RCLONE_DUMP -u RCLONE_LOG_FILE" in block
+    _assert_dynamic_rclone_sanitizer(block)
     import re
 
     assert not re.search(r"(?<!escrow_)rclone (copyto|cat|lsf|deletefile)", block), (
         "every escrow transfer goes through escrow_rclone")
-    assert "BACKUP_ESCROW_HISTORY:-10" in block
+    service = (REPO / "deploy" / "tinyassets-backup.service").read_text(encoding="utf-8")
+    assert "\nLimitCORE=0\n" in service.split("[Service]", 1)[1].split("\n[", 1)[0]
 
+
+def test_backup_history_prunes_by_age_and_preserves_unparseable_times():
+    backup = (REPO / "deploy" / "backup.sh").read_text(encoding="utf-8")
+    block = backup.split("# Keep history for", 1)[1].split("        else", 1)[0]
+    assert "BACKUP_ESCROW_HISTORY_DAYS:-200" in block
+    assert "TZ=UTC escrow_rclone lsf --files-only --format tp" in block
+    assert "tail -n" not in block
+    assert 'modified_epoch="$(date -u -d "${modified}" +%s 2>/dev/null)" || continue' in block
+    assert "(( modified_epoch < history_cutoff )) || continue" in block
+    assert block.index("modified_epoch < history_cutoff") < block.index("escrow_rclone deletefile")
+    assert "escrow_rclone copyto --ignore-times" in backup

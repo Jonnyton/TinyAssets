@@ -28,7 +28,7 @@ HMACs. The readers are:
   holds these keys in /etc/tinyassets/env);
 - the DR drill's short-lived per-run read key;
 - DigitalOcean account administrators.
-History is bounded to the newest 10 sets (backup.sh). Encrypting the escrow
+History expires after 200 days without a refresh by default (backup.sh). Encrypting the escrow
 needs a key that survives losing the droplet without a human holding it, and at
 $0 there is no such place: GitHub secrets cannot be written by a workflow, and
 anything on the droplet dies with it. Accepted under the slim-until-paying-users
@@ -58,6 +58,14 @@ try:  # the host is Linux; the import only fails on a developer's Windows box
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 except ImportError:  # pragma: no cover
     pass
+
+if sys.platform == "linux":  # Windows has neither prctl nor Linux core dumps
+    import ctypes
+
+    # Also stop privileged core collectors from dumping this secret-bearing process.
+    _libc = ctypes.CDLL(None, use_errno=True)
+    if _libc.prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE = 4
+        raise OSError(ctypes.get_errno(), "could not disable process dumps")
 
 # The host's env directory. Overridable only so the backup harness can point
 # it at a temp tree; production never sets it.
@@ -90,7 +98,7 @@ _VALUE = re.compile(r"[A-Za-z0-9+/=_\\ .:-]{16,8192}")
 def parse_value(text: str, name: str):
     """The value, None if absent, or UNSUPPORTED for any shape we will not guess at."""
     mentions = [line for line in text.splitlines()
-                if re.match(rf"^\s*(export\s+)?{re.escape(name)}\s*[=:]", line)]
+                if re.match(rf"^\s*(export\s+)?{re.escape(name)}\s*(?:[=:]|$)", line)]
     if not mentions:
         return None
     if len(mentions) != 1 or not mentions[0].startswith(name + "="):

@@ -15,6 +15,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,7 @@ ESCROW_VALUES = {
 
 
 def _run(tmp_path: Path, *, offregion: str | None, fail_offregion: bool = False,
-         escrow_complete: bool = True):
+         escrow_complete: bool = True, history: str = "", history_days: int = 200):
     volume = tmp_path / "volume"
     volume.mkdir()
     con = sqlite3.connect(volume / ".tinyassets.db")
@@ -57,13 +58,21 @@ def _run(tmp_path: Path, *, offregion: str | None, fail_offregion: bool = False,
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "rclone.calls"
+    history_file = tmp_path / "history"
+    history_file.write_text(history, encoding="utf-8")
     _fake(bin_dir, "docker", f'echo "{volume}"\n')
     _fake(bin_dir, "rclone", f'''echo "$*" >> "{calls}"
+if [[ "$*" == *"/escrow/"* ]]; then
+  printf 'dump-bodies:%s\\n' "${{RCLONE_DUMP_BODIES+set}}" >> "{calls}"
+fi
+while [[ "$1" == --* ]]; do shift 2; done
 case "$1" in
   copyto)
     if [[ "{1 if fail_offregion else 0}" == "1" && "${{@: -1}}" == offregion:* ]]; then exit 1; fi
     exit 0 ;;
-  lsf) exit 0 ;;
+  lsf)
+    if [[ "${{@: -1}}" == */escrow/history/ ]]; then cat "{history_file}"; fi
+    exit 0 ;;
   *) exit 0 ;;
 esac
 ''')
@@ -97,6 +106,8 @@ esac
         "BACKUP_LOG": str(tmp_path / "backup.log"),
         "GH_TOKEN": "x",
         "TINYASSETS_ESCROW_ETC": str(etc),
+        "RCLONE_DUMP_BODIES": "true",
+        "BACKUP_ESCROW_HISTORY_DAYS": str(history_days),
     }
     if offregion is not None:
         env["BACKUP_OFFREGION_DEST"] = offregion
@@ -183,3 +194,33 @@ def test_the_archive_carries_the_key_hash_manifest_not_the_keys(tmp_path):
         assert f"{name} {hashlib.sha256(value.encode()).hexdigest()}" in manifest
         assert value not in manifest
 
+
+def test_escrow_rclone_unsets_inherited_dump_bodies(tmp_path):
+    result, calls, _ = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups")
+    assert result.returncode == 0, result.stdout + result.stderr
+    diagnostics = [c for c in calls if c.startswith("dump-bodies:")]
+    assert len(diagnostics) >= 3
+    assert set(diagnostics) == {"dump-bodies:"}
+
+
+@pytest.mark.parametrize("history_days", [200, 30])
+def test_history_prunes_only_expired_sets_and_keeps_unparseable_entries(tmp_path, history_days):
+    now = datetime.now(timezone.utc)
+
+    def entry(age, name):
+        modified = now - timedelta(days=age)
+        return f"{modified:%Y-%m-%d %H:%M:%S};host-keys-{name}.env\n"
+
+    history = entry(history_days + 1, "expired")
+    # More than ten retained sets must survive; count is irrelevant.
+    history += "".join(entry(1, f"recent-{i}") for i in range(12))
+    history += entry(history_days - 1, "near-cutoff")
+    history += "unknown;host-keys-unknown.env\n"
+    history += "2026-99-99 00:00:00;host-keys-invalid.env\n"
+    result, calls, _ = _run(tmp_path, offregion="offregion:tinyassets-offregion/backups",
+                            history=history, history_days=history_days)
+    assert result.returncode == 0, result.stdout + result.stderr
+    deleted = [c.split()[-1] for c in calls if "deletefile" in c.split()]
+    assert deleted == ["offregion:tinyassets-offregion/escrow/history/host-keys-expired.env"]
+    uploads = [c for c in calls if "copyto" in c.split() and "/escrow/history/" in c]
+    assert len(uploads) == 1 and "--ignore-times" in uploads[0]
