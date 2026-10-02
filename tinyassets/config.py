@@ -161,6 +161,10 @@ def _read_config_document(
     return load_untrusted_yaml(raw, max_bytes=MAX_CONFIG_BYTES)
 
 
+#: ``config.yaml`` exists but could not be parsed (see `_load_preferences`).
+UNREADABLE = object()
+
+
 def load_universe_config(universe_path: str | Path) -> UniverseConfig:
     """Load config.yaml, with authority read only from the platform record.
 
@@ -173,7 +177,7 @@ def load_universe_config(universe_path: str | Path) -> UniverseConfig:
     from tinyassets.provider_authority import AUTHORITY_FIELDS, authority_for
 
     preferences, data = _load_preferences(universe_path)
-    authority = authority_for(universe_path, data if isinstance(data, dict) else None)
+    authority = authority_for(universe_path, data)
     return replace(preferences, **{name: authority[name] for name in AUTHORITY_FIELDS})
 
 
@@ -182,7 +186,9 @@ def _load_preferences(universe_path: str | Path) -> tuple[UniverseConfig, Any]:
 
     Returns ``(config, data)``: ``config`` has defaults for missing fields (and is
     all defaults when the file is absent or cannot be parsed); ``data`` is the
-    parsed mapping, or ``None``, for the one-time authority migration.
+    parsed mapping for the one-time authority migration, ``None`` when there is no
+    config.yaml, or ``UNREADABLE`` when one exists but cannot be parsed (the
+    migration then waits rather than record defaults over a real assignment).
     """
     try:
         data = _read_config_document(universe_path)
@@ -191,20 +197,20 @@ def _load_preferences(universe_path: str | Path) -> tuple[UniverseConfig, Any]:
             "PyYAML not installed; cannot read config.yaml. "
             "Install with: pip install pyyaml"
         )
-        return UniverseConfig(), None
+        return UniverseConfig(), UNREADABLE
     except (OSError, UnicodeDecodeError) as e:
         # A linked, oversized, alias-bearing or malformed config.yaml is never
         # parsed into the shared daemon: defaults, and a note -- never an
         # exception that breaks the turn (harness S1 review round 2).
         logger.warning("config.yaml in %s refused (%s); using defaults", universe_path, e)
-        return UniverseConfig(), None
+        return UniverseConfig(), UNREADABLE
     if data is None:
         logger.debug("No config.yaml in %s; using defaults", universe_path)
         return UniverseConfig(), None
 
     if not isinstance(data, dict):
         logger.warning("config.yaml is not a mapping; using defaults")
-        return UniverseConfig(), None
+        return UniverseConfig(), UNREADABLE
 
     from tinyassets.provider_authority import AUTHORITY_FIELDS
 
@@ -260,7 +266,7 @@ def write_universe_config_fields(
 
     import yaml
 
-    from tinyassets.provider_authority import AUTHORITY_FIELDS
+    from tinyassets.provider_authority import AUTHORITY_FIELDS, authority_for, record_path
 
     refused = sorted(set(fields) & set(AUTHORITY_FIELDS))
     if refused:
@@ -277,6 +283,11 @@ def write_universe_config_fields(
             "Existing config.yaml at %s unreadable (%s); rewriting fresh",
             config_file, e,
         )
+    authority_for(universe_path, data)
+    if any(name in data for name in AUTHORITY_FIELDS) and not record_path(universe_path).is_file():
+        raise OSError("cannot strip legacy authority before its platform record exists")
+    for name in AUTHORITY_FIELDS:
+        data.pop(name, None)
     data.update(fields)
 
     config_file.parent.mkdir(parents=True, exist_ok=True)

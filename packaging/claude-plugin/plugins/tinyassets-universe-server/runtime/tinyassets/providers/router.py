@@ -159,7 +159,11 @@ def _effective_universe_provider_ceiling(
     use only providers the universe itself selected, never the process-global
     fallback chain. Missing/empty selection holds before provider access.
     """
+    from tinyassets.provider_authority import current
+
+    universe_dir = universe_context.universe_dir if universe_context is not None else None
     if carrier_armed or universe_context is None:
+        resolved_config = current(universe_dir, resolved_config)
         return (
             resolved_config.allowed_providers
             if resolved_config is not None
@@ -171,6 +175,7 @@ def _effective_universe_provider_ceiling(
     requester_config = universe_context.config
     if requester_config is None:
         raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+    requester_config = current(universe_dir, requester_config)
     if requester_config.allowed_providers is not None:
         ceiling = [
             str(provider).strip()

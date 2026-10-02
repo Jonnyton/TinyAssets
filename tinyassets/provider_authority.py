@@ -15,9 +15,10 @@ those four fields live in a platform record instead:
   function to ``.platform/cc-<ulid>/assignment.json`` and nothing else changes.
 * `authority_for` reads it. The first read of a home that has no record yet is
   the one-time migration: today's values are copied out of ``config.yaml``
-  (defaults when it has none), so no home ever reads authority from the config
-  again. A record that exists always wins; authority left in ``config.yaml`` is
-  ignored and logged.
+  (defaults when it has none), using exclusive creation. A record that exists
+  always wins, including one published during migration; authority left in
+  ``config.yaml`` is ignored and logged. If migration cannot write, readable
+  config values remain usable in memory until the record can be created.
 * A record that cannot be read fails CLOSED: an empty ``allowed_providers``
   ceiling, so nothing routes, rather than the unrestricted ``None`` default.
 """
@@ -89,10 +90,11 @@ def write_record(universe_path: str | Path, fields: dict[str, Any]) -> None:
         raise
 
 
-def authority_for(universe_path: str | Path, config_data: dict[str, Any] | None) -> dict[str, Any]:
+def authority_for(universe_path: str | Path, config_data: Any) -> dict[str, Any]:
     """The authority fields for this home, from the platform record only.
 
-    ``config_data`` is the parsed ``config.yaml`` (or ``None``). It is consulted
+    ``config_data`` is the parsed ``config.yaml`` mapping, ``None`` when there is
+    none, or any other object when it exists but is unreadable. It is consulted
     exactly once per home -- when no record exists yet -- to migrate today's
     values; after that it is never read for authority.
     """
@@ -105,15 +107,52 @@ def authority_for(universe_path: str | Path, config_data: dict[str, Any] | None)
     except (OSError, ValueError) as exc:
         logger.error("provider authority record unreadable (%s); nothing may route", exc)
         return dict(FAIL_CLOSED)
+    if record is None and config_data is not None and not isinstance(config_data, dict):
+        # config.yaml exists but cannot be read: migrating now would record the
+        # defaults over a real assignment. Wait for a readable file; meanwhile
+        # nothing routes.
+        logger.error("config.yaml in %s unreadable and no authority record yet; "
+                     "nothing may route until it is readable", universe_path)
+        return dict(FAIL_CLOSED)
+    if not isinstance(config_data, dict):
+        config_data = None
     present = sorted(name for name in AUTHORITY_FIELDS if name in (config_data or {}))
     if record is None:
         migrated = {name: (config_data or {}).get(name, DEFAULTS[name])
                     for name in AUTHORITY_FIELDS}
         try:
-            write_record(universe_path, migrated)
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".assignment.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(migrated, handle, sort_keys=True)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                try:
+                    os.link(tmp, path)
+                except FileExistsError:
+                    # A concurrent migration or publisher won. Never replace it.
+                    try:
+                        return _read(path) or dict(FAIL_CLOSED)
+                    except (OSError, ValueError) as exc:
+                        logger.error("provider authority record unreadable (%s); nothing may route",
+                                     exc)
+                        return dict(FAIL_CLOSED)
+            finally:
+                Path(tmp).unlink(missing_ok=True)
         except OSError as exc:
-            logger.error("provider authority record not written (%s); nothing may route", exc)
-            return dict(FAIL_CLOSED)
+            # Even a failed write must not hide authority published meanwhile.
+            try:
+                record = _read(path)
+            except (OSError, ValueError) as read_exc:
+                logger.error("provider authority record unreadable (%s); nothing may route",
+                             read_exc)
+                return dict(FAIL_CLOSED)
+            if record is not None:
+                return record
+            logger.warning("provider authority record could not be written (%s); "
+                           "using migrated values in memory", exc)
+            return migrated
         if present:
             logger.info("provider authority migrated out of config.yaml for %s: %s",
                         universe_path, ", ".join(present))
@@ -124,3 +163,20 @@ def authority_for(universe_path: str | Path, config_data: dict[str, Any] | None)
             "read only from the platform record", universe_path, ", ".join(present),
         )
     return record
+
+
+def current(universe_dir: str | Path | None, fallback_config: Any) -> Any:
+    """Refresh authority for an existing home, retaining captured preferences.
+
+    Without a home to read, retain the caller's ceiling rather than widening it
+    to the defaults for a missing home.
+    """
+    if universe_dir is None or not Path(universe_dir).is_dir():
+        return fallback_config
+    from dataclasses import replace
+
+    from tinyassets.config import _load_preferences
+
+    preferences, data = _load_preferences(universe_dir)
+    authority = authority_for(universe_dir, data)
+    return replace(fallback_config if fallback_config is not None else preferences, **authority)

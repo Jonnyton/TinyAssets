@@ -12,9 +12,11 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 
 from tinyassets import provider_authority as pa
 from tinyassets.config import (
+    UniverseConfig,
     load_universe_config,
     write_provider_assignment_projection,
     write_universe_config_fields,
@@ -110,3 +112,110 @@ def test_the_generic_config_writer_refuses_authority(tmp_path):
 def test_the_record_is_invisible_to_the_agents_tool_jail():
     """Hidden home entries are never bound into the tool jail (universe_tools)."""
     assert pa.record_path("/h").parent.name.startswith(".")
+
+
+def test_an_unreadable_config_never_records_defaults_over_a_real_assignment(tmp_path):
+    home = _home(tmp_path)
+    _config(home, "allowed_providers: [codex\n")  # unparseable
+    assert load_universe_config(home).allowed_providers == []  # nothing routes
+    assert not pa.record_path(home).exists(), "migration waits for a readable file"
+    _config(home, "allowed_providers: [codex]\n")
+    assert load_universe_config(home).allowed_providers == ["codex"]
+
+
+def test_concurrent_migration_returns_the_winning_record(tmp_path, monkeypatch):
+    home = _home(tmp_path)
+    real_link = pa.os.link
+    winner = {**pa.DEFAULTS, "allowed_providers": ["codex"], "engine_assignment_generation": 9}
+
+    def publish_before_link(source, destination):
+        with monkeypatch.context() as patch:
+            patch.setattr(pa.os, "link", real_link)
+            assert pa.authority_for(home, winner) == winner
+        real_link(source, destination)
+
+    monkeypatch.setattr(pa.os, "link", publish_before_link)
+    assert pa.authority_for(home, {"allowed_providers": ["claude-code"]}) == winner
+    assert json.loads(pa.record_path(home).read_text(encoding="utf-8")) == winner
+    assert list(pa.record_path(home).parent.glob("*.tmp")) == []
+
+
+def test_read_only_home_uses_readable_config_authority(tmp_path, monkeypatch, caplog):
+    home = _home(tmp_path)
+    _config(home, "allowed_providers: [codex]\nengine_assignment_state: ready\n"
+                  "engine_assignment_generation: 4\n"
+                  "provider_authority_bindings: {codex: {binding_id: old}}\n")
+
+    def refuse_write(*args, **kwargs):
+        raise OSError("read-only home")
+
+    monkeypatch.setattr(pa.tempfile, "mkstemp", refuse_write)
+    loaded = load_universe_config(home)
+    assert loaded.allowed_providers == ["codex"]
+    assert loaded.engine_assignment_state == "ready"
+    assert loaded.engine_assignment_generation == 4
+    assert loaded.provider_authority_bindings == {"codex": {"binding_id": "old"}}
+    assert "could not be written" in caplog.text
+    assert not pa.record_path(home).exists()
+
+
+def test_preference_write_migrates_and_strips_legacy_authority(tmp_path):
+    home = _home(tmp_path)
+    _config(home, "allowed_providers: [claude-code]\nengine_assignment_state: ready\n"
+                  "engine_assignment_generation: 4\n"
+                  "provider_authority_bindings: {claude-code: {binding_id: old}}\n")
+    write_universe_config_fields(home, preferred_writer="codex")
+    data = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert not set(pa.AUTHORITY_FIELDS).intersection(data)
+    assert data["preferred_writer"] == "codex"
+    record = json.loads(pa.record_path(home).read_text(encoding="utf-8"))
+    assert record["allowed_providers"] == ["claude-code"]
+    assert record["engine_assignment_generation"] == 4
+
+
+@pytest.mark.parametrize("carrier_armed", [False, True])
+def test_router_ceiling_refreshes_captured_authority(tmp_path, carrier_armed):
+    from tinyassets.providers.base import UniverseContext
+    from tinyassets.providers.router import _effective_universe_provider_ceiling
+
+    home = _home(tmp_path)
+    captured = UniverseConfig(allowed_providers=["claude-code"])
+    pa.write_record(home, {"allowed_providers": ["codex"]})
+    context = UniverseContext(universe_dir=home, config=captured)
+    assert _effective_universe_provider_ceiling(
+        context, captured, carrier_armed=carrier_armed,
+    ) == ["codex"]
+    assert captured.allowed_providers == ["claude-code"]
+
+
+def test_current_refreshes_all_authority_and_preserves_preferences(tmp_path):
+    home = _home(tmp_path)
+    captured = UniverseConfig(allowed_providers=["claude-code"], preferred_writer="claude-code")
+    record = {
+        "allowed_providers": ["codex"],
+        "engine_assignment_state": "ready",
+        "engine_assignment_generation": 7,
+        "provider_authority_bindings": {"codex": {"binding_id": "current"}},
+    }
+    pa.write_record(home, record)
+    refreshed = pa.current(home, captured)
+    assert {name: getattr(refreshed, name) for name in pa.AUTHORITY_FIELDS} == record
+    assert refreshed.preferred_writer == captured.preferred_writer
+    pa.write_record(home, {**record, "allowed_providers": []})
+    assert pa.current(home, captured).allowed_providers == []
+    assert pa.current(None, captured) is captured
+    assert pa.current(home / "missing", captured) is captured
+
+
+def test_preference_writer_keeps_authority_when_migration_cannot_write(tmp_path, monkeypatch):
+    home = _home(tmp_path)
+    original = "allowed_providers: [codex]\n"
+    _config(home, original)
+
+    def refuse_write(*args, **kwargs):
+        raise OSError("read-only record directory")
+
+    monkeypatch.setattr(pa.tempfile, "mkstemp", refuse_write)
+    with pytest.raises(OSError, match="cannot strip legacy authority"):
+        write_universe_config_fields(home, preferred_writer="claude-code")
+    assert (home / "config.yaml").read_text(encoding="utf-8") == original
