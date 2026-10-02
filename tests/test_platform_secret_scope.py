@@ -381,13 +381,22 @@ def _compose_available() -> bool:
 
 
 def _compose_environment(env_file: Path, work: Path) -> dict:
+    """Compose's reading of *env_file*, with a project env that holds every
+    forbidden name, as `--env-file /etc/tinyassets/env` does in production: a
+    bare declaration left in the daemon copy would be filled from it."""
+    project = work / "project.env"
+    project.write_text(
+        "".join(f"{name}=from-project\n" for name in sorted(DAEMON_FORBIDDEN_ENV)),
+        encoding="utf-8",
+    )
     compose = work / "compose.yml"
     compose.write_text(
         f"services:\n  x:\n    image: busybox\n    env_file:\n      - {env_file.as_posix()}\n",
         encoding="utf-8",
     )
     rendered = subprocess.run(
-        ["docker", "compose", "-f", str(compose), "config", "--format", "json"],
+        ["docker", "compose", "--env-file", str(project), "-f", str(compose),
+         "config", "--format", "json"],
         capture_output=True, text=True, cwd=work, check=True,
     )
     return json.loads(rendered.stdout)["services"]["x"].get("environment") or {}
@@ -409,6 +418,12 @@ def _compose_environment(env_file: Path, work: Path) -> dict:
         'A="say \\"hi\\""\nDO_API_TOKEN=x\n',
         "A=1\r\nDO_API_TOKEN=x\r\nB=2\r\n",
         "DO_API_TOKEN=a\nDO_API_TOKEN=b\nA=1\n",
+        "A='it\\'s valid'\nDO_API_TOKEN=x\n",
+        "A='abc\\\\'\nB=1\n",
+        "A='l1\\'\nDO_API_TOKEN=inner'\nB=2\n",
+        "DO_API_TOKEN=x\nDO_API_TOKEN\nB=1\n",
+        "export CLOUDFLARE_TUNNEL_TOKEN\nB=1\n",
+        "B\nC=1\n",
     ],
 )
 def test_render_matches_composes_own_parser(tmp_path, source_text):
@@ -427,3 +442,48 @@ def test_render_matches_composes_own_parser(tmp_path, source_text):
         if key not in DAEMON_FORBIDDEN_ENV
     }
     assert _compose_environment(daemon, tmp_path) == expected
+
+
+@_POSIX_SHELL
+@pytest.mark.parametrize("declaration", ["DO_API_TOKEN", "  export DO_API_TOKEN  "])
+def test_render_removes_a_bare_forbidden_declaration(tmp_path, declaration):
+    """Compose fills a bare name from the project environment, which in
+    production is the host env file holding the real value."""
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    source.write_text(f"KEEP=1\n{declaration}\nBARE_KEPT\n", encoding="utf-8")
+
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+
+    assert result.returncode == 0, result.stderr
+    body = [
+        line for line in daemon.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert body == ["KEEP=1", "BARE_KEPT"]
+
+
+@_POSIX_SHELL
+def test_render_accepts_an_escaped_quote_inside_single_quotes(tmp_path):
+    source = tmp_path / "env"
+    daemon = tmp_path / "daemon.env"
+    source.write_text("A='it\\'s valid'\nDO_API_TOKEN=placeholder\n", encoding="utf-8")
+
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+
+    assert result.returncode == 0, result.stderr
+    assert "A='it\\'s valid'\n" in daemon.read_text(encoding="utf-8")
+
+
+@_POSIX_SHELL
+def test_a_source_that_cannot_be_read_installs_nothing(tmp_path):
+    """`-r` passes on a directory and the read then fails; that must not
+    install an empty daemon file."""
+    source = tmp_path / "env"
+    source.mkdir()
+    daemon = tmp_path / "daemon.env"
+
+    result = _helper(tmp_path, ["render-daemon-env"], source, daemon)
+
+    assert result.returncode == 7
+    assert not daemon.exists()

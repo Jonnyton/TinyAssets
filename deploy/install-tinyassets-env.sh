@@ -581,7 +581,10 @@ QUOTE_OPEN=""
 RENDERED_CONTENT=""
 RENDER_REMOVED=""
 
-# Parse one line as an assignment; sets ENV_KEY and ENV_VALUE.
+# Parse one line as a declaration; sets ENV_KEY and ENV_VALUE. A bare name
+# (`DO_API_TOKEN`, `export DO_API_TOKEN`) is a declaration too: Compose fills it
+# from the project environment, which is the host env file itself (Codex round
+# 2), so it is removed exactly like an assignment.
 parse_env_assignment() {
     local normalized rest after_export
     strip_compose_leading_space "$1"
@@ -600,6 +603,10 @@ parse_env_assignment() {
     rest="${BASH_REMATCH[2]}"
     strip_compose_leading_space "${rest}"
     rest="${COMPOSE_TRIMMED}"
+    if [[ -z "${rest//[[:space:]]/}" ]]; then
+        ENV_VALUE=""
+        return 0
+    fi
     [[ "${rest}" == =* || "${rest}" == :* ]] || return 1
     strip_compose_leading_space "${rest:1}"
     ENV_VALUE="${COMPOSE_TRIMMED}"
@@ -611,8 +618,9 @@ parse_env_assignment() {
 classify_env_value() {
     local re_dq_closed='^"([^"\\]|\\.)*"[[:space:]]*(#.*)?$'
     local re_dq_open='^"([^"\\]|\\.)*\\?$'
-    local re_sq_closed="^'[^']*'[[:space:]]*(#.*)?\$"
-    local re_sq_open="^'[^']*\$"
+    # Compose honours a backslash escape inside single quotes too (`'it\'s'`).
+    local re_sq_closed="^'([^'\\\\]|\\\\.)*'[[:space:]]*(#.*)?\$"
+    local re_sq_open="^'([^'\\\\]|\\\\.)*(\\\\)?\$"
     QUOTE_OPEN=""
     case "${ENV_VALUE}" in
         \"*)
@@ -633,7 +641,7 @@ classify_env_value() {
 # cleanly, 1 if the value continues, 2 if text other than a comment follows.
 closes_open_quote() {
     local re_dq_close='^([^"\\]|\\.)*"(.*)$'
-    local re_sq_close="^[^']*'(.*)\$"
+    local re_sq_close="^([^'\\\\]|\\\\.)*'(.*)\$"
     local re_tail='^[[:space:]]*(#.*)?$'
     local tail
     if [ "${QUOTE_OPEN}" = '"' ]; then
@@ -641,7 +649,7 @@ closes_open_quote() {
         tail="${BASH_REMATCH[2]}"
     else
         [[ "$1" =~ ${re_sq_close} ]] || return 1
-        tail="${BASH_REMATCH[1]}"
+        tail="${BASH_REMATCH[2]}"
     fi
     [[ "${tail}" =~ ${re_tail} ]] || return 2
     return 0
@@ -720,21 +728,24 @@ render_daemon_content() {
     RENDER_REMOVED="${removed[*]:-none}"
 }
 
+# Read a whole file into READ_CONTENT, trailing newlines included. A failed
+# read is a failure: `cat ...; printf x` reported success with empty content
+# when the read failed, which would have installed an empty daemon file.
+READ_CONTENT=""
 read_file_exactly() {
     local text
-    text="$(cat -- "$1"; printf x)" || return 1
-    printf '%s' "${text%x}"
+    text="$(cat -- "$1" && printf x)" || return 1
+    READ_CONTENT="${text%x}"
 }
 
 # Write RENDERED_CONTENT to DAEMON_ENV_FILE through the same transaction, owner
 # and mode as the source, then read back what landed.
 write_daemon_env() {
     local ENV_FILE="${DAEMON_ENV_FILE}"
-    local written
     atomic_install "${RENDERED_CONTENT}"
-    written="$(read_file_exactly "${DAEMON_ENV_FILE}")" \
+    read_file_exactly "${DAEMON_ENV_FILE}" \
         || refuse_render "${DAEMON_ENV_FILE} unreadable after write"
-    render_daemon_content "${written}"
+    render_daemon_content "${READ_CONTENT}"
     if [ "${RENDER_REMOVED}" != "none" ]; then
         refuse_render "${RENDER_REMOVED} survived into ${DAEMON_ENV_FILE}"
     fi
@@ -743,13 +754,13 @@ write_daemon_env() {
 }
 
 cmd_render_daemon_env() {
-    local content removed
+    local removed
     if [ ! -r "${DAEMON_ENV_SOURCE}" ]; then
         refuse_render "${DAEMON_ENV_SOURCE} is unreadable"
     fi
-    content="$(read_file_exactly "${DAEMON_ENV_SOURCE}")" \
+    read_file_exactly "${DAEMON_ENV_SOURCE}" \
         || refuse_render "${DAEMON_ENV_SOURCE} is unreadable"
-    render_daemon_content "${content}"
+    render_daemon_content "${READ_CONTENT}"
     removed="${RENDER_REMOVED}"
     write_daemon_env
     echo "removed: ${removed}"
