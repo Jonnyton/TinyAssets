@@ -297,3 +297,27 @@ Three refinements came out of the Codex code review of B1. The design above is o
 - **Pre-lease rows are generation 0.** The first acquisition of any key is generation 1. So the first leased boot settles a leftover from before B1, as the boot rule it replaces did.
 - **Open-time migrations are gated, not yet extracted.** `owner_stores.MIGRATES_ON_OPEN_BEFORE_C2` names every connection helper that migrates a schema when a store is opened (`provider_work_authority.connection()`, and the journal's additive `owner_generation` ALTER). The journal ALTER is re-checked under `BEGIN IMMEDIATE`, so it is race-free. C2 cannot set `HANDOVER_ENABLED` while either list in `owner_stores` (`FENCE_BEFORE_C2`, `MIGRATES_ON_OPEN_BEFORE_C2`) is non-empty. Full extraction into a startup step is owed before C2, together with the 82 writers still awaiting a fence.
 - **Owed before C2 (B1 code review round 3, P2, non-blocking today):** `recover_dead_keys` runs once, at founder start. Suppose a key was skipped because an old engine child was still alive. That can happen only with overlapping owners, and today's deploy stops the old container first, so it cannot happen now. Once that child exits, nothing retries the recovery, and a new child cannot succeed the dead holder. C2's handover must retry recovery when a skipped holder dies. Note too that each recovery costs a SQLite busy wait plus a fence per key; measure it before many keys exist.
+
+## B2 design addendum: round-2 findings 5, 6, 7 and 11, resolved before B2 is built
+
+### B2-1. Admission state lives beside each execution's own row (round-2 finding 5)
+There is no cross-database counter. The fence row gains a column: `owner_fence(owner_key, generation, admission_open)`, present in EVERY owner store, alongside the generation. An execution start checks `admission_open = 1` and inserts its own row in ONE fenced transaction on ITS store. That store is the journal for turns, the run's own `.runs.db` for runs, and the automations store for fires.
+
+Closing a key is a fenced write of `admission_open = 0` to every cataloged store for that key. Until every store is closed, the key is never tested for idleness, so a partial close is conservatively non-idle. Once all are closed, the set of open executions can only shrink, so the idle test cannot race a new start. A key is released only after an idle test, in a lease-store transaction, that re-verifies every store is still closed.
+
+### B2-2. "Open" means a live execution claim, not a counter (round-2 finding 6)
+Each execution holds an `exec_claims(exec_id, owner_key, member, parent_exec_id, started_at)` row in its own store.
+- It is inserted in the admission transaction.
+- It is deleted in the executing process's `finally`, AFTER worker and effect teardown. That ordering is what ties settlement to teardown, not to a terminal-looking row.
+- A claim whose member lock is free belongs to a process that died. It is not open, and its row is reconciled by generation as today.
+
+So no decrement can be lost or doubled, there is no CAS to get wrong, and a crash anywhere leaves either a live claim (still open, which is correct) or a dead one (not open, which is also correct). Idle for a key means: every store is closed, and no claim with a live member exists for that key.
+
+### B2-3. Spawned descendants are continuations with their own claims (round-2 finding 7)
+A start that carries `parent_exec_id`, whose parent claim is live, is a CONTINUATION. It is admitted even while the key is closing, and it inserts its own claim. Examples are an agent node's `run_graph`, or a turn's tool round that enqueues work.
+- **Fire-and-forget children.** The parent may finish first, and the child's own claim keeps the key non-idle until the child's teardown.
+- **Across processes.** The parent id travels with the child to the engine process. That process is a member of the same tree, so its claim is counted.
+- **Durable fires do not block idleness.** A trigger row that has not started holds no claim. It waits, durably, for the key to open under its new owner. "Nothing queued" in D4 therefore means no frontend-held request for the key, not "no durable fire".
+
+### B2-4. Learning advances over a gap-free processed range (round-2 finding 11)
+Learning settlement uses explicit ranges. `settle_learned_cursor(from_turn, to_turn)` advances only across turns that are each either processed by this settlement or marked `learn_excluded`. Rows a turn did not process stop the advance at the first gap. Rows projected back from abandoned pending requests (C1) are marked `learn_excluded`: never claimed as learned, never blocking. A later turn that processes a gap row advances past it.

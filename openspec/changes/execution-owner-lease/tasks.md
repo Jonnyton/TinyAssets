@@ -12,7 +12,7 @@
 
 ## 2. B2: whole-execution admission
 
-- [ ] 2.1 `cc_admission` and `cc_operations`: every start counted in its own fenced transaction, continuations carry their admission id, op-id attach/conflict, and durable background fires while closing (D5/D6a).
+- [ ] 2.1 Per-store `admission_open` on the fence row; `exec_claims` with liveness-keyed open/closed; continuations through `parent_exec_id`; op-id attach/conflict; a release only after a re-verified all-closed idle test (B2-1..B2-3, D6a).
 - [ ] 2.2 Read-then-acknowledge steering and carryover (D9), and the explicit learned-cursor range (D8). Add the invariant tests, including tonight's mid-turn loss.
 
 ## 3. C1: frontend/owner split
