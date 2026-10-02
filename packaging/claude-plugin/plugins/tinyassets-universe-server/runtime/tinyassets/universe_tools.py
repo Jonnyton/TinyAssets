@@ -86,6 +86,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
+from tinyassets.addressed_agents import MAIN_AGENT
 from tinyassets.providers import provider_jail
 from tinyassets.providers.provider_jail import (
     PLATFORM_RUNTIME_DIR,
@@ -274,7 +275,9 @@ def _system_binary(name: str) -> str:
     return found
 
 
-def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseView:
+def _universe_view(
+    root: Path, egress_socket: Path | None = None, *, agent_id: str,
+) -> UniverseView:
     """The tool jail's view of ``root``: a read-only ``/u`` holding the visible
     entries, agent-owned paths read-write, hidden entries absent.
 
@@ -283,6 +286,8 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
     Every bind is ``-try``: the daemon owns this folder concurrently, and an
     entry it removes after the scan is simply not in this call's view.
     """
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     for name in AGENT_HARNESS_DIRS:
         path = root / name
         if not os.path.lexists(path):
@@ -301,6 +306,8 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
         owned = (
             entry.name in AGENT_HARNESS_DIRS if is_dir else entry.name in AGENT_BRAIN_FILES
         )
+        if entry.name == "identity.md" and agent_id != MAIN_AGENT:
+            owned = False
         op = "bind-try" if owned else "ro-bind-try"
         mounts.append(JailMount(op, f"{MOUNT_POINT}/{entry.name}", root / entry.name))
     mounts.append(JailMount("remount-ro", MOUNT_POINT))
@@ -321,10 +328,12 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
 
 
 def tool_jail_argv(
-    universe_dir: Path, inner: Sequence[str], *, seccomp_fd: int | None = None,
+    universe_dir: Path, inner: Sequence[str], *, agent_id: str, seccomp_fd: int | None = None,
     egress_socket: Path | None = None,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     try:
         root = Path(universe_dir).resolve(strict=True)
     except OSError:
@@ -332,7 +341,7 @@ def tool_jail_argv(
     if not root.is_dir():
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
-    view = _universe_view(root, egress_socket)
+    view = _universe_view(root, egress_socket, agent_id=agent_id)
     return jail_argv(
         list(inner), view, bwrap_path=bwrap, clearenv=True,
         seccomp_fd=seccomp_fd,
@@ -556,6 +565,7 @@ def run_jailed(
     universe_dir: Path,
     inner: Sequence[str],
     *,
+    agent_id: str,
     stdin: bytes | None = None,
     limits: ToolLimits = DEFAULT_LIMITS,
     wall_seconds: float | None = None,
@@ -569,6 +579,8 @@ def run_jailed(
     host being busy. ``on_wait`` is invoked once when that happens, so a caller
     with a user in front of it can surface a waiting state.
     """
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     wall = float(wall_seconds if wall_seconds is not None else limits.wall_seconds)
     cap = int(output_bytes if output_bytes is not None else limits.output_bytes)
     cpu = min(int(limits.cpu_seconds), int(wall) + 1)
@@ -588,7 +600,7 @@ def run_jailed(
     filter_fd = _seccomp_fd()
     try:
         egress = {} if egress_socket is None else {"egress_socket": egress_socket}
-        argv = TOOL_JAIL_ARGV(root, limited, seccomp_fd=filter_fd, **egress)
+        argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
         with _slot(root, on_wait=on_wait, waited=queued):
             free = _free_disk(root)
             if 0 <= free < limits.min_free_disk_bytes:
@@ -856,9 +868,11 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
 
 def read_file(
     universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Up to ``limit`` lines of a file from line ``offset`` (1-based)."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
     start = max(1, int(offset or 1))
     count = int(limit) if limit and int(limit) > 0 else DEFAULT_READ_LINES
@@ -869,7 +883,7 @@ def read_file(
     )
     run = RUNNER(
         universe_dir, ["/bin/sh", "-c", script, "sh", target, str(start), str(count)],
-        limits=limits,
+        agent_id=agent_id, limits=limits,
     )
     note = _waited_note(run)
     if run.killed == "output_limit":
@@ -886,16 +900,18 @@ def read_file(
 
 def write_file(
     universe_dir: Path, path: str, content: str,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Create or replace a file, making parent directories."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
     payload = (content or "").encode("utf-8")
     if len(payload) > MAX_WRITE_BYTES:
         raise UniverseToolError(f"content is over the {MAX_WRITE_BYTES}-byte write limit")
     script = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"'
     run = RUNNER(
-        universe_dir, ["/bin/sh", "-c", script, "sh", target],
+        universe_dir, ["/bin/sh", "-c", script, "sh", target], agent_id=agent_id,
         stdin=payload, limits=limits,
     )
     note = _waited_note(run)
@@ -907,16 +923,18 @@ def write_file(
 
 def edit_file(
     universe_dir: Path, path: str, old_text: str, new_text: str,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Replace the one exact occurrence of ``old_text`` with ``new_text``."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
     if not old_text:
         raise UniverseToolError("old_text is required: the exact passage to replace")
     run = RUNNER(
         universe_dir,
         ["/bin/sh", "-c", '[ -f "$1" ] || { echo "no such file: $1"; exit 1; }; cat -- "$1"',
-         "sh", target],
+         "sh", target], agent_id=agent_id,
         limits=limits, output_bytes=MAX_EDIT_BYTES,
     )
     note = _waited_note(run)
@@ -938,7 +956,8 @@ def edit_file(
             "surrounding text so it matches exactly one"
         )
     written = write_file(
-        universe_dir, target, current.replace(old_text, new_text, 1), limits=limits,
+        universe_dir, target, current.replace(old_text, new_text, 1),
+        agent_id=agent_id, limits=limits,
     )
     if written.startswith("error:"):
         return written
@@ -958,9 +977,11 @@ def _egress_socket(universe_dir: Path) -> Path | None:
 
 def bash(
     universe_dir: Path, command: str, timeout: float = 0,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     if not (command or "").strip():
         raise UniverseToolError("a command is required")
     wall = float(timeout) if timeout and float(timeout) > 0 else limits.wall_seconds
@@ -974,7 +995,7 @@ def bash(
 
         inner = universe_egress.forwarder_argv(python, inner)
         egress = {"egress_socket": socket_path}
-    run = RUNNER(universe_dir, inner, limits=limits, wall_seconds=wall, **egress)
+    run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits, wall_seconds=wall, **egress)
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"

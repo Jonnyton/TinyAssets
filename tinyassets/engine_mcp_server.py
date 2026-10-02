@@ -4211,7 +4211,7 @@ async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
     from tinyassets import universe_tools
 
     return await _universe_tool(
-        universe_tools.read_file, path=path, offset=offset, limit=limit,
+        universe_tools.read_file, agent_id=_acting_agent(), path=path, offset=offset, limit=limit,
     )
 
 
@@ -4220,7 +4220,9 @@ async def write_file(path: str, content: str) -> str:
     """Create or replace a file in /u, making parent folders."""
     from tinyassets import universe_tools
 
-    return await _universe_tool(universe_tools.write_file, path=path, content=content)
+    return await _universe_tool(
+        universe_tools.write_file, agent_id=_acting_agent(), path=path, content=content,
+    )
 
 
 @mcp.tool(name="edit")
@@ -4229,7 +4231,8 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
     from tinyassets import universe_tools
 
     return await _universe_tool(
-        universe_tools.edit_file, path=path, old_text=old_text, new_text=new_text,
+        universe_tools.edit_file, agent_id=_acting_agent(), path=path,
+        old_text=old_text, new_text=new_text,
     )
 
 
@@ -4240,7 +4243,9 @@ async def run_bash(command: str, timeout: int = 0) -> str:
     timeout: seconds (default 120, max 600)."""
     from tinyassets import universe_tools
 
-    return await _universe_tool(universe_tools.bash, command=command, timeout=timeout)
+    return await _universe_tool(
+        universe_tools.bash, agent_id=_acting_agent(), command=command, timeout=timeout,
+    )
 
 
 if __name__ == "__main__":
