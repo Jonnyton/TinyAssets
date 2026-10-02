@@ -4175,15 +4175,20 @@ async def _universe_tool(op, /, **kwargs) -> str:
         return f"error: {exc}"
 
 
-@mcp.tool(name="read")
+# No output schema: an image comes back as [text, image] content, which a str
+# schema would make the client report as an error (tinyassets/tool_images.py).
+@mcp.tool(name="read", output_schema=None)
 async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
-    """Read a file in your folder /u (relative paths are under /u).
+    """Read a file in your folder /u (relative paths are under /u); an image
+    (.png .jpg .webp .gif) is shown to you, scaled to fit.
     offset: first line (1-based); limit: line count (default 2000)."""
     from tinyassets import universe_tools
+    from tinyassets.tool_images import ToolImage
 
-    return await _universe_tool(
+    result = await _universe_tool(
         universe_tools.read_file, path=path, offset=offset, limit=limit,
     )
+    return result.tool_result() if isinstance(result, ToolImage) else result
 
 
 @mcp.tool(name="write")
