@@ -352,6 +352,21 @@ def verify_generated_java(mobile: Path, release: AndroidRelease) -> None:
         raise ValueError("generated MainActivity did not install VoiceWebChromeClient")
     if "voiceChromeClient.stopCapture(bridge.getWebView())" not in main:
         raise ValueError("generated MainActivity does not stop microphone capture on pause")
+    # Without our own callback the app plugin's always-enabled one swallows the
+    # back gesture at the first history entry, so the opening screen cannot be
+    # left. Registration must come AFTER super.onCreate(): the dispatcher calls
+    # the most recently added enabled callback first, and before the bridge
+    # exists there is nothing to add it to.
+    back_policy = (
+        "installBackPolicy();",
+        "new OnBackPressedCallback(true)",
+        "moveTaskToBack(true)",
+    )
+    missing = [item for item in back_policy if item not in main]
+    if missing:
+        raise ValueError(f"generated MainActivity is missing the back-gesture policy: {missing}")
+    if main.index("installBackPolicy();") < main.index("super.onCreate(savedInstanceState);"):
+        raise ValueError("installBackPolicy() must run after super.onCreate() builds the bridge")
     for name in NATIVE_SOURCES:
         source = mobile / "native/android" / name
         generated = package_dir / name

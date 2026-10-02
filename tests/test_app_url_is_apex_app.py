@@ -131,23 +131,34 @@ def test_android_shell_loads_the_apex_app_url():
     assert config["server"]["allowNavigation"] == ["tinyassets.io"]
 
 
+#: The highest versionCode Play has accepted, and the versionName it carries.
+#: Raise this ONLY when the Console shows a newer bundle live, never to make a
+#: local build pass — the assertion below is what stops a repo that looks green
+#: from shipping a code Play already refuses.
+SHIPPED_PLAY_RELEASE = (5, "1.0.4")
+
+
 def test_android_release_is_bumped_past_the_shipped_play_build():
-    """1.0.3 / code 4 is on Play pointed at the dead path.
+    """Play refuses a versionCode it has seen, so a bump IS the fix for installs.
 
-    Play refuses a versionCode it has seen, so the fix for installed users IS
-    the bump; a green repo with code 4 would ship nothing.
-
-    Code 5 is also shared: the push-notification native change rides the same
-    bundle so testers get one update, not two. A lane that bumps again would
-    split that into two releases — hence the upper bound, not just a floor.
+    Code 5 / `1.0.4` carried the `/app` move and the push-notification native
+    change, and went live on the closed Alpha track (verified in the Console
+    2026-10-02). It was pinned to exactly 5 while both lanes were in flight, so
+    they could not split one user-visible update in two. That window is closed:
+    the pin is now a floor, because the closed test requires *further* updates
+    during its 14 days and a ceiling would block every one of them.
     """
+    shipped_code, shipped_name = SHIPPED_PLAY_RELEASE
     release = json.loads((REPO_ROOT / "mobile/android-release.json").read_text(encoding="utf-8"))
-    assert release["versionCode"] == 5, (
-        "code 5 is the shared slot for the URL move + push notifications; "
-        "re-bumping splits one user-visible update in two "
-        "(docs/ops/mobile-launch-handoff.md)"
+    assert release["versionCode"] > shipped_code, (
+        f"code {shipped_code} ({shipped_name}) is live on Play; Play never accepts a "
+        "versionCode it has seen, so the next bundle needs a higher one "
+        "(docs/ops/google-play-launch.md §1b)"
     )
-    assert release["versionName"] == "1.0.4"
+    assert release["versionName"] != shipped_name, (
+        f"versionName {shipped_name!r} is the shipped build's; a new code needs its own name "
+        "so release notes and the Console agree"
+    )
 
 
 def test_desktop_shell_loads_the_apex_app_url():

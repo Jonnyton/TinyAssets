@@ -101,23 +101,41 @@ repeats annually.
 ## 1b. Version and release gates — generated defaults are not a release strategy
 
 `mobile/android-release.json` is the checked-in Android release source of truth. It
-records the next candidate: package `io.tinyassets.app`, version code `5`, version
-name `1.0.4`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
-(`1.0.2`) and `4` (`1.0.3`).
+records the next candidate: package `io.tinyassets.app`, version code `6`, version
+name `1.0.5`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
+(`1.0.2`), `4` (`1.0.3`) and `5` (`1.0.4`).
 
-**Code 5 / `1.0.4` is not optional maintenance.** The app's public URL moved from
-`https://tinyassets.io/mcp/app` to `https://tinyassets.io/app` on 2026-09-30 with no
-redirect left behind (founder directive: no back-compat). `server.url` is COMPILED
-INTO the shell, so every installed `4 (1.0.3)` WebView opens a path that no longer
-serves. Shipping this bundle IS the fix for installed users — there is no
-server-side remedy, which is why the version bump belongs to the same change as
-the move.
+Code `5` / `1.0.4` carried the `/app` URL move (`server.url` is compiled into the
+shell, so installed `1.0.3` WebViews opened a path that no longer served) plus the
+first push-notification native change. It is live on the closed **Alpha** track.
 
-**The bump is checked in; the BUNDLE waits.** Code 5 must carry the push-notification
-native change (`@capacitor/push-notifications` + FCM config, owner-notify lane) as
-well, so testers get one update rather than two. Build the AAB only once both have
-landed on `main`, and do **not** bump again in between — see
-[`mobile-launch-handoff.md`](mobile-launch-handoff.md) for the ordering.
+### The closed-test update ladder (2026-10-02 → 2026-10-15)
+
+The 12-tester / 14-day closed test is a wall-clock window, and the tester-recruiting
+service's instructions require **2–3 app updates released during it**. The window's
+day 1 is 2026-10-02 (Play: "12 testers have currently been opted in for 1 day"), so
+production access can be applied for from **2026-10-15**. Each update is a real,
+small native improvement — the hosted web app ships instantly and needs no bundle,
+so a bundle exists only when the native shell changes.
+
+| Code | Name | Target date | Native change | State |
+|---|---|---|---|---|
+| 6 | `1.0.5` | 2026-10-04 (day 3) | the back gesture gets a policy: walk WebView history, then one confirmation before leaving, and leave without tearing down the signed-in WebView | checked in |
+| 7 | `1.0.6` | 2026-10-09 (day 8) | keyboard + window-inset behaviour, so the composer is never under the keyboard or the system bars | planned |
+| 8 | `1.0.7` | 2026-10-13 (day 12) | splash hand-off: hold the splash until the first page actually paints instead of a fixed 1200 ms | planned |
+
+Nothing in a window update may touch sign-in, `server.url`, or push. Bump the code
+and the name together, one update per bundle; a code Play has seen is refused even
+on a test track.
+
+**Build route: `Android release AAB` (`workflow_dispatch` on `main`), not the
+container.** The container recipe in `mobile/container/` builds without
+`ANDROID_GOOGLE_SERVICES_JSON_B64` unless the file is staged under
+`~/.tinyassets/android/`, and a bundle built that way logs `push DISABLED` and
+ships a shell whose notifications are dead — a regression against `1.0.4`. That
+secret exists in the repo (set 2026-10-01), so CI is the route that produces a
+faithful bundle. The workflow also refuses to sign any commit that is not already in
+`origin/main` history, so each update lands on `main` first and is built after.
 
 Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
 seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's

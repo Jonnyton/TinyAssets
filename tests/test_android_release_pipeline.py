@@ -280,6 +280,63 @@ def test_merged_release_manifest_gate_catches_debuggable_and_version_drift(
         verify.verify_manifest(manifest, release, merged=True)
 
 
+def _generated_java(tmp_path: Path) -> Path:
+    """A generated tree whose Java is exactly what the injector would write."""
+    mobile = tmp_path / "mobile"
+    package = mobile / "android/app/src/main/java/io/tinyassets/app"
+    package.mkdir(parents=True)
+    (package / "MainActivity.java").write_text(scheme.MAIN_ACTIVITY_SRC, encoding="utf-8")
+    (mobile / "native/android").mkdir(parents=True)
+    for name in verify.NATIVE_SOURCES:
+        committed = (MOBILE / "native/android" / name).read_bytes()
+        (mobile / "native/android" / name).write_bytes(committed)
+        (package / name).write_bytes(committed)
+    return mobile
+
+
+def test_the_back_gesture_gets_a_policy_instead_of_being_swallowed() -> None:
+    """@capacitor/app's own callback is always enabled and, at the first history
+    entry, does nothing -- so without this the opening screen eats the gesture
+    and the app cannot be left by going back at all."""
+    main = scheme.MAIN_ACTIVITY_SRC
+    # History first, so the page's own navigation keeps working.
+    assert "webView.canGoBack()" in main and "webView.goBack();" in main
+    # Then one confirmation, because an edge-swipe is easy to hit while typing.
+    assert "EXIT_CONFIRM_WINDOW_MS" in main
+    assert "Press back again to leave TinyAssets" in main
+    # Leaving behaves like Home: the signed-in WebView survives, so returning
+    # resumes the conversation instead of reloading it over the network.
+    assert "moveTaskToBack(true);" in main
+    # The dispatcher calls the most recently added enabled callback first, and
+    # there is no bridge to read before super.onCreate() builds one.
+    assert main.index("installBackPolicy();") > main.index("super.onCreate(savedInstanceState);")
+
+
+def test_the_release_gate_refuses_a_shell_whose_back_gesture_is_dead(tmp_path: Path) -> None:
+    release = _release()
+    mobile = _generated_java(tmp_path)
+    package = mobile / "android/app/src/main/java/io/tinyassets/app"
+    verify.verify_generated_java(mobile, release)
+
+    (package / "MainActivity.java").write_text(
+        scheme.MAIN_ACTIVITY_SRC.replace("        installBackPolicy();\n", ""), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="back-gesture policy"):
+        verify.verify_generated_java(mobile, release)
+
+    # Registered too early the bridge is still null, so every back press would
+    # fall through to a no-op: a shape that compiles and is still broken.
+    (package / "MainActivity.java").write_text(
+        scheme.MAIN_ACTIVITY_SRC.replace(
+            "        super.onCreate(savedInstanceState);\n",
+            "        installBackPolicy();\n        super.onCreate(savedInstanceState);\n",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="after super.onCreate"):
+        verify.verify_generated_java(mobile, release)
+
+
 def test_release_workflow_has_fail_closed_release_gates() -> None:
     workflow = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
     for required in (
