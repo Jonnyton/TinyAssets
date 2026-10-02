@@ -16,11 +16,14 @@ the callers (the tool runner and provider launch) is S4's next change, not this 
       - exports and imports;
       - reports usage in logical bytes;
       - refuses to start without `allow_unisolated=True`.
-- [x] 1.4 `tests/test_box_provider_contract.py`: the driver-agnostic suite. Result in the Linux
-      oracle (`scripts/linux_oracle.py`, python 3.11.16, uid 1001, 2026-10-02): 31 passed,
-      1 skipped. The skip is the bound test; the local driver declares no bound.
-- [x] 1.5 Mutation evidence: six guards were removed one at a time, and each turned its test red
-      (design D3).
+- [x] 1.4 `tests/test_box_provider_contract.py` (the portable driver contract) and
+      `tests/test_box_local_driver.py` (restart, busy, cas-while-running, launch retry and
+      descriptor ownership, provoked through the local driver). Linux oracle
+      (`scripts/linux_oracle.py`, python 3.11.16, uid 1001, 2026-10-02): 41 passed, 1 skipped.
+      The skip is the bound test; the local driver declares no bound.
+- [x] 1.5 Mutation evidence: fifteen guards removed one at a time, each turning its test red
+      (design D3). The cross-family refute (gpt-6-astra) returned REJECT on the first version;
+      its findings are folded in (design D2–D4).
 
 ## PR 2: gVisor driver
 

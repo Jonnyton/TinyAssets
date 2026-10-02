@@ -1,24 +1,35 @@
 """The local `BoxProvider` driver: one host directory per command center, for tests and dev.
 
-**This driver has no kernel boundary.** It runs commands as host processes in
-the box directory. It exists so the platform can code against `BoxProvider`
-today, and so the driver-agnostic contract suite has a reference driver. It
-refuses to start unless the caller passes ``allow_unisolated=True``. The
-isolating drivers (gVisor, then Firecracker) implement the same contract.
+**This driver has no kernel boundary.** It runs commands as host processes in the
+box directory. It exists so the platform can code against `BoxProvider` today,
+and as the reference driver for the contract suite. The same descriptor-safe core
+is what `boxd` runs *inside* an isolating box. It refuses to start unless the
+caller passes ``allow_unisolated=True``.
 
-What it does guarantee is everything above the kernel:
+Everything above the kernel is enforced:
 
-* paths resolve beneath the box directory through directory descriptors, with
-  every component opened ``O_NOFOLLOW``, so a planted link is never followed;
-* every operation checks the handle's account against the command center's
-  owner and its epoch against the current placement epoch;
-* mutations are idempotent by operation id, and a restart turns in-flight
-  operations into ``unknown_after_restore``;
-* writes go to a temporary file in the same directory and are renamed into
-  place, so a reader never sees a half-written file.
+* **Paths** resolve beneath the box directory through directory descriptors,
+  with every component opened ``O_NOFOLLOW``, so a planted link is never
+  followed. An exec's working directory is passed to the child as an open
+  descriptor (``/proc/self/fd``), never re-resolved by name.
+* **Authority.** Every operation re-checks, under the box's lock, that the
+  handle's account owns the command center and that its epoch is current. A
+  destroy therefore cannot interleave with an operation that authenticated a
+  moment earlier.
+* **Idempotency.** Mutations are idempotent by operation id. An operation that
+  may have had an effect is never forgotten: it is recorded as done, or as
+  failed, and a retry gets that record back. Outcomes are fenced to the box-host
+  incarnation that started them (`BoxHostState`).
+* **Coherent generations.** Mutations and running execs hold a pending count. A
+  snapshot (`read_many`, `export`) is taken only while nothing is pending, and
+  `cas` refuses while anything is pending.
+* **Executions** are supervised from launch. Stdin is fed by its own thread, so
+  a child that never reads it cannot stall the wall clock. When the leader exits,
+  the rest of its process group is killed. The output limit is enforced even on
+  a fast exit.
 
-POSIX only, like `tinyassets.workspace_fs`: there is no safe descriptor-based
-equivalent on Windows, so there is no fallback.
+Linux only (POSIX ``openat`` semantics and ``/proc/self/fd``). Like
+`tinyassets.workspace_fs`, it refuses elsewhere; there is no unsafe fallback.
 """
 
 from __future__ import annotations
@@ -42,6 +53,7 @@ from pathlib import Path
 from tinyassets.boxes.provider import (
     BOX_ROOT,
     BoxAuthError,
+    BoxBusy,
     BoxError,
     BoxHandle,
     BoxNotFound,
@@ -70,7 +82,6 @@ from tinyassets.boxes.state import BoxHostState, op_digest
 
 __all__ = ["LocalBoxProvider"]
 
-_POSIX = os.name == "posix"
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
@@ -78,7 +89,8 @@ _CC_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TMP_PREFIX = ".boxtmp-"
 _POLL_S = 0.02
-_READ_MANY_RETRIES = 3
+#: Runs the command from the working directory the driver opened, by descriptor.
+_CWD_SHIM = 'cd -- "/proc/self/fd/$0" || exit 126; exec "$@"'
 
 
 def _kind(mode: int) -> str:
@@ -99,11 +111,64 @@ def _path_error(exc: OSError, path: str) -> BoxError:
     return BoxError(exc.errno, f"{path}: {exc.strerror}")
 
 
+def _bounded(data: StreamIn, max_bytes: int) -> bytes:
+    """Freeze the input into immutable bytes, refusing as soon as it passes the bound."""
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        body = bytes(data)
+        if len(body) > max_bytes:
+            raise BoxError(f"write of {len(body)} bytes is over its {max_bytes}-byte bound")
+        return body
+    parts: list[bytes] = []
+    total = 0
+    for chunk in data:
+        chunk = bytes(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise BoxError(f"write is over its {max_bytes}-byte bound")
+        parts.append(chunk)
+    return b"".join(parts)
+
+
+class _FdChunks:
+    """Chunks of an already-open file. Closing (or dropping) it always closes the fd."""
+
+    def __init__(self, fd: int, chunk_bytes: int) -> None:
+        self._fd: int | None = fd
+        self._chunk = chunk_bytes
+
+    def __iter__(self) -> _FdChunks:
+        return self
+
+    def __next__(self) -> bytes:
+        if self._fd is None:
+            raise StopIteration
+        block = os.read(self._fd, self._chunk)
+        if not block:
+            self.close()
+            raise StopIteration
+        return block
+
+    def close(self) -> None:
+        if self._fd is not None:
+            fd, self._fd = self._fd, None
+            os.close(fd)
+
+    def __enter__(self) -> _FdChunks:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+
 @dataclass
 class _Running:
+    cc: str
     proc: subprocess.Popen
     cancel: threading.Event = field(default_factory=threading.Event)
-    thread: threading.Thread | None = None
+    done: threading.Event = field(default_factory=threading.Event)
 
 
 class LocalBoxProvider:
@@ -116,15 +181,17 @@ class LocalBoxProvider:
         state_dir: Path,
         owner_of: Callable[[str], str | None],
         allow_unisolated: bool = False,
+        busy_wait_s: float = 5.0,
+        destroy_wait_s: float = 10.0,
     ) -> None:
         if not allow_unisolated:
             raise BoxError(
                 "the local box driver runs commands on the host with no kernel boundary; "
                 "construct it with allow_unisolated=True only for tests and single-user dev"
             )
-        if not _POSIX:
+        if os.name != "posix" or not os.path.isdir("/proc/self/fd"):
             raise NotImplementedError(
-                "the local box driver needs POSIX openat semantics (O_NOFOLLOW + dir_fd); "
+                "the local box driver needs Linux (openat + O_NOFOLLOW + /proc/self/fd); "
                 f"this host is {os.name!r}, and there is no safe fallback"
             )
         self._root = Path(boxes_root)
@@ -134,15 +201,18 @@ class LocalBoxProvider:
         self._exec_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._state = BoxHostState(self._state_dir / "boxhost.db")
         self._owner_of = owner_of
+        self._busy_wait_s = busy_wait_s
+        self._destroy_wait_s = destroy_wait_s
         self._running: dict[str, _Running] = {}
-        self._locks: dict[str, threading.Lock] = {}
+        self._destroying: set[str] = set()
+        self._locks: dict[str, threading.RLock] = {}
         self._locks_guard = threading.Lock()
 
-    # -- authentication ----------------------------------------------------------
+    # -- authority -----------------------------------------------------------------
 
-    def _cc_lock(self, cc: str) -> threading.Lock:
+    def _lock(self, cc: str) -> threading.RLock:
         with self._locks_guard:
-            return self._locks.setdefault(cc, threading.Lock())
+            return self._locks.setdefault(cc, threading.RLock())
 
     @staticmethod
     def _check_cc(cc: str) -> str:
@@ -153,21 +223,20 @@ class LocalBoxProvider:
     def _require_owner(self, cc: str, account_id: str) -> None:
         owner = self._owner_of(cc)
         if owner is None or owner != account_id:
-            raise BoxAuthError(
-                f"account {account_id!r} does not own command center {cc!r}"
-            )
+            raise BoxAuthError(f"account {account_id!r} does not own command center {cc!r}")
 
-    def _auth(self, handle: BoxHandle) -> str:
+    def _auth_locked(self, handle: BoxHandle) -> str:
+        """Owner + epoch + not being destroyed. Call with the box's lock held."""
         cc = self._check_cc(handle.command_center_id)
         self._require_owner(cc, handle.account_id)
         current = self._state.epoch(cc)
         if handle.epoch != current:
-            raise StaleHandle(
-                f"handle for {cc!r} has epoch {handle.epoch}, current is {current}"
-            )
+            raise StaleHandle(f"handle for {cc!r} has epoch {handle.epoch}, current is {current}")
+        if cc in self._destroying:
+            raise StaleHandle(f"command center {cc!r} is being destroyed")
         return cc
 
-    # -- descriptors ---------------------------------------------------------------
+    # -- descriptors -----------------------------------------------------------------
 
     def _root_fd(self) -> int:
         from tinyassets.workspace_fs import open_dir_nofollow
@@ -181,7 +250,7 @@ class LocalBoxProvider:
                 return os.open(cc, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=root)
             except FileNotFoundError:
                 if not create:
-                    raise
+                    raise BoxNotFound(errno.ENOENT, f"no box for {cc!r}") from None
                 try:
                     os.mkdir(cc, 0o700, dir_fd=root)
                 except FileExistsError:
@@ -225,11 +294,15 @@ class LocalBoxProvider:
             raise
         return current
 
-    def _parent(self, box_fd: int, rel: str, path: str, *, create: bool) -> tuple[int, str]:
+    def _parent(self, cc: str, rel: str, path: str, *, create: bool) -> tuple[int, str]:
         if not rel:
             raise BoxPathError(f"{path!r} names the box root, not a file")
         head, _, leaf = rel.rpartition("/")
-        return self._walk(box_fd, head, path, create=create), leaf
+        box = self._box_fd(cc)
+        try:
+            return self._walk(box, head, path, create=create), leaf
+        finally:
+            os.close(box)
 
     @staticmethod
     def _open_regular(parent_fd: int, leaf: str, path: str) -> int:
@@ -242,23 +315,6 @@ class LocalBoxProvider:
             os.close(fd)
             raise BoxPathError(f"{path!r} is not a regular file ({_kind(info.st_mode)})")
         return fd
-
-    # -- binding and waking ----------------------------------------------------------
-
-    def bind(self, command_center_id: str, *, account_id: str,
-             turn_id: str | None = None) -> BoxHandle:
-        cc = self._check_cc(command_center_id)
-        self._require_owner(cc, account_id)
-        return BoxHandle(cc, account_id, self._state.epoch(cc), turn_id)
-
-    def committed_generation(self, handle: BoxHandle) -> int:
-        return self._state.generation(self._auth(handle))
-
-    def ensure_awake(self, handle: BoxHandle, *, reason: str) -> None:
-        os.close(self._box_fd(self._auth(handle)))
-
-    def suspend(self, handle: BoxHandle) -> None:
-        self._auth(handle)  # no memory state to checkpoint in the local driver
 
     # -- operation-id bookkeeping -------------------------------------------------------
 
@@ -273,116 +329,190 @@ class LocalBoxProvider:
             )
         if record["state"] == "running":
             raise BoxError(f"{kind} {op_id!r} is still in flight")
-        return record["outcome"] or {}
+        outcome = record["outcome"] or {}
+        if "error" in outcome:
+            raise BoxError(f"{kind} {op_id!r} failed after partial effects and is not re-run: "
+                           f"{outcome['error']}")
+        return outcome
 
-    # -- files -----------------------------------------------------------------------------
+    # -- binding and waking ----------------------------------------------------------
+
+    def bind(self, command_center_id: str, *, account_id: str,
+             turn_id: str | None = None) -> BoxHandle:
+        cc = self._check_cc(command_center_id)
+        self._require_owner(cc, account_id)
+        return BoxHandle(cc, account_id, self._state.epoch(cc), turn_id)
+
+    def committed_generation(self, handle: BoxHandle) -> int:
+        with self._lock(handle.command_center_id):
+            return self._state.generation(self._auth_locked(handle))
+
+    def ensure_awake(self, handle: BoxHandle, *, reason: str) -> None:
+        with self._lock(handle.command_center_id):
+            os.close(self._box_fd(self._auth_locked(handle)))
+
+    def suspend(self, handle: BoxHandle) -> None:
+        with self._lock(handle.command_center_id):
+            self._auth_locked(handle)  # no memory state to checkpoint in the local driver
+
+    # -- reads ---------------------------------------------------------------------------
+
+    def _read_locked(self, cc: str, path: str, offset: int, max_bytes: int) -> tuple[bytes, int]:
+        rel = box_relpath(path)
+        parent, leaf = self._parent(cc, rel, path, create=False)
+        try:
+            fd = self._open_regular(parent, leaf, path)
+        finally:
+            os.close(parent)
+        try:
+            size = os.fstat(fd).st_size
+            os.lseek(fd, offset, os.SEEK_SET)
+            return (os.read(fd, max_bytes) if max_bytes else b""), int(size)
+        finally:
+            os.close(fd)
 
     def read(self, handle: BoxHandle, path: str, *, offset: int = 0,
              max_bytes: int) -> FileRead:
-        cc = self._auth(handle)
-        rel = box_relpath(path)
         if max_bytes < 0 or offset < 0:
             raise ValueError("offset and max_bytes must be >= 0")
-        box = self._box_fd(cc)
-        try:
-            parent, leaf = self._parent(box, rel, path, create=False)
-            try:
-                fd = self._open_regular(parent, leaf, path)
-            finally:
-                os.close(parent)
-            try:
-                size = os.fstat(fd).st_size
-                os.lseek(fd, offset, os.SEEK_SET)
-                data = os.read(fd, max_bytes) if max_bytes else b""
-            finally:
-                os.close(fd)
-        finally:
-            os.close(box)
-        return FileRead(data=data, generation=self._state.generation(cc), size=size)
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
+            data, size = self._read_locked(cc, path, offset, max_bytes)
+            return FileRead(data=data, generation=self._state.generation(cc), size=size)
 
     def read_many(self, handle: BoxHandle, paths: Sequence[str], *,
                   max_total: int) -> Snapshot:
-        cc = self._auth(handle)
-        for _ in range(_READ_MANY_RETRIES):
-            before = self._state.generation(cc)
-            files: dict[str, bytes] = {}
-            missing: list[str] = []
-            total = 0
-            for path in paths:
-                try:
-                    got = self.read(handle, path, max_bytes=max_total - total + 1)
-                except BoxNotFound:
-                    missing.append(path)
-                    continue
-                if got.size > max_total - total:
-                    raise BoxError(f"read_many over its {max_total}-byte bound at {path!r}")
-                files[path] = got.data
-                total += got.size
-            if self._state.generation(cc) == before:
-                return Snapshot(files=files, missing=tuple(missing), generation=before)
-        raise BoxError("the box kept changing during read_many; retry later")
+        cc = self._check_cc(handle.command_center_id)
+        deadline = time.monotonic() + self._busy_wait_s
+        while True:
+            with self._lock(cc):
+                self._auth_locked(handle)
+                # Mutations take this lock; running execs hold a pending count, and an exec can
+                # neither start nor finish without this lock. So with the lock held and nothing
+                # pending, nothing can change the files underneath the reads.
+                if not self._state.pending(cc):
+                    generation = self._state.generation(cc)
+                    files: dict[str, bytes] = {}
+                    missing: list[str] = []
+                    total = 0
+                    for path in paths:
+                        try:
+                            data, size = self._read_locked(cc, path, 0, max_total - total + 1)
+                        except BoxNotFound:
+                            missing.append(path)
+                            continue
+                        if size > max_total - total:
+                            raise BoxError(f"read_many over its {max_total}-byte bound at {path!r}")
+                        files[path] = data
+                        total += size
+                    return Snapshot(files=files, missing=tuple(missing), generation=generation)
+            if time.monotonic() > deadline:
+                raise BoxBusy(f"command center {cc!r} stayed busy past {self._busy_wait_s}s")
+            time.sleep(_POLL_S)
 
     def download(self, handle: BoxHandle, path: str, *,
                  chunk_bytes: int = 64 * 1024) -> Iterator[bytes]:
-        cc = self._auth(handle)
-        rel = box_relpath(path)
-        box = self._box_fd(cc)
-        try:
-            parent, leaf = self._parent(box, rel, path, create=False)
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
+            rel = box_relpath(path)
+            parent, leaf = self._parent(cc, rel, path, create=False)
             try:
                 fd = self._open_regular(parent, leaf, path)
             finally:
                 os.close(parent)
-        finally:
-            os.close(box)
+        return _FdChunks(fd, chunk_bytes)
 
-        def chunks() -> Iterator[bytes]:
+    def list(self, handle: BoxHandle, path: str, *, cursor: str | None = None,
+             limit: int = 200) -> DirPage:
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
+            rel = box_relpath(path)
+            box = self._box_fd(cc)
             try:
-                while True:
-                    block = os.read(fd, chunk_bytes)
-                    if not block:
-                        return
-                    yield block
+                dfd = self._walk(box, rel, path, create=False)
             finally:
-                os.close(fd)
+                os.close(box)
+            try:
+                names = sorted(n for n in os.listdir(dfd) if not n.startswith(_TMP_PREFIX))
+                if cursor is not None:
+                    names = [n for n in names if n > cursor]
+                page, rest = names[:limit], names[limit:]
+                entries = []
+                for name in page:
+                    info = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+                    entries.append(DirEntry(name, _kind(info.st_mode), int(info.st_size)))
+            finally:
+                os.close(dfd)
+        return DirPage(tuple(entries), page[-1] if rest else None)
 
-        return chunks()
+    def stat(self, handle: BoxHandle, path: str) -> FileStat | None:
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
+            rel = box_relpath(path)
+            if not rel:
+                box = self._box_fd(cc)
+                try:
+                    info = os.fstat(box)
+                finally:
+                    os.close(box)
+            else:
+                try:
+                    parent, leaf = self._parent(cc, rel, path, create=False)
+                except BoxNotFound:
+                    return None
+                try:
+                    info = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    return None
+                finally:
+                    os.close(parent)
+        return FileStat(path, _kind(info.st_mode), int(info.st_size), info.st_mtime)
+
+    # -- mutations ------------------------------------------------------------------------
 
     def write(self, handle: BoxHandle, op_id: str, path: str, data: StreamIn, *,
               max_bytes: int, mode: WriteMode = WriteMode.REPLACE,
               expect_generation: int | None = None) -> FileWrite:
-        cc = self._auth(handle)
         rel = box_relpath(path)
         mode = WriteMode(mode)
         if mode is WriteMode.CAS and expect_generation is None:
             raise ValueError("a cas write needs expect_generation")
-        body = data if isinstance(data, (bytes, bytearray)) else b"".join(data)
-        if len(body) > max_bytes:
-            raise BoxError(f"write of {len(body)} bytes is over its {max_bytes}-byte bound")
+        body = _bounded(data, max_bytes)
         payload = {"path": rel, "sha": hashlib.sha256(body).hexdigest(), "mode": mode.value,
                    "expect": expect_generation}
-        with self._cc_lock(cc):
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
             done = self._begin(cc, op_id, "write", payload)
             if done is not None:
                 return FileWrite(path=path, size=done["size"], generation=done["generation"])
-            try:
-                written = self._write_now(cc, rel, path, bytes(body), mode, expect_generation)
-            except BaseException:
+            if mode is WriteMode.CAS and (
+                self._state.pending(cc) or self._state.generation(cc) != expect_generation
+            ):
                 self._state.abandon(cc, op_id)
-                raise
-            generation = self._state.bump_generation(cc)
-            self._state.finish(cc, op_id, {"size": written, "generation": generation})
-        return FileWrite(path=path, size=written, generation=generation)
+                raise WriteConflict(f"box generation is not {expect_generation} (or is changing)")
+            self._state.hold(cc)
+            try:
+                try:
+                    self._place(cc, rel, path, body, mode)
+                except BaseException:
+                    self._state.abandon(cc, op_id)  # _place leaves nothing visible on failure
+                    raise
+                generation = self._state.bump_generation(cc)
+                self._state.finish(cc, op_id, {"size": len(body), "generation": generation})
+            finally:
+                self._state.release(cc)
+        return FileWrite(path=path, size=len(body), generation=generation)
 
-    def _write_now(self, cc: str, rel: str, path: str, body: bytes, mode: WriteMode,
-                   expect_generation: int | None) -> int:
-        if mode is WriteMode.CAS and self._state.generation(cc) != expect_generation:
-            raise WriteConflict(f"box generation moved past {expect_generation}")
-        box = self._box_fd(cc)
-        try:
-            parent, leaf = self._parent(box, rel, path, create=True)
-        finally:
-            os.close(box)
+    def _place(self, cc: str, rel: str, path: str, body: bytes, mode: WriteMode) -> None:
+        """Write ``body`` to a temp file, then publish it: ``link`` (no-clobber) or ``rename``.
+
+        Nothing is visible at ``path`` until the final step succeeds; on any failure the
+        temp file is removed, so the caller may treat a raised error as "no effect".
+        """
+        parent, leaf = self._parent(cc, rel, path, create=True)
+        tmp = _TMP_PREFIX + secrets.token_hex(8)
         try:
             try:
                 existing = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
@@ -393,93 +523,67 @@ class LocalBoxProvider:
                     raise WriteConflict(f"{path!r} already exists")
                 if stat.S_ISDIR(existing.st_mode):
                     raise BoxPathError(f"{path!r} is a directory")
-            tmp = _TMP_PREFIX + secrets.token_hex(8)
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o644,
                          dir_fd=parent)
             try:
-                with os.fdopen(fd, "wb", closefd=False) as fh:
-                    fh.write(body)
-                    fh.flush()
-                    os.fsync(fd)
-            except BaseException:
+                view = memoryview(body)
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fsync(fd)
+            finally:
                 os.close(fd)
+            if mode is WriteMode.CREATE:
+                try:  # link() refuses an existing name: no clobber, even under a race
+                    os.link(tmp, leaf, src_dir_fd=parent, dst_dir_fd=parent,
+                            follow_symlinks=False)
+                except FileExistsError:
+                    raise WriteConflict(f"{path!r} already exists") from None
                 os.unlink(tmp, dir_fd=parent)
-                raise
-            os.close(fd)
-            os.rename(tmp, leaf, src_dir_fd=parent, dst_dir_fd=parent)
-            return len(body)
+            else:
+                os.rename(tmp, leaf, src_dir_fd=parent, dst_dir_fd=parent)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+            raise
         finally:
             os.close(parent)
 
-    def list(self, handle: BoxHandle, path: str, *, cursor: str | None = None,
-             limit: int = 200) -> DirPage:
-        cc = self._auth(handle)
-        rel = box_relpath(path)
-        if limit < 1:
-            raise ValueError("limit must be >= 1")
-        box = self._box_fd(cc)
-        try:
-            dfd = self._walk(box, rel, path, create=False)
-        finally:
-            os.close(box)
-        try:
-            names = sorted(n for n in os.listdir(dfd) if not n.startswith(_TMP_PREFIX))
-            if cursor is not None:
-                names = [n for n in names if n > cursor]
-            page, rest = names[:limit], names[limit:]
-            entries = []
-            for name in page:
-                info = os.stat(name, dir_fd=dfd, follow_symlinks=False)
-                entries.append(DirEntry(name, _kind(info.st_mode), int(info.st_size)))
-        finally:
-            os.close(dfd)
-        return DirPage(tuple(entries), page[-1] if rest else None)
-
-    def stat(self, handle: BoxHandle, path: str) -> FileStat | None:
-        cc = self._auth(handle)
-        rel = box_relpath(path)
-        box = self._box_fd(cc)
-        try:
-            if not rel:
-                info = os.fstat(box)
-            else:
-                try:
-                    parent, leaf = self._parent(box, rel, path, create=False)
-                except BoxNotFound:
-                    return None
-                try:
-                    info = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
-                except FileNotFoundError:
-                    return None
-                finally:
-                    os.close(parent)
-        finally:
-            os.close(box)
-        return FileStat(path, _kind(info.st_mode), int(info.st_size), info.st_mtime)
-
     def remove(self, handle: BoxHandle, op_id: str, path: str) -> None:
-        cc = self._auth(handle)
         rel = box_relpath(path)
-        with self._cc_lock(cc):
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
             if self._begin(cc, op_id, "remove", {"path": rel}) is not None:
                 return
             try:
-                box = self._box_fd(cc)
-                try:
-                    parent, leaf = self._parent(box, rel, path, create=False)
-                finally:
-                    os.close(box)
-                try:
-                    removed = _remove_beneath(parent, leaf, path)
-                finally:
-                    os.close(parent)
+                parent, leaf = self._parent(cc, rel, path, create=False)
             except BaseException:
                 self._state.abandon(cc, op_id)
                 raise
-            generation = self._state.bump_generation(cc)
-            self._state.finish(cc, op_id, {"removed": removed, "generation": generation})
+            try:
+                os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                os.close(parent)
+                self._state.abandon(cc, op_id)
+                raise BoxNotFound(errno.ENOENT, f"no such box path: {path}") from None
+            self._state.hold(cc)
+            try:
+                try:
+                    removed = _remove_beneath(parent, leaf, path)
+                except BaseException as exc:
+                    # Some children may already be gone: record the failure, never re-run.
+                    self._state.bump_generation(cc)
+                    self._state.finish(cc, op_id, {"error": str(exc)})
+                    raise
+                finally:
+                    os.close(parent)
+                generation = self._state.bump_generation(cc)
+                self._state.finish(cc, op_id, {"removed": removed, "generation": generation})
+            finally:
+                self._state.release(cc)
 
-    # -- execution ----------------------------------------------------------------------------
+    # -- execution ----------------------------------------------------------------------
 
     def _exec_id(self, cc: str, op_id: str) -> str:
         return "x" + hashlib.sha256(f"{cc}\0{op_id}".encode()).hexdigest()[:31]
@@ -487,67 +591,69 @@ class LocalBoxProvider:
     def start_exec(self, handle: BoxHandle, op_id: str, argv: Sequence[str], *,
                    stdin: bytes = b"", env: Mapping[str, str] | None = None,
                    cwd: str = BOX_ROOT, limits: ExecLimits = ExecLimits()) -> str:
-        cc = self._auth(handle)
         if not argv or not all(isinstance(a, str) and "\0" not in a for a in argv):
             raise ValueError("argv must be a non-empty list of strings without NULs")
-        extra = dict(env or {})
+        extra = {str(k): str(v) for k, v in (env or {}).items()}
         for key, value in extra.items():
-            if not _ENV_KEY.match(key) or "\0" in str(value):
+            if not _ENV_KEY.match(key) or "\0" in value:
                 raise ValueError(f"environment key {key!r} is not allowed")
+        stdin = bytes(stdin)
         rel_cwd = box_relpath(cwd)
         payload = {"argv": list(argv), "stdin": hashlib.sha256(stdin).hexdigest(),
                    "env": extra, "cwd": rel_cwd,
                    "limits": [limits.wall_seconds, limits.output_bytes]}
-        exec_id = self._exec_id(cc, op_id)
-        record = self._state.begin(cc, op_id, "exec", op_digest("exec", payload))
-        if record is not None:
-            return exec_id  # done, running, or unknown: never run twice
-        try:
-            box = self._box_fd(cc)
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
+            exec_id = self._exec_id(cc, op_id)
+            if self._state.begin(cc, op_id, "exec", op_digest("exec", payload)) is not None:
+                return exec_id  # done, running or unknown: never run twice
+            out_path = self._exec_dir / f"{exec_id}.out"
             try:
-                os.close(self._walk(box, rel_cwd, cwd, create=False))
-            finally:
-                os.close(box)
-            box_dir = self._root.resolve() / cc
-            workdir = box_dir / rel_cwd if rel_cwd else box_dir
+                box = self._box_fd(cc)
+                try:
+                    cwd_fd = self._walk(box, rel_cwd, cwd, create=False)
+                finally:
+                    os.close(box)
+                try:
+                    out_path.unlink(missing_ok=True)  # leftover of a launch that never ran
+                    out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    child_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
+                                 "HOME": BOX_ROOT, **extra}
+                    try:
+                        proc = subprocess.Popen(
+                            ["/bin/sh", "-c", _CWD_SHIM, str(cwd_fd), *argv],
+                            env=child_env, stdin=subprocess.PIPE, stdout=out_fd,
+                            stderr=subprocess.STDOUT, start_new_session=True,
+                            pass_fds=(cwd_fd,), close_fds=True,
+                        )
+                    finally:
+                        os.close(out_fd)
+                finally:
+                    os.close(cwd_fd)
+            except BaseException:
+                out_path.unlink(missing_ok=True)
+                self._state.abandon(cc, op_id)  # nothing ran
+                raise
             self._state.register_exec(cc, op_id, exec_id)
             self._state.update(cc, op_id, {"exec_id": exec_id,
                                            "output_bytes": limits.output_bytes})
-            out_path = self._exec_dir / f"{exec_id}.out"
-            out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            child_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(box_dir),
-                         "LANG": "C.UTF-8", **extra}
-            try:
-                proc = subprocess.Popen(
-                    list(argv), cwd=workdir, env=child_env, stdin=subprocess.PIPE,
-                    stdout=out_fd, stderr=subprocess.STDOUT, start_new_session=True,
-                )
-            finally:
-                os.close(out_fd)
-        except BaseException:
-            self._state.abandon(cc, op_id)
-            raise
-        running = _Running(proc)
-        self._running[exec_id] = running
-        running.thread = threading.Thread(
+            running = _Running(cc, proc)
+            self._running[exec_id] = running
+            self._state.hold(cc)  # a running exec may change files at any moment
+        threading.Thread(
             target=self._supervise, args=(cc, op_id, exec_id, running, stdin, limits, out_path),
             daemon=True, name=f"box-exec-{exec_id[:8]}",
-        )
-        running.thread.start()
+        ).start()
         return exec_id
 
     def _supervise(self, cc: str, op_id: str, exec_id: str, running: _Running,
                    stdin: bytes, limits: ExecLimits, out_path: Path) -> None:
         proc = running.proc
+        started = time.monotonic()
+        killed: str | None = None
+        code: int | None = None
         try:
-            if proc.stdin is not None:
-                try:
-                    proc.stdin.write(stdin)
-                    proc.stdin.close()
-                except (BrokenPipeError, OSError):
-                    pass
-            started = time.monotonic()
-            killed: str | None = None
+            threading.Thread(target=_feed, args=(proc, stdin), daemon=True).start()
             while proc.poll() is None:
                 if running.cancel.is_set():
                     killed = "cancelled"
@@ -556,30 +662,36 @@ class LocalBoxProvider:
                 elif out_path.stat().st_size > limits.output_bytes:
                     killed = "output_limit"
                 if killed:
-                    _kill_group(proc)
                     break
                 time.sleep(_POLL_S)
+            # The exec ends with its leader: kill whatever else is left in its group.
+            _kill_group(proc.pid)
             code = proc.wait()
-            if killed == "output_limit":
+            if out_path.stat().st_size > limits.output_bytes:
                 with open(out_path, "r+b") as fh:
                     fh.truncate(limits.output_bytes)
-            generation = self._state.bump_generation(cc)  # the command may have changed files
-            self._state.finish(cc, op_id, {"exec_id": exec_id, "exit_code": code,
-                                           "killed": killed, "generation": generation,
-                                           "output_bytes": limits.output_bytes})
+                killed = killed or "output_limit"
         finally:
-            self._running.pop(exec_id, None)
+            with self._lock(cc):
+                generation = self._state.bump_generation(cc)  # the command may have changed files
+                self._state.finish(cc, op_id, {"exec_id": exec_id, "exit_code": code,
+                                               "killed": killed, "generation": generation,
+                                               "output_bytes": limits.output_bytes})
+                self._state.release(cc)
+                self._running.pop(exec_id, None)
+            running.done.set()
 
     def stream(self, handle: BoxHandle, exec_id: str, *,
                from_offset: int = 0, timeout: float | None = None) -> Iterator[ExecEvent]:
-        cc = self._auth(handle)
-        if self._state.find_exec(cc, exec_id) is None:
-            raise BoxNotFound(errno.ENOENT, f"no exec {exec_id!r} in this box")
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
+            if self._state.find_exec(cc, exec_id) is None:
+                raise BoxNotFound(errno.ENOENT, f"no exec {exec_id!r} in this box")
         out_path = self._exec_dir / f"{exec_id}.out"
         deadline = None if timeout is None else time.monotonic() + timeout
 
         def events() -> Iterator[ExecEvent]:
-            offset = from_offset
+            offset = max(0, from_offset)
             while True:
                 record = self._state.find_exec(cc, exec_id) or {}
                 state = record.get("state")
@@ -607,16 +719,18 @@ class LocalBoxProvider:
         return events()
 
     def cancel(self, handle: BoxHandle, exec_id: str) -> None:
-        cc = self._auth(handle)
-        if self._state.find_exec(cc, exec_id) is None:
-            raise BoxNotFound(errno.ENOENT, f"no exec {exec_id!r} in this box")
-        running = self._running.get(exec_id)
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
+            if self._state.find_exec(cc, exec_id) is None:
+                raise BoxNotFound(errno.ENOENT, f"no exec {exec_id!r} in this box")
+            running = self._running.get(exec_id)
         if running is not None:
             running.cancel.set()
 
     def exec_status(self, handle: BoxHandle, op_id: str) -> ExecStatus:
-        cc = self._auth(handle)
-        record = self._state.lookup(cc, op_id)
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
+            record = self._state.lookup(cc, op_id)
         if record is None or record["kind"] != "exec":
             raise BoxNotFound(errno.ENOENT, f"no exec operation {op_id!r} in this box")
         outcome = record["outcome"] or {}
@@ -626,17 +740,21 @@ class LocalBoxProvider:
                           state=state, exit_code=outcome.get("exit_code"),
                           killed=outcome.get("killed"))
 
-    # -- whole box -------------------------------------------------------------------------------
+    # -- whole box -------------------------------------------------------------------------
 
     def usage(self, handle: BoxHandle) -> BoxUsage:
-        cc = self._auth(handle)
-        box = self._box_fd(cc)
+        with self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
+            box = self._box_fd(cc)
         seen: set[tuple[int, int]] = set()
         total = 0
         try:
             for _dirpath, _dirs, files, dfd in os.fwalk(".", dir_fd=box, follow_symlinks=False):
                 for name in files:
-                    info = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+                    try:
+                        info = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
                     if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) not in seen:
                         seen.add((info.st_dev, info.st_ino))
                         total += int(info.st_size)
@@ -646,45 +764,25 @@ class LocalBoxProvider:
                         generation=self._state.generation(cc))
 
     def export(self, handle: BoxHandle, *, profile: ExportProfile) -> Iterator[bytes]:
-        """A tar of the box's regular files and directories. Links and special files are left out.
+        """A tar of the box's regular files and directories, taken while nothing is pending.
 
-        Profile scrubbing (the `share` manifest, harness §4.17) is applied by the export layer
-        above the driver; the driver's job is a faithful, link-free copy.
+        Links and special files are left out. Profile scrubbing (the ``share`` manifest,
+        harness §4.17) is applied by the export layer above the driver.
         """
-        cc = self._auth(handle)
         ExportProfile(profile)
+        cc = self._check_cc(handle.command_center_id)
         spool = tempfile.TemporaryFile(dir=self._state_dir)
-        box = self._box_fd(cc)
-        try:
-            with tarfile.open(fileobj=spool, mode="w") as tar:
-                for dirpath, dirs, files, dfd in os.fwalk(".", dir_fd=box, follow_symlinks=False):
-                    base = dirpath[2:] if dirpath.startswith("./") else ""
-                    for name in sorted(dirs):
-                        info = os.stat(name, dir_fd=dfd, follow_symlinks=False)
-                        if stat.S_ISDIR(info.st_mode):
-                            entry = tarfile.TarInfo(f"{base}/{name}".lstrip("/"))
-                            entry.type, entry.mode = tarfile.DIRTYPE, 0o755
-                            tar.addfile(entry)
-                    for name in sorted(files):
-                        if name.startswith(_TMP_PREFIX):
-                            continue
-                        try:
-                            fd = os.open(name, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK, dir_fd=dfd)
-                        except OSError:
-                            continue  # a link (ELOOP) or vanished: not exported
-                        try:
-                            info = os.fstat(fd)
-                            if not stat.S_ISREG(info.st_mode):
-                                continue
-                            entry = tarfile.TarInfo(f"{base}/{name}".lstrip("/"))
-                            entry.size, entry.mode = info.st_size, 0o644
-                            entry.mtime = int(info.st_mtime)
-                            with os.fdopen(os.dup(fd), "rb") as fh:
-                                tar.addfile(entry, fh)
-                        finally:
-                            os.close(fd)
-        finally:
-            os.close(box)
+        deadline = time.monotonic() + self._busy_wait_s
+        while True:
+            with self._lock(cc):
+                self._auth_locked(handle)
+                if not self._state.pending(cc):
+                    _tar_box(self._box_fd(cc), spool)
+                    break
+            if time.monotonic() > deadline:
+                spool.close()
+                raise BoxBusy(f"command center {cc!r} stayed busy past {self._busy_wait_s}s")
+            time.sleep(_POLL_S)
         spool.seek(0)
 
         def chunks() -> Iterator[bytes]:
@@ -699,80 +797,155 @@ class LocalBoxProvider:
 
     def import_bundle(self, handle: BoxHandle, op_id: str, chunks: Iterable[bytes], *,
                       profile: ExportProfile) -> ImportReport:
-        cc = self._auth(handle)
-        ExportProfile(profile)
+        profile = ExportProfile(profile)
         spool = tempfile.TemporaryFile(dir=self._state_dir)
         digest = hashlib.sha256()
         for block in chunks:
             digest.update(block)
             spool.write(block)
         spool.seek(0)
-        with self._cc_lock(cc):
+        with spool, self._lock(handle.command_center_id):
+            cc = self._auth_locked(handle)
             done = self._begin(cc, op_id, "import", {"sha": digest.hexdigest(),
-                                                     "profile": ExportProfile(profile).value})
+                                                     "profile": profile.value})
             if done is not None:
                 return ImportReport(done["files"], done["bytes"], tuple(done["refused"]))
             files = size = 0
             refused: list[str] = []
+            self._state.hold(cc)
             try:
-                with spool, tarfile.open(fileobj=spool, mode="r:") as tar:
-                    for member in tar:
-                        name = member.name[2:] if member.name.startswith("./") else member.name
-                        try:
-                            rel = box_relpath(f"{BOX_ROOT}/{name}")
-                            if not rel:
-                                raise BoxPathError(f"{member.name!r} names the box root")
-                        except BoxPathError:
-                            refused.append(member.name)
-                            continue
-                        if member.isdir():
-                            box = self._box_fd(cc)
+                try:
+                    with tarfile.open(fileobj=spool, mode="r:") as tar:
+                        for member in tar:
+                            name = member.name[2:] if member.name.startswith("./") else member.name
                             try:
-                                os.close(self._walk(box, rel, member.name, create=True))
-                            finally:
-                                os.close(box)
-                        elif member.isreg():
-                            src = tar.extractfile(member)
-                            body = src.read() if src is not None else b""
-                            self._write_now(cc, rel, member.name, body, WriteMode.REPLACE, None)
-                            files += 1
-                            size += len(body)
-                        else:
-                            refused.append(member.name)  # links, devices, FIFOs
-            except BaseException:
-                self._state.abandon(cc, op_id)
-                raise
-            self._state.bump_generation(cc)
-            self._state.finish(cc, op_id, {"files": files, "bytes": size, "refused": refused})
+                                rel = box_relpath(f"{BOX_ROOT}/{name}")
+                                if not rel:
+                                    raise BoxPathError(f"{member.name!r} names the box root")
+                                if member.isdir():
+                                    box = self._box_fd(cc)
+                                    try:
+                                        os.close(self._walk(box, rel, member.name, create=True))
+                                    finally:
+                                        os.close(box)
+                                elif member.isreg():
+                                    src = tar.extractfile(member)
+                                    body = src.read() if src is not None else b""
+                                    self._place(cc, rel, member.name, body, WriteMode.REPLACE)
+                                    files += 1
+                                    size += len(body)
+                                else:
+                                    refused.append(member.name)  # links, devices, FIFOs
+                            except (BoxPathError, WriteConflict):
+                                refused.append(member.name)
+                except BaseException as exc:
+                    if files:
+                        self._state.bump_generation(cc)
+                        self._state.finish(cc, op_id, {"error": str(exc)})
+                    else:
+                        self._state.abandon(cc, op_id)
+                    raise
+                self._state.bump_generation(cc)
+                self._state.finish(cc, op_id, {"files": files, "bytes": size,
+                                               "refused": refused})
+            finally:
+                self._state.release(cc)
         return ImportReport(files, size, tuple(refused))
 
     def destroy(self, handle: BoxHandle, op_id: str) -> DestroyReceipt:
-        cc = self._auth(handle)
-        with self._cc_lock(cc):
-            done = self._begin(cc, op_id, "destroy", {})
-            if done is not None:
-                return DestroyReceipt(cc, op_id, done["files_removed"], done["new_epoch"])
-            for exec_id, running in list(self._running.items()):
-                if (self._state.find_exec(cc, exec_id) or {}).get("op_id"):
-                    running.cancel.set()
-            root = self._root_fd()
-            try:
+        cc = self._check_cc(handle.command_center_id)
+        with self._lock(cc):
+            self._require_owner(cc, handle.account_id)
+            recorded = self._state.lookup(cc, op_id)
+            if (recorded is not None and recorded["kind"] == "destroy"
+                    and recorded["state"] == "done"):
+                outcome = recorded["outcome"] or {}
+                return DestroyReceipt(cc, op_id, outcome["files_removed"], outcome["new_epoch"])
+            self._auth_locked(handle)
+            if self._begin(cc, op_id, "destroy", {}) is not None:
+                raise BoxError(f"destroy {op_id!r} has an earlier record")
+            self._destroying.add(cc)  # every other operation on this box now refuses
+            victims = [r for r in self._running.values() if r.cc == cc]
+        try:
+            for running in victims:
+                running.cancel.set()
+            for running in victims:  # supervisors kill and reap the whole group, then finish
+                if not running.done.wait(self._destroy_wait_s):
+                    self._state.abandon(cc, op_id)  # nothing removed yet: a retry may run
+                    raise BoxError(
+                        f"an exec in {cc!r} did not stop within {self._destroy_wait_s}s"
+                    )
+            with self._lock(cc):
+                root = self._root_fd()
                 try:
-                    removed = _remove_beneath(root, cc, cc)
-                except BoxNotFound:
-                    removed = 0
-            finally:
-                os.close(root)
-            new_epoch = self._state.bump_epoch(cc)
-            self._state.finish(cc, op_id, {"files_removed": removed, "new_epoch": new_epoch})
+                    try:
+                        removed = _remove_beneath(root, cc, cc)
+                    except BoxNotFound:
+                        removed = 0
+                finally:
+                    os.close(root)
+                new_epoch = self._state.bump_epoch(cc)
+                self._state.finish(cc, op_id, {"files_removed": removed, "new_epoch": new_epoch})
+        finally:
+            with self._lock(cc):
+                self._destroying.discard(cc)
         return DestroyReceipt(cc, op_id, removed, new_epoch)
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
+def _feed(proc: subprocess.Popen, stdin: bytes) -> None:
+    """Feed stdin on its own thread, so a child that never reads cannot stall supervision."""
+    if proc.stdin is None:
+        return
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        proc.stdin.write(stdin)
+    except (BrokenPipeError, OSError):
+        pass
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+
+
+def _kill_group(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+
+
+def _tar_box(box_fd: int, spool) -> None:
+    """Write the box's regular files and directories into ``spool``; closes ``box_fd``."""
+    try:
+        with tarfile.open(fileobj=spool, mode="w") as tar:
+            for dirpath, dirs, files, dfd in os.fwalk(".", dir_fd=box_fd, follow_symlinks=False):
+                base = dirpath[2:] if dirpath.startswith("./") else ""
+                for name in sorted(dirs):
+                    info = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+                    if stat.S_ISDIR(info.st_mode):
+                        entry = tarfile.TarInfo(f"{base}/{name}".lstrip("/"))
+                        entry.type, entry.mode = tarfile.DIRTYPE, 0o755
+                        tar.addfile(entry)
+                for name in sorted(files):
+                    if name.startswith(_TMP_PREFIX):
+                        continue
+                    try:
+                        fd = os.open(name, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK, dir_fd=dfd)
+                    except OSError:
+                        continue  # a link (ELOOP) or vanished: not exported
+                    try:
+                        info = os.fstat(fd)
+                        if not stat.S_ISREG(info.st_mode):
+                            continue
+                        entry = tarfile.TarInfo(f"{base}/{name}".lstrip("/"))
+                        entry.size, entry.mode = info.st_size, 0o644
+                        entry.mtime = int(info.st_mtime)
+                        with os.fdopen(os.dup(fd), "rb") as fh:
+                            tar.addfile(entry, fh)
+                    finally:
+                        os.close(fd)
+    finally:
+        os.close(box_fd)
 
 
 def _remove_beneath(parent_fd: int, name: str, path: str, depth: int = 0) -> int:
@@ -795,4 +968,3 @@ def _remove_beneath(parent_fd: int, name: str, path: str, depth: int = 0) -> int
         os.close(dfd)
     os.rmdir(name, dir_fd=parent_fd)
     return removed
-

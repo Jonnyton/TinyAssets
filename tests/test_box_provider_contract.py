@@ -222,8 +222,15 @@ def test_a_planted_link_to_another_box_is_never_followed(provider, tmp_path):
     for path in ("/cc/founder.md", "/cc/up/founder.md"):
         with pytest.raises(BoxPathError):
             provider.read(attacker, path, max_bytes=100)
-    snap = provider.read_many(attacker, ["/cc/d/x"], max_total=100)
-    assert snap.missing == ("/cc/d/x",)
+        with pytest.raises(BoxPathError):
+            provider.read_many(attacker, [path], max_total=100)
+        with pytest.raises(BoxPathError):
+            provider.download(attacker, path)
+    with pytest.raises(BoxPathError):
+        provider.list(attacker, "/cc/up")
+    assert provider.stat(attacker, "/cc/founder.md").kind == "link"
+    kinds = {e.name: e.kind for e in provider.list(attacker, "/cc").entries}
+    assert kinds["founder.md"] == "link" and kinds["up"] == "link"
     with pytest.raises(BoxPathError):
         provider.write(attacker, "w2", "/cc/up/founder.md", b"overwrite", max_bytes=100)
     # removing the link removes the link, never its target
@@ -274,6 +281,7 @@ def test_cancel_kills_the_whole_process_tree(provider):
     _out, done = _drain(provider, handle, exec_id)
     assert done.killed == "cancelled"
     time.sleep(0.2)
+    assert Path("/proc/self/stat").exists()
     stat_file = Path(f"/proc/{child}/stat")
     # gone, or a zombie awaiting a reaper (the container's pid 1 may not reap)
     assert not stat_file.exists() or stat_file.read_text().split(") ")[1][0] == "Z"
@@ -285,32 +293,50 @@ def test_wall_clock_and_output_limits_kill_the_exec(provider):
     slow = provider.start_exec(handle, "e1", ["sleep", "30"],
                                limits=ExecLimits(wall_seconds=0.5))
     assert _drain(provider, handle, slow)[1].killed == "timeout"
-    loud = provider.start_exec(handle, "e2", ["sh", "-c", "yes | head -c 1000000; sleep 30"],
+    loud = provider.start_exec(handle, "e2", ["head", "-c", "1000000", "/dev/zero"],
                                limits=ExecLimits(wall_seconds=30, output_bytes=1000))
     out, done = _drain(provider, handle, loud)
     assert done.killed == "output_limit" and len(out) <= 1000
 
 
 @needs_posix
-def test_an_exec_in_flight_across_a_restart_reports_unknown_and_is_not_rerun(tmp_path):
-    if "local" not in DRIVERS:
-        pytest.skip("restart semantics exercised on the local driver")
-    first = _local(tmp_path)
-    handle = first.bind("cc-a", account_id="acct-a")
-    exec_id = first.start_exec(handle, "e1", ["sleep", "30"], limits=ExecLimits(wall_seconds=30))
-    # A box host crash: the old host never records an outcome, and its process dies.
-    first._state.finish = lambda *a, **k: None
-    first._state.bump_generation = lambda *a, **k: 0
-    first._running[exec_id].proc.kill()
-    second = _local(tmp_path)
-    status = second.exec_status(handle, "e1")
-    assert status.state is ExecState.UNKNOWN_AFTER_RESTORE
-    assert second.start_exec(handle, "e1", ["sleep", "30"],
-                             limits=ExecLimits(wall_seconds=30)) == status.exec_id
-    events = list(second.stream(handle, status.exec_id, timeout=2))
-    assert events[-1].killed == ExecState.UNKNOWN_AFTER_RESTORE.value
-    with pytest.raises(BoxError):
-        second.write(handle, "e1", "/cc/x", b"x", max_bytes=10)  # op id belongs to the exec
+def test_stdin_a_child_never_reads_cannot_stall_the_wall_clock(provider):
+    handle = provider.bind("cc-a", account_id="acct-a")
+    started = time.monotonic()
+    exec_id = provider.start_exec(handle, "e1", ["sleep", "30"], stdin=b"x" * (4 << 20),
+                                  limits=ExecLimits(wall_seconds=0.5))
+    _out, done = _drain(provider, handle, exec_id)
+    assert done.killed == "timeout" and time.monotonic() - started < 10
+
+
+@needs_posix
+def test_the_exec_ends_with_its_leader_and_takes_its_group_with_it(provider):
+    handle = provider.bind("cc-a", account_id="acct-a")
+    exec_id = provider.start_exec(handle, "e1", ["sh", "-c", "sleep 60 & echo $! > child.pid"])
+    _out, done = _drain(provider, handle, exec_id)
+    assert done.exit_code == 0
+    child = int(provider.read(handle, "/cc/child.pid", max_bytes=20).data)
+    time.sleep(0.2)
+    stat_file = Path(f"/proc/{child}/stat")
+    assert not stat_file.exists() or stat_file.read_text().split(") ")[1][0] == "Z"
+
+
+@needs_posix
+def test_destroy_stops_running_execs_before_it_returns(provider):
+    handle = provider.bind("cc-a", account_id="acct-a")
+    provider.start_exec(handle, "e1", ["sh", "-c", "echo $$ > leader.pid; sleep 60"],
+                        limits=ExecLimits(wall_seconds=60))
+    deadline = time.monotonic() + 10
+    while provider.stat(handle, "/cc/leader.pid") is None or not provider.read(
+            handle, "/cc/leader.pid", max_bytes=20).data.strip():
+        assert time.monotonic() < deadline, "exec never started"
+        time.sleep(0.05)
+    leader = int(provider.read(handle, "/cc/leader.pid", max_bytes=20).data)
+    receipt = provider.destroy(handle, "d1")
+    stat_file = Path(f"/proc/{leader}/stat")
+    assert not stat_file.exists() or stat_file.read_text().split(") ")[1][0] == "Z"
+    # replaying the same destroy through the original handle returns the same receipt
+    assert provider.destroy(handle, "d1") == receipt
 
 
 # -- whole box --------------------------------------------------------------------------------

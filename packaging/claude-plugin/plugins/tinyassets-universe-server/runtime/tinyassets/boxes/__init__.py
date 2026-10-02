@@ -7,6 +7,7 @@ runs code on its behalf. Drivers implement it; callers never branch on which.
 from tinyassets.boxes.provider import (
     BOX_ROOT,
     BoxAuthError,
+    BoxBusy,
     BoxError,
     BoxHandle,
     BoxNotFound,
@@ -36,6 +37,7 @@ from tinyassets.boxes.provider import (
 __all__ = [
     "BOX_ROOT",
     "BoxAuthError",
+    "BoxBusy",
     "BoxError",
     "BoxHandle",
     "BoxNotFound",

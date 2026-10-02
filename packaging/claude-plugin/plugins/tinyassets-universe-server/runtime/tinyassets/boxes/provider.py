@@ -38,6 +38,7 @@ from typing import Protocol, Union, runtime_checkable
 __all__ = [
     "BOX_ROOT",
     "BoxAuthError",
+    "BoxBusy",
     "BoxError",
     "BoxHandle",
     "BoxNotFound",
@@ -78,6 +79,10 @@ class BoxError(OSError):
 
 class BoxAuthError(BoxError):
     """The handle's account does not own the command center it names."""
+
+
+class BoxBusy(BoxError):
+    """The box stayed busy (a running exec or mutation) past the caller's wait bound."""
 
 
 class StaleHandle(BoxError):

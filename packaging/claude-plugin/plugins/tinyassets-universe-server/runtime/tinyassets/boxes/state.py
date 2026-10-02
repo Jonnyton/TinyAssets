@@ -4,10 +4,21 @@ This is the box HOST's state, not the platform's and not the box's. It answers
 `committed_generation` while a box sleeps, refuses stale epochs, and makes every
 mutation idempotent by operation id.
 
-An operation is recorded ``running`` before it starts and ``done`` (with its
-outcome) when it finishes. When the host restarts, every operation still
-``running`` becomes ``unknown_after_restore``: its effect may or may not have
-happened, so a retry returns "unknown" rather than running it again.
+Three rules:
+
+* **Outcomes are fenced to the host incarnation that started them.** Every time
+  the box host starts, it takes a new incarnation number and marks every
+  operation still ``running`` as ``unknown_after_restore``. An operation records
+  the incarnation it began under, and its completion is written only if the
+  operation is still ``running`` under that same incarnation. A supervisor left
+  over from an older host therefore cannot overwrite "unknown" with "done".
+* **An operation that may have had an effect is never forgotten.** It ends
+  ``done``, either with its outcome or with a recorded failure, and a retry gets
+  that record back instead of a second run. Only a refusal raised *before* any
+  effect calls :meth:`abandon`.
+* **A generation is coherent only while nothing is pending.** Mutations and
+  running executions hold a pending count on their box. A snapshot reader
+  accepts a generation only when that count was zero before and after its reads.
 """
 
 from __future__ import annotations
@@ -26,6 +37,7 @@ from tinyassets.boxes.provider import OpIdReuse
 __all__ = ["BoxHostState", "op_digest"]
 
 _SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS host (k TEXT PRIMARY KEY, v INTEGER NOT NULL)",
     "CREATE TABLE IF NOT EXISTS boxes ("
     " command_center_id TEXT PRIMARY KEY,"
     " epoch INTEGER NOT NULL,"
@@ -36,6 +48,7 @@ _SCHEMA = (
     " kind TEXT NOT NULL,"
     " digest TEXT NOT NULL,"
     " state TEXT NOT NULL,"  # running | done | unknown_after_restore
+    " incarnation INTEGER NOT NULL,"
     " outcome TEXT,"
     " PRIMARY KEY (command_center_id, op_id))",
     "CREATE TABLE IF NOT EXISTS execs ("
@@ -58,9 +71,17 @@ class BoxHostState:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._pending: dict[str, int] = {}
         with self._conn() as conn:
             for stmt in _SCHEMA:
                 conn.execute(stmt)
+            row = conn.execute("SELECT v FROM host WHERE k = 'incarnation'").fetchone()
+            self.incarnation = (int(row[0]) if row else 0) + 1
+            conn.execute(
+                "INSERT INTO host (k, v) VALUES ('incarnation', ?)"
+                " ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+                (self.incarnation,),
+            )
             # A restart: whatever was in flight has an unknown outcome now.
             conn.execute(
                 "UPDATE ops SET state = 'unknown_after_restore' WHERE state = 'running'"
@@ -81,6 +102,24 @@ class BoxHostState:
                 conn.execute("COMMIT")
         finally:
             conn.close()
+
+    # -- pending work (in memory: it describes this host incarnation only) ----------
+
+    def hold(self, cc: str) -> None:
+        with self._lock:
+            self._pending[cc] = self._pending.get(cc, 0) + 1
+
+    def release(self, cc: str) -> None:
+        with self._lock:
+            left = self._pending.get(cc, 0) - 1
+            if left > 0:
+                self._pending[cc] = left
+            else:
+                self._pending.pop(cc, None)
+
+    def pending(self, cc: str) -> int:
+        with self._lock:
+            return self._pending.get(cc, 0)
 
     # -- epochs and generations ------------------------------------------------
 
@@ -125,11 +164,11 @@ class BoxHostState:
     # -- operation outcomes ----------------------------------------------------
 
     def begin(self, cc: str, op_id: str, kind: str, digest: str) -> dict[str, Any] | None:
-        """Record ``op_id`` as running. Returns the earlier record if it already exists.
+        """Record ``op_id`` as running under this incarnation, or return the earlier record.
 
         The caller runs the operation only when this returns None. A returned record
-        is either ``done`` (return its outcome), ``running`` (still in flight on this
-        host) or ``unknown_after_restore`` (hold; never re-run).
+        is ``done`` (its outcome), ``running`` (in flight on this host) or
+        ``unknown_after_restore`` (hold; never re-run).
         """
         if not isinstance(op_id, str) or not op_id or len(op_id) > 200:
             raise OpIdReuse(f"op_id must be a non-empty string of at most 200 chars, got {op_id!r}")
@@ -149,34 +188,39 @@ class BoxHostState:
                     "outcome": json.loads(row[3]) if row[3] else None,
                 }
             conn.execute(
-                "INSERT INTO ops (command_center_id, op_id, kind, digest, state)"
-                " VALUES (?, ?, ?, ?, 'running')",
-                (cc, op_id, kind, digest),
+                "INSERT INTO ops (command_center_id, op_id, kind, digest, state, incarnation)"
+                " VALUES (?, ?, ?, ?, 'running', ?)",
+                (cc, op_id, kind, digest, self.incarnation),
             )
             return None
 
     def update(self, cc: str, op_id: str, outcome: dict[str, Any]) -> None:
-        """Attach progress to a still-running operation (e.g. its exec id)."""
+        """Attach progress to an operation still running under this incarnation."""
         with self._lock, self._conn() as conn:
             conn.execute(
-                "UPDATE ops SET outcome = ? WHERE command_center_id = ? AND op_id = ?",
-                (json.dumps(outcome), cc, op_id),
+                "UPDATE ops SET outcome = ? WHERE command_center_id = ? AND op_id = ?"
+                " AND state = 'running' AND incarnation = ?",
+                (json.dumps(outcome), cc, op_id, self.incarnation),
             )
 
-    def finish(self, cc: str, op_id: str, outcome: dict[str, Any]) -> None:
+    def finish(self, cc: str, op_id: str, outcome: dict[str, Any]) -> bool:
+        """Record the outcome, only if still running under this incarnation. True if written."""
         with self._lock, self._conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE ops SET state = 'done', outcome = ?"
-                " WHERE command_center_id = ? AND op_id = ?",
-                (json.dumps(outcome), cc, op_id),
+                " WHERE command_center_id = ? AND op_id = ?"
+                " AND state = 'running' AND incarnation = ?",
+                (json.dumps(outcome), cc, op_id, self.incarnation),
             )
+            return cur.rowcount == 1
 
     def abandon(self, cc: str, op_id: str) -> None:
-        """An operation refused before it had any effect: forget it so a corrected retry can run."""
+        """Forget an operation refused BEFORE any effect, so a corrected retry can run."""
         with self._lock, self._conn() as conn:
             conn.execute(
-                "DELETE FROM ops WHERE command_center_id = ? AND op_id = ? AND state = 'running'",
-                (cc, op_id),
+                "DELETE FROM ops WHERE command_center_id = ? AND op_id = ?"
+                " AND state = 'running' AND incarnation = ?",
+                (cc, op_id, self.incarnation),
             )
 
     def lookup(self, cc: str, op_id: str) -> dict[str, Any] | None:
@@ -195,6 +239,12 @@ class BoxHostState:
             conn.execute(
                 "INSERT OR IGNORE INTO execs (exec_id, command_center_id, op_id) VALUES (?, ?, ?)",
                 (exec_id, cc, op_id),
+            )
+
+    def forget_exec(self, cc: str, exec_id: str) -> None:
+        with self._lock, self._conn() as conn:
+            conn.execute(
+                "DELETE FROM execs WHERE exec_id = ? AND command_center_id = ?", (exec_id, cc)
             )
 
     def find_exec(self, cc: str, exec_id: str) -> dict[str, Any] | None:
