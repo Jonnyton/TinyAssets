@@ -631,7 +631,7 @@ def _step(round_age_s, state="inference_started"):
 def test_this_pages_own_turn_says_which_step_and_model_it_waits_on(tmp_path, html):
     out = _run(tmp_path, html, {"activeTurn": _step(420.0)}, _OWN_TURN_WAIT)
     assert out["waiting"]["line"] == (
-        "Your agent is thinking... step 4 · waiting on qwen3.8 for 7 min"
+        "Your agent is thinking... step 4 · waiting on qwen3.8-27b for 7 min"
     ), out["waiting"]["line"]
     # Seven minutes on one request: the owner may choose another model.
     assert out["tryHidden"] is False
@@ -639,7 +639,7 @@ def test_this_pages_own_turn_says_which_step_and_model_it_waits_on(tmp_path, htm
 
 def test_another_model_is_offered_only_after_a_long_wait(tmp_path, html):
     out = _run(tmp_path, html, {"activeTurn": _step(60.0)}, _OWN_TURN_WAIT)
-    assert out["waiting"]["line"].endswith("step 4 · waiting on qwen3.8 for 1 min")
+    assert out["waiting"]["line"].endswith("step 4 · waiting on qwen3.8-27b for 1 min")
     assert out["tryHidden"] is True
 
 
@@ -659,5 +659,64 @@ def test_a_server_without_step_detail_keeps_the_old_line(tmp_path, html):
 def test_a_turn_from_another_window_names_its_step_too(tmp_path, html):
     out = _run(tmp_path, html, {"activeTurn": _step(180.0)}, _SERVER_TURN)
     line = out["after"]["line"]
-    assert "step 4 · waiting on qwen3.8 for 3 min" in line and "another window" in line
+    assert "step 4 · waiting on qwen3.8-27b for 3 min" in line and "another window" in line
     assert line.count("thinking") == 1
+
+
+
+def test_a_native_agent_step_names_its_model_too(tmp_path, html):
+    """Codex: a native round is noted on the server, so it is shown too."""
+    out = _run(tmp_path, html, {"activeTurn": _step(420.0, "native_started")}, _OWN_TURN_WAIT)
+    assert out["waiting"]["line"].endswith("step 4 · waiting on qwen3.8-27b for 7 min")
+    assert out["tryHidden"] is False
+
+
+_TRANSITIONS = r"""
+setQueueOwner("p-1");
+els["btn-try-model"]=new El("button"); els["btn-try-model"].hidden=true;
+const turn=sendTurn("build it");
+await settle();
+SCENARIO.activeTurn=SCENARIO.first; await pollStatus();
+const detailed=indicator();
+interruptRequested=true; setStatusLine("Stopping your agent's turn...");
+await pollStatus();
+const stopping=indicator();
+interruptRequested=false;
+await pollStatus();
+queueTurn("and also this", "and also this", {});
+await settle();
+const queued=indicator();
+SCENARIO.activeTurn=SCENARIO.second; await pollStatus();
+const afterTools=indicator();
+SCENARIO.activeTurn=null; SCENARIO.seats={running:2,waiting:1,chat_waiting:true,upgrade_url:null};
+await pollStatus();
+const buttonAfterEnd=els["btn-try-model"].hidden;
+gates[0].resolve({reply:"done"});
+await turn; await settle();
+console.log(JSON.stringify({detailed, queued, afterTools, stopping, buttonAfterEnd}));
+"""
+
+
+def test_the_detail_never_erases_a_queue_count_or_a_stop_and_the_button_clears(tmp_path, html):
+    """Codex: the inference->tools transition erased "1 waiting", the 1s render
+    overwrote "Stopping...", and the button outlived the turn into a seat wait."""
+    out = _run(tmp_path, html, {
+        "first": _step(420.0), "second": _step(430.0, "tools_pending"), "activeTurn": None,
+    }, _TRANSITIONS)
+    assert "waiting on qwen3.8-27b" in out["detailed"]["line"]
+    assert "waiting" in out["queued"]["line"] and "qwen" not in out["queued"]["line"]
+    assert out["afterTools"]["line"] == out["queued"]["line"]
+    assert out["stopping"]["line"] == "Stopping your agent's turn..."
+    assert out["buttonAfterEnd"] is True
+
+
+@pytest.mark.parametrize("model_id,shown", [
+    ("qwen/qwen3.8-27b:free", "qwen3.8-27b"),
+    ("openai/gpt-5.4", "gpt-5.4"),
+    ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free", "nemotron-3-ultra-550b"),
+    ("plain-model", "plain-model"),
+])
+def test_a_model_is_named_as_a_person_would_say_it(tmp_path, html, model_id, shown):
+    body = "console.log(JSON.stringify({name: shortModelName(SCENARIO.id)}));"
+    assert _run(tmp_path, html, {"id": model_id}, body)["name"] == shown

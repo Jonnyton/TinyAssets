@@ -1910,10 +1910,13 @@
       model:(typeof row.model==="string")?row.model:"",
       roundSinceMs:roundAge===null?0:Date.now()-roundAge*1000};
   }
-  // A model id as a person says it: "qwen/qwen3.8-27b:free" -> "qwen3.8".
+  // A model id as a person says it: no vendor prefix or ":variant" tag, and a
+  // very long name cut at a hyphen ("nemotron-3-ultra-550b-a55b" ->
+  // "nemotron-3-ultra-550b"), never down to a family word that names nothing.
   function shortModelName(id){
-    const tail=String(id||"").split("/").pop().replace(/:free$/,"");
-    return tail.split("-")[0]||tail;
+    let tail=String(id||"").split("/").pop().replace(/:[^:]*$/,"");
+    while(tail.length>24&&tail.lastIndexOf("-")>0) tail=tail.slice(0,tail.lastIndexOf("-"));
+    return tail;
   }
   // Minutes this step has waited on its model, or 0 when the server did not say.
   function waitMinutes(){
@@ -1924,7 +1927,8 @@
   // "" when the server has not said, or when the step is running tools (that
   // line belongs to the live tool painter).
   function waitDetail(){
-    if(!serverTurnLive()||!serverTurn.round||serverTurn.state!=="inference_started")
+    if(!serverTurnLive()||!serverTurn.round||
+       (serverTurn.state!=="inference_started"&&serverTurn.state!=="native_started"))
       return "";
     const mins=waitMinutes();
     return "step "+serverTurn.round+(serverTurn.model
@@ -2066,6 +2070,7 @@
   }
   function renderWorking(){
     renderStop();
+    renderTryModel();
     if(seatWait){
       // The waiting line, with the Upgrade link INSIDE it -- never a banner, card
       // or modal (founder, 2026-09-30). No link on the top tier: the server sends
@@ -2103,15 +2108,19 @@
     // The flag is dropped on the way out: a local turn has taken the line, so our
     // sentence is no longer on screen and we must not later "clear" what that path
     // wrote (a queue count outlives the turn it was queued behind).
-    renderTryModel();
     if(turnStartedAt){
       serverStatusLine=false;
       // This page's own sentence, with WHERE the turn is when the server says.
-      // Never over a queue count or the seat line, which know more.
+      // Never over a queue count, the seat line or a Stop in progress, which
+      // know more; and never rewritten unchanged, so a screen reader hears the
+      // minute change and nothing else.
       const detail=waitDetail();
-      if(detail&&!sendQueue.length&&!seatLineShown){
-        setStatusLine("Your agent is thinking... "+detail); ownDetailLine=true;
-      }else if(ownDetailLine&&!detail){
+      const mine=!sendQueue.length&&!seatLineShown&&!interruptRequested;
+      if(detail&&mine){
+        const text="Your agent is thinking... "+detail;
+        if($("status-line").textContent!==text) setStatusLine(text);
+        ownDetailLine=true;
+      }else if(ownDetailLine&&!detail&&mine){
         setStatusLine("Your agent is thinking..."); ownDetailLine=false;
       }
       return;
