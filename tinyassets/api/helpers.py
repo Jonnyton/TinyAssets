@@ -212,67 +212,39 @@ def _designated_public_universe() -> str:
     return "default-universe"
 
 
-#: Bound on one platform record or log read into the shared daemon process.
-_MAX_PLATFORM_FILE_BYTES = 64 * 1024 * 1024
-
-
-def _read_platform_bytes(path: Path) -> bytes | None:
-    """Bytes of a platform file, or ``None`` when it is absent.
-
-    A path under the data dir is read link-free from the data dir, through
-    :mod:`tinyassets.universe_files`. The tool jail hides or binds read-only
-    the files these helpers read, but a workflow provider jail binds the whole
-    universe read-write and allows ``symlink``: ``activity.log ->
-    /data/<other>/founder.md`` would otherwise make the daemon return another
-    universe's file to this universe's owner. A link at any component, a
-    non-regular file or a file over the bound raises an :class:`OSError`.
-    A path outside the data dir is not in any universe and reads plainly.
-    """
-    from tinyassets.universe_files import read_universe_file
-
-    base = _base_path()
-    relpath = None
-    for root in (base, base.resolve()):
-        try:
-            relpath = path.relative_to(root).as_posix()
-            break
-        except ValueError:
-            continue
-    try:
-        if relpath is None:
-            return path.read_bytes() if path.exists() else None
-        return read_universe_file(root, relpath, max_bytes=_MAX_PLATFORM_FILE_BYTES)
-    except FileNotFoundError:
-        return None
-
-
 def _read_json(path: Path) -> dict[str, Any] | list[Any] | None:
-    """Safely read a JSON file, returning None on any failure.
+    """Read a JSON file; ``None`` when absent or not valid JSON.
 
-    A refused read (a planted link, see :func:`_read_platform_bytes`) is a
-    failure: logged, and ``None``.
+    Read through :func:`tinyassets.universe_files.read_data_path`: under the
+    data dir no link is followed at any component. A REFUSED read (a planted
+    link, a non-regular file, over the bound) raises
+    :class:`~tinyassets.universe_files.UniverseFileError` rather than reading
+    as ``None``, because a caller that writes back would otherwise overwrite
+    or create the file on the strength of "absent".
     """
+    from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+
+    data = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+    if data is None:
+        return None
     try:
-        data = _read_platform_bytes(path)
-        if data is not None:
-            return json.loads(data.decode("utf-8"))
-    except (OSError, ValueError) as exc:
+        return json.loads(data.decode("utf-8"))
+    except ValueError as exc:
         logger.warning("Failed to read %s: %s", path, exc)
     return None
 
 
 def _read_platform_text(path: Path, default: str, errors: str) -> str:
     """A text file outside the wiki: a platform log or record (``activity.log``,
-    run logs). Read link-free under the data dir; a refusal logs and reads as
-    ``default``, like any other unreadable file."""
-    try:
-        data = _read_platform_bytes(path)
-        if data is not None:
-            text = data.decode("utf-8", errors=errors)
-            return text.replace("\r\n", "\n").replace("\r", "\n")
-    except OSError as exc:
-        logger.warning("Failed to read %s: %s", path, exc)
-    return default
+    run logs). ``default`` only when absent; a refused read raises, see
+    :func:`_read_json`."""
+    from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+
+    data = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+    if data is None:
+        return default
+    text = data.decode("utf-8", errors=errors)
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _read_text(path: Path, default: str = "", *, errors: str = "strict") -> str:

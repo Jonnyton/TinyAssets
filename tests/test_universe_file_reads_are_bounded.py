@@ -66,9 +66,6 @@ ALLOWED = {
     ("tinyassets/universe_intelligence.py", "read_operating_instructions"):
         "creates the seed AGENTS.md with O_CREAT|O_EXCL|O_NOFOLLOW and writes it; "
         "reading it goes through universe_files",
-    ("tinyassets/api/helpers.py", "_read_platform_bytes"):
-        "reads plainly only a path OUTSIDE the data dir, which is in no universe; "
-        "every path under the data dir goes through universe_files",
     ("tinyassets/api/wiki.py", "_append_wiki_log"):
         "opens log.md in append mode to WRITE one line; it never reads it",
     ("tinyassets/api/wiki.py", "_wiki_file_bug"):

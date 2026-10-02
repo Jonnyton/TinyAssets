@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import stat
+import uuid
 from pathlib import Path
 
 from tinyassets import workspace_fs as fs
@@ -36,19 +37,25 @@ __all__ = [
     "MAX_BRAIN_FILE_BYTES",
     "MAX_CONFIG_BYTES",
     "MAX_FRONTMATTER_BYTES",
+    "MAX_PLATFORM_FILE_BYTES",
     "MAX_UNIVERSE_FILE_BYTES",
     "UniverseFileError",
     "list_universe_dir",
     "load_untrusted_yaml",
     "open_runtime_dir",
+    "read_data_path",
     "read_universe_file",
     "read_universe_text",
+    "write_data_path",
+    "write_universe_file",
 ]
 
 #: Default bound: generous (a brain file is kilobytes) but fixed.
 MAX_UNIVERSE_FILE_BYTES = 8 * 1024 * 1024
 #: A brain / soul / log markdown file.
 MAX_BRAIN_FILE_BYTES = 1024 * 1024
+#: A platform record, log or canon document the daemon reads whole.
+MAX_PLATFORM_FILE_BYTES = 64 * 1024 * 1024
 #: ``config.yaml`` and any YAML frontmatter, before the parser sees it.
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_FRONTMATTER_BYTES = 64 * 1024
@@ -190,6 +197,165 @@ def open_runtime_dir(universe_dir: Path | str, *parts: str) -> int:
         os.close(current)
         raise
     return current
+
+
+def _parent_dir_fd(root: Path, parts: list[str], *, create: bool) -> int:
+    """POSIX: a descriptor for the directory holding ``parts[-1]``, every
+    component opened (and, with ``create``, made) with no link followed."""
+    current = fs.open_dir_nofollow(root.resolve(strict=False))
+    try:
+        for part in parts[:-1]:
+            _check_component(part)
+            if create:
+                try:
+                    os.mkdir(part, 0o777, dir_fd=current)
+                except FileExistsError:
+                    pass
+            child = fs.open_subdir_nofollow(current, part)
+            os.close(current)
+            current = child
+    except BaseException:
+        os.close(current)
+        raise
+    return current
+
+
+def _split(relpath: str) -> list[str]:
+    parts = str(relpath).replace("\\", "/").split("/")
+    for part in parts:
+        _check_component(part)
+    return parts
+
+
+def write_universe_file(
+    universe_dir: Path | str,
+    relpath: str,
+    data: bytes,
+    *,
+    make_parents: bool = True,
+) -> None:
+    """Atomically replace ``universe_dir/relpath`` with ``data``, link-free.
+
+    Every directory component is opened (and with ``make_parents`` created)
+    with no link followed; the bytes go to a fresh temp file created
+    ``O_EXCL|O_NOFOLLOW`` in that verified directory, then renamed over the
+    name. A rename replaces a link at the final name rather than writing
+    through it, so a planted ``config.yaml -> /data/<other>/config.yaml``
+    becomes this universe's own file and the other one is never touched.
+    """
+    root = Path(universe_dir)
+    parts = _split(relpath)
+    name = parts[-1]
+    tmp = f".{name}.{uuid.uuid4().hex[:12]}.tmp"
+    if getattr(fs, "_POSIX", False):
+        dir_fd = _parent_dir_fd(root, parts, create=make_parents)
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            fd = os.open(tmp, flags, 0o666, dir_fd=dir_fd)
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            try:
+                os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            except BaseException:
+                try:
+                    os.unlink(tmp, dir_fd=dir_fd)
+                except OSError:
+                    pass
+                raise
+        finally:
+            os.close(dir_fd)
+        return
+    parent = root
+    for part in parts[:-1]:
+        parent = parent / part
+        if make_parents and not os.path.lexists(parent):
+            parent.mkdir()
+    if len(parts) > 1:
+        _lstat_nofollow_windows(root, "/".join(parts[:-1]))
+    target = parent / name
+    temp = parent / tmp
+    with open(temp, "xb") as handle:  # noqa: PTH123 - parent link-checked above
+        handle.write(data)
+    try:
+        os.replace(temp, target)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def _data_relative(path: Path) -> tuple[Path, str] | None:
+    """``(data root, relpath)`` when ``path`` names something under the data
+    dir, else ``None``. ``path`` is never resolved -- that would follow the
+    very link being refused -- so both spellings of the root are tried."""
+    from tinyassets.storage import data_dir
+
+    base = data_dir()
+    for root in (base, base.resolve()):
+        try:
+            rel = Path(path).relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if rel in ("", "."):
+            return None
+        return root, rel
+    return None
+
+
+def read_data_path(path: Path | str, *, max_bytes: int = MAX_UNIVERSE_FILE_BYTES) -> bytes | None:
+    """Bytes of a daemon file by absolute path; ``None`` when it is absent.
+
+    Under the data dir every universe folder is writable by something the
+    universe runs (a workflow provider jail binds it read-write and allows
+    ``symlink``), so the path is walked from the data dir with no link at any
+    component. Any refusal -- a link, a non-regular file, over ``max_bytes``,
+    an unreadable component -- raises :class:`UniverseFileError`: it must
+    never read as "absent", which a read-modify-write would then overwrite.
+    A path outside the data dir is in no universe and reads plainly.
+    """
+    located = _data_relative(Path(path))
+    try:
+        if located is None:
+            return Path(path).read_bytes()
+        return read_universe_file(located[0], located[1], max_bytes=max_bytes)
+    except FileNotFoundError:
+        return None
+    except UniverseFileError:
+        raise
+    except OSError as exc:
+        if located is None:
+            raise
+        raise UniverseFileError(f"{located[1]!r} was refused: {exc}") from exc
+
+
+def write_data_path(path: Path | str, data: bytes | str, *, make_parents: bool = True) -> None:
+    """Atomically write a daemon file by absolute path, never through a link.
+
+    Under the data dir this is :func:`write_universe_file` from the data root
+    (no link at any component, temp + rename in the verified directory).
+    Outside it, the same temp + rename with a plain path.
+    """
+    payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+    located = _data_relative(Path(path))
+    if located is not None:
+        write_universe_file(located[0], located[1], payload, make_parents=make_parents)
+        return
+    target = Path(path)
+    if make_parents:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:12]}.tmp")
+    with open(temp, "xb") as handle:  # noqa: PTH123 - outside every universe
+        handle.write(payload)
+    try:
+        os.replace(temp, target)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def load_untrusted_yaml(text: str, *, max_bytes: int = MAX_CONFIG_BYTES) -> object:

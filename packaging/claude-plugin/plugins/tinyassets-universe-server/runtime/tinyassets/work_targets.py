@@ -102,11 +102,16 @@ def _read_json(path: Path, default: Any) -> Any:
     checking the file exists + has bytes themselves — keep this helper
     permissive so inspect/health reads don't crash on one bad file.
     """
-    if not path.exists():
+    from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+
+    # Link-free. A REFUSED read raises rather than returning ``default``:
+    # these files are read-modify-written, and "absent" would be overwritten.
+    raw = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+    if raw is None:
         return default
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        value = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
         logger.warning(
             "Failed to read JSON at %s (%s: %s); returning default",
             path, type(exc).__name__, exc,
@@ -116,11 +121,9 @@ def _read_json(path: Path, default: Any) -> Any:
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=False) + "\n",
-        encoding="utf-8",
-    )
+    from tinyassets.universe_files import write_data_path
+
+    write_data_path(path, json.dumps(payload, indent=2, sort_keys=False) + "\n")
 
 
 def work_targets_path(universe_path: str | Path) -> Path:
