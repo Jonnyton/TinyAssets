@@ -84,31 +84,33 @@ _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 #: Seconds uvicorn keeps waiting on connections and tracked request tasks after
 #: SIGTERM, before cancelling them.
 #:
-#: Chosen, not defaulted. Uvicorn's default is to wait indefinitely, which reads
-#: generous and decides nothing: docker recreates the container with the service's
-#: ``stop_grace_period``, and with that key absent the effective bound was
-#: docker's 10-second default -- so a turn was SIGKILLed 10s into a drain nobody
-#: had chosen (founder, 2026-09-26; the same shape twice on 2026-08-29).
+#: SHORT BECAUSE THE DRAIN IS AN OUTAGE. Uvicorn closes its only listening socket
+#: the moment SIGTERM arrives, so every second the old process spends draining is
+#: a second in which the public surface (/mcp, /app) returns 502. Nothing else can
+#: listen on 127.0.0.1:8001 until this process exits. On 2026-10-01 a 170s/180s
+#: drain behind a long codex turn took production down from 22:49:48Z to
+#: 22:53:04Z (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+#: Uptime is the Forever Rule, and a turn cut off here is settled truthfully at
+#: the next boot by ``agent_turn_reconcile.reconcile_orphaned_turns``.
+#:
+#: Still chosen, not defaulted: uvicorn's default waits indefinitely.
 #:
 #: Two things this does NOT do, both measured rather than assumed (Codex on
 #: #4039, ``docs/audits/2026-09-26-pr4039-drain-repro.py``):
 #:
 #: * It does not keep the served reply alive. sse-starlette cancels the SSE
-#:   response as soon as uvicorn starts shutting down -- 0.49s in, against a 5s
-#:   grace, while the turn itself finished at 1.99s. The turn COMPLETING is what
-#:   this buys: its effects land and ``record_exchange`` stores the answer, which
-#:   the app reads from the thread.
+#:   response as soon as uvicorn starts shutting down, so a longer drain never
+#:   saved the reply. It only let the turn finish while nobody could reach us.
 #: * It does not bound the process. A FastMCP tool runs in an AnyIO worker thread
-#:   that is not cancelled, and lifespan shutdown is not covered by this timeout;
-#:   a 0.25s value still let the worker run to 1.98s. **Docker's
-#:   ``stop_grace_period`` is the real bound.**
+#:   that is not cancelled, and lifespan shutdown waits on it. The 2026-10-01
+#:   process sat in "Waiting for application shutdown" until SIGKILL. **The
+#:   deploy's explicit ``docker compose up --timeout`` and the compose
+#:   ``stop_grace_period`` are the real bound.**
 #:
-#: So keep this BELOW ``deploy/compose.yml``'s ``daemon.stop_grace_period``: not
-#: because it guarantees a clean exit, but so the ordinary case reaches uvicorn's
-#: own cancellation before docker's SIGKILL, instead of the two racing.
-#: ``tests/test_deploy_drains_in_flight_turns.py`` pins the ordering, because the
-#: numbers live in different files and nothing else relates them.
-GRACEFUL_SHUTDOWN_S = 170.0
+#: Keep this BELOW ``deploy/compose.yml``'s ``daemon.stop_grace_period`` so the
+#: ordinary case reaches uvicorn's own cancellation before docker's SIGKILL.
+#: ``tests/test_deploy_drains_in_flight_turns.py`` pins the ordering.
+GRACEFUL_SHUTDOWN_S = 10.0
 
 
 def _oauth_security_schemes() -> list[dict[str, object]]:

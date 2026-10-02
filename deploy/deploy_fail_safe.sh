@@ -165,26 +165,25 @@ UNIT_GROUP="${UNIT_GROUP:-root}"
 DAEMON_CONTAINER=tinyassets-daemon
 TUNNEL_CONTAINER=tinyassets-tunnel
 LOGS_CONTAINER=tinyassets-logs
-# The floor for `daemon.stop_grace_period`, asserted on the STAGED bundle. A
-# recreate stops the daemon first and waits this long for in-flight turns; with
-# the key absent the bound is docker's 10 seconds, which is what killed the
-# founder's turns. A bundle that loses the key must FAIL validation rather than
-# silently return to 10 (compose flags are inert in exactly this quiet way).
+# The CEILING on how long a converge lets the old daemon drain, in seconds.
+# Uvicorn closes its listener on SIGTERM and nothing else can bind 127.0.0.1:8001
+# until the old container is gone, so every second of drain is public 502. At
+# 180 (#4039) one long turn held production down for 3m16s on 2026-10-01
+# (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
 #
-# 180, not the 300 first proposed: this run may drain TWICE (the forward converge
-# and, if the new image is unacceptable, the rollback converge), each followed by
-# a HEALTH_TIMEOUT wait, and `deploy-prod.yml` gives the whole job 900s. At 300
-# the worst case is 2*300 + 2*180 = 960 > 900, so a slow deploy would be
-# CANCELLED part-way rather than rolled back -- worse than the bug being fixed
-# (Codex on #4039, P1). 180 gives 720 with 180s left for pull, validation,
-# snapshot and canary, and stays under tinyassets-daemon.service's 200s
-# TimeoutStartSec so a recreate driven through the unit cannot outlive it.
+# Used twice: `restart_stack` passes it as `up --timeout`, which binds the
+# container being REPLACED regardless of the StopTimeout it was created with;
+# and the staged bundle's `daemon.stop_grace_period` must not exceed it, so a
+# unit- or watchdog-driven recreate is bounded the same way.
 #
 # Kept in step with `deploy/compose.yml` and with
 # `universe_server.GRACEFUL_SHUTDOWN_S` by tests/test_deploy_drains_in_flight_turns.py.
-MIN_DAEMON_STOP_GRACE_S=180
-# Shared host-mutation lock (same path the watchdog uses); serializes all
-# image mutators so deploy/watchdog/autoheal cannot race.
+MAX_DAEMON_STOP_GRACE_S=20
+# Shared host-mutation lock. scripts/watchdog.py and deploy/daemon-watchdog.sh
+# check it (read-only, never created) and stand down while it is held. Until
+# 2026-10-01 this comment claimed they did when neither did, and both restarted
+# the daemon mid-deploy. GitHub-driven mutators serialize separately on the
+# `production-host-mutation` workflow concurrency group.
 LOCK_FILE="${LOCK_FILE:-/var/lock/tinyassets-host-mutation.lock}"
 LOCK_WAIT=120            # seconds to wait for the lock before refusing
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"   # seconds to reach 'healthy'
@@ -330,25 +329,53 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up AND l
 # services whose image or config changed (the tunnel keeps running).
 restart_stack() {
   systemctl reset-failed "$UNIT" 2>/dev/null || true
+  remove_compose_temp_daemons
   # Time the converge. `up -d` recreates the daemon, which STOPS the old
-  # container first and waits up to its `stop_grace_period` for in-flight turns
-  # to finish, so this duration IS the drain -- the only measurement of whether
-  # 300s is the right bound or whether turns are still being cut off at it.
-  # Logged rather than gated: a deploy must not fail because a turn was long.
+  # container first. `--timeout` bounds that stop to MAX_DAEMON_STOP_GRACE_S
+  # and then SIGKILLs. Without it compose uses the StopTimeout the old
+  # container was CREATED with: 180s on 2026-10-01, all of it public 502.
   local started elapsed
   started="$SECONDS"
-  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d daemon cloudflared logs; then
+  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
+        --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
     elapsed=$((SECONDS - started))
     err "docker compose up -d failed after ${elapsed}s"
     return 1
   fi
   elapsed=$((SECONDS - started))
-  log "converge took ${elapsed}s (includes draining in-flight turns, bounded by daemon.stop_grace_period)"
-  if [ "$elapsed" -ge "$MIN_DAEMON_STOP_GRACE_S" ]; then
-    log "note: the converge reached the ${MIN_DAEMON_STOP_GRACE_S}s grace bound; a turn was very likely cut off (see tinyassets/agent_turn_reconcile.py for what the founder is told)"
+  log "converge took ${elapsed}s (includes the old daemon's drain, bounded at ${MAX_DAEMON_STOP_GRACE_S}s)"
+  if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]; then
+    log "note: the converge reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; a turn was very likely cut off (see tinyassets/agent_turn_reconcile.py for what the founder is told)"
   fi
   systemctl start "$UNIT" 2>/dev/null || err "note: ${UNIT} did not start (stack converged directly; see journalctl -u ${UNIT})"
   return 0
+}
+
+# Compose recreates a container by creating `<12-hex>_<name>`, stopping and
+# removing the old one, then renaming. A compose run that dies part-way, or a
+# second compose run racing this one (the unit's did on 2026-10-01), leaves
+# that temp name behind, and the next `up -d` fails on
+# "Conflict. The container name /<hex>_tinyassets-daemon is already in use".
+# That is what turned the 2026-10-01 forward failure into rollback_failed.
+# Runs under the host-mutation lock. Only containers that are NOT running are
+# removed: `compose start` can start a temp-named replacement by id without
+# renaming it, so a running one may be the only serving daemon (Codex refute).
+# A running one is reported and left alone.
+remove_compose_temp_daemons() {
+  local name state
+  while read -r name state; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$name" | grep -Eq "^[0-9a-f]{12}_${DAEMON_CONTAINER}\$" || continue
+    case "$state" in
+      created|exited|dead)
+        log "removing stray compose temp container ${name} (${state})"
+        docker rm -f "$name" >/dev/null 2>&1 || err "note: could not remove stray container ${name}"
+        ;;
+      *)
+        err "note: temp-named container ${name} is '${state}'; leaving it (it may be serving)"
+        ;;
+    esac
+  done < <(docker ps -a --format '{{.Names}} {{.State}}' 2>/dev/null || true)
 }
 
 # `up -d` does NOT recreate a container whose image and compose config are
@@ -591,7 +618,7 @@ validate_bundle() {
   # resolve the same, renders identically (Codex round 2, §2). argv[3] is the
   # uninterpolated render (env_file survives there).
   RUNTIME_DIR="$RUNTIME_DIR" EXPECT_IMAGE="$NEW_IMAGE" ENV_FILE="$ENV_FILE" \
-    MIN_DAEMON_STOP_GRACE_S="$MIN_DAEMON_STOP_GRACE_S" \
+    MAX_DAEMON_STOP_GRACE_S="$MAX_DAEMON_STOP_GRACE_S" \
     python3 - "$cfg" "${BUNDLE_WORK}/compose.yml" "${cfg}.raw" <<'PY'
 import json
 import os
@@ -711,14 +738,15 @@ if image_lines is None:
 
 # The drain bound, read from the SOURCE rather than either render: compose
 # normalizes durations and this check must not depend on which form this
-# version emits. Absent means docker's 10-second default, which is what cut the
-# founder's turns off mid-flight -- a bundle that drops the key is refused.
-min_grace = int(os.environ["MIN_DAEMON_STOP_GRACE_S"])
+# version emits. It is a CEILING: the drain is public 502, because the old
+# daemon has already closed its listener (2026-10-01). Absent is refused too,
+# so the bound stays written down where the next reader looks for it.
+max_grace = int(os.environ["MAX_DAEMON_STOP_GRACE_S"])
 grace_lines = daemon_direct_children(r"^stop_grace_period:\s*\S")
 if len(grace_lines) != 1:
     problems.append(
         "daemon must declare exactly one direct `stop_grace_period:` (found %d); without it "
-        "a recreate SIGKILLs in-flight turns after docker's 10s default" % (len(grace_lines),)
+        "the drain bound silently falls back to docker's 10s default" % (len(grace_lines),)
     )
 else:
     grace_text = grace_lines[0].split(":", 1)[1].strip().strip("'\"")
@@ -741,10 +769,11 @@ else:
         )
     else:
         seconds = sum(float(number) * units[unit] for number, unit in parts)
-        if seconds < min_grace:
+        if seconds > max_grace:
             problems.append(
-                "daemon.stop_grace_period is %gs; it must be at least %ds so an in-flight "
-                "turn is not SIGKILLed mid-drain" % (seconds, min_grace)
+                "daemon.stop_grace_period is %gs; it must be at most %ds, because the old "
+                "daemon has closed its listener and every second of drain is public 502"
+                % (seconds, max_grace)
             )
 if not image_lines:
     problems.append("no `image:` line found in the daemon block of the source file")
