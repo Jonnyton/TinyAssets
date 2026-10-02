@@ -334,7 +334,7 @@ def test_the_whole_render_tree_is_bounded_and_reaped(monkeypatch, megs, wall, br
     def remember():
         snapshot = real_snapshot()
         # The intermediate child forks exactly three detached grandchildren.
-        for pid, (ppid, _, _) in snapshot.items():
+        for pid, (ppid, _, _, _) in snapshot.items():
             try:
                 command = Path(f"/proc/{pid}/cmdline").read_bytes()
                 stat = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()
@@ -366,3 +366,118 @@ def test_preview_refuses_a_read_only_caller_before_writing(tmp_path, monkeypatch
 
     assert app_ui.preview_app_ui(universe_id=HOME, ui_id="village") == denial
     assert list(tmp_path.iterdir()) == []
+
+
+
+@pytest.mark.parametrize("survivor", [True, False])
+def test_failed_containment_disables_previews_and_keeps_locks(tmp_path, monkeypatch, survivor):
+    import os
+    import signal
+    import sys
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    process = SimpleNamespace(pid=12345, stdin=io.BytesIO(), stdout=io.BytesIO(),
+                              stderr=io.BytesIO(), returncode=-9, wait=Mock())
+    spawn = Mock(return_value=process)
+    clock = [0.0]
+    joins = []
+
+    class Reader:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def join(self, timeout):
+            joins.append(timeout)
+            clock[0] += timeout
+
+        def is_alive(self):
+            return not survivor
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    # Exercise the real host-slot context on every OS, with a harmless fake flock.
+    flock = Mock()
+    monkeypatch.setitem(sys.modules, "fcntl", SimpleNamespace(
+        flock=flock, LOCK_EX=2, LOCK_NB=4))
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(ui_preview, "_SLOT", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(ui_preview, "_POISONED", "")
+    monkeypatch.setattr(ui_preview, "_POISONED_HOST_FD", None)
+    monkeypatch.setattr(ui_preview, "_spec_for", lambda *a: {})
+    monkeypatch.setattr(ui_preview, "available", lambda: True)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(ui_preview.shutil, "which", lambda name: "bwrap")
+    monkeypatch.setattr(ui_preview.subprocess, "Popen", spawn)
+    monkeypatch.setattr(ui_preview.threading, "Thread", Reader)
+    monkeypatch.setattr(ui_preview.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ui_preview.time, "sleep", sleep)
+    monkeypatch.setattr(os, "waitid", lambda *a: object(), raising=False)
+    for name in ("P_PID", "WEXITED", "WNOHANG", "WNOWAIT"):
+        monkeypatch.setattr(os, name, 1, raising=False)
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+    kill = Mock()
+    monkeypatch.setattr(os, "kill", kill)
+    monkeypatch.setattr(ui_preview, "_proc_snapshot", lambda: {12346: (12345, 1, False, 7)})
+    monkeypatch.setattr(ui_preview, "_descendants", lambda *a: {12346} if survivor else set())
+    try:
+        with pytest.raises(ui_preview.PreviewUnavailable, match="could not be stopped") as first:
+            ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME, ui_id="x")
+        with pytest.raises(ui_preview.PreviewUnavailable) as second:
+            ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME, ui_id="x")
+        assert str(first.value) == str(second.value) == ui_preview._POISONED
+        spawn.assert_called_once()
+        assert not ui_preview._SLOT.acquire(blocking=False)
+        assert ui_preview._POISONED_HOST_FD is not None
+        os.fstat(ui_preview._POISONED_HOST_FD)  # still open, retaining the flock
+        flock.assert_called_once()
+        assert len(joins) == 2 and all(0 <= timeout <= 10 for timeout in joins)
+        assert clock[0] < 10.2
+        assert kill.call_args.args[0] == process.pid
+        process.wait.assert_called_once()
+    finally:
+        if ui_preview._POISONED_HOST_FD is not None:
+            os.close(ui_preview._POISONED_HOST_FD)
+        # monkeypatch restores the original poison state and lock globals.
+
+
+@pytest.mark.skipif(__import__("sys").platform != "linux", reason="PID namespaces need Linux")
+def test_timeout_only_signals_the_unreaped_bwrap_pid(monkeypatch):
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        pytest.skip("bubblewrap is not installed")
+    probe = subprocess.run(
+        [bwrap, "--unshare-pid", "--bind", "/", "/", "--", "true"],
+        capture_output=True, timeout=10,
+    )
+    if probe.returncode:
+        pytest.skip("this host does not permit bubblewrap PID namespaces")
+    real_popen, real_kill = subprocess.Popen, os.kill
+    spawned, signalled = [], []
+
+    def spawn(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def kill(pid, sig):
+        assert spawned[0].returncode is None, "bwrap must remain unreaped"
+        signalled.append(pid)
+        return real_kill(pid, sig)
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(os, "kill", kill)
+    _, _, _, breach = ui_preview._supervised(
+        b"", 2, argv=[sys.executable, "-c", _TREE.replace("MEGS", "1")])
+    assert breach.startswith("timeout")
+    assert signalled == [spawned[0].pid]

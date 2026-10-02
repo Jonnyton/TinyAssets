@@ -54,6 +54,12 @@ from typing import Any
 #: One render at a time in this process; the host-wide lock file bounds the
 #: per-universe engine processes together (POSIX).
 _SLOT = threading.BoundedSemaphore(1)
+_POISONED = ""
+_POISONED_HOST_FD: int | None = None
+_CONTAINMENT_FAILURE = (
+    "ui_preview_failed: the previous render could not be stopped; "
+    "previews are disabled until the daemon restarts"
+)
 #: Resident memory summed over the render's whole process tree, and its size.
 TREE_MEMORY_BYTES = 1536 * 1024 * 1024
 TREE_PROCESSES = 64
@@ -199,6 +205,8 @@ def preview_app_ui(
     Raises ``AgentNotFoundError`` for a UI the caller does not have and
     :class:`PreviewUnavailable` when this host cannot render or is rendering.
     """
+    if _POISONED:
+        raise PreviewUnavailable(_POISONED)
     if not (isinstance(width, int) and isinstance(height, int)
             and 200 <= width <= MAX_WIDTH and 200 <= height <= MAX_HEIGHT):
         raise ValueError(f"width and height must be 200..{MAX_WIDTH} pixels")
@@ -211,7 +219,8 @@ def preview_app_ui(
     try:
         return _run_child(spec, wall_seconds)
     finally:
-        _SLOT.release()
+        if not _POISONED:
+            _SLOT.release()
 
 
 def _run_child(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
@@ -235,6 +244,7 @@ def _run_child(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
 def _host_slot():
     """One render per host: an flock the per-universe engine processes share.
     Busy is a refusal, never a queue. Windows dev hosts: this process only."""
+    global _POISONED_HOST_FD
     import os
 
     try:
@@ -254,11 +264,14 @@ def _host_slot():
                 "ui_preview_busy: another preview is rendering on this host; try again") from None
         yield
     finally:
-        os.close(fd)
+        if _POISONED:
+            _POISONED_HOST_FD = fd
+        else:
+            os.close(fd)
 
 
-def _proc_snapshot() -> dict[int, tuple[int, int, bool]]:
-    """Host PID -> (parent PID, RSS bytes, zombie) from Linux /proc."""
+def _proc_snapshot() -> dict[int, tuple[int, int, bool, int]]:
+    """Host PID -> (parent PID, RSS bytes, zombie, starttime) from Linux /proc."""
     import os
 
     snapshot = {}
@@ -271,14 +284,15 @@ def _proc_snapshot() -> dict[int, tuple[int, int, bool]]:
                 fields = handle.read().rsplit(b")", 1)[1].split()
         except OSError:
             continue
-        snapshot[int(entry)] = (int(fields[1]), int(fields[21]) * page, fields[0] == b"Z")
+        snapshot[int(entry)] = (int(fields[1]), int(fields[21]) * page,
+                                fields[0] == b"Z", int(fields[19]))
     return snapshot
 
 
-def _descendants(root: int, snapshot: dict[int, tuple[int, int, bool]]) -> set[int]:
+def _descendants(root: int, snapshot: dict[int, tuple[int, int, bool, int]]) -> set[int]:
     # Traverse zombies too: their live children still belong to this tree.
     children: dict[int, list[int]] = {}
-    for pid, (ppid, _, _) in snapshot.items():
+    for pid, (ppid, _, _, _) in snapshot.items():
         children.setdefault(ppid, []).append(pid)
     found = set()
     pending = list(children.get(root, []))
@@ -293,6 +307,7 @@ def _descendants(root: int, snapshot: dict[int, tuple[int, int, bool]]) -> set[i
 def _supervised(stdin: bytes, wall_seconds: float,
                 argv: list[str] | None = None) -> tuple[bytes, bytes, int, str]:
     """Contain even detached Chromium processes in a Linux PID namespace."""
+    global _POISONED
     import os
     import signal
 
@@ -337,15 +352,17 @@ def _supervised(stdin: bytes, wall_seconds: float,
         pass
     deadline = time.monotonic() + wall_seconds
     breach = ""
-    observed: set[int] = set()
+    seen: dict[int, int] = {}
     try:
-        while process.poll() is None:
+        while (os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+               if linux else process.poll()) is None:
             if linux:
                 snapshot = _proc_snapshot()
                 descendants = _descendants(process.pid, snapshot)
-                observed.update(descendants)
-                members = [snapshot[pid] for pid in descendants if not snapshot[pid][2]]
-                if sum(rss for _, rss, _ in members) > TREE_MEMORY_BYTES:
+                seen.update({pid: snapshot[pid][3] for pid in descendants})
+                members = [info for pid, info in snapshot.items()
+                           if not info[2] and seen.get(pid) == info[3]]
+                if sum(rss for _, rss, _, _ in members) > TREE_MEMORY_BYTES:
                     breach = "memory: the render used more memory than a preview may"
                 elif len(members) > TREE_PROCESSES:
                     breach = "processes: the render started more processes than a preview may"
@@ -357,45 +374,38 @@ def _supervised(stdin: bytes, wall_seconds: float,
                 break
             time.sleep(0.25)
     finally:
-        gone = True
         if linux:
-            snapshot = _proc_snapshot()
-            observed.update(_descendants(process.pid, snapshot))
-            # bwrap's direct child is namespace init. Killing init makes the
-            # kernel kill every namespace member, irrespective of setsid().
-            for pid in [pid for pid, (ppid, _, _) in snapshot.items()
-                        if ppid == process.pid] + [process.pid]:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.kill(pid, signal.SIGKILL)
+            # Keep bwrap unreaped: its PID cannot be reused while cleanup runs.
+            # Its parent-death signal kills namespace init, and the kernel then
+            # kills every namespace member. Never signal another numeric PID.
             settle = time.monotonic() + 10
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(process.pid, signal.SIGKILL)
+            while True:
+                snapshot = _proc_snapshot()
+                alive = {pid for pid in _descendants(process.pid, snapshot)
+                         if not snapshot[pid][2]}
+                if not alive or time.monotonic() >= settle:
+                    break
+                time.sleep(0.1)
+            for reader in readers:
+                reader.join(timeout=max(0, settle - time.monotonic()))
+            contained = not alive and not any(reader.is_alive() for reader in readers)
+            # Reaping is the final cleanup operation, after all tree walks.
             try:
                 process.wait(timeout=max(0, settle - time.monotonic()))
             except subprocess.TimeoutExpired:
-                gone = False
-            while True:
-                snapshot = _proc_snapshot()
-                observed.update(_descendants(process.pid, snapshot))
-                alive = {pid for pid in observed | {process.pid}
-                         if pid in snapshot and not snapshot[pid][2]}
-                if not alive:
-                    break
-                if time.monotonic() >= settle:
-                    gone = False
-                    break
-                time.sleep(0.1)
-            if not gone:
-                breach = "failed: the render could not be stopped"
+                contained = False
+            if not contained:
+                _POISONED = _CONTAINMENT_FAILURE
+                raise PreviewUnavailable(_POISONED)
         else:
             # Windows is a dev host only; production containment requires Linux.
             _kill_tree_windows(process.pid)
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
             process.wait()
-        for reader in readers:
-            if linux:
-                if gone:
-                    reader.join()
-            else:
+            for reader in readers:
                 reader.join(timeout=5)
 
     return b"".join(chunks["out"]), b"".join(chunks["err"]), process.returncode, breach
