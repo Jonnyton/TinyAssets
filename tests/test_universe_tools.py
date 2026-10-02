@@ -120,12 +120,15 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     assert "--share-net" not in argv
     for flag in ("--unshare-all", "--clearenv", "--die-with-parent", "--new-session"):
         assert flag in argv, flag
-    # /u is a tmpfs of binds, then made READ-ONLY; only agent-owned paths are rw.
-    tmpfs_at = argv.index("--tmpfs", argv.index("--tmpfs") + 1)
-    remount_at = argv.index("--remount-ro")
-    assert argv[tmpfs_at + 1] == "/u" and argv[remount_at + 1] == "/u"
-    assert all(tmpfs_at < argv.index(dest) < remount_at for _src, dest in (
+    # /u is the agent's OWN workspace, bound read-write as a whole (harness W2);
+    # the visible root entries are bound over it, agent-owned ones read-write.
+    workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
+    assert ("--bind", workspace, "/u") == tuple(argv[argv.index(workspace) - 1:
+                                                     argv.index(workspace) + 2])
+    workspace_at = argv.index(workspace)
+    assert all(workspace_at < argv.index(dest) for _src, dest in (
         _pairs(argv, "--bind-try") + _pairs(argv, "--ro-bind-try")))
+    assert "--remount-ro" not in argv
     assert root not in argv, "the root itself is never bound"
     rw = dict((dest, src) for src, dest in _pairs(argv, "--bind-try"))
     assert rw["/u/identity.md"] == str(universe.resolve() / "identity.md")
@@ -164,8 +167,11 @@ def test_the_owners_credentials_and_authority_state_are_absent_from_the_jail(
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
 
+    workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
     for arg in argv:
-        assert "/." not in arg, f"a hidden root entry reached the jail argv: {arg}"
+        # The one hidden name allowed is the agent's own workspace, as /u's source.
+        assert "/." not in arg or arg == workspace, (
+            f"a hidden root entry reached the jail argv: {arg}")
     ro = {dest for _src, dest in _pairs(argv, "--ro-bind-try")}
     assert {"/u/soul.md", "/u/config.yaml"} <= ro
     rw = {dest for _src, dest in _pairs(argv, "--bind-try")}
@@ -319,7 +325,6 @@ def test_a_provider_launch_view_masks_every_hidden_root_dir(tmp_path):
         (universe / name).mkdir()
         (universe / name / "settings.json").write_text('{"hooks": {}}', encoding="utf-8")
     (universe / ".runtime").mkdir()
-    (universe / ".hidden-file").write_text("x", encoding="utf-8")
     view = default_view(universe)
     argv = jail_argv(["cli", "-p"], view, bwrap_path="/usr/bin/bwrap")
     for name in (".claude", ".codex", ".some-future-cli"):
@@ -327,9 +332,41 @@ def test_a_provider_launch_view_masks_every_hidden_root_dir(tmp_path):
         assert argv[mask - 1] == "--tmpfs", name
         assert mask > argv.index(str(universe)), "the mask sits over the universe bind"
     assert f"{universe}/.runtime" not in argv, "the launch still needs its runtime"
-    assert f"{universe}/.hidden-file" not in argv
     # No jail shares the host network; only the tool jail clears the env.
     assert "--share-net" not in argv and "--clearenv" not in argv
+
+
+def test_a_provider_launch_view_masks_every_hidden_root_file(tmp_path):
+    """Per-universe platform state at the root -- the credential vault, the run,
+    consent and usage databases -- is a /dev/null bind, so the provider can
+    neither read it nor replace it with a link the daemon would follow."""
+    universe = _universe(tmp_path).resolve()
+    for name in (".credential-vault.json", ".runs.db", ".runs.db-wal",
+                 ".effector_consents.db", ".usage.db", ".some-future-cli-config"):
+        (universe / name).write_text("platform state", encoding="utf-8")
+    (universe / ".runtime").mkdir()
+    view = default_view(universe)
+    argv = jail_argv(["cli", "-p"], view, bwrap_path="/usr/bin/bwrap")
+    universe_bind = argv.index(str(universe))
+    for name in (".credential-vault.json", ".runs.db", ".runs.db-wal",
+                 ".effector_consents.db", ".usage.db", ".some-future-cli-config"):
+        mask = argv.index(f"{universe}/{name}")
+        assert argv[mask - 2] == "--ro-bind" and argv[mask - 1] == "/dev/null", name
+        assert mask > universe_bind, "the mask sits over the universe bind"
+    assert f"{universe}/.runtime" not in argv, "the launch still needs its runtime"
+
+
+def test_a_provider_launch_refuses_a_symlinked_hidden_file(tmp_path):
+    """A hidden root entry that is already a link cannot be masked over, so the
+    launch is refused rather than following it."""
+    universe = _universe(tmp_path).resolve()
+    (tmp_path / "elsewhere.db").write_text("other", encoding="utf-8")
+    try:
+        (universe / ".runs.db").symlink_to(tmp_path / "elsewhere.db")
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create a symlink")
+    with pytest.raises(ProviderConfinementError, match="is a link"):
+        default_view(universe)
 
 
 def test_a_provider_launch_refuses_a_symlinked_hidden_dir(tmp_path):
