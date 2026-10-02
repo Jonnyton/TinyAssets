@@ -260,6 +260,26 @@ def test_a_box_host_that_stops_answering_exhausts_a_bound_not_the_process(monkey
     assert box.starts == []
 
 
+def test_a_refused_read_after_a_started_command_is_unknown_not_refused(monkeypatch):
+    class OneSlot:
+        def __init__(self):
+            self.taken = 0
+
+        def acquire(self, blocking=True):
+            self.taken += 1
+            return self.taken == 1  # the start gets a slot, the reader does not
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(box_tools, "_BOX_CALL_SLOTS", OneSlot())
+    box = FakeBox()
+    with pytest.raises(EngineToolError) as raised:
+        run(tools(box).bash("op", "make deploy"))
+    assert raised.value.outcome == "unknown"
+    assert box.starts == ["op"] and box.cancels == ["op"]
+
+
 def test_output_past_the_cap_kills_the_execution():
     box = FakeBox(lambda argv, stdin: (b"0123456789abcdef", 0))
     outcome = run(BoxExecutor(box, object(), limits=None).run(

@@ -213,7 +213,12 @@ class BoxExecutor:
             # the launching thread when the reply arrives, however late.
             launch.abandon()
             raise
-        collector = _in_thread(self._collect, exec_id, op_id, output_bytes, slot=True)
+        try:
+            collector = _in_thread(self._collect, exec_id, op_id, output_bytes, slot=True)
+        except BoxOperationRefused:
+            # The command is running; only reading it was refused. Never "not sent".
+            await self._cancel(exec_id)
+            raise _unknown() from None
         try:
             return await _wait(collector, timeout=wall_seconds)
         except TimeoutError:
