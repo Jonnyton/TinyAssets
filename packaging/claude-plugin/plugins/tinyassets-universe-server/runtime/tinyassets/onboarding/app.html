@@ -4294,7 +4294,7 @@
   const COMMAND_CENTER_FALLBACK="Your command center";
   function commandCenterName(value){
     const name=typeof value==="string" ? value.trim() : "";
-    if(!name || /^u-[0-9a-z]{8,}$/i.test(name)) return COMMAND_CENTER_FALLBACK;
+    if(!name || /^(u|cc)-[0-9a-z]{8,}$/i.test(name)) return COMMAND_CENTER_FALLBACK;
     return name;
   }
   function showCommandCenterName(value){

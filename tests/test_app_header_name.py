@@ -32,7 +32,8 @@ def _shown(value) -> str:
 
 
 @pytest.mark.parametrize("value", [
-    "u-01kxm1vszd8hwp7em418asq8h9", "U-0000000000000001", "", "   ", None,
+    "u-01kxm1vszd8hwp7em418asq8h9", "U-0000000000000001", "cc-01kxm1vszd8hwp7em418asq8h9",
+    "", "   ", None,
 ])
 def test_an_id_or_no_name_shows_the_fallback(value):
     assert _shown(value) == "Your command center"
