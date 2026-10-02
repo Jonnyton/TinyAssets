@@ -26,3 +26,11 @@ Both producers are flag-gated and OFF by default. The honest fix is to key the c
 ## Not affected
 
 `tinyassets/providers/public_model_lists.py` keys an `lru_cache` on `(size, mtime_ns)` of a repo data file. That file changes only when a PR lands, which means a fresh container and an empty cache, and its docstring already reasons about the residual risk.
+
+## Separate residual: credential reads trust (size, mtime_ns)
+
+`tinyassets/credential_vault.py` `_read_credential_material` (around line 1074) stats a credential file before and after `read_bytes()`. It refuses when `(st_dev, st_ino, st_size, st_mtime_ns)` changed.
+
+Our own writers replace the file atomically (`Path.replace`, around line 628), so the inode changes and the check catches any rewrite. The residual is a provider CLI rewriting its OWN credential file in place: same inode, same size, and inside one coarse mtime tick, during our read. That could pass a torn read.
+
+Closing it means a second read and a byte-for-byte compare. The cost is one more read of a small file. It is auth code, so it needs cross-family review. Not changed here.
