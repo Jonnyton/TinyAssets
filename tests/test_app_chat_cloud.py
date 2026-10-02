@@ -14,10 +14,20 @@ from tests.test_app_browser_notifications import functions, run_js
 PURE = ("cloudViewportClass", "cloudStorageKey", "cloudClamp", "cloudDefaultState",
         "cloudParseSaved", "cloudResolveState")
 
-CONSTS = """
-const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
-      CLOUD_MIN_W=280, CLOUD_MIN_H=220, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
-"""
+
+def _shipped_constants() -> str:
+    """The page's own constants, so a changed bound is tested as shipped."""
+    import re
+
+    from tinyassets.onboarding import render_app_html
+
+    html, _ = render_app_html()
+    match = re.search(r"const CLOUD_KEY_PREFIX=.*?;", html, re.S)
+    assert match, "app.html must declare the chat-cloud constants"
+    return match.group(0) + ";\n"
+
+
+CONSTS = _shipped_constants()
 
 WIDE = {"w": 1280, "h": 740}
 PHONE = {"w": 390, "h": 700}
@@ -75,11 +85,11 @@ def test_clamping_keeps_it_wholly_on_the_stage():
            "bubble": {"x": -80, "y": 9000}, "userSet": True}
     state = call(f"cloudClamp({json.dumps(off)}, {json.dumps(WIDE)})")
 
-    assert state["open"] == {"x": 0, "y": 0, "w": 1280, "h": 220}   # min height, full width
+    assert state["open"] == {"x": 0, "y": 0, "w": 1280, "h": 360}   # min height, full width
     assert state["bubble"] == {"x": 0, "y": 740 - 56}
-    moved = {**off, "open": {"x": 1200, "y": 700, "w": 400, "h": 300}}
+    moved = {**off, "open": {"x": 1200, "y": 700, "w": 400, "h": 400}}
     state = call(f"cloudClamp({json.dumps(moved)}, {json.dumps(WIDE)})")
-    assert state["open"] == {"x": 880, "y": 440, "w": 400, "h": 300}
+    assert state["open"] == {"x": 880, "y": 340, "w": 400, "h": 400}
 
 
 def test_a_stage_smaller_than_the_minimum_gets_the_whole_stage():
@@ -118,13 +128,15 @@ function el(){ return {hidden:false, style:{}, dataset:{}, attrs:{}, focused:fal
   classList:{set:new Set(), add(c){this.set.add(c)}, remove(c){this.set.delete(c)},
              contains(c){return this.set.has(c)},
              toggle(c,on){on?this.set.add(c):this.set.delete(c)}},
-  setAttribute(k,v){this.attrs[k]=v}, focus(){this.focused=true}}; }
+  setAttribute(k,v){this.attrs[k]=v}, focus(){this.focused=true; document.activeElement=this},
+  contains(node){return node===this.child}}; }
 const nodes={'chat-stage':stage, 'chat-cloud':el(), 'chat-cloud-bubble':el(),
              'btn-cloud-shrink':el(),
              'chat-cloud-badge':el(), 'composer-input':el(),
              'view-chat':{classList:{contains:c=>c==='ui-custom-active'&&layout}}};
 nodes['chat-cloud'].dataset.agent='main';
 const $=id=>nodes[id];
+const document={activeElement:null};
 const snap=()=>({state:cloudState, store, mode:nodes['chat-cloud'].dataset.mode,
   bubbleHidden:nodes['chat-cloud-bubble'].hidden, left:nodes['chat-cloud'].style.left});
 """
@@ -171,7 +183,7 @@ console.log(JSON.stringify({untouched, placed:snap().mode}));""")
 def test_keyboard_moves_and_resizes_within_the_stage():
     out = controller("""
 stage.clientWidth=1280; refreshChatCloud();
-cloudState=cloudClamp({mode:'open',open:{x:100,y:100,w:400,h:300},bubble:{x:0,y:0}},
+cloudState=cloudClamp({mode:'open',open:{x:100,y:100,w:400,h:400},bubble:{x:0,y:0}},
                       {w:1280,h:740});
 cloudKeydown({key:'ArrowRight', shiftKey:false, preventDefault(){}});
 const moved=Object.assign({}, cloudState.open);
@@ -179,5 +191,19 @@ cloudKeydown({key:'ArrowDown', shiftKey:true, preventDefault(){}});
 for(let i=0;i<200;i++) cloudKeydown({key:'ArrowUp', shiftKey:false, preventDefault(){}});
 console.log(JSON.stringify({moved, after:cloudState.open}));""")
 
-    assert out["moved"] == {"x": 116, "y": 100, "w": 400, "h": 300}
-    assert out["after"] == {"x": 116, "y": 0, "w": 400, "h": 316}
+    assert out["moved"] == {"x": 116, "y": 100, "w": 400, "h": 400}
+    assert out["after"] == {"x": 116, "y": 0, "w": 400, "h": 416}
+
+
+def test_a_placed_cloud_survives_a_refresh_even_when_storage_is_off():
+    """Storage can refuse writes; the owner's placement must still hold until
+    the page goes away, rather than snapping back on the next resize."""
+    out = controller("""
+localStorage.setItem=()=>{ throw new Error('quota'); };
+refreshChatCloud();
+cloudKeydown({key:'ArrowLeft', shiftKey:true, preventDefault(){}});
+layout=true; refreshChatCloud();
+console.log(JSON.stringify({mode:snap().mode, w:cloudState.open.w}));""")
+
+    assert out["mode"] == "open"
+    assert out["w"] == 1256 - 16

@@ -299,6 +299,16 @@
       .rail{width:auto;max-height:45%;border-left:0;border-top:1px solid var(--line)}
       .rail--setup{width:auto;max-height:none;order:-1}
     }
+    /* A narrow CLOUD gets the compact composer too, so Send/Stop never clip. */
+    @container (max-width:520px){
+      .composer{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto}
+      .composer .voice-output-select{grid-column:1/-1;grid-row:1;width:100%;max-width:none;min-width:0}
+      .composer .btn--attach{grid-column:1;grid-row:2}
+      .composer .btn--voice{grid-column:2;grid-row:2}
+      .composer .composer-input{grid-column:3;grid-row:2;min-width:0}
+      .composer .btn--send{grid-column:4;grid-row:2}
+      .composer .btn--stop{grid-column:4;grid-row:2}
+    }
     .chat-cloud-resize{position:absolute;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;
       touch-action:none;background:linear-gradient(135deg,transparent 50%,var(--line) 50%)}
     .chat-cloud-bubble{position:absolute;width:56px;height:56px;border-radius:50%;border:1px solid var(--line);
@@ -4508,7 +4518,7 @@
   // class, because a phone and a desktop want different windows. There is no
   // server store for UI preferences, so this device remembers it.
   const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
-        CLOUD_MIN_W=280, CLOUD_MIN_H=220, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
+        CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
   let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
   function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
   function cloudStorageKey(owner, agentId, viewport){
@@ -4562,10 +4572,17 @@
     if(!cloudWired) wireChatCloud();
     const stage=cloudStageSize();
     if(!stage.w || !stage.h) return;             // not laid out yet; the resize observer retries
-    cloudStoreKey=cloudStorageKey(queueOwner, cloud.dataset.agent, cloudViewportClass(stage.w));
-    let saved=null;
-    try{ saved=cloudParseSaved(localStorage.getItem(cloudStoreKey)); }catch(_error){ saved=null; }
-    cloudState=cloudResolveState(saved, cloudHasLayout(), stage);
+    const key=cloudStorageKey(queueOwner, cloud.dataset.agent, cloudViewportClass(stage.w));
+    if(key===cloudStoreKey && cloudState && cloudState.userSet){
+      // Same owner, agent and viewport class, and the owner has placed it: the
+      // live state is the truth (it may be mid-drag, or storage may be off).
+      cloudState=cloudClamp(cloudState, stage);
+    }else{
+      cloudStoreKey=key;
+      let saved=null;
+      try{ saved=cloudParseSaved(localStorage.getItem(key)); }catch(_error){ saved=null; }
+      cloudState=cloudResolveState(saved, cloudHasLayout(), stage);
+    }
     applyChatCloud();
   }
   function applyChatCloud(){
@@ -4575,7 +4592,13 @@
     cloud.style.left=s.open.x+"px"; cloud.style.top=s.open.y+"px";
     cloud.style.width=s.open.w+"px"; cloud.style.height=s.open.h+"px";
     bubble.style.left=s.bubble.x+"px"; bubble.style.top=s.bubble.y+"px";
+    const stage=cloudStageSize(), size=Math.min(CLOUD_BUBBLE, stage.w, stage.h);
+    bubble.style.width=size+"px"; bubble.style.height=size+"px";
+    // Shrinking on its own (a layout arrived) must not strand focus inside a
+    // hidden window: it moves to the bubble.
+    const strand=s.mode==="bubble" && bubble.hidden && document.activeElement && cloud.contains(document.activeElement);
     bubble.hidden=s.mode!=="bubble";
+    if(strand) bubble.focus();
     $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
     if(s.mode==="open") setCloudUnread(false);
   }
@@ -4632,12 +4655,13 @@
         applyChatCloud();
         e.preventDefault();
       };
-      const end=()=>{
+      const end=e=>{
         handle.removeEventListener("pointermove",move);
         handle.removeEventListener("pointerup",end);
         handle.removeEventListener("pointercancel",end);
         $("chat-cloud").classList.remove("is-dragging");
-        if(moved){ saveChatCloud(); if(kind==="bubble") cloudSuppressClick=true; }
+        // Only a completed drag produces a click to swallow; a cancelled one does not.
+        if(moved){ saveChatCloud(); if(kind==="bubble" && e.type==="pointerup") cloudSuppressClick=true; }
       };
       handle.addEventListener("pointermove",move);
       handle.addEventListener("pointerup",end);

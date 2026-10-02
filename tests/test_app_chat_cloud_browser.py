@@ -186,3 +186,47 @@ def test_the_bubble_shows_that_the_agent_is_working(app_url, browser):
     page.evaluate("document.getElementById('btn-stop').hidden = false")
     page.wait_for_function("document.getElementById('chat-cloud-bubble').classList.contains('is-thinking')")
     assert "working" in page.get_attribute("#chat-cloud-bubble", "aria-label")
+
+
+def test_a_narrow_cloud_keeps_send_inside_it(app_url, browser):
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    _drag(page, "#chat-cloud-resize", -2000, -2000)        # down to the minimum
+    # Every composer control a web owner can have, so the widest row is measured.
+    page.evaluate("""() => { for (const id of ['btn-voice', 'voice-output-select'])
+        document.getElementById(id).hidden = false; }""")
+
+    cloud, send = _box(page, "#chat-cloud"), _box(page, "#btn-send")
+    assert cloud["width"] == pytest.approx(320, abs=2)
+    assert send["x"] + send["width"] <= cloud["x"] + cloud["width"]
+    assert send["y"] + send["height"] <= cloud["y"] + cloud["height"]
+
+
+def test_a_cancelled_bubble_drag_does_not_swallow_the_next_click(app_url, browser):
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    page.click("#btn-cloud-shrink")
+    page.evaluate("""() => {
+        const b = document.getElementById('chat-cloud-bubble'), r = b.getBoundingClientRect();
+        const at = (type, dx) => b.dispatchEvent(new PointerEvent(type, {bubbles: true,
+            pointerId: 7, button: 0, clientX: r.x + 20 + dx, clientY: r.y + 20}));
+        at('pointerdown', 0); at('pointermove', -60); at('pointercancel', -60);
+    }""")
+
+    page.click("#chat-cloud-bubble")
+
+    assert page.locator("#chat-cloud").is_visible()
+
+
+def test_shrinking_on_its_own_moves_focus_to_the_bubble(app_url, browser):
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    page.focus("#composer-input")
+
+    page.evaluate("""() => {
+        document.getElementById('view-chat').classList.add('ui-custom-active');
+        refreshChatCloud();
+    }""")
+
+    assert page.locator("#chat-cloud").is_hidden()
+    assert page.evaluate("document.activeElement.id") == "chat-cloud-bubble"
