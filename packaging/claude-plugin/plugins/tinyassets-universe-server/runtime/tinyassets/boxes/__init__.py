@@ -1,0 +1,63 @@
+"""Sealed command-center boxes (target architecture D1/D2).
+
+`BoxProvider` is the only way the platform touches a command center's files or
+runs code on its behalf. Drivers implement it; callers never branch on which.
+"""
+
+from tinyassets.boxes.provider import (
+    BOX_ROOT,
+    BoxAuthError,
+    BoxError,
+    BoxHandle,
+    BoxNotFound,
+    BoxPathError,
+    BoxProvider,
+    BoxUsage,
+    DestroyReceipt,
+    DirEntry,
+    DirPage,
+    ExecEvent,
+    ExecLimits,
+    ExecState,
+    ExecStatus,
+    ExportProfile,
+    FileRead,
+    FileStat,
+    FileWrite,
+    ImportReport,
+    OpIdReuse,
+    Snapshot,
+    StaleHandle,
+    WriteConflict,
+    WriteMode,
+    box_relpath,
+)
+
+__all__ = [
+    "BOX_ROOT",
+    "BoxAuthError",
+    "BoxError",
+    "BoxHandle",
+    "BoxNotFound",
+    "BoxPathError",
+    "BoxProvider",
+    "BoxUsage",
+    "DestroyReceipt",
+    "DirEntry",
+    "DirPage",
+    "ExecEvent",
+    "ExecLimits",
+    "ExecState",
+    "ExecStatus",
+    "ExportProfile",
+    "FileRead",
+    "FileStat",
+    "FileWrite",
+    "ImportReport",
+    "OpIdReuse",
+    "Snapshot",
+    "StaleHandle",
+    "WriteConflict",
+    "WriteMode",
+    "box_relpath",
+]
