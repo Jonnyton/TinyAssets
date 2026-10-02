@@ -65,6 +65,12 @@ A process acquires `owner_key` inside `BEGIN IMMEDIATE` on the lease store. Ther
   - every worker the owner spawns.
 
   Death recovery requires `LOCK_EX|LOCK_NB` on the tree lock to SUCCEED. The kernel grants that only when no member of the tree is alive, whatever killed it. This is kernel-proven quiescence of every executor that could still act for the old generation. Effects those processes already sent externally remain potentially completed: they are reconciled as unknown (D2 of #4263), never replayed. The holder's own liveness token (`process_liveness`) still blocks a contender while it is alive.
+
+  **Admission is serialised against recovery** (round-3 finding 1). An `LOCK_EX` that succeeds proves only that no member holds the lock NOW. A child that had been spawned but had not yet locked could join afterwards. So:
+  - every child, AFTER taking its `LOCK_SH`, re-reads the lease row and executes only if the row still names exactly its spawn holder, generation and proof (`verify_lease_proof`). Otherwise it exits without acting;
+  - the recovering contender holds its `LOCK_EX` on the old tree lock until its new lease row (and new proof) is committed.
+
+  A delayed child therefore either joins before the `LOCK_EX`, which blocks recovery until it dies, or joins after and finds the lease replaced. Tree membership is keyed by the ORIGINAL holder token, which the child receives in its environment, not by its own post-fork token (`process_liveness.py:169` rotates that).
 - **First use.** No row exists for the key.
 
 **The acquirer:**
@@ -80,7 +86,7 @@ A process acquires `owner_key` inside `BEGIN IMMEDIATE` on the lease store. Ther
   1. takes the host-mutation flock and holds it to the end;
   2. stops the stack (`docker compose stop daemon` plus every service that mounts the data volume, found by a volume-mount scan, not a process-name scan);
   3. sets `restore_state = 'in_progress'` in its own committed transaction;
-  4. reads every store in the catalog (below), plus a deterministic offline scan of `<data_root>` and `<data_root>/*/` for each registered store filename, so stores the catalog never saw are still found;
+  4. reads every store in the catalog (below), plus a deterministic offline enumeration: each registered store KIND declares a complete path enumerator over the data root, including nested layouts such as `<data_root>/.agent-sessions/<universe>/` (`agent_sessions.py:84`, `agent_steering.py:79`, `agent_rules.py:175`). Discovery then never depends on catalog contents (round-3 finding 3). A test asserts that every store kind has an enumerator, and that the enumerator finds a store created at each of its layouts;
   5. computes each key's high-water as the max of the recovered lease generation, every recovered fence, and every `agent_turns.owner_generation` (round-2 finding 3: the recovered lease generation is included);
   6. writes each key's row `released` at that high-water, writes the manifest, and sets `state = 'none'` in ONE transaction.
 - Containers restart only after the tool exits.
@@ -261,3 +267,14 @@ So a delete cannot race a late insert (round-1 finding 11).
 | 5-7, 11 | B2: cross-database admission, exactly-once settlement, spawned descendants, gap-aware learning | **Must resolve in the B2 design addendum before B2 starts** |
 | 8-10 | C1: one winning pending transition, the abandoned projection's authorisation, a principal-scoped deletion exclusion | **Must resolve before C1** |
 | 12 | C2: force scope = container; phase-1 cap rules transitional; closing a busy key makes its requests wait | **Must resolve before C2**. Direction: close a key only at its idle instant, so no request waits behind a turn |
+
+## Round-3 refute (final round): ADAPT, two must-fixes, both applied as prescribed
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | A delayed child can join the tree after the exclusive probe succeeds | D2: the child validates holder, generation and proof after `LOCK_SH`, and the contender holds `LOCK_EX` through lease replacement (the reviewer's prescribed fix) |
+| 2 | Restore gate | AGREE |
+| 3 | The offline scan misses nested store layouts | D2: a complete path enumerator per store kind, with a test (the reviewer's prescribed fix) |
+| 4 | Migration extraction | AGREE, enforceable |
+
+Review cap reached (3 rounds). Taken to the lead per AGENTS.md; no fourth round.
