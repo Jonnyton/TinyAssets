@@ -41,6 +41,12 @@ write through the box tools changed the file after the edit read it.
 - **THEN** the turn is refused before its first inference and no tool runs
   anywhere else
 
+#### Scenario: the founder's mid-turn message rides on a box result
+- **WHEN** the founder sends a message while a thin-loop turn works, and the
+  turn's next tool call is a box tool or an owner read
+- **THEN** the message is appended once to that tool's result, exactly as the
+  engine route appends it to an engine tool's result
+
 ### Requirement: Owner reads are served by the loop and never reach the box
 The tools `history` and `activity` SHALL be answered by the loop, read-only,
 for the turn's owner and command center only, through the same domain reads
