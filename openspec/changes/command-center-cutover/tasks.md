@@ -2,6 +2,22 @@
 
 Prerequisite: C4a (#4234) is in production for at least one day.
 
+**Hard prerequisite for anything that makes `config.yaml` agent-writable**
+(lead, 2026-10-02). That includes the self-improving harness's config editing,
+the sealed box, and a provider adapter that ships file tools under the
+read-write default view. The authority split must land first: `allowed_providers`,
+`engine_assignment_*` and `provider_authority_bindings` move to a platform-side
+`assignment.json` through a resolver, readers read only from there, values
+left in `config.yaml` are ignored and logged, and a test proves that writing
+them there changes nothing. It ships as a standalone PR right after #4273,
+outside the freeze window. Task 3 then only retargets its resolver to
+`.platform/cc-<ulid>/`.
+
+Today `config.yaml` is not agent-writable. The tool jail binds it read-only
+(`universe_tools.py:118-137`), Claude provider turns have no file tools
+(`providers/base.py:157`), Codex sees a read-only workspace
+(`codex_provider.py:932`), and code nodes see no home.
+
 - [ ] 1. `scripts/command_center_inventory.py` (read-only, E1), with fixture
       tests. It classifies every home entry by the E6 layout, and an entry it
       cannot classify fails the run. Attach a production-copy report.

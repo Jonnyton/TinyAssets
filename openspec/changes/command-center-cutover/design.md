@@ -159,7 +159,10 @@ moves those fields into `.platform/cc-<ulid>/assignment.json`, a
 platform-owned assignment record. Every consumer then reads authority only
 from that record. `config.yaml` keeps only the agent's preferences, read as
 untrusted. A test fails if an authority field is read from `config.yaml`, or
-if writing one there changes routing.
+if writing one there changes routing. **Ordering:** the split ships standalone
+before the cutover (tasks.md prerequisite). It is a hard prerequisite of any
+change that makes `config.yaml` agent-writable, so the self-improving harness
+cannot open the file to the agent while it still carries authority.
 
 **Mixed consumers get both roots explicitly** (refute #1). These readers span
 both sides and are adapted, then tested end to end:
