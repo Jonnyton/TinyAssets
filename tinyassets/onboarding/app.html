@@ -656,6 +656,10 @@
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
+        <h3>Your agent</h3>
+        <p id="profile-name"></p>
+        <p id="profile-responsibility"></p>
+        <div id="profile-status" class="notice" role="status"></div>
         <h3>Your agent's rules</h3>
         <p>What your agent may do on its own. For each kind of action, choose: take action
         without asking, take action if you asked for exactly that, ask you first, or hand
@@ -5020,6 +5024,8 @@
   }
   function clearAccountScopedState(){
     queueScope=""; queueOwner="";
+    $("profile-name").textContent=""; $("profile-responsibility").textContent="";
+    $("profile-status").textContent="";
     // The other writer of the home. A custom UI's bridge is account- AND
     // home-scoped, so an account-scoped clear must end it here too; leaving it to
     // the sign-out path only would miss every other caller of this.
@@ -6144,7 +6150,22 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadRules(); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadProfile(); loadRules(); }
+    async function loadProfile(){
+      const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
+      const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
+      $("profile-name").textContent=""; $("profile-responsibility").textContent="";
+      $("profile-status").textContent="Loading your agent…";
+      try{
+        const r=await fetch("/app/profile",{credentials:"same-origin",headers:authHeaders()});
+        const doc=await r.json();
+        if(!current()) return;
+        if(!r.ok){ $("profile-status").textContent="Your agent could not be loaded."; return; }
+        $("profile-name").textContent=doc.name||"Not named yet";
+        $("profile-responsibility").textContent=doc.responsibility||"No responsibility set yet";
+        $("profile-status").textContent=({working:"Working",idle:"Idle",waiting_on_you:"Waiting on you"})[doc.status]||"";
+      }catch(e){ if(current()) $("profile-status").textContent="Your agent could not be loaded."; }
+    }
     // ---- Your agent's rules (harness D1a/D1b) ---------------------------
     // The owner's Custom Rules, read and written through /app/rules, which only
     // ever addresses the signed-in owner's own home. Loosening a hand-back is

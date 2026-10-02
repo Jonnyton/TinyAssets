@@ -227,7 +227,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind", "/app/models/preferences",
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
-        "/app/account/delete", "/app/account/timezone", "/app/rules",
+        "/app/account/delete", "/app/account/timezone", "/app/rules", "/app/profile",
         "/app/turn/interrupt", "/app/turn/steer",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
@@ -244,6 +244,7 @@ def test_route_is_apex_app_get(monkeypatch):
     assert by_path["/app/ui-frame"].methods == {"GET", "HEAD"}
     assert "GET" in by_path["/app/billing/status"].methods
     assert "GET" in by_path["/app/me"].methods
+    assert by_path["/app/profile"].methods == {"GET", "HEAD"}
     assert "GET" in by_path["/app/voice/status"].methods
     assert {"GET", "POST"} <= by_path["/app/models/preferences"].methods
     assert by_path["/app/connections"].methods == {"GET", "HEAD", "POST"}

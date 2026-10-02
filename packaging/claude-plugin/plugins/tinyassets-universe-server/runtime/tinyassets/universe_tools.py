@@ -1138,14 +1138,17 @@ def harness_prompt(universe_dir: Path) -> str:
     Runs in the shared daemon on every founder turn, so a bad skill folder
     never breaks the turn: any failure yields the section with no skills.
     """
+    from tinyassets.onboarding_note import onboarding_note
+
+    note = onboarding_note(universe_dir)
     try:
         skills = skill_index(universe_dir)
     except (OSError, RecursionError, ValueError):
         skills = []
     if not skills:
-        return _HARNESS_HEAD + "(none yet)"
+        return _HARNESS_HEAD + "(none yet)" + note
     lines = [
         f"- `{name}`: {description} ({SKILLS_DIR}/{name}/SKILL.md)"
         for name, description in skills
     ]
-    return _HARNESS_HEAD + "\n".join(lines)
+    return _HARNESS_HEAD + "\n".join(lines) + note
