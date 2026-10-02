@@ -73,7 +73,7 @@ Two more habits that fell out of the same incident:
 
 Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — gpt-6-astra rejects it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Models are pinned, not inherited.** claude: `--model fable` (latest Claude). **codex: `-m gpt-6-astra`, always explicit** (founder, 2026-09-27) — never the host's `~/.codex/config.toml` default, which is silently whatever it last said and is named nowhere in the result. Override only with a stated reason (`--model M`, `WORKFLOW_CODEX_MODEL`).
+**Models are pinned, not inherited.** claude: `--model fable` (latest Claude). **codex: `gpt-6-astra` at effort `medium` is the wrapper's default** (`DEFAULT_CODEX_MODEL` in `scripts/peer_agent.py`): the CLI's own default is a model a ChatGPT account rejects in seconds. Override only with a stated reason (`--model M` / `WORKFLOW_CODEX_MODEL`, `--effort` / `WORKFLOW_CODEX_EFFORT`). A nonzero exit writes `[peer_agent] ERROR` plus the whole stderr to `--out` and exits nonzero.
 
 ## When to use which peer
 
