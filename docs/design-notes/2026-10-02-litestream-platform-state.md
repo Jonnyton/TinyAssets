@@ -1,6 +1,11 @@
 # Litestream for platform state (target-architecture S1a.2)
 
-**Status:** proposed, for a cross-family refute before any code.
+**Status:** DEFERRED (lead decision, 2026-10-02, under the founder's slim-until-paying-users
+rule). Litestream waits for the command-center cutover (#4262), which puts platform state in
+`.platform/` (D8a) with clear content classes. Interim: the brain tier (root stores, copied
+through the SQLite backup API) goes off-region **hourly**. That gives about 1 h RPO for
+platform state, with $0 cost and no new component. This note stays as the record of what a
+later Litestream change must solve.
 **Measured:** 2026-10-02 on the production droplet. Journal mode and size of every
 non-archive `*.db` under `/data` (read-only `pragma journal_mode`), the Litestream release
 notes v0.5.0 to v0.5.17, and `git grep` for checkpoint and journal pragmas.
@@ -137,3 +142,28 @@ at 1 min. Backup age gets its own alarm (nightly plus 2 h).
   namespaces, and SQLite's shm locks.
 - Is 72 h retention long enough for point-in-time recovery from a bad deploy (the S1a.4
   restore test)?
+
+## Refute outcome (gpt-6-astra, 2026-10-02): ADAPT. Why it is deferred, not shipped
+
+The sidecar architecture is viable. The guarantees above were not supported:
+
+- **Root location is not a content boundary.** `.tinyassets.db`, `.runs.db` (inputs, outputs,
+  judgments) and `.langgraph_runs.db` hold user content that account deletion removes or
+  redacts (`account_deletion.py:528,657`). `.hosted-model-auth.db` uses `secure_delete`
+  (`connection_oauth/pkce.py:74`).
+- **Point-in-time restore resurrects deleted accounts.** The tombstone lives in the database
+  being rolled back. This is a property of every backup tier, so it is filed separately:
+  `docs/concerns/2026-10-02-restores-resurrect-deleted-accounts.md`.
+- **No cross-store restore atomicity.** Examples: `outbound.db` grants against
+  `provider_serving_binding.py`, and `.runs.db` against `.langgraph_runs.db`. A restore set
+  must be defined and reconciled.
+- **v0.5.17 configuration differs from what this note wrote:** `snapshot.retention`, separate
+  L0 retention (default 5 min), and no built-in replica-lag metric.
+- **Maintenance exclusion:** the sidecar must take part in the layout lock and in
+  migration, reset and restore exclusion (`storage_layout.py:11`, `scoped_reset.py:848`).
+- The inventory is incomplete (`.node_eval.db`, `.authoring.db`, `.idempotency.db`,
+  `daemon_brain.db`). Every store needs an explicit decision.
+
+A later Litestream change starts from `.platform/` only, after the cutover, and must answer each
+point above.
+
