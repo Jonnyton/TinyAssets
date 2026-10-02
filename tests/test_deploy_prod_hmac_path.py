@@ -137,6 +137,12 @@ def test_rotation_is_explicit_manual_dispatch_only():
     rotation = before_install[before_install.index("# Rotating"):]
     assert "assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in rotation, (
         "rotation must first prove the shared env holds no copy")
+    # Refusals must actually stop the run, not just print (Codex on #4260).
+    for refusal in ("invalid request HMAC install mode",
+                    "request HMAC rotation is manual-dispatch only",
+                    "rotation prerequisite failed: shared env exposes request admission authority"):
+        tail = script[script.index(refusal):]
+        assert tail.split("\n", 2)[1].strip() == "exit 1", f"'{refusal}' must be followed by exit 1"
 
 
 def test_agent_key_is_installed_into_its_own_daemon_only_file():
@@ -162,10 +168,13 @@ def test_shared_env_is_scrubbed_and_fails_closed_on_a_request_key_copy():
     script = _step(SCRUB).get("run", "") or ""
     assert "delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE" in script
     assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in script
-    for key in ("WORKFLOW_IMAGE", "WORKFLOW_DATA_DIR", "WORKFLOW_MCP_CANARY_URL", "BACKUP_GH_REPO"):
-        assert key in script
-    for kept in ("BACKUP_DEST", "LOG_DEST"):
-        assert kept not in script, f"{kept} is host-owned and must survive deploys"
+    delete = next(line for line in script.splitlines() if "bash -s -- delete " in line)
+    for key in ("TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY", "WORKFLOW_IMAGE",
+                "WORKFLOW_DATA_DIR", "WORKFLOW_MCP_CANARY_URL"):
+        assert f" {key}" in delete, f"{key} must be in the delete command itself"
+    for kept in ("BACKUP_DEST", "LOG_DEST", "BACKUP_GH_REPO"):
+        # BACKUP_GH_REPO: deploy/backup.sh still reads it (Codex on #4260).
+        assert kept not in delete, f"{kept} is host-owned and must survive deploys"
     assert "assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in script
     assert "shared env still contains request admission minting authority" in script
 
@@ -231,3 +240,24 @@ def test_self_host_template_declares_empty_agent_interchange_hmac_key():
     for name, service in services.items():
         if name != "daemon":
             assert dedicated_path not in (service.get("env_file") or []), name
+
+
+@pytest.mark.parametrize("name", [
+    VALIDATE_AGENT, VALIDATE_REQUEST, INSTALL_REQUEST, INSTALL_AGENT, VALIDATE_HOST_PAIR, SCRUB,
+])
+def test_every_hmac_step_fails_the_run(name):
+    """`continue-on-error` or a soft `if:` would turn each fail-closed check into a
+    log line (Codex on #4260 mutated exactly this and the structure tests passed)."""
+    step = _step(name)
+    assert not step.get("continue-on-error"), f"{name} must fail the run"
+    assert "if" not in step, f"{name} must run on every deploy"
+    script = step.get("run", "") or ""
+    if "\n" in script.strip():
+        assert script.lstrip().startswith("set -euo pipefail"), f"{name} must stop on error"
+
+
+def test_the_shared_env_guard_exits_nonzero_on_a_copy():
+    script = _step(SCRUB).get("run", "") or ""
+    guard = script[script.index("assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"):]
+    assert "|| {" in guard and "exit 1" in guard.split("}")[0]
+
