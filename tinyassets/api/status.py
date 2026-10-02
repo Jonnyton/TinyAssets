@@ -1837,11 +1837,10 @@ def get_status(
     if include_conversation:
         try:
             if universe_exists and permissions.universe_access_allows(uid, write=True):
+                from tinyassets import addressed_agents
                 from tinyassets.conversation_failure import normalize_turn_failure
                 from tinyassets.conversation_store import read_history_page
                 from tinyassets.providers.execution_receipt import normalize_execution_receipt
-
-                from tinyassets import addressed_agents
 
                 _addressed = addressed_agents.resolve(
                     udir.parent, universe_id=uid, owner=permissions.current_actor_id(),
