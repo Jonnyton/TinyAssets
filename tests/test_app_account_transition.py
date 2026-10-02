@@ -397,7 +397,7 @@ def test_sign_out_takes_the_composer_with_the_rest_of_the_account(html):
       DOM.composer.value="my unsent private draft: severance terms";
       DOM.composer.style.height="96px";
       DOM.send.disabled=true; turnStartedAt=1000; activeTurn={};
-      setStatusLine("Your universe is thinking...");
+      setStatusLine("Your agent is thinking...");
       STORE.local[UPLOAD_KEY_A]=JSON.stringify(
         {version:1,owner:"principal-a",home:"universe-a",saved:[{file_id:"f1"}]});
       sendQueue.push({message:"A queued line",display:"A queued line",
@@ -460,7 +460,7 @@ def test_the_previous_turns_cleanup_cannot_touch_the_next_account(html):
       // Exactly what sendTurn holds across its await.
       const myTurn={}; activeTurn=myTurn;
       DOM.send.disabled=true; turnStartedAt=1000;
-      setStatusLine("Your universe is thinking...");
+      setStatusLine("Your agent is thinking...");
 
       enterSignedOut();                            // the boundary
       STORE.session[TOKEN_KEY]="t2";

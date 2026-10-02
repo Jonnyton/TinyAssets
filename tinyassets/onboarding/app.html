@@ -3830,7 +3830,7 @@
     if(!el) return el;
     const note=document.createElement("span");
     note.className="msg-steered-note";
-    note.textContent="Sent to your universe while it works \u2014 it sees this at its next step.";
+    note.textContent="Sent to your agent while it works \u2014 it sees this at its next step.";
     el.appendChild(note); el.steeredNote=note;
     return el;
   }
@@ -3884,7 +3884,7 @@
         opts:item.opts});
     }
     setStatusLine(activeTurn
-      ? "Your universe is thinking..."+(sendQueue.length?" "+sendQueue.length+" waiting":"")
+      ? "Your agent is thinking..."+(sendQueue.length?" "+sendQueue.length+" waiting":"")
       : "");
     saveQueue();
   }
