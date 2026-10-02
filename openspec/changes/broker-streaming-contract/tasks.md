@@ -1,8 +1,9 @@
 ## 1. Contract (this change)
 
 - [x] 1.1 Proposal, design and spec delta for I14.
-- [ ] 1.2 Cross-family review of the design (max 3 rounds; round 1 ADAPT acted on); log the verdicts
-      in `design.md`.
+- [x] 1.2 Cross-family review of the design: three rounds (ADAPT, ADAPT,
+      ADAPT), cap reached; verdicts and the post-cap corrections are logged in
+      `design.md` Appendix R.
 
 ## 2. Build (S6, after review)
 

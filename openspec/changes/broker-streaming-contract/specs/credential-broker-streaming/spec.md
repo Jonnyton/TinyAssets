@@ -9,8 +9,10 @@ caller's role from the connecting process's authenticated identity against its
 own configuration, refuse unmapped callers, and refuse frames the role may not
 send. On a box channel the principal SHALL be derived from the box identity
 that `boxhostd` authenticated, and any principal the request names SHALL be
-refused. A stream refused here SHALL end `refused` with `side_effect_state`
-`none`, and nothing SHALL reach the network.
+refused. A stream refused here SHALL end `refused` without sending anything,
+and SHALL report the operation's `side_effect_state` as the transmission
+requirement defines it, never `none` for an operation it cannot establish
+sent nothing.
 
 #### Scenario: a revoked grant refuses the next stream
 - **WHEN** a grant is revoked while its owner's earlier stream is still open
@@ -26,7 +28,8 @@ refused. A stream refused here SHALL end `refused` with `side_effect_state`
 The broker SHALL send a stream's status, reason and sanitized headers only
 after the redirect chain and the OAuth refresh-once are settled, and SHALL
 then forward the response body as it arrives, never more than the caller's
-outstanding credit, reading upstream only while credit remains. After the
+outstanding credit. Without credit it SHALL keep parsing framing but buffer
+no more than a fixed look-ahead of body payload. After the
 status is sent the broker SHALL NOT send the request again. Request bodies in
 this version SHALL be collected within today's bound before sending. A
 caller's cancel SHALL abort the upstream request and end the stream. An
@@ -41,8 +44,8 @@ for lack of credit.
 
 #### Scenario: a slow consumer does not grow broker memory or look idle
 - **WHEN** a caller stops granting credit while the provider is still sending
-- **THEN** the broker stops reading that stream, buffers no more than its
-  window plus the scan hold-back, and does not end it as idle
+- **THEN** the broker buffers no more than its window, the look-ahead and the
+  scan hold-back for that stream, and does not end it as idle
 
 ### Requirement: No byte of a held sensitive value is forwarded
 The broker SHALL scan, for each stream, every sensitive value the
@@ -120,8 +123,8 @@ acknowledgement was delivered.
 ### Requirement: Request/close callers keep their contract
 `ScopedConnectionProxy.request` SHALL keep its signature, return document,
 redirect fields, typed errors and closed-proxy refusal, implemented as one
-stream collected to its end and checked with today's matcher on the decoded
-body. No per-request or per-proxy process SHALL be spawned.
+stream collected to its end; the broker, not the wrapper, SHALL perform the
+scan. No per-request or per-proxy process SHALL be spawned.
 
 #### Scenario: an effector call is unchanged
 - **WHEN** an effector calls `proxy.request("POST", {...})`
@@ -133,8 +136,8 @@ The box's base-URL endpoint SHALL select the grant from the box's command
 center and the connection named in its path, SHALL send only to that
 connection's declared host and allowed endpoints, SHALL map a failure before
 the status to an HTTP error status naming only the error class, SHALL remove
-upstream framing headers before applying its own, SHALL relay bodyless
-responses without framing, and SHALL end a response that does not complete
+upstream framing headers before applying its own, SHALL relay a bodyless
+response only after its stream completes, and SHALL end a response that does not complete
 after its status by aborting the connection without a successful terminator.
 
 #### Scenario: a scan hit after the status reaches the CLI as truncation

@@ -86,8 +86,12 @@ role may not send are refused before anything else is read:
 **Authorization.** Every `OPEN` runs the **same** checks as
 `resolve_exact_scoped_proxy`: the authenticated principal, an active grant,
 the grant's owner and command center, the connection's identity and owner,
-and revocation. A refusal is `refused`, nothing is sent, and the stream
-reports `side_effect_state: none`.
+and revocation. A refusal is `refused` and this stream sends nothing
+(`stream_sent: false`). The operation-level `side_effect_state` follows
+decision 3: it is `none` only for an operation with no recorded earlier
+attempt, the recorded state where the namespace is authenticated and a record
+exists, and never `none` when the broker cannot establish it (an unmapped
+caller, an expired id).
 
 **Generation.** Comparing a number cannot fence a stale owner, which could
 claim a future generation. Nor can the owner channel's identity, which an old
@@ -169,10 +173,13 @@ may have sent reports `unknown`, though the duplicate itself sent nothing.
   - Before `HEAD`, the broker reads and parses the status line and headers
     whatever the credit, within today's header bounds. A caller may open with
     zero credit and decide after `HEAD`.
-  - After `HEAD`, it may read up to a fixed look-ahead (`LOOKAHEAD`, 16 KiB,
-    beyond the scan hold-back) without credit. That lets it parse chunk
-    framing and see EOF, so a response whose last DATA exactly used the
-    credit still reaches `END`.
+  - After `HEAD`, it keeps parsing without credit, but may BUFFER at most
+    `LOOKAHEAD` (16 KiB, beyond the scan hold-back) of body payload awaiting
+    credit. Framing it parses and discards (chunk sizes, the terminating
+    chunk, trailers within today's header bounds) does not count against
+    `LOOKAHEAD`; it is bounded by the absolute deadline and the header
+    bounds. So a response whose last DATA exactly used the credit still
+    reaches `END`, however many trailers follow.
   - Beyond that it reads only while credit remains, and it never sends past
     the credit.
 - **Caller side.** A caller's per-stream receive buffer never exceeds the
@@ -233,7 +240,8 @@ separate change for both paths.
 - Any occurrence a future byte could complete must start within those L-1
   bytes, so no forwarded byte belongs to it. This holds for unequal lengths,
   overlapping values and arbitrary chunk boundaries.
-- At a clean EOF the held tail is scanned and flushed. On a match the stream
+- At a clean EOF the incremental decoder is finalized, then the held tail
+  is scanned and flushed. On a match the stream
   ends `failed` (unsafe destination response), the tail is discarded, and an
   audit record is written.
 - An empty set means no hold-back.
@@ -325,9 +333,10 @@ document (`status`, `reason`, `headers`, `body` decoded UTF-8 with
 replacement), redirect fields and typed errors, including
 `ConnectionAuthorizationError`'s provider detail.
 
-- It opens one stream with the request document unchanged, grants credit up
-  to the connection's body cap, collects the stream to `END`, and runs
-  today's `_contains_secret` over the decoded document before returning.
+- It opens one stream with the request document unchanged and rolling
+  credit, collects it to a `completed` `END`, and returns the document. The
+  broker has already verified the headers and body, raw and decoded
+  (decision 5). The wrapper holds no value and scans nothing.
 - `close()` sets a local closed flag, so a later `request` still raises
   "outbound proxy is closed".
 - The spawned worker and its startup handshake are deleted with S6. Every
@@ -354,7 +363,10 @@ naming `error_class` and nothing of the destination's.
   framing (`Content-Length`, `Transfer-Encoding`, hop-by-hop headers and any
   named in `Connection`) and re-frames the body as chunked.
 - A response that cannot carry a body (to `HEAD`, or with status 1xx, 204 or
-  304) is relayed with no body and no framing.
+  304) has nothing to truncate, so `boxhostd` holds its headers until a
+  `completed` `END` and only then relays them, with no body and no framing.
+  A non-completed `END` before that maps through the before-`HEAD` error
+  statuses.
 - On a failed `END` it **aborts the connection without the terminating
   chunk**. An HTTP client then sees a truncated response, never a successful
   short one.
@@ -438,3 +450,13 @@ caller: the loop's incremental SSE reader folds chunks with today's codec
   - H: headers parse and a bounded look-ahead run at zero credit.
   - I: upstream framing is stripped, bodyless statuses are handled, and only
     `completed` terminates.
+- **Round 3 (70ca97e6): ADAPT, cap reached.** Closed: A, C, E, F, G, I.
+  Agreed: the decoded hold-back size. The remaining corrections were
+  targeted, and the reviewer said they need no further round. They are
+  applied here and not re-reviewed, per the cap:
+  - B: the wrapper scans nothing; the broker verifies.
+  - D: an authorization refusal reports `stream_sent: false`, and never an
+    operation-level `none` it cannot establish.
+  - H: `LOOKAHEAD` bounds buffered payload only; discarded framing and
+    trailers do not consume it.
+  - J (new): bodyless responses are held until a `completed` `END`.
