@@ -198,13 +198,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/daemon_memory.py": [
         "_read_section: .read_text()",
     ],
-    "tinyassets/daemon_server.py": [
-        "_bootstrap_notes_from_json: .read_text()",
-        "_bootstrap_payload_table_from_json: .read_text()",
-        "_mirror_notes_json: .write_text()",
-        "_mirror_payload_table_to_json: .write_text()",
-        "sync_universes_from_filesystem: .read_text()",
-    ],
     "tinyassets/daemon_wiki.py": [
         "_append_line: .open()",
         "_write_if_missing: .write_text()",
@@ -329,8 +322,6 @@ PINNED: dict[str, list[str]] = {
         "_publish_heartbeat: .write_text()",
     ],
     "tinyassets/soul_edit.py": [
-        "_atomic_write_text: os.replace()",
-        "_atomic_write_text: os.unlink()",
         "_soul_lock: os.open()",
     ],
     "tinyassets/storage/__init__.py": [

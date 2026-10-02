@@ -282,6 +282,9 @@ def write_universe_file(
         parent = _windows_parent(root, parts, create=make_parents)
         target = parent / name
         if mode != "replace":
+            if mode == "exclusive" and os.path.lexists(target):
+                # Same contract as POSIX O_EXCL: anything there, a link included.
+                raise FileExistsError(str(target))
             if os.path.islink(target):
                 raise UniverseFileError(f"{relpath!r} is a link; nothing was written")
             with open(target, "xb" if mode == "exclusive" else "ab") as handle:  # noqa: PTH123
