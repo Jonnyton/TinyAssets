@@ -113,6 +113,19 @@ def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
         return {"state": "unreadable", "reason": type(exc).__name__}
 
 
+def _reader_owns(uid: str) -> bool:
+    """Is the verified caller the universe's owning account? False on any doubt."""
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.universe_owner import owner_of
+
+    try:
+        actor = permissions.current_actor_id()
+        return bool(actor) and owner_of(_base_path(), uid) == actor
+    except Exception:  # noqa: BLE001 - an unreadable owner withholds, never shows
+        return False
+
+
 def _policy_hash(payload: dict[str, Any]) -> str:
     """Deterministic sha256 of sorted-JSON policy payload.
 
@@ -1824,7 +1837,13 @@ def get_status(
     # PRESENT and null when the universe is idle, so a client can tell "idle"
     # from "this build does not report it".
     if universe_exists and permissions.universe_access_allows(uid, write=True):
-        response["active_turn"] = _universe_active_turn(udir)
+        active = _universe_active_turn(udir)
+        # The step and its wait are for every reader above; the MODEL id is the
+        # owning account's own selector, which can be private (an account-bearing
+        # id the reply's "Answered by" never shows) -- so only its owner sees it.
+        if isinstance(active, dict) and "model" in active and not _reader_owns(uid):
+            active = {key: value for key, value in active.items() if key != "model"}
+        response["active_turn"] = active
 
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about

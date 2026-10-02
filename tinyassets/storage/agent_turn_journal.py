@@ -507,6 +507,12 @@ class AgentTurnJournal:
                 "age_s": age,
                 "stale": age > max_age_s,
             }
+            # Which step, on which model, for how long: a long wait on one
+            # model request must not read as a hang.
+            progress = boot.progress(uid, row["turn_id"])
+            if progress is not None:
+                observed["round"], observed["model"] = progress[0], progress[1]
+                observed["round_age_s"] = max((now - progress[2]).total_seconds(), 0.0)
             # Fresh beats stale whatever the order; among equals the newest row
             # wins, which is the one the DESC scan reached first.
             if newest is None or (newest["stale"] and not observed["stale"]):
