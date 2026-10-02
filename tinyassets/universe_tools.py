@@ -1082,6 +1082,13 @@ def _folder_section(universe_dir: Path) -> str:
     from tinyassets.universe_files import list_universe_entries
 
     lines: list[str] = []
+    remaining = 200
+
+    def read(directory: str) -> list:
+        nonlocal remaining
+        entries = list_universe_entries(universe_dir, directory, limit=remaining)
+        remaining -= len(entries)
+        return entries
 
     def visit(directory: str, depth: int, entries: list) -> None:
         for name, info in entries:
@@ -1092,15 +1099,17 @@ def _folder_section(universe_dir: Path) -> str:
             shown = path.encode("unicode_escape").decode("ascii")
             if stat.S_ISDIR(info.st_mode):
                 lines.append(f"- {shown}/")
-                if depth < 2:
-                    visit(path, depth + 1, list_universe_entries(universe_dir, path))
+                if depth < 2 and remaining:
+                    visit(path, depth + 1, read(path))
             elif stat.S_ISREG(info.st_mode):
                 lines.append(f"- {shown} ({info.st_size / 1024:.1f} KB)")
 
     try:
         for directory in ("notes", "prompts", "workflows"):
+            if not remaining:
+                break
             try:
-                entries = list_universe_entries(universe_dir, directory)
+                entries = read(directory)
             except FileNotFoundError:
                 continue  # Optional top-level folders need not exist yet.
             visit(directory, 1, entries)
@@ -1108,7 +1117,9 @@ def _folder_section(universe_dir: Path) -> str:
         return ""
     lines.sort()
     visible = lines[:40]
-    if len(lines) > 40:
+    if not remaining:
+        visible.append("(more entries; `bash ls` shows them.)")
+    elif len(lines) > 40:
         visible.append(f"({len(lines) - 40} more entries; `bash ls` shows them.)")
     return "\n\n## What is in my folder now\n" + "\n".join(visible or ["(empty)"])
 

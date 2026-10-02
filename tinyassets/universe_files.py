@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import stat
+from itertools import islice
 from pathlib import Path
 
 from tinyassets import workspace_fs as fs
@@ -147,9 +148,9 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
 
 
 def list_universe_entries(
-    universe_dir: Path | str, relpath: str,
+    universe_dir: Path | str, relpath: str, *, limit: int | None = None,
 ) -> list[tuple[str, os.stat_result]]:
-    """Sorted names and link-free metadata; never follow an entry's symlink."""
+    """Sorted no-follow metadata, optionally scanning only the first limit entries."""
     root = Path(universe_dir)
     if getattr(fs, "_POSIX", False):
         root_fd = fs.open_dir_nofollow(root.resolve(strict=False))
@@ -161,10 +162,11 @@ def list_universe_entries(
                     _check_component(part)
                     current = fs.open_subdir_nofollow(current, part)
                     opened.append(current)
-                return sorted(
-                    (name, os.stat(name, dir_fd=current, follow_symlinks=False))
-                    for name in os.listdir(current)
-                )
+                with os.scandir(current) as entries:
+                    return sorted(
+                        (entry.name, entry.stat(follow_symlinks=False))
+                        for entry in islice(entries, limit)
+                    )
             finally:
                 for handle in opened:
                     os.close(handle)
@@ -174,7 +176,10 @@ def list_universe_entries(
     if not directory.is_dir():
         raise UniverseFileError("not a directory")
     with os.scandir(directory) as entries:
-        return sorted((entry.name, entry.stat(follow_symlinks=False)) for entry in entries)
+        return sorted(
+            (entry.name, entry.stat(follow_symlinks=False))
+            for entry in islice(entries, limit)
+        )
 
 
 def open_runtime_dir(universe_dir: Path | str, *parts: str) -> int:

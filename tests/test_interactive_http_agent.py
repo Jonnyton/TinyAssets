@@ -58,6 +58,7 @@ def agent(served, monkeypatch):
         wires=[],
         tools=[],
         requested_rounds=1,
+        first_text=None,
         fail_tool=False,
         closed=False,
         before_reply=None,
@@ -133,6 +134,8 @@ def agent(served, monkeypatch):
                 "content": "{}" if learning else None if tools else "finished exact answer",
             }
             if tools:
+                if len(state.wires) == 1:
+                    message["content"] = state.first_text
                 message["tool_calls"] = [
                     {
                         "id": "same-wire-id",
