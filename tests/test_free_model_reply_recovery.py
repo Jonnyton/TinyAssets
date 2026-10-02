@@ -290,13 +290,13 @@ def test_a_reply_timeout_moves_on_without_asking_the_same_model_again(agent, mon
 def test_a_reply_timeout_names_the_budget_that_actually_ended_it(agent):
     """Live: "within its reply budget (2591705s)" -- the turn's remaining time, not
     the broker's 600s ceiling that ended the request."""
+    from dataclasses import replace
+
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
     from tinyassets.storage.outbound_connections import (
         INFERENCE_MAX_SECONDS,
         OutboundDeadlineExceeded,
     )
-
-    from dataclasses import replace
 
     agent.config = replace(agent.config, absolute_cap_s=2_591_705)
     real_resolve = ApiKeyHttpProvider._resolve_proxy
