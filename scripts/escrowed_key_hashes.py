@@ -1,15 +1,24 @@
-"""Print `NAME sha256-or-ABSENT` for each escrowed key, as the host holds it.
+"""Print `NAME <sha256 | ABSENT | UNSUPPORTED>` for each escrowed key on the host.
 
 Runs ON the production host (`ssh ... "sudo python3 -" < this file`). Stdlib
-only. Prints hashes, never values; the caller compares them and prints only
-match/mismatch. The value is read the way Compose reads an env file for these
-single-line assignments: the last `NAME=` line wins, and one pair of
-surrounding quotes is removed.
+only. Prints hashes, never values; the caller compares them and prints only a
+verdict.
+
+It reads the env FILES, which is what the next container start loads, not
+the environment of the running container.
+
+Only the one shape these keys actually have is accepted (verified on prod
+2026-10-02): exactly one `NAME=value` line, unquoted, single line. Compose
+parses more (export prefixes, quoting, escapes, comments), and a partial
+reimplementation of that grammar is how a check reports a false match. So any
+other shape for a key yields UNSUPPORTED rather than a guess (Codex on #4283).
+Trailing whitespace is stripped, as Compose does for unquoted values.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 # name -> the host file it lives in
@@ -20,14 +29,20 @@ ESCROWED_KEYS: dict[str, str] = {
     "TINYASSETS_APP_INGRESS_HMAC_KEY": "/etc/tinyassets/app-ingress.env",
 }
 
+UNSUPPORTED = object()
 
-def host_value(text: str, name: str) -> str | None:
-    value = None
-    for line in text.splitlines():
-        if line.startswith(name + "="):
-            value = line.split("=", 1)[1]
-    if value is not None and len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-        value = value[1:-1]
+
+def host_value(text: str, name: str):
+    """The value, None if absent, or UNSUPPORTED for any shape we will not guess at."""
+    mentions = [line for line in text.splitlines()
+                if re.match(rf"^\s*(export\s+)?{re.escape(name)}\s*=", line)]
+    if not mentions:
+        return None
+    if len(mentions) != 1 or not mentions[0].startswith(name + "="):
+        return UNSUPPORTED
+    value = mentions[0].split("=", 1)[1].rstrip()
+    if not value or value[0] in "'\"" or " #" in value:
+        return UNSUPPORTED
     return value
 
 
@@ -42,7 +57,12 @@ def main() -> int:
         except OSError:
             text = ""
         value = host_value(text, name)
-        print(name, digest(value) if value else "ABSENT")
+        if value is None:
+            print(name, "ABSENT")
+        elif value is UNSUPPORTED:
+            print(name, "UNSUPPORTED")
+        else:
+            print(name, digest(value))
     return 0
 
 

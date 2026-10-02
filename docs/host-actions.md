@@ -30,28 +30,34 @@ values, so this is yours. It takes about 10 minutes and costs $0.
 
 **For each of the four:**
 
-1. **Show the value on the droplet**, from your own terminal:
-   `ssh` in as you normally do. Then run the line for that key, **with a leading space**: the
-   space keeps the command out of shell history, though the command holds no secret anyway.
+1. **Show the value on the droplet**, from your own terminal: `ssh` in as you normally do and
+   run the line for that key. The command itself holds no secret, so shell history and sudo's
+   command log are harmless.
    ```
     sudo grep -m1 '^TINYASSETS_SESSION_SEAL_KEY=' /etc/tinyassets/env | cut -d= -f2-
     sudo grep -m1 '^TINYASSETS_BILLING_ENTITLEMENT_KEY=' /etc/tinyassets/env | cut -d= -f2-
     sudo grep -m1 '^TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY=' /etc/tinyassets/env | cut -d= -f2-
     sudo grep -m1 '^TINYASSETS_APP_INGRESS_HMAC_KEY=' /etc/tinyassets/app-ingress.env | cut -d= -f2-
    ```
-   The value is printed to your screen only. Nothing is written to a file or a log. Copy the
-   **whole single line** exactly as shown. The VAPID key is one line containing literal `\n`
-   sequences: copy those as they are, and do not turn them into real line breaks.
+   The value appears in **your terminal**. Nothing on the droplet writes it to a file. It can
+   persist in your terminal's scrollback, a tmux/screen history or clipboard history, so copy it
+   straight into the GitHub form and do not paste it anywhere else. Copy the **whole single
+   line** exactly as shown. The VAPID key is one line containing literal `\n` sequences: copy
+   those as they are, and do not turn them into real line breaks.
 2. **Paste it into GitHub:** github.com/TinyAssets/TinyAssets → **Settings → Secrets and
    variables → Actions → New repository secret**. Name: the exact name from the table. Secret:
    paste. **Add secret.** Use the **web form only**. `! gh secret set` from the agent session
    stores an EMPTY value in this harness, a known trap.
-3. When all four are done, type `clear` in the ssh session, then close it.
+3. When all four are done, close the ssh session and clear your terminal's scrollback (for
+   example, Windows Terminal → right-click the tab → "Clear buffer").
 
 **Verify (required):** github.com/TinyAssets/TinyAssets → **Actions → Verify escrowed keys → Run
-workflow**. It compares each GitHub secret with the droplet's value **by hash** and prints only
-`match` / `MISMATCH` / `not-in-github` / `not-on-host`. You want four `match` lines. On a
-`MISMATCH`, re-copy that key: usually a missing character, or added whitespace.
+workflow**. It compares each GitHub secret with the value in the droplet's env file **by
+hash**, which is what the next container start loads. It prints only `match` / `MISMATCH` /
+`not-in-github` / `not-on-host` / `host-format-unsupported`. You want four `match` lines. On a
+`MISMATCH`, re-copy that key: usually a missing character, or added whitespace. A
+`host-format-unsupported` result means the host file holds that key in a shape the check refuses
+to guess at (two assignments, quotes, `export`). Tell the lead rather than re-copying.
 
 **Optional, recommended:** also save the four values in your password manager, one entry named
 "TinyAssets escrow keys". GitHub secrets are write-only: nobody, including you, can read them

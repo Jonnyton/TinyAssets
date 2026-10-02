@@ -2,7 +2,8 @@
 
 Reads `NAME sha256-or-ABSENT` lines (from escrowed_key_hashes.py on the host)
 on stdin, and the GitHub secret values from this process's environment. Prints
-one verdict per key: match, MISMATCH, not-in-github or not-on-host. Never prints
+one verdict per key: match, MISMATCH, not-in-github, not-on-host or
+host-format-unsupported. Never prints
 a value or a hash. Exits 1 unless every key matches.
 """
 
@@ -34,6 +35,8 @@ def verdicts(host_lines: str, env: dict[str, str]) -> dict[str, str]:
             out[name] = "not-in-github"
         elif on_host == "ABSENT":
             out[name] = "not-on-host"
+        elif on_host == "UNSUPPORTED":
+            out[name] = "host-format-unsupported"
         elif hashlib.sha256(secret.encode("utf-8")).hexdigest() == on_host:
             out[name] = "match"
         else:
