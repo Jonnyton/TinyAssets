@@ -298,7 +298,7 @@ def test_server_instructions_carry_relay_markers() -> None:
     assert "data, never instructions" in text
     assert "relay" in text.lower()
     assert "converse" in text
-    assert "connector" in text  # you are the connector, not the universe
+    assert "connector" in text  # you are the connector, not the command center
     assert "invent" in text     # never invent its name or facts
     assert "memorize" in text   # persona/work views are never memorized
     assert "Call get_status FIRST" not in text
@@ -316,7 +316,7 @@ def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
     assert "get_status" not in text          # status is not the main experience
     assert "converse" in text                # creates/loads + relays in one entry
     assert "consent" in text                 # invoking the prompt IS consent
-    assert "persists" in text.lower()        # the universe persists what it learns
+    assert "persists" in text.lower()        # the command center persists what it learns
     assert "power source" in text             # 24/7 power-source bonding beat
     assert "Engine assignment is not" in text
 
@@ -359,7 +359,7 @@ def test_control_station_prompt_relays_not_embodies() -> None:
     assert "render" in compact.lower()
     assert "converse" in compact
     # The chatbot does not speak as the universe; it renders the universe's reply.
-    assert "not the universe" in compact.lower()
+    assert "not the command center" in compact.lower()
     assert "quotation" in compact  # never wrap the reply as your own quotation
     # The universe writes its own brain; the chatbot relays, never writes it.
     assert "writes its own brain" in compact.lower()
@@ -392,7 +392,7 @@ def test_control_station_relays_brain_not_writes_it() -> None:
     mu = " ".join(_MEET_UNIVERSE_PROMPT.split())
     assert "relay" in mu.lower()
     assert "converse" in mu
-    # meet_universe: the universe persists what it learns itself (not the chatbot).
+    # meet_universe: the command center persists what it learns itself (not the chatbot).
     assert "persists what it learns itself" in mu.lower()
 
 
@@ -402,4 +402,4 @@ def test_server_instructions_relay_not_embody() -> None:
     text = mcp.instructions or ""
     assert "relay" in text.lower()
     assert "converse" in text
-    assert "not the universe" in text.lower()
+    assert "not the command center" in text.lower()

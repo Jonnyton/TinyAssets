@@ -1102,7 +1102,7 @@ def create_binding(
         )
         if cursor.rowcount != 1:
             raise AgentConflictError(
-                f"a binding with role {role!r} already exists in this universe; "
+                f"a binding with role {role!r} already exists in this command center; "
                 "read it and update it instead"
             )
         row = _read_binding_row(

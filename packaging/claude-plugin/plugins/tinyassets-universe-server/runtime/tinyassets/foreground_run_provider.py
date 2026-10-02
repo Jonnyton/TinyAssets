@@ -299,7 +299,7 @@ class _ForegroundRunProviderSession:
             or not self._universe_id
             or get_founder_home(self._base_path, self._principal_id) != self._universe_id
         ):
-            raise PermissionError("foreground run is not the principal's own universe")
+            raise PermissionError("foreground run is not the principal's own command center")
 
     def _run_record(self) -> dict[str, Any]:
         from tinyassets.runs import get_run
@@ -1087,7 +1087,7 @@ class _ForegroundRunProviderSession:
         if supplied_context is not None and (
             Path(supplied_context.universe_dir) != self._universe_dir
         ):
-            raise PermissionError("foreground provider universe cannot be substituted")
+            raise PermissionError("foreground provider command center cannot be substituted")
         if supplied_context is not None and any(
             getattr(supplied_context, field, None) is not None
             for field in ("provider_request", "provider_invocation", "served_provider",
@@ -1567,7 +1567,7 @@ def _rebind(provider_call: Any, session: _ForegroundRunProviderSession) -> Any:
         raise PermissionError(
             "cannot rebind a foreground provider call of type "
             f"{type(provider_call).__name__}: only an exact "
-            "UniverseBoundProviderCall carries the universe binding this "
+            "UniverseBoundProviderCall carries the command center binding this "
             "rebind is required to preserve"
         )
     try:

@@ -2144,7 +2144,7 @@ def _execute(
             ) from exc
         raise AutomationRunUnstopped(
             f"automation run {run_id} ignored cancellation for "
-            f"{cancel_grace_seconds()}s; universe stays leased"
+            f"{cancel_grace_seconds()}s; command center stays leased"
         ) from exc
     record = get_run(base_path, run_id) or {}
     return _replace(

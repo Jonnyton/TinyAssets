@@ -205,7 +205,7 @@ def require_send_consent(*, universe_dir: str | Path, receiver_id: str) -> None:
     raise PatchIntakeConsentMissing(
         "patch_intake_consent_required: sending to the "
         f"{label} patch intake needs the owner's approval of the "
-        f'"Let your universe report problems to {label}" request in their '
+        f'"Let your command center report problems to {label}" request in their '
         "rail; nothing has been sent"
     )
 
@@ -260,14 +260,14 @@ def request_payload(intake: dict[str, str]) -> dict[str, Any]:
     label = intake["label"]
     return {
         "kind": REQUEST_KIND,
-        "title": f"Let your universe report problems to {label}",
+        "title": f"Let your command center report problems to {label}",
         "body": (
-            f"When your universe hits a bug, a missing feature or an idea worth "
+            f"When your command center hits a bug, a missing feature or an idea worth "
             f"building, it can tell {label} directly instead of stopping. "
             "Approving this lets it send those reports -- what it was trying to "
             "do and what was missing -- and nothing else: not your files, not "
             "your conversations, not your other work. Whoever runs the intake "
-            "sees who sent it and what your universe sent them, nothing more, "
+            "sees who sent it and what your command center sent them, nothing more, "
             "and you can take this back at any time. There is nothing to paste."
         ),
         "fields": [],
@@ -392,7 +392,7 @@ def _how(receiver_id: str, label: str, *, granted: bool, pending: bool) -> str:
     if pending:
         return (
             f"Your user has not approved sending to {label} yet. The request "
-            f'"Let your universe report problems to {label}" is waiting in their '
+            f'"Let your command center report problems to {label}" is waiting in their '
             "rail -- point them at that one. Do NOT raise a connection or "
             "credential request for this: there is no token, and approving that "
             "one request is the whole setup."

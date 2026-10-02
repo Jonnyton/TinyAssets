@@ -1015,7 +1015,7 @@ def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
                 "automations, revoke the webhooks, unregister the schedules and "
                 "subscriptions, unset the goals' canonical binding, edit the "
                 "branches (and their published versions) that invoke it, or "
-                "declare a different loop branch in the universes that run it, "
+                "declare a different loop branch in the command centers that run it, "
                 "then delete."
             ),
         })

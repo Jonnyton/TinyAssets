@@ -267,7 +267,7 @@ def test_protocol_error_notice_names_the_format_and_does_not_cry_actions(agent, 
         run(agent)
     notice = us._served_failure_notice(caught.value)
     assert "could not identify why" not in notice
-    assert "replied in a format this universe could not read" in notice
+    assert "replied in a format this command center could not read" in notice
     assert "try again, or choose another model" in notice
     assert "Nothing ran." in notice
     assert "Actions may already have occurred" not in notice
