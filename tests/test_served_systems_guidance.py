@@ -52,7 +52,7 @@ def test_every_founder_turn_says_where_long_running_work_belongs(tmp_path) -> No
     """The folder prompt told the agent what NOT to use bash for and nothing
     else; the service it then wrote under /u followed from that gap."""
     prompt = _flat(universe_tools.harness_prompt(tmp_path))
-    assert "workflows and automations in this universe" in prompt
+    assert "workflows and automations in this command center" in prompt
     assert "never a service hosted elsewhere" in prompt
     assert f"write_graph.{CHAPTER}" in prompt
     # And that name resolves by the route the index advertises.
@@ -88,7 +88,7 @@ def test_the_chapter_promises_only_what_the_platform_accepts() -> None:
 
     # Every event type it names is one an automation accepts.
     named_events = set(
-        re.findall(r"``(run_completed|pending_request_answered|[a-z_]*_event)``", text))
+        re.findall(r"``(run_completed|pending_request_answered|owner_message|[a-z_]*_event)``", text))
     # Every event it names is one an automation accepts, and it names them all.
     assert named_events == set(automations.EVENT_TYPES)
 

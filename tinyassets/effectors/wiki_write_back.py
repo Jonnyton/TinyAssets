@@ -245,7 +245,19 @@ def _render_section(*, packet: dict[str, Any], idem_hint: str) -> tuple[str, str
 
 
 def _destination_marker_db_path(universe_dir: Path) -> Path:
-    return universe_dir / "wiki" / _DESTINATION_MARKER_DB
+    """Trusted effect metadata, at the universe root where the tool jail never
+    reaches it. It used to live inside ``wiki/``, which the universe's agent
+    now writes; a copy left there is never read again."""
+    return universe_dir / _DESTINATION_MARKER_DB
+
+
+def _page_bytes(universe_dir: Path, target: Path) -> bytes:
+    """A wiki page's exact bytes, read link-free and bounded from the
+    universe's wiki root (the agent writes its own wiki)."""
+    from tinyassets.universe_files import read_universe_file
+
+    root = _wiki_root_for_universe(universe_dir).resolve()
+    return read_universe_file(root, target.relative_to(root).as_posix())
 
 
 def _record_destination_marker(
@@ -256,7 +268,7 @@ def _record_destination_marker(
     effect_key: str,
 ) -> None:
     """Record trusted destination metadata only after the page write lands."""
-    page_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    page_sha256 = hashlib.sha256(_page_bytes(universe_dir, target)).hexdigest()
     db_path = _destination_marker_db_path(universe_dir)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path, timeout=30.0) as connection:
@@ -338,9 +350,10 @@ def _stale_replay_must_not_fire() -> None:
 
 
 def _append_or_update_section(path: Path, section: str, idem_hint: str) -> dict[str, Any]:
+    from tinyassets.api.helpers import _read_text
     from tinyassets.api.wiki import _append_wiki_log, _page_rel_path
 
-    text = path.read_text(encoding="utf-8")
+    text = _read_text(path)
     old_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     marker = f"tinyassets-wiki-write-back:{idem_hint}"
     start = f"<!-- {marker} -->"

@@ -60,7 +60,7 @@ class TestOnePoolPerAccount:
         record = refused.value.record
         assert record["failure_class"] == sa.FAILURE_QUOTA
         assert record["used_bytes"] == 90 * KIB
-        assert "across 2 universes" in record["error"]
+        assert "across 2 command centers" in record["error"]
 
     def test_another_account_is_unaffected(self, base):
         _write(_universe(base, "u-a", A), "a.bin", 95 * KIB)
@@ -71,7 +71,7 @@ class TestOnePoolPerAccount:
 
     def test_platform_bytes_are_not_charged(self, base):
         udir = _universe(base, "u-one", A)
-        for platform_dir in (".runtime", ".workspace-staging", "workspaces"):
+        for platform_dir in (".runtime", ".workspace-staging"):
             (udir / platform_dir).mkdir()
             _write(udir / platform_dir, "big.bin", 500 * KIB)
         _write(udir, "mine.bin", 10 * KIB)
@@ -79,6 +79,18 @@ class TestOnePoolPerAccount:
         sa.commit(_admit(base, "u-one", 1 * KIB))
 
         assert sa.usage(base, A).used_bytes == 10 * KIB + 1 * KIB
+
+    def test_permanent_workspaces_are_charged_through_their_own_store(self, base):
+        udir = _universe(base, "u-one", A)
+        (udir / "workspaces").mkdir()
+        _write(udir / "workspaces", "gen.bin", 30 * KIB)
+
+        sa.measure(base, "u-one", "workspaces")
+        sa.measure(base, "u-one", "universe_files")
+
+        measured = dict(((s, st), b) for s, st, b in sa.usage(base, A).breakdown)
+        assert measured[("u-one", "workspaces")] == 30 * KIB
+        assert ("u-one", "universe_files") not in measured  # not counted twice
 
     def test_a_hard_link_is_counted_once(self, base):
         udir = _universe(base, "u-one", A)
@@ -367,3 +379,77 @@ def test_measurement_is_off_the_clock_of_the_admission(base):
     started = time.monotonic()
     sa.commit(_admit(base, "u-one", 1 * KIB))
     assert time.monotonic() - started < 5
+
+
+def _fresh_ledger_held(tmp_path):
+    """A fresh rollback-journal ledger with another connection's write lock held."""
+    import sqlite3
+
+    tmp_path.mkdir(exist_ok=True)
+    holder = sqlite3.connect(
+        sa.ledger_path(tmp_path), isolation_level=None, check_same_thread=False,
+    )
+    holder.execute("CREATE TABLE IF NOT EXISTS other (x)")  # a fresh, non-WAL file
+    holder.execute("BEGIN IMMEDIATE")
+    return holder
+
+
+def test_first_contact_waits_out_a_concurrent_wal_switch(tmp_path):
+    """A fresh ledger whose first switch to WAL meets another writer waits for it.
+
+    SQLite skips the busy handler for the read-to-write upgrade inside that
+    switch, so this used to raise "database is locked" at once, and an
+    admission refused the write as unmeasurable: the concurrent branch-create
+    test failed about 1 run in 10. A held write lock reproduces it every time.
+    """
+    holder = _fresh_ledger_held(tmp_path)
+    releaser = threading.Timer(0.3, lambda: holder.execute("COMMIT"))
+    started = time.monotonic()
+    releaser.start()
+    try:
+        conn = sa._connect(tmp_path)
+        waited = time.monotonic() - started
+    finally:
+        releaser.join()
+        holder.close()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert waited >= 0.25  # it waited, it did not race past
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
+    finally:
+        conn.close()
+
+
+def test_a_held_wal_switch_gives_up_at_one_deadline(tmp_path, monkeypatch):
+    """The busy handler is off inside the loop, so one deadline bounds the wait:
+    a writer that never lets go is refused after it, not after it twice."""
+    import sqlite3
+
+    monkeypatch.setattr(sa, "_BUSY_TIMEOUT_S", 0.4)
+    holder = _fresh_ledger_held(tmp_path)
+    started = time.monotonic()
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            sa._connect(tmp_path)
+        waited = time.monotonic() - started
+    finally:
+        holder.close()
+    assert 0.35 <= waited < 0.75
+
+
+def test_a_wal_switch_that_is_not_busy_fails_on_the_first_attempt():
+    import sqlite3
+
+    attempts = []
+
+    class Broken:
+        def execute(self, sql):
+            if sql.startswith("PRAGMA journal_mode"):
+                attempts.append(sql)
+                exc = sqlite3.OperationalError("disk I/O error")
+                exc.sqlite_errorcode = sqlite3.SQLITE_IOERR
+                raise exc
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        sa._enable_wal(Broken())
+    assert len(attempts) == 1

@@ -13,11 +13,19 @@ name: linux-jail-proof
 #   * tests/test_native_refresh_jail.py runs the argv the shipping codex
 #     provider builds for a coding turn (tinyassets/providers/codex_provider.py)
 #     and proves the launch-credential mask holds, with a detection control;
+#   * tests/test_provider_jail_root_masks.py proves a provider cannot read,
+#     write or re-link the per-universe platform state kept in hidden root files
+#     (the credential vault, the run/consent/usage databases);
 #   * tests/test_provider_universe_jail.py runs the shipping claude and codex
 #     adapters, and a jail-unaware command adapter through the router, inside
 #     the shared provider jail (tinyassets/providers/provider_jail.py) and
 #     proves a launch for universe A reads A but not universe B, the platform
 #     source, another launch's credential or any outside process environment;
+#   * tests/test_provider_jail_network.py proves a provider launch has no host
+#     network: its API only through the universe's checking egress proxy, its
+#     own engine MCP server only through the pinned relay, and never the
+#     daemon's loopback, another universe's engine port, the metadata address
+#     or the host; plus the seccomp filter and rlimits inside the jail;
 #   * tests/test_universe_tools_jail.py drives the universe agent's four tools
 #     (tinyassets/universe_tools.py, served by tinyassets/engine_mcp_server.py)
 #     through the real tool jail and proves: only its own universe at /u, no
@@ -27,7 +35,9 @@ name: linux-jail-proof
 #     that a skill file the agent writes changes its next served turn.
 #
 # This job supplies the jail on a disposable GitHub-hosted Ubuntu VM and FAILS
-# unless EVERY named case is present in JUnit with no skip, failure or error.
+# unless EVERY case marked `@pytest.mark.real_jail` is present in JUnit with no
+# skip, failure or error. The marker is the only list: a new jail proof joins
+# by carrying it (and adding its file to `paths:` below so it retriggers).
 # It is cloud-only test infrastructure: no deployment, no production surface,
 # no account secrets, no self-hosted runner, never the founder's desktop.
 #
@@ -36,18 +46,36 @@ name: linux-jail-proof
 # file-delivery, codex coding-turn and provider-universe jail slices, read by
 # a human before a "proven live" claim.
 #
-# Hardening it does NOT do, on purpose: no `sysctl` relaxation of
-# kernel.apparmor_restrict_unprivileged_userns, no AppArmor profile edits, no
-# privileged daemon. If the hosted image refuses an unprivileged user
-# namespace, the same hermetic test runs once under `sudo -n` with the exact
-# setup-python interpreter on the throwaway VM — and if that also cannot jail,
-# the job is red, not skipped.
+# WHERE THE JAIL RUNS: a container as uid 1001, because that is production,
+# through scripts/linux_oracle.py -- the same invocation developers use
+# locally, so CI and the local oracle cannot drift apart.
+# The live daemon runs as uid=1001(tinyassets) inside its container with
+# unprivileged user namespaces enabled and /usr/bin/bwrap (checked 2026-10-01).
+# The hosted Ubuntu VM refuses unprivileged user namespaces to the runner, and
+# the old fallback ran pytest under `sudo -n`: as root inside bwrap's user
+# namespace, binds of runner-owned paths and /proc/self/fd/N are denied, so 18
+# workspace-provisioning proofs failed for a reason production never has. The
+# proof therefore runs in the oracle image (docker/linux-oracle.Dockerfile:
+# python:3.11-slim + bubblewrap, the same base as production) at --user
+# 1001:1001, with seccomp and systempaths unconfined for that one container
+# (Docker's defaults block bubblewrap's clone flags and /proc mounts).
+# The hosted kernel restricts unprivileged user namespaces through AppArmor
+# (kernel.apparmor_restrict_unprivileged_userns=1): with plain
+# `apparmor=unconfined` the namespace is created but its capabilities are
+# denied (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`,
+# measured 2026-10-01). So the container gets ONE named profile,
+# `ta-jail-userns` (unconfined plus `userns,`), loaded for this run only. No
+# host sysctl is changed, no privileged container, no daemon edits, and no
+# other process gains user namespaces. If the jail cannot be created, the job
+# is red, not skipped.
 
 on:
   pull_request:
     paths:
       # This job and its assertion helper.
       - ".github/workflows/linux-jail-proof.yml"
+      - "docker/linux-oracle.Dockerfile"
+      - "scripts/linux_oracle.py"
       - "scripts/ci_assert_junit_case.py"
       # The jail and the runtime that drives delivery RPC through it.
       - "tinyassets/node_sandbox.py"
@@ -80,7 +108,10 @@ on:
       # router that binds the owning universe, the adapters it launches and the
       # environment builder whose paths must resolve inside it.
       - "tests/test_provider_universe_jail.py"
+      - "tests/test_provider_jail_network.py"
+      - "tests/test_provider_jail_root_masks.py"
       - "tinyassets/providers/provider_jail.py"
+      - "tinyassets/providers/jail_seccomp.py"
       - "tinyassets/providers/owned_process.py"
       - "tinyassets/providers/router.py"
       - "tinyassets/providers/claude_provider.py"
@@ -88,11 +119,25 @@ on:
       # The universe agent's four tools, the engine surface that serves them,
       # the served turn that indexes its skills, and their real-jail proof.
       - "tests/test_universe_tools_jail.py"
+      # Workspace provisioning and registry proxy jail proofs (real_jail-marked
+      # 2026-10-01; before that no CI job ran them).
+      - "tests/test_node_sandbox_workspace.py"
+      - "tests/test_workspace_provision_mount.py"
+      - "tests/test_workspace_provision_process.py"
+      - "tests/test_workspace_registry_proxy.py"
+      - "tests/test_sandbox_mount_handles.py"
+      # Code nodes' bwrap jail: positive control plus the boundary proofs.
+      - "tests/test_node_sandbox.py"
+      - "tinyassets/workspace_provision_process.py"
+      - "tinyassets/workspace_registry_process.py"
+      - "tinyassets/workspace_registry.py"
+      - "tinyassets/workspace_registry_proxy.py"
       - "tests/engine_authority_helpers.py"
       - "tinyassets/universe_tools.py"
       - "tinyassets/engine_mcp_server.py"
       - "tinyassets/served_tools.py"
       - "tinyassets/universe_intelligence.py"
+      - "tinyassets/universe_egress.py"
       - "tinyassets/workspace_fs.py"
   workflow_dispatch:
 
@@ -103,45 +148,13 @@ concurrency:
   group: linux-jail-proof-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
-env:
-  # The ONLY test files this job runs, and EVERY case it must see executed
-  # (space-separated; no path or nodeid here contains a space). Kept as env so
-  # the shell steps never interpolate an expression.
-  JAIL_TEST_FILES: >-
-    tests/test_delivery_node_rpc.py
-    tests/test_native_refresh_jail.py
-    tests/test_provider_universe_jail.py
-    tests/test_universe_tools_jail.py
-  JAIL_TEST_NODEIDS: >-
-    tests/test_delivery_node_rpc.py::test_real_linux_jail_transports_delivery_rpc
-    tests/test_native_refresh_jail.py::test_jail_reads_workspace_but_not_launch_credentials
-    tests/test_native_refresh_jail.py::test_removing_the_launch_mask_exposes_the_snapshot
-    tests/test_provider_universe_jail.py::test_claude_node_call_reads_only_its_own_universe
-    tests/test_provider_universe_jail.py::test_codex_node_call_reads_only_its_own_universe
-    tests/test_provider_universe_jail.py::test_router_jails_a_new_command_adapter_with_no_jail_code
-    tests/test_universe_tools_jail.py::test_tools_reach_their_own_universe_and_nothing_else
-    tests/test_universe_tools_jail.py::test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch
-    tests/test_universe_tools_jail.py::test_io_uring_and_symlink_are_refused_in_the_jail
-    tests/test_universe_tools_jail.py::test_the_owners_credentials_and_authority_state_are_out_of_reach
-    tests/test_universe_tools_jail.py::test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt
-    tests/test_universe_tools_jail.py::test_an_engine_pinned_to_another_universe_cannot_reach_it
-    tests/test_universe_tools_jail.py::test_bash_has_no_network
-    tests/test_universe_tools_jail.py::test_the_limits_are_applied_inside_the_jail
-    tests/test_universe_tools_jail.py::test_memory_limit_stops_a_runaway_allocation
-    tests/test_universe_tools_jail.py::test_process_limit_holds_and_a_fork_bomb_is_contained
-    tests/test_universe_tools_jail.py::test_cpu_output_and_wall_clock_limits_kill
-    tests/test_universe_tools_jail.py::test_a_jail_that_fills_the_shared_disk_is_killed
-    tests/test_universe_tools_jail.py::test_a_skill_the_agent_writes_changes_its_next_turn
-    tests/test_universe_tools_jail.py::test_a_background_run_reads_and_writes_its_notes_while_a_database_closes
-
 jobs:
   linux-jail-proof:
     name: linux-jail-proof
-    # Ephemeral GitHub-hosted VM only. Never self-hosted, never a container
-    # image (Docker's default seccomp blocks bubblewrap's clone flags, which
-    # is why the local oracle has to relax seccomp — this job does not).
+    # Ephemeral GitHub-hosted VM only, never self-hosted. The jail itself runs
+    # in a throwaway container as uid 1001 (see the header).
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -155,101 +168,64 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install
+        # On the host only to collect the marked cases and read the JUnit;
+        # the proofs themselves run in the container.
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
 
-      - name: Install bubblewrap
+      - name: Allow user namespaces for the jail container only
+        env:
+          PROFILE: ${{ runner.temp }}/ta-jail-userns
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap
-          command -v bwrap
-          bwrap --version
-
-      - name: Probe the jail (functional smoke)
-        id: probe
-        run: |
-          set -euo pipefail
-          # Mirrors the flags node_sandbox.BwrapLauncher actually uses:
-          # --die-with-parent --new-session --unshare-all. If a jail cannot be
-          # created with these, the real test cannot pass, so decide it here
-          # with a clear message instead of inside pytest.
-          smoke=(bwrap --die-with-parent --new-session --unshare-all
-                 --ro-bind / / --proc /proc --dev /dev -- /bin/true)
-          if "${smoke[@]}"; then
-            echo "runner=unprivileged" >> "$GITHUB_OUTPUT"
-            echo "bubblewrap jail OK without privilege"
-          elif sudo -n "${smoke[@]}"; then
-            # Root-approved fallback: the VM is disposable and the test is
-            # hermetic. No sysctl, no AppArmor edit — just the same argv as root.
-            echo "runner=sudo" >> "$GITHUB_OUTPUT"
-            echo "bubblewrap jail OK only under sudo (unprivileged userns refused)"
-          else
-            echo "::error::bubblewrap cannot create a jail on this runner (unprivileged and sudo both failed)"
-            exit 1
-          fi
+          # Unconfined like Docker's apparmor=unconfined, plus the one permission
+          # the kernel's userns restriction withholds. Applied only to the
+          # containers below, by name.
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            'profile ta-jail-userns flags=(unconfined) {' \
+            '  userns,' \
+            '}' > "$PROFILE"
+          sudo apparmor_parser -r "$PROFILE"
 
       - name: Run the jail proof modules inside the real jail
         env:
-          # Everything the run writes lives under runner.temp, outside the
-          # checkout, so tests/conftest.py's temp-root guard is satisfied and
-          # no repo path is touched.
-          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-jail
-          PYTEST_BASETEMP: ${{ runner.temp }}/ta-pt-jail
-          JUNIT_PATH: ${{ runner.temp }}/junit-linux-jail.xml
-          JAIL_RUNNER: ${{ steps.probe.outputs.runner }}
+          OUT_DIR: ${{ runner.temp }}/jail-out
         run: |
           set -euo pipefail
-          mkdir -p "$TINYASSETS_DATA_DIR" "$PYTEST_BASETEMP"
-          # The exact interpreter setup-python put on PATH, resolved once so the
-          # sudo path runs the SAME binary (and the same site-packages that
-          # `pip install -e` populated), not the system python.
-          py="$(command -v python)"
-          "$py" --version
-          read -r -a files <<< "$JAIL_TEST_FILES"
+          # The cases are whatever carries @pytest.mark.real_jail -- the ONE
+          # definition. A plain assignment, so `set -e` stops on the helper's
+          # own failure (it exits 2 when no test carries the marker).
+          listed="$(python scripts/ci_assert_junit_case.py --marker real_jail --list-files)"
+          mapfile -t files <<< "$listed"
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::JAIL_TEST_FILES is empty"
+            echo "::error::no test file carries pytest.mark.real_jail"
             exit 1
           fi
-          args=("${files[@]}"
-                -q -p no:cacheprovider
-                -o junit_family=xunit1
-                --basetemp "$PYTEST_BASETEMP"
-                --junitxml "$JUNIT_PATH")
-          case "$JAIL_RUNNER" in
-            unprivileged)
-              "$py" -m pytest "${args[@]}"
-              ;;
-            sudo)
-              sudo -n --preserve-env=TINYASSETS_DATA_DIR,GITHUB_ACTIONS,CI,RUNNER_OS,RUNNER_TEMP \
-                "$py" -m pytest "${args[@]}"
-              ;;
-            *)
-              echo "::error::probe step produced no runner decision"
-              exit 1
-              ;;
-          esac
+          mkdir -p "$OUT_DIR"
+          # The SAME invocation a developer runs locally: scripts/linux_oracle.py
+          # builds the oracle image, runs as uid 1001, probes bubblewrap first
+          # (exit 3, pytest never starts, if no jail can be made) and passes
+          # pytest's exit code through. Only the profile is CI-specific.
+          python scripts/linux_oracle.py --out "$OUT_DIR" --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            -- -m real_jail -q -p no:cacheprovider -o junit_family=xunit1 \
+            --basetemp /tmp/b --junitxml /out/junit-linux-jail.xml "${files[@]}"
 
       - name: Assert every real-jail case executed (a skip is not a pass)
         # Runs even when pytest is red so the summary names each case's state.
         if: always()
         env:
-          JUNIT_PATH: ${{ runner.temp }}/junit-linux-jail.xml
+          JUNIT_PATH: ${{ runner.temp }}/jail-out/junit-linux-jail.xml
         run: |
           set -euo pipefail
-          read -r -a nodeids <<< "$JAIL_TEST_NODEIDS"
-          if [ "${#nodeids[@]}" -eq 0 ]; then
-            echo "::error::JAIL_TEST_NODEIDS is empty"
-            exit 1
-          fi
-          nodeid_args=()
-          for nodeid in "${nodeids[@]}"; do
-            nodeid_args+=(--nodeid "$nodeid")
-          done
+          # Every case carrying the marker, derived from the test source by the
+          # same helper; absent, skipped, failed or errored fails the job.
           python scripts/ci_assert_junit_case.py \
             --junit "$JUNIT_PATH" \
-            "${nodeid_args[@]}" \
+            --marker real_jail \
             --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload junit
@@ -257,5 +233,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: junit-linux-jail-proof
-          path: ${{ runner.temp }}/junit-linux-jail.xml
+          path: ${{ runner.temp }}/jail-out/junit-linux-jail.xml
           if-no-files-found: warn

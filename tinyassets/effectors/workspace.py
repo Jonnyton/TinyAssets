@@ -866,6 +866,11 @@ def _checkout(
             f"startup reconciliation failed: {type(exc).__name__}",
         ) from None
 
+    # The lease bound is the platform's, never the packet's: a packet-chosen
+    # reservation is a packet choosing its own quota. For a PERMANENT workspace
+    # it is also never more than the owning account can still hold.
+    storage_reservation, bound = _fit_permanent(storage, base_path, universe_id, repo_key, db)
+
     def _admit(*, wait_s: float = 0.0) -> Any:
         return workspace_pool.admit(
             db,
@@ -874,9 +879,7 @@ def _checkout(
             repo_key=repo_key,
             storage_class=storage,
             run_id=str(run_id),
-            # The lease bound is the platform's, never the packet's: a
-            # packet-chosen reservation is a packet choosing its own quota.
-            max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
+            max_bytes=bound,
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
             wait_s=wait_s,
@@ -885,37 +888,43 @@ def _checkout(
             # run's lock. A cancel arriving there must end the wait, not be
             # discovered after the deadline has already bought a lease.
             should_cancel=should_cancel,
-            **_universe_quota_kwargs(storage, base_path),
+            **_universe_quota_kwargs(storage, bound),
         )
 
+    admitted = False
     try:
-        lease = _admit()
-    except Exception as exc:
-        if is_cancellation(exc):
-            raise
-        kind = _pool_error_kind(exc)
-        if kind not in _SWEEPABLE_REFUSALS:
-            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
-        # A lock or a pool slot held by a run that has already finished is
-        # owed to the outbox, not genuinely in use. Sweep ONCE and retry ONCE:
-        # a loop here would turn a real contention into a stall, and the
-        # periodic sweeper is what handles everything this misses.
         try:
-            from tinyassets import runs as _runs
-
-            _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
-        except Exception:
-            logger.exception("workspace sweep before retry failed")
-            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
-        try:
-            lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
-        except Exception as retry_exc:
-            if is_cancellation(retry_exc):
+            lease = _admit()
+        except Exception as exc:
+            if is_cancellation(exc):
                 raise
-            raise _Refused(
-                _pool_error_kind(retry_exc),
-                f"workspace not admitted: {_pool_detail(retry_exc)}",
-            ) from None
+            kind = _pool_error_kind(exc)
+            if kind not in _SWEEPABLE_REFUSALS:
+                raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+            # A lock or a pool slot held by a run that has already finished is
+            # owed to the outbox, not genuinely in use. Sweep ONCE and retry ONCE:
+            # a loop here would turn a real contention into a stall, and the
+            # periodic sweeper is what handles everything this misses.
+            try:
+                from tinyassets import runs as _runs
+
+                _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
+            except Exception:
+                logger.exception("workspace sweep before retry failed")
+                raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+            try:
+                lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
+            except Exception as retry_exc:
+                if is_cancellation(retry_exc):
+                    raise
+                raise _Refused(
+                    _pool_error_kind(retry_exc),
+                    f"workspace not admitted: {_pool_detail(retry_exc)}",
+                ) from None
+        admitted = True
+    finally:
+        if not admitted:  # every give-up path, cancellation included
+            _settle_permanent(storage_reservation, published=False)
 
     # ONE owner for everything created after admission (Codex round 3, P1 #7).
     # `owned` holds what this call opened; the mount takes them ONLY after a
@@ -924,6 +933,7 @@ def _checkout(
     # and nobody wipes is a leak the pool cannot see.
     owned: list[Any] = []
     published = False
+    generation_bytes: int | None = None
     staging: Path | None = None
     try:
         staging = _staging_root(base_path, run_id, node_id)
@@ -1023,6 +1033,11 @@ def _checkout(
 
         replaced = None
         if storage == "universe":
+            # Provisioning may have grown the generation past the bytes the
+            # transfer moved: measure what will be published, and refuse it
+            # (discarded, the previous generation untouched) if it outgrew what
+            # the account could hold.
+            generation_bytes = _require_generation_fits(lease, bound)
             replaced = _publish(
                 db, lease, universe_id=universe_id, repo_key=repo_key, run_id=run_id
             )
@@ -1052,6 +1067,7 @@ def _checkout(
             from tinyassets import workspace_staging
 
             workspace_staging.remove(staging)
+        _settle_permanent(storage_reservation, published=published, actual=generation_bytes)
         if not published:
             _close_handles(*owned)
             _owe_wipe(base_path, lease, run_id=run_id, universe_id=universe_id)
@@ -1072,31 +1088,100 @@ def _checkout(
     return evidence
 
 
-def _universe_quota_kwargs(storage: str, base_path: Path) -> dict[str, Any]:
+def _fit_permanent(
+    storage: str, base_path: Path, universe_id: str, repo_key: str, db: Path,
+) -> tuple[Any, int]:
+    """``(storage_reservation, lease bound)`` for one workspace admission.
+
+    Scratch: the pool's lease bound, never charged to anyone. Permanent: the
+    OWNING ACCOUNT's storage decides -- the bound is what still fits (plus the
+    generation this checkout replaces, whose discard is owed at publication),
+    capped at the lease bound. account-storage-quota D6: the old fixed 4 GiB
+    reservation against a flat 16 GiB quota refused every permanent workspace on
+    a 2 GiB free account, empty or not. Raises `_Refused` when even the
+    minimum does not fit, before any lease exists.
+    """
+    if storage != "universe":
+        return None, _DEFAULT_MAX_CHECKOUT_BYTES
+    from tinyassets import storage_accounting, workspace_pool
+    from tinyassets.universe_owner import owner_of
+
+    data_root = Path(base_path).parent
+    credit = 0
+    conn = workspace_pool._connect(db)
+    try:
+        workspace_pool.ensure_schema(conn)
+        published = workspace_pool.published_generation(
+            conn, universe_id=universe_id, repo_key=repo_key,
+        )
+    finally:
+        conn.close()
+    if published is not None:
+        old_path, _ = workspace_pool.universe_paths(
+            universe_workspace_root(base_path), repo_key, published,
+        )
+        credit = storage_accounting._walk_bytes(Path(old_path))
+    try:
+        return storage_accounting.reserve_fitted(
+            data_root,
+            account_id=owner_of(data_root, universe_id),
+            scope_id=universe_id,
+            store="workspaces",
+            cap=_DEFAULT_MAX_CHECKOUT_BYTES,
+            credit=credit,
+        )
+    except storage_accounting.StorageRefused as refused:
+        # The effector result reaches whoever drove this run -- possibly a
+        # collaborator in the owner's universe -- so only the charged account
+        # sees its numbers (gpt-6-astra, PR #4167). No bound actor: redacted.
+        record = storage_accounting.visible_record(refused)
+        raise _Refused(record.pop("failure_class"), record.pop("error"), **record) from None
+
+
+def _universe_quota_kwargs(storage: str, bound: int) -> dict[str, Any]:
+    """The pool's own per-universe check, fed the ACCOUNT-derived bound: with no
+    separate "used" number it only stops two in-flight permanent leases from
+    sharing one bound. The account pool (`_fit_permanent`) is the one quota."""
     if storage != "universe":
         return {}
-    from tinyassets import workspace_pool
-
-    return {
-        "universe_quota_bytes": int(_DEFAULT_MAX_CHECKOUT_BYTES * 4),
-        "universe_used_bytes_fn": lambda _uid: _universe_used_bytes(base_path, workspace_pool),
-    }
+    return {"universe_quota_bytes": int(bound), "universe_used_bytes_fn": lambda _uid: 0}
 
 
-def _universe_used_bytes(base_path: Path, _pool: Any) -> int:
-    """Bytes the universe's permanent workspaces already hold. Called INSIDE
-    the admission transaction, so it must not open the pool database."""
-    root = base_path / "workspaces"
-    if not root.is_dir():
-        return 0
-    total = 0
-    for path in root.rglob("*"):
+def _settle_permanent(
+    storage_reservation: Any, *, published: bool, actual: int | None = None,
+) -> None:
+    """Commit the permanent workspace's reservation once published -- at the
+    MEASURED generation size, not the bound, so an empty created workspace is
+    not billed its 4 GiB ceiling -- and release it otherwise. Never raises."""
+    if storage_reservation is None:
+        return
+    from tinyassets import storage_accounting
+
+    if published:
         try:
-            if path.is_file() and not path.is_symlink():
-                total += path.stat().st_size
-        except OSError:
-            continue
-    return total
+            amount = storage_reservation.bytes if actual is None else min(
+                int(actual), storage_reservation.bytes,
+            )
+            storage_accounting.commit(storage_reservation, amount)
+        except Exception:  # noqa: BLE001 -- measurement settles it
+            logger.exception("workspace storage reservation could not be committed")
+    else:
+        storage_accounting.release(storage_reservation)
+
+
+def _require_generation_fits(lease: Any, bound: int) -> int:
+    """Measure the new generation -- provisioning included -- and refuse it if it
+    outgrew its reservation, before publication (D6). Returns its size."""
+    from tinyassets import storage_accounting
+
+    size = storage_accounting._walk_bytes(Path(lease.path))
+    if size > bound:
+        raise _Refused(
+            "storage_quota_exceeded",
+            f"the workspace grew to {size} bytes, past the {bound} bytes its "
+            "account storage could hold; nothing was published",
+        )
+    return size
 
 
 def _publish(db: Path, lease: Any, *, universe_id: str, repo_key: str, run_id: str) -> int | None:
@@ -1210,6 +1295,11 @@ def _create(
                 "it, and re-opening one is not available in this release",
             )
 
+    # A created workspace starts empty, but its bound is still what the owning
+    # account can hold -- and its admission is refused if even the minimum does
+    # not fit (D6). Growth during the run is measured afterwards (founder Q5).
+    storage_reservation, bound = _fit_permanent(storage, base_path, universe_id, repo_key, db)
+
     def _admit(*, wait_s: float = 0.0) -> Any:
         return workspace_pool.admit(
             db,
@@ -1221,7 +1311,7 @@ def _create(
             repo_key=repo_key,
             storage_class=storage,
             run_id=str(run_id),
-            max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
+            max_bytes=bound,
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
             wait_s=wait_s,
@@ -1229,33 +1319,39 @@ def _create(
             # Same contended lock, same pool, same wait: a created workspace is
             # not a lesser admission and must stop for a cancel too.
             should_cancel=should_cancel,
-            **_universe_quota_kwargs(storage, base_path),
+            **_universe_quota_kwargs(storage, bound),
         )
 
+    admitted = False
     try:
-        lease = _admit()
-    except Exception as exc:
-        if is_cancellation(exc):
-            raise
-        kind = _pool_error_kind(exc)
-        if kind not in _SWEEPABLE_REFUSALS:
-            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
         try:
-            from tinyassets import runs as _runs
-
-            _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
-        except Exception:
-            logger.exception("workspace sweep before retry failed")
-            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
-        try:
-            lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
-        except Exception as retry_exc:
-            if is_cancellation(retry_exc):
+            lease = _admit()
+        except Exception as exc:
+            if is_cancellation(exc):
                 raise
-            raise _Refused(
-                _pool_error_kind(retry_exc),
-                f"workspace not admitted: {_pool_detail(retry_exc)}",
-            ) from None
+            kind = _pool_error_kind(exc)
+            if kind not in _SWEEPABLE_REFUSALS:
+                raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+            try:
+                from tinyassets import runs as _runs
+
+                _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
+            except Exception:
+                logger.exception("workspace sweep before retry failed")
+                raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+            try:
+                lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
+            except Exception as retry_exc:
+                if is_cancellation(retry_exc):
+                    raise
+                raise _Refused(
+                    _pool_error_kind(retry_exc),
+                    f"workspace not admitted: {_pool_detail(retry_exc)}",
+                ) from None
+        admitted = True
+    finally:
+        if not admitted:
+            _settle_permanent(storage_reservation, published=False)
 
     owned: list[Any] = []
     published = False
@@ -1301,6 +1397,8 @@ def _create(
         published = True
         owned.clear()
     finally:
+        # Created empty: charged what it holds now (nothing), not its bound.
+        _settle_permanent(storage_reservation, published=published, actual=0)
         if not published:
             _close_handles(*owned)
             _owe_wipe(base_path, lease, run_id=run_id, universe_id=universe_id)
@@ -1805,7 +1903,7 @@ def _run(
     db_path = _ledger_db_path(base_path)
     if not universe_id or db_path is None or base_path is None:
         return {
-            "error": "no universe authority is bound to this run",
+            "error": "no command center authority is bound to this run",
             "error_kind": "no_universe_authority",
             "matched_output_key": matched_key,
         }

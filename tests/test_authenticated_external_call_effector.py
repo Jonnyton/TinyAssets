@@ -35,6 +35,9 @@ import ssl
 import threading
 from pathlib import Path
 
+import pytest
+
+from tinyassets import agent_review
 from tinyassets.credential_vault import write_credential_vault
 from tinyassets.effectors import authenticated_external_call as aec
 from tinyassets.effectors.authenticated_external_call import (
@@ -50,6 +53,18 @@ from tinyassets.storage.outbound_connections import (
 )
 
 _HTTP_FLAG = "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"
+
+
+def _approve(prompt, system, role="writer"):
+    return '{"verdict": "proceed", "reason": "test reviewer"}'
+
+
+@pytest.fixture(autouse=True)
+def _a_reviewer_that_approves():
+    """These tests drive the effector itself, not a run: they bind an explicit
+    approving reviewer (harness D1d holds a consequential action with none)."""
+    with agent_review.bound(_approve, active=True):
+        yield
 
 
 # --------------------------------------------------------------------------- #
@@ -564,6 +579,7 @@ def test_sink_is_registered_and_dispatchable_from_a_branch():
         ]
     )
     evidence = effectors_pkg.run_effects_for_branch(
+        review_provider=_approve,
         branch=branch,
         run_state={},
         base_path=None,
@@ -808,6 +824,7 @@ def test_append_one_line_chains_a_fetch_effect_into_the_write_in_one_run(tmp_pat
     run_state = {"fetch_packet": json.dumps(fetch_packet), "write_packet": json.dumps(write_packet)}
     try:
         evidence = effectors_pkg.run_effects_for_branch(
+            review_provider=_approve,
             branch=branch, run_state=run_state, base_path=str(universe_dir), run_id="r1",
         )
     finally:
@@ -861,6 +878,7 @@ def test_effect_reference_sees_only_earlier_nodes(tmp_path, monkeypatch):
     run_state = {"fetch_packet": json.dumps(fetch_packet), "write_packet": json.dumps(write_packet)}
     try:
         evidence = effectors_pkg.run_effects_for_branch(
+            review_provider=_approve,
             branch=branch, run_state=run_state, base_path=str(universe_dir), run_id="r1",
         )
     finally:
@@ -1071,7 +1089,7 @@ def _seed_engine_admission(tmp_path, monkeypatch, run_id, universe_id="universe-
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     db = tmp_path / adm.LEDGER_NAME
-    ticket = adm.admit(universe_id, write_max=20, total_max=60, window_s=3600, db=db)
+    ticket = adm.admit(universe_id, db=db)
     assert adm._is_ticket(ticket)
     assert adm.attach_run(ticket, run_id, db=db)
     return db
@@ -1114,6 +1132,7 @@ def _run_one(tmp_path, monkeypatch, *, verb, run_id, packet_body=None, refuse_gr
                                   output_keys=["pkt"], input_keys=[])], state_schema=None)
     try:
         evidence = effectors_pkg.run_effects_for_branch(
+            review_provider=_approve,
             branch=branch, run_state={"pkt": json.dumps(packet)},
             base_path=str(universe_dir), run_id=run_id,
         )
@@ -1163,6 +1182,7 @@ def test_a_run_with_no_effect_nodes_settles_as_a_read(tmp_path, monkeypatch):
     branch = node(node_defs=[node(node_id="think", effects=[], output_keys=["o"], input_keys=[])],
                   state_schema=None)
     assert effectors_pkg.run_effects_for_branch(
+        review_provider=_approve,
         branch=branch, run_state={"o": "text"}, base_path=str(tmp_path / "universe-1"),
         run_id="run-compute") == {}
     assert _admission_kind(db, "run-compute") == "read"
@@ -1203,6 +1223,7 @@ def test_an_unknown_sink_settles_as_a_write(tmp_path, monkeypatch):
     branch = node(node_defs=[node(node_id="n1", effects=["github_pull_request"],
                                   output_keys=["o"], input_keys=[])], state_schema=None)
     evidence = effectors_pkg.run_effects_for_branch(
+        review_provider=_approve,
         branch=branch, run_state={"o": "x"}, base_path=str(tmp_path / "universe-1"),
         run_id="run-unknown")
     assert evidence["n1"]["github_pull_request"]["error_kind"] == "unknown_sink"

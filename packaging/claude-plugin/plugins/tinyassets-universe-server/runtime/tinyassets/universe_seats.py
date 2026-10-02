@@ -1,91 +1,30 @@
-"""Seats: how many agent calls one universe runs at once, and who waits.
+"""Account seats: how many agent calls one ACCOUNT runs at once.
 
-Founder directive 2026-09-30: *"how many agent calls thier universe can
-simoltaniously run ... a user could not prompt infinate agents at once without some
-pending waiting on a avalable seat."*
+Founder, 2026-09-30: an account's limits are two numbers, cloud storage and
+concurrent agent seats. Over the seat count, work WAITS -- visibly, in a queue --
+and is never refused or dropped. The pool is ONE per person, shared across all of
+their universes; universe creation stays unlimited and free.
 
-**Pending, not refused.** That word is the whole contract. A user who starts four
-agents on a three-seat account has not done anything wrong -- they asked for more
-than fits at once -- so the extra work QUEUES and starts when a seat frees. Nothing
-here ever refuses for want of a seat, and nothing here ever drops work.
-
-A seat is one in-flight AGENT CALL: a `converse` chat turn, an agent node, an
-automation run, an `event` / `once` / `app_event` wake. Not one provider attempt --
-one agent call makes several (fallback chain, judge ensemble, retry), so charging at
-`providers/router.py`'s existing slot would mean "3 seats" did not mean "3 agents".
-
-Three layers, none of them duplicating another:
-
-    universe seats        HERE      per-universe, tier-sized, QUEUES
-      provider_admission  existing  host-wide, memory-sized, REFUSES
-        _SYNC_CALL_MAX_WORKERS = 8  thread pool
-
-`provider_admission` is a MEMORY bound derived from measured RSS on a 2 GB box; it
-would exist with one user. Seats are a PRODUCT bound from the account tier; they
-would exist on an infinite box. A universe can be seat-full with provider slots free,
-and provider slots can be exhausted with seats free.
-
-And one layer below in scope, not above: the per-agent lease
-(`automations.universe_leases`) answers *"is THIS agent already running?"*. Seats
-answer *"may ANY of this universe's agents start?"*. A due automation resolves its
-own overlap policy FIRST and only then asks for a seat, so a `skip`-policy run never
-occupies a queue position it will abandon.
-
-Why SQLite leases and not a semaphore
--------------------------------------
-1. Engine MCP runs as a CHILD PROCESS. `automations.py` already records what an
-   in-memory map cost there: "a restarted process (empty map) could launch work an
-   OLD process is still doing".
-2. A deploy RECREATES THE CONTAINER. An in-memory count restarts at zero while
-   provider subprocesses may still be dying.
-3. A process that CRASHES without unwinding leaks a seat forever. An expiry cannot.
-
-So: rows with an absolute `expires_at`, refreshed while the work is live, and reaped
-by the next acquisition. Reaping is on the acquisition path rather than a timer --
-after a deploy, the first acquisition is exactly when stale rows must be gone, and a
-timer is one more thing that can be dead at that moment.
-
-Fairness
---------
-Background work occupies at most `seats - interactive_reserve`. The reserved seat is
-a HARD guarantee that a runaway ping-pong of background wakes cannot make the owner's
-chat wait: a priority ordering alone bounds the chat's wait by the longest background
-run, which is `DEFAULT_RUN_TIMEOUT_SECONDS` (3 hours) by design. Within a class,
-order is by a monotone ticket, so the longest-owed starts first.
-
-What this module does NOT promise, stated because two of them read like promises
------------------------------------------------------------------------------
-* **Eventual background service.** Interactive work has absolute priority, so
-  continuous interactive demand can defer background work indefinitely. The
-  guarantee is one-directional by design: the owner's chat never waits on their
-  automations. There is no aging, and background progress is conditional on
-  interactive demand subsiding (astra round 1, finding 7). A universe's own chat
-  starving its own automations is the owner's own doing, and it stops when they
-  stop typing.
-* **A durable queue for synchronous callers.** A waiter row is a QUEUE POSITION,
-  not a work record (astra round 1, finding 3). Background work -- automations,
-  wakes, agent nodes -- is already durable in its own tables, so waiting only
-  delays it and nothing is dropped. A `converse` chat turn is a synchronous
-  request: if it cannot get a seat it is TOLD so, and the caller retries. This
-  module must not be read as promising to replay it later, because it does not
-  store it.
-
-Where the seat is taken, which is not where it is asked for
-----------------------------------------------------------
-The seat belongs to the code that EXECUTES the agent call, never to the code that
-enqueues it (astra round 1, finding 2). `runs.py`'s `start_run` submits a worker and
-returns `queued` immediately, and `graph_compiler` deliberately leaves an
-already-started worker running after a node timeout. A seat held around either of
-those releases while the work is still going. So: acquire inside the node executor
-and the run worker, not in the API handler that started them.
-
-`parent_seat_id` is passed EXPLICITLY, in-process only. It is deliberately not
-carried on `ProviderInvocationCarrier`: that object is immutable, non-serializable
-and process-bound, so it cannot transport a seat across the engine-MCP process
-boundary (astra round 1, finding 5). A nested call in another process takes its own
-seat, which is the safe direction. Inheritance is also keyed on the parent actually
-being SUSPENDED, not on invocation depth -- a by-version invoke defaults to blocking
-and waits, so depth alone answers the wrong question.
+* **Keyed on the owning account.** `account_key` asks `universe_owner.owner_of`,
+  the one resolver storage uses too. A universe no account is charged for
+  (pre-ownership, ambiguous home) is its own unattributed pool: counted, never
+  refused, and never merged into somebody else's.
+* **Held at the agent call.** The agent node's executor (`graph_compiler`) and the
+  chat turn (`universe_intelligence.converse`) hold a seat for the model call. An
+  automation or wake worker takes its seat BEFORE it claims an attempt, without
+  blocking the consumer thread (`try_acquire`), and the run's agent calls re-enter
+  it. Nothing that merely enqueues work holds a seat.
+* **Interactive first.** ``total < seats`` always; ``background < seats -
+  reserve`` for background only, so a chat is never stuck behind automation; and
+  an interactive waiter is ahead of every background waiter.
+* **Nested calls transfer, siblings pay.** A blocking child re-enters its parent's
+  seat by an exclusive depth transition; a parallel sibling that finds the seat
+  already lent takes (and waits for) its own.
+* **Released on proven death.** A seat's holder is this process's
+  `process_liveness.owner_token` under the ledger's own root. A seat is reclaimed
+  when its holder is proven dead (a crash, a deploy's SIGKILL), or when its lease
+  lapsed AND the holder is not provably alive. A provably alive holder is never
+  reclaimed, however stale its lease.
 """
 
 from __future__ import annotations
@@ -96,13 +35,16 @@ import secrets
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from collections.abc import Callable
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
+_current_seat: ContextVar = ContextVar("account_seat", default=None)
 
-LEDGER_NAME = ".universe_seats.db"
+LEDGER_NAME = ".account_seats.db"
 
 CLASS_INTERACTIVE = "interactive"
 CLASS_BACKGROUND = "background"
@@ -114,102 +56,123 @@ KIND_CHAT_TURN = "chat_turn"
 KIND_AGENT_NODE = "agent_node"
 KIND_AUTOMATION = "automation"
 KIND_WAKE = "wake"
-KIND_APP_EVENT = "app_event"
 
-#: How long a seat survives its holder's silence. Deliberately far shorter than a
-#: run's own timeout (`automations.DEFAULT_RUN_TIMEOUT_SECONDS`, 10800): a DEAD
-#: holder's seat should strand capacity for two minutes, not three hours. A LIVE
-#: long run keeps its seat indefinitely, because the refresher keeps stamping it --
-#: "a served turn runs until it is finished" is not weakened by a short lease, only
-#: by a missing refresher.
+#: Account keys carry their kind, so an owner id can never collide with an
+#: unattributed universe's pool.
+_ACCOUNT_PREFIX = "account:"
+_UNATTRIBUTED_PREFIX = "unattributed:"
+
+#: How long a seat survives its holder's silence WHEN its holder cannot be proven
+#: alive. The refresher re-stamps every live seat, so a lapsed lease with no
+#: liveness proof means nobody is holding it.
 SEAT_LEASE_SECONDS = 120.0
-#: Re-stamp cadence. A quarter of the lease, so two consecutive missed refreshes
-#: still do not expire a live seat.
+#: Re-stamp cadence: a quarter of the lease.
 SEAT_REFRESH_SECONDS = 30.0
-#: A waiter's own liveness lease. Longer than a seat's, because a waiter may sit for
-#: as long as the work ahead of it takes and losing its position would be the drop
-#: this module promises never to do.
-WAITER_LEASE_SECONDS = 900.0
-#: How long a blocking acquire waits before handing back a visible waiting state
-#: instead of continuing to block. Matches `provider_admission`'s own judgement:
-#: long enough to ride out a brief burst, short enough that a queued user gets an
-#: answer rather than a hang.
-SEAT_WAIT_SECONDS = 20.0
-#: Poll cadence while blocking. Cheap next to an agent call measured in seconds.
-_POLL_SECONDS = 0.1
-
-#: This process's holder token. Identity for re-entrancy and for the refresher;
-#: liveness is the lease's job, not this token's. Regenerated after a fork so a
-#: child cannot refresh or re-enter its parent's seats.
-_BOOT = secrets.token_hex(8)
-
-
-def _holder() -> str:
-    return f"{os.getpid()}:{_BOOT}"
-
-
-def _reset_holder_after_fork() -> None:
-    global _BOOT
-    _BOOT = secrets.token_hex(8)
-
-
-if hasattr(os, "register_at_fork"):  # POSIX only; a no-op elsewhere
-    os.register_at_fork(after_in_child=_reset_holder_after_fork)
+#: A waiter's queue position lapses if it is not re-presented for this long. Every
+#: waiter re-presents its ticket far more often (a blocking waiter every
+#: `_POLL_SECONDS`, the automation pump every poll), so only an abandoned position
+#: lapses -- and a lapsed live waiter only rejoins at the back, it is never dropped.
+#: Short on purpose: an abandoned position ahead of live work stalls that work.
+WAITER_LEASE_SECONDS = 60.0
+#: How often a waiting caller re-publishes its waiting state.
+WAITING_NOTICE_SECONDS = 5.0
+_POLL_SECONDS = 0.25
 
 
 class SeatLedgerUnusable(RuntimeError):
     """The seat store is tampered or unreadable.
 
-    Raised, not swallowed. A seat store that cannot be trusted is a cross-universe
-    concurrency escape -- admitting work without a seat because the ledger is a
-    symlink is exactly the evasion the check exists to stop, and Hard Rule 8 says
-    fail loudly rather than pretend.
+    Raised, not swallowed: admitting work without a seat because the ledger is a
+    symlink is exactly the evasion the check exists to stop (Hard Rule 8).
     """
 
 
 @dataclass(frozen=True)
 class Seat:
-    """A held seat. ``reentrant`` means it re-entered a parent's seat rather than
-    taking a second one, so releasing it only decrements a depth."""
+    """A held seat. ``reentrant`` means it re-entered a parent's seat, so
+    releasing it only decrements that seat's depth."""
 
     seat_id: str
-    universe_id: str
+    account_id: str
     seat_class: str
     kind: str
     reentrant: bool = False
+    depth: int = 1
+    db: Path | None = None
 
 
 @dataclass(frozen=True)
 class Waiting:
-    """No seat yet, and the queue position that guarantees one. Never a refusal:
-    the caller's work still runs, once ``ticket`` reaches the front."""
+    """No seat yet, and the queue position that guarantees one. Never a refusal."""
 
     ticket: int
-    universe_id: str
+    account_id: str
     seat_class: str
     running: int
     waiting: int
     seats: int
 
 
-def ledger_path() -> Path:
-    """The seat store under the daemon's resolved data root.
+# --------------------------------------------------------------------------- #
+# Account and tier -- the storage lane's resolver, never a second one
+# --------------------------------------------------------------------------- #
 
-    `tinyassets.storage.data_dir` -- `TINYASSETS_DATA_DIR` first, absolute, never
-    the CWD (the configuration invariant in AGENTS.md).
+
+def account_key(universe_id: str, *, root: str | Path) -> str:
+    """The seat pool a universe's agent calls draw from.
+
+    ``universe_owner.owner_of`` is the ONE resolver of "whose account is this
+    universe charged to" (#4139). Nothing here re-derives ownership from ACL rows
+    or bindings (memory `never-infer-identity-from-adjacent-tables`).
     """
-    from tinyassets.storage import data_dir
+    from tinyassets.universe_owner import owner_of
 
-    return data_dir() / LEDGER_NAME
+    uid = (universe_id or "").strip()
+    if not uid:
+        raise ValueError("a seat needs a universe_id")
+    owner = owner_of(root, uid)
+    return f"{_ACCOUNT_PREFIX}{owner}" if owner else f"{_UNATTRIBUTED_PREFIX}{uid}"
+
+
+def owner_of_key(key: str) -> str | None:
+    """The account id inside an account key, or None for an unattributed pool."""
+    return key[len(_ACCOUNT_PREFIX):] if key.startswith(_ACCOUNT_PREFIX) else None
+
+
+def tier_of_key(key: str, *, root: str | Path):
+    """The `AccountType` of an account key, via ``universe_owner.account_type_of``
+    -- the one per-account input policy takes. An unattributed pool is free:
+    unknown never resolves to a subscription."""
+    from tinyassets.universe_owner import account_type_of
+    from tinyassets.usage_policy import AccountType
+
+    owner = owner_of_key(key)
+    return account_type_of(root, owner) if owner else AccountType.FREE
+
+
+def limits_for_key(key: str, *, root: str | Path):
+    from tinyassets.usage_policy import limits_for
+
+    return limits_for(tier_of_key(key, root=root))
+
+
+# --------------------------------------------------------------------------- #
+# The ledger
+# --------------------------------------------------------------------------- #
+
+
+def ledger_path(root: str | Path | None = None) -> Path:
+    """The seat store under the data root (`storage.data_dir`, never the CWD)."""
+    if root is None:
+        from tinyassets.storage import data_dir
+
+        root = data_dir()
+    return Path(root) / LEDGER_NAME
 
 
 def _trusted(db: Path) -> bool:
-    """Whether the store sits inside its data dir and is not a symlink.
-
-    Same rule as `engine_admissions._ledger_is_trusted`, and for a sharper reason
-    here: a seat store an attacker can redirect is a seat store whose counts they
-    choose. A check that cannot complete is NOT trust -- it raises.
-    """
+    """Whether the store sits inside its data dir and is not a symlink. A check
+    that cannot complete is NOT trust -- it raises."""
     try:
         if db.is_symlink():
             return False
@@ -221,9 +184,10 @@ def _trusted(db: Path) -> bool:
 
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS universe_seats (
+CREATE TABLE IF NOT EXISTS account_seats (
     seat_id      TEXT PRIMARY KEY,
-    universe_id  TEXT NOT NULL,
+    account_id   TEXT NOT NULL,
+    universe_id  TEXT NOT NULL DEFAULT '',
     seat_class   TEXT NOT NULL,
     kind         TEXT NOT NULL,
     run_id       TEXT NOT NULL DEFAULT '',
@@ -232,16 +196,14 @@ CREATE TABLE IF NOT EXISTS universe_seats (
     acquired_at  REAL NOT NULL,
     expires_at   REAL NOT NULL
 );
-CREATE INDEX IF NOT EXISTS universe_seats_universe
-    ON universe_seats(universe_id, expires_at);
+CREATE INDEX IF NOT EXISTS account_seats_account ON account_seats(account_id);
 
 -- `ticket` is AUTOINCREMENT so "longest-owed" is an integer comparison: two
--- waiters enqueued in the same millisecond still have a total order, which a
--- float timestamp cannot promise. `enqueued_at` is kept for the owner-facing
--- "waiting since", never for ordering.
+-- waiters enqueued in the same millisecond still have a total order.
 CREATE TABLE IF NOT EXISTS seat_waiters (
     ticket       INTEGER PRIMARY KEY AUTOINCREMENT,
-    universe_id  TEXT NOT NULL,
+    account_id   TEXT NOT NULL,
+    universe_id  TEXT NOT NULL DEFAULT '',
     seat_class   TEXT NOT NULL,
     kind         TEXT NOT NULL,
     run_id       TEXT NOT NULL DEFAULT '',
@@ -249,13 +211,21 @@ CREATE TABLE IF NOT EXISTS seat_waiters (
     enqueued_at  REAL NOT NULL,
     expires_at   REAL NOT NULL
 );
-CREATE INDEX IF NOT EXISTS seat_waiters_universe
-    ON seat_waiters(universe_id, seat_class, ticket);
+CREATE INDEX IF NOT EXISTS seat_waiters_account
+    ON seat_waiters(account_id, seat_class, ticket);
 """
 
 
-def _connect(db: Path | None) -> sqlite3.Connection:
-    db = db or ledger_path()
+def _schema_statements() -> list[str]:
+    """`_SCHEMA` as single statements, with its comments dropped."""
+    lines = [line for line in _SCHEMA.splitlines() if not line.lstrip().startswith("--")]
+    return [stmt.strip() for stmt in "\n".join(lines).split(";") if stmt.strip()]
+
+
+_SCHEMA_STATEMENTS = _schema_statements()
+
+
+def _connect(db: Path) -> sqlite3.Connection:
     try:
         db.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -264,7 +234,9 @@ def _connect(db: Path | None) -> sqlite3.Connection:
     if not _trusted(db):
         raise SeatLedgerUnusable(f"seat store is not inside its data dir: {db}")
     try:
-        conn = sqlite3.connect(str(db), timeout=30)
+        # Autocommit mode: `_txn` issues BEGIN IMMEDIATE / COMMIT itself, so the
+        # driver never opens or closes a transaction behind its back.
+        conn = sqlite3.connect(str(db), timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")
         return conn
@@ -273,22 +245,27 @@ def _connect(db: Path | None) -> sqlite3.Connection:
 
 
 @contextmanager
-def _txn(db: Path | None):
-    """One `BEGIN IMMEDIATE` per operation.
+def _txn(db: Path):
+    """One `BEGIN IMMEDIATE` per operation, held until COMMIT.
 
-    The lock comes FIRST, so schema creation happens under it: two first touches
-    used to both pass before either had created the tables
-    (`engine_admissions`' round-1 P0, and `workspace_pool` repeats the note).
+    The schema is created with single `execute` calls INSIDE the transaction.
+    `executescript` must never be used here: it COMMITS any open transaction
+    before it runs, which silently ended the write lock the moment it was taken
+    -- every reap, count and insert after it ran outside any transaction, so two
+    releases of a lent seat could both read depth 2 and leave a depth-0 row that
+    held a seat forever, and two acquirers could both take the last seat.
     """
     conn = _connect(db)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        conn.executescript(_SCHEMA)
+        for statement in _SCHEMA_STATEMENTS:
+            conn.execute(statement)
         yield conn
-        conn.commit()
+        conn.execute("COMMIT")
     except BaseException:
         try:
-            conn.rollback()
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
         except sqlite3.Error:
             pass
         raise
@@ -296,516 +273,469 @@ def _txn(db: Path | None):
         conn.close()
 
 
-def _reap(conn: sqlite3.Connection, now: float) -> None:
-    """Reclaim expired seats and waiters whose holders are not provably alive.
+def _holder(root: Path) -> str:
+    """This process's owner token, its liveness lock held under ``root``."""
+    from tinyassets.process_liveness import owner_token
 
-    Called at the top of EVERY acquisition, not on a timer: after a deploy the
-    first acquisition is exactly when the previous process's rows have to be gone.
+    return owner_token(root)
 
-    **Expiry is not unconditional reclamation.** Unconditional deletion admits a
-    replacement while the original holder is still calling a provider: kill the
-    refresher thread, leave its provider running, wait out the lease, and two agent
-    calls execute on one seat (astra round 1, finding 1). `automations._lease_blocks`
-    already refuses to do this, and for the same reason -- "a live holder that missed
-    its refreshes may still be calling a provider".
 
-    So an expired seat is reclaimed only when its holder is NOT provably alive.
-    Provably alive means the holder still holds its OS liveness lock, which the
-    kernel drops however the process dies, SIGKILL from a deploy included. A holder
-    with no liveness file is not proven alive and is reclaimed -- the lease is the
-    bound for a process that never registered, and refusing to ever reclaim those
-    would strand capacity permanently.
+def _reap(conn: sqlite3.Connection, now: float, root: Path) -> None:
+    """Reclaim seats whose holder is proven dead, or whose lease lapsed with no
+    proof of life; drop waiters that are dead or abandoned.
+
+    Probed once per distinct holder: every seat a process holds shares its token.
     """
-    expired = conn.execute(
-        "SELECT seat_id, holder FROM universe_seats WHERE expires_at < ?", (now,)
-    ).fetchall()
-    for row in expired:
-        if _holder_is_alive(str(row["holder"])):
-            continue
-        conn.execute("DELETE FROM universe_seats WHERE seat_id = ?", (row["seat_id"],))
-    # A waiter is a QUEUE POSITION, never work. Its expiry cannot lose work,
-    # because the work it is waiting for is durable elsewhere (see `acquire`).
-    conn.execute("DELETE FROM seat_waiters WHERE expires_at < ?", (now,))
+    from tinyassets.process_liveness import ALIVE, DEAD, owner_state
+
+    states: dict[str, str] = {}
+
+    def state(holder: str) -> str:
+        if holder not in states:
+            states[holder] = owner_state(root, holder)
+        return states[holder]
+
+    for row in conn.execute("SELECT seat_id, holder, expires_at FROM account_seats").fetchall():
+        verdict = state(str(row["holder"]))
+        if verdict == DEAD or (verdict != ALIVE and float(row["expires_at"]) < now):
+            conn.execute("DELETE FROM account_seats WHERE seat_id = ?", (row["seat_id"],))
+    for row in conn.execute("SELECT ticket, holder, expires_at FROM seat_waiters").fetchall():
+        if state(str(row["holder"])) == DEAD or float(row["expires_at"]) < now:
+            conn.execute("DELETE FROM seat_waiters WHERE ticket = ?", (row["ticket"],))
 
 
-def _holder_is_alive(holder: str) -> bool:
-    """Whether ``holder``'s process provably still exists.
-
-    Delegates to the consumer-liveness proof `automations` already maintains: a
-    file per holder, OS-locked for the process lifetime. Never a guess -- an
-    unknown holder, a missing file or a probe error all answer False, so this can
-    only ever DELAY reclamation of a seat whose owner is demonstrably running.
-    """
-    if holder == _holder():
-        # Our own seats. This process is obviously alive, and probing our own
-        # lock would report "alive" only if we happen to have registered one.
-        return True
-    try:
-        from tinyassets.process_liveness import ALIVE, owner_state
-        from tinyassets.storage import data_dir
-
-        return owner_state(data_dir(), holder) == ALIVE
-    except Exception:
-        return False
+def _count(conn: sqlite3.Connection, table: str, account_id: str, seat_class: str | None = None,
+           before: int | None = None) -> int:
+    sql = f"SELECT COUNT(*) FROM {table} WHERE account_id = ?"
+    args: list[object] = [account_id]
+    if seat_class is not None:
+        sql += " AND seat_class = ?"
+        args.append(seat_class)
+    if before is not None:
+        sql += " AND ticket < ?"
+        args.append(before)
+    return int(conn.execute(sql, args).fetchone()[0])
 
 
-def _running(
-    conn: sqlite3.Connection, universe_id: str, seat_class: str | None = None
-) -> int:
-    """Seats this universe holds, optionally of one class only.
-
-    Keyed on `universe_id` alone -- no query here aggregates across universes,
-    which is what keeps one universe's occupancy from consuming or revealing
-    another's.
-    """
-    if seat_class is None:
-        return int(
-            conn.execute(
-                "SELECT COUNT(*) FROM universe_seats WHERE universe_id = ?",
-                (universe_id,),
-            ).fetchone()[0]
-        )
-    return int(
-        conn.execute(
-            "SELECT COUNT(*) FROM universe_seats "
-            "WHERE universe_id = ? AND seat_class = ?",
-            (universe_id, seat_class),
-        ).fetchone()[0]
-    )
-
-
-def _admits(
-    conn: sqlite3.Connection,
-    universe_id: str,
-    seat_class: str,
-    *,
-    seats: int,
-    reserve: int,
-) -> bool:
-    """Whether capacity exists for one more seat of ``seat_class``.
-
-    TWO predicates, and the difference is the whole meaning of a reserve
-    (astra round 1, finding 6 -- a real bug in the first draft):
+def _admits(conn: sqlite3.Connection, account_id: str, seat_class: str, *,
+            seats: int, reserve: int) -> bool:
+    """Capacity for one more seat of ``seat_class``.
 
         total_live < seats                        always
         background_live < seats - reserve         background only
 
-    The first draft compared TOTAL live against `seats - reserve` for background
-    work. With 3 seats, 1 reserved and two INTERACTIVE holders, that refused
-    background work while a seat sat free and no background work was running at
-    all -- the reserve was protecting interactive work from itself. A reserve
-    bounds the class it constrains, not the total.
+    A reserve bounds the class it constrains, not the total: comparing TOTAL live
+    against ``seats - reserve`` refused background work while a seat sat free
+    because two chats were running (astra round 1, finding 6).
     """
-    if _running(conn, universe_id) >= seats:
+    if _count(conn, "account_seats", account_id) >= seats:
         return False
     if seat_class == CLASS_INTERACTIVE:
         return True
-    return _running(conn, universe_id, CLASS_BACKGROUND) < max(1, seats - reserve)
+    return _count(conn, "account_seats", account_id, CLASS_BACKGROUND) < max(1, seats - reserve)
 
 
-def _ahead_of(
-    conn: sqlite3.Connection, universe_id: str, seat_class: str, ticket: int | None
-) -> int:
-    """How many waiters are entitled to a seat before this caller.
+def _ahead_of(conn: sqlite3.Connection, account_id: str, seat_class: str,
+              ticket: int | None) -> int:
+    """Waiters entitled to a seat before this caller.
 
-    This is the fairness rule as a query, and it is the reason the queue is a queue:
-    a caller that finds a seat free while someone is already owed one joins BEHIND
-    them rather than taking it.
-
-    An interactive waiter is counted ahead of everyone; a background waiter is
-    counted ahead only of other background waiters. So an interactive caller is
-    never behind a background one whatever the tickets say.
-
-    ``ticket`` None means "not enqueued yet", which must count every live waiter as
-    ahead -- otherwise a fresh arrival would tie with the front of the queue.
+    Every interactive waiter is ahead of every background waiter, whatever the
+    tickets say; within a class, lower tickets first. ``ticket`` None ("not queued
+    yet") counts every waiter of the relevant classes, so a fresh arrival never
+    overtakes the front of the queue.
     """
-    mine = ticket if ticket is not None else None
-    if seat_class == CLASS_INTERACTIVE:
-        if mine is None:
-            return int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM seat_waiters "
-                    "WHERE universe_id = ? AND seat_class = ?",
-                    (universe_id, CLASS_INTERACTIVE),
-                ).fetchone()[0]
-            )
-        return int(
-            conn.execute(
-                "SELECT COUNT(*) FROM seat_waiters "
-                "WHERE universe_id = ? AND seat_class = ? AND ticket < ?",
-                (universe_id, CLASS_INTERACTIVE, mine),
-            ).fetchone()[0]
-        )
-    # Background: every interactive waiter, plus earlier background waiters.
-    interactive = int(
-        conn.execute(
-            "SELECT COUNT(*) FROM seat_waiters "
-            "WHERE universe_id = ? AND seat_class = ?",
-            (universe_id, CLASS_INTERACTIVE),
-        ).fetchone()[0]
+    interactive = _count(
+        conn, "seat_waiters", account_id, CLASS_INTERACTIVE,
+        before=ticket if seat_class == CLASS_INTERACTIVE else None,
     )
-    if mine is None:
-        background = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM seat_waiters "
-                "WHERE universe_id = ? AND seat_class = ?",
-                (universe_id, CLASS_BACKGROUND),
-            ).fetchone()[0]
-        )
-    else:
-        background = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM seat_waiters "
-                "WHERE universe_id = ? AND seat_class = ? AND ticket < ?",
-                (universe_id, CLASS_BACKGROUND, mine),
-            ).fetchone()[0]
-        )
-    return interactive + background
+    if seat_class == CLASS_INTERACTIVE:
+        return interactive
+    return interactive + _count(conn, "seat_waiters", account_id, CLASS_BACKGROUND, before=ticket)
 
 
-def _reenter(
-    conn: sqlite3.Connection,
-    universe_id: str,
-    parent_seat_id: str,
-    now: float,
-    lease_s: float,
-) -> bool:
-    """Increment a parent seat's depth, if this caller may re-enter it.
+def _reenter(conn: sqlite3.Connection, account_id: str, parent_seat_id: str, now: float,
+             lease_s: float, holder: str, parent_depth: int) -> bool:
+    """Lend a parent's seat to ONE blocking nested call.
 
-    A blocking nested agent call is not a second concurrent model call: its parent
-    is BLOCKED waiting for it. Charging two seats would mean a 2-seat account cannot
-    run a 2-deep agent chain at all -- the deadlock
-    `provider_admission._NESTED_RESERVE` was added to fix one layer down.
-
-    Both the universe AND the holder must match. Universe alone would let one
-    universe name another's seat and ride it (the cross-user theft case); holder
-    alone would let a sibling universe in the same process do the same. A seat id is
-    not a capability, so it is never trusted on its own.
-
-    **Exclusive transfer, not reference counting** (astra round 1, finding 4). The
-    `depth = 1` predicate is what makes it exclusive: a seat may be lent to ONE
-    nested call at a time. A blocked parent lending its seat is sound because the
-    parent is not executing; a parent lending the same seat to three PARALLEL child
-    agent nodes would put three model calls on one seat, which is the bound failing
-    silently. A sibling that finds the seat already lent takes its own, and waits
-    for it like any other caller -- correct, because it really is concurrent work.
+    Account, holder AND depth must all match. A seat id alone is never a
+    capability: account-only would let one account's code name another's seat,
+    holder-only would let another account in this process do it. ``depth =
+    parent_depth`` makes the loan exclusive: a sibling that finds the seat already
+    lent takes its own, because it really is concurrent work.
     """
     updated = conn.execute(
-        "UPDATE universe_seats SET depth = 2, expires_at = ? "
-        "WHERE seat_id = ? AND universe_id = ? AND holder = ? AND depth = 1",
-        (now + lease_s, parent_seat_id, universe_id, _holder()),
+        "UPDATE account_seats SET depth = depth + 1, expires_at = ? "
+        "WHERE seat_id = ? AND account_id = ? AND holder = ? AND depth = ?",
+        (now + lease_s, parent_seat_id, account_id, holder, parent_depth),
     )
     return updated.rowcount == 1
 
 
 def acquire(
-    universe_id: str,
+    account_id: str,
     *,
     seat_class: str = CLASS_BACKGROUND,
     kind: str = KIND_AGENT_NODE,
+    universe_id: str = "",
     run_id: str = "",
     ticket: int | None = None,
     parent_seat_id: str | None = None,
+    parent_depth: int = 1,
     seats: int | None = None,
     reserve: int | None = None,
     db: Path | None = None,
     now: float | None = None,
     lease_s: float = SEAT_LEASE_SECONDS,
 ) -> Seat | Waiting:
-    """Take a seat for ``universe_id``, or join the queue.
+    """Take a seat for ``account_id`` now, or hold a queue position.
 
-    Returns a :class:`Seat` when held, or :class:`Waiting` carrying the queue
-    position. NEVER refuses for want of a seat. ``ticket`` re-presents a position
-    already held, so a polling caller keeps it rather than going to the back.
-
-    One `BEGIN IMMEDIATE` transaction does all of it -- reap, re-entry, count,
-    ceiling, queue position, insert -- so two concurrent acquisitions cannot both
-    see the last seat free.
+    Never refuses for want of a seat. ``ticket`` re-presents a position already
+    held. One `BEGIN IMMEDIATE` does reap, re-entry, count, ceiling, queue position
+    and insert, so two acquisitions cannot both see the last seat free.
     """
-    universe_id = (universe_id or "").strip()
-    if not universe_id:
-        raise ValueError("a seat needs a universe_id")
+    account_id = (account_id or "").strip()
+    if not account_id:
+        raise ValueError("a seat needs an account_id")
     if seat_class not in SEAT_CLASSES:
         raise ValueError(f"seat class must be one of {SEAT_CLASSES}, not {seat_class!r}")
+    db = db or ledger_path()
+    root = db.parent
     moment = time.time() if now is None else now
     if seats is None or reserve is None:
-        limits = _limits(universe_id)
+        limits = limits_for_key(account_id, root=root)
         seats = limits.seats if seats is None else seats
         reserve = limits.interactive_reserve if reserve is None else reserve
     total = max(1, int(seats))
     held_back = min(max(0, int(reserve)), total - 1)
-
+    # Before the transaction: taking the liveness lock is filesystem work that must
+    # not happen while holding the write lock.
+    holder = _holder(root)
     with _txn(db) as conn:
-        _reap(conn, moment)
+        _reap(conn, moment, root)
         if parent_seat_id and _reenter(
-            conn, universe_id, parent_seat_id, moment, lease_s
+            conn, account_id, parent_seat_id, moment, lease_s, holder, parent_depth
         ):
             if ticket is not None:
                 conn.execute("DELETE FROM seat_waiters WHERE ticket = ?", (ticket,))
-            return Seat(
-                seat_id=parent_seat_id,
-                universe_id=universe_id,
-                seat_class=seat_class,
-                kind=kind,
-                reentrant=True,
-            )
-        running = _running(conn, universe_id)
-        ahead = _ahead_of(conn, universe_id, seat_class, ticket)
-        if _admits(conn, universe_id, seat_class, seats=total, reserve=held_back) and (
-            ahead == 0
-        ):
+            return Seat(parent_seat_id, account_id, seat_class, kind,
+                        reentrant=True, depth=parent_depth + 1, db=db)
+        running = _count(conn, "account_seats", account_id)
+        if ticket is not None and conn.execute(
+            "SELECT 1 FROM seat_waiters WHERE ticket = ? AND account_id = ? AND holder = ?",
+            (ticket, account_id, holder),
+        ).fetchone() is None:
+            # Lapsed, or never ours: a ticket is only honoured for the account and
+            # process that took it.
+            ticket = None
+        ahead = _ahead_of(conn, account_id, seat_class, ticket)
+        if ahead == 0 and _admits(conn, account_id, seat_class, seats=total, reserve=held_back):
             seat_id = secrets.token_hex(12)
             conn.execute(
-                "INSERT INTO universe_seats (seat_id, universe_id, seat_class, kind, "
-                "run_id, holder, depth, acquired_at, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
-                (
-                    seat_id, universe_id, seat_class, kind, run_id, _holder(),
-                    moment, moment + lease_s,
-                ),
+                "INSERT INTO account_seats (seat_id, account_id, universe_id, seat_class, "
+                "kind, run_id, holder, depth, acquired_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (seat_id, account_id, universe_id, seat_class, kind, run_id, holder,
+                 moment, moment + lease_s),
             )
             if ticket is not None:
                 conn.execute("DELETE FROM seat_waiters WHERE ticket = ?", (ticket,))
-            return Seat(
-                seat_id=seat_id,
-                universe_id=universe_id,
-                seat_class=seat_class,
-                kind=kind,
-            )
-        # No seat: keep or take a queue position. Refreshing an existing ticket
-        # rather than inserting a new one is what stops a polling caller from
-        # walking to the back of its own queue every 100 ms.
+            return Seat(seat_id, account_id, seat_class, kind, db=db)
         if ticket is not None:
-            kept = conn.execute(
+            conn.execute(
                 "UPDATE seat_waiters SET expires_at = ? WHERE ticket = ?",
                 (moment + WAITER_LEASE_SECONDS, ticket),
             )
-            if kept.rowcount != 1:
-                ticket = None
-        if ticket is None:
+        else:
             cur = conn.execute(
-                "INSERT INTO seat_waiters (universe_id, seat_class, kind, run_id, "
-                "holder, enqueued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    universe_id, seat_class, kind, run_id, _holder(),
-                    moment, moment + WAITER_LEASE_SECONDS,
-                ),
+                "INSERT INTO seat_waiters (account_id, universe_id, seat_class, kind, run_id, "
+                "holder, enqueued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (account_id, universe_id, seat_class, kind, run_id, holder, moment,
+                 moment + WAITER_LEASE_SECONDS),
             )
             ticket = int(cur.lastrowid or 0)
-        waiting = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM seat_waiters WHERE universe_id = ?",
-                (universe_id,),
-            ).fetchone()[0]
-        )
         return Waiting(
-            ticket=ticket,
-            universe_id=universe_id,
-            seat_class=seat_class,
-            running=running,
-            waiting=waiting,
-            seats=total,
+            ticket=ticket, account_id=account_id, seat_class=seat_class, running=running,
+            waiting=_count(conn, "seat_waiters", account_id), seats=total,
         )
-
-
-def _limits(universe_id: str):
-    """This universe's tier limits. Resolved here so no caller passes its own."""
-    from tinyassets.api.helpers import _universe_dir
-    from tinyassets.usage_policy import limits_for, limits_for_universe
-
-    try:
-        return limits_for_universe(_universe_dir(universe_id))
-    except Exception:
-        # The resolver already answers FREE for an unreadable owner or record;
-        # this catches a failure to RESOLVE the directory at all. Free is the
-        # safe answer: it is the type that grants least.
-        _log.warning("could not resolve the account type for %s; using free", universe_id)
-        from tinyassets.usage_policy import AccountType
-
-        return limits_for(AccountType.FREE)
 
 
 def refresh(seat_id: str, *, db: Path | None = None, now: float | None = None) -> bool:
-    """Re-stamp a held seat's lease. False when there was no such seat to stamp --
-    which means it was already reaped, and the caller should stop, not carry on
-    holding capacity it no longer owns."""
+    """Re-stamp a held seat's lease. False means it was already reaped."""
     seat_id = (seat_id or "").strip()
     if not seat_id:
         return False
+    db = db or ledger_path()
     moment = time.time() if now is None else now
+    holder = _holder(db.parent)
     with _txn(db) as conn:
         cur = conn.execute(
-            "UPDATE universe_seats SET expires_at = ? WHERE seat_id = ? AND holder = ?",
-            (moment + SEAT_LEASE_SECONDS, seat_id, _holder()),
+            "UPDATE account_seats SET expires_at = ? WHERE seat_id = ? AND holder = ?",
+            (moment + SEAT_LEASE_SECONDS, seat_id, holder),
         )
         return cur.rowcount == 1
 
 
-def release(seat_id: str, *, db: Path | None = None) -> bool:
-    """Give a seat back. Decrements depth for a re-entered seat; deletes at zero.
+#: ``_release_once`` gave back one level of a LENT seat; the row, and the
+#: parent's claim on it, remain. Truthy, so callers reading "released" still do.
+_DEPTH_RETURNED = "depth_returned"
 
-    Called from a `finally`, so it must never raise on an already-gone seat: a
-    reaped seat is exactly the case where the caller is unwinding.
-    """
-    seat_id = (seat_id or "").strip()
-    if not seat_id:
-        return False
+
+def _release_once(seat_id: str, db: Path) -> bool | str | None:
+    """One release attempt: True released, ``_DEPTH_RETURNED`` a lent seat's
+    depth given back (the parent still holds it), False no such seat of ours,
+    None the store could not be written -- try again."""
     try:
+        holder = _holder(db.parent)
         with _txn(db) as conn:
             row = conn.execute(
-                "SELECT depth FROM universe_seats WHERE seat_id = ?", (seat_id,)
+                "SELECT depth FROM account_seats WHERE seat_id = ? AND holder = ?",
+                (seat_id, holder),
             ).fetchone()
             if row is None:
                 return False
             if int(row["depth"]) > 1:
                 conn.execute(
-                    "UPDATE universe_seats SET depth = depth - 1 WHERE seat_id = ?",
-                    (seat_id,),
+                    "UPDATE account_seats SET depth = depth - 1 WHERE seat_id = ?", (seat_id,)
                 )
-                return True
-            conn.execute("DELETE FROM universe_seats WHERE seat_id = ?", (seat_id,))
+                return _DEPTH_RETURNED
+            else:
+                conn.execute("DELETE FROM account_seats WHERE seat_id = ?", (seat_id,))
             return True
-    except SeatLedgerUnusable:
-        # Unwinding is the wrong moment to raise about the store. The lease is the
-        # backstop that makes this survivable, which is why it exists.
-        _log.warning("seat %s could not be released; its lease will reap it", seat_id)
+    except (SeatLedgerUnusable, sqlite3.Error, OSError, RuntimeError):
+        return None
+
+
+def release(seat_id: str, *, db: Path | None = None) -> bool:
+    """Give a seat back: decrement a lent seat's depth, delete it at the last one.
+
+    Only this process's own seat: the holder must match. Never raises -- it runs
+    from a `finally`. A release the store refuses (locked, briefly unwritable) is
+    NOT dropped: this process is alive, so nothing else would ever reclaim the
+    seat, and it would be charged to the account until the process died. It is
+    queued and retried by the refresher until it lands.
+    """
+    seat_id = (seat_id or "").strip()
+    if not seat_id:
         return False
+    db = db or ledger_path()
+    outcome = _release_once(seat_id, db)
+    if outcome is None:
+        # Still registered: whether this was the last level or a nested loan is
+        # unknown until the store answers, and only the retry learns which.
+        _log.warning("seat %s could not be released yet; retrying until it is", seat_id)
+        _queue_retry(seat_id, db)
+        return False
+    _settle_registration(seat_id, outcome)
+    return bool(outcome)
+
+
+def _settle_registration(seat_id: str, outcome: bool | str) -> None:
+    """Stop refreshing a seat once a release has actually removed it.
+
+    A nested call returning its loan (``_DEPTH_RETURNED``) leaves the row -- the
+    seat id is the PARENT's and the parent is still working. Dropping it from
+    the refresh set there let the parent's lease lapse under a live provider
+    call, so anything trusting the lease (a deploy's in-flight check, a
+    sibling's reaper) read it as finished.
+    """
+    if outcome is _DEPTH_RETURNED:
+        return
+    with _held_lock:
+        _held.pop(seat_id, None)
 
 
 def abandon(ticket: int | None, *, db: Path | None = None) -> bool:
-    """Give up a queue position. For a caller that decided not to run after all --
-    never for one that is still waiting, which would be the drop this module
-    promises not to do."""
+    """Give up a queue position -- only for a caller that decided not to run."""
     if ticket is None:
         return False
     try:
-        with _txn(db) as conn:
-            cur = conn.execute("DELETE FROM seat_waiters WHERE ticket = ?", (int(ticket),))
-            return cur.rowcount == 1
-    except SeatLedgerUnusable:
+        with _txn(db or ledger_path()) as conn:
+            return conn.execute(
+                "DELETE FROM seat_waiters WHERE ticket = ?", (int(ticket),)
+            ).rowcount == 1
+    except (SeatLedgerUnusable, sqlite3.Error):
         return False
 
 
-def occupancy(
-    universe_id: str,
-    *,
-    db: Path | None = None,
-    now: float | None = None,
-    seats: int | None = None,
-) -> dict[str, object]:
-    """What the owner is shown: seats total, running, waiting, and the ceiling
-    background work may reach. Read-only, and it reaps nothing -- an observation
-    must not change what it observes."""
-    universe_id = (universe_id or "").strip()
-    limits = None
-    if seats is None:
-        limits = _limits(universe_id)
-        seats = limits.seats
-    moment = time.time() if now is None else now
-    out: dict[str, object] = {
-        "seats": int(seats),
-        "running": 0,
-        "waiting": 0,
-        "background_seats": limits.background_seats if limits else int(seats),
-    }
-    if not universe_id:
-        return out
-    try:
-        with _txn(db) as conn:
-            out["running"] = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM universe_seats "
-                    "WHERE universe_id = ? AND expires_at >= ?",
-                    (universe_id, moment),
-                ).fetchone()[0]
-            )
-            out["waiting"] = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM seat_waiters "
-                    "WHERE universe_id = ? AND expires_at >= ?",
-                    (universe_id, moment),
-                ).fetchone()[0]
-            )
-    except SeatLedgerUnusable:
-        out["availability"] = "unavailable"
-    return out
+def holder_is_named(root: str | Path, holder: str) -> bool:
+    """Whether any seat or waiter still names ``holder``. The liveness cleanup
+    keeps a dead token's proof until then, or its seats would become unprovable."""
+    db = ledger_path(root)
+    if not db.exists():
+        return False
+    with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
+        for table in ("account_seats", "seat_waiters"):
+            try:
+                if conn.execute(
+                    f"SELECT 1 FROM {table} WHERE holder = ? LIMIT 1", (holder,)
+                ).fetchone():
+                    return True
+            except sqlite3.OperationalError:
+                continue
+    return False
 
 
-def waiting_message(
-    universe_id: str,
-    *,
-    running: int,
-    tier: str | None = None,
-) -> str:
-    """The one line an owner sees while work waits.
+# --------------------------------------------------------------------------- #
+# What the owner sees
+# --------------------------------------------------------------------------- #
 
-    "Waiting for a free seat (2 running). Upgrade for more seats." -- an inline
-    clickable link, never a banner, button, card or modal (founder, 2026-09-30).
-    Empty upgrade half on the top tier, so the caller concatenates unconditionally.
+
+def waiting_message(*, running: int, tier: str) -> str:
+    """The one line an owner sees while work waits for a seat.
+
+    "Waiting for a free seat (2 running) — [Upgrade](...) for more seats." The link
+    sits inside the message -- never a banner, card or modal (founder, 2026-09-30)
+    -- and is absent on the top tier, where `usage_policy.upgrade_url` is None.
     """
     from tinyassets.usage_policy import upgrade_sentence
 
-    if tier is None:
-        from tinyassets.universe_owner import account_type_for_universe
-        from tinyassets.usage_policy import AccountType
-
-        try:
-            from tinyassets.api.helpers import _universe_dir
-
-            tier = account_type_for_universe(_universe_dir(universe_id))
-        except Exception:
-            tier = AccountType.FREE
-    head = f"Waiting for a free seat ({int(running)} running)."
+    head = f"Waiting for a free seat ({int(running)} running)"
     tail = upgrade_sentence(tier, what="seats")
-    return f"{head} {tail}".strip()
+    return f"{head} — {tail}" if tail else f"{head}."
+
+
+def occupancy(account_id: str, *, db: Path | None = None, universe_id: str = "",
+              now: float | None = None) -> dict[str, object]:
+    """Seats, running and waiting for one account -- read-only, reaps nothing.
+
+    ``universe_id`` adds ``chat_waiting``: whether a chat turn in THAT universe is
+    queued, so a surface shows the waiting line only on the conversation waiting.
+    """
+    account_id = (account_id or "").strip()
+    db = db or ledger_path()
+    limits = limits_for_key(account_id, root=db.parent)
+    out: dict[str, object] = {
+        "seats": limits.seats,
+        "background_seats": limits.background_seats,
+        "running": 0,
+        "waiting": 0,
+        "interactive_waiting": 0,
+        "tier": limits.name,
+        "upgrade_url": _upgrade_url(limits.name),
+    }
+    if universe_id:
+        out["chat_waiting"] = False
+    if not account_id or not db.exists():
+        return out
+    moment = time.time() if now is None else now
+    try:
+        if not _trusted(db):
+            raise SeatLedgerUnusable("untrusted seat ledger")
+        with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
+            out["running"] = _count(conn, "account_seats", account_id)
+            live = "SELECT COUNT(*) FROM seat_waiters WHERE account_id = ? AND expires_at >= ?"
+            out["waiting"] = int(conn.execute(live, (account_id, moment)).fetchone()[0])
+            out["interactive_waiting"] = int(conn.execute(
+                live + " AND seat_class = ?", (account_id, moment, CLASS_INTERACTIVE),
+            ).fetchone()[0])
+            if universe_id:
+                out["chat_waiting"] = bool(conn.execute(
+                    live + " AND seat_class = ? AND universe_id = ?",
+                    (account_id, moment, CLASS_INTERACTIVE, universe_id),
+                ).fetchone()[0])
+    except (SeatLedgerUnusable, sqlite3.Error, OSError):
+        out["availability"] = "unavailable"
+        return out
+    if out["waiting"]:
+        out["message"] = waiting_message(running=int(out["running"]), tier=limits.name)
+    return out
+
+
+def _upgrade_url(tier: str) -> str | None:
+    from tinyassets.usage_policy import upgrade_url
+
+    return upgrade_url(tier)
+
+
+def status_for_owner(universe_id: str, *, root: str | Path, actor_id: str) -> dict | None:
+    """The seat block a status surface shows, or None when ``actor_id`` is not the
+    universe's owning account: an account's occupancy spans all of its universes,
+    and a co-admin of one of them has no business reading the rest."""
+    key = account_key(universe_id, root=root)
+    if not actor_id or owner_of_key(key) != actor_id:
+        return None
+    return occupancy(key, db=ledger_path(root), universe_id=universe_id)
 
 
 # --------------------------------------------------------------------------- #
-# The refresher: one thread for every seat this process holds
+# The refresher: one thread for every seat this process owns
 # --------------------------------------------------------------------------- #
-# Deliberately NOT started on import. A periodic thread that starts itself
-# pollutes a monkeypatched global in whatever test happens to run next, and unit
-# tests here drive `now` explicitly and never need it. `hold` starts it; tests
-# that use `hold` stop it.
+# Not started on import: a self-starting periodic thread pollutes monkeypatched
+# globals in whatever test runs next. `_register` starts it.
 _held_lock = threading.Lock()
-_held: dict[str, Path | None] = {}
+_held: dict[str, Path] = {}
 _refresher: threading.Thread | None = None
 _refresher_stop = threading.Event()
 
 
+_pending_releases: list[tuple[str, Path]] = []
+#: How soon a refused release is tried again.
+_RETRY_SECONDS = 1.0
+
+
+def _retry_pending_releases() -> None:
+    """Try every queued release once; keep the ones the store still refuses."""
+    with _held_lock:
+        pending = list(_pending_releases)
+        _pending_releases.clear()
+    failed = []
+    for seat_id, db in pending:
+        outcome = _release_once(seat_id, db)
+        if outcome is None:
+            failed.append((seat_id, db))
+        else:
+            _settle_registration(seat_id, outcome)
+    if failed:
+        with _held_lock:
+            _pending_releases.extend(failed)
+
+
 def _refresh_loop() -> None:
-    while not _refresher_stop.wait(SEAT_REFRESH_SECONDS):
+    next_refresh = time.monotonic() + SEAT_REFRESH_SECONDS
+    while not _refresher_stop.wait(_RETRY_SECONDS):
+        _retry_pending_releases()
+        if time.monotonic() < next_refresh:
+            continue
+        next_refresh = time.monotonic() + SEAT_REFRESH_SECONDS
         with _held_lock:
             current = dict(_held)
-        if not current:
-            continue
         for seat_id, db in current.items():
             try:
                 if not refresh(seat_id, db=db):
-                    # Already reaped. Stop stamping it; the holder will find out
-                    # when it releases. Keeping it in the map would re-create a
-                    # seat row the ledger has deliberately forgotten.
                     with _held_lock:
                         _held.pop(seat_id, None)
-            except SeatLedgerUnusable:
+            except (SeatLedgerUnusable, sqlite3.Error, OSError, RuntimeError):
                 _log.warning("seat refresh failed for %s", seat_id)
 
 
-def _start_refresher() -> None:
+def _ensure_refresher() -> None:
+    """Start the refresh thread if it is not running. Call with `_held_lock`."""
     global _refresher
+    if _refresher is not None and _refresher.is_alive():
+        return
+    _refresher_stop.clear()
+    _refresher = threading.Thread(target=_refresh_loop, name="account-seat-refresh", daemon=True)
+    _refresher.start()
+
+
+def _queue_retry(seat_id: str, db: Path) -> None:
     with _held_lock:
-        if _refresher is not None and _refresher.is_alive():
-            return
-        _refresher_stop.clear()
-        _refresher = threading.Thread(
-            target=_refresh_loop, name="universe-seat-refresh", daemon=True
-        )
-        _refresher.start()
+        _pending_releases.append((seat_id, db))
+        _ensure_refresher()
+
+
+def _register(seat: Seat) -> None:
+    """Keep an OWNED seat stamped. A lent seat is its parent's to stamp."""
+    if seat.reentrant:
+        return
+    with _held_lock:
+        _held[seat.seat_id] = seat.db or ledger_path()
+        _ensure_refresher()
 
 
 def stop_refresher() -> None:
-    """Stop the refresh thread and forget what it was stamping. For tests and for
-    a graceful shutdown; a held seat then expires on its lease, which is correct."""
+    """Stop the refresh thread. For tests; held seats still end by release or
+    proven death."""
     global _refresher
     _refresher_stop.set()
     thread = _refresher
@@ -814,95 +744,224 @@ def stop_refresher() -> None:
     with _held_lock:
         _refresher = None
         _held.clear()
+        _pending_releases.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Waiting, holding, and the contextvar that carries a seat to nested calls
+# --------------------------------------------------------------------------- #
+
+
+def current_seat() -> Seat | None:
+    return _current_seat.get()
+
+
+def acquire_blocking(
+    account_id: str,
+    *,
+    seat_class: str = CLASS_BACKGROUND,
+    kind: str = KIND_AGENT_NODE,
+    universe_id: str = "",
+    run_id: str = "",
+    ticket: int | None = None,
+    parent: Seat | None = None,
+    wait_s: float | None = None,
+    on_waiting: Callable[[Waiting], None] | None = None,
+    seats: int | None = None,
+    reserve: int | None = None,
+    db: Path | None = None,
+) -> Seat | Waiting:
+    """`acquire`, waiting for a seat. ``wait_s=None`` waits until served; a float
+    gives back the :class:`Waiting` (its position kept) when it elapses.
+
+    ``parent`` is the seat this caller is nested in; re-entry is retried on every
+    poll, so a sibling that found the seat lent takes it as soon as it is back.
+    ``on_waiting`` is told when waiting starts and every `WAITING_NOTICE_SECONDS`.
+    A notice that fails never costs the seat -- except a run's cancellation
+    (``RunCancelledError``), which is how a cancelled run stops waiting: its queue
+    position is given up and the cancellation propagates.
+    """
+    ticket_box: list[int | None] = [ticket]
+    try:
+        return _wait_for_seat(
+            account_id, seat_class=seat_class, kind=kind, universe_id=universe_id,
+            run_id=run_id, ticket_box=ticket_box, parent=parent, wait_s=wait_s,
+            on_waiting=on_waiting, seats=seats, reserve=reserve, db=db,
+        )
+    except BaseException:
+        abandon(ticket_box[0], db=db)
+        raise
+
+
+def _is_cancellation(exc: BaseException) -> bool:
+    # By name, as `graph_compiler._is_cancel_exception` does: `runs` imports this.
+    return type(exc).__name__ == "RunCancelledError"
+
+
+def _wait_for_seat(account_id, *, seat_class, kind, universe_id, run_id, ticket_box,
+                   parent, wait_s, on_waiting, seats, reserve, db) -> Seat | Waiting:
+    deadline = None if wait_s is None else time.monotonic() + max(0.0, wait_s)
+    notified_at: float | None = None
+    ticket = ticket_box[0]
+    if parent is not None and parent.account_id != account_id:
+        parent = None
+    while True:
+        outcome = acquire(
+            account_id, seat_class=seat_class, kind=kind, universe_id=universe_id,
+            run_id=run_id, ticket=ticket,
+            parent_seat_id=parent.seat_id if parent else None,
+            parent_depth=parent.depth if parent else 1,
+            seats=seats, reserve=reserve, db=db,
+        )
+        if isinstance(outcome, Seat):
+            _register(outcome)
+            return outcome
+        ticket = ticket_box[0] = outcome.ticket
+        now_m = time.monotonic()
+        if on_waiting is not None and (
+            notified_at is None or now_m - notified_at >= WAITING_NOTICE_SECONDS
+        ):
+            notified_at = now_m
+            try:
+                on_waiting(outcome)
+            except Exception as exc:  # noqa: BLE001 - a notice is not a step
+                if _is_cancellation(exc):
+                    raise
+                _log.warning("waiting notice failed for %s", account_id, exc_info=True)
+        if deadline is not None and now_m >= deadline:
+            return outcome
+        time.sleep(_POLL_SECONDS)
+
+
+def detach_seat() -> None:
+    """Clear the current seat in THIS context. For a copied context handed to
+    work that runs alongside its caller (a queued run), which must take its own
+    seats rather than borrow one its still-running caller is using."""
+    _current_seat.set(None)
+
+
+@contextmanager
+def carrying(seat: Seat):
+    """Make ``seat`` the current one for the body WITHOUT releasing it after:
+    for a caller whose release is owned elsewhere (the agent node's future).
+    A blocking call nested inside re-enters it rather than waiting for a seat its
+    own blocked parent holds."""
+    token = _current_seat.set(seat)
+    try:
+        yield seat
+    finally:
+        _current_seat.reset(token)
+
+
+@contextmanager
+def bound(seat: Seat):
+    """Make ``seat`` the current one for the body (nested calls re-enter it) and
+    release it on every exit path. A crash is covered by proven death."""
+    token = _current_seat.set(seat)
+    try:
+        yield seat
+    finally:
+        _current_seat.reset(token)
+        release(seat.seat_id, db=seat.db)
 
 
 @contextmanager
 def hold(
-    universe_id: str,
+    account_id: str,
     *,
     seat_class: str = CLASS_BACKGROUND,
     kind: str = KIND_AGENT_NODE,
+    universe_id: str = "",
     run_id: str = "",
-    parent_seat_id: str | None = None,
-    wait_s: float = SEAT_WAIT_SECONDS,
+    on_waiting: Callable[[Waiting], None] | None = None,
+    seats: int | None = None,
+    reserve: int | None = None,
     db: Path | None = None,
 ):
-    """Hold a seat for the body, waiting up to ``wait_s`` for one.
+    """Wait for a seat (no deadline), hold it for the body, release it after.
 
-    Yields a :class:`Seat` when held, or a :class:`Waiting` when the bounded wait
-    elapsed -- the caller then surfaces the waiting state rather than blocking
-    forever, and the queue POSITION IS KEPT so the work is not dropped. Check
-    `isinstance(x, Seat)`.
-
-    Released on every exit path including exceptions, which is success, failure,
-    cancellation and timeout. A crash is covered by the lease instead, and that is
-    the only path a `finally` cannot reach.
+    No deadline, because work that has queued must not bounce back: a bounce reads
+    as a refusal however it is worded. An interactive wait is bounded in practice
+    by the reserve -- a chat only ever waits behind another chat.
     """
-    deadline = time.monotonic() + max(0.0, wait_s)
-    ticket: int | None = None
-    outcome: Seat | Waiting = acquire(
-        universe_id,
-        seat_class=seat_class,
-        kind=kind,
-        run_id=run_id,
-        parent_seat_id=parent_seat_id,
-        db=db,
+    seat = acquire_blocking(
+        account_id, seat_class=seat_class, kind=kind, universe_id=universe_id,
+        run_id=run_id, parent=current_seat(), wait_s=None, on_waiting=on_waiting,
+        seats=seats, reserve=reserve, db=db,
     )
-    while isinstance(outcome, Waiting) and time.monotonic() < deadline:
-        ticket = outcome.ticket
-        time.sleep(_POLL_SECONDS)
-        outcome = acquire(
-            universe_id,
-            seat_class=seat_class,
-            kind=kind,
-            run_id=run_id,
-            ticket=ticket,
-            parent_seat_id=parent_seat_id,
-            db=db,
-        )
-    if isinstance(outcome, Waiting):
-        # Still waiting. Hand it back WITHOUT abandoning the ticket: the position
-        # is the promise that the work runs.
-        yield outcome
-        return
-    # A re-entered seat is its parent's: the parent's refresher already stamps it,
-    # and registering it twice would have two owners racing to drop it.
-    if not outcome.reentrant:
-        with _held_lock:
-            _held[outcome.seat_id] = db
-        _start_refresher()
-    try:
-        yield outcome
-    finally:
-        if not outcome.reentrant:
-            with _held_lock:
-                _held.pop(outcome.seat_id, None)
-        release(outcome.seat_id, db=db)
+    with bound(seat):
+        yield seat
+
+
+# Positions held by pollers that must not block (the automation pump). Keyed by
+# the caller's durable work id, so the next poll re-presents the same ticket.
+_tickets_lock = threading.Lock()
+_tickets: dict[str, int] = {}
+
+
+def try_acquire(
+    work_key: str,
+    account_id: str,
+    *,
+    seat_class: str = CLASS_BACKGROUND,
+    kind: str = KIND_AUTOMATION,
+    universe_id: str = "",
+    db: Path | None = None,
+) -> Seat | Waiting:
+    """One non-blocking attempt, keeping ``work_key``'s queue position between
+    polls. For a worker whose work stays durable and due while it waits, so the
+    wait holds no thread and claims no attempt."""
+    with _tickets_lock:
+        ticket = _tickets.get(work_key)
+    outcome = acquire(
+        account_id, seat_class=seat_class, kind=kind, universe_id=universe_id,
+        ticket=ticket, db=db,
+    )
+    with _tickets_lock:
+        if isinstance(outcome, Seat):
+            _tickets.pop(work_key, None)
+        else:
+            _tickets[work_key] = outcome.ticket
+    if isinstance(outcome, Seat):
+        _register(outcome)
+    return outcome
 
 
 __all__ = [
     "CLASS_BACKGROUND",
     "CLASS_INTERACTIVE",
     "KIND_AGENT_NODE",
-    "KIND_APP_EVENT",
     "KIND_AUTOMATION",
     "KIND_CHAT_TURN",
     "KIND_WAKE",
+    "LEDGER_NAME",
     "SEAT_CLASSES",
     "SEAT_LEASE_SECONDS",
     "SEAT_REFRESH_SECONDS",
-    "SEAT_WAIT_SECONDS",
     "WAITER_LEASE_SECONDS",
+    "WAITING_NOTICE_SECONDS",
     "Seat",
     "SeatLedgerUnusable",
     "Waiting",
     "abandon",
+    "account_key",
     "acquire",
+    "acquire_blocking",
+    "bound",
+    "carrying",
+    "current_seat",
+    "detach_seat",
     "hold",
+    "holder_is_named",
     "ledger_path",
+    "limits_for_key",
     "occupancy",
+    "owner_of_key",
     "refresh",
     "release",
+    "status_for_owner",
     "stop_refresher",
+    "tier_of_key",
+    "try_acquire",
     "waiting_message",
 ]

@@ -263,8 +263,12 @@ class AssignedQueueConsumer:
             store = AutomationStore(self.base_path)
 
             def still_named(holder: str) -> bool:
-                return holder in store.lease_holders() or holder in (
-                    in_flight_owner_tokens(self.base_path)
+                from tinyassets.universe_seats import holder_is_named
+
+                return (
+                    holder_is_named(self.base_path, holder)
+                    or holder in store.lease_holders()
+                    or holder in in_flight_owner_tokens(self.base_path)
                 )
 
             for stale in (self.base_path / LIVENESS_DIR).glob("*.lock"):
@@ -442,7 +446,7 @@ class AssignedQueueConsumer:
                 universe_id, holder=self.consumer_id
             )
         except Exception:  # noqa: BLE001 - an unreleased lease expires on its own
-            logger.exception("universe lease release failed universe=%s", universe_id)
+            logger.exception("command center lease release failed universe=%s", universe_id)
 
     def _reap_finished(self) -> tuple[int, set[str]]:
         """Drop completed futures, then report free slots and busy universes.

@@ -36,7 +36,6 @@ GIB = 1024**3
 #: Defaults from design note ``workspace-node`` D4.
 DEFAULT_POOL_BYTES_CAP = 20 * GIB
 DEFAULT_LEASE_BYTES_CAP = 4 * GIB
-DEFAULT_BYTES_PER_HOUR = 20 * GIB
 #: The rolling ledger window, in seconds.
 WINDOW_S = 3600
 #: One host-wide slot in this change; the runner sidecar is what lifts it.
@@ -812,7 +811,6 @@ def admit(
     universe_used_bytes_fn: Callable[[str], int] | None = None,
     pool_bytes_cap: int = DEFAULT_POOL_BYTES_CAP,
     lease_bytes_cap: int = DEFAULT_LEASE_BYTES_CAP,
-    bytes_per_hour: int = DEFAULT_BYTES_PER_HOUR,
     host_slot: str = HOST_SLOT,
     now: Callable[[], float] = time.time,
     lease_id_factory: Callable[[], str] = secrets.token_hex,
@@ -863,9 +861,9 @@ def admit(
     used_fn: Callable[[str], int] = _no_universe_bytes
     if storage_class == STORAGE_UNIVERSE:
         if universe_quota_bytes is None:
-            raise ValueError("universe storage needs universe_quota_bytes")
+            raise ValueError("command center storage needs universe_quota_bytes")
         if universe_used_bytes_fn is None:
-            raise ValueError("universe storage needs universe_used_bytes_fn")
+            raise ValueError("command center storage needs universe_used_bytes_fn")
         quota_bytes = int(universe_quota_bytes)
         used_fn = universe_used_bytes_fn
 
@@ -888,7 +886,6 @@ def admit(
             budget_root = family_admission.member.root_run_id
             budget_epoch = family_admission.member.epoch
         ts = float(now())
-        cutoff = ts - WINDOW_S
         started_at = PROCESS_STARTED_AT if process_started_at is None else float(process_started_at)
 
         conn = _connect(db)
@@ -913,16 +910,6 @@ def admit(
 
                 # (a) actual transfer capacity. Job counts below are observation,
                 # not another starts cap over existing run/effect admission.
-                charged = _ledger_sum(conn, universe_id, KIND_BYTES, cutoff)
-                if charged + max_bytes > bytes_per_hour:
-                    clears = _window_clears_at(conn, universe_id, KIND_BYTES, cutoff)
-                    raise WorkspacePoolRefused(
-                        REFUSED_QUOTA,
-                        f"workspace bytes per hour ({bytes_per_hour}) exhausted for "
-                        f"{universe_id}: {charged} charged + {max_bytes} requested, "
-                        f"clears_at={clears}",
-                    )
-
                 # (b) the storage bound: the shared pool, or the universe's quota.
                 if storage_class == STORAGE_SCRATCH:
                     if max_bytes > lease_bytes_cap:
@@ -946,7 +933,7 @@ def admit(
                     if used + outstanding + max_bytes > quota_bytes:
                         raise WorkspacePoolRefused(
                             REFUSED_QUOTA,
-                            f"universe quota ({quota_bytes}) exhausted for "
+                            f"command center quota ({quota_bytes}) exhausted for "
                             f"{universe_id}: {used} used + {outstanding} reserved "
                             f"+ {max_bytes} requested",
                         )
@@ -1138,7 +1125,6 @@ def reserve_operation_bytes(
     run_id: str,
     operation_id: str,
     max_bytes: int,
-    bytes_per_hour: int = DEFAULT_BYTES_PER_HOUR,
     now: Callable[[], float] = time.time,
 ) -> int:
     """Reserve the maximum charge of a workspace operation that holds no lease.
@@ -1156,13 +1142,13 @@ def reserve_operation_bytes(
     """
     return _reserve_transfer_bytes(
         db, universe_id=universe_id, run_id=run_id, operation_id=operation_id,
-        max_bytes=max_bytes, bytes_per_hour=bytes_per_hour, now=now, count_job=True,
+        max_bytes=max_bytes, now=now, count_job=True,
     )
 
 
 def reserve_transfer_bytes(
     db: Path, *, universe_id: str, run_id: str, operation_id: str,
-    max_bytes: int, bytes_per_hour: int = DEFAULT_BYTES_PER_HOUR,
+    max_bytes: int,
     now: Callable[[], float] = time.time,
 ) -> int:
     """Reserve actual transfer capacity without inventing a workspace job.
@@ -1175,21 +1161,20 @@ def reserve_transfer_bytes(
     """
     if type(max_bytes) is not int or max_bytes < 0:
         raise ValueError("max_bytes must be a nonnegative integer")
-    if type(bytes_per_hour) is not int or bytes_per_hour <= 0:
-        raise ValueError("bytes_per_hour must be a positive integer")
     if type(universe_id) is not str or not universe_id or type(run_id) is not str:
-        raise ValueError("transfer reservation requires universe and explicit string run scope")
+        raise ValueError("transfer reservation requires command center and explicit string run "
+            "scope")
     if type(operation_id) is not str or not operation_id:
         raise ValueError("transfer reservation requires operation identity")
     return _reserve_transfer_bytes(
         db, universe_id=universe_id, run_id=run_id, operation_id=operation_id,
-        max_bytes=max_bytes, bytes_per_hour=bytes_per_hour, now=now, count_job=False,
+        max_bytes=max_bytes, now=now, count_job=False,
     )
 
 
 def _reserve_transfer_bytes(
     db: Path, *, universe_id: str, run_id: str, operation_id: str,
-    max_bytes: int, bytes_per_hour: int, now: Callable[[], float], count_job: bool,
+    max_bytes: int, now: Callable[[], float], count_job: bool,
 ) -> int:
     if not operation_id:
         raise ValueError("operation_id is required")
@@ -1197,7 +1182,6 @@ def _reserve_transfer_bytes(
         raise ValueError(f"max_bytes must be >= 0, got {max_bytes}")
     max_bytes = int(max_bytes)
     ts = float(now())
-    cutoff = ts - WINDOW_S
     conn = _connect(db)
     try:
         try:
@@ -1214,15 +1198,6 @@ def _reserve_transfer_bytes(
                 conn.commit()
                 return int(existing[0])
 
-            charged = _ledger_sum(conn, universe_id, KIND_BYTES, cutoff)
-            if charged + max_bytes > bytes_per_hour:
-                clears = _window_clears_at(conn, universe_id, KIND_BYTES, cutoff)
-                raise WorkspacePoolRefused(
-                    REFUSED_QUOTA,
-                    f"workspace bytes per hour ({bytes_per_hour}) exhausted for "
-                    f"{universe_id}: {charged} charged + {max_bytes} requested, "
-                    f"clears_at={clears}",
-                )
             if count_job:
                 conn.execute(
                     "INSERT INTO workspace_ledger "

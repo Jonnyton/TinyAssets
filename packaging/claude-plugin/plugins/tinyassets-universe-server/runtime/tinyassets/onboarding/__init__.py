@@ -799,6 +799,23 @@ async def _handle_openai_device_poll(request: Any) -> Any:
     )
 
 
+def _command_center_name(home: str) -> str:
+    """The command center's learned name, or "" -- never its id.
+
+    A universe row's ``display_name`` defaults to the id until a name is
+    learned, so that default is not a name and is not sent.
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import get_universe
+
+    try:
+        name = str(get_universe(_base_path(), universe_id=home).get("display_name") or "")
+    except KeyError:
+        return ""
+    name = name.strip()
+    return "" if name == home else name
+
+
 async def _handle_me(request: Any) -> Any:
     """What the signed-in user's app needs to route on: which universe they
     speak to and whether it has a mind (engine) connected yet. Login lands on
@@ -838,6 +855,7 @@ async def _handle_me(request: Any) -> Any:
                 "home_bound": True,
                 "engine_connected": setup == "connected",
                 "setup": setup,
+                "name": _command_center_name(home),
             }
 
     try:
@@ -1188,6 +1206,122 @@ async def _handle_serving_bind(request: Any) -> Any:
 
 
 
+async def _handle_rules(request: Any) -> Any:
+    """The signed-in owner's Custom Rules for their own agent (harness D1a).
+
+    GET lists them (seeding a new universe's defaults). POST saves one rule
+    (``action_class``, ``behaviour``, optional ``connection`` / ``operation`` /
+    ``note``) or removes a narrowed one (``delete: <id>``). Only the caller's
+    OWN home universe is ever addressed -- nothing in the request names a
+    universe -- so an owner edits their agent's rules and nobody else's.
+    Loosening a hand-back needs ``confirm_handback: true``; without it the
+    answer carries the plain consequence to show before asking again.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets import agent_review, agent_rules
+    from tinyassets.auth.middleware import current_identity
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+    home = await run_in_threadpool(_read_home, identity)
+    if not home:
+        return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
+
+    def _universe_dir():
+        from tinyassets.api.helpers import _universe_dir as resolve
+
+        return resolve(home)
+
+    def _listing():
+        rules = agent_rules.list_rules(_universe_dir())
+        return {
+            "universe_id": home,
+            "rules": [rule.as_dict() for rule in rules],
+            "behaviours": agent_rules.BEHAVIOUR_LABELS,
+            "classes": agent_rules.ACTION_CLASSES,
+            "handbacks": agent_rules.HANDBACK_CONSEQUENCES,
+            "operation_kinds": [k.as_dict() for k in agent_rules.list_kinds(_universe_dir())],
+            "kinds": agent_rules.OPERATION_KINDS,
+            "review_off": sorted(agent_review.switched_off(_universe_dir())),
+            "review_never": sorted(agent_review.NOT_CONSEQUENTIAL),
+            "review_always": sorted(agent_review.ALWAYS_REVIEWED),
+        }
+
+    if request.method == "GET":
+        return JSONResponse(await run_in_threadpool(_listing), headers=_NO_STORE)
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+
+    def _save():
+        if "review" in data:
+            spec = data["review"]
+            if not isinstance(spec, dict) or type(spec.get("enabled")) is not bool:
+                raise ValueError("review needs action_class and enabled")
+            agent_review.set_review(_universe_dir(), str(spec.get("action_class") or ""),
+                                    spec["enabled"], confirm=data.get("confirm") is True)
+            return {"reviewed": spec, **_listing()}
+        if "declare" in data:
+            spec = data["declare"]
+            if not isinstance(spec, dict):
+                raise ValueError("declare must be an object")
+            declared = agent_rules.declare_kind(
+                _universe_dir(), str(spec.get("connection") or ""),
+                str(spec.get("kind") or ""), method=str(spec.get("method") or ""),
+                path_prefix=str(spec.get("path_prefix") or "/"),
+                confirm=data.get("confirm") is True,
+            )
+            return {"declared": declared.as_dict(), **_listing()}
+        if "undeclare" in data:
+            kind_id = data["undeclare"]
+            if type(kind_id) is not int or kind_id <= 0 or kind_id > 9_223_372_036_854_775_807:
+                raise ValueError("undeclare must be a declaration id")
+            return {"undeclared": agent_rules.delete_kind(
+                        _universe_dir(), kind_id, confirm=data.get("confirm") is True),
+                    **_listing()}
+        if "delete" in data:
+            rule_id = data["delete"]
+            # A positive JSON integer only: no float truncation, no bool, no
+            # value outside SQLite's integer range (gpt-6-astra on #4193).
+            if (type(rule_id) is not int or rule_id <= 0
+                    or rule_id > 9_223_372_036_854_775_807):
+                raise ValueError("delete must be a rule id")
+            removed = agent_rules.delete_rule(
+                _universe_dir(), rule_id,
+                confirm_handback=data.get("confirm_handback") is True,
+            )
+            return {"deleted": removed, **_listing()}
+        rule = agent_rules.set_rule(
+            _universe_dir(), str(data.get("action_class") or ""),
+            str(data.get("behaviour") or ""),
+            connection=str(data.get("connection") or ""),
+            operation=str(data.get("operation") or ""),
+            note=str(data.get("note") or ""),
+            confirm_handback=data.get("confirm_handback") is True,
+        )
+        return {"saved": rule.as_dict(), **_listing()}
+
+    try:
+        return JSONResponse(await run_in_threadpool(_save), headers=_NO_STORE)
+    except (agent_rules.RuleRefused, agent_review.ReviewSwitchRefused) as exc:
+        return JSONResponse(
+            {"error": "rule_refused", "detail": str(exc)}, status_code=409, headers=_NO_STORE,
+        )
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid_rule"}, status_code=400, headers=_NO_STORE)
+
+
 async def _handle_account_timezone(request: Any) -> Any:
     """Record the signed-in user's own clock, as their browser reports it.
 
@@ -1306,6 +1440,88 @@ async def _handle_turn_interrupt(request: Any) -> Any:
     return JSONResponse({"interrupted": count, "universe_id": universe_id}, headers=_NO_STORE)
 
 
+async def _handle_turn_steer(request: Any) -> Any:
+    """Send the signed-in user's message into their own RUNNING turn (harness S2).
+
+    Founder, 2026-10-01: the agent should hear a message typed while it works,
+    the way Claude Code does, instead of the page holding it until the turn
+    ends. When a turn of this caller's thread is live, the message is queued
+    for the next tool result of that turn (``tinyassets.agent_steering``) and
+    ``steered: true`` comes back. When none is live, ``steered: false``: the
+    page sends it as an ordinary message instead.
+
+    Keyed on the VERIFIED caller exactly like the Stop button: only a turn this
+    subject started in this universe can be steered, and only into this
+    subject's own thread.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.turn_interrupt import live_count
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return JSONResponse({"error": "text_required"}, status_code=400, headers=_NO_STORE)
+    identity = current_identity()
+    universe_id = str(data.get("universe_id", "") or "").strip()
+    if not universe_id:
+        try:
+            universe_id = await run_in_threadpool(_read_home, identity, raise_errors=True)
+        except Exception:  # noqa: BLE001 - no home: nothing running to steer
+            universe_id = ""
+    if not universe_id:
+        return JSONResponse({"steered": False}, headers=_NO_STORE)
+    try:
+        if not live_count(identity.user_id, universe_id):
+            return JSONResponse(
+                {"steered": False, "universe_id": universe_id}, headers=_NO_STORE,
+            )
+    except ValueError:
+        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
+
+    def _queue():
+        from tinyassets import agent_steering
+        from tinyassets.api.helpers import _universe_dir
+
+        return agent_steering.enqueue(
+            _universe_dir(universe_id), f"thread:principal:{identity.user_id}", text,
+        )
+
+    from tinyassets.agent_steering import SteeringRefused
+
+    try:
+        queued = await run_in_threadpool(_queue)
+    except SteeringRefused as exc:
+        return JSONResponse(
+            {"error": "steering_refused", "detail": str(exc)},
+            status_code=409, headers=_NO_STORE,
+        )
+    except ValueError:
+        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
+    if queued is None:
+        # The turn settled between the check above and the queue: admission and
+        # settle share one transaction, so the line was refused, never stranded.
+        return JSONResponse({"steered": False, "universe_id": universe_id}, headers=_NO_STORE)
+    return JSONResponse(
+        {"steered": True, "universe_id": universe_id, "steer_id": queued.id},
+        headers=_NO_STORE,
+    )
+
+
 async def _handle_account_delete(request: Any) -> Any:
     """Delete the signed-in user's account: their universe (memory, history,
     deposited credentials), every row keyed to it, any paid plan (cancelled
@@ -1410,15 +1626,21 @@ async def _handle_billing_status(request: Any) -> Any:
                         "reason": "no_home_universe"}
             # Tier and, if it is ending, when. No Stripe round-trip: `ends_at` is
             # persisted by the webhook, so this stays a local read even though it is
-            # polled. Usage limits belong to the metering change, which has NOT
-            # landed - reporting quotas here would advertise enforcement that does
-            # not exist.
+            # polled. Seats are enforced (`universe_seats`); storage is not yet, so
+            # it is not reported as a limit. `upgrade_url` is None on the top tier,
+            # which is what the app's `?upgrade=1` entry reads.
             plan = get_plan(_universe_dir(home))
+            from tinyassets.usage_policy import limits_for, upgrade_url
+
+            limits = limits_for(plan["tier"])
             return {
                 "tier": plan["tier"],
                 "ends_at": plan["ends_at"],
                 "billing_enabled": billing_enabled(),
-                "enforced": [],
+                "enforced": ["seats"],
+                "seats": limits.seats,
+                "interactive_reserve": limits.interactive_reserve,
+                "upgrade_url": upgrade_url(plan["tier"]),
             }
 
     return JSONResponse(
@@ -1856,7 +2078,9 @@ def onboarding_routes() -> list[Any]:
         Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
+        Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
+        Route("/app/turn/steer", _handle_turn_steer, methods=["POST"]),
         Route("/app/connections", handle_connections, methods=["GET", "POST"]),
         Route("/app/files", handle_file_upload, methods=["POST"]),
         # Notifications. `/app/devices` and `/app/notify` are identity-gated by

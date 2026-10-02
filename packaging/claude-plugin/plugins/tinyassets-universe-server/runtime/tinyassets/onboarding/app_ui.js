@@ -1,5 +1,5 @@
-  // ---- Custom universe UI: isolated renderer + closed bridge ----------------
-  // A universe can hold executable UI bundles (`tinyassets.app-ui.v1`) its own
+  // ---- Custom command center UI: isolated renderer + closed bridge ----------------
+  // A command center can hold executable UI bundles (`tinyassets.app-ui.v1`) its own
   // agent writes, and this renders them. A bundle is somebody's arbitrary code —
   // usually somebody the viewer has never met, because bundles are shared by
   // publish/remix — so nothing here sanitizes it. It runs in the sandboxed,
@@ -7,15 +7,15 @@
   // policy), which owns no storage, no cookies and no network of its own.
   //
   // Everything the bundle can do is in ACTIONS below and nowhere else. Each
-  // handler builds its own tool arguments and pins the universe to the VIEWING
-  // user's current home, so a bundle cannot name a universe: cross-user reach is
+  // handler builds its own tool arguments and pins the command center to the VIEWING
+  // user's current home, so a bundle cannot name a command center: cross-user reach is
   // not refused by a check, it is unrepresentable. Replies are assembled from
   // picked fields, never spread from a server payload, so a field added upstream
   // later cannot ride out to untrusted code.
   //
   // Storage is the viewer's own `app_ui` row (read_graph/write_graph
   // target="app_ui"): the bundles in `ui_library` and the choice in
-  // `ui_selection`, one row per person and universe, keyed server-side by who is
+  // `ui_selection`, one row per person and command center, keyed server-side by who is
   // signed in. It is not an agent binding and never appears to a binding reader.
   // Every write is compare-and-set on the row's revision.
   const AppUI={
@@ -27,15 +27,19 @@
     // `sessionStorage` (the access token), `localStorage` and the parent DOM.
     // The frame's own response header sandboxes it too, so this is the second of
     // two independent locks, not the only one.
-    SANDBOX:"allow-scripts",
-    // Per-UI bounds only. There is NO bound on the library as a whole -- neither
-    // a count of UIs nor a byte total. A 4 MiB library ceiling used to refuse an
-    // install once the stored library was full; those bytes are the universe's
-    // tier storage now, one of the two limits an account has (founder 2026-09-30).
-    // Sizes are UTF-8 BYTES, because that is what the server validates: counting
-    // UTF-16 units let multi-byte bundles pass here and fail at write time
-    // (Codex, 2026-09-26).
-    MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
+    // `allow-forms` lets a bundle's <form> fire its submit event, which a bundle
+    // handles in script. Without it the browser drops the submit silently and the
+    // button does nothing. The frame's `form-action 'none'` still refuses every
+    // real submission, so no form can navigate or send anything anywhere.
+    SANDBOX:"allow-scripts allow-forms",
+    // Per-UI bounds only, the same numbers the server enforces
+    // (custom_agents.APP_UI_MAX_*). There is NO bound on the library as a whole --
+    // neither a count of UIs nor a byte total: those bytes are the command center's
+    // tier storage, one of the two limits an account has (founder 2026-09-30).
+    // The 49,152-byte bundle bound these replace made a game impossible
+    // (founder's village, 2026-10-02). Sizes are UTF-8 BYTES, because that is
+    // what the server validates (Codex, 2026-09-26).
+    MAX_TEXT_BYTES:1048576,MAX_ASSET_FILES:500,MAX_ASSET_BYTES:16777216,MAX_UI_ASSET_BYTES:134217728,
     MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
     MAX_LIST_RUNS:50,MAX_OUTPUT_CHUNK:8192,MAX_ID:200,MAX_PATH:1024,MAX_FILE_CHUNK:65536,
     // The first page of a whole-list read; see readWhole.
@@ -48,12 +52,23 @@
     ROLE:"app_experience",TURN_KIND:"tinyassets.turn-graph.v1",
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
+    // Carried verbatim when present: the asset manifest the server checked,
+    // shared libraries by name, and whether `script` is a module.
+    OPTIONAL:["assets","libraries","script_type"],
+    SHA256_RE:/^[0-9a-f]{64}$/,
+    ASSET_PATH_RE:/^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
+    ASSET_FETCH:"/app/api/ui-asset",
+    // The vendored libraries and their SHA-384 pins, the same table as
+    // tinyassets/onboarding/ui_libraries.json (a test holds them equal). A
+    // library whose bytes do not match is refused, never posted to the frame.
+    LIBRARIES:Object.freeze({"howler":{format:"global",sha384:"sha384-SSf4pKRrGaeWL8bdA89QvGkhZo5WvIVCGwKVzfX7z+9sSaIHtE/AkOLehofI4JVY",requires:[]},"phaser":{format:"global",sha384:"sha384-AvQiDMZAVLda3VtAoU5MCfBz8pzXhteb2CiUJeKBmPlWzpXj1uJ96Km11+YuFNu/",requires:[]},"pixi.js":{format:"global",sha384:"sha384-sQhAUuZTvdanRcBHbVCTasnEWH28GGEK87FJGPj/JaqwL/15KWQwKe7whTHdCkwm",requires:[]},"three":{format:"module",sha384:"sha384-IDC7sAMAIMB/TZ6dgKKPPAKZ2bXXXP8+FBMBC8cU319eBhKITx+PaalhfDkDNH28",requires:[]},"three/addons/controls/OrbitControls.js":{format:"module",sha384:"sha384-aJoe4qqS/DgF2jh9njAuvA6QIveJYoCuYOfYjdFY8P3eawzmc9bEQ40jq2TvOyuP",requires:["three"]},"three/addons/loaders/GLTFLoader.js":{format:"module",sha384:"sha384-x79xjCNsFlRByL5E+VmRg4w6ppPmAVfP11fg7GzEVJ0wT+wuVfARjjZNLsq7iUmq",requires:["three", "three/addons/utils/BufferGeometryUtils.js"]},"three/addons/utils/BufferGeometryUtils.js":{format:"module",sha384:"sha384-wOjwauvHlJO7K6APr7FmMGH2nupQa3Ndzas9bJZhsAMOK055efJud8ns4aYmASKv",requires:["three"]}}),
+    libCache:new Map(),
 
     epoch:0,home:"",principal:"",enabled:false,busy:false,
     library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,
     // The conversation installation as last read (null: none, so default), the
     // reason it could not be read, and the selection it replaced this visit.
-    conversation:null,conversationNote:"",previousTurn:null,selecting:false,
+    conversation:null,conversationNote:"",previousTurn:null,selecting:false,ambiguous:false,
     // The stored row's revision as last read; 0 means no row exists yet.
     revision:0,
     // Bumped on every mount AND unmount. A request captures it, so a reply owed
@@ -71,10 +86,10 @@
       if(!component||typeof component!=="object"||Array.isArray(component))
         return this.unsupported("UI component is not an object");
       const keys=Object.keys(component).sort();
-      const extra=keys.filter(k=>!this.FIELDS.includes(k));
+      const extra=keys.filter(k=>!this.FIELDS.includes(k)&&!this.OPTIONAL.includes(k));
       if(extra.length) return this.unsupported("UI component carries fields this app does not render: "+extra.join(", "));
-      if(keys.length!==this.FIELDS.length)
-        return this.unsupported("UI component is missing "+this.FIELDS.filter(k=>!keys.includes(k)).join(", "));
+      const missing=this.FIELDS.filter(k=>!keys.includes(k));
+      if(missing.length) return this.unsupported("UI component is missing "+missing.join(", "));
       if(component.kind!==this.KIND) return this.unsupported("not a "+this.KIND+" component");
       if(component.version!==this.VERSION)
         return this.unsupported("UI version "+String(component.version)+" is not supported; this app renders version 1");
@@ -82,17 +97,44 @@
         return this.unsupported("ui_id must be lowercase letters, digits or dashes");
       if(!this.text(component.name,this.MAX_NAME)||!component.name.trim())
         return this.unsupported("name must be a non-empty string of at most "+this.MAX_NAME+" characters");
-      if(!this.text(component.markup,this.MAX_MARKUP))
-        return this.unsupported("markup must be a string of at most "+this.MAX_MARKUP+" characters");
-      if(!this.text(component.style,this.MAX_STYLE))
-        return this.unsupported("style must be a string of at most "+this.MAX_STYLE+" characters");
-      if(!this.text(component.script,this.MAX_SCRIPT))
-        return this.unsupported("script must be a string of at most "+this.MAX_SCRIPT+" characters");
+      for(const field of ["markup","style","script"])
+        if(typeof component[field]!=="string") return this.unsupported(field+" must be a string");
       const size=this.bytes(JSON.stringify(component));
-      if(size>this.MAX_BUNDLE_BYTES)
-        return this.unsupported("this UI is "+size+" bytes; the limit is "+this.MAX_BUNDLE_BYTES);
-      return {ok:true,bundle:{kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
-        name:component.name.trim(),markup:component.markup,style:component.style,script:component.script}};
+      if(size>this.MAX_TEXT_BYTES)
+        return this.unsupported("this UI is "+size+" bytes of text; the limit is "+this.MAX_TEXT_BYTES);
+      if("script_type" in component&&component.script_type!=="classic"&&component.script_type!=="module")
+        return this.unsupported("script_type must be classic or module");
+      if("libraries" in component){
+        const libs=component.libraries;
+        if(!Array.isArray(libs)) return this.unsupported("libraries must be a list");
+        for(const name of libs)
+          if(typeof name!=="string"||!Object.prototype.hasOwnProperty.call(this.LIBRARIES,name))
+            return this.unsupported("library "+String(name)+" is not one this app provides");
+        if(new Set(libs).size!==libs.length) return this.unsupported("a library is listed twice");
+      }
+      if("assets" in component){
+        const assets=component.assets;
+        if(!assets||typeof assets!=="object"||Array.isArray(assets)) return this.unsupported("assets must be an object");
+        const paths=Object.keys(assets);
+        if(paths.length>this.MAX_ASSET_FILES) return this.unsupported("this UI has more than "+this.MAX_ASSET_FILES+" assets");
+        let total=0;
+        for(const path of paths){
+          const ref=assets[path];
+          if(path.length>200||!this.ASSET_PATH_RE.test(path)) return this.unsupported("asset path "+path+" is not a bundle path");
+          if(!ref||typeof ref!=="object"||!this.SHA256_RE.test(String(ref.sha256))||!Number.isInteger(ref.size)||
+             ref.size<0||ref.size>this.MAX_ASSET_BYTES||typeof ref.media_type!=="string"||!ref.media_type)
+            return this.unsupported("asset "+path+" is not a stored blob");
+          total+=ref.size;
+        }
+        if(total>this.MAX_UI_ASSET_BYTES) return this.unsupported("this UI's assets exceed "+this.MAX_UI_ASSET_BYTES+" bytes");
+      }
+      const bundle={kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
+        name:component.name.trim(),markup:component.markup,style:component.style,script:component.script};
+      // Optional fields pass through as stored, so a library rebuilt from parsed
+      // entries (install) never strips another UI's assets.
+      for(const field of this.OPTIONAL)
+        if(field in component) bundle[field]=JSON.parse(JSON.stringify(component[field]));
+      return {ok:true,bundle};
     },
     // The library is a LIST of any length, ordered as stored, with no
     // user-chosen keys; each entry names itself by `ui_id`.
@@ -148,7 +190,7 @@
       this.enabled=false; this.home=""; this.principal="";
       this.library=[]; this.unreadable=""; this.selection=null; this.busy=false;
       this.revision=0;
-      this.conversation=null; this.conversationNote=""; this.previousTurn=null; this.selecting=false;
+      this.conversation=null; this.conversationNote=""; this.previousTurn=null; this.selecting=false; this.ambiguous=false;
       $("btn-ui-switch").hidden=true;
       this.status(""); this.paint();
     },
@@ -162,7 +204,7 @@
       const id=String(home||"").trim();
       if(!this.enabled||!id||id===this.home) return;
       this.reset();
-      this.status("Your home universe changed; the custom UI was closed and its access ended.");
+      this.status("Your home command center changed; the custom UI was closed and its access ended.");
     },
     enable(home,principal){
       if(this.enabled&&this.home===home&&this.principal===principal) return;
@@ -200,7 +242,7 @@
         this.status("Could not read your installed UIs ("+(err&&err.message||"unknown error")+"). Default chat is in use.");
       }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
     },
-    // After each turn: the universe can switch or edit this row by talking
+    // After each turn: the command center can switch or edit this row by talking
     // (write_graph target="app_ui" operation="activate" ...). A bodiless index
     // read says whether the row moved; only then is it read whole and adopted,
     // so an unchanged row never remounts a UI mid-use.
@@ -255,6 +297,8 @@
       host.replaceChildren(frame);
       host.hidden=false;
       $("view-chat").classList.add("ui-custom-active");
+      // The chat cloud starts small over a layout and big without one.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
       this.paintHeader();
     },
     unmount(){
@@ -262,12 +306,14 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
+      // The chat cloud starts small over a layout and big without one.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();
     },
 
-    // ---- the bridge: one frame, one allowlist, one universe ----------------
+    // ---- the bridge: one frame, one allowlist, one command center ----------------
     // A frozen map. An action absent from it does not exist — the refusal names
     // what was asked and nothing is guessed from a near-match.
     ACTIONS:Object.freeze({
@@ -289,11 +335,96 @@
       if(message.type!=="call"||typeof message.id!=="string"||typeof message.action!=="string") return;
       this.serve(message.id,message.action,message.params);
     },
+    // The frame owns no network, so the bytes a UI loads are fetched HERE, with
+    // the viewer's bearer, checked against their pins, and posted in; the frame
+    // turns them into blob: URLs of its own. Fenced to the frame that asked: a
+    // remount while bytes download drops them.
     deliver(){
       if(!this.frame||!this.active||this.ready) return;
       this.ready=true;
-      this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:{
-        markup:this.active.markup,style:this.active.style,script:this.active.script}});
+      const entry=this.active;
+      const bundle={markup:entry.markup,style:entry.style,script:entry.script};
+      if(entry.script_type==="module") bundle.script_type="module";
+      // Nothing to fetch: handed over at once, exactly as before files existed.
+      if(!(entry.libraries||[]).length&&!Object.keys(entry.assets||{}).length){
+        this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle});
+        return;
+      }
+      return this.deliverWithFiles(entry,bundle);
+    },
+    async deliverWithFiles(entry,bundle){
+      const gen=this.frameGen,epoch=this.epoch,home=this.home;
+      let files=[],libraries=[];
+      try{
+        libraries=await this.libraryBytes(entry.libraries||[]);
+        files=await this.assetBytes(entry.assets||{},home);
+      }catch(err){
+        if(gen!==this.frameGen||!this.fence(epoch,home)) return;
+        if(err&&err.authRequired){ sessionExpired(); return; }
+        this.status(entry.name+" could not load its files ("+(err&&err.message||"unknown error")+").");
+        this.paint();
+        return;
+      }
+      if(gen!==this.frameGen||!this.fence(epoch,home)||!this.frame) return;
+      this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:Object.assign(bundle,{files,libraries})});
+    },
+    async fetchBytes(body){
+      try{ await ensureFreshToken(); }catch(_err){ /* the request reports it */ }
+      const headers={"Content-Type":"application/json"};
+      const tk=token(); if(tk) headers["Authorization"]="Bearer "+tk;
+      const resp=await fetch(this.ASSET_FETCH,{method:"POST",headers,credentials:"same-origin",
+        cache:"no-store",body:JSON.stringify(body)});
+      if(resp.status===401){ const e=new Error("authentication_required"); e.authRequired=true; throw e; }
+      if(!resp.ok){
+        let doc=null; try{ doc=await resp.json(); }catch(_e){ doc=null; }
+        throw new Error((doc&&typeof doc.error==="string"&&doc.error)||("answered "+resp.status));
+      }
+      return await resp.arrayBuffer();
+    },
+    async digest(algorithm,bytes){
+      return new Uint8Array(await crypto.subtle.digest(algorithm,bytes));
+    },
+    // Every library named, after what it requires, each verified against its
+    // SHA-384 pin. Libraries are public code, so a verified copy is kept for
+    // the page's life.
+    async libraryBytes(names){
+      const ordered=[],visit=name=>{
+        if(ordered.includes(name)) return;
+        const pin=this.LIBRARIES[name];
+        if(!pin) throw new Error("library "+name+" is not one this app provides");
+        for(const dep of pin.requires) visit(dep);
+        ordered.push(name);
+      };
+      for(const name of names) visit(name);
+      const out=[];
+      for(const name of ordered){
+        let bytes=this.libCache.get(name);
+        if(!bytes){
+          bytes=await this.fetchBytes({library:name});
+          const got="sha384-"+btoa(String.fromCharCode(...await this.digest("SHA-384",bytes)));
+          if(got!==this.LIBRARIES[name].sha384) throw new Error("library "+name+" failed its integrity check");
+          this.libCache.set(name,bytes);
+        }
+        out.push({name,format:this.LIBRARIES[name].format,bytes});
+      }
+      return out;
+    },
+    // The viewer's own blobs, a few at a time, each checked against the hash
+    // its manifest names before the frame sees it.
+    async assetBytes(assets,home){
+      const paths=Object.keys(assets),out=new Array(paths.length);
+      let next=0;
+      const hex=bytes=>Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");
+      const worker=async()=>{
+        while(next<paths.length){
+          const i=next++,path=paths[i],ref=assets[path];
+          const bytes=await this.fetchBytes({graph_id:home,sha256:ref.sha256});
+          if(hex(await this.digest("SHA-256",bytes))!==ref.sha256) throw new Error("asset "+path+" failed its integrity check");
+          out[i]={path,media_type:ref.media_type,bytes};
+        }
+      };
+      await Promise.all(Array.from({length:Math.min(4,paths.length)},worker));
+      return out;
     },
     post(payload){
       const frame=this.frame&&this.frame.contentWindow;
@@ -322,7 +453,7 @@
       // A reply is owed to the frame that ASKED. Without this, bundle A's answer
       // reaches bundle B, and since both bootstraps number requests from r1 it
       // settles B's own r1 promise with A's data (Codex, 2026-09-26).
-      const gen=this.frameGen;
+      const gen=this.frameGen,asker={gen,name:this.active?this.active.name:"This UI"};
       const method=Object.prototype.hasOwnProperty.call(this.ACTIONS,action)?this.ACTIONS[action]:null;
       if(!method){ this.refuse(id,"action not available: "+action); return; }
       if(this.pending>=8){ this.refuse(id,"too many requests in flight"); return; }
@@ -330,7 +461,7 @@
       this.pending++;
       try{
         await this.verify();
-        const result=await this[method](args);
+        const result=await this[method](args,asker);
         if(!this.fence(epoch,home)||gen!==this.frameGen||!this.frame) return;
         this.post({ta_ui:this.PROTOCOL,type:"result",id,ok:true,result});
       }catch(err){
@@ -343,11 +474,11 @@
     // The viewer's identity, reduced to what a UI needs to greet them. No
     // principal id, no token, no provider or credential material.
     async whoami(){
-      return {protocol:this.PROTOCOL,universe_id:this.home,
-        universe_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
+      return {protocol:this.PROTOCOL,command_center_id:this.home,
+        command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
-    // bundle cannot enumerate anybody else's universe.
+    // bundle cannot enumerate anybody else's command center.
     // Every row of one of the viewer's OWN lists. The read takes a page size
     // and no offset, so ask for a page and, while the server fills it exactly,
     // ask for a bigger one: a bundle
@@ -383,7 +514,7 @@
     // in the shared conversation rather than a private side channel.
     //
     // `agent` is NOT yet honoured per message: the server admits a turn only for
-    // the universe's ONE currently selected conversation
+    // the command center's ONE currently selected conversation
     // (consumer_runtime.reserve_prepared_turn). Naming a different agent is
     // refused by name rather than silently sent to the selected one.
     async sendMessage(args){
@@ -396,7 +527,7 @@
         const match=agents.agents.find(a=>a.agent_id===wanted||a.name===wanted);
         if(!match) throw new Error("no agent of yours is named "+wanted);
         if(!match.selected) throw new Error(
-          "this universe sends turns to its selected conversation only, and "+match.name+" is not it; "+
+          "this command center sends turns to its selected conversation only, and "+match.name+" is not it; "+
           "change the conversation design first (set_conversation_design)");
       }
       if(this.sending) throw new Error("a message from this UI is already in flight");
@@ -408,7 +539,7 @@
     // The viewer's own saved conversation, field by field.
     //
     // Pinned to `this.home` and the ANSWER is checked against it. `get_status`
-    // with no universe defaults to the caller's ACTIVE universe, so an unpinned
+    // with no command center defaults to the caller's ACTIVE command center, so an unpinned
     // read hands a bundle whichever home the account moved to rather than the one
     // it was granted (Codex, 2026-09-26). `verify()` closes the window; this
     // closes the read itself, so neither depends on the other being right.
@@ -423,7 +554,7 @@
       const doc=await Owner.status(call);
       if(!doc||doc.error) throw new Error("your conversation is unavailable");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that conversation belongs to another universe; this UI's access ended");
+        throw new Error("that conversation belongs to another command center; this UI's access ended");
       const conversation=doc.recent_conversation;
       if(!conversation||typeof conversation.error==="string"||!Array.isArray(conversation.turns))
         throw new Error("your conversation could not be read");
@@ -440,20 +571,20 @@
     // ---- live state: the viewer's own automations and runs, read-only -------
     // What a screen needs to show agents WORKING rather than a picture of them.
     // Same rules as the reads above: `graph_id` is always this.home, the answer
-    // is checked against it where it names a universe, and every reply is built
+    // is checked against it where it names a command center, and every reply is built
     // from picked fields. Automation `inputs` and a run's `actor` never cross:
     // the first is the owner's private configuration, the second a principal id.
     //
-    // The server scopes each of these to the named universe, so a run id from
+    // The server scopes each of these to the named command center, so a run id from
     // anywhere else reads as not found rather than being returned.
     async listAutomations(){
       const doc=await this.readWhole({target:"automations",graph_id:this.home},"automations");
       if(!doc||doc.error||!Array.isArray(doc.automations)) throw new Error("your automations are unavailable");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("those automations belong to another universe; this UI's access ended");
+        throw new Error("those automations belong to another command center; this UI's access ended");
       const automations=[];
       for(const a of doc.automations){
-        // A retired fleet-era row names no universe and runs nothing: skip it.
+        // A retired fleet-era row names no command center and runs nothing: skip it.
         if(!a||typeof a!=="object"||a.universe_id!==this.home) continue;
         const t=(a.trigger&&typeof a.trigger==="object")?a.trigger:{};
         automations.push({automation_id:String(a.automation_id||""),name:String(a.name||""),
@@ -524,7 +655,7 @@
     },
 
     // ---- the shared folder and the wake -------------------------------------
-    // Agents coordinate through files in the universe folder, so a screen of
+    // Agents coordinate through files in the command center folder, so a screen of
     // them reads those files. Owner-only on the server (an admin grant on this
     // home), pinned to this.home here, picked fields back.
     filePath(value,required){
@@ -536,10 +667,10 @@
     async listFiles(args){
       const path=this.filePath(args.path,false);
       const doc=await Owner.read(
-        {target:"universe_files",graph_id:this.home,query:path});
+        {target:"command_center_files",graph_id:this.home,query:path});
       if(!doc||doc.error||!Array.isArray(doc.entries)) throw new Error("that folder is not available");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that folder belongs to another universe; this UI's access ended");
+        throw new Error("that folder belongs to another command center; this UI's access ended");
       const entries=[];
       for(const e of doc.entries){
         if(!e||typeof e.name!=="string") continue;
@@ -552,11 +683,11 @@
     async readFile(args){
       const path=this.filePath(args.path,true);
       const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
-      const doc=await Owner.read({target:"universe_file",graph_id:this.home,
+      const doc=await Owner.read({target:"command_center_file",graph_id:this.home,
         query:path,file_offset:offset,file_max_bytes:this.MAX_FILE_CHUNK});
       if(!doc||doc.error) throw new Error("that file is not available");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that file belongs to another universe; this UI's access ended");
+        throw new Error("that file belongs to another command center; this UI's access ended");
       const text=doc.encoding==="text"&&typeof doc.text==="string";
       return {path:String(doc.path||path),encoding:text?"text":"base64",
         content:text?doc.text:String(doc.base64||""),size_bytes:Number.isInteger(doc.size_bytes)?doc.size_bytes:null,
@@ -631,11 +762,12 @@
         const rows=await this.installations();
         if(!this.fence(epoch,home)) return;
         this.conversation=rows.length===1?rows[0]:null;
-        this.conversationNote=rows.length>1?"More than one conversation installation exists, so none can be changed here until one remains.":"";
+        this.ambiguous=rows.length>1;
+        this.conversationNote=this.ambiguous?"More than one conversation installation exists, so none answers you. Restore the default conversation to clear them.":"";
       }catch(err){
         if(!this.fence(epoch,home)) return;
         if(err&&err.authRequired) throw err;
-        this.conversation=null;
+        this.conversation=null; this.ambiguous=false;
         this.conversationNote="Conversation design unreadable ("+(err&&err.message||"unknown error")+").";
       }
       this.paint();
@@ -645,31 +777,44 @@
       if(rows.length>1) return {state:"ambiguous"};
       return this.describe(rows[0]||null);
     },
-    async setConversationDesign(args){
+    async setConversationDesign(args,asker){
       const want=args.state==="default"?null:{
         definition_id:typeof args.agent_definition_id==="string"?args.agent_definition_id.trim():"",
         component_key:typeof args.component_key==="string"?args.component_key:""};
       if(want&&(!want.definition_id||want.definition_id.length>this.MAX_ID||!want.component_key||want.component_key.length>this.MAX_ID))
         throw new Error("agent_definition_id and component_key are required, or state \"default\"");
       if(this.selecting) throw new Error("a conversation change is already in flight");
-      const ui=this.active?this.active.name:"This UI";
-      return this.changeConversation(want,(agent,target)=>confirm(target
-        ? "“"+ui+"” asks to send your future messages to “"+String(agent.name||"unnamed")+
-          "” (its conversation component "+target.component_key+", workflow version "+
-          String(agent.components[target.component_key].branch_version_id)+"). "+
-          "Your model choice and access still govern every call, and work already started is not changed. Allow?"
-        : "“"+ui+"” asks to restore the default conversation for your future messages. Allow?"));
+      return this.changeConversation(want,(agent,target)=>{
+        // The prompt names the UI that ASKED, captured before any await, and
+        // is never shown once that UI has left the screen.
+        this.stillAsking(asker);
+        return confirm(target
+          ? "“"+asker.name+"” asks to send your future messages to “"+String(agent.name||"unnamed")+
+            "” (its conversation component "+target.component_key+", workflow version "+
+            String(agent.components[target.component_key].branch_version_id)+"). "+
+            "Your model choice and access still govern every call, and work already started is not changed. Allow?"
+          : "“"+asker.name+"” asks to restore the default conversation for your future messages. Allow?");
+      },asker);
     },
-    // The ONE conversation write. `approve` is null only for this page's own
-    // recovery buttons, which are themselves the person's click.
-    async changeConversation(target,approve){
+    // A UI's request belongs to the frame that sent it. Another UI swapped in
+    // while the request awaited is a different author, so the request ends.
+    stillAsking(asker){
+      if(asker&&asker.gen!==this.frameGen)
+        throw new Error("the UI that asked is no longer on screen; nothing was changed");
+    },
+    // The ONE conversation write path. `approve` and `asker` are null only for
+    // this page's own recovery buttons, which are themselves the person's click.
+    async changeConversation(target,approve,asker){
       if(!this.enabled) throw new Error("not ready");
       const epoch=this.epoch,home=this.home;
       this.selecting=true; this.paint();
       try{
         const rows=await this.installations();
         if(!this.fence(epoch,home)) throw new Error("your session changed");
-        if(rows.length>1) throw new Error("more than one conversation installation exists; nothing was changed");
+        if(rows.length>1){
+          if(target||approve) throw new Error("more than one conversation installation exists; restore the default conversation in Switch command center first. Nothing was changed");
+          return await this.clearAmbiguity(rows,epoch,home);
+        }
         const b=rows[0]||null;
         if(b&&b.updated_by!==this.principal) throw new Error("the conversation installation is not owner-controlled; nothing was changed");
         let definitionId,selection,agent=null;
@@ -691,39 +836,73 @@
           selection={version:1,state:"disabled"};
         }
         if(approve&&!approve(agent,target)) throw new Error("the person did not approve the change; nothing was changed");
-        // The prompt waited on a person: the session may have moved meanwhile.
+        // The prompt waited on a person: the session, and the UI on screen,
+        // may have moved meanwhile.
         await this.verify();
+        this.stillAsking(asker);
         const config=b?JSON.parse(JSON.stringify(b.configuration)):{schema_version:1,name:"App experience",role:this.ROLE};
         const previous=b?{definition_id:String(b.agent_definition_id),
           selection:JSON.parse(JSON.stringify(config.turn_consumer||{version:1,state:"disabled"}))}:null;
         config.turn_consumer=selection;
-        const result=await MCP.callTool("write_graph",{target:"agent_binding",operation:b?"update":"bind",
-          graph_id:home,agent_definition_id:definitionId,
-          ...(b?{agent_binding_id:b.agent_binding_id,expected_revision:b.revision}:{}),
-          payload_json:JSON.stringify(config)});
-        if(!this.fence(epoch,home)) throw new Error("your session changed");
-        const written=result&&result.binding;
-        if(!result||result.error||result.status!=="configured"||!written||!this.eligible(written)||
-           written.updated_by!==this.principal||String(written.agent_definition_id)!==definitionId||
-           (b&&written.agent_binding_id!==b.agent_binding_id))
-          throw new Error("the change was not confirmed"+(result&&result.error?" ("+String(result.error)+")":"")+"; it was not retried");
-        const doc=await Owner.read({target:"agent_binding",graph_id:home,agent_binding_id:written.agent_binding_id});
-        if(!this.fence(epoch,home)) throw new Error("your session changed");
-        const check=doc&&doc.binding;
-        if(!this.eligible(check)||check.updated_by!==this.principal||check.agent_binding_id!==written.agent_binding_id||
-           String(check.agent_definition_id)!==definitionId||check.revision!==written.revision||
-           JSON.stringify(check.configuration)!==JSON.stringify(config))
-          throw new Error("the change could not be confirmed by read-back; it was not retried");
-        this.previousTurn=previous; this.conversation=check; this.conversationNote="";
+        const check=await this.writeInstallation(b,definitionId,config,epoch,home);
+        this.previousTurn=previous; this.conversation=check; this.ambiguous=false; this.conversationNote="";
         this.status(selection.state==="disabled"
           ?"Default conversation restored for future messages. Work already started is not changed."
           :"Conversation design changed for future messages. Your model choice and private data are unchanged.");
         return this.describe(check);
       }finally{ if(this.fence(epoch,home)){ this.selecting=false; this.paint(); } }
     },
+    // One revision-guarded write of the receiver's own installation, read back
+    // and compared by VALUE: the store keeps canonical JSON with sorted keys.
+    // With no `b` it creates one; the server refuses a second installation of
+    // the role, so two tabs that both saw none cannot both create one.
+    async writeInstallation(b,definitionId,config,epoch,home){
+      const result=await MCP.callTool("write_graph",{target:"agent_binding",operation:b?"update":"bind",
+        graph_id:home,agent_definition_id:definitionId,
+        ...(b?{agent_binding_id:b.agent_binding_id,expected_revision:b.revision}:{}),
+        payload_json:JSON.stringify(config)});
+      if(!this.fence(epoch,home)) throw new Error("your session changed");
+      const written=result&&result.binding;
+      const kept=config.role===this.ROLE;
+      // A retired row has left the role, so `eligible` no longer fits it; it
+      // is still this viewer's own row in this home.
+      const mine=v=>!!(v&&v.created_by===this.principal&&v.universe_id===this.home&&
+        v.status==="configured"&&(!kept||this.eligible(v)));
+      if(!result||result.error||result.status!=="configured"||!mine(written)||
+         written.updated_by!==this.principal||String(written.agent_definition_id)!==definitionId||
+         (b&&written.agent_binding_id!==b.agent_binding_id))
+        throw new Error("the change was not confirmed"+(result&&result.error?" ("+String(result.error)+")":"")+"; it was not retried");
+      const doc=await Owner.read({target:"agent_binding",graph_id:home,agent_binding_id:written.agent_binding_id});
+      if(!this.fence(epoch,home)) throw new Error("your session changed");
+      const check=doc&&doc.binding;
+      if(!mine(check)||check.agent_binding_id!==written.agent_binding_id||check.updated_by!==this.principal||
+         String(check.agent_definition_id)!==definitionId||check.revision!==written.revision||
+         this.canonical(check.configuration)!==this.canonical(config))
+        throw new Error("the change could not be confirmed by read-back; it was not retried");
+      return check;
+    },
+    // Trusted recovery from more than one installation (left by an older
+    // client, before the server refused a second one): the first, by id, is
+    // kept with the default conversation; every other one is retired out of
+    // the role, so exactly one installation remains and none is active.
+    async clearAmbiguity(rows,epoch,home){
+      const ordered=[...rows].sort((x,y)=>String(x.agent_binding_id)<String(y.agent_binding_id)?-1:1);
+      let kept=null;
+      for(const [i,b] of ordered.entries()){
+        const config=JSON.parse(JSON.stringify(b.configuration));
+        config.turn_consumer={version:1,state:"disabled"};
+        if(i>0) config.role=this.ROLE+"_retired";
+        else if(this.describe(b).state==="default"&&b.updated_by===this.principal){ kept=b; continue; }
+        const check=await this.writeInstallation(b,String(b.agent_definition_id),config,epoch,home);
+        if(i===0) kept=check;
+      }
+      this.previousTurn=null; this.conversation=kept; this.ambiguous=false; this.conversationNote="";
+      this.status("Default conversation restored; "+(ordered.length-1)+" extra installation(s) retired.");
+      return {state:"default"};
+    },
     async recover(target){
       if(!this.enabled||this.selecting) return;
-      try{ await this.changeConversation(target,null); }
+      try{ await this.changeConversation(target,null,null); }
       catch(err){
         if(err&&err.authRequired){ sessionExpired(); return; }
         this.status("Conversation not changed: "+(err&&err.message||"unavailable")+".");
@@ -808,7 +987,7 @@
     },
     // Install a bundle into the viewer's own library: a remix installs the
     // COMPONENT, so it runs against this viewer's bridge and this viewer's
-    // universe. The author's universe is never addressed by an installed copy.
+    // command center. The author's command center is never addressed by an installed copy.
     async install(component){
       if(!this.enabled||this.busy) return {ok:false,reason:"not ready"};
       const parsed=this.parseBundle(component);
@@ -832,7 +1011,7 @@
         next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
         // No library-wide limit, so no install is ever turned away for the size
         // of what is already there. The bundle itself was validated above, and
-        // its bytes are the universe's storage.
+        // its bytes are the command center's storage.
         return {ui_library:JSON.parse(JSON.stringify(next))};
       });
       if(!outcome.ok){
@@ -849,6 +1028,10 @@
     publishPayload(bundle,description){
       const parsed=this.parseBundle(bundle);
       if(!parsed.ok) return parsed;
+      // Its files live in this viewer's private UI storage; a published copy
+      // could not load them (the server's publish refuses them for the same reason).
+      if(parsed.bundle.assets&&Object.keys(parsed.bundle.assets).length)
+        return this.unsupported("a UI that loads its own files cannot be published yet");
       return {ok:true,payload:{schema_version:1,name:parsed.bundle.name,
         description:String(description||""),tags:[this.KIND],
         components:{ui:JSON.parse(JSON.stringify(parsed.bundle))}}};
@@ -882,7 +1065,7 @@
         list.appendChild(item);
       }
       if(!this.library.length)
-        this.line(list,"No custom UI installed. Ask your universe to build one.","muted");
+        this.line(list,"No custom UI installed. Ask your agent to build one.","muted");
       $("btn-ui-refresh").disabled=this.busy;
       this.paintConversation();
     },
@@ -899,7 +1082,7 @@
       if(this.conversationNote) this.line(panel,this.conversationNote,"muted");
       this.line(panel,"Your chosen model and existing access still govern every call. A change applies to future messages, not work already started.","muted");
       panel.appendChild(this.button("Restore default conversation",()=>this.restoreDefaultConversation(),
-        this.selecting||now.state==="default"));
+        this.selecting||(now.state==="default"&&!this.ambiguous)));
       if(this.previousTurn) panel.appendChild(this.button("Restore previous conversation",
         ()=>this.restorePreviousConversation(),this.selecting));
     },

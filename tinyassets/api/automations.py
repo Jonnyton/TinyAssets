@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
@@ -73,15 +73,15 @@ _UNAVAILABLE_DETAIL = {
     ),
     "authentication_required": (
         "Sign in before creating an automation: an automation is owned by a "
-        "person, never by the universe."
+        "person, never by the command center."
     ),
     "owner_not_admin": (
-        "You need an admin grant on this universe to create an automation in "
+        "You need an admin grant on this command center to create an automation in "
         "it. A write grant lets you edit its work, not schedule it."
     ),
     "not_owner_home": (
-        "Automations run in your own home universe. Create this one there, or "
-        "make this universe your home first."
+        "Automations run in your own home command center. Create this one there, or "
+        "make this command center your home first."
     ),
     "timezone_invalid": (
         "That timezone is not one I recognize. Pass an IANA name such as "
@@ -89,7 +89,7 @@ _UNAVAILABLE_DETAIL = {
         "and I will use the zone your app reported."
     ),
     "no_serving_assignment": (
-        "This universe has no model serving it yet, so a run would have "
+        "This command center has no model serving it yet, so a run would have "
         "nothing to run on. Connect a model -- a subscription or your own "
         "API-key source -- and set it serving first."
     ),
@@ -103,29 +103,27 @@ _UNAVAILABLE_DETAIL = {
     ),
     "trigger_invalid": (
         "Give exactly one trigger: a positive interval_seconds, a valid "
-        "cron_expr, or an event_type -- not two, and not none."
+        "cron_expr, a not_before (or delay_seconds) for one wake, or an "
+        "event_type -- not two, and not none."
     ),
     "event_type_unknown": (
         "That event is not one the engine emits, so the automation would never "
-        "fire. Subscribe to run_completed, pending_request_answered or app_event."
+        "fire. Subscribe to run_completed, pending_request_answered, app_event "
+        "or owner_message."
     ),
     "event_filter_invalid": (
         "event_filter must be an object of non-empty strings over the event's "
         "own fields: run_completed takes branch_def_id (required), outcome and "
         "run_id; pending_request_answered takes request_id, kind and status; "
-        "app_event takes name (required)."
+        "app_event takes name (required); owner_message takes none."
     ),
     "overlap_invalid": (
         "overlap must be queue (wait for the running one, the default), skip "
         "(drop this run) or cancel_previous (stop the running one first)."
     ),
-    "usage_limited": (
-        "This universe has reached its usage limit for engine edits in the "
-        "last hour, so nothing was stored. It frees up as older edits age out."
-    ),
     "not_owner_or_admin": (
         "This automation belongs to someone else. Only its owner or an admin "
-        "on this universe can change it."
+        "on this command center can change it."
     ),
     "already_retired": (
         "This automation is deleted. Create a new one rather than reviving it."
@@ -290,23 +288,7 @@ def _projection(
     }
     if recent_reason:
         projected["recent_reason"] = recent_reason
-    # A run the meter refused is never a silent drop: say which cap, and when
-    # capacity returns (plan item 6). Read live from the same ledger.
-    if "run_rate_limited" in (recent_reason, automation.last_reason):
-        notice = _usage_notice(automation.universe_id)
-        if notice is not None:
-            projected["usage_notice"] = notice
     return projected
-
-
-def _usage_notice(universe_id: str) -> dict[str, Any] | None:
-    try:
-        from tinyassets.engine_admissions import usage_notice
-
-        return usage_notice(universe_id)
-    except Exception:  # noqa: BLE001 - an enrichment, never a precondition
-        logger.warning("usage notice unavailable for %r", universe_id, exc_info=True)
-        return None
 
 
 def _recent_reasons(base: Path, universe_id: str) -> dict[str, str]:
@@ -330,7 +312,7 @@ def _recent_reasons(base: Path, universe_id: str) -> dict[str, str]:
         )
     except Exception:  # noqa: BLE001 - visibility must not break the list
         logger.warning(
-            "automation recent-reason lookup failed for universe %r",
+            "automation recent-reason lookup failed for command center %r",
             universe_id,
             exc_info=True,
         )
@@ -359,7 +341,7 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
         )
     except Exception:  # noqa: BLE001 - a dead layer must not break a live read
         logger.warning(
-            "legacy automation control listing failed for universe %r",
+            "legacy automation control listing failed for command center %r",
             universe_id,
             exc_info=True,
         )
@@ -403,6 +385,8 @@ def _create(
     event_filter = document.get("event_filter", {})
     overlap = document.get("overlap", "")
     timezone_name = document.get("timezone", "")
+    not_before = document.get("not_before", "")
+    raw_delay = document.get("delay_seconds")
 
     if not isinstance(name, str) or not name.strip():
         return _payload_invalid("name must be a non-empty string")
@@ -428,6 +412,22 @@ def _create(
         interval_seconds = int(raw_interval or 0)
     except (TypeError, ValueError):
         return _payload_invalid("interval_seconds must be an integer")
+    # A one-shot wake the agent sets for itself: "run this branch once, not
+    # before then". The same row an agent node's enqueue_branch_run stores.
+    if not isinstance(not_before, str):
+        return _payload_invalid("not_before must be an ISO-8601 timestamp string")
+    if raw_delay is not None:
+        if not_before.strip():
+            return _payload_invalid("give not_before or delay_seconds, not both")
+        if (isinstance(raw_delay, bool) or not isinstance(raw_delay, (int, float))
+                or raw_delay != raw_delay or raw_delay < 0):
+            return _payload_invalid("delay_seconds must be a number >= 0")
+        try:
+            not_before = (
+                datetime.now(timezone.utc) + timedelta(seconds=float(raw_delay))
+            ).isoformat()
+        except OverflowError:
+            return _payload_invalid("delay_seconds is too large")
 
     try:
         created = register_automation(
@@ -438,6 +438,7 @@ def _create(
             branch_def_id=branch_def_id.strip(),
             interval_seconds=interval_seconds,
             cron_expr=cron_expr.strip(),
+            not_before=not_before.strip(),
             event_type=event_type.strip(),
             event_filter=event_filter,
             overlap=overlap.strip(),
@@ -458,7 +459,7 @@ def _list(
     universe_id: str,
     actor: str,
     payload: Any,
-    limit: int,
+    limit: int | None,
 ) -> dict[str, Any]:
     document = _document(payload)
     if document is None:
@@ -470,7 +471,9 @@ def _list(
         include_retired=include_retired,
     )
     reasons = _recent_reasons(base, universe_id)
-    bound = max(1, int(limit or 30))
+    # ``limit=None`` is every row: a model door pages the whole list to fit its
+    # ceiling itself, and a page it did not choose would hide the 31st row.
+    bound = len(rows) if limit is None else max(1, int(limit or 30))
     records = [
         _with_last_wake(base, row, _projection(
             row,
@@ -479,11 +482,14 @@ def _list(
         ))
         for row in rows[:bound]
     ]
-    records.extend(_legacy_rows(base, universe_id))
+    legacy = _legacy_rows(base, universe_id)
+    records.extend(legacy)
     return {
         "universe_id": universe_id,
         "automations": records,
         "count": len(records),
+        # How many automations exist, so a page smaller than that says so.
+        "total": len(rows) + len(legacy),
         "include_retired": include_retired,
     }
 
@@ -559,7 +565,7 @@ def _controllable(
         )
     except Exception:  # noqa: BLE001 - fail closed on an unreadable ACL
         logger.warning(
-            "automation control ACL read failed for universe %r",
+            "automation control ACL read failed for command center %r",
             automation.universe_id,
             exc_info=True,
         )
@@ -636,7 +642,7 @@ def automations(
     automation_id: str = "",
     expected_revision: int = 0,
     payload: Any = None,
-    limit: int = 30,
+    limit: int | None = 30,
 ) -> dict[str, Any]:
     """Create, inspect and control the caller's universe automations."""
     normalized = (action or "").strip().lower()

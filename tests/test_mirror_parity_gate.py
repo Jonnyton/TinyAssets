@@ -193,6 +193,26 @@ def test_a_missing_root_skips_rather_than_fails(tmp_path) -> None:
     assert invariant.check().status is Status.SKIPPED
 
 
+def test_a_missing_mirror_beside_a_real_canonical_tree_fails(tmp_path) -> None:
+    """A mirror that vanished whole is the largest drift, not a skip."""
+    canonical = tmp_path / "tinyassets"
+    canonical.mkdir()
+    (canonical / "runs.py").write_text("x = 1\n")
+    invariant = MirrorParityInvariant(
+        canonical_root=canonical, mirror_root=tmp_path / "gone"
+    )
+    result = invariant.check()
+    assert result.status is Status.VIOLATED
+    assert "build_plugin.py" in result.message
+
+    done = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "check_mirror_parity.py"),
+         "--canonical-root", str(canonical), "--mirror-root", str(tmp_path / "gone")],
+        capture_output=True, text=True, check=False,
+    )
+    assert done.returncode == 1, done.stdout + done.stderr
+
+
 def test_the_packaging_workflow_notices_an_untracked_mirror_file() -> None:
     """The third gate on the same class. build-bundle.yml rebuilds the mirror
     and then asks git whether anything moved - and `git diff` does not see

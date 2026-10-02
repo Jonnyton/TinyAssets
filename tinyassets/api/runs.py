@@ -49,6 +49,7 @@ from tinyassets.api.helpers import (
     _request_universe,
     _universe_dir,
 )
+from tinyassets.command_center_names import present_actor
 
 logger = logging.getLogger("universe_server.runs")
 
@@ -185,8 +186,8 @@ def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
                 "action": action,
                 "required": "universe_id",
                 "note": (
-                    "Branches are run by universes. Route the run through "
-                    "the founder's own universe."
+                    "Branches are run by command centers. Route the run through "
+                    "the founder's own command center."
                 ),
             })
         return None
@@ -565,7 +566,7 @@ _WORK_MODEL_EXHAUSTED_ACTION = (
     "provider_rate_limited or provider_daily_quota is a rate limit. Retry later, or "
     "widen the order - an explicit choice with no fallbacks stays exhausted "
     "rather than silently moving to another source. " + _OWN_MODEL_ROUTES
-    + " Changing what the universe serves elsewhere cannot rescue a pinned "
+    + " Changing what the command center serves elsewhere cannot rescue a pinned "
     "source, and nobody else needs to act."
 )
 
@@ -738,7 +739,7 @@ def _no_provider_advice() -> str:
     owner connects, so that is the one thing worth pointing at.
     """
     return (
-        "No LLM provider is reachable for this universe. It runs on a provider "
+        "No LLM provider is reachable for this command center. It runs on a provider "
         "you connect to it, not on platform API keys -- connect or reconnect "
         "one from the request in your rail."
     )
@@ -791,10 +792,11 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
             "operator surface before running; approval is not exposed by the "
             "advertised handles.",
         )
-    if "code runs only in the universe that authored it" in msg:
+    if any(f"code runs only in the {word} that authored it" in msg
+           for word in ("command center", "universe")):  # pre-rename records
         return _failure_payload(
             exc, "node_not_accepted",
-            "This branch's code was authored elsewhere. Remix it into your universe "
+            "This branch's code was authored elsewhere. Remix it into your command center "
             "(write_graph with fork_from) and run your copy.",
         )
     if "approv" in msg:
@@ -802,7 +804,7 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
         return _failure_payload(
             exc, "node_not_approved",
             "Approval no longer gates code: a source_code node runs in the OS sandbox, "
-            "in the universe that authored it. If this run named an approval, the "
+            "in the command center that authored it. If this run named an approval, the "
             "branch predates that change - re-store the node and run again.",
         )
     if "workspace not available" in msg:
@@ -888,12 +890,16 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     if held is not None:
         return held
     from tinyassets.providers.model_pins import PIN_REFUSAL_MARKER
-    from tinyassets.providers.owner_binding import AUTHORITY_HELD_DETAIL
+    from tinyassets.providers.owner_binding import (
+        AUTHORITY_HELD_DETAIL,
+        LEGACY_AUTHORITY_HELD_DETAIL,
+    )
 
     if PIN_REFUSAL_MARKER in msg:
         # A pin naming no single source: its own words list the accepted refs.
         return ("permission_denied:provider_not_bound", MODEL_PIN_ACTION)
-    if AUTHORITY_HELD_DETAIL.lower() in msg:
+    if any(lead.lower() in msg
+           for lead in (AUTHORITY_HELD_DETAIL, LEGACY_AUTHORITY_HELD_DETAIL)):
         # A held run whose universe DOES have a provider connected: the message
         # carries the refusal's own words after this lead-in. Keyed BEFORE the
         # substring nets below, because those words are arbitrary -- a wrapped
@@ -905,11 +911,12 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "empty_llm_response",
             _EMPTY_LLM_RESPONSE_ACTION,
         )
-    if "code runs only in the universe that authored it" in msg:
+    if any(f"code runs only in the {word} that authored it" in msg
+           for word in ("command center", "universe")):  # pre-rename records
         # A public foreign branch with code was run directly (sandboxed-code-node D2).
         return (
             "node_not_accepted",
-            "This branch's code was authored elsewhere. Remix it into your universe "
+            "This branch's code was authored elsewhere. Remix it into your command center "
             "(write_graph with fork_from) and run your copy.",
         )
     if "workspace not available" in msg:
@@ -975,7 +982,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
         return (
             "node_not_approved",
             "Approval no longer gates code: a source_code node runs in the OS sandbox, "
-            "in the universe that authored it. Re-store the node and run again.",
+            "in the command center that authored it. Re-store the node and run again.",
         )
     if "source_code" in msg:
         return (
@@ -1030,8 +1037,8 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     if "expired" in msg or "unauthor" in msg or "forbidden" in msg or "401" in msg:
         return (
             "auth_invalid",
-            "The universe's model provider reported a sign-in problem. Check "
-            "the connection and reconnect the provider for this universe if "
+            "The command center's model provider reported a sign-in problem. Check "
+            "the connection and reconnect the provider for this command center if "
             "needed; this is not evidence of a usage or billing limit.",
         )
     if "provider" in msg or "api key" in msg or "api_key" in msg:
@@ -1356,23 +1363,12 @@ def enqueue_universe_branch_run(
     if errors:
         raise ValueError(f"branch {bid} failed validation: {errors}")
 
-    # A triggered run is a run: it is metered against the universe's usage,
-    # per hour and per day, like run_graph and automations. This is what
-    # bounds a schedule or subscription, now that their count and cadence
-    # floors are gone (plan item 6). Fails closed: a trigger has no user
-    # waiting on it, and an unreadable meter must not admit unmetered work.
+    # Settlement identity only; a triggered run is never refused for usage. It
+    # waits for its account's seats at its agent calls (`universe_seats`).
     from tinyassets.engine_admissions import attach_run
-    from tinyassets.engine_mcp_server import _admission_parts, _engine_run_admit
+    from tinyassets.engine_mcp_server import _engine_run_admit
 
-    ticket, refused_by = _admission_parts(
-        _engine_run_admit(universe_id=uid, want_ticket=True, fail_closed=True)
-    )
-    if ticket is None:
-        from tinyassets.engine_admissions import usage_notice
-
-        notice = usage_notice(uid) if refused_by != "ledger" else None
-        returns = f":until={notice['capacity_returns_at']}" if notice else ""
-        raise ValueError(f"run_usage_limited:{refused_by}{returns}")
+    ticket = _engine_run_admit(universe_id=uid)
 
     provider_call: Any = None
     try:
@@ -1541,7 +1537,7 @@ def _compose_run_snapshot(
     summary = "\n".join([
         f"**Run on workflow `{header_branch}`** — status "
         f"`{run_record['status']}`",
-        f"Actor: {run_record['actor']}",
+        f"Actor: {present_actor(run_record['actor'])}",
         "",
         "Nodes:",
         *node_lines,
@@ -1585,7 +1581,7 @@ def _compose_run_snapshot(
         # Say so plainly: "queued" alone reads as stuck.
         snapshot["workspace_wait"] = dict(wait)
         wait_line = (
-            "Waiting for the universe workspace (position "
+            "Waiting for the command center workspace (position "
             f"{wait.get('position')} in line). It starts by itself when the "
             "workspace is free, keeps its place across a restart, and can "
             "still be cancelled."
@@ -2516,7 +2512,7 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
     if not flag_on:
         next_steps.append(
             "Set TINYASSETS_TIERED_SCOPE=on to enable full four-tier"
-            " isolation (universe/goal/branch/user)."
+            " isolation (command center/goal/branch/user)."
         )
     next_steps.append(
         "Check activity.log for 'retrieval.scope_mismatch' to diagnose"

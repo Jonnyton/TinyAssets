@@ -31,9 +31,11 @@ regression riding in on a green check.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -63,28 +65,179 @@ MIN_RAN_FLOORS = {
     # floor is checked again by `--aggregate`, but the union floor alone cannot
     # see one shard collapsing: 5 of 6 shards still clear it comfortably.
     "shard": 1000,
+    # The PR-time run of scripts/affected_tests.py's selection. Zero on
+    # purpose: a selection can honestly be one test or none (a docs-only
+    # change), and this run is advisory -- the merge-group shards above carry
+    # the floors that gate. Only reachable with --affected.
+    "affected": 0,
 }
+
+
+# ---- budgets ------------------------------------------------------------------
+#
+# The suite is budgeted by what it COSTS, never by how many tests it has: a
+# count budget invites deleting cheap, valuable tests (Linear grew its suite 4x
+# in 2026 and still cut PR wait, by cutting per-test cost). Each is a reviewed
+# constant here, like MIN_RAN_FLOOR, so raising one is a receipt-gated diff of
+# a gate file and lowering one is free. None of them reads a date: the merge
+# queue must never fail because of the calendar.
+#
+# Measured on merge-group runs 2026-10-01 (36926964890, 36924723282,
+# 36920148863, 36912072109): 126-127 tests skipped; the sum of per-test seconds
+# across the six shards 1,431-1,509, with one noisy-runner outlier at 1,856.
+# The seconds cap sits well above that noise so a slow runner never fails a
+# merge; it catches a change that makes the suite materially slower.
+MAX_REQUIRED_SKIPPED = 127
+MAX_TEST_SECONDS = 2400
+#: Entries in the quarantine ledger, flaky or not. A quarantine that only grows
+#: is how a red build gets normalised.
+MAX_QUARANTINE = 63
+#: How far MAX_QUARANTINE may sit above the ledger. Deleting entries means
+#: lowering the cap in the same PR (tests/test_ci_required_tests.py), so the
+#: cap only ratchets down unless a reviewed change raises it.
+QUARANTINE_SLACK = 8
+#: Leading `key=value` fields a ledger line may carry, BEFORE the node id; a
+#: `flaky` entry must carry owner= and expires= (the test still RUNS, it just
+#: does not block). Leading, never trailing: a parameter id may end in
+#: ` owner=b]`, but no node id starts with `owner=`.
+_LEDGER_FIELD = re.compile(r"^(owner|expires|issue)=(\S+)\s+")
+
+
+def split_ledger_line(raw: str) -> tuple[bool, str, dict[str, str]] | None:
+    """(is_flaky, node_id, fields) for one ledger line, or None for a blank or
+    comment line. The ONE parser: the gate, the hygiene gate, the inventory and
+    the quarantine oracle all read entries through it."""
+    line = raw.split("#", 1)[0].strip()
+    if not line:
+        return None
+    is_flaky = line.startswith("flaky ")
+    if is_flaky:
+        line = line[len("flaky ") :].lstrip()
+    fields: dict[str, str] = {}
+    while (hit := _LEDGER_FIELD.match(line)) is not None:
+        fields[hit.group(1)] = hit.group(2)
+        line = line[hit.end() :]
+    return is_flaky, line.strip(), fields
+
+
+def budget_failures(skipped: set[str], seconds: float) -> list[str]:
+    """What the union of the required shards spent over budget."""
+    out = []
+    if len(skipped) > MAX_REQUIRED_SKIPPED:
+        sample = ", ".join(sorted(skipped)[:5])
+        out.append(
+            f"{len(skipped)} tests were SKIPPED in the required run; the budget is "
+            f"{MAX_REQUIRED_SKIPPED}. A skip runs nowhere in this gate. Make the new case "
+            f"run here, remove a skip elsewhere, or raise MAX_REQUIRED_SKIPPED in a "
+            f"reviewed change. e.g. {sample}"
+        )
+    if seconds > MAX_TEST_SECONDS:
+        out.append(
+            f"the required tests took {seconds:.0f}s summed over all shards; the budget is "
+            f"{MAX_TEST_SECONDS}s. Find the slow additions (junit `time`) and cut their "
+            f"fixed cost, or raise MAX_TEST_SECONDS in a reviewed change."
+        )
+    return out
+
+
+def collect_cost(junit: Path) -> tuple[set[str], float]:
+    """(skipped node ids, summed seconds) from a junit xml."""
+    skipped: set[str] = set()
+    seconds = 0.0
+    for tc in ET.parse(junit).getroot().iter("testcase"):
+        seconds += float(tc.get("time") or 0)
+        if tc.find("skipped") is not None:
+            skipped.add(node_id(tc))
+    return skipped, seconds
 
 
 # ---- sharding ---------------------------------------------------------------
 #
 # The required gate runs as N parallel jobs. Each test FILE belongs to exactly
-# one shard, decided by a stable hash of its repo-relative path, so the
-# partition is complete and disjoint by construction: every collected file maps
-# to some index in 1..N, and the workflow runs every index. Hashing rather than
-# a committed durations table: nothing to regenerate, and a new file lands in a
-# shard without anyone touching this code. Measured imbalance at 6 shards on
-# 2026-09-27 junit: max shard 220-254s against a 187-201s mean.
+# one shard, so the partition is complete and disjoint by construction: every
+# collected file maps to some index in 1..N, and the workflow runs every index.
+#
+# Files are packed by measured duration (.github/test-durations.json, per-file
+# seconds from a merge-group junit; scripts/refresh_test_durations.py rewrites
+# it). Every test_*.py under tests/ is packed longest-first onto the
+# least-loaded shard; a file the table does not know yet counts as the median,
+# and anything outside that set falls back to a stable path hash. A stale
+# table only costs balance, never coverage. The pure hash it replaced left
+# shard 3 slowest in 27 of 57 merge-group runs (2026-10-01; 289s of tests
+# against 197-261s for the others).
 #
 # Enforced through `pytest_ignore_collect` (this module is loaded with `-p`), so
 # a shard never IMPORTS another shard's files: a collection error is reported
 # once, by the shard that owns the file, not six times.
 
 
+DURATIONS = REPO_ROOT / ".github" / "test-durations.json"
+
+
+def _hash_shard(relpath: str, total: int) -> int:
+    digest = hashlib.sha256(relpath.encode("utf-8")).hexdigest()
+    return int(digest, 16) % total + 1
+
+
+def load_durations(path: Path = DURATIONS) -> dict[str, float]:
+    """Per-file seconds. A missing or unreadable table means "no data", loudly."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return {str(k): float(v) for k, v in raw.items()}
+    except (OSError, ValueError, AttributeError) as exc:
+        print(f"WARNING: no usable test durations at {path} ({exc}); "
+              "every file counts as equal", flush=True)
+        return {}
+
+
+def pack(files: list[str], durations: dict[str, float], total: int) -> dict[str, int]:
+    """Longest-first onto the least-loaded shard; deterministic for equal inputs.
+
+    Every shard job computes this independently, so it may depend only on the
+    checkout: ties break on path and on the lowest shard index.
+    """
+    known = sorted(durations[f] for f in files if f in durations)
+    default = known[len(known) // 2] if known else 1.0
+    weight = {f: durations.get(f, default) for f in files}
+    loads = [0.0] * total
+    owner: dict[str, int] = {}
+    for f in sorted(files, key=lambda f: (-weight[f], f)):
+        index = min(range(total), key=lambda i: (loads[i], i))
+        loads[index] += weight[f]
+        owner[f] = index + 1
+    return owner
+
+
+@functools.lru_cache(maxsize=None)
+def _packed(total: int) -> dict[str, int]:
+    """The packing over TRACKED test files.
+
+    Tracked, not whatever is on disk: one generated test_*.py present in one
+    shard job and not another would reshuffle hundreds of owners between them
+    (Codex review 2026-10-01 measured 561 for one added file). Without git the
+    disk scan is the fallback, said out loud.
+    """
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "tests"],
+            cwd=REPO_ROOT, capture_output=True, check=True,
+        ).stdout.decode("utf-8").split("\0")
+        files = [
+            f for f in listed if f.rsplit("/", 1)[-1].startswith("test_") and f.endswith(".py")
+        ]
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"WARNING: git ls-files failed ({exc}); packing the files on disk", flush=True)
+        files = [
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "tests").rglob("test_*.py")
+        ]
+    return pack(sorted(files), load_durations(), total)
+
+
 def shard_of(relpath: str, total: int) -> int:
     """1-based shard index owning a repo-relative test file path."""
-    digest = hashlib.sha256(relpath.replace("\\", "/").encode("utf-8")).hexdigest()
-    return int(digest, 16) % total + 1
+    rel = relpath.replace("\\", "/")
+    return _packed(total).get(rel) or _hash_shard(rel, total)
 
 
 def parse_shard(raw: str) -> tuple[int, int]:
@@ -164,7 +317,8 @@ def parse_quarantine(path: Path) -> tuple[set[str], set[str], list[str]]:
     Line formats (blank lines and `#` comments ignored)::
 
         tests/test_x.py::test_y            # tolerated failure, ratcheted
-        flaky tests/test_x.py::test_z      # tolerated in BOTH directions
+        flaky owner=dev expires=2026-10-15 tests/test_x.py::test_z
+                                           # runs, never blocks, until it expires
 
     A plain entry is ratcheted: it must keep failing, or the line is stale and
     must be deleted. A `flaky` entry is exempt from that ratchet because it
@@ -178,17 +332,24 @@ def parse_quarantine(path: Path) -> tuple[set[str], set[str], list[str]]:
     flaky: set[str] = set()
     problems: list[str] = []
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = raw.split("#", 1)[0].strip()
-        if not line:
+        parsed = split_ledger_line(raw)
+        if parsed is None:
             continue
-        is_flaky = False
-        if line.startswith("flaky "):
-            is_flaky = True
-            line = line[len("flaky ") :].strip()
+        is_flaky, line, fields = parsed
         if "::" not in line:
             problems.append(f"{path.name}:{lineno}: not a pytest node id: {line!r}")
             continue
+        if is_flaky and not ("owner" in fields and "expires" in fields):
+            problems.append(
+                f"{path.name}:{lineno}: a flaky quarantine entry needs owner= and expires= "
+                f"(it still runs; the owner and date say who ends it and when): {line!r}"
+            )
         (flaky if is_flaky else tolerated).add(line)
+    if len(tolerated) + len(flaky) > MAX_QUARANTINE:
+        problems.append(
+            f"{path.name}: {len(tolerated) + len(flaky)} entries; the cap is {MAX_QUARANTINE}. "
+            "Fix or delete entries before quarantining more."
+        )
     return tolerated, flaky, problems
 
 
@@ -380,6 +541,8 @@ def aggregate(
 
     failing: set[str] = set()
     ran: set[str] = set()
+    skipped: set[str] = set()
+    seconds = 0.0
     owner: dict[str, int] = {}
     merged = ET.Element("testsuites")
     for index, info in sorted(manifests.items()):
@@ -407,6 +570,9 @@ def aggregate(
             owner.setdefault(nid, index)
         failing |= shard_failing
         ran |= shard_ran
+        shard_skipped, shard_seconds = collect_cost(info["junit"])
+        skipped |= shard_skipped
+        seconds += shard_seconds
 
     # Written even when failing, so the `junit-required-tests` artifact (what
     # --emit-quarantine and duration measurements read) keeps its old shape.
@@ -420,13 +586,58 @@ def aggregate(
         return 1
 
     per_shard = ", ".join(f"{i}: exit {m['exit']}" for i, m in sorted(manifests.items()))
-    return evaluate(
+    verdict = evaluate(
         failing,
         ran,
         min_ran,
         [m["exit"] for m in manifests.values()],
         f"### Required tests ({expected} shards; {per_shard})",
     )
+    over = budget_failures(skipped, seconds)
+    summarise(
+        ["", f"- skipped: **{len(skipped)}** (budget {MAX_REQUIRED_SKIPPED}); "
+         f"summed test seconds: **{seconds:.0f}** (budget {MAX_TEST_SECONDS})"]
+        + [f"\n**FAILED - {o}**" for o in over]
+    )
+    return 1 if over else verdict
+
+
+def _shard_label(args: argparse.Namespace) -> str:
+    return f" - shard {args.shard[0]}/{args.shard[1]}" if args.shard else ""
+
+
+def _read_selection(args: argparse.Namespace) -> list[str] | None:
+    """This run's slice of an affected-tests selection; None means the whole surface.
+
+    Sliced here rather than through the `-p` plugin so a slice that owns no
+    selected file is known to be empty BEFORE pytest runs (pytest would exit 5
+    and the run would read as broken). Files under --exclude-from are dropped
+    the same way the required shards drop them: the heavy list is red at
+    baseline and belongs to `heavy-tests`.
+    """
+    entries = Path(args.affected).read_text(encoding="utf-8").split()
+    if entries == ["ALL"]:
+        return None
+    if "ALL" in entries:
+        raise SystemExit(f"{args.affected}: ALL must be the only entry")
+    excluded: list[str] = []
+    if args.exclude_from:
+        excluded = [
+            line.strip().rstrip("/")
+            for line in Path(args.exclude_from).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+    picked = []
+    for rel in entries:
+        if any(rel == e or rel.startswith(e + "/") for e in excluded):
+            continue
+        if args.shard and shard_of(rel, args.shard[1]) != args.shard[0]:
+            continue
+        if not (REPO_ROOT / rel).is_file():
+            print(f"WARNING: {args.affected} lists a missing path: {rel}", flush=True)
+            continue
+        picked.append(rel)
+    return picked
 
 
 def main() -> int:
@@ -497,7 +708,7 @@ def main() -> int:
         type=parse_shard,
         metavar="I/N",
         help=(
-            "Run only the test files hashed to shard I of N (see shard_of), and "
+            "Run only the test files packed into shard I of N (see shard_of), and "
             "write a manifest beside --junit recording the shard and pytest's "
             "exit code for --aggregate. Requires --profile shard."
         ),
@@ -519,6 +730,16 @@ def main() -> int:
         help="With --aggregate: the shard count the workflow matrix runs.",
     )
     ap.add_argument(
+        "--affected",
+        metavar="FILE",
+        help=(
+            "The output of scripts/affected_tests.py: test paths to run, or the "
+            "single word ALL for the whole required surface. Combined with "
+            "--shard I/N it runs that shard's slice of the selection. An empty "
+            "slice is a green no-op. Requires --profile affected."
+        ),
+    )
+    ap.add_argument(
         "--shard-job-result",
         metavar="RESULT",
         help=(
@@ -528,8 +749,12 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if args.shard and args.profile != "shard":
+    if args.shard and args.profile not in ("shard", "affected"):
         raise SystemExit("--shard requires --profile shard (the per-shard floor).")
+    if (args.profile == "affected") != bool(args.affected):
+        raise SystemExit("--affected and --profile affected go together.")
+    if args.affected and args.include_from:
+        raise SystemExit("--affected already names what to run; drop --include-from.")
     if args.profile == "shard" and not args.shard:
         raise SystemExit("--profile shard is only meaningful with --shard I/N.")
     if args.aggregate and (
@@ -703,7 +928,19 @@ def main() -> int:
                 f"run (an empty include list would silently run nothing)."
             )
         cmd += present
-    if args.shard:
+    selection = _read_selection(args) if args.affected else None
+    if selection is not None:
+        if not selection:
+            summarise(
+                [
+                    f"### Affected tests{_shard_label(args)}",
+                    "",
+                    "No selected test file falls in this slice; nothing to run.",
+                ]
+            )
+            return 0
+        cmd += selection
+    elif args.shard:
         # Loads THIS module as a pytest plugin for its pytest_ignore_collect.
         # `-p` imports by module name, hence scripts/ on PYTHONPATH below.
         cmd += ["-p", "ci_required_tests", f"--ci-shard={args.shard[0]}/{args.shard[1]}"]
@@ -756,11 +993,17 @@ def main() -> int:
         return 1
 
     failing, ran = collect_outcomes(junit)
-    if args.shard:
+    exits = [proc.returncode]
+    if args.affected:
+        heading = f"### Affected tests{_shard_label(args)}"
+        # Exit 5 (nothing collected) is honest here: a selected file can hold
+        # only `slow` tests, which `-m "not slow"` deselects.
+        exits = [0 if code == 5 else code for code in exits]
+    elif args.shard:
         heading = f"### Required tests - shard {args.shard[0]}/{args.shard[1]}"
     else:
         heading = "### Required tests"
-    return evaluate(failing, ran, args.min_ran, [proc.returncode], heading)
+    return evaluate(failing, ran, args.min_ran, exits, heading)
 
 
 if __name__ == "__main__":

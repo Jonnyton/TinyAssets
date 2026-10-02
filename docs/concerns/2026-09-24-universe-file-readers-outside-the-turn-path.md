@@ -37,8 +37,14 @@ so none is reachable by an agent write today. Each still reads raw.
 
 | Module | What it reads under a universe | Agent-writable? |
 |---|---|---|
-| `api/wiki.py`, `effectors/wiki_write_back.py`, `wiki/okf_export.py` | `wiki/` pages, `index.md`/`log.md` of the wiki | No (`wiki/` read-only in the jail) |
-| `api/universe.py`, `api/runs.py`, `api/branches.py`, `api/pending_requests.py`, `api/helpers.py` (`_read_json`/`_read_text`) | premise, `activity.log`, `work_targets.json`, `.runtime_status.json`, `.pause`, request docs | No (read-only or masked) |
+| `api/universe.py`, `api/runs.py`, `api/branches.py`, `api/pending_requests.py`, `api/helpers.py` (`_read_json`, `_read_platform_text`) | premise, `activity.log`, `work_targets.json`, `.runtime_status.json`, `.pause`, request docs | No (read-only or masked) |
+
+**Resolved for `wiki/` (harness W, 2026-10-01).** `wiki/` is now agent-writable.
+`api/wiki.py`, `api/helpers.py`, `effectors/wiki_write_back.py` and
+`wiki/okf_export.py` are in `TURN_PATH`: a wiki page reads link-free and bounded
+through `universe_files`, and an oversized or linked page raises instead of
+reading as empty. The trusted write-back markers moved from `wiki/` to the
+universe root.
 | `api/status.py` `_platform_has_work` | EVERY universe's `work_targets.json`, unbounded `json.loads` | No — but a cross-user amplifier if it ever becomes writable |
 | `work_targets.py`, `mcp_server.py` | `work_targets.json`, legacy status/progress/chapters | No |
 | `credential_vault.py`, `providers/base.py`, `providers/codex_provider.py`, `providers/definition.py`, `provider_assignment.py`, `storage/outbound_connections.py` | `.credential-vault.json`, `.credentials/`, `.runtime/`, admission lock | No (hidden root entries, masked) |

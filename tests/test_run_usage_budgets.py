@@ -9,13 +9,10 @@ byte budgets, named in the refusal, tier-raisable, never a shape rule.
 from __future__ import annotations
 
 import json
-import sqlite3
-
-import pytest
 
 from tinyassets import effectors
 from tinyassets.branches import NodeDefinition
-from tinyassets.effectors import EffectChain, EffectFailedError, dispatch_node_effects
+from tinyassets.effectors import EffectChain, dispatch_node_effects
 
 SINK = "authenticated_external_call"
 
@@ -52,13 +49,11 @@ def test_there_is_no_per_run_dispatch_or_byte_budget(monkeypatch):
     structural cap on what one run may be (founder, 2026-09-30). The universe's
     rolling-hour ledger is a separate lane and is untouched here.
     """
-    import inspect
 
     monkeypatch.setitem(effectors._EFFECTORS, SINK, _adapter(_OK))
     for gone in ("RUN_DISPATCHES_MAX", "RUN_BYTES_MAX", "RUN_RPC_CALLS_MAX"):
         assert not hasattr(effectors, gone), f"{gone} came back"
-    src = inspect.getsource(effectors._budget_refusal)
-    assert "split the work across runs" not in src
+    assert not hasattr(effectors, "_budget_refusal"), "no dispatch budget of any kind"
 
     chain = EffectChain(run_id="b1")
     for i in range(12):
@@ -80,30 +75,6 @@ def test_unknown_sizes_are_still_charged_at_the_per_call_bounds(monkeypatch):
     assert chain.bytes_out > 256 * 1024 * 1024
 
 
-def test_the_hourly_ledger_charges_and_refuses(monkeypatch, tmp_path):
-    from tinyassets import engine_admissions as ea
-
-    db = tmp_path / "ledger.db"
-    monkeypatch.setattr(ea, "ledger_path", lambda: db)
-    assert ea.dispatch_window_usage("u-1") == (0, 0)          # no ledger yet: empty
-    ea.charge_dispatch("u-1", dispatches=1, nbytes=1000)
-    ea.charge_dispatch("u-1", dispatches=1, nbytes=24)
-    assert ea.dispatch_window_usage("u-1") == (2, 1024)
-    assert ea.dispatch_window_usage("u-2") == (0, 0)
-    # rows outside the window are pruned on the next charge
-    with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE dispatch_budget SET ts = ts - 7200")
-    ea.charge_dispatch("u-1", dispatches=1, nbytes=1)
-    assert ea.dispatch_window_usage("u-1") == (1, 1)
-    # the chain consults it before firing
-    monkeypatch.setitem(effectors._EFFECTORS, SINK, _adapter(_OK))
-    monkeypatch.setattr(ea, "DISPATCHES_PER_HOUR", 1)
-    chain = EffectChain(run_id="b3", universe_id="u-1")
-    with pytest.raises(EffectFailedError, match="hourly budget exhausted"):
-        dispatch_node_effects(chain, _node("n0"), {"n0_packet": _packet()})
-    chain2 = EffectChain(run_id="b4", universe_id="u-9")
-    dispatch_node_effects(chain2, _node("n0"), {"n0_packet": _packet()})   # fresh universe: fine
-    assert ea.dispatch_window_usage("u-9") == (1, 1000)
 
 
 def test_the_adapter_reports_the_bytes_it_moved(monkeypatch):

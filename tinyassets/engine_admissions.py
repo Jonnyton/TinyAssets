@@ -1,54 +1,10 @@
-"""The engine run-admission ledger: what an engine-triggered run costs.
+"""Run effect settlement: did a run only read, or did it write?
 
-Codex gate #5: a prompt-injected engine must not be able to spam an
-already-approved effect branch (open many PRs). The bound is a rolling
-per-universe cap on engine-triggered runs, charged ATOMICALLY at admission
-so two parallel calls cannot both slip past it.
-
-Live 2026-08-29 (``docs/concerns/2026-08-29-run-rate-cap-stalls-a-normal-
-github-job.md``): the cap counted every run the same, so a normal GitHub job
-- read the ref, create the branch, read the file, write it, open the PR -
-with one honest retry was refused mid-flight, in the founder's presence. A
-run that only READ (``GET``/``HEAD`` through the authenticated call, or no
-external effect at all) is not the injection case the cap exists for.
-
-The count rule, in one place:
-
-* Every engine-triggered run and every scheduled automation run is admitted
-  as kind ``write`` and counts against ``write_max`` (300 per rolling hour).
-  Nothing is trusted about the run before it runs - the packet an effect
-  fires is model-authored at run time, so a branch cannot be classified as
-  read-only up front. An engine write (write_graph, remix, brain) is admitted
-  as kind ``engine``: it is a durable mutation of the universe's own state,
-  not an external effect, so it counts toward ``total_max`` only.
-* ``admit`` hands back a TICKET (the ledger row id). The caller binds it to
-  the run it starts with ``attach_run``; identity by row id, never "the
-  newest row", so two concurrent admissions cannot cross-bind (Codex round 1).
-* When the run has finished, it is SETTLED: if every effect that fired was a
-  ``GET``/``HEAD`` authenticated call, or nothing fired at all (a run that
-  failed or was cancelled fires nothing - effects fire only after success),
-  the run's row is reclassified as kind ``read``. Anything else - a non-GET
-  verb, another sink (known or not), a verb the result does not name - is
-  settled as ``write``, and a WRITE SETTLEMENT IS FINAL: a later ``read``
-  settlement for the same run (a FAILED status written after the effects
-  already fired, because provider-authority release failed) cannot downgrade
-  it (Codex round 3). A settlement that arrives BEFORE the bind (a fast run)
-  is kept in ``settlements`` and applied when the bind happens (Codex
-  round 2).
-* ``read`` rows still count toward ``total_max`` (900 per rolling hour - a
-  run_graph call returns as soon as the run is queued, so this is what bounds
-  compute on the owner's subscription), so a loop of read-only runs is
-  bounded too, just not by the write budget. ``engine`` rows count against
-  that same total without a separate category ceiling. Failed engine writes
-  still charge their admission; the owner chooses the mix within their total.
-
-The ledger is ``<data_dir>/.engine_run_admissions.db`` (the canonical
-resolver, never the CWD) and is NOT the shared runs table (which would
-over-limit legitimate browser/scheduled runs - Codex 2026-08-19 (b)). A
-symlinked or out-of-tree ledger is refused: fail CLOSED on a tampered ledger
-regardless of caller mode. Schema inspection and migration happen INSIDE the
-``BEGIN IMMEDIATE`` transaction: two first touches of a legacy ledger used to
-both pass before either had migrated (Codex round 1, P0).
+The effect boundary reads that classification (`effectors.dispatch_node_effects`);
+nothing here counts, meters or refuses. Account usage is two numbers -- cloud
+storage and concurrent seats (`universe_seats`) -- and a run waits for a seat at
+its agent calls rather than being refused here (change
+`two-dimension-usage-limits`).
 """
 
 from __future__ import annotations
@@ -58,59 +14,18 @@ import sqlite3
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import NamedTuple
 
 LEDGER_NAME = ".engine_run_admissions.db"
-# Shared by enforcement and read-only status; one source for the deployed policy.
-#
-# These are cross-user FAIRNESS bounds on shared compute, not product limits
-# (plan item 6, 2026-09-28). The reference workload that must fit with room to
-# spare is a user's 10-agent squad on 2-minute heartbeats: 10 x 30 = 300 runs an
-# hour, ~7,200 a day, every one charged as a write until it settles. The old
-# hourly write cap of 300 was exactly that squad, so both hourly caps are 4x.
-RUN_WRITE_LIMIT = 1200
-RUN_TOTAL_LIMIT = 3600
-RUN_WINDOW_SECONDS = 3600
-# THE daily knob. Runs (write and read, not engine edits) per universe per
-# rolling 24h. The hourly caps pace work; this one bounds a day's spend, which
-# a self-launching chain paced under the hourly caps would otherwise never
-# meet. It replaced the structural caps -- invoke_branch depth, automation
-# and schedule counts, cadence floors (plan item 6). ~2.8x the squad's day.
-RUN_DAY_LIMIT = 20_000
-RUN_DAY_SECONDS = 86400
-
-
 KIND_WRITE = "write"
 KIND_READ = "read"
-# An engine write (write_graph, remix, brain): a durable, reversible mutation
-# of the universe's own state, never an external effect. It counts toward the
-# total bound only - live 2026-08-30 04:5xZ a founder's one-line README job
-# was refused at the 20-write cap with nine of the eighteen rows being the
-# universe's own branch authoring (it built ~8 branch variants in an hour).
-KIND_ENGINE = "engine"
 # Verbs that leave nothing behind on the far side. Compared case-insensitively.
 READ_VERBS = frozenset({"GET", "HEAD"})
-# ``admit`` returned this when a DB error was tolerated (fail-open): the run is
-# admitted but no row records it, so there is nothing to bind or settle.
+# ``admit`` returns this when the ledger could not record the run: the run still
+# goes ahead, there is simply nothing to bind or settle.
 ADMITTED_UNRECORDED = -1
-REFUSED_BY_WRITE = "write"
-REFUSED_BY_TOTAL = "total"
-REFUSED_BY_DAY = "day"
-REFUSED_BY_LEDGER = "ledger"
-# A settlement row outlives the run it belongs to by this much; pruned on
-# every settle and every admission, so a browser run that never binds leaves
-# at most two hours of rows (Codex round 3).
+# A row outlives its run by this much; pruned on every admission and settle, so
+# the ledger holds at most this window of rows.
 SETTLEMENT_TTL_S = 2 * 3600
-
-
-class Admission(NamedTuple):
-    """``ticket``: the ledger row id when recorded; ``ADMITTED_UNRECORDED``
-    when a DB error was tolerated; None when refused - and then ``refused_by``
-    names the cap (``write`` / ``total``) or ``ledger``
-    (tampered/unusable)."""
-
-    ticket: int | None
-    refused_by: str | None
 
 
 def ledger_path() -> Path:
@@ -157,218 +72,48 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS settlements "
         "(run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, ts REAL NOT NULL)"
     )
-    # Usage budgets (change `run-usage-budgets`): one row per effect dispatch
-    # with the bytes it moved; the rolling-hour sums bound a universe's
-    # outbound volume now that graph shape no longer does.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS dispatch_budget "
-        "(universe_id TEXT NOT NULL, ts REAL NOT NULL, dispatches INTEGER NOT NULL, "
-        "bytes INTEGER NOT NULL)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS dispatch_budget_universe_ts "
-        "ON dispatch_budget(universe_id, ts)"
-    )
-    # A day of rows is now kept, so the per-universe counts need an index.
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS admissions_universe_ts "
-        "ON admissions(universe_id, ts)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS admissions_ts ON admissions(ts)")
 
 
 def _is_ticket(ticket: object) -> bool:
     return isinstance(ticket, int) and not isinstance(ticket, bool) and ticket > 0
 
 
-def admit_detail(
-    universe_id: str,
-    *,
-    write_max: int,
-    total_max: int,
-    window_s: int,
-    fail_closed: bool = False,
-    db: Path | None = None,
-    kind: str = KIND_WRITE,
-    day_max: int | None = None,
-) -> Admission:
-    """Atomically admit one engine-triggered run/write under the rolling caps.
+def admit(universe_id: str, *, db: Path | None = None) -> int:
+    """Record a run so its effects can settle it; return the ticket to bind.
 
-    A ``write`` (a run) is refused when the universe's ``write`` rows in the
-    window have reached ``write_max``. An ``engine`` admission (write_graph,
-    remix, brain) has no independent category ceiling. Every kind is refused
-    once rows of any kind reach ``total_max``. ``reclassify_read`` may later
-    downgrade a ``write`` row once its run proves it wrote nothing. Rows
-    older than the window are pruned on each admission.
-
-    ``day_max`` additionally refuses a ``write`` (a run) once the universe's
-    runs -- write and read rows, not engine edits -- in the last
-    ``RUN_DAY_SECONDS`` have reached it. Rows are then kept for a day.
+    NEVER refuses (spec `engine-run-admissions`: the ledger admits every run
+    unconditionally). A ledger that cannot record -- missing, tampered or locked --
+    returns ``ADMITTED_UNRECORDED`` and the run goes ahead unsettled.
     """
-    if kind not in (KIND_WRITE, KIND_ENGINE):
-        raise ValueError(f"admission kind must be write or engine, not {kind!r}")
     db = db or ledger_path()
     try:
-        # A data dir that does not exist yet must not mean "no cap" (Codex
-        # round 1): the ledger creates its own trusted parent.
         db.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
-        return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
-    trusted = _ledger_is_trusted(db)
-    if trusted is False:
-        return Admission(None, REFUSED_BY_LEDGER)
-    if trusted is None:
-        return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
+        return ADMITTED_UNRECORDED
+    if _ledger_is_trusted(db) is not True:
+        return ADMITTED_UNRECORDED
     now = time.time()
-    cutoff = now - window_s
-    day_cutoff = now - RUN_DAY_SECONDS
-    # A day of rows is kept whatever THIS caller meters: the prune is global,
-    # so a caller without the day window pruning at one hour deleted every
-    # other universe's day history (Codex refute 2026-09-28, P1).
-    keep_from = min(cutoff, day_cutoff)
     try:
         conn = sqlite3.connect(str(db), timeout=10)
         try:
-            # The lock comes FIRST: schema inspection, migration, count and
-            # insert all happen under it, so a second first-touch waits and
-            # sees the migrated table rather than racing the ALTER.
+            # The lock comes FIRST: migration and insert happen under it, so a
+            # second first-touch waits and sees the migrated table.
             conn.execute("BEGIN IMMEDIATE")
             _ensure_schema(conn)
-            same_kind = conn.execute(
-                "SELECT COUNT(*) FROM admissions "
-                "WHERE universe_id = ? AND ts >= ? AND kind = ?",
-                (universe_id, cutoff, kind),
-            ).fetchone()[0]
-            total = conn.execute(
-                "SELECT COUNT(*) FROM admissions WHERE universe_id = ? AND ts >= ?",
-                (universe_id, cutoff),
-            ).fetchone()[0]
-            refused_by = None
-            if kind == KIND_WRITE and int(same_kind) >= write_max:
-                refused_by = REFUSED_BY_WRITE
-            elif int(total) >= total_max:
-                refused_by = REFUSED_BY_TOTAL
-            elif kind == KIND_WRITE and day_max is not None:
-                day_runs = conn.execute(
-                    "SELECT COUNT(*) FROM admissions WHERE universe_id = ? "
-                    "AND ts >= ? AND kind IN (?, ?)",
-                    (universe_id, day_cutoff, KIND_WRITE, KIND_READ),
-                ).fetchone()[0]
-                if int(day_runs) >= day_max:
-                    refused_by = REFUSED_BY_DAY
-            if refused_by:
-                # Refused - but the migration that may have just run must
-                # stay: a rollback here would undo it and redo it on every
-                # refused call. Nothing else was written.
-                conn.commit()
-                return Admission(None, refused_by)
             cur = conn.execute(
                 "INSERT INTO admissions (universe_id, ts, kind, run_id) VALUES (?, ?, ?, '')",
-                (universe_id, now, kind),
+                (universe_id, now, KIND_WRITE),
             )
             ticket = int(cur.lastrowid or 0)
-            # Rows outside every window count for nothing: prune them now,
-            # not a window later (Codex on engine rows). Run rows count toward
-            # the day, so they are kept a day; engine edits never do, so they
-            # go at the hour.
-            conn.execute("DELETE FROM admissions WHERE ts < ?", (keep_from,))
-            conn.execute(
-                "DELETE FROM admissions WHERE ts < ? AND kind = ?",
-                (cutoff, KIND_ENGINE),
-            )
+            conn.execute("DELETE FROM admissions WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.execute("DELETE FROM settlements WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.commit()
-            return Admission(ticket if ticket > 0 else ADMITTED_UNRECORDED, None)
+            return ticket if ticket > 0 else ADMITTED_UNRECORDED
         finally:
             conn.close()
     except sqlite3.Error:
-        return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
-
-
-def usage_notice(
-    universe_id: str,
-    *,
-    db: Path | None = None,
-    now: float | None = None,
-) -> dict[str, object] | None:
-    """What an owner is told when a cap is reached, or None if none is.
-
-    Names the cap, its size and window, and WHEN capacity returns: the moment
-    enough of the counted rows age out of the window for one more run. Read-
-    only; computed from the same rows and caps admission uses, so a refusal is
-    never silent and never a guess.
-    """
-    db = db or ledger_path()
-    if not db.is_file():
-        return None
-    moment = time.time() if now is None else now
-    hour_from = moment - RUN_WINDOW_SECONDS
-    day_from = moment - RUN_DAY_SECONDS
-    checks = (
-        ("writes_per_hour", RUN_WRITE_LIMIT, RUN_WINDOW_SECONDS,
-         "ts >= ? AND kind = ?", (hour_from, KIND_WRITE)),
-        ("runs_and_edits_per_hour", RUN_TOTAL_LIMIT, RUN_WINDOW_SECONDS,
-         "ts >= ?", (hour_from,)),
-        ("runs_per_day", RUN_DAY_LIMIT, RUN_DAY_SECONDS,
-         "ts >= ? AND kind IN (?, ?)", (day_from, KIND_WRITE, KIND_READ)),
-    )
-    try:
-        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=10)
-        try:
-            for name, cap, window, where, params in checks:
-                stamps = [
-                    float(row[0]) for row in conn.execute(
-                        f"SELECT ts FROM admissions WHERE universe_id = ? AND {where} "
-                        "ORDER BY ts ASC",
-                        (universe_id, *params),
-                    )
-                ]
-                if len(stamps) < cap:
-                    continue
-                returns = stamps[len(stamps) - cap] + window
-                from datetime import datetime, timezone
-
-                at = datetime.fromtimestamp(returns, timezone.utc).replace(
-                    microsecond=0
-                ).isoformat()
-                return {
-                    "limit": name,
-                    "cap": cap,
-                    "window_seconds": window,
-                    "capacity_returns_at": at,
-                    "message": (
-                        f"This universe reached its usage limit of {cap} "
-                        f"{name.replace('_', ' ')}. It is shared-compute "
-                        f"fairness, not a limit on what you build; capacity "
-                        f"returns at {at}."
-                    ),
-                }
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
-    return None
-
-
-def admit(
-    universe_id: str,
-    *,
-    write_max: int,
-    total_max: int,
-    window_s: int,
-    fail_closed: bool = False,
-    db: Path | None = None,
-    kind: str = KIND_WRITE,
-) -> int | None:
-    """``admit_detail`` without the reason: the ticket, or None when refused."""
-    return admit_detail(
-        universe_id,
-        write_max=write_max,
-        total_max=total_max,
-        window_s=window_s,
-        fail_closed=fail_closed,
-        db=db,
-        kind=kind,
-    ).ticket
+        return ADMITTED_UNRECORDED
 
 
 def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bool:
@@ -376,8 +121,8 @@ def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bo
 
     Called by whoever admitted the run, right after the run id exists. If the
     run already settled (a fast run finishes before its caller returns), the
-    waiting settlement is applied here. Only a ``write`` row can be bound: an
-    ``engine`` row is never a run and can never become a read. Never raises;
+    waiting settlement is applied here. Only an unbound ``write`` row can be
+    bound (legacy ``engine`` rows age out unbound). Never raises;
     False means nothing was bound (no ticket, an unrecorded admission, a
     missing ledger, a row already bound, or not a run row) and the row simply
     stays as it is.
@@ -516,70 +261,3 @@ def fired_only_reads(
         if not verb or str(verb).strip().upper() not in READ_VERBS:
             return False
     return True
-
-
-# --------------------------------------------------------------------------- #
-# Usage budgets - outbound volume per universe per rolling hour
-# (change `run-usage-budgets`; the per-run half lives on the EffectChain)
-# --------------------------------------------------------------------------- #
-DISPATCHES_PER_HOUR = 5_000
-BYTES_PER_HOUR = 2 * 1024 * 1024 * 1024
-BUDGET_WINDOW_S = 3600
-
-
-def dispatch_window_usage(
-    universe_id: str, *, window_s: int = BUDGET_WINDOW_S, db: Path | None = None,
-) -> tuple[int, int]:
-    """(dispatches, bytes) this universe moved in the rolling window. A ledger
-    that cannot be read counts as empty here - the per-call caps and the
-    per-run budget still bound the run; refusing every effect on a ledger
-    hiccup would be the louder failure in the wrong place."""
-    universe_id = (universe_id or "").strip()
-    if not universe_id:
-        return (0, 0)
-    db = db or ledger_path()
-    if not db.exists():
-        return (0, 0)
-    try:
-        conn = sqlite3.connect(str(db), timeout=10)
-        try:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(dispatches), 0), COALESCE(SUM(bytes), 0) "
-                "FROM dispatch_budget WHERE universe_id = ? AND ts >= ?",
-                (universe_id, time.time() - window_s),
-            ).fetchone()
-            return (int(row[0] or 0), int(row[1] or 0))
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return (0, 0)
-
-
-def charge_dispatch(
-    universe_id: str, *, dispatches: int = 1, nbytes: int = 0,
-    window_s: int = BUDGET_WINDOW_S, db: Path | None = None,
-) -> None:
-    """Record one dispatch and the bytes it moved; prune rows older than one
-    window. Never raises into the dispatch path."""
-    universe_id = (universe_id or "").strip()
-    if not universe_id:
-        return
-    db = db or ledger_path()
-    try:
-        db.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db), timeout=10)
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            _ensure_schema(conn)
-            now = time.time()
-            conn.execute(
-                "INSERT INTO dispatch_budget (universe_id, ts, dispatches, bytes) "
-                "VALUES (?, ?, ?, ?)",
-                (universe_id, now, max(int(dispatches), 0), max(int(nbytes), 0)),
-            )
-            conn.execute("DELETE FROM dispatch_budget WHERE ts < ?", (now - window_s,))
-            conn.commit()
-        finally:
-            conn.close()
-    except (sqlite3.Error, OSError):
-        return

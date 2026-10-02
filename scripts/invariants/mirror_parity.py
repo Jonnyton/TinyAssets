@@ -56,6 +56,9 @@ TREE_EXCLUDES: tuple[str, ...] = (
     "*.pyc",
     ".pytest_cache",
     "*.tmp",
+    # Vendored custom-UI libraries (~3 MB) are served only by the hosted app;
+    # the plugin runtime has no app. Their pinned manifest IS mirrored.
+    "ui_libraries",
 )
 
 #: Divergence is compared for text the mirror is expected to ship verbatim.
@@ -185,9 +188,13 @@ class MirrorParityInvariant(Invariant):
                 message=f"canonical root not found: {self.canonical_root}",
             )
         if not self.mirror_root.is_dir():
+            # The canonical tree exists, so the mirror is owed: a mirror that is
+            # gone entirely is the largest drift there is, not a reason to skip
+            # (a build that died between its renames once left exactly this).
             return CheckResult(
-                status=Status.SKIPPED,
-                message=f"mirror root not found: {self.mirror_root}",
+                status=Status.VIOLATED,
+                message=f"mirror root not found: {self.mirror_root}; rebuild with "
+                "python packaging/claude-plugin/build_plugin.py",
             )
 
         report = scan_parity(self.canonical_root, self.mirror_root)

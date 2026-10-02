@@ -2,168 +2,152 @@
 
 ## ADDED Requirements
 
-### Requirement: A seat is one in-flight agent call, and the tier sets how many a universe holds at once
+### Requirement: A seat is one in-flight agent call, and the ACCOUNT's tier sets how many run at once
 
-The platform SHALL bound how many agent calls one universe executes
-concurrently by a per-universe count of **seats** taken from its account tier,
-and SHALL hold one seat for the whole of each agent call rather than for each
-provider attempt within it. Everything that runs a model SHALL hold a seat: a
-`converse` chat turn, an agent node inside a graph run, an automation run, an
-`event` wake, a `once` wake, and an `app_event` wake. The seat bound SHALL be
-per universe and SHALL be enforced by a predicate keyed on `universe_id`, so no
-universe's occupancy can consume or reveal another's. Seats SHALL NOT replace or
-duplicate the host-wide provider-subprocess bound
-(`tinyassets.provider_admission`), which is a memory bound on shared hardware
-and SHALL continue to apply underneath the seat layer. Seats SHALL NOT bound
-the size, depth or breadth of what a user builds.
+The platform SHALL bound how many agent calls one ACCOUNT executes concurrently
+by a count of **seats** from that account's tier. The pool SHALL be one per
+person, shared across all of their universes (founder, 2026-09-30); creating a
+universe SHALL NOT create a pool. The account SHALL be the universe's owner as
+resolved by `universe_owner.owner_of`, and the tier SHALL be
+`universe_owner.tier_of` -- the same resolvers storage uses, never a second
+derivation from ACL rows or bindings. A universe no account is charged for
+SHALL be its own unattributed pool on the free tier: counted, never refused,
+never merged into another account's. A seat SHALL be held for the whole of one
+agent call, not per provider attempt. Seats SHALL NOT replace the host-wide
+provider-subprocess bound (`provider_admission`), and SHALL NOT bound the size,
+depth or breadth of what a user builds.
 
-#### Scenario: Four agents on a three-seat account
-- **WHEN** an owner on a tier with 3 seats starts a graph with 4 agent nodes
-- **THEN** 2 run concurrently (the background ceiling), the other 2 wait for a seat, and all 4 complete
+#### Scenario: Two universes of one owner share one pool
+- **WHEN** an owner on the free tier (3 seats, 1 reserved) has two background agent calls running, one in each of two universes, and a third arrives in either
+- **THEN** the third waits for a seat
 
-#### Scenario: Seats are per universe
-- **WHEN** one universe holds every seat its tier allows
-- **THEN** another universe's agent call acquires a seat immediately and is not affected
+#### Scenario: Different owners never share
+- **WHEN** one account holds every seat its tier allows
+- **THEN** another account's agent call acquires a seat immediately
 
-#### Scenario: One agent call is one seat, whatever it costs in provider attempts
-- **WHEN** an agent call falls back across sources and retries, making several provider attempts
-- **THEN** it holds exactly one seat from start to finish
+#### Scenario: A co-admin is not an owner
+- **WHEN** an account administers a universe another account owns
+- **THEN** agent calls in that universe draw on the owner's pool, not the co-admin's
 
-### Requirement: Over the limit, work queues longest-owed-first and is never refused or dropped
+### Requirement: Seats are taken at the executor, and every agent call takes one
 
-An agent call that finds no seat available SHALL be enqueued and SHALL start
-when a seat frees. It SHALL NOT be refused and SHALL NOT be dropped. The queue
-SHALL be ordered by priority class and then by a monotone ticket, so that among
-equal-priority waiters the longest-owed starts first. A caller that finds a
-seat free while another waiter is already owed one SHALL join the queue behind
-that waiter rather than take the seat.
+Seats SHALL be acquired where the model call happens, never where work is
+enqueued: the agent node's executor (`graph_compiler`), keyed on the RUN's own
+universe from its execution context; the chat turn (`converse`), as
+`interactive`; and the automation and wake worker (`run_due_automation`), as
+`background`, as a non-blocking admission check before it claims an attempt.
+No thread another account's work is owed SHALL ever wait for a seat: runs
+execute in a worker pool of their own account (keyed by the same owner
+resolver), so one account's waiting runs never queue another account's run.
+A run started by `run_graph`, an
+automation, a wake or an inbound event SHALL therefore hold a seat for each of
+its agent calls.
+
+#### Scenario: One account's waits never hold up another account
+- **WHEN** one account has far more runs waiting for its seats than the run pool has threads
+- **THEN** another account's run on the same host still starts and completes promptly
+
+#### Scenario: A real run holds a seat
+- **WHEN** a run started through `runs` executes an agent node for a universe
+- **THEN** that call holds one seat of the universe's owning account for its duration
+
+### Requirement: Over the limit, work waits longest-owed-first and is never refused or dropped
+
+An agent call that finds no seat SHALL wait and SHALL start when a seat frees,
+without a deadline. It SHALL NOT be refused and SHALL NOT be dropped. The queue
+SHALL be ordered by class and then by a monotone ticket; a caller that finds a
+seat free while another waiter is owed one SHALL join behind it. A polling
+worker SHALL keep its ticket between polls. An abandoned position SHALL lapse,
+and a position whose process is proven dead SHALL be dropped, so neither stalls
+live work behind it.
 
 #### Scenario: Queue order is longest-owed first
 - **WHEN** three background agent calls wait for one seat, enqueued in order A, B, C
-- **THEN** they start in the order A, B, C as seats free
+- **THEN** they start in the order A, B, C
 
-#### Scenario: An arriving call does not overtake an owed waiter
-- **WHEN** a seat frees while a waiter is already enqueued, and a new call of the same class arrives in the same instant
-- **THEN** the enqueued waiter takes the seat and the new call is enqueued behind it
-
-#### Scenario: Queued work is not lost
-- **WHEN** a wake, automation run or agent node is enqueued for a seat
-- **THEN** it runs once a seat frees, and no path reports it as refused, rate-limited or skipped for want of a seat
+#### Scenario: Four agents on a free account
+- **WHEN** four agent nodes across two universes of one free account start at once
+- **THEN** two run, two wait, and all four complete
 
 ### Requirement: Background work can never take the last seat, so the owner's chat is never blocked by it
 
-Waiters SHALL be classified `interactive` (a chat turn) or `background`
-(everything else). Background work SHALL occupy at most `seats - interactive_reserve`
-seats; interactive work MAY occupy all `seats`. An interactive waiter SHALL
-never be ordered behind a background waiter, whatever their tickets. The
-fairness rule SHALL be documented where the tier values are defined.
+Chat turns SHALL be `interactive`; everything else SHALL be `background`.
+Background SHALL occupy at most `seats - interactive_reserve`; interactive MAY
+occupy all `seats`. An interactive waiter SHALL never be ordered behind a
+background waiter.
 
-#### Scenario: A background runaway cannot starve the chat
-- **WHEN** two automations wake each other continuously for a sustained period on a universe whose every background seat is occupied
-- **THEN** concurrent seat holders never exceed the background ceiling, and an interactive chat turn arriving at any point acquires a seat within the bounded wait
+#### Scenario: A background ping-pong cannot starve the chat
+- **WHEN** background work keeps every background seat busy and more waits
+- **THEN** a chat turn is served at once on the reserved seat
 
-#### Scenario: Interactive work jumps the background queue
-- **WHEN** background waiters are already enqueued and a chat turn asks for a seat
-- **THEN** the chat turn is ordered ahead of every background waiter
+### Requirement: An automation or wake waits before it claims, so a wait is never an attempt or a failure
 
-### Requirement: A blocking nested agent call inherits its parent's seat
+The automation worker SHALL try for a seat once per poll, before claiming an
+attempt, and SHALL NOT block the consumer thread while waiting. A wait SHALL
+NOT consume `MAX_ONCE_ATTEMPTS`, SHALL NOT count toward
+`MAX_CONSECUTIVE_FAILURES`, and SHALL leave the automation due. The seat it
+gets SHALL be given back before its run is queued: a seat held by a run still
+waiting for a run-pool worker, behind workers waiting for that account's seats,
+is a deadlock. The run's agent calls SHALL take their own seats at the executor,
+and no run timeout, and no deadline of a blocking invoke waiting on a child,
+SHALL turn a wait there into a failure.
 
-An agent call made while its caller is BLOCKED waiting for it SHALL re-enter
-the caller's seat rather than take a second one, tracked by a depth count on
-the seat, and the seat SHALL be released when the outermost holder releases it.
-A non-blocking (asynchronous, or by-version) invocation SHALL take its own
-seat, because its parent continues to execute. A chain of blocking nested agent
-calls SHALL NOT be able to deadlock against its own universe's seat limit.
+#### Scenario: A wake outlasts a busy account
+- **WHEN** a wake is due on more polls than it has attempts while its account's background seats are full
+- **THEN** it records `waiting_for_seat` each time, has spent no attempt, is not retired, and runs once a seat frees
 
-#### Scenario: A two-deep blocking chain runs on one seat
-- **WHEN** an agent node blocking-invokes a sub-branch containing another agent node, on a universe with one background seat
-- **THEN** both execute and neither waits for the other's seat
+### Requirement: A blocking nested agent call inherits its parent's seat, exclusively
 
-#### Scenario: An async invoke pays its own seat
-- **WHEN** an agent node invokes a sub-branch asynchronously and continues
-- **THEN** the sub-branch's agent call acquires its own seat
+A call made while its caller holds a seat SHALL re-enter that seat by an
+exclusive depth transition that matches account, holding process and depth;
+a parallel sibling that finds the seat already lent SHALL take its own, and
+SHALL retry re-entry while it waits. A seat id alone SHALL never be a
+capability.
 
-### Requirement: A seat is a lease, released on every terminal path and reaped when it expires
+#### Scenario: Another account cannot ride a seat by naming it
+- **WHEN** a caller names another account's seat as its parent
+- **THEN** it takes a seat of its own account instead
 
-Seats SHALL be recorded in a durable store under the canonical data-dir
-resolver, never in process memory alone, because engine MCP runs in a child
-process and a deploy recreates the container. A seat SHALL be released on
-success, on failure, on cancellation and on timeout. A seat SHALL carry an
-absolute expiry, SHALL be refreshed on a cadence shorter than that expiry while
-its work is live, and SHALL be reaped by any subsequent acquisition once it has
-expired, so a crashed or restarted holder cannot strand capacity. Reaping SHALL
-happen on the acquisition path and SHALL NOT depend on a timer or background
-sweeper being alive. A seat store that is a symlink or resolves outside its
-data directory SHALL be refused rather than trusted, because a tampered seat
-store is a cross-universe concurrency escape. A live long-running agent call
-SHALL keep its seat for as long as it runs; the lease SHALL bound only how long
-a DEAD holder's seat survives.
+### Requirement: A seat ends on every terminal path and on its holder's proven death
 
-#### Scenario: A crashed holder's seat is reclaimed
-- **WHEN** a process holding a seat dies without releasing it
-- **THEN** the next acquisition for that universe reaps the expired seat and admits waiting work
+A seat SHALL be released on success, failure, cancellation and timeout; a
+call still running after its node timed out SHALL keep its seat until it
+actually ends. Each seat SHALL name its holder by `process_liveness.owner_token`
+under the seat store's own root. Every read-decide-write on the store SHALL run
+inside one write transaction held until it commits. A release the store refuses
+SHALL be retried until it lands, never dropped, because a live holder's seat is
+otherwise never reclaimed. A seat SHALL be reclaimed when its holder is
+proven dead (a crash, a deploy's SIGKILL), or when its lease has lapsed and its
+holder is not provably alive; a provably alive holder SHALL never be reclaimed.
+The liveness cleanup SHALL keep a dead token's proof while any seat or waiter
+still names it. A seat store that is a symlink or resolves outside its data
+directory SHALL be refused loudly. Only the holding process SHALL release a seat.
 
-#### Scenario: Seats survive a deploy restart correctly
-- **WHEN** the container is recreated while seats were held
-- **THEN** the first acquisition after restart reaps the stale rows and the seat count reflects only live work
+#### Scenario: A deploy frees its seats at once
+- **WHEN** the process holding seats is killed
+- **THEN** the next acquisition reclaims them without waiting for their leases
 
-#### Scenario: A long run keeps its seat
-- **WHEN** an agent call runs for many multiples of the lease period while refreshing it
-- **THEN** its seat is never reaped and no second holder is admitted in its place
-
-#### Scenario: Every terminal path releases
-- **WHEN** an agent call ends in success, in failure, by cancellation, or by timeout
-- **THEN** its seat is released immediately and the next waiter starts
-
-### Requirement: The per-agent lease is resolved before a seat is requested
-
-A per-agent overlap fence SHALL be resolved by the automation's own overlap policy BEFORE the run joins the seat queue, so a run its own policy would skip does not occupy a queue position it will abandon. The fence is the existing per-agent lease, which keeps one automation's runs from overlapping themselves; the seat layer sits above it and neither replaces it.
-
-#### Scenario: A skip-policy automation does not hold a queue position
-- **WHEN** an automation whose overlap policy is `skip` becomes due while its previous run is still going, and the universe's seats are full
-- **THEN** it is skipped by its overlap policy without ever entering the seat queue
+#### Scenario: A cancelled waiting run gives its place back
+- **WHEN** a run is cancelled while its agent node waits for a seat
+- **THEN** the wait ends, its queue position is abandoned, and the provider is never called
 
 ### Requirement: The waiting state is visible to the owner with an inline upgrade link
 
-Whenever work waits for a seat, the owner SHALL be able to see that it is
-waiting and how many seats are running, on the chat turn's own reply, in
-`read_graph`, and in the app's status for queued runs and wakes. The waiting
-message SHALL name the number running and SHALL contain a clickable upgrade
-link inline within the message itself; it SHALL NOT be presented as a separate
-banner, button, card or modal. The link SHALL point at an existing route that
-opens the deployment's real upgrade flow; no new or invented URL SHALL be used.
-An account already on the highest tier SHALL see the fact without an upgrade
-link. The prompt SHALL be informative and SHALL NOT block: the work still runs
-when a seat frees.
-
-#### Scenario: A waiting chat turn says so rather than hanging
-- **WHEN** a chat turn cannot get a seat within the bounded wait
-- **THEN** the owner receives a message naming the number of seats running with an inline upgrade link, the turn keeps its queue position, and its reply arrives when the seat frees
-
-#### Scenario: The upgrade link resolves to the real upgrade flow
-- **WHEN** the waiting message's upgrade link is followed
-- **THEN** it resolves to an existing served route which opens the same checkout flow as the app's own upgrade control
+While work waits, the owner SHALL see that it waits and how many seats are
+running: a run records a `waiting_for_seat` system event (never a node `ran`);
+an automation records `waiting_for_seat` as its recent reason; `get_status`
+(`read_graph` status) reports the account's `seats` -- running, waiting,
+`chat_waiting` for THIS universe, the message and `upgrade_url` -- to the owning
+account only; and the app's one status line shows "Waiting for a free seat (N
+running) -- Upgrade for more seats." with Upgrade a link INSIDE the line, never
+a banner, card or modal. The link SHALL be `usage_policy.upgrade_url`
+(`https://tinyassets.io/app?upgrade=1`), which the app routes to its existing
+`startSubscribe()`. The top tier SHALL see the waiting line with no link.
 
 #### Scenario: The top tier is not asked to upgrade
-- **WHEN** a universe on the highest tier waits for a seat
-- **THEN** the message names the waiting state and carries no upgrade link
+- **WHEN** an account on the highest tier waits for a seat
+- **THEN** the waiting line carries no upgrade link and `upgrade_url` is null
 
-#### Scenario: read_graph shows the queue
-- **WHEN** an owner reads a universe with seats held and work waiting
-- **THEN** the response reports the tier's seat count, how many are running, and how many are waiting
-
-### Requirement: Tier values are defined in exactly one place
-
-The seat count and the interactive reserve for each account tier SHALL be defined in a single module alongside the tier's storage quota, keyed by the tier strings the subscription store already owns, so no second definition of the same fact can drift from it. An unrecognized tier SHALL resolve to the lowest tier and log loudly; it SHALL NEVER resolve to "no limit". The free tier SHALL have fewer seats than a paid tier. The interactive reserve SHALL be clamped below the seat count inside the resolver, never at a call site, so it can never refuse every background run.
-
-#### Scenario: An unknown tier is the most restrictive, not unlimited
-- **WHEN** a universe's stored tier string is not recognized
-- **THEN** the free tier's seats apply and the mismatch is logged
-
-#### Scenario: A reserve can never consume every seat
-- **WHEN** the configured interactive reserve is greater than or equal to the tier's seat count
-- **THEN** background work still has at least one seat
-
-#### Scenario: Both test accounts work on free
-- **WHEN** a free universe runs a four-agent village and the owner chats while it runs
-- **THEN** every agent completes by queueing, the chat turn gets a seat, and nothing requires an upgrade
+#### Scenario: A co-admin never reads the owner's occupancy
+- **WHEN** a non-owning admin reads the universe's status
+- **THEN** no `seats` block is present

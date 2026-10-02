@@ -113,6 +113,20 @@ def test_a_configured_secret_is_written_and_its_contents_are_not_logged(
     assert SECRET_MARKER not in out
 
 
+def test_a_file_without_the_debug_client_says_debug_builds_have_no_push(tmp_path, capsys):
+    # The debug build installs as io.tinyassets.app.debug; Firebase's plugin
+    # refuses that variant without its own client, so the log must say why.
+    mobile = _mobile(tmp_path)
+    materialize.materialize(mobile, {"ANDROID_GOOGLE_SERVICES_JSON_B64": _b64(_document())})
+    out = capsys.readouterr().out
+    assert "no io.tinyassets.app.debug client" in out and "processDebugGoogleServices" in out
+
+    both = _document()
+    both["client"].append(_document(APP_ID + ".debug")["client"][0])
+    materialize.materialize(mobile, {"ANDROID_GOOGLE_SERVICES_JSON_B64": _b64(both)})
+    assert "debug builds:" not in capsys.readouterr().out
+
+
 def test_a_file_path_is_an_equivalent_source(tmp_path):
     mobile = _mobile(tmp_path)
     source = tmp_path / "gs.json"

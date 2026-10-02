@@ -709,7 +709,7 @@ def ensure_default_author(base_path: str | Path) -> dict[str, Any]:
     return register_author(
         base_path,
         display_name="House Daemon",
-        soul_text="Default house daemon for the host-run universe server.",
+        soul_text="Default house daemon for the host-run command center server.",
         created_by="system",
         metadata={"auto_created": True},
     )
@@ -2599,9 +2599,9 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Community Branches — CRUD
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _branch_definition_insert(
@@ -2695,6 +2695,22 @@ _BRANCH_DEFINITION_INSERT_SQL = """
             """
 
 
+def _charge_branch_write(base_path: str | Path, author: str, values: Any) -> None:
+    """Gate a branch-definition write on the AUTHOR's account storage
+    (account-storage-quota D7: branch/version writes). Raises
+    `storage_accounting.StorageRefused` at the quota before anything is written;
+    an author with no account (platform) is not gated."""
+    from tinyassets import storage_accounting
+
+    nbytes = sum(len(v.encode("utf-8")) for v in values if isinstance(v, str))
+    storage_accounting.charge_now(
+        base_path,
+        account_id=storage_accounting.account_for_actor(base_path, author),
+        store="branches",
+        nbytes=nbytes,
+    )
+
+
 def save_branch_definition(
     base_path: str | Path,
     *,
@@ -2702,6 +2718,7 @@ def save_branch_definition(
 ) -> dict[str, Any]:
     """Insert or replace a branch definition."""
     branch_def_id, values = _branch_definition_insert(branch_def)
+    _charge_branch_write(base_path, str(branch_def.get("author") or ""), values)
     with _connect(base_path) as conn:
         conn.execute(
             _BRANCH_DEFINITION_INSERT_SQL.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1),
@@ -2722,6 +2739,7 @@ def create_branch_definition_once(
     The returned boolean is true only for that winning insert.
     """
     branch_def_id, values = _branch_definition_insert(branch_def)
+    _charge_branch_write(base_path, str(branch_def.get("author") or ""), values)
     with _connect(base_path) as conn:
         cursor = conn.execute(
             _BRANCH_DEFINITION_INSERT_SQL
@@ -2931,6 +2949,12 @@ def update_branch_definition(
 
     params.append(branch_def_id)
 
+    author = str(
+        updates.get("author")
+        or get_branch_definition(base_path, branch_def_id=branch_def_id).get("author")
+        or ""
+    )
+    _charge_branch_write(base_path, author, params)
     with _connect(base_path) as conn:
         conn.execute(
             f"UPDATE branch_definitions SET {', '.join(sets)} "
@@ -2984,9 +3008,9 @@ def fork_branch_definition(
     return save_branch_definition(base_path, branch_def=forked.to_dict())
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 5: Goals — first-class shared primitive above Branches
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 _logger = logging.getLogger(__name__)
@@ -3956,9 +3980,9 @@ def goal_archive_consultation(
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 6: Outcome gates — ladder on goals, claims per branch
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _gate_claim_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -4793,9 +4817,9 @@ def _preview(text: str, max_len: int) -> str:
     return collapsed[: max_len - 1] + "…"
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Memory-scope Stage 2a — universe_acl CRUD
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 #
 # A universe with zero ACL rows is public; a universe with at least one
 # row is private and only the listed actors may access it. Enforcement

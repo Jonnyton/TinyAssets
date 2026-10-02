@@ -31,6 +31,10 @@ def _bind(monkeypatch, payload: str):
     monkeypatch.setattr(s, "_GRAPH_ID", "u-pinned")
     mock_engine_admission(monkeypatch, {s._GRAPH_ID})
     monkeypatch.setattr(us, "read_graph", lambda **kw: payload)
+    # These tests measure the ceiling against the handler's exact bytes; the
+    # owner_unread field is tested in test_engine_conversation_attention.
+    monkeypatch.setattr("tinyassets.engine_conversation_attention._observe",
+                        lambda text, reading: None)
     return s
 
 
@@ -233,7 +237,7 @@ def test_a_sibling_of_an_exempt_target_is_still_bounded(monkeypatch):
 
 def test_a_result_within_the_ceiling_is_returned_byte_for_byte(monkeypatch):
     """Bounding is not reformatting: a result that fits is never rewritten."""
-    payload = json.dumps({"universe_id": "u-pinned", "phase": "running"})
+    payload = json.dumps({"command_center_id": "u-pinned", "phase": "running"})
     s = _bind(monkeypatch, payload)
 
     assert _text(asyncio.run(s.mcp.call_tool("read_graph", {"target": "graph"}))) == payload

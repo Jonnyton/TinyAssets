@@ -640,6 +640,91 @@ def _ledger_db_path(base_path: str | Path | None) -> Path | None:
         return None
 
 
+def _request_path(request: dict[str, Any]) -> str:
+    """The path a request addresses, for classifying it (never for sending)."""
+    absolute = _str_field(request, "url")
+    if absolute:
+        try:
+            return urllib.parse.urlsplit(absolute).path or "/"
+        except ValueError:
+            return "/"
+    path = request.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        return "/"
+    # Parsed the way the transport rebuilds the URL: no query, no fragment, so
+    # "/v1/charges#" classifies as the "/v1/charges" it is sent as
+    # (gpt-6-astra on #4199).
+    try:
+        return urllib.parse.urlsplit(path).path or "/"
+    except ValueError:
+        return "/"
+
+
+def _review_evidence(request: dict[str, Any]) -> str:
+    """The request's own body, bounded, for the auto-review (untrusted there)."""
+    body = request.get("body", request.get("json"))
+    try:
+        text = body if isinstance(body, str) else json.dumps(body, default=str)
+    except (TypeError, ValueError):
+        text = ""
+    return (text or "")[:2000]
+
+
+def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
+                  path: str = "/", *, evidence: str = "") -> dict[str, Any] | None:
+    """``None`` when the owner's rules let this call proceed, else a refusal.
+
+    What the call MEANS comes from the owner's declarations for this connection
+    (harness D1b); an undeclared operation is decided as a write.
+    """
+    from tinyassets import agent_rules
+
+    try:
+        action_class, operation = agent_rules.classify(
+            universe_dir, connection_id, verb, path)
+        decision = agent_rules.decide(
+            universe_dir, action_class, connection=connection_id, operation=operation,
+        )
+    except Exception:
+        logger.exception("authenticated_external_call rule lookup crashed")
+        return {
+            "dry_run": True,
+            "reason": "rules_unreadable",
+            "error_kind": "rules_unreadable",
+            "hint": "Your rules could not be read, so nothing was sent.",
+        }
+    if decision.proceeds:
+        # Allowed by the rules: a consequential action is still checked on the
+        # run's own model first (harness D1d), which can only hold it.
+        from tinyassets.agent_review import review_refusal
+
+        return review_refusal(
+            universe_dir,
+            action={"action_class": action_class, "connection": connection_id,
+                    "operation": operation, "path": path},
+            rule=decision.reason, evidence=evidence,
+        )
+    if decision.behaviour == agent_rules.HAND_OFF:
+        return {
+            "dry_run": True,
+            "reason": "rule_hand_off",
+            "error_kind": "rule_hand_off",
+            "rule": decision.reason,
+            "hint": ("Your owner's rules hand this action to them: ask them to do it "
+                     "themselves; do not perform it."),
+        }
+    # Ask first, and "if pre-approved" until approvals are bound to the exact
+    # action (D1c): the owner is asked before anything is sent.
+    return {
+        "dry_run": True,
+        "reason": "rule_ask_first",
+        "error_kind": "rule_ask_first",
+        "rule": decision.reason,
+        "hint": ("Your owner's rules ask first for this action: raise one request "
+                 "describing it and continue other work until they answer."),
+    }
+
+
 def _check_consent(universe_dir: Path, destination: str) -> bool:
     """Whether an active effector-consent grant exists for this destination.
 
@@ -948,7 +1033,7 @@ def _run(
     if not universe_id or db_path is None:
         # No trusted universe context ⇒ fail closed (never borrow a default).
         return {
-            "error": "no universe authority is bound to this run",
+            "error": "no command center authority is bound to this run",
             "error_kind": "no_universe_authority",
             "matched_output_key": matched_key,
         }
@@ -989,6 +1074,20 @@ def _run(
             "dry_run": True,
             "reason": "soul_authority_denied",
             "error_kind": "soul_authority_denied",
+            "destination": destination,
+            "connection_id": connection_id,
+            "matched_output_key": matched_key,
+        }
+    # The owner's Custom Rules (harness D1a) decide before the standing grant is
+    # consulted, and can only tighten it: "ask first" and "hand off" stop a call
+    # its grant would allow. Every call here counts as a write until connections
+    # declare their operation kinds (D1b). A rule store that cannot be read
+    # refuses the call; it never falls back to allowing it.
+    rule_refusal = _rule_refusal(universe_dir, connection_id, verb, _request_path(request),
+                                 evidence=_review_evidence(request))
+    if rule_refusal is not None:
+        return {
+            **rule_refusal,
             "destination": destination,
             "connection_id": connection_id,
             "matched_output_key": matched_key,

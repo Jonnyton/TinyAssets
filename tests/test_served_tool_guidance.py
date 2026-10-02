@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import json
 import pathlib
+import re
 import types
 from collections import Counter
 
@@ -103,6 +104,12 @@ CHAPTER_ORDER = (
 #: resident text and the served descriptions sit at their 30,000-char ratchet;
 #: this sentence paid for it. The create checks it describes still refuse by name.
 #:
+#: 2026-10-01: telling the agent an ask IS the notification (live: it searched
+#: for a notification sender instead) costs resident text at the same ratchet.
+#: Two sentences paid for it, each already said elsewhere in the docstring: the
+#: run_graph step closes it ("Actually RUNNING it ... via run_graph"), and
+#: "File delivery ... not supported here" sits one line above the other.
+#:
 #: Each entry is ``(passage, marker)``: the verbatim passage the allowance is
 #: derived from, and a word that occurs ONLY in it, so its absence is a cheap,
 #: direct check that the passage went rather than merely being rephrased.
@@ -116,6 +123,14 @@ REMOVED_PASSAGES = (
         "It schedules your own workflow using existing creation checks and the "
         "universe's current serving provider.",
         "creation",
+    ),
+    (
+        "The build half of build+run parity (run it afterward with run_graph).",
+        "build+run",
+    ),
+    (
+        "Exact file delivery is not implemented.",
+        "implemented.",
     ),
 )
 DELIBERATELY_REMOVED: Counter = sum(
@@ -141,6 +156,17 @@ def _parameter_descriptions(handle: str) -> list[str]:
         raise AssertionError(f"no served handle named {handle!r}")
 
     return asyncio.run(_read())
+
+
+def _resident(handle: str) -> str:
+    """The advertised description plus every parameter description, flattened.
+
+    What a served turn reads about ``handle`` without fetching a chapter. Both
+    fields, because FastMCP 3.2.0 leaves a docstring's ``Args:`` block in the
+    description while 3.4.x (CI, production) moves it into the parameter schema.
+    """
+    text = " ".join([_description(handle), *_parameter_descriptions(handle)])
+    return " ".join(text.split())
 
 
 def _description(handle: str) -> str:
@@ -198,6 +224,32 @@ def _source_docstring(name: str = "write_graph") -> str:
     return ast.get_docstring(node, clean=False) or ""
 
 
+#: A prose "universe" in the baseline is the same guidance renamed (founder,
+#: 2026-10-01: the product is the person's command center;
+#: `openspec/changes/rename-universe-to-command-center` C0). Only the bare prose
+#: forms move; identifiers such as ``universe_id`` stay in the count untouched.
+_RENAMED_PROSE = re.compile(r"^(\(?)universe((?:'s|s)?[).,;:]*)$")
+
+
+#: Machine spellings C1 renamed in the advertised text (the public names).
+_RENAMED_CODE = {"``tiny/<universe>/<slug>``": "``tiny/<command-center-id>/<slug>``"}
+
+
+def _renamed(counts: Counter) -> Counter:
+    out: Counter = Counter()
+    for word, count in counts.items():
+        if word in _RENAMED_CODE:
+            out[_RENAMED_CODE[word]] += count
+            continue
+        match = _RENAMED_PROSE.match(word)
+        if match:
+            out[match.group(1) + "command"] += count
+            out["center" + match.group(2)] += count
+        else:
+            out[word] += count
+    return out
+
+
 def test_the_split_lost_no_guidance():
     """The whole safety claim in one assertion: relocation, not deletion.
 
@@ -211,7 +263,8 @@ def test_the_split_lost_no_guidance():
     text: the passage is gone, and so is the word that occurred only in it. A word
     list alone would excuse a global deficit in those words wherever it happened.
     """
-    before = _pre_split_word_counts()
+    baseline = _pre_split_word_counts()
+    before = _renamed(baseline)
     text = _source_docstring() + "".join(
         engine.SERVED_TOOL_CHAPTERS["write_graph"][name] for name in CHAPTER_ORDER
     )
@@ -230,7 +283,7 @@ def test_the_split_lost_no_guidance():
     for passage, marker in REMOVED_PASSAGES:
         assert passage not in flat
         assert marker not in text
-    assert sum(before.values()) == 4968  # provenance, stated in the fixture header
+    assert sum(baseline.values()) == 4968  # provenance, stated in the fixture header
 
 
 #: The two shapes a FastMCP version can hand us for the same docstring: 3.2.0 leaves
@@ -483,3 +536,20 @@ def test_the_public_connector_description_is_untouched_and_uncoupled():
     # The public manual is still whole: it never carried the engine's chapters,
     # and the relocation did not shrink it (measured 16,623 chars on 2026-09-25).
     assert len(public) > 16_000
+
+
+def test_the_agent_is_told_a_request_is_the_notification():
+    """Live 2026-10-01: asked to send the morning note as a notification, the
+    universe searched for a notification sender, found none, and raised a request
+    for one. Requests ARE the notification channel; that fact must stay resident."""
+    assert "An ask IS the only notification" in _resident("write_graph")
+
+
+def test_the_agent_is_told_an_ask_is_only_for_what_the_owner_can_grant():
+    """Live 2026-10-01: refused a trigger type the engine lacked, the universe
+    asked its owner to approve "Enable new-message wakes" -- an approval that
+    could not create the missing capability, so the owner approved and nothing
+    happened. A platform gap goes to the patch request, never to the owner."""
+    resident = _resident("write_graph")
+    assert "what the owner can grant or decide" in resident
+    assert "a platform gap is a patch request" in resident

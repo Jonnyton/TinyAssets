@@ -6,7 +6,7 @@ subscribed branch, and the automation pump fires that wake exactly as it fires
 any other -- run fence, per-universe lease, run admission, and the owner's live
 authority re-checked at run time. Nothing here runs a branch itself.
 
-Three events are emitted, each from the one place its state changes:
+Four events are emitted, each from the one place its state changes:
 
 * ``run_completed`` -- ``runs.update_run_status``, on a run's transition into a
   terminal status. Payload: ``run_id``, ``branch_def_id``, ``outcome``.
@@ -18,6 +18,13 @@ Three events are emitted, each from the one place its state changes:
   act never wakes an unfiltered subscription twice.
 * ``app_event`` -- connector ``run_graph operation="emit_event"``, which a
   custom UI's bridge calls as its viewer. Payload: ``name``, ``data``.
+* ``owner_message`` -- ``universe_server.converse``, once the owner's message is
+  stored in their conversation (answered, failed or interrupted), so the woken
+  agent can read it. Payload: none. It COALESCES: while a wake it stored has not
+  started, further messages add nothing, so a burst is one wake and the running
+  agent sees the rest as ``owner_unread`` (``conversation_unread``). The
+  universe's own replies never emit it, and a ``universe:<id>`` principal wakes
+  nothing, so an agent cannot wake itself by answering.
 
 The cross-user floor: an event is stamped with the principal that caused it,
 and wakes only subscriptions that principal owns, in that principal's own home
@@ -47,12 +54,14 @@ from typing import Any
 from tinyassets.automations import (
     EVENT_APP,
     EVENT_FILTER_KEYS,
+    EVENT_OWNER_MESSAGE,
     EVENT_PENDING_REQUEST_ANSWERED,
     EVENT_RUN_COMPLETED,
     EVENT_WOKE_PREFIX,
     REFUSAL_KEY_PREFIX,
     STATE_ACTIVE,
     TRIGGER_EVENT,
+    TRIGGER_ONCE,
     Automation,
     AutomationStore,
     AutomationUnavailable,
@@ -146,9 +155,10 @@ def _emit(
     if not home or (universe_id and universe_id != home):
         return []
     uid = home
+    rows = AutomationStore(base).list(universe_id=uid)
     subs = [
         sub
-        for sub in AutomationStore(base).list(universe_id=uid)
+        for sub in rows
         if sub.trigger_kind == TRIGGER_EVENT
         and sub.event_type == event_type
         and sub.desired_state == STATE_ACTIVE
@@ -162,6 +172,13 @@ def _emit(
     retry: list[str] = []
     for sub in subs:
         owner = sub.owner_principal_id
+        key = _event_key(sub, event_type, payload, event_id)
+        if event_type == EVENT_OWNER_MESSAGE:
+            pending = _pending_wake(rows, sub)
+            if pending is not None:
+                stored.append(pending.automation_id)
+                continue
+            key = _coalesced_key(base, sub, event_id)
         # The branch is read as its owner: a private branch is refused to an
         # unbound thread. owner_run_identity binds only an admin of this
         # universe, and register_automation re-checks admin AND home.
@@ -186,7 +203,7 @@ def _emit(
                         },
                     },
                     now=now,
-                    event_key=_event_key(sub, event_type, payload, event_id),
+                    event_key=key,
                 )
             except AutomationUnavailable as exc:
                 reason = f"event_wake_refused:{exc.reason}"
@@ -210,11 +227,11 @@ class EventDeliveryDeferred(RuntimeError):
     """A matching subscription could not take its wake yet (see RETRYABLE_REFUSALS)."""
 
 
-#: Refusals that pass on their own -- a serving assignment comes back, a usage
-#: window refills, the consumer is switched on. A durable event refused for one
-#: of these stays owed. Every other refusal (the owner lost admin, the branch
-#: is gone) is final for this event and is recorded on the subscription.
-RETRYABLE_REFUSALS = frozenset({"no_serving_assignment", "usage_limited", "consumer_disabled"})
+#: Refusals that pass on their own -- a serving assignment comes back, the
+#: consumer is switched on. A durable event refused for one of these stays owed.
+#: Every other refusal (the owner lost admin, the branch is gone) is final for
+#: this event and is recorded on the subscription.
+RETRYABLE_REFUSALS = frozenset({"no_serving_assignment", "consumer_disabled"})
 
 
 def _event_key(
@@ -235,6 +252,46 @@ def _event_key(
     ident = event_id or _json.dumps(payload, sort_keys=True, default=str)
     digest = hashlib.sha256(ident.encode("utf-8")).hexdigest()[:32]
     return f"{sub.automation_id}:{event_type}:{digest}"
+
+
+def _wake_prefix(sub: Automation) -> str:
+    return f"{sub.automation_id}:{EVENT_OWNER_MESSAGE}:"
+
+
+def _pending_wake(rows: list[Automation], sub: Automation) -> Automation | None:
+    """A wake this subscription stored that has not started yet, if any.
+
+    A ``once`` row retires when its run starts, so an unretired one is still
+    owed -- waiting for its time, its seat or the agent's previous run.
+    """
+    prefix = _wake_prefix(sub)
+    for row in rows:
+        if (row.trigger_kind == TRIGGER_ONCE and not row.retired_at
+                and row.event_key.startswith(prefix)):
+            return row
+    return None
+
+
+def _coalesced_key(base: Path, sub: Automation, event_id: str) -> str:
+    """One key for every concurrent delivery after the subscription's last fire.
+
+    Two messages stored at once both read the same ``last_reason`` and so name
+    the same wake; the unique key stores it once. A key whose wake already ran
+    (the fire was never recorded) is not reused, or the message would wake
+    nothing.
+    """
+    import hashlib
+    import uuid
+
+    def key(ident: str) -> str:
+        digest = hashlib.sha256(ident.encode("utf-8")).hexdigest()[:32]
+        return f"{_wake_prefix(sub)}{digest}"
+
+    candidate = key("after:" + sub.last_reason)
+    existing = AutomationStore(base).get_by_event_key(candidate)
+    if existing is not None and existing.retired_at:
+        return key("after:" + sub.last_reason + ":" + (event_id or uuid.uuid4().hex))
+    return candidate
 
 
 def _record_fire(base: Path, sub: Automation, reason: str, now: datetime) -> None:
@@ -368,10 +425,28 @@ def emit_app_event(
     )
 
 
+def emit_owner_message(universe_dir: str | Path, *, principal_id: str) -> list[str]:
+    """The owner's message is now in their conversation: wake their subscriptions.
+
+    ``principal_id`` is the VERIFIED caller who sent it. Every cross-user rule is
+    ``emit``'s: their own subscriptions, in their own current home, and only
+    when ``universe_dir`` is that home. A visitor's message wakes nothing.
+    """
+    udir = Path(universe_dir)
+    return emit(
+        udir.parent,
+        event_type=EVENT_OWNER_MESSAGE,
+        universe_id=udir.name,
+        principal_id=principal_id,
+        payload={},
+    )
+
+
 __all__ = [
     "MAX_APP_EVENT_DATA_BYTES",
     "emit",
     "emit_app_event",
+    "emit_owner_message",
     "emit_pending_request_answered",
     "emit_run_completed",
     "validated_app_event",

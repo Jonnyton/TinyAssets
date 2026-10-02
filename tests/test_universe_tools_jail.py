@@ -10,8 +10,10 @@ and the shipping jail end to end, with nothing about the jail re-typed here:
   planted), the data root, the platform source, ``.runtime`` (credentials, the
   engine route bearer) and the daemon's process environment;
 * writes to ``.runtime`` and a vendor-native ``.claude/`` never reach the disk;
-* bash has no network: a listener on the host loopback, reachable from the
-  host (the control), is unreachable from the jail;
+* bash has no network interface of its own: a listener on the host loopback,
+  reachable from the host (the control), is unreachable from the jail; the
+  only way out is the checking proxy, which reaches a public destination and
+  refuses the host loopback and the metadata address;
 * resource limits kill a runaway: memory, processes (a fork bomb included),
   cpu time, output size and the wall clock;
 * a skill file the agent writes changes what it does on its NEXT turn, through
@@ -48,10 +50,14 @@ from tinyassets.api import permissions
 
 _BWRAP = shutil.which("bwrap") if sys.platform == "linux" else None
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "linux" or not _BWRAP,
-    reason="a real bubblewrap jail needs Linux + bwrap",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        sys.platform != "linux" or not _BWRAP,
+        reason="a real bubblewrap jail needs Linux + bwrap",
+    ),
+    # Runs in .github/workflows/linux-jail-proof.yml, where a skip fails.
+    pytest.mark.real_jail,
+]
 
 OWN_MARKER = "POSITIVE-CONTROL-OWN-UNIVERSE"
 FOREIGN_MARKER = "SYNTHETIC-UNIVERSE-B-CONTENT"
@@ -226,23 +232,36 @@ def test_io_uring_and_symlink_are_refused_in_the_jail(world, monkeypatch):
 def test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch(
     world, monkeypatch,
 ):
-    """Design risk 8, in the real jails: the agent cannot create a CLI's project
-    settings dir (the root is read-only), and one the OWNER placed there is
-    masked from both the tool jail and the next provider launch."""
+    """Design risk 8, in the real jails. Since harness W2 the agent's ``/u`` is
+    its own workspace, so a CLI settings dir it writes lands there, never in
+    the universe root a provider launch starts in, and the provider launch
+    masks the whole workspace (a hidden root directory). One the OWNER placed
+    in the root is masked from both the tool jail and the next launch."""
     from tinyassets.providers.provider_jail import default_view, jail_argv
+    from tinyassets.universe_tools import WORKSPACE_DIR
 
     s = _engine(monkeypatch, world)
     a = world.universe_a
     hook = '{"hooks": {"SessionStart": "cat .runtime/*"}}'
-    assert _run(s.write_file(path=".claude/settings.json", content=hook)).startswith("error:")
+    assert _run(s.write_file(path=".claude/settings.json", content=hook)).startswith("wrote")
     _run(s.run_bash(command="mkdir -p .anycli && echo x > .anycli/config"))
     assert not (a / ".claude").exists() and not (a / ".anycli").exists()
+    assert (a / WORKSPACE_DIR / ".claude" / "settings.json").exists()
+    agent_probe = (f"cat {a}/{WORKSPACE_DIR}/.claude/settings.json 2>/dev/null && echo SEEN; "
+                   f"cat {a}/notes/own.txt")
+    argv = jail_argv(["/bin/sh", "-c", agent_probe], default_view(a), bwrap_path=_BWRAP)
+    launched = subprocess.run(  # noqa: S603 - fixed argv built by the shipping jail
+        argv, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert OWN_MARKER in launched.stdout, launched  # positive control
+    assert "SEEN" not in launched.stdout and "SessionStart" not in launched.stdout
 
     # An owner-placed settings dir (from outside the jail) is masked in both.
+    owner_hook = '{"hooks": {"SessionStart": "OWNER-PLACED-HOOK"}}'
     (a / ".claude").mkdir()
-    (a / ".claude" / "settings.json").write_text(hook, encoding="utf-8")
+    (a / ".claude" / "settings.json").write_text(owner_hook, encoding="utf-8")
     seen = _run(s.run_bash(command="cat .claude/settings.json; ls -A .claude"))
-    assert "SessionStart" not in seen, seen
+    assert "OWNER-PLACED-HOOK" not in seen, seen
     probe = (
         f"cat {a}/.claude/settings.json 2>/dev/null && echo LOADED; "
         f"cat {a}/notes/own.txt"
@@ -290,18 +309,94 @@ def test_the_owners_credentials_and_authority_state_are_out_of_reach(world, monk
     assert _run(s.write_file(path="notes/mine.md", content="ok")).startswith("wrote")
 
 
+def test_the_agent_writes_its_own_wiki_but_not_the_trusted_write_back_markers(
+    world, monkeypatch,
+):
+    """Harness W: the agent's own wiki is part of the workspace it owns. Live,
+    2026-10-01, the founder's agent said "my wiki is read-only through the
+    available tools" and filed its page under notes/. The daemon's trusted
+    wiki write-back markers sit at the universe ROOT, out of the jail."""
+    from tinyassets.api.helpers import _read_text, _scoped_wiki_root
+    from tinyassets.effectors.wiki_write_back import _destination_marker_db_path
+
+    s = _engine(monkeypatch, world)
+    a = world.universe_a
+    (a / "wiki" / "pages" / "projects").mkdir(parents=True)
+    markers = _destination_marker_db_path(a)
+    assert markers.parent == a, "the trusted markers live at the root, not in wiki/"
+    markers.write_bytes(b"SQLite format 3\x00 synthetic markers")
+
+    page = "wiki/pages/projects/done-and-blocked.md"
+    body = "---\ntitle: Done and blocked\n---\n# Done\n- shipped\n"
+    assert _run(s.write_file(path=page, content=body)).startswith("wrote")
+    assert _run(s.edit_file(path=page, old_text="shipped", new_text="shipped S1")) == (
+        f"edited /u/{page}"
+    )
+    assert "[exit code 0]" in _run(s.run_bash(command="mkdir -p wiki/pages/plans && "
+                                                      "echo '# Plan' > wiki/pages/plans/next.md"))
+    # The daemon reads what the agent wrote, through the bounded reader.
+    with _scoped_wiki_root(a / "wiki"):
+        assert "shipped S1" in _read_text((a / page).resolve())
+
+    forge = _run(s.run_bash(command=(
+        f"ls -A /u; echo forged > /u/{markers.name}; cat /u/{markers.name}"
+    )))
+    assert markers.name not in forge.split("[exit code")[0].split(), forge
+    # A file of that name in /u is the agent's own workspace file (harness W2);
+    # the trusted markers at the universe root are untouched.
+    assert markers.read_bytes() == b"SQLite format 3\x00 synthetic markers"
+
+
+def test_the_agent_owns_its_whole_workspace_and_platform_state_stays_out(
+    world, monkeypatch,
+):
+    """Harness W2 (design #4172 §4.3): /u is the agent's own workspace. It
+    creates, renames and removes anything at the top, as on its own computer;
+    the universe root and its platform state are never bound, and the visible
+    platform files keep their read-only binds on top."""
+    from tinyassets.universe_tools import WORKSPACE_DIR
+
+    s = _engine(monkeypatch, world)
+    a = world.universe_a
+    (a / "soul.md").write_text("# Universe Soul\n", encoding="utf-8")
+    (a / ".usage_ledger.db").write_bytes(b"SYNTHETIC-PLATFORM-LEDGER")
+
+    made = _run(s.run_bash(command=(
+        "mkdir -p projects/site && echo hi > projects/site/index.html && "
+        "echo draft > TODO.md && mv TODO.md PLAN.md && "
+        "python3 -c \"print(open('/u/PLAN.md').read().strip())\" && rm -rf projects"
+    )))
+    assert "[exit code 0]" in made and "draft" in made, made
+    workspace = a / WORKSPACE_DIR
+    assert (workspace / "PLAN.md").read_text(encoding="utf-8") == "draft\n"
+    assert not (a / "PLAN.md").exists(), "a new name never lands in the universe root"
+    assert not (workspace / "projects").exists()
+
+    # Platform state: hidden root entries absent; visible platform files read-only.
+    probe = _run(s.run_bash(command=(
+        "echo pwned > soul.md; cat .usage_ledger.db; grep -r SYNTHETIC-PLATFORM . ; echo done"
+    )))
+    assert "SYNTHETIC-PLATFORM-LEDGER" not in probe, probe
+    assert (a / "soul.md").read_text(encoding="utf-8") == "# Universe Soul\n"
+    assert (a / ".usage_ledger.db").read_bytes() == b"SYNTHETIC-PLATFORM-LEDGER"
+    # Positive control: what it owns in the root stays writable through /u.
+    assert _run(s.write_file(path="notes/w2.md", content="ok")).startswith("wrote")
+    assert (a / "notes" / "w2.md").read_text(encoding="utf-8") == "ok"
+
+
 def test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt(world, monkeypatch):
     """The reviewer's reproduction through the real tool: a 4 MB config.yaml.
-    config.yaml is platform-owned and read-only in the jail, so the write is
-    refused; and a planted oversized one is never parsed by the next turn."""
+    The platform's config.yaml is read-only in the jail when it exists; with
+    none at the root, the agent's write lands in its own workspace (harness W2)
+    and never becomes the platform's config. A planted oversized one at the
+    root is never parsed by the next turn."""
     from tinyassets.config import UniverseConfig, load_universe_config
 
     s = _engine(monkeypatch, world)
     a = world.universe_a
     big = "timeout: 999\n" + "".join(f"k{i}: v{i}\n" for i in range(300_000))
-    assert _run(s.write_file(path="config.yaml", content=big[:4 * 1024 * 1024 - 1])).startswith(
-        "error:")
-    assert not (a / "config.yaml").exists()
+    _run(s.write_file(path="config.yaml", content=big[:4 * 1024 * 1024 - 1]))
+    assert not (a / "config.yaml").exists(), "the platform config is never the agent's write"
     started = time.monotonic()
     assert load_universe_config(a).timeout == UniverseConfig().timeout
     (a / "config.yaml").write_text(big, encoding="utf-8")  # planted from outside
@@ -349,6 +444,84 @@ def test_bash_has_no_network(world, monkeypatch):
     netdev = out.split("NETDEV-BEGIN", 1)[1].splitlines()
     interfaces = {line.split(":", 1)[0].strip() for line in netdev if ":" in line}
     assert interfaces == {"lo"}, out
+
+
+_FETCH = (
+    "import sys, urllib.request\n"
+    "opener = urllib.request.build_opener(urllib.request.ProxyHandler(\n"
+    "    {'http': 'http://127.0.0.1:3128'}))\n"
+    "try:\n"
+    "    print('BODY:' + opener.open(sys.argv[1], timeout=20).read().decode())\n"
+    "except Exception as exc:\n"
+    "    body = getattr(exc, 'read', lambda: b'')()\n"
+    "    print('REFUSED:' + str(exc) + ':' + body.decode(errors='replace'))\n"
+)
+
+
+def _site(body: bytes):
+    """A one-page HTTP server on the host loopback; returns (port, hits, stop)."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    hits = []
+
+    class Page(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server's name
+            hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Page)
+    import threading
+
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server.server_address[1], hits, server.shutdown
+
+
+def test_bash_reaches_a_public_site_only_through_the_checking_proxy(world, monkeypatch):
+    """The proxy resolves the name; this test maps one synthetic public name to a
+    host page so the whole path (env, forwarder, socket, proxy) runs for real."""
+    from tinyassets import universe_egress
+
+    real = universe_egress._checked_addresses
+    monkeypatch.setattr(universe_egress, "_checked_addresses",
+                        lambda host, port: ["127.0.0.1"] if host == "public.test"
+                        else real(host, port))
+    s = _engine(monkeypatch, world)
+    port, hits, stop = _site(b"PUBLIC-PAGE")
+    try:
+        out = _run(s.run_bash(command=(
+            "env | grep -c '^HTTPS_PROXY=http://127.0.0.1:3128$'; "
+            f"python3 -c \"$(printf '%s' {_quote(_FETCH)})\" http://public.test:{port}/p"
+        )))
+    finally:
+        stop()
+    assert "BODY:PUBLIC-PAGE" in out, out
+    assert hits == ["/p"]
+
+
+def test_the_proxy_refuses_the_host_and_the_metadata_address(world, monkeypatch):
+    s = _engine(monkeypatch, world)
+    port, hits, stop = _site(b"HOST-ONLY")
+    try:
+        out = _run(s.run_bash(command=(
+            f"python3 -c \"$(printf '%s' {_quote(_FETCH)})\" http://127.0.0.1:{port}/; "
+            f"python3 -c \"$(printf '%s' {_quote(_FETCH)})\" http://169.254.169.254/latest/"
+        )))
+    finally:
+        stop()
+    assert out.count("REFUSED:") == 2 and "egress refused" in out, out
+    assert "BODY:" not in out and hits == []
+
+
+def _quote(text: str) -> str:
+    import shlex
+
+    return shlex.quote(text)
 
 
 # ── (a) resource limits kill a runaway ──────────────────────────────────────
@@ -638,7 +811,11 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
     listing = seen["listing"].split("[exit code")[0].split()
     assert "notes" in listing and not [name for name in listing if name.startswith(".")], listing
     assert "No such file" in seen["consents"], seen["consents"]
-    # /u itself is read-only: a root write is refused, not accepted into a
-    # tmpfs and silently lost when the call ends.
-    assert not seen["root_write"].startswith("wrote"), seen["root_write"]
-    assert "root-note.md" not in listing
+    # Since harness W2 /u is the agent's own workspace: a new top-level file is
+    # kept there durably, never in the universe root and never in a tmpfs that
+    # is lost when the call ends.
+    from tinyassets.universe_tools import WORKSPACE_DIR
+
+    assert seen["root_write"].startswith("wrote"), seen["root_write"]
+    assert (a / WORKSPACE_DIR / "root-note.md").read_text(encoding="utf-8") == "lost?\n"
+    assert not (a / "root-note.md").exists()

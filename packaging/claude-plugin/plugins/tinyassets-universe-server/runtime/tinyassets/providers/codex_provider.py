@@ -17,6 +17,7 @@ import sys
 import time
 from pathlib import Path
 
+from tinyassets import agent_sessions
 from tinyassets.exceptions import (
     InteractiveDeadlineError,
     ProviderAuthenticationError,
@@ -221,13 +222,29 @@ def _terminal_auth_failure(excerpt: str) -> bool:
     return any(phrase in lower for phrase in _TERMINAL_AUTH_PHRASES)
 
 
+#: Where the adapter's private home is mounted inside its jail.
+_JAIL_HOME = "/codex-home"
+
+_THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{0,127}")
+
+
+def _native_session_exists(store: Path, thread_id: str) -> bool:
+    """Whether ``store`` still holds the rollout file for ``thread_id``."""
+    if not _THREAD_ID.fullmatch(thread_id or ""):
+        return False
+    try:
+        return agent_sessions.native_file_exists(store, f"{thread_id}.jsonl")
+    except OSError:
+        return False
+
+
 def _codex_home_file_mounts(codex_home: Path) -> list[JailMount]:
     """A read-only bind for each regular file of the sealed snapshot."""
     mounts: list[JailMount] = []
     for entry in sorted(codex_home.iterdir()):
         if entry.is_symlink() or not entry.is_file():
             continue
-        mounts.append(JailMount("ro-bind", f"/codex-home/{entry.name}", entry))
+        mounts.append(JailMount("ro-bind", f"{_JAIL_HOME}/{entry.name}", entry))
     if not mounts:
         raise ProviderError("codex served sandbox found no credential files to mount")
     return mounts
@@ -361,9 +378,15 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     # no approver, so the prompt auto-cancels ("user cancelled MCP tool call").
     # Auto-approve this ONE trusted, enabled_tools-restricted server so its tools
     # actually execute (Codex diagnosis 2026-08-22; verified key parses on 0.146).
+    from tinyassets.engine_steering import route_with_session, session_of, turn_of
+
+    # The route names this launch's session and live turn, so the engine steers
+    # only the owner's chat thread, in this turn, with a message sent mid-turn
+    # (harness S2).
+    url = route_with_session(route.url, session_of(config), turn_of())
     server = (
         "mcp_servers.tinyassets={"
-        f'url="{route.url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}",'
+        f'url="{url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}",'
         f'required=true,default_tools_approval_mode="approve",'
         f"enabled_tools=[{enabled}]"
         "}"
@@ -734,6 +757,8 @@ class CodexProvider(BaseProvider):
     """Calls GPT via the ``codex exec`` CLI binary."""
 
     agent_execution_kind = "native_agent"
+    #: Continues a stored native session by its thread id (``agent_sessions``).
+    native_resume = True
 
     name = "codex"
     family = "openai"
@@ -802,10 +827,10 @@ class CodexProvider(BaseProvider):
             try:
                 codex_home.relative_to(universe_root)
             except ValueError as exc:
-                raise ProviderError("codex auth home is outside the served universe") from exc
+                raise ProviderError("codex auth home is outside the served command center") from exc
             if not bwrap_path or not codex_home.is_dir():
                 raise ProviderError(
-                    "codex served turns require an available OS sandbox and universe auth"
+                    "codex served turns require an available OS sandbox and command center auth"
                 )
             sandbox_args = [
                 "--sandbox",
@@ -868,12 +893,42 @@ class CodexProvider(BaseProvider):
             "--disable",
             "remote_plugin",
             "--skip-git-repo-check",
-            "--ephemeral",
         ]
+
+        # A served turn that names a session continues it (change
+        # `universe-agent-harness`, S1): its native session files persist under
+        # the universe's `.runtime/`, and a resumable one is resumed with only
+        # the input it has not seen. Anything else stays `--ephemeral`, as every
+        # launch was before. The session is held for the whole launch, so a
+        # second concurrent turn of the same key runs unrecorded instead of
+        # interleaving one native history.
+        session_ref = getattr(config, "agent_session", None) if config.sandbox_workspace else None
+        session_hold = contextlib.ExitStack()
+        persist = False
+        resume_record: dict | None = None
+        session_store: Path | None = None
+        if session_ref is not None:
+            persist = session_hold.enter_context(agent_sessions.exclusive(session_ref))
+        if persist:
+            session_store = agent_sessions.native_store(universe_root, self.name)
+            resume_record = agent_sessions.resumable(
+                session_ref, adapter=self.name, model=model or "", prompt=prompt,
+            )
+            if resume_record is not None and not _native_session_exists(
+                session_store, str(resume_record["handle"]),
+            ):
+                logger.warning("native session for %s is gone; starting a new one", session_ref.key)
+                resume_record = None
+            if resume_record is not None:
+                full_input = agent_sessions.resume_input(session_ref, resume_record, system)
+        if not persist:
+            cmd.append("--ephemeral")
 
         universe_view: UniverseView | None = None
         if config.sandbox_workspace:
             launch_cmd = [*cmd, "-C", "/workspace"]
+            if resume_record is not None:
+                launch_cmd += ["resume", str(resume_record["handle"]), "-"]
             # A converse/chat turn is NOT a coding task: give codex an EMPTY
             # scratch /workspace (tmpfs) inside the same jail instead of the
             # universe, so it answers as a chat model rather than acting as a
@@ -881,11 +936,26 @@ class CodexProvider(BaseProvider):
             # replied with persona-echo / "reauthentication" while hosted-mode
             # codex chatted + recalled memory correctly). Coding turns
             # (run_graph etc.) keep the read-only universe workspace.
+            sandbox_chat = getattr(config, "sandbox_chat", False)
             workspace_mount = (
                 JailMount("tmpfs", "/workspace")
-                if getattr(config, "sandbox_chat", False)
+                if sandbox_chat
                 else JailMount("ro-bind", "/workspace", universe_root)
             )
+            # The universe agent's own workspace (harness W2) is masked here as
+            # in every provider launch: what its agent writes there never
+            # reaches a provider's view (gpt-6-astra on #4194, round 2).
+            workspace_masks: tuple[JailMount, ...] = ()
+            if not sandbox_chat:
+                from tinyassets.providers.provider_jail import (
+                    AGENT_WORKSPACE_DIR,
+                    ensure_agent_workspace,
+                )
+
+                ensure_agent_workspace(universe_root)
+                workspace_masks = (
+                    JailMount("tmpfs", f"/workspace/{AGENT_WORKSPACE_DIR}"),
+                )
             # This adapter's own view of its universe inside the shared jail
             # (tinyassets.providers.provider_jail): narrower than the default,
             # never wider -- every bind below comes from inside universe_root.
@@ -893,6 +963,7 @@ class CodexProvider(BaseProvider):
                 universe_dir=universe_root,
                 mounts=(
                     workspace_mount,
+                    *workspace_masks,
                     JailMount(
                         "tmpfs", "/workspace/.runtime/provider-launch-credentials",
                     ),
@@ -903,13 +974,17 @@ class CodexProvider(BaseProvider):
                     # /codex-home/.lock: Read-only file system", exit 73 in 56 ms
                     # -> "codex exhausted", live 2026-08-22). The credential bytes
                     # stay immutable; only scratch files can be created beside them.
-                    JailMount("tmpfs", "/codex-home"),
+                    JailMount("tmpfs", _JAIL_HOME),
                     *_codex_home_file_mounts(codex_home),
+                    *(
+                        (JailMount("bind", f"{_JAIL_HOME}/sessions", session_store),)
+                        if session_store is not None else ()
+                    ),
                 ),
                 chdir="/workspace",
-                setenv=(("CODEX_HOME", "/codex-home"), ("HOME", "/tmp")),
+                setenv=(("CODEX_HOME", _JAIL_HOME), ("HOME", "/tmp")),
             )
-            proc_env["CODEX_HOME"] = "/codex-home"
+            proc_env["CODEX_HOME"] = _JAIL_HOME
             proc_env["HOME"] = "/tmp"
         else:
             # A universe's call runs in that universe (the shared jail binds
@@ -922,17 +997,22 @@ class CodexProvider(BaseProvider):
         # The shared spawn point jails every launch made for a universe; this
         # adapter only names where its own install lives (the wrapper script
         # execs a binary the generic command lookup cannot see).
-        proc = await aspawn_owned(
-            launch_cmd,
-            shell=use_shell,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_STDOUT_READER_LIMIT,
-            env=proc_env,
-            universe_view=universe_view,
-            install_mounts=lambda: _codex_sandbox_mounts(base_cmd),
-        )
+        try:
+            proc = await aspawn_owned(
+                launch_cmd,
+                shell=use_shell,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_STDOUT_READER_LIMIT,
+                env=proc_env,
+                universe_view=universe_view,
+                install_mounts=lambda: _codex_sandbox_mounts(base_cmd),
+            )
+        except BaseException:
+            session_hold.close()
+            raise
+        session_saved = False
 
         # EVERY exit -- success, classified raise, cancellation -- ends the
         # owned family. The clean-exit path never reaped anything before, so
@@ -1027,6 +1107,7 @@ class CodexProvider(BaseProvider):
             if machine_accounting:
                 messages: list[str] = []
                 usage: dict[str, object] | None = None
+                thread_id = ""
                 try:
                     events = [json.loads(line) for line in stdout_text.splitlines() if line.strip()]
                 except (json.JSONDecodeError, TypeError) as exc:
@@ -1034,6 +1115,10 @@ class CodexProvider(BaseProvider):
                 for event in events:
                     if not isinstance(event, dict):
                         raise ProviderError("codex returned invalid accounting output")
+                    if event.get("type") == "thread.started" and isinstance(
+                        event.get("thread_id"), str
+                    ):
+                        thread_id = event["thread_id"]
                     item = event.get("item")
                     if (
                         event.get("type") == "item.completed"
@@ -1059,6 +1144,12 @@ class CodexProvider(BaseProvider):
                     raise ProviderError("codex accounting output contained invalid usage")
                 cost_microunits = (input_tokens + output_tokens) * 100
                 text = messages[-1].strip()
+                if persist and thread_id:
+                    agent_sessions.save(
+                        session_ref, adapter=self.name, model=model or "",
+                        handle=thread_id, system=system,
+                    )
+                    session_saved = True
             else:
                 text = stdout_text
 
@@ -1105,3 +1196,11 @@ class CodexProvider(BaseProvider):
             )
         finally:
             kill_owned_tree(proc)
+            if resume_record is not None and not session_saved:
+                # A resumed launch that did not finish leaves no claim that the
+                # session is healthy: the next turn starts a new one rather than
+                # resuming into the same failure.
+                logger.warning("native session %s did not complete; next turn starts fresh",
+                               session_ref.key)
+                agent_sessions.clear(session_ref)
+            session_hold.close()

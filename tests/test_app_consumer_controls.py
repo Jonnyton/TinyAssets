@@ -13,6 +13,31 @@ from tests.test_custom_ui_bridge import _run
 EXTRA = r'''
 let prompts=[],approve=true;
 const confirm=message=>{prompts.push(message);return approve;};
+// The binding store as it really answers: canonical JSON with sorted keys
+// (custom_agents._canonical_json), so {version,state,...} reads back
+// {component_key,...,version}. A text compare called every save a failure.
+const sortKeys=v=>Array.isArray(v)?v.map(sortKeys):(v&&typeof v==='object')?
+ Object.fromEntries(Object.keys(v).sort().map(k=>[k,sortKeys(v[k])])):v;
+// Rows an older client could have left beside `binding`: a second
+// installation of the same role, which makes the conversation ambiguous.
+let extra=[];
+const harnessCall=MCP.callTool;
+MCP.callTool=async function(tool,args){
+ const other=extra.find(r=>args&&r.agent_binding_id===args.agent_binding_id);
+ if(other&&tool==='write_graph'){
+  calls.push({tool,args:JSON.parse(JSON.stringify(args))});
+  if(args.expected_revision!==other.revision) return {error:'agent_conflict'};
+  Object.assign(other,{configuration:sortKeys(JSON.parse(args.payload_json)),revision:other.revision+1,updated_by:PRINCIPAL});
+  return {status:'configured',binding:JSON.parse(JSON.stringify(other))};
+ }
+ if(other&&tool==='read_graph') return {binding:JSON.parse(JSON.stringify(other))};
+ const result=await harnessCall.call(this,tool,args);
+ if(tool==='read_graph'&&args.target==='agent_bindings') result.bindings=result.bindings.concat(JSON.parse(JSON.stringify(extra)));
+ if(tool==='write_graph'&&args.target==='agent_binding'&&result&&result.binding){
+  binding={...binding,configuration:sortKeys(binding.configuration)}; result.binding=binding;
+ }
+ return result;
+};
 '''
 
 CHECKS = r'''
@@ -43,6 +68,8 @@ const ask=async(action,params)=>{
  throw Error('the bridge never answered '+action);
 };
 const writes=()=>calls.filter(c=>c.tool==='write_graph'&&c.args.target==='agent_binding');
+// Every save below reads back from the sorted-key store: the selection is
+// written {version,state,component_key,...} and returned in key order.
 
 // ---- the trusted panel shows the default before anything is chosen --------
 assert.equal($('ui-conversation').children[0].textContent,'Conversation design: default');
@@ -114,6 +141,58 @@ me={...me,universe_id:'u-other'};
 r=await ask('set_conversation_design',{agent_definition_id:'d2',component_key:'turn'});
 assert.equal(r.ok,false);
 assert.equal(writes().length,0,'a changed home must not receive the write');
+
+// ---- a UI swapped in mid-request is never named as the asker -------------
+me={...me,universe_id:HOME};
+u.enable(HOME,PRINCIPAL); await settle(40);
+assert(u.active,'the remembered UI is mounted again');
+const office=u.frame.contentWindow;
+emit({source:office,data:{ta_ui:1,type:'ready'}});
+calls=[];prompts=[];
+let release;const gate=new Promise(res=>{release=res;});
+const ownerRead=Owner.read;
+Owner.read=async a=>{ if(a.target==='agent') await gate; return ownerRead(a); };
+emit({source:office,data:{ta_ui:1,type:'call',id:'swap',action:'set_conversation_design',
+ params:{agent_definition_id:'d2',component_key:'turn'}}});
+await settle(20);
+u.mount(u.parseBundle(bundleOf({ui_id:'other',name:'Other UI'})).bundle);
+release(); await settle(60);
+Owner.read=ownerRead;
+assert.equal(prompts.length,0,'the prompt named a UI that did not ask: '+prompts.join(' | '));
+assert.equal(writes().length,0,'a request from a UI that left the screen must not write');
+
+// ---- more than one installation: refused for a UI, recoverable in Switch UI
+const other=u.frame.contentWindow;
+emit({source:other,data:{ta_ui:1,type:'ready'}});
+binding={...binding,configuration:{...binding.configuration,
+ turn_consumer:{version:1,state:'active',component_key:'turn',definition_fingerprint:'b'.repeat(64)}}};
+extra=[{...installed(),agent_binding_id:'b2',revision:3,configuration:{schema_version:1,name:'App experience',
+ role:'app_experience',turn_consumer:{version:1,state:'active',component_key:'turn',definition_fingerprint:'b'.repeat(64)}}}];
+await u.readConversationDesign();
+assert(u.ambiguous,'two installations must read as ambiguous');
+assert(/More than one/.test($('ui-conversation').children[1].textContent));
+const restore=$('ui-conversation').children.find(c=>c.textContent==='Restore default conversation');
+assert.equal(restore.disabled,false,'the Switch UI dialog must offer recovery from ambiguity');
+calls=[];prompts=[];
+const askOther=async(action,params)=>{
+ const id='o'+(n++);
+ emit({source:other,data:{ta_ui:1,type:'call',id,action,params:params||{}}});
+ for(let i=0;i<60;i++){ const hit=other.posts.find(p=>p.type==='result'&&p.id===id); if(hit)return hit; await new Promise(r=>setImmediate(r)); }
+ throw Error('no answer to '+action);
+};
+assert.deepEqual((await askOther('conversation_design')).result,{state:'ambiguous'});
+r=await askOther('set_conversation_design',{agent_definition_id:'d2',component_key:'turn'});
+assert.equal(r.ok,false);assert(/more than one/.test(r.error),r.error);
+r=await askOther('set_conversation_design',{state:'default'});
+assert.equal(r.ok,false,'a UI cannot run the recovery; it is the trusted dialog\'s');
+assert.equal(writes().length,0);assert.equal(prompts.length,0);
+await u.restoreDefaultConversation();
+assert.equal(writes().length,2);
+assert.deepEqual(binding.configuration.turn_consumer,{state:'disabled',version:1});
+assert.equal(extra[0].configuration.role,'app_experience_retired');
+assert.equal(extra[0].configuration.turn_consumer.state,'disabled');
+assert.equal(u.ambiguous,false);
+assert.deepEqual((await askOther('conversation_design')).result,{state:'default'});
 console.log('consumer controls passed');
 })().catch(err=>{console.error(err);process.exit(1);});
 '''
