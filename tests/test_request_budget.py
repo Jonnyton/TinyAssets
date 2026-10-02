@@ -6,13 +6,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tinyassets.providers.free_sources import source_for_host
-from tinyassets.request_budget import RequestBudget, request_budget, requests_today
+from tinyassets.providers.free_sources import daily_cap_for_host
+from tinyassets.request_budget import PooledBudget, RequestBudget, request_budget, requests_today
 from tinyassets.storage import DB_FILENAME
 from tinyassets.storage.agent_turn_journal import ensure_schema
 
 NOW = datetime(2026, 10, 2, 12, tzinfo=timezone.utc)
-PRESET = source_for_host("openrouter.ai")
+PRESET = daily_cap_for_host("openrouter.ai")
 
 
 def seed_requests(base, count, *, owner="owner", source="connection", model="model:free",
@@ -74,23 +74,27 @@ def test_success_past_declared_cap_self_corrects_but_failures_do_not(tmp_path, f
 
 def test_success_past_cap_without_larger_declared_allowance_is_unknown(tmp_path):
     seed_requests(tmp_path, 51)
-    preset = {k: v for k, v in PRESET.items() if k != "free_daily_requests_with_credit"}
+    preset = {k: v for k, v in PRESET.items() if k != "credit_requests_per_day"}
     assert request_budget(tmp_path, "owner", "connection", "model:free", preset=preset,
                           now=NOW) is None
 
 
-@pytest.mark.parametrize("remaining,planned", [(50, 20), (10, 5), (3, 4), (0, 4)])
-def test_prompt_and_planned_requests(remaining, planned):
-    value = RequestBudget(50 - remaining, 50, "OpenRouter", "UTC")
-    assert value.planned_requests == planned
+@pytest.mark.parametrize("remaining", [50, 10, 3, 0])
+def test_prompt_only_describes_daily_pool(remaining):
+    value = PooledBudget((("source", RequestBudget(50 - remaining, 50, "OpenRouter", "UTC")),))
     line = value.prompt_line()
-    assert f"used {50 - remaining} of about 50" in line
+    assert f"about {remaining} requests left" in line
     assert "resets 00:00 UTC" in line
-    if remaining:
-        assert f"within about {planned} requests" in line
-        assert "notes/<project>-progress.md" in line
-    else:
-        assert "allowance is spent" in line
+    assert "notes/<project>-progress.md" in line
+    assert "working slice" not in line
+
+
+def test_adaptive_cap_is_removed():
+    from tinyassets import request_budget as module
+
+    assert not hasattr(module, "MAX_TURN_REQUESTS")
+    assert not hasattr(module, "MIN_TURN_REQUESTS")
+    assert not hasattr(RequestBudget, "planned_requests")
 
 
 def test_uncapped_source_or_paid_model_has_no_budget(tmp_path):
@@ -100,9 +104,25 @@ def test_uncapped_source_or_paid_model_has_no_budget(tmp_path):
 
 
 def test_openrouter_allowance_is_installed_data():
-    assert PRESET["free_daily_requests"] == 50
-    assert PRESET["free_daily_requests_with_credit"] == 1000
-    assert PRESET["daily_reset_timezone"] == "UTC"
-    assert "https://openrouter.ai/docs/api-reference/limits" in (
-        PRESET["free_daily_requests_comment"]
-    )
+    assert PRESET["requests_per_day"] == 50
+    assert PRESET["credit_requests_per_day"] == 1000
+    assert PRESET["reset_timezone"] == "UTC"
+    assert PRESET["credit_url"] == "https://openrouter.ai/settings/credits"
+
+
+def test_connect_screen_cap_shape_and_unknown_host(monkeypatch):
+    from tinyassets.providers import free_sources
+
+    monkeypatch.setattr(free_sources, "_SOURCES", [{
+        "name": "Synthetic", "base_url": "https://capped.example/v1",
+        "billing_url": "https://capped.example/billing",
+        "daily_cap": {"requests_per_day": 25, "tokens_per_minute": 1000,
+                      "reset_timezone": "America/Los_Angeles",
+                      "source_url": "https://capped.example/limits"},
+    }])
+    assert daily_cap_for_host("capped.example") == {
+        "requests_per_day": 25, "credit_requests_per_day": None,
+        "reset_timezone": "America/Los_Angeles", "name": "Synthetic",
+        "credit_url": "https://capped.example/billing",
+    }
+    assert daily_cap_for_host("uncapped.example") is None

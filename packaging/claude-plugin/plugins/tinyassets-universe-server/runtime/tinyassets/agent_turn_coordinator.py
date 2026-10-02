@@ -29,7 +29,7 @@ from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
 from tinyassets.providers.native_agent_input import render_native_input
-from tinyassets.request_budget import WRAP_UP_REMAINING, budget_for_context
+from tinyassets.request_budget import budget_for_context, pooled_budget
 from tinyassets.served_tools import granted_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
@@ -116,7 +116,6 @@ class AgentTurnCoordinator:
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
         self.spent_attempts = []
-        self.request_limit = None
         self.budget_wrap_up = False
         # Replies that failed in flight (in-band source error, unreadable
         # body) retried so far this turn, and the models already given their
@@ -424,6 +423,28 @@ class AgentTurnCoordinator:
         finally:
             self._release_turn()
 
+    def _daily_budget(self):
+        """Recompute between rounds and exclude spent accounts before dispatch."""
+        from tinyassets.api.pending_requests import refresh_connect_llm_request
+        from tinyassets.providers.model_policy import Exhaustion
+
+        budget = pooled_budget(
+            self.context.universe_dir.parent, self.owner, self.context,
+            exhaustion=self.exhaustion,
+        )
+        refresh_connect_llm_request(self.context.universe_dir, budget)
+        while True:
+            selected = budget_for_context(self.context, owner=self.owner)
+            if selected is None or selected.remaining > 0:
+                return budget
+            failed = self.context.model_selection
+            self.exhaustion += (Exhaustion("account", failed),)
+            candidate = self._next_candidate() if self._has_candidate_order() else None
+            if candidate is None:
+                raise ProviderAuthorityHeldError("the pooled daily request allowance is spent")
+            self._leave_hot_source(candidate)
+            self.context = replace(self.context, model_selection=candidate)
+
     async def _run(self):
         self.owner = self._check_scope()
         uid = self.context.universe_dir.name
@@ -457,26 +478,12 @@ class AgentTurnCoordinator:
                     # every settled round and tool result kept as it is.
                     if self.interrupt is not None:
                         self.interrupt.check()
+                    budget = self._daily_budget()
                     self.execution_kind = self.router.selected_agent_execution_kind(
                         self.context.model_selection,
                     )
                     if self.execution_kind == "engine_inference":
-                        budget = budget_for_context(self.context, owner=self.owner)
-                        if budget is not None:
-                            if self.request_limit is None:
-                                self.request_limit = min(budget.planned_requests, budget.remaining)
-                            used = len(self.turn.rounds)
-                            if budget.remaining <= 0 or used >= self.request_limit:
-                                raise ProviderAuthorityHeldError(
-                                    "the free request allowance is spent",
-                                )
-                            # Reserve the text-only inference INSIDE K, including failures.
-                            self.budget_wrap_up = (
-                                used >= self.request_limit - 1
-                                or budget.remaining <= WRAP_UP_REMAINING
-                            )
-                        else:
-                            self.budget_wrap_up = False
+                        self.budget_wrap_up = budget is not None and budget.remaining == 1
                         if engine is None:
                             actor_id, graph_id = self.adapter.engine_identity(
                                 self.context, self.config,
@@ -498,11 +505,23 @@ class AgentTurnCoordinator:
                             ),
                         )
                         prompt, system, observer = self.prompt, self.system, self._begin
+                        if budget is not None:
+                            system += "\n\n" + budget.prompt_line()
+                            if budget.remaining == 2:
+                                system += (
+                                    "\nI save my current progress to notes/<project>-progress.md "
+                                    "in this round; the next inference has no tools."
+                                )
                         if self.budget_wrap_up:
                             system += (
-                                "\n\nThis is my final request within this turn's budget. "
+                                "\n\nThis is the last request in my pooled daily allowance. "
                                 "I reply in text now: what I finished, where progress was "
-                                "saved, and what is left. I never claim an unsaved file exists."
+                                "saved in notes/<project>-progress.md, what is left, and "
+                                "when I can continue (earliest reset "
+                                f"{budget.next_reset.isoformat()} "
+                                "or when my founder connects more compute). "
+                                "I never claim an unsaved file exists or an automatic "
+                                "wake is armed."
                             )
                     else:
                         self.native_input = render_native_input(
@@ -599,6 +618,12 @@ class AgentTurnCoordinator:
                     # The model answered: whatever refused it before does not now.
                     self._forget_refusal()
                     if self.turn.state == "completed":
+                        from tinyassets.api.pending_requests import refresh_connect_llm_request
+
+                        refresh_connect_llm_request(self.context.universe_dir, pooled_budget(
+                            self.context.universe_dir.parent, self.owner, self.context,
+                            exhaustion=self.exhaustion,
+                        ))
                         return response
                     if self.turn.state != "tools_pending":
                         raise ProviderProtocolError(

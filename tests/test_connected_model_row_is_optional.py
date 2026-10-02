@@ -79,6 +79,43 @@ def test_an_optional_row_is_not_counted_as_an_outstanding_ask(rig, monkeypatch):
     assert outstanding == [], "a connected universe reported work waiting on its user"
 
 
+def test_low_compute_promotes_same_connect_card_and_clears_when_unbounded(rig, monkeypatch):
+    from tinyassets.api.pending_requests import refresh_connect_llm_request
+    from tinyassets.request_budget import PooledBudget, RequestBudget
+
+    monkeypatch.setattr("tinyassets.api.pending_requests._serving_llm_bound",
+                        lambda *a, **k: True)
+    root = rig / "u-owner"
+    pool = PooledBudget((("source", RequestBudget(45, 50, "Source", "UTC")),))
+    for _ in range(2):
+        refresh_connect_llm_request(root, pool)
+        cards = [row for row in _rail() if row["request_id"] == "sys_connect_llm"]
+        assert len(cards) == 1
+        assert cards[0]["status"] == "pending" and cards[0]["sticky"] is True
+        assert cards[0]["action"]["type"] == "connect"
+    refresh_connect_llm_request(root, None)
+    cards = [row for row in _rail() if row["request_id"] == "sys_connect_llm"]
+    assert len(cards) == 1 and cards[0]["status"] == "optional"
+
+
+def test_low_compute_card_expires_at_reset(rig, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from tinyassets.api.pending_requests import refresh_connect_llm_request
+    from tinyassets.request_budget import PooledBudget, RequestBudget
+
+    monkeypatch.setattr("tinyassets.api.pending_requests._serving_llm_bound",
+                        lambda *a, **k: True)
+    monkeypatch.setattr(PooledBudget, "next_reset", property(
+        lambda self: datetime.now(timezone.utc) - timedelta(seconds=1),
+    ))
+    refresh_connect_llm_request(rig / "u-owner", PooledBudget((
+        ("source", RequestBudget(50, 50, "Source", "UTC")),
+    )))
+    cards = [row for row in _rail() if row["request_id"] == "sys_connect_llm"]
+    assert len(cards) == 1 and cards[0]["status"] == "optional"
+
+
 # --------------------------------------------------------------------------- #
 # The page: the heading stops asking when only optional rows remain.
 # --------------------------------------------------------------------------- #

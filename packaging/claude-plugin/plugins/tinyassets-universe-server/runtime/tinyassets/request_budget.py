@@ -6,15 +6,13 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tinyassets.storage import DB_FILENAME
 
-MIN_TURN_REQUESTS = 4
-MAX_TURN_REQUESTS = 20
-WRAP_UP_REMAINING = 2
+UNBOUNDED = None
 LEARNING_MIN_REMAINING = 10
 
 
@@ -30,18 +28,35 @@ class RequestBudget:
         return self.cap - self.used
 
     @property
-    def planned_requests(self):
-        return max(MIN_TURN_REQUESTS, min(MAX_TURN_REQUESTS, self.remaining // 2))
+    def next_reset(self):
+        local = datetime.now(timezone.utc).astimezone(ZoneInfo(self.reset_timezone))
+        return (local.replace(hour=0, minute=0, second=0, microsecond=0)
+                + timedelta(days=1)).astimezone(timezone.utc)
+
+
+@dataclass(frozen=True)
+class PooledBudget:
+    sources: tuple[tuple[str, RequestBudget], ...]
+
+    @property
+    def remaining(self):
+        return sum(max(0, budget.remaining) for _, budget in self.sources)
+
+    @property
+    def next_reset(self):
+        return min(budget.next_reset for _, budget in self.sources)
 
     def prompt_line(self):
-        line = (f"Today I have used {self.used} of about {self.cap} free requests on "
-                f"{self.source_name} (resets 00:00 {self.reset_timezone}). ")
-        if self.remaining <= 0:
-            return line + "The allowance is spent."
-        return line + (
-            f"I plan this turn to finish one working slice within about {self.planned_requests} "
-            "requests, including my final reply: I batch reads, save progress to "
-            "notes/<project>-progress.md before the final request, and say what is left."
+        split = ", ".join(
+            f"{budget.source_name} ({max(0, budget.remaining)} left, "
+            f"resets 00:00 {budget.reset_timezone})" for _, budget in self.sources
+        )
+        return (
+            f"Compute today: about {self.remaining} requests left across {split}. "
+            "I work normally; if it runs out I save progress to notes/<project>-progress.md, "
+            "say what is left, and continue when a source resets or my founder connects "
+            "more compute. Before the last request I save progress, because the last "
+            "request can only reply in text."
         )
 
 
@@ -93,24 +108,24 @@ def requests_today(base_path, owner, source_ref, *, reset_timezone,
 def request_budget(base_path, owner, source_ref, model, *, preset, zero_priced_models=(), now=None):
     """One data-driven cap policy; successful requests beyond a cap correct it."""
     try:
-        cap = preset.get("free_daily_requests")
+        cap = preset.get("requests_per_day")
         if (type(cap) is not int or cap <= 0
                 or not (model.endswith(":free") or model in zero_priced_models)):
             return None
         counts = requests_today(
-            base_path, owner, source_ref, reset_timezone=preset["daily_reset_timezone"],
+            base_path, owner, source_ref, reset_timezone=preset["reset_timezone"],
             zero_priced_models=zero_priced_models, now=now,
         )
         if counts is None:
             return None
         used, successful = counts
         if successful > cap:
-            cap = preset.get("free_daily_requests_with_credit")
+            cap = preset.get("credit_requests_per_day")
             if type(cap) is not int or cap < successful:
                 return None
         return RequestBudget(
-            used, cap, preset.get("display_name") or preset["name"],
-            preset["daily_reset_timezone"],
+            used, cap, preset["name"],
+            preset["reset_timezone"],
         )
     except Exception:  # noqa: BLE001 - advisory only
         return None
@@ -120,7 +135,7 @@ def budget_for_context(context, *, owner=None):
     """Resolve installed source facts and captured prices locally, with no IO to a model."""
     try:
         from tinyassets.providers.definition import get_definition
-        from tinyassets.providers.free_sources import source_for_host
+        from tinyassets.providers.free_sources import daily_cap_for_host
 
         selection = context.model_selection
         if selection is None or not selection.connection_id.startswith("api_key_http:"):
@@ -145,7 +160,7 @@ def budget_for_context(context, *, owner=None):
         hosts = {ep["host"] for ep in json.loads(row[0])}
         if len(hosts) != 1:
             return None
-        preset = source_for_host(hosts.pop())
+        preset = daily_cap_for_host(hosts.pop())
         zero = set()
         plan = context.agent_model_plan
         if plan is not None and plan.catalog.owner_id == owner:
@@ -163,3 +178,34 @@ def budget_for_context(context, *, owner=None):
         )
     except Exception:  # noqa: BLE001 - no prompt or guard on unknown budgets
         return None
+
+
+def pooled_budget(base_path, owner, universe_context, *, exhaustion=()):
+    """The accepted turn order, counted once per source; doubt never throttles.
+
+    Discovery and admission belong to served_model_plan, not this local reader.
+    An absent plan does not prove that the selected source is the only usable one.
+    """
+    try:
+        from dataclasses import replace
+
+        context = universe_context
+        if Path(base_path).resolve() != context.universe_dir.parent.resolve():
+            return UNBOUNDED
+        plan = context.agent_model_plan
+        if plan is None:
+            return UNBOUNDED
+        candidates = plan.order(owner, context.universe_dir.name, exhaustion).candidates
+        if not candidates:
+            return UNBOUNDED
+        sources = {}
+        for candidate in candidates:
+            budget = budget_for_context(
+                replace(context, model_selection=candidate.ref), owner=owner,
+            )
+            if budget is None:
+                return UNBOUNDED
+            sources[candidate.ref.connection_id] = budget
+        return PooledBudget(tuple(sources.items()))
+    except Exception:  # noqa: BLE001 - unknown evidence must not throttle
+        return UNBOUNDED

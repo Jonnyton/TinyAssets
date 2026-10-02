@@ -34,6 +34,32 @@ def source_preset(source_id):
     return next((row for row in source_cards() if row["id"] == source_id), None)
 
 
+# TEMPORARY until feat/connect-free-ai lands: same signature
+def daily_cap_for_host(host):
+    """Read connect-screen's installed daily caps, never acquisition metadata."""
+    source = next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), {})
+    cap = source.get("daily_cap")
+    if cap:
+        return {
+            "requests_per_day": cap.get("requests_per_day"),
+            "credit_requests_per_day": None,
+            "reset_timezone": cap.get("reset_timezone"),
+            "name": source["name"],
+            "credit_url": source.get("billing_url", ""),
+        }
+    offers = json.loads(Path(__file__).with_name("daily_cap_offers.json").read_text("utf-8"))
+    offer = offers.get(host)
+    if offer is None:
+        return None
+    return {
+        "requests_per_day": offer["free_requests_per_day"],
+        "credit_requests_per_day": offer.get("credit_requests_per_day"),
+        "reset_timezone": offer["reset_timezone"],
+        "name": offer["name"],
+        "credit_url": offer.get("credit_url", ""),
+    }
+
+
 def source_for_host(host):
     source = next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), None)
     if source is not None:

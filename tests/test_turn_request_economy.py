@@ -194,9 +194,9 @@ def seed_budget(agent, monkeypatch, remaining):
     from tinyassets.providers import free_sources
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
-    original = free_sources.source_for_host
+    original = free_sources.daily_cap_for_host
     monkeypatch.setattr(daemon_server, "get_founder_home", get_founder_home)
-    monkeypatch.setattr(free_sources, "source_for_host",
+    monkeypatch.setattr(free_sources, "daily_cap_for_host",
                         lambda host: PRESET if host == "owned.example" else original(host))
     agent.served.context = apply_served_model_preferences(agent.served.context)
     selection = agent.served.context.model_selection
@@ -206,20 +206,19 @@ def seed_budget(agent, monkeypatch, remaining):
     )
 
 
-def test_served_budget_wrap_up_includes_final_request_inside_k(agent, monkeypatch):
-    """Mutation sanity: ignoring K fails len(wires) <= planned_requests (4)."""
+def test_served_pool_reserves_exactly_the_last_request(agent, monkeypatch):
+    """Use all five daily requests, with the last one replying normally."""
     import hashlib
     import json
 
     from tinyassets.request_budget import budget_for_context
 
-    seed_budget(agent, monkeypatch, remaining=6)
+    seed_budget(agent, monkeypatch, remaining=5)
     initial = budget_for_context(agent.served.context)
-    assert initial.remaining == 6 and initial.planned_requests == 4
+    assert initial.remaining == 5
     agent.requested_rounds = 12
     assert run(agent) == "finished exact answer"
-    assert len(agent.wires) <= initial.planned_requests
-    assert len(agent.wires) == 4 and len(agent.tools) == 3
+    assert len(agent.wires) == 5 and len(agent.tools) == 4
     assert agent.wires[-1][1]["body"]["tool_choice"] == "none"
     assert agent.latest().state == "completed"
     final_body = agent.wires[-1][1]["body"]
@@ -227,12 +226,12 @@ def test_served_budget_wrap_up_includes_final_request_inside_k(agent, monkeypatc
         "sha256:" + hashlib.sha256(json.dumps(final_body).encode("utf-8")).hexdigest()
     )
     system = agent.wires[0][1]["body"]["messages"][0]["content"]
-    assert "used 44 of about 50 free requests on OpenRouter" in system
-    assert "within about 4 requests" in system
-    assert budget_for_context(agent.served.context).remaining == 2
+    assert "Compute today: about 5 requests left across OpenRouter" in system
+    assert "within about" not in system
+    assert budget_for_context(agent.served.context).remaining == 0
 
 
-@pytest.mark.parametrize("remaining,requests", [(3, 2), (2, 1), (1, 1)])
+@pytest.mark.parametrize("remaining,requests", [(3, 3), (2, 2), (1, 1)])
 def test_wrap_up_reserves_last_daily_requests(agent, monkeypatch, remaining, requests):
     seed_budget(agent, monkeypatch, remaining)
     agent.requested_rounds = 12
@@ -242,11 +241,11 @@ def test_wrap_up_reserves_last_daily_requests(agent, monkeypatch, remaining, req
 
 
 def test_unknown_budget_preserves_requested_rounds_and_omits_prompt(agent):
-    agent.requested_rounds = 5
+    agent.requested_rounds = 15
     assert run(agent) == "finished exact answer"
-    assert len(agent.wires) == 6 and len(agent.tools) == 5
+    assert len(agent.wires) == 16 and len(agent.tools) == 15
     assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
-    assert "free requests" not in agent.wires[0][1]["body"]["messages"][0]["content"]
+    assert "Compute today:" not in agent.wires[0][1]["body"]["messages"][0]["content"]
 
 
 @pytest.mark.parametrize("remaining,skipped", [(9, True), (10, False), (None, False)])
@@ -267,13 +266,172 @@ def test_learning_budget_threshold(agent, monkeypatch, caplog, remaining, skippe
 def test_served_converse_skips_learning_after_budget_wrap_up(agent, monkeypatch, signed_in):
     from tinyassets import daemon_server
 
-    seed_budget(agent, monkeypatch, remaining=6)
+    seed_budget(agent, monkeypatch, remaining=5)
     root = agent.served.context.universe_dir
     agent.requested_rounds = 12
     monkeypatch.setattr(daemon_server, "get_founder_home", get_founder_home)
     signed_in("owner")
     monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
     assert run(agent, greeting=True) == "finished exact answer"
-    assert len(agent.wires) == 4
+    assert len(agent.wires) == 5
+    assert agent.wires[-1][1]["body"]["tool_choice"] == "none"
+    assert agent.latest().state == "completed"
+
+
+def test_large_daily_pool_does_not_cap_a_long_turn(agent, monkeypatch):
+    seed_budget(agent, monkeypatch, remaining=50)
+    agent.requested_rounds = 15
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 16 and len(agent.tools) == 15
+    assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
+
+
+def test_low_pool_raises_one_connect_request_across_turns(agent, monkeypatch):
+    from tinyassets.storage.pending_requests import list_pending
+
+    seed_budget(agent, monkeypatch, remaining=9)
+    agent.requested_rounds = 0
+    assert run(agent) == "finished exact answer"
+    first = list_pending(agent.served.context.universe_dir)
+    assert [row["request_id"] for row in first] == ["sys_connect_llm"]
+    assert run(agent) == "finished exact answer"
+    second = list_pending(agent.served.context.universe_dir)
+    assert len(second) == 1 and second[0]["created_at"] == first[0]["created_at"]
+    assert second[0]["action"]["type"] == "connect"
+
+
+def add_second_source(agent, monkeypatch):
+    """Accept a second real owned grant through the serving binding."""
+    import json
+    from dataclasses import replace
+
+    from tests.test_model_discovery_capability import DESCRIPTOR
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.providers.served_model_plan import apply_served_model_preferences
+
+    authority = http.authority_tests
+    served = agent.served
+    rig = served.rig
+    endpoints, _ = rig.ledger.policy_json("conn-models")
+    rig.ledger.create_connection(
+        connection_id="independent", owner_user_id="owner", connection_class="http",
+        connection_type="http", auth_scheme="bearer", scopes=("GET", "POST"),
+        provider="http", destination="compute:independent", credential_ref="vault://http/other",
+        allowed_endpoints=json.loads(endpoints),
+    )
+    grant = rig.ledger.grant_connection(
+        grant_id="independent-grant", connection_id="independent", owner_user_id="owner",
+        universe_id="u-models",
+    )
+    other = register_definition(
+        universe_id="u-models", owner_user_id="owner", access_method="api_key_http",
+        protocol="openai_chat", model="unchanged-other-pin", ref=grant.grant_id,
+    )
+    rig.ledger.configure_capability(
+        connection_id="independent", capability_kind="model_discovery", descriptor=DESCRIPTOR,
+        enabled=True, expected_grant=grant,
+    )
+    connected = authority.bind_serving_provider(
+        base_path=rig.base, universe_dir=served.context.universe_dir, owner_user_id="owner",
+        universe_id="u-models", agent_binding_id=served.agent["agent_binding_id"],
+        expected_revision=served.agent["revision"], provider=rig.definition.id,
+        model_access={rig.definition.id: authority.ModelAccess("discovered"),
+                      other.id: authority.ModelAccess("discovered")},
+    )
+    with authority.SQLiteProviderWorkAuthorityStore(rig.base).connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        binding = authority.set_binding_serving_in_transaction(
+            conn, universe_id="u-models", binding_id=served.agent["agent_binding_id"],
+            expected_revision=connected["agent_binding"]["revision"], owner_user_id="owner",
+            enabled=True,
+        )
+        conn.commit()
+    carrier = authority.auth.mint_provider_request_carrier(
+        universe_id="u-models", agent_binding_id=binding["agent_binding_id"],
+        binding_revision=binding["revision"], operation="converse",
+    )
+    original_read = authority.snapshots.read_http_discovery_document
+
+    def read(**kwargs):
+        if kwargs["definition"].ref == "independent-grant":
+            kwargs["definition"] = replace(kwargs["definition"], ref="grant-models")
+        return original_read(**kwargs)
+
+    monkeypatch.setattr(authority.snapshots, "read_http_discovery_document", read)
+    served.context = apply_served_model_preferences(replace(
+        served.context, provider_request=carrier,
+        config=authority.load_universe_config(served.context.universe_dir),
+    ))
+    first = authority.ModelRef(f"api_key_http:{rig.definition.id}", authority.MODEL)
+    second = authority.ModelRef(f"api_key_http:{other.id}", authority.MODEL)
+    plan = served.context.agent_model_plan
+    # The fixture uses one discovery protocol for both synthetic accounts.
+    # Its default has no account proof and deliberately excludes both after an
+    # account failure. Supply distinct authenticated identities for this case.
+    plan = replace(plan, catalog=replace(plan.catalog, connections=tuple(
+        replace(connection, authenticated_account_id=connection.connection_id)
+        for connection in plan.catalog.connections
+    )))
+    from tinyassets.providers.model_policy import ModelPolicy
+    served.context = replace(served.context, model_selection=first, agent_model_plan=replace(
+        plan, policy=ModelPolicy(0, "explicit", saved_default=first, fallbacks=(second,)),
+    ))
+    return first, second
+
+
+@pytest.mark.parametrize("remaining", [0, 2])
+def test_spent_source_is_skipped_before_dispatch_and_between_rounds(agent, monkeypatch, remaining):
+    from tinyassets.request_budget import pooled_budget
+
+    seed_budget(agent, monkeypatch, remaining=remaining)
+    first, second = add_second_source(agent, monkeypatch)
+    pool = pooled_budget(agent.served.rig.base, "owner", agent.served.context)
+    assert pool.remaining == 50 + remaining
+    assert len(pool.sources) == 2
+    agent.requested_rounds = 4
+    assert run(agent) == "finished exact answer"
+    refs = [item.candidate.source_ref for item in agent.latest().rounds]
+    assert refs == [first.connection_id] * remaining + [second.connection_id] * (5 - remaining)
+    assert len(agent.tools) == 4
+
+
+def test_uncapped_member_makes_whole_pool_unbounded(agent, monkeypatch):
+    from tinyassets.request_budget import UNBOUNDED, pooled_budget
+
+    seed_budget(agent, monkeypatch, remaining=3)
+    _, second = add_second_source(agent, monkeypatch)
+    # Unknown cap evidence on one accepted source unbounds the entire pool.
+    from tinyassets import request_budget as budgets
+    original = budgets.budget_for_context
+    monkeypatch.setattr(budgets, "budget_for_context", lambda ctx, **kw:
+                        None if ctx.model_selection.connection_id == second.connection_id
+                        else original(ctx, **kw))
+    assert pooled_budget(agent.served.rig.base, "owner", agent.served.context) is UNBOUNDED
+    agent.requested_rounds = 15
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 16
+    assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
+    assert all("Compute today:" not in wire[1]["body"]["messages"][0]["content"]
+               for wire in agent.wires)
+
+
+def test_final_request_is_reserved_from_the_whole_pool(agent, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from tests.test_request_budget import seed_requests
+    from tinyassets.request_budget import pooled_budget
+
+    seed_budget(agent, monkeypatch, remaining=2)
+    first, second = add_second_source(agent, monkeypatch)
+    seed_requests(agent.served.rig.base, 47, source=second.connection_id,
+                  model=second.model_id, turn_id="second-source-used",
+                  created_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    assert pooled_budget(agent.served.rig.base, "owner", agent.served.context).remaining == 5
+    agent.requested_rounds = 15
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 5 and len(agent.tools) == 4
+    assert [item.candidate.source_ref for item in agent.latest().rounds] == (
+        [first.connection_id] * 2 + [second.connection_id] * 3
+    )
     assert agent.wires[-1][1]["body"]["tool_choice"] == "none"
     assert agent.latest().state == "completed"

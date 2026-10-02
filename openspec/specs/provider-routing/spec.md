@@ -1086,3 +1086,31 @@ The system SHALL request every engine-inference agent reply as a stream and SHAL
 #### Scenario: The turn outgrows its only model
 - **WHEN** the next request would exceed the selected model's window and no accepted model is larger
 - **THEN** older tool results are sent clipped with a marker saying the tool can be called again for the whole result, and only when clipping no longer shrinks the request is the record `context_window_exceeded`
+
+### Requirement: Request economy uses the command center's remaining daily pool
+The served conversation coordinator SHALL NOT impose a per-turn or per-step request ceiling. It SHALL read daily cap facts through `daily_cap_for_host`, using the connect-screen's installed data, and count the owner's journaled free-model requests, including failed attempts. Successful requests beyond the declared free cap SHALL retain the existing credit-tier self-correction. The accepted `AgentModelPlan` order, including capacity exclusions, SHALL determine which sources contribute, counted once per connection. Any usable uncapped source, non-free candidate, or unreadable evidence SHALL make the pool UNBOUNDED; an unbounded pool SHALL add no budget prompt and SHALL NOT force a budget wrap-up.
+
+For a finite pool, the prompt SHALL describe its total and per-source remaining requests and midnight reset timezones. It SHALL ask the agent to save progress to `notes/<project>-progress.md` before its final inference. When one pooled request remains, that inference SHALL carry `tool_choice="none"` and request a final reply describing completed work, the saved progress location, remaining work, and the earliest reset or additional-compute condition. The final reply SHALL complete through the normal journal path. The platform SHALL NOT claim that a file was saved or a wake armed without evidence.
+
+Before dispatch and between tool rounds, a source known to have zero remaining requests SHALL be excluded through the existing account-scoped `Exhaustion` policy. A finite pool below ten SHALL promote the existing `sys_connect_llm` card through its existing connect action, with one fixed request identity across turns. The urgency SHALL expire at the earliest reset and clear when a later turn observes replenished or unbounded compute. Learning extraction SHALL still skip a capped selected source below ten remaining; batching and resident context remain efficiency guidance rather than a request ceiling.
+
+#### Scenario: Five remaining requests are all available to one task
+- **WHEN** the finite pool has five requests and the agent keeps asking for tools
+- **THEN** four tool rounds run and the fifth request is text-only and completes normally
+
+#### Scenario: A long task has enough compute
+- **WHEN** fifteen tool rounds are needed and the pool starts at fifty or is unbounded
+- **THEN** all fifteen tool rounds and the final reply run without a per-turn budget stop
+
+#### Scenario: The selected source is already spent
+- **WHEN** the first accepted source has zero remaining and an independent accepted source has room
+- **THEN** the first inference goes to the source with room without spending a request on the empty source
+
+#### Scenario: A low pool spans two turns
+- **WHEN** successive turns observe fewer than ten requests remaining
+- **THEN** the app receives one pending `sys_connect_llm` card rather than duplicate requests
+
+#### Scenario: A conversation needs to continue after reset
+- **WHEN** an interactive conversation exhausts its finite pool
+- **THEN** its reply states when compute becomes available without claiming an automatic resume
+- **AND** no new scheduler or owner-authored Branch is invented: the existing one-shot automation requires an existing owner-authored Branch and cannot directly schedule this conversation

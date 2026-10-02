@@ -1845,6 +1845,25 @@ def _first_power_preset() -> dict[str, object] | None:
     }
 
 
+def refresh_connect_llm_request(universe_dir, budget):
+    """Promote the existing setup card while a known pool is nearly spent.
+
+    One fixed row, shared by every turn. Expiry is the earliest reset; a new
+    uncapped source or replenished pool clears it on the next turn.
+    """
+    from tinyassets.storage.pending_requests import refresh_system_request
+
+    entry = None
+    if budget is not None and budget.remaining < 10:
+        entry = _connect_llm_request(connected=True)
+        entry.update(status="pending", sticky=True, body=(
+            f"About {budget.remaining} compute requests remain today. "
+            "Connect more compute to keep working, or continue after a source resets."
+        ))
+        entry["action"]["setup"]["budget_reset_at"] = budget.next_reset.isoformat()
+    refresh_system_request(universe_dir, _LLM_REQUEST_ID, entry)
+
+
 def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
     """A blocking setup entry, or an optional additional-source entry when ready.
 
@@ -2028,6 +2047,14 @@ def list_requests(*, universe_id: str = "") -> dict[str, Any]:
     # mute with no way back, and needs no migration.
     connected = _serving_llm_bound(_base_path(), uid, permissions.current_actor_id().strip())
     entry = _connect_llm_request(connected=connected)
+    budget_entry = next((row for row in rows if row["request_id"] == _LLM_REQUEST_ID), None)
+    rows = [row for row in rows if row["request_id"] != _LLM_REQUEST_ID]
+    if connected and budget_entry is not None:
+        from datetime import datetime, timezone
+
+        reset_at = budget_entry["action"]["setup"].get("budget_reset_at", "")
+        if reset_at and datetime.fromisoformat(reset_at) > datetime.now(timezone.utc):
+            entry.update(body=budget_entry["body"], status="pending", sticky=True)
     if connected:
         from tinyassets.provider_assignment import load_provider_assignment
 
