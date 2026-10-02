@@ -27,7 +27,11 @@
     // `sessionStorage` (the access token), `localStorage` and the parent DOM.
     // The frame's own response header sandboxes it too, so this is the second of
     // two independent locks, not the only one.
-    SANDBOX:"allow-scripts",
+    // `allow-forms` lets a bundle's <form> fire its submit event, which a bundle
+    // handles in script. Without it the browser drops the submit silently and the
+    // button does nothing. The frame's `form-action 'none'` still refuses every
+    // real submission, so no form can navigate or send anything anywhere.
+    SANDBOX:"allow-scripts allow-forms",
     // Per-UI bounds only, the same numbers the server enforces
     // (custom_agents.APP_UI_MAX_*). There is NO bound on the library as a whole --
     // neither a count of UIs nor a byte total: those bytes are the command center's
@@ -293,6 +297,8 @@
       host.replaceChildren(frame);
       host.hidden=false;
       $("view-chat").classList.add("ui-custom-active");
+      // The chat cloud starts small over a layout and big without one.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
       this.paintHeader();
     },
     unmount(){
@@ -300,6 +306,8 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
+      // The chat cloud starts small over a layout and big without one.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();

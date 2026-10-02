@@ -4,11 +4,14 @@ A bundle is somebody's arbitrary code — often somebody the viewer has never me
 because bundles are shared by publish/remix. Nothing here tries to sanitize it.
 The containment is the document's own policy, and it holds whatever the code does:
 
-* ``sandbox allow-scripts`` as a **response header** CSP directive, so the opaque
+* ``sandbox allow-scripts allow-forms`` as a **response header** CSP directive, so the opaque
   origin applies however the document was loaded — framed by the app or navigated
   to directly. Without ``allow-same-origin`` the document cannot read the app's
   ``sessionStorage`` (which is where the access token lives), ``localStorage``,
-  cookies, or any node of the parent DOM.
+  cookies, or any node of the parent DOM. ``allow-forms`` is there only so a
+  bundle's ``<form>`` fires its ``submit`` event for the bundle's own handler;
+  without it the browser drops the submit silently. ``form-action 'none'``
+  below still refuses every actual submission.
 * ``default-src 'none'``, ``form-action 'none'``, and every source limited to
   ``data:`` and ``blob:``: the bundle has no network of its own and no URL to
   exfiltrate through. No source names a host, ``'self'`` or a scheme that leaves
@@ -254,7 +257,7 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
 """
 
 FRAME_CSP = (
-    "sandbox allow-scripts; "
+    "sandbox allow-scripts allow-forms; "
     "default-src 'none'; "
     "script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; "
     "style-src 'unsafe-inline' blob:; "
