@@ -28,13 +28,26 @@ the callers (the tool runner and provider launch) is S4's next change, not this 
 
 ## PR 2: gVisor driver
 
-- [ ] 2.1 `tinyassets/boxes/gvisor.py`:
-      - rootful runsc on the systrap platform;
-      - a distinct uid and user namespace per box;
-      - `--network=none`, with the egress socket over host-uds;
+- [x] 2.1 Every driver: bounded calls (`BoxDeadline`, `BoxDeadlineBeforeStart`, a provider
+      call timeout and `bounded(s)`), a cancel that never waits behind the box lock,
+      `BoxHandle.owner_generation` with a per-box owner fence (`StaleOwner`), and
+      `try_fence_idle`, the atomic idle proof the per-command-center handover needs
+      (design D8).
+- [x] 2.2 `tinyassets/boxes/boxd.py`, the in-box agent over `tinyassets/rpc_frames.py`, and
+      `tinyassets/boxes/gvisor.py`, the host side (design D9):
+      - rootful runsc on systrap;
+      - a uid range per box from an allocated slot;
+      - a per-box cgroup with memory (no swap past it) and pids limits;
+      - `--network=none` plus its own network namespace;
       - an XFS project quota as the hard disk bound;
-      - `boxd` inside the box, reached over a host-uds RPC.
-- [ ] 2.2 The contract suite on gVisor in the Linux oracle, including the bound test.
-- [ ] 2.3 Measure start, exec and idle memory against the spike baselines
-      (`target-architecture` `evidence.md` E4).
-- [ ] 2.4 Sync the spec, and archive this change once PR 2 lands.
+      - and kill-the-box on destroy, on an unknown outcome, and on host start.
+- [x] 2.3 The contract suite on gVisor, including the bound test, plus
+      `tests/test_box_gvisor_driver.py` (detached child dies with the box, a new host ends a
+      crashed host's boxes, no network, uid per box, memory limit, a hung box is ended).
+      Privileged container (oracle image, runsc release-20260928.0, XFS loop mount with
+      prjquota, real cgroups, 2026-10-02): 33 passed. Local driver in the Linux oracle: 54
+      passed. Mutation: 11 guards removed one at a time, 9 red; the two green are the
+      single network layers (three independent layers, design D9).
+- [x] 2.4 Measured against E4 (design D9): box start to first answer 468 ms p50, exec `true`
+      start-to-exit 41 ms, 4 KiB write 15 ms, read 3.5 ms, `try_fence_idle` 4 ms.
+- [ ] 2.5 Sync the spec, and archive this change once PR 2 lands.

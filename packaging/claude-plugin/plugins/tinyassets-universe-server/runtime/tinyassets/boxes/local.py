@@ -34,6 +34,7 @@ Linux only (POSIX ``openat`` semantics and ``/proc/self/fd``). Like
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import os
@@ -54,6 +55,7 @@ from tinyassets.boxes.provider import (
     BOX_ROOT,
     BoxAuthError,
     BoxBusy,
+    BoxDeadlineBeforeStart,
     BoxError,
     BoxHandle,
     BoxNotFound,
@@ -73,6 +75,7 @@ from tinyassets.boxes.provider import (
     ImportReport,
     Snapshot,
     StaleHandle,
+    StaleOwner,
     StreamIn,
     WriteConflict,
     WriteMode,
@@ -183,6 +186,7 @@ class LocalBoxProvider:
         allow_unisolated: bool = False,
         busy_wait_s: float = 5.0,
         destroy_wait_s: float = 10.0,
+        call_timeout_s: float = 30.0,
     ) -> None:
         if not allow_unisolated:
             raise BoxError(
@@ -203,6 +207,8 @@ class LocalBoxProvider:
         self._owner_of = owner_of
         self._busy_wait_s = busy_wait_s
         self._destroy_wait_s = destroy_wait_s
+        self._call_timeout_s = call_timeout_s
+        self._tls = threading.local()
         self._running: dict[str, _Running] = {}
         self._running_guard = threading.Lock()
         self._destroying: set[str] = set()
@@ -212,9 +218,37 @@ class LocalBoxProvider:
 
     # -- authority -----------------------------------------------------------------
 
-    def _lock(self, cc: str) -> threading.RLock:
+    def _raw_lock(self, cc: str) -> threading.RLock:
+        """The box lock for the host's own bookkeeping (supervisors, destroy's continuation)."""
         with self._locks_guard:
             return self._locks.setdefault(cc, threading.RLock())
+
+    @contextlib.contextmanager
+    def bounded(self, deadline_s: float) -> Iterator[None]:
+        """Calls made inside this block, on this thread, finish within ``deadline_s``."""
+        previous = getattr(self._tls, "deadline", None)
+        self._tls.deadline = time.monotonic() + max(0.0, float(deadline_s))
+        try:
+            yield
+        finally:
+            self._tls.deadline = previous
+
+    def _deadline(self) -> float:
+        explicit = getattr(self._tls, "deadline", None)
+        return explicit if explicit is not None else time.monotonic() + self._call_timeout_s
+
+    @contextlib.contextmanager
+    def _lock(self, cc: str) -> Iterator[None]:
+        """The box lock for a CALLER: waiting for it is bounded by the call's deadline."""
+        lock = self._raw_lock(cc)
+        remaining = self._deadline() - time.monotonic()
+        if remaining <= 0 or not lock.acquire(timeout=remaining):
+            raise BoxDeadlineBeforeStart(f"command center {cc!r}: the box stayed locked past "
+                                         "the call's deadline; nothing was done")
+        try:
+            yield
+        finally:
+            lock.release()
 
     @staticmethod
     def _check_cc(cc: str) -> str:
@@ -239,6 +273,15 @@ class LocalBoxProvider:
         if self._closing:
             raise BoxError("the box host is shutting down")
         return cc
+
+    def _require_owner_generation(self, cc: str, handle: BoxHandle) -> None:
+        """Mutations and execs carry the owner's generation; below the fence they are refused."""
+        fence = self._state.owner_fence(cc)
+        if fence is None:
+            return
+        if handle.owner_generation is None or handle.owner_generation < fence:
+            raise StaleOwner(f"command center {cc!r} is fenced at owner generation {fence}; "
+                             f"this handle carries {handle.owner_generation}")
 
     # -- descriptors -----------------------------------------------------------------
 
@@ -272,6 +315,13 @@ class LocalBoxProvider:
         try:
             return os.open(name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=parent_fd)
         except FileNotFoundError:
+            # A dangling link reads as "not found" under some kernels (gVisor resolves it
+            # before honouring O_NOFOLLOW). It is a link either way: refuse it as one.
+            try:
+                if stat.S_ISLNK(os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode):
+                    raise BoxPathError(f"box path {path!r} crosses a link") from None
+            except FileNotFoundError:
+                pass
             if not create:
                 raise BoxNotFound(errno.ENOENT, f"no such box path: {path}") from None
             try:
@@ -349,10 +399,38 @@ class LocalBoxProvider:
     # -- binding and waking ----------------------------------------------------------
 
     def bind(self, command_center_id: str, *, account_id: str,
-             turn_id: str | None = None) -> BoxHandle:
+             turn_id: str | None = None,
+             owner_generation: int | None = None) -> BoxHandle:
         cc = self._check_cc(command_center_id)
         self._require_owner(cc, account_id)
-        return BoxHandle(cc, account_id, self._state.epoch(cc), turn_id)
+        return BoxHandle(cc, account_id, self._state.epoch(cc), turn_id, owner_generation)
+
+    def is_idle(self, command_center_id: str) -> bool:
+        """Nothing runs and nothing is pending in this box right now (a snapshot)."""
+        cc = self._check_cc(command_center_id)
+        if self._state.pending(cc):
+            return False
+        with self._running_guard:
+            return not any(r.cc == cc for r in self._running.values())
+
+    def try_fence_idle(self, command_center_id: str, *, owner_generation: int) -> bool:
+        """Atomically: if nothing runs or is pending in the box, fence it at the generation.
+
+        Under the box lock no exec can start or finish, so "nothing pending" and the
+        fence are one step: either a concurrent exec started first (False, nothing
+        changed) or it arrives after the fence and is refused below it.
+        """
+        cc = self._check_cc(command_center_id)
+        with self._lock(cc):
+            if self._state.pending(cc):
+                return False
+            with self._running_guard:
+                if any(r.cc == cc for r in self._running.values()):
+                    return False
+            fence = self._state.owner_fence(cc)
+            if fence is not None and owner_generation < fence:
+                raise StaleOwner(f"command center {cc!r} is already fenced at {fence}")
+            return self._state.raise_owner_fence(cc, owner_generation)
 
     def committed_generation(self, handle: BoxHandle) -> int:
         with self._lock(handle.command_center_id):
@@ -495,6 +573,7 @@ class LocalBoxProvider:
                    "expect": expect_generation}
         with self._lock(handle.command_center_id):
             cc = self._auth_locked(handle)
+            self._require_owner_generation(cc, handle)
             done = self._begin(cc, op_id, "write", payload)
             if done is not None:
                 return FileWrite(path=path, size=done["size"], generation=done["generation"])
@@ -574,6 +653,7 @@ class LocalBoxProvider:
         rel = box_relpath(path)
         with self._lock(handle.command_center_id):
             cc = self._auth_locked(handle)
+            self._require_owner_generation(cc, handle)
             if self._begin(cc, op_id, "remove", {"path": rel}) is not None:
                 return
             try:
@@ -624,6 +704,7 @@ class LocalBoxProvider:
                    "limits": [limits.wall_seconds, limits.output_bytes]}
         with self._lock(handle.command_center_id):
             cc = self._auth_locked(handle)
+            self._require_owner_generation(cc, handle)
             exec_id = self._exec_id(cc, op_id)
             if self._state.begin(cc, op_id, "exec", op_digest("exec", payload)) is not None:
                 return exec_id  # done, running or unknown: never run twice
@@ -677,7 +758,10 @@ class LocalBoxProvider:
             except BaseException as exc:
                 # It is running but cannot be supervised: kill it, then record the failure.
                 _kill_group(proc.pid)
-                proc.wait()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass  # SIGKILL was sent to the whole group; the kernel reaps it
                 with self._running_guard:
                     self._running.pop(exec_id, None)
                 if held:
@@ -718,7 +802,7 @@ class LocalBoxProvider:
             code = proc.wait()
             killed = killed or "supervisor_error"
         finally:
-            with self._lock(cc):
+            with self._raw_lock(cc):
                 generation = self._state.bump_generation(cc)  # the command may have changed files
                 self._state.finish(cc, op_id, {"exec_id": exec_id, "exit_code": code,
                                                "killed": killed, "generation": generation,
@@ -766,12 +850,15 @@ class LocalBoxProvider:
         return events()
 
     def cancel(self, handle: BoxHandle, exec_id: str) -> None:
-        with self._lock(handle.command_center_id):
-            cc = self._auth_locked(handle)
-            if self._state.find_exec(cc, exec_id) is None:
-                raise BoxNotFound(errno.ENOENT, f"no exec {exec_id!r} in this box")
-            with self._running_guard:
-                running = self._running.get(exec_id)
+        """Never waits behind the box lock: authenticated from the host record, then signalled."""
+        cc = self._check_cc(handle.command_center_id)
+        self._require_owner(cc, handle.account_id)
+        if handle.epoch != self._state.epoch(cc):
+            raise StaleHandle(f"handle for {cc!r} is stale")
+        if self._state.find_exec(cc, exec_id) is None:
+            raise BoxNotFound(errno.ENOENT, f"no exec {exec_id!r} in this box")
+        with self._running_guard:
+            running = self._running.get(exec_id)
         if running is not None:
             running.cancel.set()
 
@@ -854,6 +941,7 @@ class LocalBoxProvider:
         spool.seek(0)
         with spool, self._lock(handle.command_center_id):
             cc = self._auth_locked(handle)
+            self._require_owner_generation(cc, handle)
             done = self._begin(cc, op_id, "import", {"sha": digest.hexdigest(),
                                                      "profile": profile.value})
             if done is not None:
@@ -916,6 +1004,7 @@ class LocalBoxProvider:
                                    f"{outcome['error']}")
                 return DestroyReceipt(cc, op_id, outcome["files_removed"], outcome["new_epoch"])
             self._auth_locked(handle)
+            self._require_owner_generation(cc, handle)
             if self._begin(cc, op_id, "destroy", {}) is not None:
                 raise BoxError(f"destroy {op_id!r} has an earlier record")
             self._destroying.add(cc)  # every other operation on this box now refuses
@@ -930,7 +1019,7 @@ class LocalBoxProvider:
                     raise BoxError(
                         f"an exec in {cc!r} did not stop within {self._destroy_wait_s}s"
                     )
-            with self._lock(cc):
+            with self._raw_lock(cc):
                 removing = True
                 root = self._root_fd()
                 try:
@@ -943,7 +1032,7 @@ class LocalBoxProvider:
                 new_epoch = self._state.bump_epoch(cc)
                 self._state.finish(cc, op_id, {"files_removed": removed, "new_epoch": new_epoch})
         except BaseException as exc:
-            with self._lock(cc):
+            with self._raw_lock(cc):
                 if removing:
                     # Part of the box may be gone: every old handle is now stale, and the
                     # failure is recorded so this op id never re-runs.
@@ -953,7 +1042,7 @@ class LocalBoxProvider:
                     self._state.abandon(cc, op_id)  # nothing removed: a retry may run
             raise
         finally:
-            with self._lock(cc):
+            with self._raw_lock(cc):
                 self._destroying.discard(cc)
         return DestroyReceipt(cc, op_id, removed, new_epoch)
 

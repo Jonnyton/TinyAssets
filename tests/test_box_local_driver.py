@@ -272,3 +272,58 @@ def test_a_failed_write_that_created_directories_is_recorded(tmp_path, monkeypat
     with pytest.raises(BoxError):  # recorded as a partial failure: never re-run
         host.write(handle, "w1", "/cc/new/dir/a.txt", b"x", max_bytes=10)
     host.close()
+
+
+def test_a_held_box_lock_makes_calls_fail_fast_and_say_they_never_ran(tmp_path):
+    import threading
+
+    from tinyassets.boxes import BoxDeadlineBeforeStart
+
+    host = _local(tmp_path)
+    handle = host.bind("cc-a", account_id="acct-a")
+    host.write(handle, "w1", "/cc/a.txt", b"1", max_bytes=10)
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with host._raw_lock("cc-a"):  # stands in for a long export or a stuck call
+            held.set()
+            release.wait(10)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(5)
+    started = time.monotonic()
+    with host.bounded(0.3):
+        with pytest.raises(BoxDeadlineBeforeStart):
+            host.write(handle, "w2", "/cc/a.txt", b"2", max_bytes=10)
+    assert time.monotonic() - started < 2
+    release.set()
+    t.join()
+    # it never ran, so the same op id runs now
+    assert host.write(handle, "w2", "/cc/a.txt", b"2", max_bytes=10).size == 1
+    host.close()
+
+
+def test_cancel_never_waits_behind_a_held_box_lock(tmp_path):
+    import threading
+
+    host = _local(tmp_path)
+    handle = host.bind("cc-a", account_id="acct-a")
+    exec_id = host.start_exec(handle, "e1", ["sleep", "30"], limits=ExecLimits(wall_seconds=60))
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with host._raw_lock("cc-a"):
+            held.set()
+            release.wait(10)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(5)
+    started = time.monotonic()
+    host.cancel(handle, exec_id)
+    assert time.monotonic() - started < 1
+    release.set()
+    t.join()
+    assert list(host.stream(handle, exec_id, timeout=10))[-1].killed == "cancelled"
+    host.close()
