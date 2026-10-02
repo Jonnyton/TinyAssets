@@ -815,9 +815,9 @@ def test_an_id_named_field_is_not_a_blind_spot(home: Path):
     from tinyassets.daemon_server import get_branch_definition, save_branch_definition
 
     raw = get_branch_definition(home, branch_def_id=SCOUT)
-    raw["node_defs"][0]["customer_id"] = "Zq8rT2vX9mK4pL7nB3wE"
+    raw["node_defs"][0]["customer_id"] = "Zq8rT2vX9mK4pL7nB3wE6yH1"
     raw["state_schema"] = [{"name": "x", "type": "str",
-                            "default": {"id": "Hq2Lp9XvB4nZm8KdRtW3"}}]
+                            "default": {"id": "Hq2Lp9XvB4nZm8KdRtW3yQ7k"}}]
     save_branch_definition(home, branch_def=raw)
     ask = _ask(OWNER, UNIVERSE, _publish_action())
     # A random-looking value is listed for review, wherever it sits; a schema
@@ -832,15 +832,15 @@ def test_an_id_named_field_is_not_a_blind_spot(home: Path):
 
 def test_a_secret_named_line_makes_an_opaque_run_certain():
     assert ccp.text_detection("api_key = 0123456789abcdef0123") == ccp.R_CREDENTIAL
-    assert ccp.text_detection("run 0123456789abcdef0123 finished") is None
-    assert ccp.text_suspect("run 0123456789abcdef0123 finished")
+    assert ccp.text_detection("run Zq8rT2vX9mK4pL7nB3wE6yH1 finished") is None
+    assert ccp.text_suspect("run Zq8rT2vX9mK4pL7nB3wE6yH1 finished")
 
 
 def test_a_platform_id_is_exempt_only_at_its_schema_location():
     notes: list[str] = []
-    ccp.scan_public({"node_defs": [{"node_id": "Zq8rT2vX9mK4pL7nB3wE"}]}, "w", notes)
+    ccp.scan_public({"node_defs": [{"node_id": "Zq8rT2vX9mK4pL7nB3wE6yH1"}]}, "w", notes)
     assert notes == []
-    ccp.scan_public({"state_schema": [{"default": {"node_id": "Zq8rT2vX9mK4pL7nB3wE"}}]},
+    ccp.scan_public({"state_schema": [{"default": {"node_id": "Zq8rT2vX9mK4pL7nB3wE6yH1"}}]},
                     "w", notes)
     assert notes == ["w.state_schema[0].default.node_id"]
 
@@ -956,3 +956,15 @@ def test_the_review_list_is_grouped_and_short():
                                   "sk-proj-settings-panel-header-title-row"])
 def test_a_kebab_identifier_starting_sk_is_not_a_key(line):
     assert ccp.text_detection(line) is None
+
+
+
+@pytest.mark.parametrize("run,expected", [
+    ("Zq8rT2vX9mK4pL7nB3wE6yH1jD5Q", True),        # random, mixed, long
+    ("getVillageSnapshotAdapter2Check", False),     # camelCase identifier
+    ("village_panel_header_title_v2", False),       # snake identifier
+    ("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", False),    # id-length hex
+    ("Zq8rT2vX9mK4pL7nB3wE", False),                # under the length floor
+])
+def test_the_suspect_tier_is_key_like_runs_only(run, expected):
+    assert ccp.key_like(run) is expected

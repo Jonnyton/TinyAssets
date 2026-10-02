@@ -360,3 +360,24 @@ the runtime for a roster agent is D8.
     random-looking strings and 52 for words. On the tab that is two grouped
     lines. All GTM workflows still pass.
 
+- **Suspect tier narrowed to key-like runs (lead, 2026-10-01).** A run is
+  flagged only if it passes every one of these tests:
+  - at least 24 characters, after a short type prefix such as `user_` is taken
+    off;
+  - Shannon entropy of at least 4.0 bits per character (after detect-secrets'
+    HighEntropyString, Apache-2.0; its base64 default is 4.5 and gitleaks'
+    generic rule is 3.5);
+  - all three of lowercase, uppercase and digits;
+  - not id-length hex;
+  - not identifier-shaped (camel, snake or kebab case of word-like segments,
+    with digit groups up to a date long).
+
+  URLs and paths are judged segment by segment, and timestamps are taken out
+  first. Review words are now phrases: "private" and "diagnosis" were 50 of
+  the 52 word flags.
+
+  On the village dry run, flags went from 269 to 29: 20 random-looking strings
+  (11 distinct, mostly copies of the same run across archived notes, and
+  capability-URL paths, which are true positives) and 9 "password" mentions.
+  338 files are included. All GTM workflows pass with no flags.
+

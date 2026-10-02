@@ -40,6 +40,7 @@ import binascii
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -146,10 +147,13 @@ _ID_VALUE = re.compile(r"^[A-Za-z0-9._:@-]{1,200}$")
 #: Words that often mark private material. A hit is NOT an exclusion: it puts
 #: the file on the tab's "worth a look" list, so the owner reviews it before
 #: confirming rather than it being silently included.
+#: Phrases, not common words: ``private`` and ``diagnosis`` were 50 of 52 word
+#: flags on the live village (a code keyword and "CI diagnosis"), and a list
+#: that long is clicked through.
 _REVIEW_WORDS = re.compile(
-    r"\b(confidential|internal only|do not (?:share|distribute|forward)|private|"
+    r"\b(confidential|internal only|do not (?:share|distribute|forward)|"
     r"password|passcode|salary|payroll|social security|ssn|bank account|iban|"
-    r"routing number|date of birth|home address|medical|diagnosis|nda)\b",
+    r"routing number|date of birth|home address|medical record|nda)\b",
     re.IGNORECASE)
 
 #: Parser findings that are credentials by STRUCTURE, wherever they appear.
@@ -349,21 +353,82 @@ def _line_verdict(line: str) -> str:
     if any(credential_shape(m.group(1)) and _mixed_classes(m.group(1))
            for m in _SECRET_ASSIGN.finditer(line)):
         return "certain"
-    return "suspect" if not _only_benign_runs(line) else ""
+    return "suspect" if _has_key_like_run(line) else ""
 
 
-def _only_benign_runs(line: str) -> bool:
-    """Every opaque run the parser flags on this line is an id-length hex string
-    or a one-class run (a kebab-case identifier, a constant): neither is worth
-    an owner's attention (lead, 2026-10-01: a review list must stay short
-    enough to be read)."""
-    from tinyassets.credential_shape import _TOKEN_SPLIT_RE, credential_shape
+def _has_key_like_run(line: str) -> bool:
+    """Whether a run the parser flags on this line is genuinely key-like."""
+    from tinyassets.credential_shape import _TOKEN_SPLIT_RE, _without_stamps, credential_shape
 
-    flagged = [t.strip("\"'`.,;:()[]{}") for t in _TOKEN_SPLIT_RE.split(line)
-               if credential_shape(t)]
-    words = [w for t in flagged for w in re.split(r"[=:,;]", t) if credential_shape(w)]
-    return bool(words) and all(
-        _HEX_ID.match(w.strip("\"'`.,;:()[]{}")) or not _mixed_classes(w) for w in words)
+    for token in _TOKEN_SPLIT_RE.split(line):
+        if not credential_shape(token):
+            continue
+        # Judged piece by piece: a URL or a path is its segments, and a dated
+        # name is what is left beside its timestamp.
+        for word in re.split(r"[=:,;/?&#]", _without_stamps(token)):
+            word = word.strip("\"'`.,;:()[]{}-")
+            if key_like(word):
+                return True
+    return False
+
+
+#: The suspect tier's high-entropy test, after detect-secrets'
+#: ``HighEntropyString`` plugins (Apache-2.0; Yelp/detect-secrets): Shannon
+#: entropy per character over the run. Its base64 default is 4.5 and gitleaks'
+#: generic-key rule uses 3.5; the lead set 4.0 between them (2026-10-01), with
+#: a 24-character floor and at least three character classes, so code
+#: identifiers and hashes stay out of a review list a person must read.
+SUSPECT_MIN_CHARS = 24
+SUSPECT_MIN_ENTROPY = 4.0
+SUSPECT_MIN_CLASSES = 3
+
+
+def _entropy(run: str) -> float:
+    counts: dict[str, int] = {}
+    for char in run:
+        counts[char] = counts.get(char, 0) + 1
+    total = len(run)
+    return -sum(n / total * math.log2(n / total) for n in counts.values())
+
+
+def _classes(run: str) -> int:
+    """Lowercase, uppercase and digits. Punctuation is not counted: a type prefix
+    like ``u-`` or ``run_`` would make every platform id "mix" classes."""
+    return sum((any(c.islower() for c in run), any(c.isupper() for c in run),
+                any(c.isdigit() for c in run)))
+
+
+#: A short type prefix on an id (``user_``, ``u-``, ``req_``) is not part of the
+#: id's randomness; it is taken off before the run is judged.
+_TYPE_PREFIX = re.compile(r"^[a-z]{1,8}[_-]")
+
+
+_IDENT_SEGMENT = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
+
+
+def identifier_shaped(run: str) -> bool:
+    """camelCase, PascalCase, snake_case or kebab-case built from word-like
+    segments: every letter segment is three or more letters (or an acronym),
+    and digit segments are at most a date long (an index, a version,
+    ``20260930``). Key material falls apart into one- and two-character
+    fragments; an identifier does not."""
+    parts = [p for p in re.split(r"[_\-./]+", run) if p]
+    segments = [s for p in parts for s in _IDENT_SEGMENT.findall(p)]
+    if not segments or "".join(segments) != "".join(parts):
+        return False
+    letters = [s for s in segments if s.isalpha()]
+    digits = [s for s in segments if s.isdigit()]
+    return (bool(letters) and all(len(s) >= 3 or s.isupper() and len(s) >= 2 for s in letters)
+            and all(len(s) <= 8 for s in digits))
+
+
+def key_like(run: str) -> bool:
+    """Long, high-entropy, at least three character classes, and not an id or
+    an identifier: the suspect tier's whole test."""
+    body = _TYPE_PREFIX.sub("", run)
+    return (len(body) >= SUSPECT_MIN_CHARS and _entropy(body) >= SUSPECT_MIN_ENTROPY
+            and _classes(body) >= SUSPECT_MIN_CLASSES and not _HEX_ID.match(body)
+            and not identifier_shaped(run))
 
 
 def _mixed_classes(value: str) -> bool:
