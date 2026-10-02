@@ -383,8 +383,13 @@ def _supervised(stdin: bytes, wall_seconds: float,
                 os.kill(process.pid, signal.SIGKILL)
             while True:
                 snapshot = _proc_snapshot()
+                # Once bwrap is dead its children re-parent away from it, so a
+                # member still dying is found by identity (pid + starttime) too.
                 alive = {pid for pid in _descendants(process.pid, snapshot)
                          if not snapshot[pid][2]}
+                alive |= {pid for pid, start in seen.items()
+                          if pid in snapshot and snapshot[pid][3] == start
+                          and not snapshot[pid][2]}
                 if not alive or time.monotonic() >= settle:
                     break
                 time.sleep(0.1)
