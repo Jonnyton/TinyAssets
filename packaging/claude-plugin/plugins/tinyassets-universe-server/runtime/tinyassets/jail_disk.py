@@ -265,14 +265,14 @@ def open_budget(
         bound = GRACE_BYTES
         notice = (
             f"[storage accounting is unavailable right now, so this call may add at "
-            f"most {_human(GRACE_BYTES)} to the universe]"
+            f"most {_human(GRACE_BYTES)} to the command center]"
         )
     try:
         start = _jail_writable_bytes(root)
     except OSError:
         if reservation is not None:
             storage_accounting.release(reservation)
-        raise DiskFloorRefused("the universe could not be measured") from None
+        raise DiskFloorRefused("the command center could not be measured") from None
     return DiskBudget(
         root=root, bound=bound, start_bytes=int(start),
         min_free_bytes=min_free_bytes, min_free_inodes=min_free_inodes,
@@ -286,11 +286,11 @@ def _full_notice(refused) -> str:
     if refused.record.get("failure_class") != storage_accounting.FAILURE_QUOTA:
         return (
             f"[storage accounting could not answer, so this call may add at most "
-            f"{_human(GRACE_BYTES)} to the universe]"
+            f"{_human(GRACE_BYTES)} to the command center]"
         )
     # Never the owner's numbers here: the caller may be a collaborator.
     return (
-        "[this universe's owner is out of cloud storage: this call may add at most "
+        "[this command center's owner is out of cloud storage: this call may add at most "
         f"{_human(GRACE_BYTES)}, and is stopped past that. Delete files to make room, "
         "or the owner can upgrade]"
     )

@@ -839,7 +839,7 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
         return "[killed: the shared disk was nearly full]"
     if run.killed == "storage_limit":
         return (
-            f"[killed: this call added more than {run.disk_bound} bytes to the universe, "
+            f"[killed: this call added more than {run.disk_bound} bytes to the command center, "
             "all the owner's cloud storage had room for]"
         )
     if run.exit_code == 128 + _SIGXCPU:
