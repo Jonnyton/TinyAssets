@@ -750,16 +750,13 @@ def store_blob(base_path: str | Path, *, author_id: str, blob: bytes) -> str:
     and the retry reserves again. Content-addressed, so rewriting identical
     bytes is a no-op.
     """
+    from tinyassets.universe_files import write_data_path
+
     sha = hashlib.sha256(blob).hexdigest()
     path = _blob_path(base_path, sha)
-    path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        tmp = path.with_name(f".{sha}.{os.getpid()}.{time.monotonic_ns()}.tmp")
-        with open(tmp, "xb") as handle:
-            handle.write(blob)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        # The platform's one link-free writer: atomic temp + rename.
+        write_data_path(path, blob, make_parents=True)
     with _db(base_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO blobs (author_id, blob_sha256, size_bytes, created_at) "
@@ -769,15 +766,15 @@ def store_blob(base_path: str | Path, *, author_id: str, blob: bytes) -> str:
 
 def read_blob(base_path: str | Path, sha256: str) -> bytes:
     """The blob, verified against its own name."""
+    from tinyassets.universe_files import read_data_path
+
     path = _blob_path(base_path, sha256)
     try:
-        info = os.lstat(path)
-    except FileNotFoundError:
+        data = read_data_path(path, max_bytes=MAX_PACKAGE_BYTES)
+    except OSError:
         raise PackageError("this package's content is not available") from None
-    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_PACKAGE_BYTES:
+    if data is None:
         raise PackageError("this package's content is not available")
-    with open(path, "rb") as handle:
-        data = handle.read(MAX_PACKAGE_BYTES + 1)
     if hashlib.sha256(data).hexdigest() != sha256:
         raise PackageError("this package's content does not match its id")
     return data

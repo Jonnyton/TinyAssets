@@ -840,7 +840,7 @@ def test_a_blob_write_that_fails_records_no_ownership(tmp_path: Path, monkeypatc
     def boom(*_a, **_k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(ccp.os, "replace", boom)
+    monkeypatch.setattr("tinyassets.universe_files.write_data_path", boom)
     with pytest.raises(OSError):
         ccp.store_blob(tmp_path, author_id="acct_a", blob=b"{}")
     monkeypatch.undo()
