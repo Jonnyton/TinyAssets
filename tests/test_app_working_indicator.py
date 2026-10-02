@@ -57,6 +57,7 @@ _DECLS = (
     # there rather than lifted from the page.
     # Introduced by the fix.
     r"const TURN_WORKING_STATES=[^\n]*;", r"let serverTurn=[^\n]*;",
+    r"let deployPending=[^\n]*;",
     r"const STATUS_IDLE_MS=[^\n]*;", r"let statusBeatMs=[^\n]*;",
     r"let serverStatusLine=[^\n]*;",
     # Which step and model the turn waits on (turn-wait-visibility).
@@ -125,8 +126,8 @@ const document={ createElement:t=>new El(t),
   createTextNode:t=>{ const e=new El("#text"); e.textContent=t; return e; },
   activeElement:null };
 const els={};
-for(const id of ["thread","thread-empty","status-line","composer-input","btn-send",
-                 "dot","universe-name"])
+for(const id of ["thread","thread-empty","status-line","deploy-pending-line",
+                 "composer-input","btn-send","dot","universe-name"])
   els[id]=new El("div");
 const $=id=>els[id];
 
@@ -197,6 +198,8 @@ const MCP={ _loginEpoch:0, invalidateSession(){},
     if(Object.prototype.hasOwnProperty.call(SCENARIO,"activeTurn"))
       s.active_turn=SCENARIO.activeTurn;
     if(Object.prototype.hasOwnProperty.call(SCENARIO,"seats")) s.seats=SCENARIO.seats;
+    if(Object.prototype.hasOwnProperty.call(SCENARIO,"deployPending"))
+      s.deploy_pending=SCENARIO.deployPending;
     return s;
   },
   async getConversation(){
@@ -517,6 +520,64 @@ def test_the_page_has_no_second_working_indicator(html):
     assert 'id="status-line" class="status-line"' in html
     assert ".status-line{min-height:1.15rem" in html, (
         "the surviving indicator must be the ORIGINAL line, not a restyled one")
+
+
+_UPDATE_LINE = r"""
+setQueueOwner("p-1");
+await pollStatus();
+renderWorking();                         // repeated renders still use one line
+const line=els["deploy-pending-line"];
+const before={text:line.textContent,hidden:line.hidden};
+if(SCENARIO.endTurn) SCENARIO.activeTurn=null;
+if(SCENARIO.clearPending) SCENARIO.deployPending={pending:false};
+if(SCENARIO.omitPending) delete SCENARIO.deployPending;
+await pollStatus();
+console.log(JSON.stringify({before,after:{text:line.textContent,hidden:line.hidden}}));
+"""
+
+_UPDATE_TEXT = "An update is waiting for this turn to finish; it installs right after."
+_LIVE_TURN = {"turn_id": "t-update", "state": "inference_started", "age_s": 10.0}
+
+
+def test_a_live_turn_shows_one_inline_pending_update(tmp_path, html):
+    out = _run(tmp_path, html, {
+        "activeTurn": _LIVE_TURN, "deployPending": {"pending": True},
+    }, _UPDATE_LINE)
+    assert out["before"] == out["after"] == {"text": _UPDATE_TEXT, "hidden": False}
+    assert html.count('id="deploy-pending-line"') == 1
+    assert 'id="deploy-pending-line" class="status-line"' in html
+
+
+@pytest.mark.parametrize("pending", [None, {}, {"pending": False},
+                                     {"pending": "true"}, {"pending": 1}, True, [], "true"])
+def test_a_live_turn_requires_an_explicit_pending_update(tmp_path, html, pending):
+    out = _run(tmp_path, html, {
+        "activeTurn": _LIVE_TURN, "deployPending": pending,
+    }, _UPDATE_LINE)
+    assert out["before"] == {"text": "", "hidden": True}
+
+
+def test_an_older_daemon_shows_no_pending_update(tmp_path, html):
+    out = _run(tmp_path, html, {"activeTurn": _LIVE_TURN}, _UPDATE_LINE)
+    assert out["before"] == {"text": "", "hidden": True}
+
+
+@pytest.mark.parametrize("turn", [None, {**_LIVE_TURN, "stale": True},
+                                {**_LIVE_TURN, "state": "completed"}])
+def test_a_pending_update_requires_a_live_turn(tmp_path, html, turn):
+    out = _run(tmp_path, html, {
+        "activeTurn": turn, "deployPending": {"pending": True},
+    }, _UPDATE_LINE)
+    assert out["before"] == {"text": "", "hidden": True}
+
+
+@pytest.mark.parametrize("transition", ["endTurn", "clearPending", "omitPending"])
+def test_the_pending_update_line_clears(tmp_path, html, transition):
+    out = _run(tmp_path, html, {
+        "activeTurn": _LIVE_TURN, "deployPending": {"pending": True}, transition: True,
+    }, _UPDATE_LINE)
+    assert out["before"] == {"text": _UPDATE_TEXT, "hidden": False}
+    assert out["after"] == {"text": "", "hidden": True}
 
 
 _LOCAL_AND_SERVER = r"""
