@@ -78,15 +78,15 @@ def test_act_uses_the_trusted_number_and_head_never_the_artifacts():
     assert qf.actionable(trusted, None) is None
 
 
-def test_the_comment_pings_the_author_and_is_marked_per_head_and_main():
+def test_the_comment_never_mentions_anyone_and_is_marked_per_head_and_main():
+    """Lead 2026-10-02: every PR is the founder's account; a mention pages him."""
     body = qf.render_comment(
-        "dev1",
         {"head": "a" * 40, "verdict": "semantic-conflict", "why": "2 shared test file(s)",
          "failures": ["tests/x.py::test_y"]},
         "b" * 40,
     )
     assert body.startswith(qf.MARKER.format(head="a" * 40, main="b" * 40))
-    assert "@dev1" in body and "`tests/x.py::test_y`" in body
+    assert "@" not in body and "`tests/x.py::test_y`" in body
     assert "Drain-Review-Diff" in body, "tell the builder their diff-key stamp survives a rebase"
 
 

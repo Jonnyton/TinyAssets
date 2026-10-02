@@ -136,13 +136,14 @@ def actionable(trusted: dict, verdict: dict | None) -> dict | None:
             "failures": failures}
 
 
-def render_comment(author: str, verdict: dict, main: str) -> str:
-    who = f"@{author} " if author else ""
+def render_comment(verdict: dict, main: str) -> str:
+    # No @-mention: every PR here is opened from the founder's account, so a
+    # mention pages him all night. Builders watch their own PRs and the label.
     lines = [
         MARKER.format(head=verdict["head"], main=main),
         "### Stale against main: taken out of the queue before it reached a group",
         "",
-        f"{who}main moved to `{main[:12]}`, and this head (`{verdict['head'][:12]}`) no "
+        f"Main moved to `{main[:12]}`, and this head (`{verdict['head'][:12]}`) no "
         "longer merges cleanly with it, so it was taken out of the merge queue and "
         "auto-merge was disabled (scripts/queue_freshness.py). Merge or rebase onto "
         "main and push; a `Drain-Review-Diff:` receipt survives that if the change "
@@ -414,12 +415,11 @@ def act(repo: str, main: str, matrix: list[dict], verdict_dir: Path) -> int:
         marker = MARKER.format(head=v["head"], main=current)
         comments = _gh("api", "--paginate", f"repos/{repo}/issues/{n}/comments", "--jq", ".[].body")
         if marker not in comments:
-            author = (after.get("author") or {}).get("login", "")
-            _gh("pr", "comment", str(n), "-R", repo, "--body", render_comment(author, v, current))
+            _gh("pr", "comment", str(n), "-R", repo, "--body", render_comment(v, current))
         _gh("label", "create", LABEL, "-R", repo, "--force", "--color", "FBCA04",
             "--description", "Stale against current main; rebase before re-queueing")
         _gh("pr", "edit", str(n), "-R", repo, "--add-label", LABEL)
-        print(f"#{n}: {v['verdict']}; removed from the queue and disarmed, author pinged.")
+        print(f"#{n}: {v['verdict']}; removed from the queue, disarmed, labelled.")
     return 0
 
 
