@@ -62,8 +62,9 @@ class Frame:
 def _document(payload: bytes) -> dict[str, Any]:
     try:
         value = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        raise FrameError("control frame is not UTF-8 JSON") from None
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: a few KiB of nested arrays exhaust the parser's stack.
+        raise FrameError("control frame is not plain UTF-8 JSON") from None
     if not isinstance(value, dict) or not isinstance(value.get("op"), str) or not value["op"]:
         raise FrameError("control frame must be a JSON object with an op")
     return value

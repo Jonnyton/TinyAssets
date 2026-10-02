@@ -119,3 +119,10 @@ def test_blocking_reader_over_a_socket_pair():
     finally:
         left.close()
         right.close()
+
+
+def test_deeply_nested_control_json_is_a_frame_error_not_a_crash():
+    payload = b'{"op":"OPEN","x":' + b"[" * 100_000 + b"]" * 100_000 + b"}"
+    raw = struct.pack(">BII", rf.CONTROL, 1, len(payload)) + payload
+    with pytest.raises(rf.FrameError):
+        rf.Decoder().feed(raw)

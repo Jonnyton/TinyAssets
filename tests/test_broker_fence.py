@@ -95,7 +95,7 @@ def test_the_barrier_waits_for_a_write_in_progress_and_stops_older_streams(tmp_p
     done = []
 
     def barrier():
-        done.append(f.barrier(2, lease.acquire(2), stop_older=stopped.append))
+        done.append(f.barrier(2, lease.acquire(2), close_older=stopped.append))
 
     advancing = threading.Thread(target=barrier)
     advancing.start()
@@ -111,3 +111,64 @@ def test_a_malformed_persisted_fence_refuses_to_serve(tmp_path, lease):
     (tmp_path / "fence.json").write_text('{"generation": "x", "token": 1}')
     with pytest.raises(ValueError):
         fence(tmp_path, lease)
+
+
+def test_a_concurrent_repeat_barrier_waits_for_the_first_to_complete(tmp_path, lease):
+    f = fence(tmp_path, lease)
+    _, old = f.barrier(1, lease.acquire(1))
+    inside, release = threading.Event(), threading.Event()
+
+    def writer():
+        with f.send(1, old):
+            inside.set()
+            release.wait(5)
+
+    threading.Thread(target=writer).start()
+    assert inside.wait(5)
+    proof = lease.acquire(2)
+    results = []
+    first = threading.Thread(target=lambda: results.append(f.barrier(2, proof)))
+    first.start()
+    time.sleep(0.2)
+    second = threading.Thread(target=lambda: results.append(f.barrier(2, proof)))
+    second.start()
+    time.sleep(0.2)
+    assert results == []  # neither acknowledged while a stale write is in progress
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert len(results) == 2 and results[0] == results[1]
+
+
+def test_cancellation_reaches_a_producer_blocked_inside_a_write(tmp_path, lease):
+    f = fence(tmp_path, lease)
+    _, old = f.barrier(1, lease.acquire(1))
+    cancelled = threading.Event()
+    inside = threading.Event()
+
+    def producer():
+        with f.send(1, old):
+            inside.set()
+            cancelled.wait(5)  # a write that ends only when its stream is cancelled
+
+    thread = threading.Thread(target=producer)
+    thread.start()
+    assert inside.wait(5)
+    started = time.monotonic()
+    f.barrier(2, lease.acquire(2), cancel_older=lambda g: cancelled.set())
+    thread.join(5)
+    assert time.monotonic() - started < 2.0
+
+
+def test_a_failed_cleanup_is_rerun_by_the_repeat_barrier(tmp_path, lease):
+    f = fence(tmp_path, lease)
+    proof = lease.acquire(1)
+
+    def boom(generation):
+        raise RuntimeError("closing failed")
+
+    with pytest.raises(RuntimeError):
+        f.barrier(1, proof, close_older=boom)
+    closed = []
+    f.barrier(1, proof, close_older=closed.append)
+    assert closed == [1]

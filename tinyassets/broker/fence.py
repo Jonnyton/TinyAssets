@@ -19,9 +19,10 @@ G (``control_plane.lease.verify_lease_proof``, injected here).
   acknowledgement was ever delivered.
 
 Linearization: :meth:`Fence.send` is a read lock held across one network
-write, and the barrier takes the write lock after persisting. When
-:meth:`barrier` returns, no stream of an older generation is inside a write,
-and none can start another (it re-checks under the read lock).
+write. The barrier persists, marks older streams cancelled, then takes the
+write lock (waiting for writes in progress) before closing their sockets.
+When :meth:`barrier` returns, no stream of an older generation is inside a
+write, and none can start another (each re-checks under the read lock).
 """
 
 from __future__ import annotations
@@ -48,6 +49,10 @@ class Fence:
         self._rw = threading.Condition()
         self._readers = 0
         self._writer = False
+        self._barrier_lock = threading.Lock()
+        #: The generation whose barrier last ran to completion (none yet after
+        #: a restart: a repeat barrier re-runs the stop, which is idempotent).
+        self._completed = 0
         self.generation, self.token = self._load()
 
     def _load(self) -> tuple[int, str]:
@@ -83,36 +88,53 @@ class Fence:
         with self._state_lock:
             return bool(self.token) and (generation, token) == (self.generation, self.token)
 
-    def barrier(self, generation: int, proof: str,
-                stop_older: Callable[[int], None] = lambda generation: None) -> tuple[int, str]:
+    def barrier(self, generation: int, proof: str, *,
+                cancel_older: Callable[[int], None] = lambda generation: None,
+                close_older: Callable[[int], None] = lambda generation: None,
+                ) -> tuple[int, str]:
         """Advance (or re-acknowledge) the fence; returns the persisted ``(G, token)``.
 
-        ``stop_older(G)`` is called with the write lock held, after the new
-        fence is durable: it must end every stream below G. On return no such
-        stream is writing or can write again.
+        Barriers are serialized, and an acknowledgement is returned only once
+        the barrier for the persisted generation has COMPLETED:
+
+        1. the new fence is made durable (new senders are refused from here);
+        2. ``cancel_older(G)`` marks every stream below G cancelled, so a
+           producer waiting inside a write is unblocked;
+        3. the barrier waits until no sender holds the write lock;
+        4. ``close_older(G)`` closes those streams' upstream sockets.
+
+        A repeat of the persisted generation whose earlier barrier did not
+        complete (it raised, or is still running) runs steps 2-4 again rather
+        than acknowledging early.
         """
         if type(generation) is not int or generation < 1 or not isinstance(proof, str):
             raise Fenced("a barrier needs a positive generation and a lease proof")
         if not self._verify(generation, proof):
             raise Fenced("the lease does not hold this generation with this proof")
-        with self._state_lock:
-            if generation < self.generation:
-                raise Fenced("a newer generation already holds the fence")
-            if generation == self.generation and self.token:
-                return self.generation, self.token
-            token = secrets.token_urlsafe(32)
-            self._persist(generation, token)
-            self.generation, self.token = generation, token
-        with self._rw:
-            self._writer = True
-            try:
-                while self._readers:
-                    self._rw.wait()
-                stop_older(generation)
-            finally:
-                self._writer = False
-                self._rw.notify_all()
-        return generation, token
+        with self._barrier_lock:
+            with self._state_lock:
+                if generation < self.generation:
+                    raise Fenced("a newer generation already holds the fence")
+                if generation == self.generation and self.token:
+                    if self._completed == generation:
+                        return self.generation, self.token
+                    token = self.token
+                else:
+                    token = secrets.token_urlsafe(32)
+                    self._persist(generation, token)
+                    self.generation, self.token = generation, token
+            cancel_older(generation)
+            with self._rw:
+                self._writer = True
+                try:
+                    while self._readers:
+                        self._rw.wait()
+                finally:
+                    self._writer = False
+                    self._rw.notify_all()
+            close_older(generation)
+            self._completed = generation
+            return generation, token
 
     @contextmanager
     def send(self, generation: int, token: str) -> Iterator[None]:

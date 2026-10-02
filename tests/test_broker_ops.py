@@ -136,3 +136,19 @@ def test_records_survive_a_new_store_over_the_same_file(tmp_path, clock):
     OpStore(tmp_path / "ops.db", clock=clock).admit("ns", op, "d")
     reopened = OpStore(tmp_path / "ops.db", clock=clock)
     assert reopened.admit("ns", op, "d").kind == "existing"
+
+
+def test_case_spellings_of_one_ulid_are_one_operation(store, clock):
+    op = now_id(clock, "ABCDEFGHJKMNPQRS")
+    store.admit("ns", op, "d")
+    store.mark_may_have_sent("ns", op.lower())
+    again = store.admit("ns", op.lower(), "d")
+    assert again.kind == "existing" and again.record.sent
+
+
+def test_an_expired_answer_from_status_is_permanent(store, clock):
+    fresh = now_id(clock)
+    clock.now += 7200
+    assert store.status("ns", fresh) == "expired"
+    clock.now -= 7200
+    assert store.admit("ns", fresh, "d").kind == "expired"

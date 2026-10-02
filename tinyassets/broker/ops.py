@@ -55,6 +55,12 @@ class OpIdInvalid(ValueError):
     """Not a ULID."""
 
 
+def canonical_op_id(op_id: str) -> str:
+    """The one spelling an op_id is stored under: ULIDs are case-insensitive."""
+    ulid_stamp_ms(op_id)
+    return op_id.upper()
+
+
 def ulid_stamp_ms(op_id: str) -> int:
     """The millisecond timestamp a ULID carries in its first ten characters."""
     if not isinstance(op_id, str) or len(op_id) != 26:
@@ -129,6 +135,7 @@ class OpStore:
     def admit(self, namespace: str, op_id: str, digest: str) -> Admission:
         if not namespace or not digest:
             raise ValueError("a namespace and a request digest are required")
+        op_id = canonical_op_id(op_id)
         stamp = ulid_stamp_ms(op_id)
         with self._lock, closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -164,6 +171,7 @@ class OpStore:
         return Admission("new", OpRecord(namespace, op_id, digest, RESERVED, False))
 
     def _set(self, namespace: str, op_id: str, state: str, *, sent: bool | None) -> None:
+        op_id = canonical_op_id(op_id)
         with self._lock, closing(self._connect()) as conn:
             cursor = conn.execute(
                 "UPDATE ops SET state = ?, sent = CASE WHEN ? IS NULL THEN sent ELSE ? END "
@@ -189,16 +197,24 @@ class OpStore:
         ``not_found`` within the window means the broker never admitted it;
         ``expired`` is never evidence that nothing was sent.
         """
+        op_id = canonical_op_id(op_id)
         stamp = ulid_stamp_ms(op_id)
         with self._lock, closing(self._connect()) as conn:
-            row = conn.execute("SELECT value FROM meta WHERE key = 'cutoff_ms'").fetchone()
-            cutoff = max(row[0] if row else 0, self._now_ms() - self._retention_ms)
-            if stamp < cutoff:
-                return "expired"
-            found = conn.execute(
-                "SELECT namespace, op_id, digest, state, sent FROM ops "
-                "WHERE namespace = ? AND op_id = ?", (namespace, op_id),
-            ).fetchone()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Persisted like an admission's: an id this answers "expired"
+                # for can never be admitted later, whatever the clock does.
+                cutoff = self._advance_cutoff(conn)
+                found = None if stamp < cutoff else conn.execute(
+                    "SELECT namespace, op_id, digest, state, sent FROM ops "
+                    "WHERE namespace = ? AND op_id = ?", (namespace, op_id),
+                ).fetchone()
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        if stamp < cutoff:
+            return "expired"
         return self._record(found) if found else "not_found"
 
     def recover(self) -> int:
