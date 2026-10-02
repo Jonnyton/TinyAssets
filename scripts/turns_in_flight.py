@@ -6,10 +6,17 @@ village turn twice in one night. ``deploy-prod`` runs this before the swap and
 waits while it answers "busy" (``.github/workflows/deploy-prod.yml``, step
 "Wait for in-flight turns").
 
-**It runs inside the RUNNING container, whatever image that is.** The workflow
-ships this file from the checkout and pipes it to ``docker exec -i
-tinyassets-daemon python -``. So it imports nothing from ``tinyassets``: the old
-image may predate any helper this repo has now. Standard library only, Python 3.11.
+**It runs in a throwaway sibling container, never in the daemon's.** The
+workflow ships this file from the checkout and pipes it to ``docker run --rm -i
+--network none --user 1001:1001 -v tinyassets-data:/data --entrypoint python
+<the daemon's image> -``. That reads the same volume as the daemon's own uid.
+It does not ``docker exec``, because every repo-authored exec into the daemon goes
+through ``ta-op``'s closed mode table (``scripts/check_drop_first_exec.py``). It
+does not use the host's python as root either: a root sqlite open can create
+``-wal``/``-shm`` files the daemon then cannot open. The liveness locks below are
+kernel ``flock``s on the volume's inodes, so the sibling sees the daemon's. Because
+the image may predate any helper this repo has now, the probe imports nothing from
+``tinyassets`` and uses the standard library only (Python 3.11+).
 
 What counts as in flight
 ------------------------
@@ -85,7 +92,7 @@ def _connect(path: Path) -> sqlite3.Connection:
     read-only, which is the state a freshly restarted box is in.
     """
     conn = sqlite3.connect(
-        path.as_uri() + "?mode=rw", uri=True, timeout=10.0, isolation_level=None,
+        path.resolve().as_uri() + "?mode=rw", uri=True, timeout=10.0, isolation_level=None,
     )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 10000")
@@ -139,24 +146,6 @@ def owner_state(base: Path, token: object) -> str:
         return DEAD if _try_lock(fd) else ALIVE
     finally:
         os.close(fd)
-
-
-def boot_epoch() -> float | None:
-    """When this container's PID 1 started, or None off Linux.
-
-    A recreated container restarts PID 1, so this is the boot of everything a
-    swap would kill: PID 1's start tick plus the kernel's boot time.
-    """
-    try:
-        btime = next(
-            float(line.split()[1])
-            for line in Path("/proc/stat").read_text().splitlines()
-            if line.startswith("btime ")
-        )
-        fields = Path("/proc/1/stat").read_text().rsplit(")", 1)[1].split()
-        return btime + float(fields[19]) / os.sysconf("SC_CLK_TCK")
-    except (OSError, StopIteration, IndexError, ValueError, AttributeError):
-        return None
 
 
 def live_seats(data_dir: Path, *, now: float) -> list[dict[str, object]]:
@@ -278,10 +267,16 @@ def working_turns(data_dir: Path, *, now: float) -> list[dict[str, object]]:
     return out
 
 
-def observe(data_dir: Path, *, now: float | None = None) -> tuple[int, dict[str, object]]:
-    """(exit status, report). Never raises for a store it cannot read."""
+def observe(data_dir: Path, *, now: float | None = None,
+            boot: float | None = None) -> tuple[int, dict[str, object]]:
+    """(exit status, report). Never raises for a store it cannot read.
+
+    ``boot`` is when the daemon container started (epoch seconds), from the
+    host's ``docker inspect``; None leaves token-less run rows uncounted.
+    """
     moment = time.time() if now is None else now
-    report: dict[str, object] = {"data_dir": str(data_dir), "observed_at": moment}
+    report: dict[str, object] = {"data_dir": str(data_dir), "observed_at": moment,
+                                 "boot_epoch": boot}
     try:
         seats = live_seats(data_dir, now=moment)
     except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
@@ -289,7 +284,7 @@ def observe(data_dir: Path, *, now: float | None = None) -> tuple[int, dict[str,
         report["in_flight"] = None
         return UNKNOWN, report
     try:
-        runs = active_runs(data_dir, now=moment, boot=boot_epoch())
+        runs = active_runs(data_dir, now=moment, boot=boot)
     except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
         report["error"] = f"run store unreadable: {type(exc).__name__}: {exc}"
         report["in_flight"] = None
@@ -353,6 +348,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ttl", type=float, default=90.0,
                         help="seconds the marker stays meaningful without a refresh")
     parser.add_argument("--run-url", default="", help="the waiting deploy run")
+    parser.add_argument("--boot-epoch", type=float, default=None,
+                        help="epoch seconds the daemon container started")
     args = parser.parse_args(argv)
     data_dir = Path(args.data_dir)
 
@@ -361,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"cleared": removed}))
         return IDLE
 
-    status, report = observe(data_dir)
+    status, report = observe(data_dir, boot=args.boot_epoch)
     if args.mark_pending:
         now = float(report["observed_at"])
         marker = {

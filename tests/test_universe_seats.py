@@ -342,6 +342,34 @@ def test_a_nested_release_keeps_the_parents_lease_refreshed(db):
         seats.stop_refresher()
 
 
+def test_a_nested_release_the_store_refused_keeps_the_parent_refreshed(db, monkeypatch):
+    """Codex round 2: a locked store queued the loan's release for retry and
+    dropped the parent from the refresh set first; the retry then returned the
+    depth and nothing re-registered it."""
+    parent = take(db, seats_n=2, reserve=1)
+    seats._register(parent)
+    try:
+        child = take(db, seats_n=2, reserve=1, parent=parent.seat_id)
+        real = seats._release_once
+        calls = {"n": 0}
+
+        def flaky(seat_id, db_path):
+            calls["n"] += 1
+            return None if calls["n"] == 1 else real(seat_id, db_path)
+
+        monkeypatch.setattr(seats, "_release_once", flaky)
+        assert seats.release(child.seat_id, db=db) is False
+        with seats._held_lock:
+            assert parent.seat_id in seats._held
+        seats._retry_pending_releases()
+        with seats._held_lock:
+            assert parent.seat_id in seats._held
+            assert not seats._pending_releases
+        assert seats.occupancy("u1", db=db, now=1000.0)["running"] == 1
+    finally:
+        seats.stop_refresher()
+
+
 def test_a_seat_is_lent_to_one_nested_call_at_a_time(db):
     """astra round 1, finding 4. Reference counting would let a blocked parent lend
     one seat to three PARALLEL child agent nodes -- three model calls on one seat,

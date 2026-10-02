@@ -1,54 +1,59 @@
 """A merge lands mid-turn: does the deploy wait, and does the turn finish?
 
-    REPRO_IMAGE=<image with fastmcp+uvicorn+repo deps> python run.py wait [TURN_S]
-    REPRO_IMAGE=... python run.py cap [TURN_S]
+Run on a LINUX docker host as root (the droplet's shape: the probe runs on the
+host against the data volume and drops to uid 1001). From Windows that is WSL:
+
+    wsl -u root -e bash -lc 'cd <this dir> && REPRO_IMAGE=turns-repro:1 python3 run.py wait 600'
+    ... python3 run.py cap 600
+
+REPRO_IMAGE needs fastmcp + uvicorn (python:3.11-slim + `pip install fastmcp
+uvicorn` is enough; the repo is mounted at /repo). Host side: Python 3 with
+PyYAML, docker, sudo, setpriv-free (the probe drops privilege itself).
 
 Starts the daemon (GEN=1), opens an MCP session and calls `converse`, a turn
-that holds a real interactive seat for TURN_S seconds (default 600). Five
-seconds in, a "merge" arrives: this runs the REAL `Wait for in-flight turns`
-step, extracted verbatim from .github/workflows/deploy-prod.yml, with `ssh` and
-`scp` replaced by local stand-ins that run the same command against the local
-container. When the step returns, it converges GEN=2 the way deploy_fail_safe.sh
-does (`up -d --timeout 20`).
+holding a real interactive seat for TURN_S seconds (default 600). Five seconds
+in, a "merge" arrives: this runs the REAL `Wait for in-flight turns` step
+(`bash deploy/wait_for_turns.sh`, read from .github/workflows/deploy-prod.yml)
+with `ssh`/`scp` replaced by stand-ins that run the same command on this host.
+When the step returns it converges GEN=2 as deploy_fail_safe.sh does
+(`up -d --timeout 20`).
 
-wait  cap 2700s, as production. Expect: outcome=idle, the turn's reply arrives
-      from GEN=1, the swap starts only after it, and GEN=2 serves.
-cap   cap 20s, standing in for 45 min with a turn that will not end. Expect:
-      outcome=cap_reached, the swap proceeds, and the turn is cut off.
-
-Prints one line of results per variant.
+wait  cap 2700s, as production. Expect outcome=idle, the turn's reply from
+      GEN=1, the swap only after it, and GEN=2 serving.
+cap   cap 20s, standing in for 45 min with a turn that will not end. Expect
+      outcome=cap_reached, the swap proceeds, the turn is cut off.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-import httpx
 import yaml
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 URL = "http://127.0.0.1:18001/mcp"
-HEADERS = {"Accept": "application/json, text/event-stream"}
+HEADERS = {"Accept": "application/json, text/event-stream",
+           "Content-Type": "application/json"}
+VOLUME = "deploy-waits-for-turns-repro_data"
 
 FAKE_SSH = r"""#!/usr/bin/env bash
-# The droplet is this machine: run the command the step would send, with sudo
-# stripped (Docker Desktop needs none).
-cmd="${@: -1}"
-exec bash -c "sudo() { \"\$@\"; }; ${cmd}"
+# The droplet is this host: run the command the step would send.
+exec bash -c "${@: -1}"
 """
 FAKE_SCP = r"""#!/usr/bin/env bash
-# Copy the one file the step ships to the path the step then reads.
-args=("$@"); src="${args[-2]}"; dst="${args[-1]#*:}"
-cp "$src" "$dst"
+# Copy the one file the step ships to the path the step then verifies and reads.
+args=("$@"); cp "${args[-2]}" "${args[-1]#*:}"
 """
 
 
@@ -59,39 +64,55 @@ def compose(*args: str, env: dict[str, str], check: bool = True) -> float:
     return time.monotonic() - started
 
 
+def answers() -> bool:
+    try:
+        urllib.request.urlopen(URL, timeout=1)
+    except urllib.error.HTTPError:
+        return True  # any HTTP status is an answer
+    except (urllib.error.URLError, OSError):
+        return False
+    return True
+
+
 def up(timeout: float = 90) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            httpx.get(URL, timeout=1)
+        if answers():
             return
-        except httpx.HTTPError:
-            time.sleep(0.25)
+        time.sleep(0.25)
     raise SystemExit("server never came up")
 
 
-def session() -> httpx.Client:
-    client = httpx.Client(headers=HEADERS, timeout=None)
-    init = client.post(URL, json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-        "protocolVersion": "2025-03-26", "capabilities": {},
-        "clientInfo": {"name": "repro", "version": "1"}}})
-    client.headers["mcp-session-id"] = init.headers["mcp-session-id"]
-    client.post(URL, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
-    return client
+def post(body: dict, session: str | None = None, timeout: float | None = None):
+    headers = dict(HEADERS)
+    if session:
+        headers["mcp-session-id"] = session
+    request = urllib.request.Request(URL, data=json.dumps(body).encode(), headers=headers,
+                                     method="POST")
+    return urllib.request.urlopen(request, timeout=timeout)
 
 
-def call(client: httpx.Client, name: str) -> str:
-    response = client.post(URL, json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                                      "params": {"name": name, "arguments": {}}})
-    return response.text
+def session() -> str:
+    with post({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-03-26", "capabilities": {},
+            "clientInfo": {"name": "repro", "version": "1"}}}) as response:
+        sid = response.headers["mcp-session-id"]
+        response.read()
+    post({"jsonrpc": "2.0", "method": "notifications/initialized"}, sid).read()
+    return sid
 
 
-def wait_step_script() -> str:
+def call(sid: str, name: str) -> str:
+    with post({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+               "params": {"name": name, "arguments": {}}}, sid) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def wait_step() -> dict:
     wf = yaml.safe_load((REPO / ".github" / "workflows" / "deploy-prod.yml").read_text(
         encoding="utf-8"))
-    step = next(s for s in wf["jobs"]["deploy"]["steps"]
+    return next(s for s in wf["jobs"]["deploy"]["steps"]
                 if s.get("name") == "Wait for in-flight turns")
-    return step["run"]
 
 
 def run_wait_step(cap_s: int, work: Path) -> dict[str, str]:
@@ -99,21 +120,17 @@ def run_wait_step(cap_s: int, work: Path) -> dict[str, str]:
     bin_dir.mkdir()
     for name, body in (("ssh", FAKE_SSH), ("scp", FAKE_SCP)):
         (bin_dir / name).write_text(body, encoding="utf-8", newline="\n")
-    script = work / "wait.sh"
-    script.write_text(wait_step_script(), encoding="utf-8", newline="\n")
+        (bin_dir / name).chmod(0o755)
+    step = wait_step()
     out = work / "gh_output"
     out.write_text("", encoding="utf-8")
-    env = {**os.environ, "GITHUB_OUTPUT": out.as_posix(), "DO_SSH_USER": "local",
-           "DO_DROPLET_HOST": "localhost", "TARGET_REVISION": "f" * 40,
-           "TURN_WAIT_CAP_S": str(cap_s), "TURN_POLL_S": "5",
-           "RUN_URL": "https://example.invalid/repro"}
-    bash = shutil.which("bash") or "bash"
-    if os.name == "nt":
-        inner = (f'export PATH="$(cygpath -u "{bin_dir}"):$PATH"; '
-                 f'bash "$(cygpath -u "{script}")"')
-    else:
-        inner = f'export PATH="{bin_dir}:$PATH"; bash "{script}"'
-    subprocess.run([bash, "-c", inner], env=env, check=True, cwd=REPO)  # the checkout root
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+           "GITHUB_OUTPUT": str(out), "DO_SSH_USER": "local", "DO_DROPLET_HOST": "localhost",
+           "TARGET_REVISION": "f" * 40, "TURN_WAIT_CAP_S": str(cap_s), "TURN_POLL_S": "5",
+           "RUN_URL": "https://example.invalid/repro", "DATA_VOLUME": VOLUME,
+           "GITHUB_RUN_ID": f"repro{os.getpid()}", "GITHUB_RUN_ATTEMPT": "1"}
+    subprocess.run(["bash", "-eo", "pipefail", "-c", step["run"]], env=env, check=True,
+                   cwd=REPO)  # the checkout root, as on the runner
     return dict(line.split("=", 1)
                 for line in out.read_text(encoding="utf-8").splitlines() if "=" in line)
 
@@ -126,14 +143,16 @@ def main(variant: str, turn_s: float) -> None:
             "1001:1001", "/data", env=env1)
     compose("up", "-d", env=env1)
     up()
+    mount = subprocess.run(["docker", "volume", "inspect", "-f", "{{.Mountpoint}}", VOLUME],
+                           capture_output=True, text=True, check=True).stdout.strip()
 
     reply: dict[str, object] = {}
-    client = session()
+    sid = session()
 
     def turn() -> None:
         try:
-            reply["text"] = call(client, "converse")
-        except httpx.HTTPError as exc:
+            reply["text"] = call(sid, "converse")
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             reply["text"] = f"CUT OFF: {type(exc).__name__}"
         reply["at"] = time.monotonic()
 
@@ -146,9 +165,10 @@ def main(variant: str, turn_s: float) -> None:
 
     def watch_marker() -> None:
         time.sleep(12)
-        got = subprocess.run(["docker", "exec", "tinyassets-daemon", "cat",
-                              "/data/.deploy-pending.json"], capture_output=True, text=True)
-        marker["seen"] = got.stdout.strip() or got.stderr.strip()
+        try:
+            marker["seen"] = (Path(mount) / ".deploy-pending.json").read_text(encoding="utf-8")
+        except OSError as exc:
+            marker["seen"] = f"<{type(exc).__name__}>"
 
     threading.Thread(target=watch_marker, daemon=True).start()
     with tempfile.TemporaryDirectory() as tmp:
@@ -160,9 +180,7 @@ def main(variant: str, turn_s: float) -> None:
 
     def probe() -> None:
         while not stop.is_set():
-            try:
-                httpx.get(URL, timeout=1)
-            except httpx.HTTPError:
+            if not answers():
                 dead.append(time.monotonic())
             time.sleep(0.25)
 
@@ -187,8 +205,8 @@ def main(variant: str, turn_s: float) -> None:
         "turn_finished_before_swap": finished is not None and finished <= swap_at,
         "turn_s_observed": round(finished - started, 1) if finished else None,
         "port_dead_window_s": round(dead[-1] - dead[0], 1) if dead else 0.0,
-        "new_gen_serving": "2" if '"2"' in new_gen or "text\":\"2" in new_gen else new_gen[:120],
-        "marker_during_wait": marker.get("seen", "<not read>")[:300],
+        "new_gen_serving": "2" if ('"2"' in new_gen or 'text":"2' in new_gen) else new_gen[:160],
+        "marker_during_wait": str(marker.get("seen", "<not read>"))[:300],
     }))
     compose("down", "-v", "--timeout", "0", env={"GEN": "0", "TURN_S": "1"}, check=False)
 

@@ -123,8 +123,9 @@ Primary dependency sources:
 ## Phase 1, 2026-10-02: the deploy waits for in-flight work
 
 `deploy-prod.yml` step "Wait for in-flight turns" (`deploy/wait_for_turns.sh`) now runs
-before the swap. Each poll pipes `scripts/turns_in_flight.py` into the live container and
-holds the swap while anything is in flight. Two things count:
+before the swap. Each poll runs `scripts/turns_in_flight.py` in a throwaway sibling
+container (the daemon's image and uid, the data volume, no network; never an exec into
+the daemon) and holds the swap while anything is in flight. Two things count:
 - an account seat a live process holds, expired or not, which covers chat turns and graph
   agent nodes;
 - a queued or running graph run whose owner is alive, which covers automations and code
@@ -138,7 +139,7 @@ one queued deploy of the newest sha. release-reconcile no longer treats a cancel
 (displaced) dispatch as the failed retry.
 
 Evidence is the compose repro in `docs/audits/2026-10-02-deploy-waits-for-turns-repro/`.
-The Codex refute verdict (ADAPT, 7 findings, all acted on) is in the PR body.
+Codex refute: round 1 ADAPT (7 findings), round 2 ADAPT (3), all acted on; see PR #4278.
 
 What this does NOT close:
 - **Idle is a moment.** A turn that starts between the last poll and the swap is still

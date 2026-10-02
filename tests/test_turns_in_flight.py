@@ -180,12 +180,20 @@ def test_a_tokenless_run_counts_only_if_it_started_after_this_boot(tmp_path, mon
     universe = tmp_path / "u-old"
     universe.mkdir()
     _run_row(universe, status="running", owner=None, started_at=1000.0)
-    monkeypatch.setattr(tif, "boot_epoch", lambda: 2000.0)
-    assert tif.observe(tmp_path)[0] == tif.IDLE
-    monkeypatch.setattr(tif, "boot_epoch", lambda: 500.0)
-    assert tif.observe(tmp_path)[0] == tif.BUSY
-    monkeypatch.setattr(tif, "boot_epoch", lambda: None)
-    assert tif.observe(tmp_path)[0] == tif.IDLE
+    assert tif.observe(tmp_path, boot=2000.0)[0] == tif.IDLE
+    assert tif.observe(tmp_path, boot=500.0)[0] == tif.BUSY
+    assert tif.observe(tmp_path, boot=None)[0] == tif.IDLE
+
+
+def test_relative_paths_work_after_entering_the_data_root(tmp_path, monkeypatch):
+    """A data root given relative to the working directory still resolves."""
+    seats.acquire("acct", db=tmp_path / tif.SEATS_DB)
+    monkeypatch.chdir(tmp_path)
+    status, report = tif.observe(Path("."))
+    assert status == tif.BUSY, report
+    rc = tif.main(["--data-dir", ".", "--mark-pending", "--ttl", "60"])
+    assert rc == tif.BUSY
+    assert (tmp_path / tif.MARKER).is_file()
 
 
 def test_a_working_journal_row_is_reported_but_does_not_hold_the_deploy(tmp_path):
@@ -308,7 +316,8 @@ def test_wait_runs_before_the_swap_and_outside_its_lock():
     body = _WAIT_SCRIPT.read_text(encoding="utf-8")
     assert "scripts/turns_in_flight.py" in body
     # Not under the host-mutation lock: the watchdogs need it while we wait.
-    assert "flock" not in body and "deploy_fail_safe.sh" not in body
+    assert "host-mutation.lock" not in body and "deploy_fail_safe.sh" not in body
+    assert not any(line.split()[:1] == ["flock"] for line in body.splitlines())
     # Every recovery workflow sharing the group is one the wait yields to.
     group_peers = {"p0-outage-triage.yml", "restart-daemon.yml",
                    "install-host-services.yml", "apply-daemon-env.yml"}
@@ -325,7 +334,11 @@ def test_job_and_step_budgets_cover_the_cap():
     cap_s = int(step["env"]["TURN_WAIT_CAP_S"])
     assert cap_s == 2700
     # Cap + one bounded prefetch-free poll + cleanup must fit inside the step.
-    assert step["timeout-minutes"] * 60 >= cap_s + 2 * 90 + 60
+    # The cap already includes the prefetch. Past it: one worst-case poll (a
+    # bounded check, four bounded recovery queries, a sleep) plus the cleanup.
+    check_s, gh_s, poll_s = 90, 30, int(step["env"]["TURN_POLL_S"])
+    worst_tail = check_s + 4 * gh_s + poll_s + check_s
+    assert step["timeout-minutes"] * 60 >= cap_s + worst_tail + 60
     job = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy"]
     assert job["timeout-minutes"] >= step["timeout-minutes"] + 15
 
@@ -335,6 +348,12 @@ _FAKE_SSH = r"""#!/usr/bin/env bash
 # codes, one per call, and records every command it was asked to run.
 cmd="${@: -1}"
 printf '%s\n' "$cmd" >> "$FAKE_DIR/calls"
+# FAKE_EXEC: run the REAL remote command here, with docker and sudo stubbed, so
+# the host-side half (checksum, volume, probe) is exercised, not assumed.
+if [ -n "${FAKE_EXEC:-}" ]; then
+  case "$cmd" in *"docker pull"*) exit 0 ;; esac
+  exec bash -c "$cmd"
+fi
 case "$cmd" in
   *"docker pull"*) exit 0 ;;
   *--clear-pending*) echo '{"cleared": true}'; exit 0 ;;
@@ -358,9 +377,31 @@ esac
 """
 
 
+_FAKE_DOCKER = r"""#!/usr/bin/env bash
+# inspect: the daemon's state|StartedAt|image. run: drop docker's own flags up to
+# the image, map the volume's /data onto $FAKE_VOLUME, run the real probe.
+printf 'docker %s\n' "$*" >> "$FAKE_DIR/docker_calls"
+case "$1" in
+  inspect) echo "${FAKE_STATE:-running/healthy}|2026-10-02T00:00:00.5Z|sha256:fakeimage" ;;
+  run)
+    while [ "$#" -gt 0 ] && [ "$1" != "sha256:fakeimage" ]; do shift; done
+    shift
+    args=()
+    for a in "$@"; do [ "$a" = "/data" ] && a="$FAKE_VOLUME"; args+=("$a"); done
+    exec python3 "${args[@]}" ;;
+  *) echo "unexpected docker $*" >&2; exit 99 ;;
+esac
+"""
+
+
 def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700,
-              extra_env: dict[str, str] | None = None) -> dict[str, str]:
-    """Run the step exactly as Actions does: its `run` text under `bash -eo pipefail`."""
+              extra_env: dict[str, str] | None = None,
+              exec_volume: Path | None = None, scp_fails: bool = False) -> dict[str, str]:
+    """Run the step exactly as Actions does: its `run` text under `bash -eo pipefail`.
+
+    ``exec_volume`` runs the REAL remote command against that directory as the
+    daemon's data volume, with docker and sudo stubbed and the real probe.
+    """
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash not available")
@@ -369,7 +410,12 @@ def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700,
     bin_dir.mkdir(parents=True)
     (bin_dir / "ssh").write_text(_FAKE_SSH, encoding="utf-8", newline="\n")
     (bin_dir / "gh").write_text(_FAKE_GH, encoding="utf-8", newline="\n")
-    for name, body in (("scp", "exit 0"), ("sleep", "exit 0")):
+    (bin_dir / "docker").write_text(_FAKE_DOCKER, encoding="utf-8", newline="\n")
+    scp_body = "exit 1" if scp_fails else (
+        'a=("$@"); cp "${a[-2]}" "${a[-1]#*:}"' if exec_volume is not None else "exit 0")
+    python = Path(sys.executable).as_posix()
+    for name, body in (("scp", scp_body), ("sleep", "exit 0"), ("sudo", 'exec "$@"'),
+                       ("python3", f'exec "{python}" "$@"')):
         (bin_dir / name).write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8",
                                     newline="\n")
     for tool in bin_dir.iterdir():
@@ -392,8 +438,11 @@ def _run_wait(tmp_path: Path, codes: list[int], *, cap_s: int = 2700,
         "TARGET_REVISION": "a" * 40, "TURN_WAIT_CAP_S": str(cap_s),
         "RUN_URL": "https://example.invalid/run",
         "IMAGE_REF": "ghcr.io/o/tinyassets-daemon@sha256:" + "0" * 64,
-        "CHECK_TIMEOUT_S": "2",
+        "CHECK_TIMEOUT_S": "2" if exec_volume is None else "60",
+        "GITHUB_RUN_ID": tmp_path.name, "GITHUB_RUN_ATTEMPT": "1",
     })
+    if exec_volume is not None:
+        env.update({"FAKE_EXEC": "1", "FAKE_VOLUME": exec_volume.as_posix()})
     env.update(extra_env or {})
     if os.name == "nt":
         # Git Bash resolves PATH entries in POSIX form; prepend inside bash.
@@ -481,3 +530,58 @@ def test_no_queued_recovery_keeps_waiting(tmp_path):
     out = _run_wait(tmp_path, [10, 10, 0], extra_env={"FAKE_GH_QUEUED": "0"})
     assert out["outcome"] == "idle"
     assert out["polls"] == "3"
+
+
+# --- the host-side half, run for real --------------------------------------
+
+
+@pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
+def test_the_real_remote_command_reads_the_volume_and_reports_idle(tmp_path):
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    out = _run_wait(tmp_path, [], exec_volume=volume)
+    assert out["outcome"] == "idle", out["_stdout"]
+    assert '"in_flight": 0' in out["_stdout"]
+    assert not (volume / tif.MARKER).exists(), "cleared after the wait"
+
+
+@pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
+def test_the_real_remote_command_sees_a_held_seat_and_marks_pending(tmp_path):
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    seats.acquire("acct", seat_class=seats.CLASS_INTERACTIVE, kind=seats.KIND_CHAT_TURN,
+                  db=volume / tif.SEATS_DB)
+    out = _run_wait(tmp_path, [], cap_s=0, exec_volume=volume)
+    assert out["outcome"] == "cap_reached", out["_stdout"]
+    assert '"in_flight": 1' in out["_stdout"]
+    # A sibling container as the daemon's uid on the daemon's image and volume,
+    # never an exec into the daemon itself.
+    docker_calls = (tmp_path / "fake" / "docker_calls").read_text(encoding="utf-8")
+    run = next(line for line in docker_calls.splitlines() if line.startswith("docker run"))
+    for flag in ("--rm", "-i", "--network none", "--user 1001:1001",
+                 "-v tinyassets-data:/data", "--entrypoint python", "sha256:fakeimage"):
+        assert flag in run, flag
+    assert "docker exec" not in docker_calls
+    # The boot epoch came from the container's StartedAt, through `date -d`.
+    assert '"boot_epoch": 1790899200.0' in out["_stdout"]
+
+
+@pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
+def test_a_failed_upload_is_unknown_never_idle(tmp_path):
+    """An empty or stale probe file must not run: `python3 -` on an empty file
+    exits 0, which would read as idle (Codex round 2)."""
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    seats.acquire("acct", db=volume / tif.SEATS_DB)
+    out = _run_wait(tmp_path, [], exec_volume=volume, scp_fails=True)
+    assert out["outcome"] == "check_unavailable", out["_stdout"]
+    assert "probe checksum mismatch" in out["_stdout"]
+
+
+@pytest.mark.skipif(yaml is None, reason="pyyaml not installed")
+def test_a_container_that_is_not_running_is_deployed_at_once_for_real(tmp_path):
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    out = _run_wait(tmp_path, [], exec_volume=volume,
+                    extra_env={"FAKE_STATE": "exited/"})
+    assert out["outcome"] == "daemon_not_serving", out["_stdout"]

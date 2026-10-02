@@ -68,8 +68,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    # 15 min of deploy work plus up to 50 for "Wait for in-flight turns".
-    timeout-minutes: 65
+    # 15 min of deploy work plus up to 55 for "Wait for in-flight turns".
+    timeout-minutes: 70
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
@@ -359,7 +359,8 @@ jobs:
       # queued (YIELD_WORKFLOWS).
       - name: Wait for in-flight turns
         id: turns
-        timeout-minutes: 50
+        # The cap (which includes the prefetch) + one worst-case poll + cleanup.
+        timeout-minutes: 55
         env:
           TARGET_REVISION: ${{ steps.tag.outputs.revision }}
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
