@@ -336,3 +336,18 @@ Learning settlement uses explicit ranges. `settle_learned_cursor(from_turn, to_t
 **Proposed split (sent to the lead):**
 - **B2a, built now.** D9 steering and carryover read-then-acknowledge; exact learned-cursor coverage (finding 7); op-id attach (D6a).
 - **B2b, deferred.** Per-command-center idle moves (B2-1 to B2-3 and C2's per-command-center handover) wait until #4263 S4's per-command-center boxes make quiescence a box-level fact. Until then, owner deploys keep phase 1's whole-process wait.
+
+## Decisions, 2026-10-02 (lead)
+
+- **Condition 4.** There is no automatic time-based cut, only an explicit operator force. That comes with three requirements:
+  - an alarm when an old owner lingers past a threshold (default 2 h);
+  - at most TWO owner generations coexisting per command center: a third deploy WAITS rather than spawning another owner;
+  - a visible "update pending for your command center" status until its key moves.
+
+  D11 is aligned on spec/target-architecture-amend-1 (378d6553).
+- **B2 split.**
+  - **B2a, built now:** steering/carryover read-then-acknowledge (D9). This is coordinated with dots-research's #4290, which edits `agent_steering.py`. B2a also covers exact learned-cursor coverage (B2-4, a live correctness bug) and op-id attach (D6a).
+  - **B2b, DEFERRED behind #4263 S4:** per-command-center idle moves (B2-1 to B2-3 and C2's per-command-center handover). S4's per-command-center boxes make quiescence a box-level fact ("box idle"); openshell-spike was asked to add that signal to the BoxProvider interface.
+  - **The never-idle starvation answer** belongs with B2b: the scheduler briefly coalesces a command center's OWN triggers to create an idle instant, which delays only that command center.
+  - **The condition-4 additions** (linger alarm, two-generation cap, per-command-center pending status) attach to whichever slice first allows two owner processes to coexist.
+- **C1** (frontend/owner split plus #4272's frontend blue-green) proceeds independently. With it, most deploys interrupt nothing.
