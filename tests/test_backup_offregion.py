@@ -36,7 +36,8 @@ def _fake(bin_dir: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
-def _run(tmp_path: Path, *, offregion: str | None, fail_offregion: bool = False):
+def _run(tmp_path: Path, *, offregion: str | None, fail_offregion: bool = False,
+         mode: str | None = None, listing: list[str] | None = None):
     volume = tmp_path / "volume"
     volume.mkdir()
     con = sqlite3.connect(volume / ".tinyassets.db")
@@ -54,10 +55,12 @@ case "$1" in
   copyto)
     if [[ "{1 if fail_offregion else 0}" == "1" && "${{@: -1}}" == offregion:* ]]; then exit 1; fi
     exit 0 ;;
-  lsf) exit 0 ;;
+  lsf) cat "{tmp_path / 'listing'}" 2>/dev/null; exit 0 ;;
   *) exit 0 ;;
 esac
 ''')
+    (tmp_path / "listing").write_text(
+        "".join(f"{name}\n" for name in (listing or [])), encoding="utf-8")
     shipped = tmp_path / "shipped"
     # The shipper is resolved relative to backup.sh; stand in a copy of the
     # deploy dir next to a fake scripts/backup_ship_gh.py that records calls.
@@ -80,6 +83,8 @@ esac
     }
     if offregion is not None:
         env["BACKUP_OFFREGION_DEST"] = offregion
+    if mode is not None:
+        env["BACKUP_MODE"] = mode
     result = subprocess.run(
         [_BASH, str(root / "deploy" / "backup.sh")],
         capture_output=True, text=True, env=env, timeout=120,
@@ -123,3 +128,68 @@ def test_github_gets_the_brain_tier_only(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert len(ships) == 1
     assert "/tinyassets-brain-" in ships[0]
+
+
+# --- hourly brain tier (interim ~1 h RPO while Litestream is deferred) -------
+
+OFF = "offregion:tinyassets-offregion/backups"
+
+
+def test_hourly_mode_ships_only_the_brain_tier_off_region(tmp_path):
+    result, calls, ships = _run(tmp_path, offregion=OFF, mode="hourly-brain")
+    assert result.returncode == 0, result.stdout + result.stderr
+    copies = [c for c in calls if c.startswith("copyto")]
+    assert len(copies) == 1
+    assert f"{OFF}/tinyassets-hourly-brain-" in copies[0]
+    assert "spaces:" not in " ".join(calls), "hourly never touches the sfo3 destination"
+    assert ships == [], "hourly never ships to GitHub"
+    assert "tinyassets-data-" not in result.stdout, "hourly never builds the full tier"
+
+
+def test_hourly_mode_requires_the_off_region_destination(tmp_path):
+    result, calls, _ = _run(tmp_path, offregion=None, mode="hourly-brain")
+    assert result.returncode == 1
+    assert "needs BACKUP_OFFREGION_DEST" in result.stdout
+    assert calls == []
+
+
+def test_hourly_retention_keeps_the_newest_48_and_touches_nothing_else(tmp_path):
+    hourly = [f"tinyassets-hourly-brain-2026-10-01T{h:02d}-23-00Z.tar.gz" for h in range(24)]
+    hourly += [f"tinyassets-hourly-brain-2026-10-02T{h:02d}-23-00Z.tar.gz" for h in range(26)]
+    nightly = ["tinyassets-brain-2026-10-01T03-00-00Z.tar.gz",
+               "tinyassets-data-2026-10-01T03-00-00Z.tar.gz"]
+    result, calls, _ = _run(tmp_path, offregion=OFF, mode="hourly-brain",
+                            listing=hourly + nightly)
+    assert result.returncode == 0, result.stdout + result.stderr
+    deleted = sorted(c.split("/")[-1] for c in calls if c.startswith("deletefile"))
+    assert deleted == sorted(hourly)[:2], "50 hourly archives, keep 48: drop the 2 oldest"
+
+
+def test_an_unknown_mode_is_refused(tmp_path):
+    result, calls, _ = _run(tmp_path, offregion=OFF, mode="weekly")
+    assert result.returncode == 1
+    assert calls == []
+
+
+def test_the_hourly_prefix_is_invisible_to_the_nightly_retention():
+    """backup_prune.py only ever emits tinyassets-brain-/tinyassets-data- names, so
+    the nightly prune can never delete an hourly archive (and vice versa)."""
+    import sys
+
+    sys.path.insert(0, str(REPO / "scripts"))
+    import backup_prune  # noqa: PLC0415
+
+    assert not "tinyassets-hourly-brain-2026-10-01T00-23-00Z.tar.gz".startswith(
+        "tinyassets-brain-")
+    assert hasattr(backup_prune, "__file__")
+
+
+def test_the_hourly_units_set_the_mode_and_skip_the_nightly_hour():
+    service = (REPO / "deploy" / "tinyassets-backup-hourly.service").read_text(encoding="utf-8")
+    timer = (REPO / "deploy" / "tinyassets-backup-hourly.timer").read_text(encoding="utf-8")
+    assert "Environment=BACKUP_MODE=hourly-brain" in service
+    assert "EnvironmentFile=/etc/tinyassets/env" in service
+    assert "OnCalendar=*-*-* 00..02,04..23:23:00 UTC" in timer
+    installer = (REPO / "deploy" / "install-host-uptime-services.sh").read_text(encoding="utf-8")
+    assert "tinyassets-backup-hourly.service tinyassets-backup-hourly.timer" in installer
+
