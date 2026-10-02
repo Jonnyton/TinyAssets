@@ -273,7 +273,7 @@
     ACTIONS:Object.freeze({
       whoami:"whoami",list_agents:"listAgents",
       send_message:"sendMessage",read_conversation:"readConversation",
-      list_automations:"listAutomations",list_runs:"listRuns",
+      list_automations:"listAutomations",list_runs:"listRuns",read_live:"readLive",
       read_run:"readRun",read_run_output:"readRunOutput",
       list_files:"listFiles",read_file:"readFile",emit:"emit",
       conversation_design:"conversationDesign",set_conversation_design:"setConversationDesign"}),
@@ -446,6 +446,43 @@
     //
     // The server scopes each of these to the named command center, so a run id from
     // anywhere else reads as not found rather than being returned.
+    // Each agent's live state, for a screen that animates agents as they work
+    // (a village whose villagers walk to what they are doing). Which agent,
+    // working or idle, since when, and its latest steps -- each a tool name, a
+    // platform-made safe summary and done/running/failed, never a command, an
+    // argument or a result (harness S4). Read-only, pinned to this.home, keyed
+    // by agent. Poll it; every call is one owner-door status read.
+    async readLive(){
+      const doc=await Owner.status({universe_id:this.home});
+      if(!doc||doc.error) throw new Error("your agents' live state is unavailable");
+      if(String(doc.universe_id||"")!==this.home)
+        throw new Error("that state belongs to another universe; this UI's access ended");
+      const turn=(doc.active_turn&&typeof doc.active_turn==="object")?doc.active_turn:null;
+      const working=!!turn&&turn.state!=="unreadable"&&turn.stale!==true;
+      const steps=[];
+      if(working&&Array.isArray(turn.tools)){
+        for(const step of turn.tools.slice(0,5)){
+          if(!step||typeof step!=="object") continue;
+          steps.push({tool:String(step.tool||""),summary:String(step.summary||""),
+            state:["running","done","failed"].includes(step.state)?step.state:"",
+            age_s:Number.isFinite(step.age_s)?step.age_s:null});
+        }
+      }
+      // The live turn is the selected conversation agent's; every other agent
+      // is idle until per-agent turns arrive (design §4.18).
+      const roster=await this.listAgents();
+      // With no installed agent selected, the conversation is the universe's own
+      // agent: it gets the seeded id "main" (design §4.18), named as the app
+      // names the universe.
+      const listed=roster.agents.some(a=>a.selected) ? roster.agents
+        : [{agent_id:"main",name:(await this.whoami()).universe_name||"Your agent",selected:true}]
+            .concat(roster.agents);
+      const agents=listed.map(a=>a.selected&&working
+        ? {agent_id:a.agent_id,name:a.name,state:"working",
+           since:typeof turn.started_at==="string"?turn.started_at:null,steps}
+        : {agent_id:a.agent_id,name:a.name,state:"idle",since:null,steps:[]});
+      return {as_of:new Date().toISOString(),agents};
+    },
     async listAutomations(){
       const doc=await this.readWhole({target:"automations",graph_id:this.home},"automations");
       if(!doc||doc.error||!Array.isArray(doc.automations)) throw new Error("your automations are unavailable");

@@ -2026,6 +2026,9 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,
                   status,started_at,finished_at,last_node_id}], has_more}
                   # newest first, at most 50; has_more says there are older
+        await tinyassets.readLive()                -> {as_of, agents:[{agent_id,name,
+                  state:"working"|"idle", since, steps:[{tool,summary,state,age_s}]}]}
+                  # each agent's live state; poll it to animate agents at work
         await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
                   error,output_fields:[...]}
         await tinyassets.readRunOutput(run_id, field, offset)
