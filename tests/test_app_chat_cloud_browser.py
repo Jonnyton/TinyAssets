@@ -219,15 +219,25 @@ def test_a_cancelled_bubble_drag_does_not_swallow_the_next_click(app_url, browse
     assert page.locator("#chat-cloud").is_visible()
 
 
-def test_shrinking_on_its_own_moves_focus_to_the_command_center(app_url, browser):
+def test_auto_shrink_preserves_typing_until_focus_leaves_the_composer(app_url, browser):
     page = browser.new_page(viewport={"width": 1280, "height": 800})
     _enter_chat(page, app_url)
-    page.focus("#composer-input")
+    page.fill("#composer-input", "Keep this draft")
+    page.locator("#composer-input").evaluate("e => e.setSelectionRange(5, 9)")
 
     page.evaluate("""() => {
         document.getElementById('view-chat').classList.add('ui-custom-active');
         refreshChatCloud();
     }""")
 
+    assert page.locator("#chat-cloud").is_visible()
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    assert page.input_value("#composer-input") == "Keep this draft"
+    assert page.locator("#composer-input").evaluate(
+        "e => [e.selectionStart, e.selectionEnd]") == [5, 9]
+
+    page.evaluate("focusCommandCenter(); refreshChatCloud()")
     assert page.locator("#chat-cloud").is_hidden()
     assert page.evaluate("document.activeElement.id") == "cc-blank"
+    page.click("#chat-cloud-bubble")
+    assert page.input_value("#composer-input") == "Keep this draft"

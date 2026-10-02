@@ -24,9 +24,11 @@ paid resource is created. Dependencies are in `design.md`.
       `command-center-cutover` (#4262, design E6)**; S2 keeps only the
       refusal, oracle proof and deletion-set tasks. Verify: the three #4258 reproductions fail in the
       Linux oracle; no jail mounts the platform root.
-- [ ] S8 One execution owner under a generation-fenced lease (turn journal,
-      reconcile-after-lease, scheduler, triggers, outbox, metering) behind
-      blue-green frontends that queue during handover; coalescing, cadence
+- [ ] S8 Per-command-center owners (a lease + fence each: turn journal,
+      reconcile-after-lease, per-command-center handover and barrier) plus one
+      platform lease (scheduler, triggers, outbox, metering) behind blue-green
+      frontends that queue only the affected command center (S8a
+      `execution-owner-lease`, S8b `control-plane-scheduler`); coalescing, cadence
       decay, schema-cutover maintenance protocol. Must land before any second
       writer exists. Verify: scripted deploy loop shows 0 failed requests, no
       duplicate effects and no live turn settled.
