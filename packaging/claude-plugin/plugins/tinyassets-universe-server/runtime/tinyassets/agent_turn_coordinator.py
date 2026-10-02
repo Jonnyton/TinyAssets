@@ -161,6 +161,18 @@ class AgentTurnCoordinator:
             )
         )
         self.retrying_capacity = False
+        self._note_round()
+
+    def _note_round(self):
+        """Tell the status surface which step and model this turn is waiting on."""
+        try:
+            BOOT.note_round(
+                self.context.universe_dir.name, self.turn.turn_id,
+                round=len(self.turn.rounds),
+                model=getattr(self.context.model_selection, "model_id", "") or "",
+            )
+        except Exception:  # noqa: BLE001 - a status hint never fails a turn
+            _LOG.warning("could not note agent turn progress")
 
     def _history(self):
         history = []
@@ -208,6 +220,7 @@ class AgentTurnCoordinator:
             after_failed_inference=self.retrying_capacity,
         ))
         self.retrying_capacity = False
+        self._note_round()
 
     def _finish_native_failure(self, exc):
         terminal = NativeTerminal("indeterminate")
