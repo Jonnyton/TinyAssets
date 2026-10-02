@@ -548,6 +548,8 @@
       </form>
       <div id="status-line" class="status-line" role="status" aria-live="polite"
            aria-label="Conversation status"></div>
+      <div id="deploy-pending-line" class="status-line" role="status"
+           aria-live="polite" hidden></div>
       <button id="btn-try-model" class="btn btn--link" type="button" hidden
               title="Pick another model for your next message. Stop this turn if you want to switch now; it is still working.">Try another model</button>
       <div id="voice-status-line" class="status-line status-line--voice" role="status"
@@ -1882,11 +1884,14 @@
   const STATUS_IDLE_MS=30000, STATUS_WORKING_MS=10000;
   let statusBeatMs=STATUS_IDLE_MS;
   let serverTurn=null;
+  let deployPending=false;
   // This command center's chat waiting for one of the account's seats (`seats` in the
   // status payload, owner-only). Its line carries the upgrade link inline.
   let seatWait=null;
   let seatLineShown=false;
   function readServerTurn(payload){
+    const deploy=payload&&payload.deploy_pending;
+    deployPending=!!deploy&&typeof deploy==="object"&&deploy.pending===true;
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
       ?payload.seats:null;
     const row=payload&&payload.active_turn;
@@ -2071,6 +2076,13 @@
   function renderWorking(){
     renderStop();
     renderTryModel();
+    const updateLine=$("deploy-pending-line");
+    if(updateLine){
+      const pending=serverTurnLive()&&deployPending;
+      const text=pending?"An update is waiting for this turn to finish; it installs right after.":"";
+      if(updateLine.textContent!==text) updateLine.textContent=text;
+      updateLine.hidden=!pending;
+    }
     if(seatWait){
       // The waiting line, with the Upgrade link INSIDE it -- never a banner, card
       // or modal (founder, 2026-09-30). No link on the top tier: the server sends
