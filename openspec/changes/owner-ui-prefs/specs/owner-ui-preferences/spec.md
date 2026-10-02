@@ -2,8 +2,8 @@
 
 ### Requirement: An owner's UI preferences are private to them and follow them across devices
 The platform SHALL keep a UI-preference record per authenticated owner, per
-agent id (default `main`) and per viewport class (`phone` or `wide`), for a
-fixed set of preference keys (`chat_cloud`). Only that owner SHALL read or write
+agent id (`main` only, for now) and per viewport class (`phone` or `wide`), for
+a fixed set of preference keys (`chat_cloud`). Only that owner SHALL read or write
 it, through the app's identity-gated routes. The owner SHALL be taken from the
 authenticated identity alone, and no request field SHALL name an owner.
 
@@ -20,12 +20,12 @@ authenticated identity alone, and no request field SHALL name an owner.
 - **THEN** it is refused with `authentication_required` and nothing is read or written
 
 ### Requirement: A UI preference is a bounded, validated value, not storage
-The platform SHALL accept only known preference keys. It SHALL refuse a value
-larger than 2 KiB, or one that does not match that key's shape, with a reason
-and without writing anything.
+The platform SHALL accept only known preference keys, the agent id `main` and
+the two viewport classes. It SHALL refuse a value larger than 2 KiB, or one that
+does not match that key's shape, with a reason and without writing anything.
 
 #### Scenario: An unknown key or an oversized value
-- **WHEN** an owner posts a key that is not `chat_cloud`, or a value over 2 KiB
+- **WHEN** an owner posts a key that is not `chat_cloud`, an agent id other than `main`, or a value over 2 KiB
 - **THEN** the request is refused with a 400 and a reason, and no row changes
 
 #### Scenario: A malformed chat-cloud value
@@ -49,6 +49,10 @@ moving it.
 #### Scenario: Offline
 - **WHEN** the UI-preference read fails
 - **THEN** the chat cloud uses this device's saved placement, or the default when there is none
+
+#### Scenario: First load after deploy
+- **WHEN** the read succeeds with no record and this device has a saved placement
+- **THEN** the chat cloud keeps that placement and the app writes it to the owner's record
 
 #### Scenario: A late answer
 - **WHEN** the server record arrives after the owner began dragging or resizing the cloud

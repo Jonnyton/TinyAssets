@@ -4,15 +4,16 @@
 
 - The chat cloud (#4277) keeps `{v:1, mode, open:{x,y,w,h}, bubble:{x,y}}` in
   `localStorage` under `app.chatCloud.v1:<owner>:<agent>:<viewport>`.
-- Per-owner platform state already lives in root stores keyed by the owner, for
-  example `.owner_devices.db` (`tinyassets/storage/owner_devices.py`) with its
-  `owner_notify_settings` table. Per-universe platform state does not belong
-  inside the provider-writable universe directory (concern filed in #4258), so
-  this store sits at the data root.
-- Account deletion sweeps every root `*.db` and deletes rows by the principal
-  columns in `PRINCIPAL_KEYS` (`tinyassets/account_deletion.py`), which includes
-  `owner_user_id`. A store keyed that way is deleted with the account without
-  being named anywhere.
+- Per-owner settings already live at the data root, keyed by the owner. The
+  closest precedent is `account_timezone` (`tinyassets/storage/account_timezone.py`):
+  one table in the canonical root database (`DB_FILENAME`), primary key
+  `owner_user_id`. Per-universe platform state does not belong inside the
+  provider-writable universe directory (concern filed in #4258), so this record
+  sits at the root too.
+- Account deletion builds its plan from the schema: every root-database table
+  with a column in `PRINCIPAL_KEYS` (`tinyassets/account_deletion.py`), which
+  includes `owner_user_id`, has the owner's rows deleted. A table keyed that way
+  is deleted with the account without being named anywhere.
 - App routes are identity-gated by `_app_identity_required()` and take the
   owner from the resolved identity (`tinyassets/onboarding/notifications.py`
   is the pattern).
@@ -24,12 +25,15 @@ install they sign into, per viewport class; it is private to them; it goes away
 with their account; the app still works offline or when the route fails.
 
 **Non-Goals:** syncing in real time between two open devices (last write wins on
-the next load is enough); a general settings system; anything an agent or a
-custom UI can read or write; preferences for other people.
+the next load is enough); a general settings system; any MCP tool, engine tool
+or custom-UI bridge action for it; preferences for other people. (The routes
+trust the resolved owner identity like every app route, so a client holding
+the owner's own bearer acts as the owner. This change adds no agent-facing
+integration.)
 
 ## Decisions
 
-### D1. One table, one row per (owner, agent, viewport, key)
+### D1. One table in the canonical root database, one row per (owner, agent, viewport, key)
 
 ```
 CREATE TABLE owner_ui_prefs (
@@ -48,16 +52,28 @@ settings system: a later per-agent preference is a new key, not a new table.
 `owner_user_id` is the column name on purpose: it is in `PRINCIPAL_KEYS`, so
 the deletion sweep covers it.
 
-*Alternative rejected:* a column on `owner_notify_settings`. Different lifecycle
-and size, and it would couple notifications to layout.
+The table lives in the canonical root database (`DB_FILENAME`), like
+`account_timezone`, not in a new store file: nothing about its lifecycle or
+locking calls for a separate database.
 
-### D2. Values are bounded and validated per key
+*Alternatives rejected:* a column on `owner_notify_settings` (it couples
+notifications to layout) and a new `.owner_ui_prefs.db` (one more root file and
+registry entry, for no isolation benefit).
 
-The server accepts only known `pref_key`s (`chat_cloud`). The body is at most
-2 KiB of JSON, and for `chat_cloud` it is validated to the same shape the page
-parses (`v == 1`, `mode` open or bubble, finite numbers). Anything else is a 400
-with a reason. This is a preference, not storage: it cannot be used to park
-data.
+### D2. Keys, agents and values are a closed, small set
+
+The server accepts only known `pref_key`s (`chat_cloud`), only `agent_id ==
+"main"` (the one agent with a chat cloud today), and the two viewport classes.
+The value is at most 2 KiB of JSON, and for `chat_cloud` it is validated to the
+same shape the page parses (`v == 1`, `mode` open or bubble, finite numbers).
+Anything else is a 400 with a reason. So an owner holds at most two rows (one
+per viewport class) of under 2 KiB each. That is a closed key space, not a cap
+on anything the owner builds.
+
+Opening `agent_id` to custom agents comes with the multi-agent chat cloud. That
+change must decide either to resolve the id against the owner's own agents, or
+to attribute the rows to the account's storage. An open string here would let
+one owner write unbounded rows that no storage accounting sees.
 
 ### D3. Routes through the owner door, owner from identity only
 
@@ -72,18 +88,27 @@ data.
 
 ### D4. The page: server first, local fallback, write both
 
-On `refreshChatCloud` the page uses the server record when the read succeeds,
-and the `localStorage` copy when it fails or is offline. On each placement it
-writes `localStorage` immediately and posts the server record afterwards, so the
-local copy stays valid if the post fails. The page never blocks on the server:
-the cloud lays out from the local copy, then corrects once if the server
-answer differs, and never after the owner has started dragging.
+The page lays the cloud out from the local copy at once, then reads the server
+record:
+- **A record:** it is applied (once, and only before the owner's first gesture
+  on this page) and cached into `localStorage`, so the next offline load has it.
+- **A successful but empty read** (`{"prefs": {}}`, the state for every owner
+  just after deploy): the local placement stays. If one exists, it is posted to
+  the server, which migrates the owner's existing placement instead of replacing
+  it with the default.
+- **A failed read:** the local copy stays.
+
+On each placement the page writes `localStorage` immediately and then posts the
+server record, so the local copy stays valid if the post fails. The page never
+blocks on the server.
 
 ### D5. Deletion and accounting
 
-Registered in `ROOT_ENTRIES` as "platform: owner UI preferences". Account
-deletion covers it through the schema-derived sweep. A test deletes an account
-and asserts the rows are gone and another owner's rows remain.
+The canonical root database is already registered for storage accounting, and
+the rows are platform-owned layout state (at most two rows of under 2 KiB per
+owner, by D2). Account deletion covers the table through the schema-derived
+plan. A test deletes an account and asserts the rows are gone and another
+owner's rows remain.
 
 ## Risks / Trade-offs
 
@@ -91,13 +116,13 @@ and asserts the rows are gone and another owner's rows remain.
   Acceptable for a layout preference.
 - **A late server answer moving the cloud under the owner's hand:** D4 applies the
   server value only before the first owner gesture of the page.
-- **Store growth:** at most two viewport rows per agent per key per owner, each
-  under 2 KiB.
+- **Store growth:** at most two rows per owner, each under 2 KiB (D2).
 
 ## Migration Plan
 
-Additive: a new root store and two routes. Existing `localStorage` copies keep
-working, and the first placement after deploy writes the server record.
+Additive: a new table and two routes. Existing `localStorage` copies keep
+working. The first load after deploy finds an empty server record and migrates
+the local placement up (D4).
 Rollback deletes the routes and leaves the page on its local copy.
 
 ## Open Questions

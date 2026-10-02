@@ -16,18 +16,20 @@ proposal first.
 
 ## What Changes
 
-- A new private **owner UI-preferences record** in platform state. It is keyed by
-  the authenticated owner, an `agent_id` (default `main`) and a viewport class
-  (`phone` | `wide`), and holds one small JSON document per key (the chat cloud's
-  `{v, mode, open, bubble}` today).
+- A new private **owner UI-preferences record** in platform state: one table in
+  the canonical root database, beside `account_timezone`. It is keyed by the
+  authenticated owner, an `agent_id` (only `main` in this change) and a viewport
+  class (`phone` | `wide`), and holds one small JSON document per key (the chat
+  cloud's `{v, mode, open, bubble}` today).
 - Two app routes through the owner door: `GET /app/ui-prefs` reads the caller's
   own records, and `POST /app/ui-prefs` writes one. The owner is always the
   authenticated subject; no body field names an owner.
 - The chat cloud reads the server record first, keeps `localStorage` as the
   offline and failure fallback, and writes both on every placement the owner
   makes.
-- Account deletion removes the owner's records (they live in a root store keyed
-  by `owner_user_id`, which the schema-derived deletion sweep already covers).
+- Account deletion removes the owner's records. The table is keyed by
+  `owner_user_id`, which the schema-derived deletion plan for the root database
+  already covers.
 
 Not changing: what the chat cloud does, its defaults, or anything about the
 custom-UI library (`app-ui-library`). No MCP surface changes.
@@ -47,9 +49,10 @@ custom-UI library (`app-ui-library`). No MCP surface changes.
 
 ## Impact
 
-- New root store `.owner_ui_prefs.db` (registered in
-  `tinyassets/storage_accounting.py` ROOT_ENTRIES), with a module
-  `tinyassets/storage/owner_ui_prefs.py`.
+- A new table `owner_ui_prefs` in the canonical root database (no new file, so
+  no new storage-registry entry), with a module
+  `tinyassets/storage/owner_ui_prefs.py` modelled on
+  `tinyassets/storage/account_timezone.py`.
 - `tinyassets/onboarding/__init__.py`: two route registrations and handlers
   (identity-gated like `/app/notify`).
 - `tinyassets/onboarding/app.html`: the chat cloud's load/save gain the server
