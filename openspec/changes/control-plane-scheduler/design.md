@@ -47,6 +47,10 @@ current one, so a claim made in the same second as the restart still settles.
 This is the D2/D4 rule for an operation in flight across a crash
 ("holds instead of re-issuing"). For a proactive wake a lost fire costs one
 window; a replay would cost a second turn the owner did not ask for.
+The claim writes `last_run_id = 'claim:<due_at iso>'` as an unresolved barrier;
+finishing replaces it with the started run id or clears it on decline/failure.
+Restart settlement clears only barriers naming claims it settles lost, in the
+same transaction, so a failed finish cannot release single flight in its owner.
 
 **D3a. Decisions are fenced by revision.** Every write that changes when a
 trigger is owed (engagement, enable, override, a claim) bumps `revision`; the
@@ -58,8 +62,11 @@ at 23:00 waits for 08:00; the missed window is counted as coalesced. The
 collapse walk applies to the first fire too, so a trigger first served late
 fires once. Ambiguous fall-back openings choose the earliest instant at or
 beyond the instant reached, and the collapse walk stops without strict forward
-progress. Each claim rechecks the clock and active hours after earlier handlers,
-while explicit tick timestamps remain fixed for deterministic tests.
+progress. The opening search starts on the current local date, validates both
+folds by a UTC round trip, and uses the gap end when the opening does not exist.
+Each claim rechecks the clock, due instant and active hours inside `BEGIN
+IMMEDIATE` after acquiring the writer lock, so lock waits cannot admit a late
+wake; explicit tick timestamps remain fixed for deterministic tests.
 
 **D4. Coalescing.** Clock triggers: a due fire waits while the previous fire's
 run is live (single flight, run status from the runs store). Windows it
@@ -128,6 +135,9 @@ A missing store or runs table means no live run; other SQLite failures warn and
 defer the trigger because liveness is unknown. Each trigger checks the lease
 before reading its generation, settles lost claims for a changed generation,
 and carries that generation in both the claim and wake request.
+An unresolved `claim:` barrier reports waiting without consulting run liveness;
+after settlement the scheduler re-reads that barrier so a restarted owner can
+fire the next window in the same tick.
 
 **D9. Harness `settings.yaml` vs platform state.** Harness §4.14 lists
 "research cadence, idle period, active hours" in the agent-editable

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -296,11 +297,13 @@ def test_a_declined_fire_spends_its_window(tmp_path):
     h = _Handler(declined="no_compute")
     register_wake_handler(KIND_PROACTIVE, h, replace=True)
     try:
-        _enrol(tmp_path, at=T0 - timedelta(hours=2))
+        key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
         sched = _scheduler(tmp_path)
         assert sched.tick(T0).declined
         assert sched.tick(T0 + timedelta(hours=1)).declined == []
         assert [f["outcome"] for f in _fires(tmp_path)] == ["declined:no_compute"]
+        assert sched.store.get(key).last_run_id == ""
+        assert sched.tick(T0 + timedelta(hours=4)).declined == [key]
     finally:
         unregister_wake_handler(KIND_PROACTIVE)
 
@@ -309,10 +312,13 @@ def test_a_raising_handler_is_recorded_and_does_not_stop_the_tick(tmp_path):
     h = _Handler(raises=True)
     register_wake_handler(KIND_PROACTIVE, h, replace=True)
     try:
-        _enrol(tmp_path, at=T0 - timedelta(hours=2))
-        report = _scheduler(tmp_path).tick(T0)
+        key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+        sched = _scheduler(tmp_path)
+        report = sched.tick(T0)
         assert report.failed and [f["outcome"] for f in _fires(tmp_path)] == [
             "failed:RuntimeError"]
+        assert sched.store.get(key).last_run_id == ""
+        assert sched.tick(T0 + timedelta(hours=4)).failed == [key]
     finally:
         unregister_wake_handler(KIND_PROACTIVE)
 
@@ -697,3 +703,122 @@ def test_generation_is_read_after_each_triggers_lease_check(tmp_path, handler, m
         r.trigger_key: r.owner_generation for r in handler.calls
     }
     assert settled == [1, 2]
+
+
+def test_failed_finish_preserves_single_flight_until_restart(tmp_path, handler, monkeypatch):
+    """A started run with an unwritten outcome must block this owner's next wake."""
+    key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    live_reads = []
+    sched = _scheduler(tmp_path, live=lambda _b, run: live_reads.append(run) or False)
+    finish = sched.store.finish_fire
+    attempts = 0
+
+    def fail_first_finish(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("injected finish failure")
+        return finish(*args, **kwargs)
+
+    monkeypatch.setattr(sched.store, "finish_fire", fail_first_finish)
+    assert sched.tick(T0).failed == [key]
+    assert len(handler.calls) == 1
+    later = T0 + timedelta(hours=4)
+    assert sched.tick(later).waiting_on_run == [key]
+    assert len(handler.calls) == 1
+    assert live_reads == []
+    assert sched.store.get(key).last_run_id == "claim:2026-10-05T08:00:00Z"
+    restarted = _scheduler(tmp_path)
+    report = restarted.tick(later)
+    assert report.lost_settled == 1
+    assert report.fired == [key]
+    assert len(handler.calls) == 2
+    assert [f["outcome"] for f in _fires(tmp_path)] == ["lost_on_restart", "started"]
+    assert restarted.store.get(key).last_run_id == "run-2"
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_claim_rechecks_active_hours_after_the_write_lock(tmp_path, handler, monkeypatch,
+                                                         explicit):
+    """Waiting for SQLite's writer lock can carry an eligible claim past closing."""
+    key = _enrol(tmp_path)
+    before = T0.replace(hour=21, minute=59, second=59)
+    after = T0.replace(hour=22, minute=0, second=1)
+    locked = False
+    sched = ControlPlaneScheduler(
+        tmp_path, zone_for=_utc, clock=lambda: after if locked else before,
+    )
+    # Isolate the claim transaction from the once-per-generation settlement.
+    sched.tick(T0)
+    original = sched.store._write
+    snapshot = sched.store.get(key)
+
+    @contextmanager
+    def write():
+        nonlocal locked
+        with original() as conn:
+            assert conn.in_transaction
+            locked = True
+            yield conn
+
+    monkeypatch.setattr(sched.store, "_write", write)
+    report = sched.tick(before if explicit else None)
+    assert locked
+    assert report.failed == []
+    if explicit:
+        assert report.fired == [key]
+        assert len(handler.calls) == len(_fires(tmp_path)) == 1
+    else:
+        assert report.fired == []
+        assert handler.calls == [] and _fires(tmp_path) == []
+        assert sched.store.get(key) == snapshot
+
+
+def test_claim_admission_time_is_used_for_lag(tmp_path, handler, monkeypatch):
+    """Time spent waiting for the claim lock belongs in the recorded dispatch lag."""
+    key = _enrol(tmp_path, at=T0 - timedelta(hours=2))
+    moment = T0
+    sched = ControlPlaneScheduler(tmp_path, zone_for=_utc, clock=lambda: moment)
+    original = sched.store.claim_fire
+
+    def claim(*args, **kwargs):
+        nonlocal moment
+        moment = T0 + timedelta(minutes=5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sched.store, "claim_fire", claim)
+    report = sched.tick()
+    assert report.fired == [key]
+    assert report.lags_s == [3900.0]
+    (fire,) = _fires(tmp_path)
+    assert fire["lag_s"] == 3900.0
+    assert fire["started_at"] == "2026-10-05T09:05:00Z"
+    assert handler.calls[0].due_at == fire["due_at"]
+
+
+def test_fall_back_cadence_uses_the_second_short_window():
+    """Closing the first repeated window must not spend the second one."""
+    policy = cadence.CadencePolicy(
+        active_start="01:30", active_end="01:45", engaged_period_s=300, idle_s=0,
+    )
+    zone = ZoneInfo("America/New_York")
+    created = datetime(2026, 11, 1, 5, 30, tzinfo=UTC)
+    due, _, collapsed = cadence.due_instant(
+        policy, zone=zone, created_at=created, engaged_at=created,
+        last_due_at=datetime(2026, 11, 1, 5, 40, tzinfo=UTC),
+        now=datetime(2026, 11, 1, 6, 35, tzinfo=UTC),
+    )
+    assert due == datetime(2026, 11, 1, 6, 35, tzinfo=UTC)
+    assert due.astimezone(zone).fold == 1
+    assert collapsed == 1
+
+
+def test_spring_forward_opening_waits_for_the_gap_end():
+    """An imaginary opening must neither admit an early wake nor skip the gap end."""
+    policy = cadence.CadencePolicy(active_start="02:30", active_end="04:00")
+    zone = ZoneInfo("America/New_York")
+    moment = datetime(2026, 3, 8, 1, 30, tzinfo=zone)
+    assert not cadence.in_active_hours(moment, policy, zone)
+    opening = cadence._into_active_hours(moment, policy, zone)
+    assert opening == datetime(2026, 3, 8, 7, tzinfo=UTC)
+    assert opening.astimezone(zone) == datetime(2026, 3, 8, 3, tzinfo=zone)

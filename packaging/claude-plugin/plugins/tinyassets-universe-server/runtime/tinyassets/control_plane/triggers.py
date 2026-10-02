@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from tinyassets.control_plane.cadence import CadencePolicy, policy_with
 
@@ -330,16 +330,21 @@ class TriggerStore:
         owner_incarnation: str,
         collapsed: int,
         now: datetime,
+        admit: Callable[[], bool] | None = None,
     ) -> bool:
         """Claim the fire for ``due_at``. False when it is not this caller's.
 
         One transaction: the trigger must still be at the revision the caller
         decided on -- no engagement, enable or override change, and no other
         claim, since -- and the ``(trigger_key, due_at)`` row must not exist.
-        Both pass, or nothing is written.
+        Both pass, or nothing is written. Admission runs after the writer lock
+        is held, because waiting for it can carry a wake outside active hours.
+        The unresolved-claim barrier preserves single flight if finishing fails.
         """
         due = _iso(due_at)
         with self._write() as conn:
+            if admit is not None and not admit():
+                return False
             row = conn.execute(
                 "SELECT revision, enabled, owner_principal_id FROM triggers "
                 "WHERE trigger_key = ?", (key,)
@@ -356,9 +361,9 @@ class TriggerStore:
             if not inserted:
                 return False
             conn.execute(
-                "UPDATE triggers SET last_due_at = ?, last_run_id = '', revision = revision + 1, "
+                "UPDATE triggers SET last_due_at = ?, last_run_id = ?, revision = revision + 1, "
                 "coalesced_total = coalesced_total + ?, updated_at = ? WHERE trigger_key = ?",
-                (due, int(collapsed), _iso(now), key),
+                (due, f"claim:{due}", int(collapsed), _iso(now), key),
             )
         return True
 
@@ -373,12 +378,11 @@ class TriggerStore:
                 "WHERE trigger_key = ? AND due_at = ? AND outcome = ?",
                 (outcome, run_id, _iso(now), lag, key, due, OUTCOME_CLAIMED),
             )
-            if run_id:
-                conn.execute(
-                    "UPDATE triggers SET last_run_id = ?, updated_at = ? "
-                    "WHERE trigger_key = ? AND last_due_at = ?",
-                    (run_id, _iso(now), key, due),
-                )
+            conn.execute(
+                "UPDATE triggers SET last_run_id = ?, updated_at = ? "
+                "WHERE trigger_key = ? AND last_due_at = ?",
+                (run_id, _iso(now), key, due),
+            )
 
     def settle_lost_claims(self, *, owner_generation: int, owner_incarnation: str) -> int:
         """Settle claims an earlier owner never started. Returns how many.
@@ -387,18 +391,35 @@ class TriggerStore:
         today's single-process lease, where the generation never moves -- when
         another scheduler instance made it. Only one owner runs at a time, so
         such a claim is not in flight. Its handler may or may not have run, so
-        it is recorded lost, never fired again.
+        it is recorded lost, never fired again. Clear only the barriers naming
+        these claims, atomically with settlement, so later windows can proceed.
         """
         conn = self._connect(create=False)
         if conn is None:
             return 0
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            lost = conn.execute(
+                "SELECT trigger_key, due_at FROM trigger_fires WHERE outcome = ? "
+                "AND (owner_generation < ? OR owner_incarnation != ?)",
+                (OUTCOME_CLAIMED, int(owner_generation), owner_incarnation),
+            ).fetchall()
             cursor = conn.execute(
                 "UPDATE trigger_fires SET outcome = ? WHERE outcome = ? "
                 "AND (owner_generation < ? OR owner_incarnation != ?)",
                 (OUTCOME_LOST, OUTCOME_CLAIMED, int(owner_generation), owner_incarnation),
             )
+            conn.executemany(
+                "UPDATE triggers SET last_run_id = '' "
+                "WHERE trigger_key = ? AND last_run_id = ?",
+                [(row["trigger_key"], f"claim:{row['due_at']}") for row in lost],
+            )
+            conn.execute("COMMIT")
             return int(cursor.rowcount or 0)
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
         finally:
             conn.close()
 

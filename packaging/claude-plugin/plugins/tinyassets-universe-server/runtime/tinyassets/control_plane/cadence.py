@@ -143,7 +143,7 @@ def decay_state(policy: CadencePolicy, *, engaged_at: datetime, now: datetime) -
 
 
 def _into_active_hours(moment: datetime, policy: CadencePolicy, zone: ZoneInfo) -> datetime:
-    """``moment`` if it is inside active hours, else the next window start."""
+    """Find the next real opening, preserving repeated windows and gap ends."""
     start, end = _clock(policy.active_start), _clock(policy.active_end)
     if start == end:  # a 24-hour window
         return moment
@@ -152,14 +152,31 @@ def _into_active_hours(moment: datetime, policy: CadencePolicy, zone: ZoneInfo) 
     inside = (start <= clock < end) if start < end else (clock >= start or clock < end)
     if inside:
         return moment
-    day = local.date() if clock < start else local.date() + timedelta(days=1)
-    # A repeated opening has two instants; fold=0 may already be behind us.
+    day = local.date()
+    # Even after today's first closing, its second opening may still be ahead.
     while True:
-        openings = [
-            datetime.combine(day, start, tzinfo=zone).replace(fold=fold).astimezone(timezone.utc)
-            for fold in (0, 1)
-        ]
-        upcoming = [opening for opening in openings if opening >= moment]
+        wall = datetime.combine(day, start)
+        openings = []
+        projections = []
+        for fold in (0, 1):
+            opening = wall.replace(tzinfo=zone, fold=fold).astimezone(timezone.utc)
+            projections.append(opening)
+            back = opening.astimezone(zone)
+            if back.replace(tzinfo=None) == wall and back.fold == fold:
+                openings.append(opening)
+        if not openings:
+            # Imaginary fold projections bracket the gap. Find its first real
+            # second, rather than treating either imaginary wall time as owed.
+            low, high = min(projections), max(projections)
+            while (high - low).total_seconds() > 1:
+                middle = low + timedelta(seconds=int((high - low).total_seconds()) // 2)
+                if middle.astimezone(zone).replace(tzinfo=None) >= wall:
+                    high = middle
+                else:
+                    low = middle
+            if high.astimezone(zone).date() == day:
+                openings.append(high)
+        upcoming = [opening for opening in openings if opening >= moment.astimezone(timezone.utc)]
         if upcoming:
             return min(upcoming)
         day += timedelta(days=1)

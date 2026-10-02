@@ -181,8 +181,9 @@ class ControlPlaneScheduler:
             now=moment,
         )
         eligible = due <= moment and cadence.in_active_hours(moment, policy, zone)
-        waiting = eligible and trigger.last_run_id and self._live(
-            self.base_path, trigger.last_run_id,
+        waiting = eligible and trigger.last_run_id and (
+            trigger.last_run_id.startswith("claim:")
+            or self._live(self.base_path, trigger.last_run_id)
         )
         lease = self.lease
         lease.check()
@@ -194,13 +195,26 @@ class ControlPlaneScheduler:
             self._settled_generation = generation
         if not eligible:
             return
+        if trigger.last_run_id.startswith("claim:"):
+            # Settlement may have cleared this snapshot's barrier, including
+            # one settled by an earlier trigger in the same tick.
+            current = self.store.get(trigger.trigger_key)
+            if current is None:
+                return
+            waiting = current.last_run_id and (
+                current.last_run_id.startswith("claim:")
+                or self._live(self.base_path, current.last_run_id)
+            )
         if waiting:
             report.waiting_on_run.append(trigger.trigger_key)
             return
-        # Earlier handlers and liveness reads can carry this tick past closing.
-        moment = now if now is not None else self._clock()
-        if due > moment or not cadence.in_active_hours(moment, policy, zone):
-            return
+
+        def admit() -> bool:
+            """SQLite lock waits, like earlier handlers, can run past closing."""
+            nonlocal moment
+            moment = self._clock()
+            return due <= moment and cadence.in_active_hours(moment, policy, zone)
+
         if not self.store.claim_fire(
             trigger.trigger_key,
             due_at=due,
@@ -209,6 +223,7 @@ class ControlPlaneScheduler:
             owner_incarnation=self.incarnation,
             collapsed=collapsed,
             now=moment,
+            admit=admit if now is None else None,
         ):
             return
         request = WakeRequest(
