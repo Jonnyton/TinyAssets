@@ -4846,6 +4846,7 @@
   function setChatCloudMode(mode){
     if(!cloudState) return;
     cloudState.mode=mode;
+    cloudState=cloudClamp(cloudState, cloudStageSize());
     applyChatCloud(); saveChatCloud();
     if(mode==="open") $("composer-input").focus();
     else if(typeof focusCommandCenter === "function") focusCommandCenter();

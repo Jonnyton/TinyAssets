@@ -242,3 +242,83 @@ def test_play_never_needs_a_second_click(app_url, browser):
     assert page.locator("#cc-blank").is_visible()
     assert page.evaluate("document.activeElement.id") == "cc-blank"
     page.close()
+
+
+def test_phone_play(app_url, browser):
+    from playwright.sync_api import expect
+
+    context = browser.new_context(viewport={"width": 390, "height": 844},
+                                  is_mobile=True, has_touch=True)
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    _enter_chat(page, app_url)
+    page.evaluate("""() => AppUI.mount({ui_id:'play', name:'Play',
+      markup:'<div id="hero"></div>',
+      style:'#hero{position:absolute;left:0;top:100px;width:20px;height:20px;background:red}',
+      script:`document.addEventListener('keydown',e=>{
+        if(e.key==='ArrowRight'){
+          const h=document.getElementById('hero');
+          h.style.left=(parseInt(h.style.left||'0')+10)+'px';
+          h.dataset.trusted=String(e.isTrusted);
+        }
+      });`})""")
+    hero = page.frame_locator("#ui-frame").locator("#hero")
+    hero.wait_for()
+    position = 0
+
+    def walk():
+        nonlocal position
+        page.keyboard.press("ArrowRight")
+        position += 10
+        expect(hero).to_have_css("left", f"{position}px")
+        expect(hero).to_have_attribute("data-trusted", "true")
+
+    page.locator("#chat-cloud-bubble").tap()
+    page.locator("#btn-cloud-shrink").tap()
+    assert page.locator("#chat-cloud").is_hidden()
+    assert _box(page, "#ui-frame") == pytest.approx(_box(page, "#chat-stage"), abs=1)
+    walk()
+    page.screenshot(path="C:/Users/Jonathan/AppData/Local/Temp/two-surfaces-phone-bubble.png")
+    page.locator("#chat-cloud-bubble").tap()
+    assert _box(page, "#chat-cloud") == pytest.approx(_box(page, "#chat-stage"), abs=1)
+    for selector in ("#btn-cloud-shrink", "#btn-cloud-menu", "#btn-attach", "#btn-send"):
+        box = _box(page, selector)
+        assert box["width"] >= 36 and box["height"] >= 36
+    page.screenshot(path="C:/Users/Jonathan/AppData/Local/Temp/two-surfaces-phone.png")
+    page.locator("#composer-input").tap()
+    page.set_viewport_size({"width": 390, "height": 500})
+    page.wait_for_function(
+        "document.getElementById('composer-input').getBoundingClientRect().bottom <= 500"
+    )
+    for selector in ("#composer-input", "#btn-send"):
+        box = _box(page, selector)
+        assert box["x"] >= 0 and box["x"] + box["width"] <= 390
+        assert box["y"] >= 0 and box["y"] + box["height"] <= 500
+    page.keyboard.type("hi")
+    page.locator("#btn-send").tap()
+    page.set_viewport_size({"width": 390, "height": 844})
+    walk()
+    page.locator("#btn-stop").wait_for(state="hidden")
+    page.locator("#btn-cloud-shrink").tap()
+    before = _box(page, "#chat-cloud-bubble")
+    page.locator("#chat-cloud-bubble").evaluate("""el => {
+        const r=el.getBoundingClientRect(), x=r.x+28, y=r.y+28;
+        const events=[['pointerdown',0,0],['pointermove',-600,-150],['pointerup',-600,-150]];
+        for (const [type,dx,dy] of events)
+            el.dispatchEvent(new PointerEvent(type,{bubbles:true,pointerId:7,pointerType:'touch',
+                isPrimary:true,button:0,buttons:type==='pointerup'?0:1,clientX:x+dx,clientY:y+dy}));
+        el.click(); // Browsers emit a compatibility click after pointerup.
+    }""")
+    after = _box(page, "#chat-cloud-bubble")
+    assert after != before
+    assert 0 <= after['x'] <= 390-after['width']
+    assert 0 <= after['y'] <= 844-after['height']
+    assert page.locator("#chat-cloud").is_hidden()
+    page.evaluate("history.pushState({}, '', '#play')")
+    page.go_back()
+    walk()
+    page.locator("#chat-cloud-bubble").tap()
+    assert page.locator("#chat-cloud").is_visible()
+    assert errors == []
+    context.close()

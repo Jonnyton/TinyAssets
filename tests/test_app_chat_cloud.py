@@ -47,7 +47,7 @@ def test_no_layout_starts_big():
 def test_no_layout_on_a_phone_starts_as_the_whole_stage():
     state = call(f"cloudDefaultState(false, {json.dumps(PHONE)})")
 
-    assert state["open"] == {"x": 0, "y": 280, "w": 390, "h": 420}
+    assert state["open"] == {"x": 0, "y": 0, "w": 390, "h": 700}
 
 
 def test_a_layout_starts_small_in_the_corner():

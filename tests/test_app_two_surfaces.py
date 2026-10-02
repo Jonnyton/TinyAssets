@@ -7,7 +7,7 @@ def test_medium_geometry():
     assert call('cloudDefaultState(false,{w:1280,h:800})')["open"] == {
         "x": 828, "y": 168, "w": 440, "h": 620}
     assert call('cloudDefaultState(false,{w:390,h:700})')["open"] == {
-        "x": 0, "y": 280, "w": 390, "h": 420}
+        "x": 0, "y": 0, "w": 390, "h": 700}
 
 
 DOM = """
