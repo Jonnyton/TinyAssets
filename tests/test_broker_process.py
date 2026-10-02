@@ -131,3 +131,4 @@ def test_a_new_supervisor_rotates_generation_and_refuses_the_old_pair(broker):
         assert not fence.admits(before["generation"], before["token"])
     finally:
         replacement.stop()
+

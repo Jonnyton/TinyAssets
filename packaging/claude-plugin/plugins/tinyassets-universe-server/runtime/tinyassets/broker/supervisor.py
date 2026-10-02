@@ -12,9 +12,10 @@ records live in the broker's state directory, so a restarted broker reloads
 them before it serves; the same owner re-runs the barrier with the same
 proof, which is idempotent and returns the same token.
 
-Selected by ``TINYASSETS_CREDENTIAL_BROKER=process`` while the broker is being
-proven; unset, callers keep the per-proxy worker. The switch is temporary:
-once the broker is proven it is the only path (change
+Selected by ``TINYASSETS_CREDENTIAL_BROKER=process``; unset, callers keep the
+per-proxy worker. Until the per-role uid split, the daemon refuses to start
+with it selected (:func:`start_broker`, v1 deviation (c)). The switch is
+temporary: once the broker is proven it is the only path (change
 ``broker-streaming-contract`` task 2.8).
 """
 
@@ -158,17 +159,25 @@ class BrokerSupervisor:
         self._socket.unlink(missing_ok=True)
 
 
-_SUPERVISOR: BrokerSupervisor | None = None
+class BrokerUidSplitRequired(RuntimeError):
+    """The broker was selected on a host where every role shares one uid."""
 
 
-def start_broker(data_root: Path | None = None) -> BrokerSupervisor | None:
-    """Daemon startup: start the broker when it is selected; else ``None``."""
-    global _SUPERVISOR
+def start_broker(data_root: Path | None = None) -> None:
+    """Daemon startup: nothing when the broker is not selected; a loud refusal when it is.
+
+    v1 deviation (c) of ``broker-streaming-contract``: the daemon, its engine
+    children and the broker share one uid, so any same-uid child can read
+    ``owner.json`` and claim another owner's principal on the owner channel.
+    The broker serves production only after the per-role uid split (daemon /
+    engine children / broker). Until then, selecting it fails the daemon's
+    start instead of quietly running without that boundary; the split's change
+    replaces this refusal with ``BrokerSupervisor(...).start()``.
+    """
     if not broker_selected():
         return None
-    from tinyassets.storage import data_dir
-
-    supervisor = BrokerSupervisor(Path(data_dir() if data_root is None else data_root))
-    supervisor.start()
-    _SUPERVISOR = supervisor
-    return supervisor
+    raise BrokerUidSplitRequired(
+        f"{ENV_SWITCH}={PROCESS} needs the per-role uid split (daemon / engine children / "
+        f"broker): every role here runs as uid {getattr(os, 'getuid', lambda: '?')()}, so "
+        f"the owner channel would "
+        f"trust any same-uid child. Unset {ENV_SWITCH} until the split is deployed.")
