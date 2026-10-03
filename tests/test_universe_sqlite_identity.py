@@ -21,12 +21,16 @@ structural closures are recorded in its docstring and in
 """
 from __future__ import annotations
 
+import errno
 import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from tinyassets import workspace_fs as fs
 from tinyassets.universe_files import (
     SqliteIdentityChanged,
     UniverseFileError,
@@ -47,11 +51,28 @@ def _seed(path: Path, mark: str) -> None:
         con.close()
 
 
+#: The identity comparison is POSIX-only: on a non-POSIX host
+#: ``connect_guarded`` takes the check-then-use branch and returns the factory
+#: result without comparing, so a test that expects ``SqliteIdentityChanged``
+#: would fail on a Windows host that CAN make symlinks rather than skip.
+posix_only = pytest.mark.skipif(
+    not getattr(fs, "_POSIX", False),
+    reason="the identity comparison is POSIX-only; the Windows branch is check-then-use",
+)
+
+
 def _link(target: Path, link: Path) -> None:
     try:
         os.symlink(target, link)
-    except (OSError, NotImplementedError):
+    except NotImplementedError:
         pytest.skip("this host cannot create a symlink")
+    except OSError as exc:
+        # Only a privilege/support refusal is a skip. Anything else -- a full
+        # disk, too many links -- is a real failure and must not read as
+        # "this host cannot create a symlink".
+        if exc.errno in (errno.EPERM, errno.EACCES, errno.ENOSYS, errno.EINVAL):
+            pytest.skip(f"this host cannot create a symlink ({exc.errno})")
+        raise
 
 
 @pytest.fixture
@@ -78,6 +99,7 @@ def test_a_planted_link_at_the_database_name_is_refused(data: Path):
         _open_ro(alpha_db)
 
 
+@posix_only
 def test_a_swap_after_the_check_is_refused_before_any_row_is_read(data: Path):
     """The TOCTOU the old check-then-use pattern lost.
 
@@ -108,6 +130,7 @@ def test_a_swap_after_the_check_is_refused_before_any_row_is_read(data: Path):
         con.close()
 
 
+@posix_only
 def test_the_refused_connection_is_closed_not_leaked(data: Path):
     """A refusal must not leak the connection it just opened.
 
@@ -136,6 +159,44 @@ def test_the_refused_connection_is_closed_not_leaked(data: Path):
         opened[0].execute("SELECT 1")
 
 
+@posix_only
+def test_an_aba_swap_is_NOT_detected_and_that_is_the_documented_limit(data: Path):
+    """The counterexample, pinned so nobody re-reads the guard as airtight.
+
+    Pin A; the attacker keeps A and puts a link to B at the name; SQLite opens
+    B; the attacker restores A before the final stat. The comparison passes and
+    the connection still addresses B. Step 3 follows links and sees only the
+    name's current target -- it never learns SQLite's descriptor, and cannot.
+
+    This test asserting the MISS is deliberate. The defect this whole change
+    exists to fix was a guard described more strongly than it behaved; a test
+    that documents the hole is how the description stays honest. If someone
+    later closes this properly, this test should fail and be deleted with a
+    note saying which closure landed.
+    """
+    alpha_dir = data / "u-alpha"
+    alpha_db = alpha_dir / ".runs.db"
+    _seed(alpha_db, OURS)
+    bravo_db = data / "u-bravo" / ".runs.db"
+    kept = alpha_dir / ".kept-a"
+
+    def aba_then_connect():
+        os.replace(alpha_db, kept)             # keep A
+        _link(bravo_db, alpha_db)              # point the name at B
+        con = sqlite3.connect(alpha_db.as_uri() + "?mode=ro", uri=True, timeout=0.2)
+        os.unlink(alpha_db)                    # drop the link
+        os.replace(kept, alpha_db)             # restore A before the stat
+        return con
+
+    con = connect_guarded(alpha_db, aba_then_connect)
+    try:
+        # No refusal, and the connection is reading B -- the other command
+        # center. This is the residual the docstring and the concern describe.
+        assert con.execute("SELECT x FROM t").fetchall() == [(ANOTHER,)]
+    finally:
+        con.close()
+
+
 def test_an_unswapped_open_is_returned_unchanged(data: Path):
     """The control: the guard is not simply refusing everything."""
     alpha_db = data / "u-alpha" / ".runs.db"
@@ -144,6 +205,72 @@ def test_an_unswapped_open_is_returned_unchanged(data: Path):
     con = _open_ro(alpha_db)
     try:
         assert con.execute("SELECT x FROM t").fetchall() == [(OURS,)]
+    finally:
+        con.close()
+
+
+@posix_only
+def test_pinning_does_not_cancel_another_connections_posix_locks(data: Path):
+    """The guard must not become a corruption mechanism while preventing one.
+
+    Closing an ordinary descriptor on an inode drops every POSIX advisory lock
+    the PROCESS holds on it -- including another SQLite connection's, while
+    SQLite still believes it holds them. SQLite documents this as a way to
+    corrupt a database. The guard opens and closes a descriptor on every call,
+    so it would have done exactly that with ``O_RDONLY``; it uses ``O_PATH``,
+    which Linux excludes from that behaviour.
+
+    The contender must be ANOTHER PROCESS. An in-process one is answered by
+    SQLite's own per-inode bookkeeping without ever consulting the kernel, so
+    it is refused either way -- the first version of this test did that and
+    passed just as happily with the lock-cancelling flag, which made it worse
+    than no test.
+    """
+    alpha_db = data / "u-alpha" / ".runs.db"
+    _seed(alpha_db, OURS)
+
+    contend = (
+        "import sqlite3,sys\n"
+        f"c=sqlite3.connect({str(alpha_db)!r},timeout=0.2)\n"
+        "try:\n"
+        "    c.execute('BEGIN IMMEDIATE')\n"
+        "    print('TOOK-THE-LOCK')\n"
+        "except sqlite3.OperationalError as e:\n"
+        "    print('REFUSED')\n"
+    )
+
+    holder = sqlite3.connect(alpha_db, timeout=0.2)
+    try:
+        holder.execute("BEGIN EXCLUSIVE")
+        holder.execute("INSERT INTO t VALUES ('HELD')")
+
+        # Sanity: while the holder has it, another process is refused.
+        first = subprocess.run([sys.executable, "-c", contend],
+                               capture_output=True, text=True, timeout=60)
+        assert first.stdout.strip() == "REFUSED", first.stdout + first.stderr
+
+        # Now the guard opens a descriptor on this very inode and closes it.
+        con = connect_guarded(
+            alpha_db,
+            lambda: sqlite3.connect(alpha_db.as_uri() + "?mode=ro", uri=True, timeout=0.2))
+        con.close()
+
+        # With a lock-cancelling flag the holder's kernel locks are gone here
+        # and the other process takes it -- the corruption window. With O_PATH
+        # the holder keeps them.
+        after = subprocess.run([sys.executable, "-c", contend],
+                               capture_output=True, text=True, timeout=60)
+        assert after.stdout.strip() == "REFUSED", (
+            "the guard's close cancelled the holder's POSIX locks: "
+            + after.stdout + after.stderr)
+
+        holder.commit()
+    finally:
+        holder.close()
+
+    con = sqlite3.connect(alpha_db)
+    try:
+        assert ("HELD",) in con.execute("SELECT x FROM t").fetchall()
     finally:
         con.close()
 

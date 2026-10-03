@@ -26,7 +26,6 @@ read in the daemon turn-path modules, so this stays the only way in.
 
 from __future__ import annotations
 
-import contextlib
 import errno
 import os
 import stat
@@ -478,24 +477,19 @@ def connect_guarded(path: Path | str, connect: Callable[[], Any]) -> Any:
     """Run ``connect`` on a universe database whose name was opened link-free.
 
     Takes the factory rather than yielding, so the ordering this depends on
-    cannot be got wrong by a caller and a connection opened just before a
-    refusal is always closed. (A context manager here leaked one on exactly
-    that path, and this suite already exhausts descriptors --
+    cannot be got wrong by a caller, and a connection this helper received is
+    **closed on the refusal path** -- a close attempt, not a guarantee the
+    close succeeds. (A context manager here leaked one on exactly that path,
+    and this suite already exhausts descriptors --
     ``docs/concerns/2026-10-03-full-suite-cannot-report-its-own-result.md``.)
+    A factory that allocates a connection and then raises must clean that up
+    itself: this helper never sees it.
 
-    **This is detection within a narrow window, not the no-follow guarantee a
-    reader might assume, and it cannot be.** Python's ``sqlite3`` takes a path:
-    there is no way to hand it a descriptor and no way to set
-    ``SQLITE_OPEN_NOFOLLOW``, which is a C open flag. Measured 2026-10-03 in
-    the Linux oracle (SQLite 3.46.1):
-
-    * a ``?nofollow=1`` URI parameter does nothing -- unrecognised URI
-      parameters are accepted silently, as is an invented one, so nothing ever
-      surfaces the mistake;
-    * ``sqlite3.connect("/proc/self/fd/<n>")`` is not a substitute either.
-      SQLite resolves it as a *path*; once the name has been replaced it reads
-      ``".../x.db (deleted)"`` and SQLite creates a new empty database under
-      that literal name.
+    **What this detects, stated exactly: an identity difference still present
+    at the final pathname lookup.** It is not a no-follow guarantee for SQLite
+    and it does not verify which inode SQLite opened -- it cannot, because
+    Python's ``sqlite3`` takes a path, exposes no open-flags argument and no
+    way to set ``SQLITE_OPEN_NOFOLLOW`` (a C open flag).
 
     What this gives:
 
@@ -503,18 +497,25 @@ def connect_guarded(path: Path | str, connect: Callable[[], Any]) -> Any:
        component was opened the same way, so a link at the name, or at any
        component above it, refuses before SQLite is involved;
     2. the device and inode are recorded from that descriptor, which is held
-       across the call so the inode cannot be recycled;
-    3. after ``connect`` returns, the name is resolved again and compared. Only
-       the connect runs in between, and that reads the header and no row -- so
-       a swap caught here has exposed nothing, and the connection is closed
-       before the refusal propagates.
+       across the call so the inode cannot be recycled under us;
+    3. after ``connect`` returns the name is resolved again and compared, and a
+       difference closes the connection before raising.
 
-    What it does not give: the window between our open and SQLite's own is not
-    closed. A swap inside it is caught by (3) before any query, which is why
-    only the connect may run there. The real closures are structural --
-    platform databases outside universe-writable directories, or the per-role
-    uid split plus a sticky parent so a child uid cannot rename the daemon's
-    entry -- and both are larger than this function.
+    **What it explicitly does NOT cover -- an ABA swap.** Pin A; the attacker
+    keeps A under another name and puts a link to B at the name; SQLite opens
+    B; the attacker restores A before step 3's ``stat``. The comparison passes
+    and the returned connection still addresses B. A hardlink back to A, or a
+    symlink back to A, passes for the same reason: step 3 follows links and
+    sees only the name's current target, never SQLite's descriptor. So this
+    raises the cost of the attack from "rename once" to "win a race twice";
+    it does not make it impossible.
+
+    If cross-command-center isolation is the contract you need, this function
+    does not supply it and no wording here can. The closures are structural --
+    platform databases outside command-center-writable folders, or the
+    per-role uid split plus a sticky parent so a child uid cannot rename the
+    daemon's entry. See
+    ``docs/concerns/2026-10-03-a-universe-database-name-steers-the-daemon.md``.
 
     Why it matters: with the name alone, a planted link makes the daemon read
     AND WRITE another universe's database. That is measured, not theorised
@@ -532,11 +533,26 @@ def connect_guarded(path: Path | str, connect: Callable[[], Any]) -> Any:
         if target.is_symlink():
             raise UniverseFileError(f"{relpath!r} is a link; it is not opened")
         return connect()
-    nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    # O_PATH, not O_RDONLY. Closing ANY ordinary descriptor on an inode drops
+    # every POSIX advisory lock this process holds on it -- including another
+    # SQLite connection's -- while SQLite still believes it holds them. That is
+    # a documented corruption mechanism
+    # (sqlite.org/howtocorrupt.html#posix_advisory_locks_canceled_by_a_separate
+    # _thread_doing_close), and this daemon does run concurrent transactional
+    # users of these databases (workspace_pool). Linux excludes O_PATH
+    # descriptors from that behaviour, and `fstat` works on them, which is all
+    # this needs. O_PATH also cannot block on a FIFO the way O_RDONLY can.
+    # No silent fall-back: without O_PATH this cannot be done safely, so say so.
+    o_path = getattr(os, "O_PATH", None)
+    if o_path is None:  # pragma: no cover - Linux is the deployment target
+        raise UniverseFileError(
+            "O_PATH is unavailable, so a database name cannot be pinned without "
+            "risking another connection's POSIX locks")
+    flags = o_path | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     dir_fd = _parent_dir_fd(root, parts, create=False)
     try:
         try:
-            fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=dir_fd)
+            fd = os.open(parts[-1], flags, dir_fd=dir_fd)
         except OSError as exc:
             if exc.errno == errno.ELOOP:
                 raise UniverseFileError(

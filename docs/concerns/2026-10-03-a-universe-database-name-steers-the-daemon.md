@@ -43,24 +43,37 @@ committed `DAEMON-WROTE-HERE` into it.** A write, not a peek.
 
 ## Why there is no in-place fix
 
-Three mechanisms, all measured dead:
+Scoped precisely, because the point of writing this down is to stop someone
+retrying a shortcut: **with the stdlib `sqlite3` module and the stock unix VFS**,
+these three do not work.
 
 1. **`?nofollow=1` as a URI parameter: ignored.** `SQLITE_OPEN_NOFOLLOW` is a C
-   open flag. The recognised URI parameters are `vfs`, `mode`, `cache`, `psow`,
-   `nolock`, `immutable`; anything else is accepted silently, including an
-   invented name -- so nothing ever surfaced the mistake. This was PR #4330's
-   proposed guarantee.
-2. **`sqlite3.connect("/proc/self/fd/<n>")`: not a substitute.** It passes every
-   test in isolation -- reads the verified inode, writes, survives a WAL switch
-   -- and fails in exactly the case it exists for. SQLite resolves the string as
-   a *path*; once the name is replaced, `/proc/self/fd/<n>` reads
-   `".../x.db (deleted)"`, and SQLite creates a **new empty database** under
-   that literal name. The daemon would then operate on an empty file and litter
-   `x.db (deleted)` into the folder.
-3. **The flag, or a custom VFS:** C-only. Python's `sqlite3` exposes neither and
-   cannot take a descriptor.
+   open flag, not a URI parameter, and the stock VFS does not look for this
+   name. An invented parameter name is accepted just as silently, which is why
+   nothing ever surfaced the mistake. (The recognised set is longer than the
+   obvious ones -- `modeof` exists too -- and a *custom* VFS does receive URI
+   parameters, so this is a statement about the stock VFS, not about URIs.)
+   This was PR #4330's proposed guarantee.
+2. **`sqlite3.connect("/proc/self/fd/<n>")`: not descriptor adoption.** SQLite
+   resolves that string as a *path*, so it is only ever as good as what the
+   path says now. Measured under these exact conditions -- default (creating)
+   mode, and the name replaced by `os.rename` so the original entry became
+   unlinked -- `/proc/self/fd/<n>` read `".../x.db (deleted)"` and SQLite
+   created a **new empty database** under that literal name. A plain rename to a
+   different name would instead yield the renamed path, and `mode=ro` would not
+   create anything; the general point is that the fd is not adopted, so the
+   outcome depends on the path string at open time.
+3. **Setting the flag, or registering a VFS, from the stdlib: not available.**
+   `sqlite3` exposes no open-flags argument and no VFS registration, and cannot
+   take a descriptor. This is a limit of the stdlib module, **not** of Python:
+   APSW exposes VFS classes in Python, and `vfs=` can select an
+   already-registered VFS. Adding a dependency or a VFS to get a no-follow open
+   is a real option, just a much larger one than this concern's partial
+   mitigation -- and it would still not beat an ABA swap by itself.
 
-So no amount of care at the call site produces a no-follow open from Python.
+So: no amount of care at the call site produces a no-follow open with the
+stdlib and the stock VFS. That is the claim, and it is narrower than "impossible
+in Python".
 
 ## What is in the tree now (the partial mitigation)
 
@@ -103,5 +116,28 @@ the only line, and this file goes.
 - PR #4330 -- attempted the in-place guarantee; its mechanism is disproved
   above. Its other review findings (delayed grandfathering trusting post-epoch
   writes, mode parsing, unrecoverable interruption) are defects in provenance
-  machinery that closure (1) would make unnecessary, and are not carried
-  forward.
+  machinery that closure (1) would make unnecessary, and the machinery is not
+  carried forward. **Its obligation is.** See below.
+
+## The consent-forgery obligation is NOT discharged by this file
+
+Dropping #4330's broken provenance implementation must not read as dropping the
+problem it was for, so stating it plainly: **a pre-seeded per-command-center
+database with forged rows is still trusted today.** Verified 2026-10-03:
+
+- `tinyassets/storage/effector_consents.py:45` puts the consents database
+  *inside* the command center (`Path(universe_dir) / _DB_FILENAME`);
+- its schema uses `CREATE TABLE IF NOT EXISTS`, so a database that already
+  exists is adopted rather than rejected;
+- the consent lookup reads rows from it, and
+  `tinyassets/effectors/authenticated_external_call.py:741` trusts that result.
+
+So a command center's own processes creating that file first could grant
+themselves their owner's consent. `2026-10-01-platform-state-inside-the-universe
+-dir.md` already calls for an interim refusal of daemon-uncreated databases, and
+that requirement stands unmet. `connect_guarded` does not address it at all: it
+checks *which inode a name points at*, not *who created the file*.
+
+Resolving this concern therefore does not resolve that one. Reviving #4330's
+grandfathering is not the answer -- it was defective in three distinct ways --
+and a migration that blesses already-forged state would be worse than none.
