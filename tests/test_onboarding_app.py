@@ -229,7 +229,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind", "/app/models/preferences",
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
-        "/app/account/delete", "/app/account/timezone", "/app/rules",
+        "/app/account/delete", "/app/account/timezone", "/app/ui-prefs", "/app/rules",
         "/app/turn/interrupt", "/app/turn/steer",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
