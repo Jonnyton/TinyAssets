@@ -1990,6 +1990,7 @@
       &&row.round_age_s>=0)?row.round_age_s:null;
     serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
       startedMs:Date.now()-age*1000,observedAt:Date.now(),
+      tools:Array.isArray(row.tools)?row.tools:[],
       round:(Number.isInteger(row.round)&&row.round>0)?row.round:0,
       model:(typeof row.model==="string")?row.model:"",
       roundSinceMs:roundAge===null?0:Date.now()-roundAge*1000};
@@ -2027,6 +2028,30 @@
     const button=$("btn-try-model");
     if(!button) return;
     button.hidden=!(waitDetail()&&waitMinutes()>=TRY_MODEL_AFTER_MIN);
+  }
+  // What the agent's tools are doing, newest call first (harness S4): said on
+  // the ONE status line, after the sentence it already shows, never as a second
+  // indicator. Only this owner's own thread is reported by the server.
+  function toolLine(){
+    const t=serverTurnLive()&&serverTurn.tools&&serverTurn.tools[0];
+    if(!t||typeof t.tool!=="string"||!t.tool) return "";
+    const what=t.tool+(t.summary?": "+String(t.summary):"");
+    if(t.state==="running") return "running "+what;
+    if(t.state==="failed") return "ran "+what+" (failed"+(t.error?": "+String(t.error):"")+")";
+    return "ran "+what;
+  }
+  const TOOL_SEP=" \u00b7 ";
+  // The working sentence other paths write ("Your agent is thinking...", the
+  // agent being the actor). The older wording is still recognised so a line
+  // written before an update keeps its tool step.
+  const THINKING_LINE=/^Your (agent|universe) is thinking\.\.\./;
+  function paintToolLine(){
+    const line=$("status-line");
+    const text=String(line.textContent||"");
+    if(!THINKING_LINE.test(text)||waitDetail()) return;
+    const base=text.split(TOOL_SEP)[0], tl=toolLine();
+    const next=tl?base+TOOL_SEP+tl:base;
+    if(next!==text) setStatusLine(next);
   }
   function serverTurnLive(){
     return !!serverTurn && (Date.now()-serverTurn.observedAt)<3*STATUS_WORKING_MS;
@@ -2214,6 +2239,7 @@
       }else if(ownDetailLine&&!detail&&mine){
         setStatusLine("Your agent is thinking..."); ownDetailLine=false;
       }
+      paintToolLine();
       return;
     }
     ownDetailLine=false;
@@ -2228,7 +2254,8 @@
     // at a turn they have no other evidence of.
     const detail=[elapsed,waitDetail(),"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
-    setStatusLine("Your agent is thinking... " + detail);
+    const tl=toolLine();
+    setStatusLine("Your agent is thinking... " + detail + (tl?TOOL_SEP+tl:""));
   }
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The command center's actual

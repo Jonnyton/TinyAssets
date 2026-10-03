@@ -45,6 +45,7 @@ from tinyassets.command_center_names import CommandCenterNames
 from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 from tinyassets.engine_steering import OwnerSteering
+from tinyassets.engine_tool_activity import ToolActivity
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
 #: inputs_json``) accepts on the wire: the JSON TEXT, or the value itself
@@ -423,6 +424,7 @@ class RefusalsAreErrors(Middleware):
 # First added is OUTERMOST: attention acknowledges only the final bounded
 # result, then the ceiling wraps the refusal flag.
 mcp.add_middleware(OwnerSteering())
+mcp.add_middleware(ToolActivity())
 mcp.add_middleware(ConversationAttention())
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
@@ -2052,6 +2054,9 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,
                   status,started_at,finished_at,last_node_id}], has_more}
                   # newest first, at most 50; has_more says there are older
+        await tinyassets.readLive()                -> {as_of, agents:[{agent_id,name,
+                  state:"working"|"idle", since, steps:[{tool,summary,state,age_s}]}]}
+                  # each agent's live state; poll it to animate agents at work
         await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
                   error,output_fields:[...]}
         await tinyassets.readRunOutput(run_id, field, offset)
@@ -4233,6 +4238,9 @@ async def _universe_tool(op, /, **kwargs) -> str:
     try:
         return await asyncio.to_thread(op, udir, **kwargs)
     except (universe_tools.UniverseToolError, ProviderConfinementError) as exc:
+        from tinyassets.engine_tool_activity import note_refusal
+
+        note_refusal(str(exc))
         return f"error: {exc}"
 
 

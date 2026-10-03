@@ -114,6 +114,38 @@ def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
         return {"state": "unreadable", "reason": type(exc).__name__}
 
 
+def _turn_started_epoch(turn_row: dict[str, Any]) -> float | None:
+    """The running turn's own start (``started_at``), as epoch seconds."""
+    from datetime import datetime
+
+    started = turn_row.get("started_at")
+    if not isinstance(started, str) or not started.endswith("Z"):
+        return None
+    try:
+        return datetime.fromisoformat(started[:-1] + "+00:00").timestamp()
+    except ValueError:
+        return None
+
+
+def _thread_tool_activity(
+    udir: Path, actor_id: str, *, since: float | None = None,
+) -> list[dict[str, Any]] | None:
+    """The latest tool calls in ``actor_id``'s own conversation thread since
+    ``since`` (the running turn's start), newest first, or ``None`` when there is
+    no caller or the log cannot be read."""
+    actor = str(actor_id or "").strip()
+    if not actor:
+        return None
+    from tinyassets import agent_activity
+
+    try:
+        return agent_activity.recent(
+            udir, f"thread:principal:{actor}", limit=5, since=since)
+    except Exception as exc:  # noqa: BLE001 - the view is never worth a failed status
+        _LOGGER.warning("tool activity unreadable: %s", type(exc).__name__)
+        return None
+
+
 def _reader_owns(uid: str) -> bool:
     """Is the verified caller the universe's owning account? False on any doubt."""
     from tinyassets.api import permissions
@@ -1849,6 +1881,15 @@ def get_status(
         if isinstance(active, dict) and "model" in active and not _reader_owns(uid):
             active = {key: value for key, value in active.items() if key != "model"}
         response["active_turn"] = active
+        # What the agent's tools are doing in the CALLER'S OWN thread (harness
+        # S4): only that thread's calls, so a collaborator with write never sees
+        # the owner's commands, and the owner sees their agent work live.
+        turn_row = response["active_turn"]
+        if isinstance(turn_row, dict) and turn_row.get("state") != "unreadable":
+            since = _turn_started_epoch(turn_row)
+            tools = _thread_tool_activity(udir, permissions.current_actor_id(), since=since)
+            if tools:
+                turn_row["tools"] = tools
 
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about
