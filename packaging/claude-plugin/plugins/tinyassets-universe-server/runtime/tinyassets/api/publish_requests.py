@@ -216,11 +216,18 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
 
 
 #: The platform's sentence about what a scrub can and cannot prove (§4.17).
+#:
+#: Two claims were wider than the code: "your brain files" (``identity.md`` is a
+#: brain file and travels on purpose -- it becomes the published roster agent's
+#: own identity, ``command_center_packages.destination``) and "your memory"
+#: (``MEMORY.md`` is withheld *unless* the owner picks entries, and then those
+#: entries travel). The listing above it was always honest; this line summarised
+#: it too confidently, which is the worse way to be wrong on a confirmation.
 PACKAGE_SENTENCE = (
     "Every file listed above becomes public. Files with a detected credential or "
-    "contact details, your memory, your brain files and platform state were left "
-    "out, but detection cannot prove a file holds no personal information: read "
-    "the list before you confirm."
+    "contact details, your private brain files and platform state were left out, "
+    "and your memory travels only where you chose an entry, but detection cannot "
+    "prove a file holds no personal information: read the list before you confirm."
 )
 
 
