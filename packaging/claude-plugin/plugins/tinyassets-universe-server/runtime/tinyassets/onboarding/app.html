@@ -1994,6 +1994,16 @@
   let seatWait=null;
   let seatLineShown=false;
   function readServerTurn(payload){
+    const wasLive=serverTurnLive();
+    readServerTurnRow(payload);
+    if(serverTurnLive() || activeTurn) return;
+    // A turn this page did not start just ended: its reply is drawn, and what it
+    // did not take (steered lines left undelivered) comes back from the server.
+    if(wasLive){ finishActiveTurn(); restoreHeldSteers(); return; }
+    // Idle and something waits: send it (a missed transition never strands it).
+    if(sendQueue.length) flushSendQueue();
+  }
+  function readServerTurnRow(payload){
     const deploy=payload&&payload.deploy_pending;
     deployPending=!!deploy&&typeof deploy==="object"&&deploy.pending===true;
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
@@ -2015,6 +2025,7 @@
       &&row.round_age_s>=0)?row.round_age_s:null;
     serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
       startedMs:Date.now()-age*1000,observedAt:Date.now(),
+      tools:Array.isArray(row.tools)?row.tools:[],
       round:(Number.isInteger(row.round)&&row.round>0)?row.round:0,
       model:(typeof row.model==="string")?row.model:"",
       roundSinceMs:roundAge===null?0:Date.now()-roundAge*1000};
@@ -2052,6 +2063,30 @@
     const button=$("btn-try-model");
     if(!button) return;
     button.hidden=!(waitDetail()&&waitMinutes()>=TRY_MODEL_AFTER_MIN);
+  }
+  // What the agent's tools are doing, newest call first (harness S4): said on
+  // the ONE status line, after the sentence it already shows, never as a second
+  // indicator. Only this owner's own thread is reported by the server.
+  function toolLine(){
+    const t=serverTurnLive()&&serverTurn.tools&&serverTurn.tools[0];
+    if(!t||typeof t.tool!=="string"||!t.tool) return "";
+    const what=t.tool+(t.summary?": "+String(t.summary):"");
+    if(t.state==="running") return "running "+what;
+    if(t.state==="failed") return "ran "+what+" (failed"+(t.error?": "+String(t.error):"")+")";
+    return "ran "+what;
+  }
+  const TOOL_SEP=" \u00b7 ";
+  // The working sentence other paths write ("Your agent is thinking...", the
+  // agent being the actor). The older wording is still recognised so a line
+  // written before an update keeps its tool step.
+  const THINKING_LINE=/^Your (agent|universe) is thinking\.\.\./;
+  function paintToolLine(){
+    const line=$("status-line");
+    const text=String(line.textContent||"");
+    if(!THINKING_LINE.test(text)||waitDetail()) return;
+    const base=text.split(TOOL_SEP)[0], tl=toolLine();
+    const next=tl?base+TOOL_SEP+tl:base;
+    if(next!==text) setStatusLine(next);
   }
   function serverTurnLive(){
     return !!serverTurn && (Date.now()-serverTurn.observedAt)<3*STATUS_WORKING_MS;
@@ -2239,6 +2274,7 @@
       }else if(ownDetailLine&&!detail&&mine){
         setStatusLine("Your agent is thinking..."); ownDetailLine=false;
       }
+      paintToolLine();
       return;
     }
     ownDetailLine=false;
@@ -2253,7 +2289,8 @@
     // at a turn they have no other evidence of.
     const detail=[elapsed,waitDetail(),"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
-    setStatusLine("Your agent is thinking... " + detail);
+    const tl=toolLine();
+    setStatusLine("Your agent is thinking... " + detail + (tl?TOOL_SEP+tl:""));
   }
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The command center's actual
@@ -3714,12 +3751,18 @@
   // does: another founder signing in on this browser must never be shown, or
   // offered to resend, a message this one held - nor the filenames it names
   // (Fable 21633 on the app byte-intake shape, 2026-09-20).
-  function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null){
+  function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null,
+                            agent=null){
     const record={message, display: display||message,
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
-       agent:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
+       // The agent this turn was SENT to. A pinned line (a claimed held line)
+       // names it, because the owner may have switched agents since: the
+       // record has to describe the turn on the wire, not the screen, or the
+       // recovery offer reappears under the wrong agent.
+       agent:String((typeof agent==="string"&&agent)||
+         (typeof addressedAgentId==="function"?addressedAgentId():"main")),
        owner:queueOwner,
        scope:queueScope,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()};
@@ -3764,7 +3807,8 @@
       if(opts.keepInflight)throw new Error("Resolve the earlier unconfirmed conversation first.");
       opts.consumerRequest={version:1,request_key:crypto.randomUUID(),
         binding_id:s.binding_id,binding_revision:s.binding_revision};
-      rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+      rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest,
+        opts.agentId);
       const saved=readInflight();
       if(!saved||JSON.stringify(saved.consumerRequest)!==JSON.stringify(opts.consumerRequest))
         throw new Error("Could not save safe conversation recovery. No workflow was started.");
@@ -4009,9 +4053,19 @@
     // AND the home, it cannot tell an own row from a stranger's, so it says
     // nothing and leaves every row on disk.
     if(queueRestored || !queueScope || !queueOwner) return; queueRestored=true;
-    const now=Date.now();
+    // Read the device's own saved rows FIRST: restoring the server's lines
+    // saves the queue, and must keep every row this device was holding.
     retainedItems=readSavedQueue();
-    retainedItems.forEach(i=>offerSavedLine(i, now));
+    const offer=(serverLines)=>{
+      const now=Date.now();
+      // A line the server holds is already queued again above; its copy saved
+      // on this device is not offered a second time.
+      retainedItems=retainedItems.filter(i=>!(ownsSavedRow(i)&&serverLines.includes(i.message)));
+      saveQueue();
+      retainedItems.forEach(i=>offerSavedLine(i, now));
+    };
+    if(typeof fetch!=="function"){ offer([]); return; }
+    restoreHeldSteers().then(offer, ()=>offer([]));
   }
   function offerSavedLine(item, now){
     // OWNERSHIP FIRST, and it is the SAME rule the in-flight record uses. A
@@ -4089,8 +4143,19 @@
     return group;
   }
   function flushBatch(){
-    const group=takeBatch();
+    const taken=takeBatch();
     saveQueue();
+    if(!taken.length) return flushSendQueue();
+    if(taken.some(item=>item.heldId)){
+      claimHeldLines(taken).then(kept=>{
+        taken.filter(item=>kept.indexOf(item)<0).forEach(alreadyHandled);
+        sendBatch(kept);
+      });
+      return;
+    }
+    sendBatch(taken);
+  }
+  function sendBatch(group){
     if(!group.length) return flushSendQueue();
     group.forEach(item=>unmarkQueued(item.bubble));
     const methods=group.map(item=>turnInputMethod(item.opts.inputMethod));
@@ -4108,6 +4173,8 @@
     // that also sits in this queue: nothing goes out until it does.
     if(pendingSteers>0){ steerHeldBatch=steerHeldBatch||batch===true; return; }
     if(sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
+    // A turn this page did not start is still running: everything waits for it.
+    if(!activeTurn && serverTurnLive()) return;
     if(batch===true) return flushBatch();
     const next=sendQueue.shift();
     // A queued line goes out only under the account and home that queued it.
@@ -4124,6 +4191,16 @@
     }
     if(claimedElsewhere(next)){ unmarkQueued(next.bubble); saveQueue(); return flushSendQueue(); }
     saveQueue();
+    if(next.heldId){
+      claimHeldLines([next]).then(kept=>{
+        if(kept.length){
+          unmarkQueued(next.bubble);
+          sendTurn(next.message, next.display, next.opts)
+            .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
+        }else{ alreadyHandled(next); flushSendQueue(); }
+      });
+      return;
+    }
     // Its turn starts now: from here it is a sent message like any other.
     unmarkQueued(next.bubble);
     // A rejection before sendTurn's own try/finally (a missing node) must not
@@ -4197,6 +4274,140 @@
     el.appendChild(note); el.steeredNote=note;
     return el;
   }
+  // A queued line's honest state: saved on the server for the next turn, or
+  // kept only on this device because the server could not be reached.
+  function markHeld(el, saved){
+    if(!el) return el;
+    if(el.heldNote&&el.heldNote.remove) el.heldNote.remove();
+    const note=document.createElement("span");
+    note.className="msg-steered-note";
+    note.textContent=saved
+      ? "Saved \u2014 your agent gets this as soon as its current work ends."
+      : "Not saved yet \u2014 kept on this device; it goes out when your agent finishes.";
+    el.appendChild(note); el.heldNote=note;
+    return el;
+  }
+  // Held lines are removed from the server's keeping before this page sends
+  // them itself, atomically: a line another tab or a turn already took comes
+  // back unclaimed and is not sent again. Unreachable server: sent as before
+  // (the next turn's carryover check still drops an exact repeat).
+  async function claimHeldLines(items){
+    const ids=items.filter(i=>i.heldId).map(i=>i.heldId);
+    if(!ids.length) return items;
+    // PINNED before the request suspends. A claim DELETES the server's copy,
+    // and the lines are already out of the queue -- which is what lets
+    // addressAgent switch while this is in flight. So the claim and the send
+    // that follows it must name the one agent the line was held for, or the
+    // line is deleted from one agent's thread and spoken to another's
+    // (gpt-6-astra on #4290, P1). Dropping the line instead is not an option:
+    // its server copy is gone.
+    const agent=pinLineAgent(items);
+    let doc=null;
+    try{
+      const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:queueScope,claim:ids,agent_id:agent})});
+      doc=r.ok?await r.json():null;
+    }catch(e){ doc=null; }
+    if(!doc||!Array.isArray(doc.claimed)) return items;
+    return items.filter(i=>!i.heldId||doc.claimed.indexOf(i.heldId)>=0);
+  }
+  // The agent a queued line belongs to, written onto the line itself so every
+  // later step reads the same answer. The precedence is captureTurnOptions's,
+  // so a pinned line and a fresh send resolve their agent identically.
+  function pinLineAgent(items){
+    const live=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const held=items.filter(i=>i&&i.heldId);
+    const first=held.length?held[0]:items[0];
+    const agent=String((first&&first.opts&&typeof first.opts.agentId==="string"
+      &&first.opts.agentId)||live);
+    items.forEach(item=>{ if(item&&item.opts) item.opts.agentId=agent; });
+    return agent;
+  }
+  function alreadyHandled(item){
+    unmarkQueued(item.bubble);
+    if(item.bubble&&item.bubble.heldNote) item.bubble.heldNote.textContent=
+      "Already passed to your agent.";
+  }
+  // The message a running turn is answering, drawn after a reload with the
+  // working state on it (P2, live 2026-10-02: a reload mid-turn showed neither
+  // the message nor that it was being worked on, so it was sent twice).
+  let watchedActive=null, lastActiveText="";
+  function showActiveTurn(active){
+    if(!active||typeof active.text!=="string"||!active.text||watchedActive||
+       active.text===lastActiveText) return false;
+    lastActiveText=active.text;
+    const bubble=appendMessage("founder", active.text, null,
+      typeof active.started_at==="number"?active.started_at:Date.now()/1000);
+    if(bubble){
+      const note=document.createElement("span");
+      note.className="msg-steered-note";
+      note.textContent="Your agent is working on this.";
+      bubble.appendChild(note); bubble.workingNote=note;
+    }
+    watchedActive={text:active.text, bubble};
+    return true;
+  }
+  // That turn ended: its reply is drawn under the message, read from the store.
+  async function finishActiveTurn(){
+    const watched=watchedActive; if(!watched) return;
+    watchedActive=null;
+    if(watched.bubble&&watched.bubble.workingNote&&watched.bubble.workingNote.remove)
+      watched.bubble.workingNote.remove();
+    let r=null;
+    try{ r=await Owner.getConversation(); }catch(_e){ return; }
+    const turns=(r&&r.recent_conversation&&Array.isArray(r.recent_conversation.turns))
+      ? r.recent_conversation.turns : [];
+    let at=-1;
+    turns.forEach((t,i)=>{ if(t&&t.speaker==="founder"&&t.text===watched.text) at=i; });
+    if(at>=0) drawHistoryTurns(turns.slice(at+1));
+    const held=readInflight();
+    if(held&&held.message===watched.text) forgetInflightIf(held);
+  }
+  // What the server holds or is running for this thread, read once.
+  async function readPendingTurns(){
+    const agentNow=()=>(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const owner=queueOwner, scope=queueScope, epoch=MCP._loginEpoch, agent=agentNow();
+    try{
+      const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:scope,agent_id:agent})});
+      const doc=r.ok?await r.json():null;
+      // The agent this asked FOR, as well as the account and home: an answer
+      // landing after the owner switched agents holds ANOTHER thread's lines.
+      if(!doc||epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope||
+         agent!==agentNow()) return null;
+      return doc;
+    }catch(e){ return null; }
+  }
+  // After a reload: what the server still holds for this thread comes back on
+  // screen -- a line saved for the next turn is queued again and goes out when
+  // the work ends; one already handed to the running turn shows as sent there.
+  async function restoreHeldSteers(){
+    const doc=await readPendingTurns();
+    if(!doc||!Array.isArray(doc.pending)) return [];
+    if(doc.active && !activeTurn) showActiveTurn(doc.active);
+    const restored=[];
+    // The agent this answer is FOR: readPendingTurns asked for it by name and
+    // refuses an answer that lands after a switch, so a restored line is
+    // stamped with it rather than with whichever agent is on screen later.
+    const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    for(const line of doc.pending){
+      const text=line&&typeof line.text==="string"?line.text:"";
+      if(!text||sendQueue.some(q=>q.message===text)) continue;
+      if(line.state==="steered"){
+        markSteered(appendMessage("founder", text, null,
+          (typeof line.created_at==="number"?line.created_at:Date.now()/1000)));
+      }else{
+        queueTurn(text, text, {inputMethod:"typed", keepComposer:true, agentId:agent});
+        const item=sendQueue[sendQueue.length-1];
+        if(item&&item.message===text){ item.heldId=line.id; markHeld(item.bubble, true); }
+      }
+      restored.push(text);
+    }
+    if(!activeTurn && !serverTurnLive()) flushSendQueue();
+    return restored;
+  }
   function unmarkSteered(el){
     if(el&&el.steeredNote&&el.steeredNote.remove) el.steeredNote.remove();
     if(el) el.steeredNote=null;
@@ -4207,8 +4418,8 @@
     // takes it.
     const before=sendQueue.length;
     queueTurn(message, display, opts);
-    const plain=!interruptPending && !!activeTurn && !opts.relay && !opts.echoed &&
-      !opts.consumerRequest && (!display || display===message);
+    const plain=!interruptPending && (!!activeTurn || serverTurnLive()) && !opts.relay &&
+      !opts.echoed && !opts.consumerRequest && (!display || display===message);
     const item=sendQueue.length>before ? sendQueue[sendQueue.length-1] : null;
     // Folded into an identical queued line, or returned to the composer when
     // the queue is full: nothing new to steer.
@@ -4224,8 +4435,13 @@
       doc=r.ok?await r.json():null;
     }catch(e){ doc=null; }
     finally{ pendingSteers--; }
-    if(epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
-       doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    const same=epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    if(same&&doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    // No turn could take it: the server SAVED it for the next one. It stays
+    // queued here too and goes out when the work ends; the next turn does not
+    // repeat a line its own message already carries.
+    else if(same&&doc&&doc.held===true){ item.heldId=doc.steer_id; markHeld(item.bubble, true); }
+    else if(same) markHeld(item.bubble, false);
     // The turn may have ended while this request was out: what was held goes now.
     if(pendingSteers===0 && !activeTurn){
       const batch=steerHeldBatch; steerHeldBatch=false; flushSendQueue(batch);
@@ -4276,7 +4492,13 @@
 
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
-    if($("btn-send").disabled || interruptPending) return steerOrQueue(message, display, opts);
+    // A turn running on the server that this page did not start (another
+    // window, an answered request) is just as busy as this page's own: a send
+    // now steers or waits, never starts a second turn beside it (P1, live
+    // 2026-10-02: such a send was lost).
+    const otherTurn=!activeTurn && serverTurnLive();
+    if($("btn-send").disabled || interruptPending || otherTurn)
+      return steerOrQueue(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the command center (file content
     // embedded verbatim). They differ only when an attachment rode along.
@@ -4288,7 +4510,8 @@
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
     if(!opts.keepInflight) rememberInflight(
-      message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null);
+      message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null,
+      opts.agentId);
     // A relayed answer or a side send did not come from the composer: what
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
@@ -4401,7 +4624,7 @@
     if($("btn-send").disabled || interruptPending) throw new Error("voice_turn_busy");
     const opts=captureTurnOptions({inputMethod:"spoken"});
     appendMessage("founder",message);
-    rememberInflight(message,message,undefined,"spoken",opts.modelChoice);
+    rememberInflight(message,message,undefined,"spoken",opts.modelChoice,null,opts.agentId);
     // A spoken turn takes the composer too, so a typed turn's late cleanup can
     // see that it is no longer the one holding it.
     const myTurn={}; activeTurn=myTurn;
@@ -9014,6 +9237,13 @@
       (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
     if(already){ forgetInflightIf(pending); restoreQueue(); return; }
     inflightRestored = true;
+    // Still being answered on the server: shown with its working state, and its
+    // reply is drawn when that turn ends -- never offered as unconfirmed.
+    const running=await readPendingTurns();
+    if(running&&running.active&&running.active.text===pending.message&&
+       showActiveTurn(running.active)){
+      restoreQueue(); return;
+    }
     appendMessage("founder", pending.display, null,
       typeof pending.ts==="number"?pending.ts/1000:null);
     const again = document.createElement("button");

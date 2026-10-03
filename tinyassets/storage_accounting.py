@@ -562,6 +562,10 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: the owner's mid-turn messages, inside .agent-sessions/<universe>/ "
         "(harness S2); emptied at every turn end"
     ),
+    "activity.db": (
+        "platform: the agent's recent tool calls for its owner's live view, inside "
+        ".agent-sessions/<universe>/ (harness S4); the latest 200 per session"
+    ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
