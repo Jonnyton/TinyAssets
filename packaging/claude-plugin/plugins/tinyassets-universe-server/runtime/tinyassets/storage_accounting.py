@@ -487,6 +487,14 @@ def _automations(base: Path, account_id: str) -> int:
     )
 
 
+def _packages(base: Path, account_id: str) -> int:
+    """Published command-center package content, by the author who owns each blob
+    (listed or not: ownership is recorded before the blob is written)."""
+    from tinyassets.command_center_packages import measure_packages
+
+    return measure_packages(base, _account_actors(base, account_id))
+
+
 #: THE registry. Every place user bytes live is either here, or named in
 #: `PLATFORM_ENTRIES` with why it is not the user's;
 #: `tests/test_storage_registry_complete.py` fails on any store that is neither.
@@ -504,6 +512,7 @@ STORES: dict[str, Store] = {
         Store("commons_pages", SCOPE_ACCOUNT, _commons_pages),
         Store("automations", SCOPE_ACCOUNT, _automations),
         Store("workspaces", SCOPE_UNIVERSE, _workspaces),
+        Store("packages", SCOPE_ACCOUNT, _packages),
     )
 }
 
@@ -522,6 +531,14 @@ ROOT_ENTRIES: dict[str, str] = {
     "daemon_wikis": "daemon_memory",
     "wiki": "commons_pages",
     ".storage_accounting.db": "platform: this ledger",
+    ".command-center-packages": (
+        "packages (published package blobs, by author); its consent pins and "
+        "version index are platform"
+    ),
+    "packages.db": (
+        "platform: package versions and consent pins, inside "
+        ".command-center-packages/ (blob bytes are charged as packages)"
+    ),
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".consumer_liveness": "platform: process liveness locks",
