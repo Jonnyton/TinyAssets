@@ -1483,7 +1483,11 @@ def get_status(
     log_read_ok = True
     if log_path.exists():
         try:
-            content = log_path.read_text(encoding="utf-8").strip()
+            from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+
+            content = (
+                read_data_path(log_path, max_bytes=MAX_PLATFORM_FILE_BYTES) or b""
+            ).decode("utf-8").strip()
             if content:
                 # Lazy-import _parse_activity_line so status startup stays cheap.
                 from tinyassets.api.universe import _parse_activity_line
