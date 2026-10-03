@@ -78,9 +78,13 @@ PLATFORM_DB_NAMES: frozenset[str] = frozenset({
     ".idempotency.db", "rules.db", "steering.db",
 })
 
-#: UNIVERSE_ENTRIES and soul_edit.py: SOUL_LOCK_FILENAME / _soul_lock.
+#: Locks a creator writes as an entry OF a home: `universe / "...lock"`
+#: (provider_assignment.py) and SOUL_LOCK_FILENAME (soul_edit.py). Bare `.lock`
+#: is NOT here: its creator puts it inside a credential snapshot directory
+#: beside auth.json (credential_vault.py), so a home holding one at the top
+#: level is something nobody writes, and stays unknown.
 PLATFORM_LOCK_NAMES: frozenset[str] = frozenset({
-    ".lock", ".provider-assignment-admission.lock", ".soul.lock",
+    ".provider-assignment-admission.lock", ".soul.lock",
 })
 
 VERBATIM_EXEMPT_NAMES: frozenset[str] = frozenset({

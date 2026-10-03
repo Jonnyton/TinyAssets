@@ -33,7 +33,10 @@ OTHER = "u-01ky3zh1arr8qth8jee7zx63pq"
     ("AGENTS.md", USER), ("skills", USER), ("notes.json", USER),
     ("workspace", USER), ("workspaces", USER), (".agent-workspace", USER),
     ("soul.edit.md", PLATFORM), ("dispatcher_config.yaml", PLATFORM),
-    (".soul.lock", PLATFORM), (".lock", PLATFORM),
+    (".soul.lock", PLATFORM), (".provider-assignment-admission.lock", PLATFORM),
+    # nobody writes a bare .lock as a home entry -- its creator puts it inside a
+    # credential snapshot directory, so at the top level it is unknown
+    (".lock", None),
     (".credentials", PLATFORM), (".credentials.json", PLATFORM),
     ("lancedb", PLATFORM), ("ledger.json", PLATFORM),
     (".conversation_memory.db", PLATFORM), (".conversation_memory.db-wal", PLATFORM),
@@ -70,8 +73,24 @@ def test_registry_names_have_source_provenance():
     # Every name storage_accounting says lives INSIDE a home must be classified --
     # that registry is where a new home entry gets added, so this is the gate that
     # notices one the layout table has not been taught yet.
-    unknown = {name for name in UNIVERSE_ENTRIES if classify(name) is None}
-    assert not unknown, f"UNIVERSE_ENTRIES names the layout table does not know: {unknown}"
+    # UNIVERSE_ENTRIES means "lives inside a universe directory" at ANY depth,
+    # while `classify` answers only for a home's own entries. These are the
+    # names whose every creator writes them into a SUBdirectory, so the home
+    # table has nothing to say about them -- each cited, because the exemption
+    # needs the same discipline as the table it bypasses.
+    nested_in_a_subdirectory = {
+        ".manifest.json": "canon/ (fantasy_daemon/api.py, ingestion/core.py) -- and"
+                          " canon/ is a verbatim-exempt subtree, so it is never scanned",
+        ".lock": "a credential snapshot directory, beside auth.json"
+                 " (credential_vault.py)",
+    }
+    unknown = {name for name in UNIVERSE_ENTRIES
+               if classify(name) is None and name not in nested_in_a_subdirectory}
+    assert not unknown, (
+        "UNIVERSE_ENTRIES names the layout table does not know -- classify each in "
+        "command_center_layout.py, or, if its creators only ever write it into a "
+        f"subdirectory of a home, record it here with where it lives: {unknown}"
+    )
     assert not PLATFORM_DB_NAMES & PLATFORM_NAMES
     assert sqlite_family("x") == ("x", "x-wal", "x-shm", "x-journal")
 
