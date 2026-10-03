@@ -107,28 +107,25 @@ test("preview trust-boundary contract never narrows below the default PR events"
   // two contradicted each other and the check went red on main.
   //
   // The proxy was the wrong thing to pin: a types list is not automatically a
-  // narrowing. What actually matters is that the job still fires on every
-  // ordinary PR event, so assert that directly -- the list must CONTAIN the
-  // three GitHub defaults. Adding `ready_for_review` is a superset and fine;
-  // removing `synchronize` would not be, and the old assertion would have
-  // caught that only by accident.
-  const DEFAULT_PR_TYPES = ["opened", "reopened", "synchronize"];
+  // narrowing, and #4352's is the three GitHub defaults plus
+  // `ready_for_review` -- strictly more triggering than before.
+  //
+  // What this file pins is PATH scope, which is what "unfiltered" means for a
+  // trust boundary: no `paths`, `paths-ignore` or `branches` may appear under
+  // `pull_request`, or the job stops covering PRs by what they touch. The
+  // ACTIVITY-type contract (defaults present, `ready_for_review` present for
+  // the draft skip to be recoverable) and the exact draft condition are owned
+  // by `tests/test_ci_runner_budget.py` -- which #4352 did add, and which is
+  // strictly stronger than anything assertable here. Deliberately not
+  // duplicated: two authorities for one fact drift apart, and that file also
+  // checks the branch-protection-context rule this one cannot see.
   const triggered = securityWorkflow.on.pull_request;
   if (triggered !== null) {
-    assert.deepEqual(Object.keys(triggered), ["types"]);
-    for (const type of DEFAULT_PR_TYPES) {
-      assert.ok(
-        triggered.types.includes(type),
-        `on.pull_request.types drops the default '${type}', so the job would ` +
-          `stop running on some ordinary PR events`,
-      );
-    }
-    // The draft skip below is only correct WITH this type: it is not a default,
-    // and without it a PR marked ready keeps the draft run's skip until its
-    // next push. So the two are one contract, and the test holds them together.
-    assert.ok(
-      triggered.types.includes("ready_for_review"),
-      "a draft-skipping job must also trigger on ready_for_review",
+    assert.deepEqual(
+      Object.keys(triggered),
+      ["types"],
+      "only activity types may narrow this trigger -- a path or branch " +
+        "filter would stop the boundary running on every pull request",
     );
   }
   assert.deepEqual(securityWorkflow.on.push, { branches: ["main"] });
@@ -137,16 +134,11 @@ test("preview trust-boundary contract never narrows below the default PR events"
   const { contract } = securityWorkflow.jobs;
   assert.equal(contract.environment, undefined);
   assert.deepEqual(contract.permissions, undefined);
-  // A draft skip must lead with the event-name check, or merge_group, push,
-  // schedule and workflow_dispatch runs read `pull_request.draft` as undefined
-  // and get skipped too. The workflow's own comment says this; nothing held it.
-  if (typeof contract.if === "string") {
-    assert.match(
-      contract.if,
-      /^\s*github\.event_name\s*!=\s*'pull_request'\s*\|\|/,
-      "a conditional on this job must pass non-PR events through first",
-    );
-  }
+  // The job's `if:` is NOT asserted here. `tests/test_ci_runner_budget.py`
+  // pins it to an exact string, which catches `if: false` and every other
+  // rewrite; a shape check here would be weaker and would invite the two to
+  // disagree. Cross-family review found exactly that: `if: false` passed a
+  // prefix match while skipping every run.
   assert.doesNotMatch(
     securityWorkflowText,
     /\bsecrets\s*(?:\.|\[)|\b(?:issues|pull-requests|actions):\s*write\b|\bcache\b|\bwrangler\b/i,
