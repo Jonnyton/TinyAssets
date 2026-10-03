@@ -216,11 +216,24 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
 
 
 #: The platform's sentence about what a scrub can and cannot prove (§4.17).
+#:
+#: It now names what TRAVELS, because the contents rule is an allowlist
+#: (``command_center_packages.ROOT_FILES``) and a sentence that lists what was
+#: removed can only ever be as complete as the removal list was. The previous
+#: wording promised "your brain files and platform state were left out" while
+#: ``orgchart.md``, ``requests.json`` and 21 other platform root files
+#: travelled. Describing the carried kinds is a claim the code can keep.
+#:
+#: Two exactness notes kept deliberately: "private" brain files, because
+#: ``identity.md`` travels as the published roster agent's own identity; and
+#: memory as conditional, because entries the owner named do travel.
 PACKAGE_SENTENCE = (
-    "Every file listed above becomes public. Files with a detected credential or "
-    "contact details, your memory, your brain files and platform state were left "
-    "out, but detection cannot prove a file holds no personal information: read "
-    "the list before you confirm."
+    "Every file listed above becomes public: your agent and skill files, your "
+    "roster agents, your published wiki pages, your app, and your own folders. "
+    "Your private brain files, your memory unless you named entries, platform "
+    "state, and anything else sitting in the top folder stay home. But "
+    "detection cannot prove a file holds no personal information: read the "
+    "list before you confirm."
 )
 
 
