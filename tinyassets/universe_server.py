@@ -3127,15 +3127,31 @@ def converse(
     # Lines the owner sent into an earlier turn that its agent never received
     # (harness S2 carryover): the page normally re-sends them as this message;
     # any it did not (a closed or reloaded page) are folded in here.
+    typed = message
     message = _with_carryover(memory_universe_dir, memory_session, message)
     live_id = ""
     try:
         # Registered under the VERIFIED caller and this universe, so the owner's
         # Stop from any of their surfaces reaches it and nobody else's can.
-        with interactive_turn(current_actor_id(), uid) as live_turn:
+        #
+        # Also under the ADDRESSED AGENT (harness §4.18). ``request_interrupt``
+        # already filters by ``live.agent_id`` and ``LiveTurn`` already carries
+        # it, but this caller left it at the ``main`` default, so every turn
+        # registered as main whoever it was addressed to: a Stop aimed at a
+        # custom agent matched nothing and did nothing, while a Stop aimed at
+        # main stopped that custom agent's turn. ``addressed_id`` is the
+        # resolution this turn already did from authenticated ingress, inside
+        # the owner/universe scope, and never a session key parsed back into an
+        # identity: a parsed session may locate or cross-check a record, but it
+        # cannot establish one, so it is not what selects whose controls apply.
+        # (Stated here rather than cited: the change that writes this rule down,
+        # addressed-agent-control-provenance, lands in #4343 and is not in this
+        # checkout, so a reference to it would point at nothing -- Codex refute
+        # of this PR, finding D.)
+        with interactive_turn(current_actor_id(), uid, agent_id=addressed_id) as live_turn:
             live_id = live_turn.live_id
             _open_steering(memory_universe_dir, memory_session, uid, live_id,
-                           current_actor_id())
+                           current_actor_id(), typed)
             reply = _converse_impl(
                 uid,
                 message,
@@ -3279,15 +3295,17 @@ def _with_agent_activity(history, universe_dir, universe_id, owner):
     return sorted([*history, *notices], key=lambda m: m.ts or 0.0)
 
 
-def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id):
-    """This served turn may now be steered by its owner (harness S2)."""
+def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id,
+                   message=""):
+    """This served turn may now be steered by its owner (harness S2), and a page
+    reloaded while it runs can show the message it is answering."""
     from tinyassets import agent_steering
     from tinyassets.turn_interrupt import live_ids
 
     try:
         agent_steering.open_turn(
             universe_dir, f"thread:{memory_session}", live_id,
-            live_ids=live_ids(actor_id, universe_id),
+            live_ids=live_ids(actor_id, universe_id), message=message,
         )
     except Exception:  # noqa: BLE001 - steering is never worth a failed turn
         logger.warning("converse: owner steering could not be opened", exc_info=True)
@@ -4943,6 +4961,12 @@ def main(
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so
     # run it here too — a strict-code boot must not serve undeclared universes.
     if transport == "streamable-http":
+        # The credential broker process (S6), before anything that makes an
+        # outbound call: its engine children reach it through the same socket.
+        # No-op unless TINYASSETS_CREDENTIAL_BROKER=process.
+        from tinyassets.broker.supervisor import start_broker
+
+        _credential_broker = start_broker()  # noqa: F841
         # Founder-scoped engine MCP over HTTP: start one loopback server per
         # serving universe so the universe agent's `run_graph`/`read_graph`
         # tools are available on EVERY served turn after a clean boot — no
