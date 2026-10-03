@@ -537,3 +537,62 @@ def test_conflicting_plan_and_incoming_selection_refuses_before_launch(agent, mo
     with pytest.raises(ProviderAuthorityHeldError, match="contradicts"):
         run(agent)
     assert not agent.wires and not agent.tools
+
+
+def test_the_journal_records_the_agent_the_context_was_built_for(agent):
+    """Harness §4.18: the per-agent journal must say WHICH agent ran the turn.
+
+    The ``agent_turns.agent_id`` column has been per-agent since #4228, but the
+    served adapter left it at its ``main`` default, so a custom agent's turn was
+    recorded as main -- and the per-agent journal, the status projection and the
+    owner's history all read the wrong agent.
+
+    The value comes from ``UniverseContext.agent_id``, which authenticated
+    ingress sets, and from nowhere else.
+    """
+    universe_intelligence._call_writer(
+        "exact user prompt",
+        system="exact system",
+        universe_context=replace(agent.served.context, agent_id="a-weaver"),
+        config=agent.config,
+    )
+    turn = agent.latest()
+    assert turn.state == "completed"
+    with agent.journal._ledger.connection() as conn:
+        rows = conn.execute("SELECT turn_id, agent_id FROM agent_turns").fetchall()
+    assert [row[1] for row in rows] == ["a-weaver"], (
+        f"the journal recorded {[r[1] for r in rows]!r}, not the addressed agent")
+
+
+def test_a_context_with_no_addressed_agent_still_records_main(agent):
+    """The default is main only because ingress had no addressed agent."""
+    assert agent.served.context.agent_id == "main", "the rig's context is not the main case"
+    run(agent)
+    with agent.journal._ledger.connection() as conn:
+        rows = conn.execute("SELECT agent_id FROM agent_turns").fetchall()
+    assert [row[0] for row in rows] == ["main"]
+
+
+def test_the_context_is_the_only_source_of_the_agent(agent, monkeypatch):
+    """Not the Stop registry, and not a session key.
+
+    A live turn registered under a DIFFERENT agent must not change what the
+    journal records: ``turn_interrupt`` is in-process state a workflow-node turn
+    does not have, so reading it would make attribution depend on whether a Stop
+    happened to be registrable. The context is set at ingress; nothing else gets
+    a vote.
+    """
+    from tinyassets import turn_interrupt
+
+    uid = agent.served.context.universe_dir.name
+    with turn_interrupt.interactive_turn("owner", uid, agent_id="a-someone-else"):
+        universe_intelligence._call_writer(
+            "exact user prompt",
+            system="exact system",
+            universe_context=replace(agent.served.context, agent_id="a-weaver"),
+            config=agent.config,
+        )
+    with agent.journal._ledger.connection() as conn:
+        rows = conn.execute("SELECT agent_id FROM agent_turns").fetchall()
+    assert [row[0] for row in rows] == ["a-weaver"], (
+        "the journal followed the Stop registry instead of the context")
