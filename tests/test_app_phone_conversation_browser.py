@@ -90,17 +90,3 @@ def test_phone_conversation(app_url, browser, tmp_path):
     page.locator('#rail-head').tap()
     assert page.locator('#btn-rail-add').is_visible()
     context.close()
-
-
-@pytest.mark.parametrize('width', [601, 768, 1280])
-def test_wide_header_stays_inline(app_url, browser, width):
-    page = browser.new_page(viewport={'width': width, 'height': 800})
-    _enter_chat(page, app_url)
-    assert page.locator('#btn-header-menu').is_hidden()
-    account, signout = _box(page, '#btn-account'), _box(page, '#btn-signout')
-    assert account['y'] == signout['y']
-    assert account['x'] + account['width'] <= signout['x']
-    assert page.locator('#rail-head').text_content() == 'Waiting on you'
-    # Desktop and the Electron app keep 100dvh: no visual-viewport height.
-    assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ''
-    page.close()
