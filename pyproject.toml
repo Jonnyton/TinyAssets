@@ -121,15 +121,6 @@ dev = [
     "httpx>=0.24",
     "fastapi>=0.115",
 ]
-gemini = [
-    "google-genai>=1.0",
-]
-grok = [
-    "openai>=1.0",
-]
-groq = [
-    "groq>=0.9",
-]
 api = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
