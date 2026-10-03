@@ -57,11 +57,22 @@ def test_dockerfile_builder_has_nodejs_for_npm():
     """Builder stage must include nodejs + npm to run npm install."""
     text = DOCKERFILE.read_text(encoding="utf-8")
     assert "nodesource" in text, (
-        "Dockerfile must use nodesource to install Node.js 20 "
-        "(Debian default nodejs is too old for @openai/codex)"
+        "Dockerfile must use nodesource to install Node.js 22 "
+        "(Debian default nodejs is too old for either vendored CLI)"
     )
-    assert "NODEJS_VERSION=20." in text, (
-        "Dockerfile must pin the exact NodeSource nodejs package version"
+    # Node 22, not 20: @anthropic-ai/claude-code declares engines.node >=22.0.0
+    # from 2.1.288 (it was >=18.0.0 at 2.1.183). @openai/codex asks >=16, so 22
+    # satisfies both. Both stages must agree or the copied native addons break.
+    assert text.count("NODEJS_VERSION=22.") == 2, (
+        "both Dockerfile stages must pin the exact NodeSource nodejs 22 package "
+        "version; claude-code 2.1.288 requires Node >= 22"
+    )
+    assert "node_20.x" not in text, (
+        "the nodesource apt repo must be node_22.x in every stage, or apt "
+        "installs a Node 20 package that cannot satisfy the pin"
+    )
+    assert text.count("deb.nodesource.com/node_22.x") == 2, (
+        "both stages must point at the node_22.x nodesource repo"
     )
 
 
