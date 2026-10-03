@@ -21,7 +21,19 @@ A row the executor itself marked unselectable SHALL NOT be offered as a choice.
 
 An executor that declares no metadata protocol SHALL continue to report unknown
 enumeration, and its independently authorized provider-default invocation SHALL
-remain usable.
+remain usable. An installed executor that declares a protocol but ANSWERS that
+it does not implement the method SHALL report the same unknown enumeration
+rather than a source failure: support is detected by asking, never from a
+platform-held version or release table. Any other error SHALL remain a failure.
+
+#### Scenario: An executor too old for the method
+
+- **GIVEN** an accepted native source whose installed executor answers that the
+  metadata method is unsupported
+- **WHEN** the catalogue is read
+- **THEN** the source reports unknown enumeration, not a failure
+- **AND** its provider-default invocation and the reviewed candidate list are
+  unaffected
 
 #### Scenario: A newly released model appears without a platform change
 

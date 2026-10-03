@@ -30,6 +30,12 @@ point."
 - Register a metadata protocol for Claude Code against its CLI's own
   `list_models` control request, so the shortlist is the **provider's** answer
   and a newly released model needs no platform release to become selectable.
+- Detect support by **asking**, never by a version table. Production pins CLI
+  2.1.183, which predates `list_models` (#4351 moves it to 2.1.288); an older
+  build answers an explicit unsupported-method error, which reads as
+  `native_enumeration_unsupported` and leaves the provider default and the
+  reviewed static list working exactly as before. The full effect of this
+  change therefore lands with #4351.
 - Rows are keyed on the resolved execution id, not the alias. `--model opus`
   means different models under different CLI versions, which is how the
   founder's menu came to show one thing and run another. A saved preference
@@ -76,7 +82,9 @@ candidates, which remain offers to grant.
 
 - The unjailed metadata spawn. `read_native_catalogue` spawns through plain
   `create_subprocess_exec`; this change adds a protocol declaration to that
-  existing boundary and does not widen it. Tracked separately.
+  existing boundary and does not widen it. Tracked in
+  `docs/concerns/2026-10-02-native-model-discovery-runs-unjailed.md`, which
+  arrives on main with PR #4350 — no duplicate filed here.
 - The synchronous-discovery delay in
   `docs/concerns/2026-09-16-model-picker-global-discovery-delay.md`. Claude now
   participates in the same per-read refresh Codex already did, which does not

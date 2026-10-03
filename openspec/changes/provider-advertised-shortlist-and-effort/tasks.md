@@ -11,7 +11,11 @@ Owner: claude-code. One branch, one PR.
   property (`aliased_rows`), so plain JSON-RPC keeps refusing duplicate ids.
 - [x] 3. Register the protocol on `ClaudeProvider` against the CLI's
   `list_models` control request, keyed on `resolvedModel`, with the metadata
-  argument vector (never `--bare`, which forces API-key auth).
+  argument vector (never `--bare`, which forces API-key auth). Feature-detect
+  an older CLI by its explicit unsupported-method answer
+  (`NativeMetadataUnsupported` -> the existing `None` contract), so production
+  on 2.1.183 reads `native_enumeration_unsupported` and keeps the provider
+  default plus the reviewed list; full effect lands with #4351.
 - [x] 4. Emit `claude --effort <level>` from `ModelConfig.reasoning_effort`,
   matching the existing Codex `-c model_reasoning_effort` path.
 - [x] 5. `model_policy.Model` carries advertised `effort_levels`;
