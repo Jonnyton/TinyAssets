@@ -18,6 +18,7 @@ process, and a restart is reconciled by generation instead.
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timezone
 
 
 class BootTurns:
@@ -30,6 +31,8 @@ class BootTurns:
         #: projection sees the row settled (:meth:`forget`), never evicted by count:
         #: forgetting a still-progressing row would paint it as activity again.
         self._released: set[tuple[str, str]] = set()
+        # Where each running turn is: (round, model id, round started at).
+        self._progress: dict[tuple[str, str], tuple[int, str, datetime]] = {}
 
     def claim(self, universe_id: str, turn_id: str) -> None:
         """This process created that turn and is about to execute it."""
@@ -48,6 +51,26 @@ class BootTurns:
                 return
             self._claimed.discard((universe_id, turn_id))
             self._released.add((universe_id, turn_id))
+            self._progress.pop((universe_id, turn_id), None)
+
+    def note_round(self, universe_id: str, turn_id: str, *, round: int, model: str,
+                   now: datetime | None = None) -> None:
+        """The turn just opened ``round`` on ``model``: what a waiting owner sees.
+
+        Display only, and in memory for the same reason ownership is: the journal
+        records no time per round, and a round's start is meaningless after the
+        restart that ends it. A 10-minute wait on one model request read exactly
+        like a hang (live 2026-10-02, turn c6ae56f9).
+        """
+        when = datetime.now(timezone.utc) if now is None else now
+        with self._lock:
+            if (universe_id, turn_id) in self._claimed:
+                self._progress[(universe_id, turn_id)] = (round, model, when)
+
+    def progress(self, universe_id: str, turn_id: str) -> tuple[int, str, datetime] | None:
+        """The last :meth:`note_round` for a turn this boot is running, or None."""
+        with self._lock:
+            return self._progress.get((universe_id, turn_id))
 
     def holds(self, universe_id: str, turn_id: str) -> bool:
         with self._lock:
