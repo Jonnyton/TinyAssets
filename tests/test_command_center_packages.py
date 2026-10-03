@@ -1056,14 +1056,40 @@ def test_every_platform_written_root_file_stays_home():
         assert ccp.fold(name) not in ccp._ROOT_FILES_F, name
 
 
-def test_the_root_folders_the_platform_creates_are_denied(tmp_path):
+def test_the_platform_folders_are_denied_from_their_writers_constants(tmp_path):
     """Root FOLDERS cannot be a closed allowlist -- a user may make any folder,
-    and their content is most of what sharing a command center means. So this
-    holds the platform-created root folders to ``NEVER_DIRS`` and friends,
-    making the addition of one a reviewed step rather than a silent default.
+    and their content is most of what sharing a command center means. So the
+    platform's own folders are DERIVED from the constants their writers use,
+    not hand-listed.
+
+    The first version of this test hand-listed six names, and the review
+    pointed out that adding ``artifacts/`` would leave it green -- which is
+    exactly what had happened: ``artifacts/reviews``,
+    ``artifacts/executions`` and ``artifacts/discarded_targets`` were
+    published, and the discard archive preserves a whole work target including
+    its request text. A hand-list cannot guard against the omission that
+    produced it.
     """
-    for rel_dir in ("workspaces", "soul_versions", ".runtime", ".credentials",
-                    "__pycache__", "node_modules"):
+    from tinyassets.work_targets import (
+        ARTIFACTS_DIRNAME,
+        DISCARD_ARCHIVE_DIRNAME,
+        EXECUTIONS_DIRNAME,
+        REVIEWS_DIRNAME,
+    )
+
+    # The writers' own constants, so a new artifact subtree is covered the day
+    # it is added and a renamed one fails here instead of leaking.
+    assert ccp.fold(ARTIFACTS_DIRNAME) in {ccp.fold(n) for n in ccp.NEVER_DIRS}
+    for sub in (REVIEWS_DIRNAME, EXECUTIONS_DIRNAME, DISCARD_ARCHIVE_DIRNAME):
+        rel = f"{ARTIFACTS_DIRNAME}/{sub}"
+        assert ccp.dir_exclusion(rel) is not None, rel
+        assert ccp.structural_exclusion(f"{rel}/record.json") == ccp.R_WORK_RECORDS
+
+    # Every never-folder names which kind of state it is, asserted at import.
+    for name in ccp.NEVER_DIRS:
+        assert ccp.dir_exclusion(name) is not None, name
+
+    for rel_dir in (".runtime", ".credentials", "__pycache__", "node_modules"):
         assert ccp.dir_exclusion(rel_dir) is not None, rel_dir
 
     # And a user's own folder is not denied, which is the line being held.
@@ -1071,21 +1097,69 @@ def test_the_root_folders_the_platform_creates_are_denied(tmp_path):
     assert ccp.dir_exclusion("data") is None
 
 
-def test_the_preview_and_the_bundle_agree_on_every_allowed_kind(tmp_path):
+def test_a_discarded_work_target_does_not_travel(tmp_path):
+    """The P1 the review found, as a writer-to-package regression.
+
+    ``work_targets.discard_archive_dir`` preserves the whole target under
+    ``artifacts/discarded_targets/``, including the request text a published
+    package must never carry -- the same class as ``requests.json``, two
+    folders down where the root allowlist could not see it.
+    """
+    from tinyassets.work_targets import ARTIFACTS_DIRNAME, DISCARD_ARCHIVE_DIRNAME
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    secret = "Prepare the acquisition offer for Acme"
+    _write(universe, f"{ARTIFACTS_DIRNAME}/{DISCARD_ARCHIVE_DIRNAME}/req_demo.json",
+           '{"title": "' + secret + '"}')
+    _write(universe, "notes/keep.md", "a shareable note\n")
+
+    files, _excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "notes/keep.md" in files
+    assert not [p for p in files if p.startswith(ARTIFACTS_DIRNAME)]
+    assert secret not in b"".join(files.values()).decode("utf-8", "replace")
+
+
+def test_the_listing_the_owner_reads_is_the_bundle_that_ships(tmp_path):
     """Every kind that travelled before this change still travels, and the
-    listing the owner reads is the set that is actually carried."""
+    paths the owner confirms against are the paths and BYTES in the blob.
+
+    The first version of this only called ``collect`` and asserted the two
+    sets were disjoint, which the review correctly said proves nothing about
+    preview-versus-bundle. This goes through ``build_publish_package`` and
+    decodes the blob with ``check_blob``, so the manifest the tab renders from
+    and the bytes an installer receives are compared directly.
+    """
     universe = tmp_path / "cc"
     universe.mkdir()
     for rel, body in TRAVELS.items():
         _write(universe, rel, body)
     _write(universe, "app.html", "<main>ui</main>\n")
+    # An excluded control, so the comparison is not vacuous.
+    _write(universe, "founder.md", "Alice lives on Elm Street.\n")
 
-    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
-    for rel in TRAVELS:
-        assert rel in files, rel
-    assert "app.html" in files
-    # preview == bundle: nothing is listed as both carried and left out.
-    assert not ({row["path"] for row in excluded} & set(files))
+    built = ccp.build_publish_package(
+        universe, name="GTM Village", description="A village",
+        options={"exclude": [], "memory_items": {}}, branch_rows=[],
+        workflows=[], ui="", automations=[])
+
+    _manifest, carried = ccp.check_blob(built["blob"])
+    rows = built["manifest"]["files"]
+    listed = {row["path"] for row in rows}
+    excluded = {row["path"] for row in built["excluded"]}
+
+    for rel, body in TRAVELS.items():
+        assert rel in carried, rel
+        assert carried[rel] == body.encode("utf-8"), rel
+    assert "app.html" in carried
+    # The listing IS the bundle: same paths, and the digests the tab shows are
+    # the digests of the bytes an installer decodes.
+    assert listed == set(carried)
+    for row in rows:
+        assert row["sha256"] == hashlib.sha256(carried[row["path"]]).hexdigest(), row["path"]
+        assert row["size"] == len(carried[row["path"]]), row["path"]
+    assert not (excluded & listed)
+    assert "founder.md" in excluded and "founder.md" not in carried
 
 
 def test_a_one_class_value_is_neither_excluded_nor_flagged():

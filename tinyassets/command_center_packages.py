@@ -57,6 +57,7 @@ from tinyassets.universe_files import (
     list_universe_dir,
     read_universe_file,
 )
+from tinyassets.work_targets import ARTIFACTS_DIRNAME as _ARTIFACTS_DIRNAME
 from tinyassets.work_targets import REQUESTS_FILENAME as _REQUESTS_FILENAME
 
 FORMAT_VERSION = 1
@@ -159,9 +160,15 @@ _ROOT_FILES_F = frozenset(fold(n) for n in ROOT_FILES)
 
 #: Root folders that never travel. Unlike :data:`ROOT_FILES` this cannot be a
 #: closed allowlist: a user may make any folder, and their content is most of
-#: what sharing a command center means. ``tests`` holds the platform-created
-#: root folders to this list so adding one is a reviewed step.
-NEVER_DIRS = frozenset({"workspaces", "soul_versions"})
+#: what sharing a command center means. So the platform's own folders are named
+#: here, and **derived from the writer's constants** rather than spelled out --
+#: ``artifacts/`` was missed by exactly the hand-listing this avoids, and it
+#: holds the review, execution and discarded-target records, which preserve the
+#: whole work target including its request text (``work_targets.py:137-146``).
+#: A review of the root-only version found it there (2026-10-03), which is also
+#: why "the top folder is where platform state lives" was too strong: most of
+#: it is, but not all.
+NEVER_DIRS = frozenset({"workspaces", "soul_versions", _ARTIFACTS_DIRNAME})
 _BRAIN_F = frozenset(fold(n) for n in _BRAIN_FILES)
 _RUNTIME_F = frozenset(fold(n) for n in _RUNTIME_FILES)
 #: Under ``wiki/`` only the curated ``pages/`` travel (okf_export's set).
@@ -283,6 +290,17 @@ R_UNREADABLE = "a link or not a regular file"
 R_CHECKOUT = "a managed repository checkout"
 R_DEEP = "deeper than a package may go"
 R_ROOT_UNLISTED = "not one of the files a package carries from the top folder"
+R_WORK_RECORDS = "your command center's own work records"
+
+#: One reason per never-folder, so the tab says which kind of state it is. The
+#: assertion is the guard: a name added to :data:`NEVER_DIRS` without a reason
+#: here fails on import rather than reading as something it is not.
+_NEVER_DIR_REASON = {
+    fold("workspaces"): R_CHECKOUT,
+    fold("soul_versions"): R_BRAIN,
+    fold(_ARTIFACTS_DIRNAME): R_WORK_RECORDS,
+}
+assert set(_NEVER_DIR_REASON) == {fold(n) for n in NEVER_DIRS}
 
 
 class PackageError(ValueError):
@@ -384,7 +402,7 @@ def dir_exclusion(rel_dir: str) -> str | None:
         return R_DOT
     head = fold(parts[0])
     if head in NEVER_DIRS:
-        return R_CHECKOUT if head == "workspaces" else R_BRAIN
+        return _NEVER_DIR_REASON[head]
     if "__pycache__" in parts or "node_modules" in parts:
         return R_RUNTIME
     if head == WIKI_DIR and len(parts) >= 2 and fold(parts[1]) != WIKI_PAGES:
