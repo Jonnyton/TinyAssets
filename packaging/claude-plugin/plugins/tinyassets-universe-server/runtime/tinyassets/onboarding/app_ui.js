@@ -287,6 +287,7 @@
       this.unmount();
       const host=$("ui-frame-host"),frame=document.createElement("iframe");
       frame.id="ui-frame"; frame.className="ui-frame"; frame.title=entry.name;
+      frame.setAttribute("tabindex","0");
       frame.setAttribute("sandbox",this.SANDBOX);
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
@@ -297,8 +298,12 @@
       host.replaceChildren(frame);
       host.hidden=false;
       $("view-chat").classList.add("ui-custom-active");
-      // The chat cloud starts small over a layout and big without one.
+      // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.paintHeader();
     },
     unmount(){
@@ -306,8 +311,12 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
-      // The chat cloud starts small over a layout and big without one.
+      // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();
@@ -342,6 +351,9 @@
     deliver(){
       if(!this.frame||!this.active||this.ready) return;
       this.ready=true;
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       const entry=this.active;
       const bundle={markup:entry.markup,style:entry.style,script:entry.script};
       if(entry.script_type==="module") bundle.script_type="module";
