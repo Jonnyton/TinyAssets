@@ -36,7 +36,8 @@ _DAILY_CAPS = json.loads(Path(__file__).with_name("daily_cap_offers.json").read_
 
 def source_cards():
     """Key-paste cards. A source completed by signing in is never one of them."""
-    return deepcopy([row for row in _SOURCES if "sign_in" not in row])
+    return deepcopy([row for row in _SOURCES
+                     if row.get("available", True) and "sign_in" not in row])
 
 
 def subscription_cards():
@@ -53,12 +54,13 @@ def sign_in_cards():
     return [{"id": row["id"], "name": row["name"], "offer": row["offer"],
              "label": row["sign_in"]["label"], "billing_note": row["billing_note"],
              "daily_cap": deepcopy(row.get("daily_cap"))}
-            for row in _SOURCES if "sign_in" in row]
+            for row in _SOURCES if row.get("available", True) and "sign_in" in row]
 
 
 def sign_in_preset(source_id):
     return next((deepcopy(row) for row in _SOURCES
-                 if row["id"] == source_id and "sign_in" in row), None)
+                 if row["id"] == source_id and row.get("available", True)
+                 and "sign_in" in row), None)
 
 
 def daily_cap_for_host(host):

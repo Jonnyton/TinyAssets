@@ -7947,7 +7947,12 @@
         }
         this.reset();
         if(doc.status==="connected"){
-          this.status(this.connectedText);
+          this.status(doc.confirmation
+            ? "Signed in. Confirm \""+frameTitle({title:doc.confirmation.title||"Use this source"})+
+              "\" under Waiting on you to add it to your agent."
+            : doc.serving&&doc.serving.status==="serving"
+              ? this.connectedText
+              : "Signed in. Your credential was saved, but your agent's model setup still needs review. Open Change model.");
           // The card is derived from the stored rejection, which the deposit just
           // cleared, so refreshing the rail is what makes it disappear.
           if(typeof refreshRail==="function") refreshRail();

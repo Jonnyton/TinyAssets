@@ -18,3 +18,17 @@ Credential handling: Codex refute on the design before code (done, ADAPT folded)
   real-browser (`real_browser` marker).
 - [ ] 9. Live proof: lead walks connect + daily-cap in the second account's browser.
 - [ ] 10. Delta drafted from the built code (`specs/free-source-pooling`); sync and archive after live proof.
+
+## Review repair handoff (2026-10-03)
+
+- [x] Withhold the installed HF card and callable preset until a verified free-only boundary exists.
+- [x] Preserve successful subscription deposits while exposing held serving and asking for explicit model access when the accepted manifest excludes the source.
+- [x] Register the Connect real-browser test file in the browser workflow trigger.
+- [x] Focused regression: 82 tests including real Chromium, plus 17 model-access tests; Ruff, plugin import and mirror parity pass.
+- [ ] Parent publishes the repair and requests Claude review; exact-head CI and live proof remain pending.
+- [ ] HF re-enablement: separate reviewed boundary/consent decision; disclosure is insufficient.
+
+The former live-HF-offer test contract is retired for this release. OAuth and pooling
+assertions remain against an explicitly enabled nonbillable fake; separate tests
+assert the unmodified installed source is unavailable. No production credential or
+provider setting is changed by this repair.

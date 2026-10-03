@@ -249,3 +249,33 @@ def test_connect_screen_markup_and_entry_points():
     assert '$("btn-connect-free-ai").addEventListener("click",()=>openConnectRequest());' in html
     # The page still names no provider: names come from the setup request.
     assert "openrouter" not in html.lower() and "hugging face" not in html.lower()
+
+
+def test_subscription_completion_only_claims_ready_when_serving():
+    html, _ = render_app_html()
+    client = html[html.index("  const SignInConnect={"):html.index("  const ENDPOINT_CONTEXT=")]
+    client = client[:client.rfind("  // A declared model list")]
+    client = client.replace("const SignInConnect=", "const TestedSignInConnect=", 1)
+    extra = """
+function authHeaders(){return {};}
+function frameTitle(row){return row.title;}
+function refreshRail(){}
+let reply;
+async function fetch(){return {ok:true,status:200,json:async()=>reply};}
+""" + client
+    out = _run("""
+const messages=[];
+for(const doc of [
+  {status:'connected',serving:{status:'held'},confirmation:{title:'Use subscription'}},
+  {status:'connected',serving:{status:'held'}},
+  {status:'connected',serving:{status:'serving'}}]){
+  reply=doc;
+  const c=Object.assign({},TestedSignInConnect,{flow:'f',connectedText:'READY'});
+  await c.poll(1000,c.epoch);
+  messages.push($(c.ids.result).textContent);
+}
+console.log(JSON.stringify({messages}));
+""", extra_source=extra)
+    assert 'Confirm "Use subscription"' in out["messages"][0]
+    assert "model setup still needs review" in out["messages"][1]
+    assert out["messages"][2] == "READY"

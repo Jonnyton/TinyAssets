@@ -1,3 +1,10 @@
+> Current release hold (2026-10-03): the installed HF source is unavailable.
+> Its allowance can roll into paid usage, and the platform has no verified free-only
+> boundary. The screen omits it and direct preset sign-in refuses before creating
+> a request. The protocol tests below use an explicitly enabled nonbillable fake;
+> they do not establish real-account billing eligibility. Re-enabling the source
+> requires a separately reviewed spending boundary or bounded priced-consent design.
+
 # Design: Hugging Face sign-in source
 
 Scope of this note: the storage and authority shape of the new connection type
