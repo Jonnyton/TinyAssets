@@ -1184,6 +1184,10 @@ class _ForegroundRunProviderSession:
                     raise PermissionError("workflow agent call cannot substitute execution context")
                 return call_foreground_work_agent(
                     self, prompt=prompt, system=system, config=config, policy=policy,
+                    **({"activity_binding": activity_runner.ActivityRunBinding(
+                        self._universe_dir, activity["activity_id"],
+                        activity["runner_generation"], self._run_id,
+                    )} if activity is not None else {}),
                     **({"response_observer": response_observer}
                        if response_observer is not None else {}),
                     **({"metadata_observer": metadata_observer}

@@ -590,9 +590,12 @@ def note_progress(universe_dir: Path, activity_id: str, generation: int, *,
         return cur.rowcount == 1
 
 
-def holds(universe_dir: Path, activity_id: str, generation: int) -> bool:
+def holds(universe_dir: Path, activity_id: str, generation: int, *, run_id: str = "") -> bool:
     """Whether this generation still runs the activity (checked at tool boundaries)."""
-    return note_progress(universe_dir, activity_id, generation)
+    record = get(universe_dir, activity_id)
+    return bool(record and record["status"] == IN_PROGRESS
+                and record["runner_generation"] == generation
+                and (not run_id or record["runner_token"] == run_id))
 
 
 @_when_absent(lambda: None)

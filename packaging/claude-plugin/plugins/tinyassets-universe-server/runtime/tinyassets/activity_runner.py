@@ -40,6 +40,38 @@ class ActivityBranchInvalid(activities.ActivityRefused):
         super().__init__(message, kind="activity_branch_invalid")
 
 
+class ActivityYielded(Exception):
+    """This exact run yielded to its owner's request; no provider retry is due."""
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityRunBinding:
+    """Server-captured activity/run/generation, checked at HTTP agent boundaries.
+
+    Constructed from the record found by the foreground run's start barrier,
+    never from model inputs. Native executors still need their own pre-tool
+    boundary; this does not claim to fence a native CLI's internal tool loop.
+    """
+
+    universe_dir: Path
+    activity_id: str
+    generation: int
+    run_id: str
+
+    def check(self) -> None:
+        if activities.holds(self.universe_dir, self.activity_id, self.generation,
+                            run_id=self.run_id):
+            return
+        record = activities.get(self.universe_dir, self.activity_id)
+        if (record and record["runner_generation"] == self.generation
+                and record["retiring_token"] == self.run_id
+                and record["status"] in {activities.WAITING_ON_YOU, activities.SCHEDULED}):
+            # An answer may already have requeued it; this retiring run still
+            # ends, and the dispatcher cannot replace it until it has ended.
+            raise ActivityYielded("Activity yielded to an owner request.")
+        raise PermissionError("activity_runner_superseded: this run no longer holds the activity")
+
+
 @dataclass(frozen=True, slots=True)
 class _Owner:
     """What the automation recipe reads off an automation row."""
