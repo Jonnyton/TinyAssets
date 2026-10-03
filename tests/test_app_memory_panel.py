@@ -9,7 +9,10 @@ from tests.test_onboarding_app import _js_function
 from tinyassets import onboarding
 
 _NODE = shutil.which("node")
-pytestmark = pytest.mark.skipif(_NODE is None, reason="node is required")
+pytestmark = pytest.mark.skipif(
+    _NODE is None,
+    reason="node is required; owner=Jonnyton; runs-in=GitHub-Actions/required-tests",
+)
 
 
 def test_memory_panel_load_edit_delete_undo_and_conflict(tmp_path):
