@@ -611,6 +611,12 @@ def _auth_challenge_path(path: str) -> bool:
         # and holds no identity: the bundle and every read reach it by
         # postMessage from the authenticated page. Exactly one path, by equality.
         return False
+    if path == "/app/oauth/client-metadata.json":
+        # The OAuth Client ID Metadata Document a sign-in source names as its
+        # client id: the provider's authorization server fetches it with no
+        # bearer. A constant public document (one redirect URI, no secret, built
+        # from the configured resource, never the request). Exactly one path.
+        return False
     # Billing webhook: Stripe POSTs here with no MCP bearer, so like /app and
     # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires
     # both Stripe provenance (signed, replay-bounded payload) and entitlement

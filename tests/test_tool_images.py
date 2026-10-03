@@ -206,11 +206,15 @@ def test_an_image_is_read_whole_inside_the_jail_with_its_own_output_cap(tmp_path
     data = _png(10, 10)
     spy = _Spy(ToolRun(0, data, None, 0.0))
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    shown = universe_tools.read_file(_universe(tmp_path), "previews/village.png")
+    shown = universe_tools.read_file(
+        _universe(tmp_path), "previews/village.png", agent_id="main",
+    )
     assert isinstance(shown, ToolImage) and (shown.width, shown.height) == (10, 10)
     call = spy.calls[0]
     assert call["inner"][-1] == "/u/previews/village.png"
     assert "cat --" in call["inner"][2]
+    # An image read is attributed like every other jailed call.
+    assert call["agent_id"] == "main"
     assert call["limits"].output_bytes == tool_images.MAX_IMAGE_SOURCE_BYTES
     # Every other limit is the default: only the output cap is raised.
     assert call["limits"].memory_bytes == universe_tools.DEFAULT_LIMITS.memory_bytes
@@ -220,7 +224,9 @@ def test_an_image_is_read_whole_inside_the_jail_with_its_own_output_cap(tmp_path
 def test_text_reads_keep_the_default_cap(tmp_path, monkeypatch):
     spy = _Spy(ToolRun(0, b"hello\n", None, 0.0))
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    assert universe_tools.read_file(_universe(tmp_path), "notes/a.md") == "hello\n"
+    assert universe_tools.read_file(
+        _universe(tmp_path), "notes/a.md", agent_id="main",
+    ) == "hello\n"
     assert spy.calls[0]["limits"].output_bytes == universe_tools.DEFAULT_LIMITS.output_bytes
 
 
@@ -231,7 +237,7 @@ def test_text_reads_keep_the_default_cap(tmp_path, monkeypatch):
 ])
 def test_an_unreadable_image_is_an_error_line(tmp_path, monkeypatch, run, needle):
     monkeypatch.setattr(universe_tools, "RUNNER", _Spy(run))
-    out = universe_tools.read_file(_universe(tmp_path), "a.png")
+    out = universe_tools.read_file(_universe(tmp_path), "a.png", agent_id="main")
     assert isinstance(out, str) and out.startswith("error:") and needle in out
 
 

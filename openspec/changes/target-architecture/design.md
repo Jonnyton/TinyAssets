@@ -59,7 +59,7 @@
 +----------------------------- CELL (always on) ------------------------------------+
 | FRONTEND  blue | green   MCP + app API, auth; stateless; replaceable per deploy      |
 |     |  (local RPC; queues while the owner hands over)                               |
-| EXECUTION OWNER (exactly one, under a generation-fenced lease)                      |
+| COMMAND-CENTER OWNERS (a lease + fence per command center) + ONE PLATFORM OWNER     |
 |     thin agent loop, agent_turns writer + reconcile, scheduler/triggers/inbox/      |
 |     notifications, outbox pump, metering, storage allocator                        |
 | CREDENTIAL BROKER (own process; only holder of the vault key; owner/connection/     |
@@ -122,6 +122,11 @@ class BoxProvider(Protocol):                       # tinyassets/boxes/provider.p
     def import_bundle(self, cc, chunks: Iterable[bytes], *, profile: ExportProfile) -> ImportReport
     def usage(self, h) -> BoxUsage          # used bytes, hard bound, generation
     def suspend(self, h) -> None            # checkpoint + stop; idempotent
+    def try_fence_idle(self, cc, *, owner_generation: int) -> bool
+        # atomically: if the box has no live execution or pending mutation, persist
+        # owner_generation as its fence (lower generations refused from now on) and
+        # return True; otherwise change nothing and return False. This is the
+        # "command center is idle" proof a per-command-center handover moves on (D11).
     def destroy(self, cc, op_id: OpId) -> DestroyReceipt
 ```
 
@@ -307,7 +312,7 @@ One CLI process never serves two accounts.
 | Vault + file-OAuth CLI credentials | `.platform/cc-<ulid>/` | encrypted under the command center's DEK; key access only in the broker (S6 migrates today's plaintext vault) | Litestream/restic, encrypted |
 | Per-command-center platform state (D8a dir 2) | `.platform/cc-<ulid>/` | SQLite + files | **Litestream v0.5** off-region (RPO ~1 s); restic for files |
 | Per-account platform state (D8a dir 3) | `.platform/accounts/<id>/` | SQLite | Litestream |
-| Catalog, ledger, inbox, market | shared | **Postgres** (PLAN 2026-07-25) | managed PITR or pgBackRest, off-region |
+| Catalog, ledger, inbox, market | shared | **Postgres** (PLAN 2026-07-25), self-hosted as a container on our cloud server, never the founder's PC (founder, 2026-10-02) | pgBackRest/dumps off-region |
 | Commons (OKF bundle) | shared | files (canonical) + rebuildable index | restic |
 | Identity map (subject → user → home cell, ownership generation) | shared | Postgres | as Postgres |
 | Root databases (`.tinyassets.db`, `.runs.db`, …) | cell root | SQLite (renamed by the cutover) | Litestream |
@@ -358,8 +363,15 @@ data_dir()/
 
 A CLI inside a box reaches the owner-door read tools through a read-only route on the box's broker endpoint, authenticated by the box identity. Nothing else changes in the tool contract.
 
+**The config split is a hard prerequisite** (lead, 2026-10-02). Nothing may make `config.yaml` agent-writable before the split lands. That covers:
+- the box (S11);
+- the self-improving harness's config editing;
+- any provider adapter that ships file tools under the read-write default view.
+
+The split ships as a standalone PR right after #4273, outside the cutover's freeze window. Today `config.yaml` is not agent-writable: the tool jail binds it read-only, Claude has no file tools, and Codex gets a read-only workspace. So this ordering only has to hold until the split lands.
+
 **Field-level authority in `config.yaml`.** The file stays agent-editable, but it still carries server-owned authority today: `engine_assignment_state`, `engine_assignment_generation` and `provider_authority_bindings` (`config.py:60-66`). It also carries `allowed_providers`, the routing ceiling the router enforces (`providers/router.py:158-177`).
-- The cutover (#4262) moves these fields into `.platform/cc-<ulid>/`, either into an assignment record or into the policy file. They stop being read from `config.yaml` before the file becomes writable in a box.
+- The split moves these fields to `.platform/cc-<ulid>/assignment.json`. Readers take authority only from that file; any of these fields left in `config.yaml` are ignored and logged.
 - Consumers read authority only from the platform copy.
 - What remains in `config.yaml` is the agent's own preference data, read as untrusted.
 
@@ -399,31 +411,49 @@ A CLI inside a box reaches the owner-door read tools through a read-only route o
 
   Writes cannot land between the snapshot and the flip, because admission is closed.
 
-### D11. Uptime: one execution owner behind replaceable frontends
+### D11. Uptime: per-command-center execution owners behind replaceable frontends
+
+*Amended 2026-10-02 (lead decision on `execution-owner-lease` Q1): ownership is **per command center**, plus one platform lease. It was a single global owner. With a single owner, a handover made every new request on the platform wait behind the slowest in-flight turn. That is one user's turn affecting another user, which is against the floor. Change of record: `openspec/changes/execution-owner-lease` (S8a, turn-handover).*
 
 **The control plane splits into two roles.**
-- **Frontends:** MCP and app API, auth, client streaming. They hold no turn ownership and deploy blue-green. An old frontend keeps its open client connections until those streams end. A frontend deploy therefore interrupts nothing.
-- **Execution owner:** the loop, the `agent_turns` writer and reconciliation, the scheduler, triggers, the outbox pump, metering and the allocator. There is **exactly one**, holding a **lease with a monotonic generation**. Frontends forward turn starts and cancellations to it, and **queue** them while the owner hands over.
+- **Frontends:** MCP and app API, auth, client streaming.
+  - They hold no turn ownership and deploy blue-green.
+  - An old frontend keeps its open client connections until those streams end, so a frontend deploy interrupts nothing.
+  - They route each turn start and cancel to the **current owner of that command center**, through a small map from command center to owner and lease generation. They **queue** only that command center's requests while it changes hands.
+- **Command-center owners:** the loop and the `agent_turns` writer and reconciliation, **for one command center**.
+  - Each command center has its own **lease with a monotonic generation**, and its own fence.
+  - One process may hold the leases of many command centers.
+- **Proof of idleness is the box host's.** A command center moves at an idle instant that `BoxProvider.try_fence_idle` proves atomically (D2). While execution still shares one process across command centers, per-command-center moves are deferred until S4; owner deploys meanwhile use the whole-process wait (`execution-owner-lease` phase 1).
+- **The platform owner:** exactly one, under **one platform lease** (`control-plane-scheduler`, S8b). It runs the cross-command-center duties: scheduler, triggers, outbox pump, metering aggregation, the storage allocator.
+- **State that spans command centers lives in a shared store, never in process memory.** During a handover, one account's command centers can be split across two owner processes. So two kinds of state need one source of truth:
+  - per-account seats (S9), in a shared store under `BEGIN IMMEDIATE`;
+  - host admission, in boxhostd's single queue (S4).
 
-**Turn ownership follows the lease generation, not the boot** (refute round 2). This replaces the boot rule in `agent_turn_boot.py:101-106`:
-- Every `agent_turns` row records the `owner_generation` that created it.
-- Reconciliation by a new owner at generation G settles only rows whose `owner_generation < G`, and only **after** it has acquired the lease. Acquiring the lease means the previous generation's lease was released, or its expiry passed with that owner fenced.
+**Turn ownership follows the command center's lease generation, not the boot** (refute round 2). This replaces the boot rule in `agent_turn_boot.py:101-106`:
+- Every `agent_turns` row records `(command_center, owner_generation)`.
+- Reconciliation by a new owner of command center X at generation G settles only X's rows with `owner_generation < G`. It runs only **after** acquiring X's lease, which means X's previous lease was released, or expired with its owner fenced.
 - A successor that started in standby therefore cannot mistake the old owner's live rows for its own, nor treat them as alive.
 - `tests/test_orphaned_turn_reconcile.py` gains the standby-start case.
 
 **Atomic fencing.**
-- *SQLite:* every database the owner writes holds a **fence row**, and the barrier advances it with a write. Every owner-side mutation runs in a `BEGIN IMMEDIATE` transaction that takes the write lock, reads the fence row, and commits only if the fence still equals its own generation. Advancing the fence and the mutation therefore serialise, and there is no stale read of a WAL snapshot. A stalled owner commits nothing.
-- *Restore-safe incarnation.* After any restore or promotion, the new owner's generation is **greater than every generation found in any recovered store**: lease, fence rows, and `agent_turns.owner_generation`. It reconciles before serving. A recovered turn store that is ahead of the recovered lease store therefore cannot hide orphaned turns.
-- *Downstream:* broker requests and box operations carry the generation, and are refused below the highest seen (D5).
+- *SQLite:* every database a command-center owner writes holds a **fence row for that command center** (the platform owner has its own), and the barrier advances it with a write. Every owner-side mutation runs in a `BEGIN IMMEDIATE` transaction that takes the write lock, reads the fence row, and commits only if the fence still equals its own generation. Advancing the fence and the mutation therefore serialise, and there is no stale read of a WAL snapshot. A stalled owner commits nothing.
+- *Restore-safe incarnation.* After any restore or promotion, each command center's new generation is **greater than every generation found for it in any recovered store**: lease, fence rows, and `agent_turns.owner_generation`. It reconciles before serving. A recovered turn store that is ahead of the recovered lease store therefore cannot hide orphaned turns.
+- *Downstream:* broker requests and box operations carry `(command_center, generation)`, and are refused below that command center's fenced generation (D5).
 - An owner handover does not change box placement epochs. The two fences are independent.
 
-**Owner handover, stated honestly** (refute round 2).
-1. The old owner stops admitting turns.
-2. It lets in-flight turns finish up to the **drain bound** (default 10 min).
-3. It journals the rest, cancels their box executions, and releases the lease.
-4. The new owner acquires the lease at generation+1, reconciles, and serves the queue.
-5. **Turns still running at the bound are interrupted.** They reconcile into held states (`agent_turn_reconcile.py:30,66`), and the user sees "interrupted, resume?". They are not silently settled, and not replayed.
-6. **New requests never fail**; they queue.
+**Owner handover, per command center: a turn runs until it finishes.** This follows the founder law "a turn runs until finished", and S8a `execution-owner-lease`, refuted three rounds.
+1. **A command center's key moves only at an idle instant.** The old owner releases that command center's lease in the same transaction that sees it idle. Admission is never closed on a busy key, because that would make the command center's own new requests wait behind its long turn.
+2. A command center with nothing in flight moves **immediately**.
+3. **There is no automatic drain bound.** A straggler keeps its **old owner process** alive until its turn finishes. The cost is that process's memory. It holds **no other command center or user** hostage, because their keys have already moved.
+4. The new owner acquires each released lease at generation+1. It runs the **acknowledged fencing barrier for that command center** (D5): the broker and boxhostd persist the generation and refuse anything lower. Then it reconciles and serves.
+5. **Only an explicit operator `--force` cuts work.** It stops the old owner. Its turns reconcile into held states (`agent_turn_reconcile.py:30,66`) with an "interrupted, resume?" notice. They are never silently settled, and never replayed.
+6. **New requests never fail.**
+7. **Lingering owners are visible and bounded in number, not in time** (lead, 2026-10-02):
+   - an **alarm** fires when an old owner process outlives a threshold (default 2 h);
+   - **per command center, at most two owner generations coexist.** A further deploy **waits** for that command center (it stays on its current owner) rather than spawning a third;
+   - the user sees **"update pending for your command center"** until its key moves.
+
+The platform lease hands over separately, under the same rules. It drains no turns. Its duties pause briefly and resume under the new holder's generation.
 
 The metrics are failed requests (target 0) and interrupted turns per owner handover (measured). Frontend-only deploys interrupt nothing. Owner deploys happen only when owner code changes.
 
@@ -546,11 +576,19 @@ S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───�
   - **Firecracker on DO** if restore p95 ≤ 500 ms, exec p95 ≤ 50 ms, awake-idle CPU ≤ 5% of a core per box, and canary p95 is unchanged with 30 awake boxes.
   - **Otherwise a bare-metal box host:** OVH RISE-S Hillsboro, $77/mo, **founder spend**. gVisor on the droplet serves until it exists.
 
-### S1. Platform-state durability and the warm standby — **founder spend** (bucket ~$0–5/mo, standby $12–24/mo, Cloudflare LB ~$5/mo) — (multi)
+### S1. Platform-state durability and the warm standby — **founder spend** (slim: off-region bucket only, for now) — (multi)
+
+**Slim-spend rule (lead, 2026-10-02).**
+- The standby droplet and the Cloudflare LB are **deferred until there are paying users**.
+- Off-region storage is **DO Spaces nyc3**.
+- S1b below stays the specified target and is built when that trigger fires.
 
 - **S1a durability:**
   1. Pin SQLite ≥3.51.3 and assert it at startup.
-  2. Run Litestream v0.5 for every SQLite store, to off-region.
+  2. Litestream v0.5 for platform state.
+     - **Deferred** until `command-center-cutover` (#4262) lands `.platform/` (D8a). Then it replicates `.platform/` only.
+     - **Interim, shipped:** the brain tier goes off-region hourly, an RPO of about 1 hour.
+     - **Constraints:** `docs/design-notes/2026-10-02-litestream-platform-state.md` §Refute outcome. Restores must replay the deletion ledger (`docs/concerns/2026-10-02-restores-resurrect-deleted-accounts.md`).
   3. Move `BACKUP_DEST` off-region. The GitHub copy keeps the brain tier only.
   4. Restore test, including point in time.
   5. Schedule `dr-drill.yml` weekly, restoring from the off-region copy (MODIFIED requirement, see reconciliation).
@@ -656,14 +694,18 @@ S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───�
   9. Spec sync.
 - **Acceptance:** live proof; memory measured; cancellation and reconcile work.
 
-### S8. Execution owner + frontends, the lease, the always-on duties, deploys — (multi)
+### S8. Command-center owners + platform owner + frontends, the leases, the always-on duties, deploys — (multi)
 
+- **Delivered as two changes:**
+  - **S8a** `execution-owner-lease` (turn-handover): per-command-center leases, fences, reconcile, handover and barrier.
+  - **S8b** `control-plane-scheduler` (cp-scheduler): the platform lease, scheduler, triggers, outbox, metering, coalescing and cadence decay.
+  Their specs are the source of truth for these tasks; this list is the umbrella view.
 - **This must land before any second writer exists.** It replaces the "independent blue-green" plan that refute 6 broke.
 - **Tasks:**
-  1. The owner lease with a monotonic generation. Owner-store mutations re-check it transactionally, and the broker and box operations carry it.
-  2. `owner_generation` on `agent_turns` replaces the boot rule. Reconciliation settles only older generations, after the lease is acquired. Add the standby-start case to `test_orphaned_turn_reconcile.py`.
-  3. Frontend/owner RPC, with queueing during handover.
-  4. The scheduler, triggers, outbox pump and metering under the lease.
+  1. A lease per command center with a monotonic generation, plus one platform lease. Owner-store mutations re-check their command center's fence transactionally, and broker and box operations carry `(command_center, generation)`.
+  2. `(command_center, owner_generation)` on `agent_turns` replaces the boot rule. Reconciliation settles only that command center's older generations, after its lease is acquired. Add the standby-start and restore-order cases to `test_orphaned_turn_reconcile.py`.
+  3. Frontend routing by command center to its current owner, with per-command-center queueing during a handover.
+  4. The scheduler, triggers, outbox pump and metering run under the platform lease. Per-account seats and host admission live in shared stores.
   5. Coalescing and cadence decay.
   6. No in-box timers (asserted).
   7. Blue/green frontends behind the local switch.
@@ -685,7 +727,9 @@ S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───�
 - **Only if the founder adopts it:** a compute-hour budget and spare-capacity lane, as its own change.
 - **Acceptance:** FIFO fairness holds under a 20-agent fan-out (measured).
 
-### S10. Postgres domains and the cell seam — **founder spend if managed Postgres** ($15.15–30.30/mo; self-hosted $0)
+### S10. Postgres domains and the cell seam — **no spend: self-hosted on our cloud server**
+
+**Founder, 2026-10-02:** Postgres runs **self-hosted as a container on our cloud server** (the droplet, $0). It never runs on the founder's desktop: his PC is never a platform dependency. Managed Postgres is not used.
 
 - **Tasks:**
   1. Inventory which of the four domains exist today.
@@ -695,7 +739,7 @@ S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───�
   5. The identity map with the ownership generation.
   6. `home_cell` plus the signed claim plus the Worker route (one target).
   7. Ingress dedup.
-  8. Off-region Postgres backups.
+  8. Off-region Postgres backups (pgBackRest or dumps to the S1 bucket), included in the DR drill.
   9. Spec sync.
 - **Acceptance:**
   - a stale-generation request and a duplicate webhook are refused or deduplicated;
@@ -743,11 +787,11 @@ S0 ──> S5;  S1 + S5 ──> box-inclusive drill;  S9 ──> S11 ───�
 
 ## Open questions (founder)
 
-1. **S0:** a staging droplet (~$0.14), or a quiet-window production benchmark.
-2. **S1:** bucket provider (R2/B2), standby droplet ($12–24/mo), Cloudflare LB (~$5/mo), and the vault-key escrow holder.
+1. **S0:** *decided*: approved (~$0.14). It runs from `.github/workflows/box-kvm-validation.yml` (#4288).
+2. **S1:** *decided (slim spend)*: off-region storage is DO Spaces nyc3; standby and LB are deferred until paying users. Still open: the vault-key escrow holder.
 3. **S5, if S0 fails on DO:** OVH RISE-S Hillsboro ($77/mo, 12-month term).
 4. **S9:** whether to add a compute-hour budget and spare lane to storage + seats.
-5. **S10:** self-hosted Postgres ($0) or DO managed ($15.15/$30.30 HA).
+5. **S10:** *decided*: self-hosted as a container on our cloud server; never the founder's PC.
 6. **D6:** the Claude subscription stays owner-only (founder's command center) unless he decides otherwise.
 7. **D3 box disk sizing** (escalated from refute round 3):
    - start each box at the full remaining account quota, so there is no mid-operation growth but host reservation is overcommitted; or
