@@ -344,6 +344,373 @@ jobs:
           BACKUP_REMOTE
           echo "Off-host backup configuration installed and verified."
 
+      # Off-REGION copy of both backup tiers (target-architecture S1a.3; concern
+      # 2026-10-02-backups-share-the-droplets-region). BACKUP_DEST is a Spaces
+      # bucket in sfo3, the droplet's own region, so a regional loss takes the
+      # primary and its only off-host copy together. This converges a second
+      # bucket in nyc3 (same provider, $0 extra on the existing Spaces plan; the
+      # provider-diverse upgrade is R2 at the first paying users) and a
+      # per-bucket readwrite key for it, as an `[offregion]` rclone remote
+      # beside `[spaces]`.
+      #
+      # Bucket creation needs a key that is not scoped to a bucket that does not
+      # exist yet, so a `fullaccess` key is minted ONLY when the remote is
+      # absent, used for one `rclone mkdir` on the runner, and deleted (HTTP 204
+      # required) before anything touches the droplet. The droplet only ever
+      # holds the per-bucket readwrite key. The weekly DR drill mints its own
+      # short-lived read key per run, so no standing read credential exists.
+      - name: Ensure off-region backup configuration
+        env:
+          DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          bucket="tinyassets-offregion"
+          endpoint="nyc3.digitaloceanspaces.com"
+          destination="offregion:${bucket}/backups"
+          bootstrap_key_name="tinyassets-offregion-bootstrap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          key_name="tinyassets-offregion-shipper-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          remote_state="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash -s -- $(printf '%q' "${destination}")" <<'OFFREGION_STATE'
+          set -euo pipefail
+          expected_destination="$1"
+          env_file="${2:-/etc/tinyassets/env}"
+          config="${3:-/root/.config/rclone/rclone.conf}"
+          rclone_bin="${4:-rclone}"
+          assignment_count="$(
+            awk -F= '$1 == "BACKUP_OFFREGION_DEST" { count++ } END { print count + 0 }' \
+              "${env_file}" 2>/dev/null || printf '0\n'
+          )"
+          configured_destination="$(
+            awk -F= '
+              $1 == "BACKUP_OFFREGION_DEST" {
+                value = substr($0, index($0, "=") + 1)
+              }
+              END { print value }
+            ' "${env_file}" 2>/dev/null || true
+          )"
+          # rclone (goconfig) trims whitespace around a header, so count every
+          # spelling it would treat as [offregion], not just the canonical one.
+          section_count="$(grep -cE '^[[:space:]]*\[[[:space:]]*offregion[[:space:]]*\][[:space:]]*$' "${config}" 2>/dev/null || true)"
+          section_count="${section_count:-0}"
+          if [[ "${assignment_count}" == "1" &&
+            "${configured_destination}" == "${expected_destination}" &&
+            "${section_count}" == "1" && ! -L "${config}"
+          ]]; then
+            if "${rclone_bin}" lsf "${expected_destination}" --max-depth 1 >/dev/null 2>&1; then
+              printf 'configured_ready\n'
+            else
+              printf 'partial_or_invalid\n'
+            fi
+          elif [[ "${assignment_count}" == "0" && "${section_count}" == "0" ]]; then
+            printf 'completely_absent\n'
+          else
+            printf 'partial_or_invalid\n'
+          fi
+          OFFREGION_STATE
+          )"
+
+          case "${remote_state}" in
+            configured_ready)
+              echo "Off-region backup configuration is already verified."
+              exit 0
+              ;;
+            completely_absent)
+              echo "Off-region backup configuration is absent; converging it."
+              ;;
+            partial_or_invalid)
+              echo "::error::Off-region backup configuration is partial or its destination probe failed; refusing automatic rotation."
+              exit 1
+              ;;
+            *)
+              echo "::error::Unexpected off-region backup configuration state."
+              exit 1
+              ;;
+          esac
+
+          sudo apt-get install -y --no-install-recommends rclone >/dev/null
+          response_file="$(mktemp)"
+          credentials_file="$(mktemp)"
+          section_file="$(mktemp)"
+          api_header_file="$(mktemp)"
+          chmod 600 \
+            "${response_file}" "${credentials_file}" "${section_file}" \
+            "${api_header_file}"
+          printf 'Authorization: Bearer %s\n' "${DO_API_TOKEN}" \
+            > "${api_header_file}"
+          remote_stage=""
+          bootstrap_access_key=""
+          created_access_key=""
+
+          delete_key() {
+            # $1 = access key id; prints nothing secret; returns non-zero unless 204.
+            local status rc
+            status="$(
+              curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -X DELETE \
+                -H @"${api_header_file}" \
+                "https://api.digitalocean.com/v2/spaces/keys/$1"
+            )"
+            rc=$?
+            [[ "${rc}" -eq 0 && "${status}" == "204" ]]
+          }
+
+          reconcile_bootstrap_keys() {
+            # Independent of any tracked id: delete EVERY key whose name marks it a
+            # bootstrap key, from this run or an earlier one that was cancelled,
+            # lost its runner, or lost the POST response (Codex on #4279). Returns
+            # non-zero if any such key could not be listed or deleted.
+            local list_file listed rc
+            list_file="$(mktemp)"
+            chmod 600 "${list_file}"
+            listed="$(
+              curl -sS --max-time 30 --max-filesize 1048576 -o "${list_file}" \
+                -w '%{http_code}' -H @"${api_header_file}" \
+                "https://api.digitalocean.com/v2/spaces/keys?per_page=200"
+            )"
+            rc=$?
+            if [[ "${rc}" -ne 0 || "${listed}" != "200" ]]; then
+              rm -f "${list_file}"
+              echo "::error::Could not list Spaces keys to reconcile bootstrap keys (HTTP ${listed})."
+              return 1
+            fi
+            local failed=0 key_id
+            while read -r key_id; do
+              [[ -n "${key_id}" ]] || continue
+              echo "::add-mask::${key_id}"
+              if ! delete_key "${key_id}"; then
+                echo "::error::A leftover bootstrap fullaccess key could not be deleted; delete keys named tinyassets-offregion-bootstrap-* in the DO console."
+                failed=1
+              fi
+            done < <(python - "${list_file}" <<'OFFREGION_LIST_PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              payload = json.load(handle)
+          for key in payload.get("keys") or []:
+              name = key.get("name") if isinstance(key, dict) else None
+              access = key.get("access_key") if isinstance(key, dict) else None
+              if (isinstance(name, str) and name.startswith("tinyassets-offregion-bootstrap-")
+                      and isinstance(access, str) and re.fullmatch(r"[A-Za-z0-9]{8,128}", access)):
+                  print(access)
+          OFFREGION_LIST_PY
+            )
+            rm -f "${list_file}"
+            return "${failed}"
+          }
+
+          cleanup() {
+            rc=$?
+            cleanup_failed=0
+            set +e
+            if [[ -n "${bootstrap_access_key}" ]]; then
+              if ! delete_key "${bootstrap_access_key}"; then
+                echo "::error::Bootstrap fullaccess Spaces key deletion failed; delete key ${bootstrap_key_name} in the DO console."
+                cleanup_failed=1
+              fi
+            fi
+            # Also by name: covers a POST whose response was lost before the id
+            # was recorded.
+            if [[ "${bootstrap_minted}" == "1" ]] && ! reconcile_bootstrap_keys; then
+              cleanup_failed=1
+            fi
+            if [[ "${rc}" -ne 0 && -n "${created_access_key}" ]]; then
+              if [[ -n "${remote_stage}" ]]; then
+                # set -e: a failed section removal must not be reported as a
+                # rollback just because the env delete after it succeeded. The
+                # final checks verify the state the rollback claims.
+                rollback_command="set -euo pipefail; python3 $(printf '%q' "${remote_stage}/rclone_conf_section.py") remove /root/.config/rclone/rclone.conf offregion; bash $(printf '%q' "${remote_stage}/install-tinyassets-env.sh") delete BACKUP_OFFREGION_DEST; if grep -qE '^[[:space:]]*\\[[[:space:]]*offregion[[:space:]]*\\]' /root/.config/rclone/rclone.conf; then exit 1; fi; if grep -q '^BACKUP_OFFREGION_DEST=' /etc/tinyassets/env; then exit 1; fi"
+                if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                    "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                    "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 120 -- /bin/bash -lc $(printf '%q' "${rollback_command}")" \
+                    >/dev/null 2>&1
+                then
+                  echo "::error::Remote off-region configuration rollback failed."
+                  cleanup_failed=1
+                fi
+              fi
+              if delete_key "${created_access_key}"; then
+                echo "Rolled back the newly created off-region Spaces key."
+              else
+                echo "::error::Off-region Spaces key rollback failed."
+                cleanup_failed=1
+              fi
+            fi
+            if [[ -n "${remote_stage}" ]]; then
+              # The staged section holds a live readwrite credential: a failed
+              # removal is a failure, not a shrug (Codex on #4279).
+              if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "rm -rf -- $(printf '%q' "${remote_stage}") && test ! -e $(printf '%q' "${remote_stage}")" \
+                  >/dev/null 2>&1
+              then
+                echo "::error::Could not remove the staged off-region credential at ${remote_stage} on the droplet; remove it by hand."
+                cleanup_failed=1
+              fi
+            fi
+            rm -f -- \
+              "${response_file}" "${credentials_file}" "${section_file}" \
+              "${api_header_file}"
+            if [[ "${cleanup_failed}" -ne 0 ]]; then
+              exit 1
+            fi
+            exit "${rc}"
+          }
+          trap cleanup EXIT
+          # A cancelled job gets SIGTERM; route it through the same cleanup.
+          trap 'exit 143' TERM
+          trap 'exit 130' INT
+          bootstrap_minted=0
+
+          mint_key() {
+            # $1 = JSON payload. Writes "access\nsecret" to credentials_file.
+            local http_status
+            http_status="$(
+              curl -sS --max-filesize 4096 \
+                -o "${response_file}" -w '%{http_code}' -X POST \
+                -H @"${api_header_file}" \
+                -H "Content-Type: application/json" \
+                --data-binary "$1" \
+                "https://api.digitalocean.com/v2/spaces/keys"
+            )"
+            if [[ "${http_status}" != "201" ]]; then
+              echo "::error::DigitalOcean Spaces key creation failed with HTTP ${http_status}; check DO_API_TOKEN has the spaces key scopes."
+              return 1
+            fi
+            python - "${response_file}" > "${credentials_file}" <<'OFFREGION_KEY_PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              payload = json.load(handle)
+          key = payload.get("key")
+          if not isinstance(key, dict):
+              raise SystemExit("Spaces key response omitted key")
+          access_key = key.get("access_key")
+          secret_key = key.get("secret_key")
+          if not isinstance(access_key, str) or not re.fullmatch(r"[A-Za-z0-9]{8,128}", access_key):
+              raise SystemExit("Spaces key response contained invalid access key")
+          if not isinstance(secret_key, str) or not re.fullmatch(r"[A-Za-z0-9+/=_-]{16,256}", secret_key):
+              raise SystemExit("Spaces key response contained invalid secret key")
+          print(access_key)
+          print(secret_key)
+          OFFREGION_KEY_PY
+          }
+
+          # 1. Bucket: a short-lived fullaccess key, used once on the runner.
+          # First remove any bootstrap key an earlier, interrupted run left behind.
+          reconcile_bootstrap_keys
+          bootstrap_minted=1
+          mint_key "$(printf '{"name":"%s","grants":[{"bucket":"","permission":"fullaccess"}]}' "${bootstrap_key_name}")"
+          mapfile -t credentials < "${credentials_file}"
+          [[ "${#credentials[@]}" -eq 2 ]]
+          bootstrap_access_key="${credentials[0]}"
+          echo "::add-mask::${credentials[0]}"
+          echo "::add-mask::${credentials[1]}"
+          bucket_ready=0
+          for delay in 0 5 10 20 30; do
+            if [[ "${delay}" -gt 0 ]]; then
+              sleep "${delay}"
+            fi
+            if RCLONE_CONFIG_BOOT_TYPE=s3 RCLONE_CONFIG_BOOT_PROVIDER=DigitalOcean \
+                RCLONE_CONFIG_BOOT_ACCESS_KEY_ID="${credentials[0]}" \
+                RCLONE_CONFIG_BOOT_SECRET_ACCESS_KEY="${credentials[1]}" \
+                RCLONE_CONFIG_BOOT_ENDPOINT="${endpoint}" RCLONE_CONFIG_BOOT_ACL=private \
+                timeout --kill-after=1s 30s rclone mkdir "boot:${bucket}" --retries 1 --low-level-retries 1 \
+                >/dev/null 2>&1; then
+              bucket_ready=1
+              break
+            fi
+          done
+          if [[ "${bucket_ready}" -ne 1 ]]; then
+            echo "::error::Could not create or reach bucket ${bucket} in nyc3 (name taken by another account, or key propagation)."
+            exit 1
+          fi
+          # rclone mkdir also succeeds on BucketAlreadyExists (someone else's
+          # bucket), so prove ownership: our own bucket list must contain it.
+          if ! RCLONE_CONFIG_BOOT_TYPE=s3 RCLONE_CONFIG_BOOT_PROVIDER=DigitalOcean \
+              RCLONE_CONFIG_BOOT_ACCESS_KEY_ID="${credentials[0]}" \
+              RCLONE_CONFIG_BOOT_SECRET_ACCESS_KEY="${credentials[1]}" \
+              RCLONE_CONFIG_BOOT_ENDPOINT="${endpoint}" \
+              timeout --kill-after=1s 30s rclone lsd boot: --retries 1 --low-level-retries 1 2>/dev/null \
+              | awk '{print $NF}' | grep -qx "${bucket}"; then
+            echo "::error::Bucket ${bucket} exists but is not in this account's bucket list; refusing to use it."
+            exit 1
+          fi
+          if ! delete_key "${bootstrap_access_key}"; then
+            echo "::error::Bootstrap fullaccess Spaces key deletion failed."
+            exit 1
+          fi
+          bootstrap_access_key=""
+          if ! reconcile_bootstrap_keys; then
+            exit 1
+          fi
+          bootstrap_minted=0
+          echo "Bucket ${bucket} (nyc3) owned and ready; bootstrap key deleted."
+
+          # 2. The droplet's per-bucket readwrite key.
+          mint_key "$(printf '{"name":"%s","grants":[{"bucket":"%s","permission":"readwrite"}]}' "${key_name}" "${bucket}")"
+          mapfile -t credentials < "${credentials_file}"
+          [[ "${#credentials[@]}" -eq 2 ]]
+          created_access_key="${credentials[0]}"
+          secret_key="${credentials[1]}"
+          echo "::add-mask::${created_access_key}"
+          echo "::add-mask::${secret_key}"
+          printf '%s\n' \
+            '[offregion]' \
+            'type = s3' \
+            'provider = DigitalOcean' \
+            "access_key_id = ${created_access_key}" \
+            "secret_access_key = ${secret_key}" \
+            "endpoint = ${endpoint}" \
+            'acl = private' \
+            > "${section_file}"
+
+          remote_stage="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "mktemp -d /tmp/tinyassets-offregion-config.XXXXXX"
+          )"
+          [[ "${remote_stage}" =~ ^/tmp/tinyassets-offregion-config[.][A-Za-z0-9]+$ ]]
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${section_file}" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/offregion.section"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh scripts/rclone_conf_section.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
+
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 300 -- /bin/bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${destination}")" <<'OFFREGION_REMOTE'
+          set -euo pipefail
+          remote_stage="$1"
+          destination="$2"
+          sudo install -d -m 0700 -o root -g root /root/.config/rclone
+          sudo python3 "${remote_stage}/rclone_conf_section.py" add \
+              /root/.config/rclone/rclone.conf "${remote_stage}/offregion.section"
+          printf '%s\n' "${destination}" \
+            | sudo bash "${remote_stage}/install-tinyassets-env.sh" set BACKUP_OFFREGION_DEST
+          probe_ready=0
+          for delay in 0 5 10 20 30; do
+            if [[ "${delay}" -gt 0 ]]; then
+              sleep "${delay}"
+            fi
+            if timeout --kill-after=1s 5s sudo rclone lsf "${destination}" --max-depth 1 --retries 1 --low-level-retries 1 >/dev/null 2>&1; then
+              probe_ready=1
+              break
+            fi
+          done
+          if [[ "${probe_ready}" -ne 1 ]]; then
+            echo "Off-region Spaces key did not become usable within the propagation window." >&2
+            exit 1
+          fi
+          OFFREGION_REMOTE
+          echo "Off-region backup configuration installed and verified."
+
       - name: Install exact uptime bundle
         env:
           REQUESTED_SOURCE_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
@@ -434,7 +801,7 @@ jobs:
               --no-pager --output=cat
           )"
           printf '%s\n' "${journal}" \
-            | grep -E 'brain upload OK|  upload OK|gh-ship: \[backup-ship\] uploaded:|WARN:|ERROR:|backup complete[.]' \
+            | grep -E 'brain upload OK|  upload OK|off-region upload OK|gh-ship: \[backup-ship\] uploaded:|WARN:|ERROR:|backup complete[.]' \
             || true
 
           [[ "${service_rc}" -eq 0 ]]
@@ -448,6 +815,8 @@ jobs:
           [[ -n "${after_full}" && "${after_full}" != "${before_full}" ]]
           printf '%s\n' "${journal}" | grep -Fq "  brain upload OK"
           printf '%s\n' "${journal}" | grep -Fq "  upload OK"
+          # The off-region copy (S1a.3) is the one the weekly DR drill restores.
+          printf '%s\n' "${journal}" | grep -Fq "  off-region upload OK"
           printf '%s\n' "${journal}" | grep -Fq "backup complete."
           if printf '%s\n' "${journal}" | grep -Eq 'WARN:|ERROR:'; then
             echo "Backup invocation emitted a warning or error." >&2
@@ -458,7 +827,8 @@ jobs:
               | grep -Fc "gh-ship: [backup-ship] uploaded:" \
               || true
           )"
-          [[ "${gh_upload_count}" -eq 2 ]]
+          # Brain tier only: the full tier exceeds GitHub's 2 GiB asset limit.
+          [[ "${gh_upload_count}" -eq 1 ]]
           printf 'Verified fresh backup: brain=%s full=%s github_assets=%s\n' \
             "${after_brain}" "${after_full}" "${gh_upload_count}"
           BACKUP_EXERCISE

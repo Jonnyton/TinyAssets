@@ -72,6 +72,7 @@ on:
       - 'scripts/rotate_run_transcripts.py'
       - 'scripts/backup_ship_gh.py'
       - 'scripts/backup_prune.py'
+      - 'scripts/rclone_conf_section.py'
       - 'scripts/retire_cheat_loop_deploy_fence.py'
       - 'scripts/prepare_expected_instance_state.py'
       # Python the deploy-chain workflows run, and what it imports
