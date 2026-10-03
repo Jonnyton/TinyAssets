@@ -66,16 +66,6 @@ ALLOWED = {
     ("tinyassets/universe_intelligence.py", "read_operating_instructions"):
         "creates the seed AGENTS.md with O_CREAT|O_EXCL|O_NOFOLLOW and writes it; "
         "reading it goes through universe_files",
-    ("tinyassets/api/helpers.py", "_read_json"):
-        "reads root-level platform JSON (status.json, ledger, work_targets.json, "
-        "requests); the tool jail binds those read-only or hides them, never wiki/",
-    ("tinyassets/api/helpers.py", "_read_platform_text"):
-        "_read_text sends only paths OUTSIDE the active wiki root here (activity.log, "
-        "run logs); every wiki page goes through universe_files",
-    ("tinyassets/api/wiki.py", "_append_wiki_log"):
-        "opens log.md in append mode to WRITE one line; it never reads it",
-    ("tinyassets/api/wiki.py", "_wiki_file_bug"):
-        "opens a new bug page with mode 'x' to WRITE it; it never reads it",
     ("tinyassets/wiki/okf_export.py", "_conformance_report"):
         "reads the bundle this export just wrote into target_dir, which is refused "
         "when inside the wiki root; not an agent-written file",
