@@ -7,24 +7,34 @@ step must produce.
 
 ## E1. Read-only first: the inventory is a deliverable
 
-**R1 implementation hold (2026-10-03):** #4273's original ADAPT remains open.
-[The inventory repair contract](inventory-repair-contract.md) records the missing
-provable acquisition boundary, required fail-closed coverage semantics and fixture
-proofs. The current script is not a verified no-write or zero-count migration
-oracle. This contract is design-only; it authorizes no production inventory.
+**R1 folded (2026-10-02, #4273).** The scanner never reads its source twice over:
+it copies the root into a private artifact outside it -- regular files only, no
+symlink or reparse traversal, bounded, with the descriptor re-checked after
+opening -- and runs SQLite's online backup API on *that copy* to get the
+standalone database it scans. No source database or LanceDB store is opened by a
+library, and `immutable=1` is gone. A source file that changes during acquisition
+is fatal, which is how a live root is refused: measured, not asserted.
 
-`scripts/command_center_inventory.py` runs read-only against a data root and
-prints a machine-readable report:
+`scripts/command_center_inventory.py` prints a machine-readable report:
 
-- every SQLite table, column, `CHECK` / index / trigger / view clause, and TEXT
-  or BLOB value naming `universe` or holding a `u-<ulid>`, decoded per
-  encoding (D7.1, D11);
-- LanceDB schemas, checkpoint payloads (via serde), JSON keys and values, and
-  marker files and folders;
-- derived identities: length-prefixed lease keys, hashed connection and grant
-  ids, content digests over records that contain an id;
-- the exempt verbatim stores (uploads, run outputs, conversation text, brain
-  files), listed by name so the scan's skips are explicit.
+- every SQLite table, column (including generated ones, via `table_xinfo`),
+  `CHECK` / index / trigger / view clause, and TEXT or BLOB value naming
+  `universe` or holding a `u-<ulid>` (D7.1, D11);
+- LanceDB schemas and id rows, JSON keys and values, and marker files;
+- the exempt verbatim stores (uploads, run outputs, the agent's workspace, brain
+  files), listed by name so the scan's skips are explicit;
+- what it CANNOT see, as `deferred` rather than as a zero: derived identities --
+  length-prefixed lease keys, hashed connection and grant ids, content digests
+  over records that contain an id. Raw byte matching cannot discover a digest of
+  an id, so that discovery belongs to tasks 3/4 (E4b).
+
+The report is fail-closed. `complete`, `coverage`, `exemptions`, `unscanned` and
+`deferred` are separate keys; an unknown home entry, an unreadable store, an
+exhausted limit or `--no-values` makes it incomplete and exits nonzero with no
+flag to opt in; and `migration_ready` stays false while `deferred` is non-empty,
+so this round cannot claim readiness by construction. Checkpoint serde decoding
+and the trusted-acquisition fence in
+[the inventory repair contract](inventory-repair-contract.md) remain open there.
 
 Run it first on a production copy. Its counts are what the migration must
 bring to zero, and what the dry run compares.

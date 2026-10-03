@@ -1,7 +1,14 @@
 # Inventory R1 repair: acquisition contract before the scanner
 
-Status: implementation blocked on this contract's design disposition. This file
-is a bounded handoff, not a completed R1 fold or permission to run an inventory.
+Status: **partly folded, 2026-10-02 (#4273).** The bounded repair landed -- the
+scanner acquires its own private copy, opens no source store with a library,
+reports `complete` / `coverage` / `exemptions` / `unscanned` / `deferred`
+separately, and fails closed with no opt-in flag. What stays OPEN here is the
+trusted-acquisition design below: an admission adapter over the existing
+managed-writer fence, a producer-attested artifact, and decoders for checkpoint
+serde and derived identities. Until those land the tool reports
+`migration_ready: false` by construction, so it is still not a
+migration-readiness oracle, and this file authorizes no production inventory.
 Source: #4273 at `a2c28a3696f86936658e39c2be5d630734f33250`; original
 [Codex R1 ADAPT](https://github.com/TinyAssets/TinyAssets/pull/4273#issuecomment-5947901737).
 No source data, production inventory, credentials or host settings were accessed.
@@ -109,11 +116,14 @@ unsupported encodings or exhausted limits produce `complete: false`,
 `migration_ready: false` and nonzero exit by default. Removing `--strict` must
 never turn incomplete into success. No incomplete category gets an apparent zero.
 
-Until acquisition and the E1 coverage registry are implemented and proven, the
-current #4273 script must not be used as a no-write or migration-readiness oracle.
-Do not add a CLI success path based only on a caller asserting that a root is a
-snapshot. This documentation does not add runtime enforcement: the original
-unsafe entry point remains unchanged and the PR remains draft/ADAPT.
+All of that paragraph is now enforced in code (#4273): the flags are reported
+separately, `--strict` is deleted because unclassified entries fail by default,
+`--no-values` cannot be complete, and `migration_ready` additionally requires an
+empty `deferred`, which this round never is. There is no CLI success path for a
+caller asserting that a root is a snapshot -- the tool makes its own copy, and the
+only accepted input is a directory it copies itself. It still must not be used as
+a migration-readiness oracle, for the reason it now states about itself: a
+producer-attested acquisition and the derived-identity decoders are missing.
 
 ## Required bounded proofs and handoff
 
@@ -131,9 +141,23 @@ read or deployment is needed to build the repair.
 | CHECK with nested expression, generated field, JSON actor, checkpoint and derived identity | Correct operational findings with verbatim bytes explicitly exempt |
 | Same row matching several columns and names-only mode | Accurate row/cell labels; no value scan in names-only; no readiness claim |
 
-Next owner first resolves this acquisition design against the existing fence and
-E1 coverage requirements, then implements the original R1 fold with red/green
-regressions. Run focused inventory tests, Ruff, mirror/import checks and Linux
-fence/containment proofs. Retain historical evidence as historical; obtain the
-required current review receipt only after actual implementation. No new broad
-refute or production pass was performed for this handoff.
+Where that table stands after #4273's fold (`tests/test_command_center_inventory.py`):
+
+- **Proven:** rows 5 (unknown stays unknown, nonzero exit), 6 (oversize, prune,
+  deadline, entry and byte limits, SQLite progress cancellation), 8 (row versus
+  cell counts, names-only), and row 2 minus the word *fenced* -- one disposable
+  artifact preserves WAL-committed state and every library write lands in it.
+- **Proven on POSIX only:** row 4. The symlink and FIFO cases `skip` on the
+  Windows dev host (`os.symlink` raises WinError 1314, `os.mkfifo` is absent);
+  descriptor replacement after `lstat` is covered on both. A Linux run is the
+  oracle for the skipped two.
+- **Partly proven:** row 7 -- nested `CHECK`, generated columns and JSON actor
+  values are covered; checkpoint serde and derived identities are reported in
+  `deferred` instead, and belong to tasks 3/4.
+- **Open:** rows 1 and 3, which are the acquisition fence itself. The scanner
+  does not refuse a root because a managed writer holds a lock; it detects that
+  the source CHANGED during acquisition and fails on that. That is a weaker
+  claim, honestly stated, not the fence.
+
+Next owner on this file resolves the fence design; nothing in the folded scanner
+depends on it, because it claims no more than it measures.

@@ -22,10 +22,21 @@ Today `config.yaml` is not agent-writable. The tool jail binds it read-only
       tests. It classifies every home entry by the E6 layout, and an entry it
       cannot classify fails the run. Attach a production-copy report.
 
-      **R1 remains blocked, 2026-10-03:** the original implementation has no
-      completed unpublished fold. Resolve [the acquisition/coverage contract](inventory-repair-contract.md)
-      before runtime repairs; names/schema observations below are historical,
-      not proof of no source writes, complete coverage or migration readiness.
+      **R1 folded, 2026-10-02.** All five ADAPT must-fixes landed: classification
+      by exact creator-backed names (unknown stays unknown and fails the run),
+      scanning a private copy the tool makes itself, encoding coverage for CHECK
+      bodies / generated columns / JSON values / LanceDB id rows, bounded
+      traversal and value reads, and counts that say whether they count rows or
+      cells. Two defects found reviewing that implementation were fixed with
+      red-first tests: the worker-supervisor heartbeat family had lost its
+      classification (which would have made the ~750 JSON files below
+      unclassified), and requiring a database's `-shm` discarded every finding in
+      it while a writer held the file. What the scan cannot see is reported as
+      `deferred`, so `migration_ready` is false by construction until tasks 3/4
+      cover derived identities. The remaining
+      [acquisition/coverage contract](inventory-repair-contract.md) items --
+      a producer-attested fence and checkpoint serde decoding -- are follow-up
+      work; the observations below stay historical.
 
       **First result, 2026-10-02.** This was a names-and-schema pass
       (`--no-values`), read-only, against live production via
