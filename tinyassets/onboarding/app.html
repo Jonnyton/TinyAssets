@@ -158,6 +158,16 @@
     .connect-go{width:100%;margin:.6rem 0 .25rem}
     .connect-other{margin-top:.6rem}
     .connect-other summary{cursor:pointer;font-size:.8rem;color:var(--ink-dim)}
+    /* The connect screen: one heading, then each source as a small card. */
+    .connect-heading{font-size:.95rem;margin:.6rem 0 .1rem}
+    .connect-source{border-top:1px solid var(--line);padding:.55rem 0 .2rem;margin-top:.5rem}
+    .connect-source .btn{width:100%;margin-top:.4rem}
+    .connect-source-name{font-size:.85rem}
+    .connect-terms{font-size:.72rem;color:var(--muted);margin:.25rem 0}
+    /* The daily-cap card under a failed turn: plain, dismissable, never a modal. */
+    .daily-cap{border:1px solid var(--line);border-radius:10px;padding:.6rem .75rem;margin-top:.5rem}
+    .daily-cap p{margin:.2rem 0}
+    .daily-cap .rtab-row .btn{text-decoration:none}
     .connect-shapes{display:flex;flex-wrap:wrap;gap:.35rem;margin:.5rem 0}
     .connect-shapes .btn{padding:.3rem .6rem;font-size:.8rem}
     .connect-shapes .btn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
@@ -501,7 +511,14 @@
                the notification request"). ONE node: renderRail moves it into the
                request's tab, so what the user typed survives the rail refresh. -->
           <div id="connect-panel" class="connect-panel" hidden>
-            <div id="free-source-cards"></div>
+            <!-- The connect screen (founder 2026-10-02): the guided free sign-in
+                 first, a backup free source, a subscription for more volume, and
+                 pasted keys folded away. Every provider name arrives as data. -->
+            <div id="connect-intro" hidden>
+              <h3 class="connect-heading">Connect free AI</h3>
+              <span class="rtab-help">Your agent thinks with AI you connect. Each source runs on
+                your own account there, and you approve it at the provider.</span>
+            </div>
             <div id="connect-primary">
               <button id="btn-hosted-model" class="btn btn--primary connect-go" type="button"></button>
               <span id="connect-primary-note" class="rtab-help">Free models only; nothing is bought.
@@ -522,6 +539,23 @@
             </div>
             <a id="hosted-manage-link" class="rtab-link" data-external target="_blank"
               rel="noreferrer noopener" hidden>Manage your keys there</a>
+            <!-- Ordered by what an agent can actually run on: the guided sign-in
+                 above, then pasted keys (largest daily allowances first, as data),
+                 then the small monthly sign-in source, then a subscription. -->
+            <details id="connect-paste" class="connect-other" hidden>
+              <summary id="connect-paste-summary">Paste a key</summary>
+              <div id="free-source-cards"></div>
+            </details>
+            <div id="connect-sign-in-sources"></div>
+            <div id="connect-subscriptions"></div>
+            <div id="sub-signin" class="connect-source" hidden>
+              <div id="sub-signin-code" class="rtab-note" hidden>
+                <span id="sub-signin-code-value"></span>
+                <a id="sub-signin-code-link" class="rtab-link" data-external target="_blank"
+                  rel="noreferrer noopener">Open the sign-in page</a>
+              </div>
+              <div id="sub-signin-result" class="rtab-note" role="status" aria-live="polite"></div>
+            </div>
             <details id="connect-other" class="connect-other">
               <summary>Other ways to connect</summary>
               <div id="connect-shapes" class="connect-shapes" role="group" aria-label="How to connect"></div>
@@ -694,6 +728,7 @@
         Your history and designs stay. Your provider account is not deleted.
         Requests already sent may still finish.</p>
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
+        <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
         <h3>Your agent's rules</h3>
@@ -3026,9 +3061,10 @@
     error.failureRecorded=recorded;
     error.historySaved=recorded&&payload.history_saved===true;
     error.failureCode=recorded?failure.code:"";
+    error.failure=recorded?failure:null;
     return error;
   }
-  function appendFailureNotice(text,original,instant,failureCode){
+  function appendFailureNotice(text,original,instant,failureCode,failure){
     // No guessed/page-truncated original, no automatic replay. A saved failure
     // remains history; a user click starts a NEW turn rather than erasing it.
     let again=null;
@@ -3050,6 +3086,9 @@
       connect.className="btn btn--link"; connect.textContent="Connect a model";
       connect.addEventListener("click",()=>openConnectRequest());
       note.appendChild(connect);
+    }
+    if(failureCode==="provider_daily_quota"&&failure&&typeof DailyCapCard!=="undefined"){
+      note.appendChild(DailyCapCard.build(failure));
     }
     return note;
   }
@@ -4273,7 +4312,7 @@
       // at a parser string with nothing to do (founder, 2026-08-28).
       if(err.historySaved){
         if(!opts.keepInflight)forgetInflight();
-        appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode);
+        appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode,err.failure);
       }else{
         unconfirmed=!!(err&&err.transport)&&!err.notSent;
         offerResend(message, display, err, Object.assign({}, opts||{}, {sentAt}));
@@ -4379,7 +4418,7 @@
       if(error&&error.authRequired){ sessionExpired(); throw error; }
       if(error.historySaved){
         forgetInflight();
-        appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode);
+        appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode,error.failure);
       }else{
         unconfirmed=!!(error&&error.transport)&&!error.notSent;
         offerResend(message,message,error,
@@ -6807,6 +6846,8 @@
       return item;
     }
     $("btn-refresh-connections").addEventListener("click",loadConnections);
+    // Settings' way into the one connect screen: the chat, with it open.
+    $("btn-connect-free-ai").addEventListener("click",()=>openConnectRequest());
     // Back to the command center's chat, re-reading what powers it: after a
     // disconnect that is chat with the connect request first, never a
     // separate setup screen.
@@ -7081,6 +7122,7 @@
         return {error:true,title:saved&&saved.title};
       }
       const out={flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier,title:saved.title};
+      if(saved.source===true) out.source=true;
       // RFC 9207: the server's own issuer, checked server-side against discovery.
       const iss=query.get("iss");
       if(iss&&iss.length<=2048) out.iss=iss;
@@ -7101,13 +7143,15 @@
       }
       return result;
     },
-    async begin(req,note,button){
+    async begin(req,note,button,opts){
       if(NATIVE) return;
+      // Server-confirmed platform provenance survives retries from the rail.
+      const source=req.origin==="platform"||!!(opts&&opts.source);
       button.disabled=true;
       note.textContent="Opening the provider's sign-in. You choose there whether to allow it.";
       try{
         const verifier=randToken(32),code_challenge=await challengeFor(verifier);
-        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title}));
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source}));
         const result=await this.post("oauth_begin",{request_id:req.request_id,code_challenge});
         const url=new URL(result.authorize_url);
         if(url.protocol!=="https:"||url.username||url.password||
@@ -7115,7 +7159,7 @@
            !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600){
           throw new Error("invalid_sign_in_response");
         }
-        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source,
           flow:result.flow,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(err){
@@ -7136,6 +7180,19 @@
         const payload={flow:cb.flow,code:cb.code,code_verifier:cb.code_verifier};
         if(cb.iss) payload.iss=cb.iss;
         const result=await this.post("oauth_exchange",payload);
+        if(cb.source){
+          // The platform's own ask: nothing for the agent to hear, and no turn
+          // spent telling it. A powered command center adds the source on the
+          // owner's explicit yes, which is now waiting in the rail.
+          appendMessage("system",result.confirmation
+            ?"Signed in. Confirm \""+frameTitle({title:result.confirmation.title||cb.title})+
+              "\" under Waiting on you to add it to your agent."
+            :result.confirmation_error
+              ?"Signed in, but adding it to your agent needs a look: open Change model."
+              :"Signed in. Your agent can use it now.");
+          await refreshRail();
+          return;
+        }
         appendMessage("system","Connected. "+(result.receipt||""));
         await refreshRail();
         // The owner's own line, as for any answered request: the command center
@@ -7190,6 +7247,175 @@
   ConnectOAuth.pending=ConnectOAuth.takeCallback();
   ConnectOAuth.resumeWhenSignedIn();
   // End connect OAuth controller.
+
+  // The connect screen's subscription sign-in: the same device client as "Sign in
+  // again", with its own elements and its own state, started from its own button.
+  // Built on first use, because that client is defined further down the page.
+  let subscriptionConnect=null;
+  function subscriptionClient(){
+    if(!subscriptionConnect) subscriptionConnect=Object.assign({},SignInConnect,{
+      ids:{code:"sub-signin-code",value:"sub-signin-code-value",link:"sub-signin-code-link",
+        result:"sub-signin-result"},
+      connectedText:"Signed in. Your agent can run on your subscription now.",
+    });
+    return subscriptionConnect;
+  }
+
+  // Subscriptions the connect screen offers for more volume (data on the setup
+  // request: a service and its words). The page names none of them itself.
+  const SubscriptionCards={
+    signature:"",
+    render(subscriptions){
+      const host=$("connect-subscriptions");
+      const valid=(Array.isArray(subscriptions)?subscriptions:[]).filter(s=>s&&
+        typeof s.service==="string"&&/^[a-z0-9_-]{1,32}$/.test(s.service)&&
+        typeof s.label==="string"&&s.label.length>0&&s.label.length<=80);
+      $("sub-signin").hidden=!valid.length;
+      const signature=JSON.stringify(valid);
+      if(this.signature===signature) return;
+      this.signature=signature;host.replaceChildren();
+      for(const subscription of valid){
+        const card=document.createElement("div");card.className="connect-source";
+        const note=document.createElement("p");note.className="connect-terms";
+        note.textContent=typeof subscription.note==="string"?subscription.note:"";card.appendChild(note);
+        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
+        button.textContent=subscription.label;card.appendChild(button);
+        button.addEventListener("click",()=>{
+          const client=subscriptionClient();
+          client.configure(subscription.service,"");
+          client.start();
+        });
+        host.appendChild(card);
+      }
+    },
+  };
+
+  // Sources completed by SIGNING IN (installed data on the setup request). One tap
+  // asks the server for the platform's own connect request, then hands it to the
+  // generic sign-in client: the browser names only the source's id.
+  const SignInSourceCards={
+    signature:"",busy:false,
+    render(sources){
+      const host=$("connect-sign-in-sources");
+      const valid=(Array.isArray(sources)?sources:[]).filter(s=>s&&typeof s.id==="string"&&
+        /^[a-z0-9_]{1,64}$/.test(s.id)&&typeof s.name==="string"&&typeof s.label==="string"&&
+        s.label.length>0&&s.label.length<=80);
+      const signature=JSON.stringify(valid);
+      if(this.signature===signature) return;
+      this.signature=signature;host.replaceChildren();
+      for(const source of valid){
+        const card=document.createElement("div");card.className="connect-source";
+        const name=document.createElement("strong");name.className="connect-source-name";
+        name.textContent=source.name;card.appendChild(name);
+        const offer=document.createElement("p");offer.className="connect-terms";
+        offer.textContent=typeof source.offer==="string"?source.offer:"";card.appendChild(offer);
+        const terms=document.createElement("p");terms.className="connect-terms";
+        terms.textContent=typeof source.billing_note==="string"?source.billing_note:"";
+        card.appendChild(terms);
+        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
+        button.textContent=source.label;card.appendChild(button);
+        const status=document.createElement("p");status.className="rtab-note";
+        status.setAttribute("role","status");card.appendChild(status);
+        button.addEventListener("click",()=>this.start(source,button,status));
+        host.appendChild(card);
+      }
+    },
+    async start(source,button,status){
+      if(this.busy||NATIVE) return;
+      this.busy=true;button.disabled=true;status.textContent="Opening the sign-in…";
+      try{
+        const result=await ConnectOAuth.post("source_sign_in",{preset_id:source.id});
+        const req=result&&result.request;
+        if(!req||typeof req.request_id!=="string"||!req.action||req.action.type!=="connect"||
+           !req.action.oauth) throw new Error("sign_in_unavailable");
+        await ConnectOAuth.begin(req,status,button,{source:true});
+      }catch(error){
+        status.textContent="Sign-in could not be started ("+((error&&error.message)||"unknown error")+
+          "). Nothing was connected; try again in a moment.";
+        button.disabled=false;
+      }finally{this.busy=false;}
+    },
+  };
+
+  // Under a turn that stopped because a source spent its free requests for the
+  // day: what happened, and the three honest ways on. The limit, the credit and
+  // the provider's name are installed data on the setup request, matched by the
+  // credit page the failure itself names; without a match the card says less,
+  // never more. Dismissable; never a modal; never a sales line.
+  const DailyCapCard={
+    setup(){
+      const rows=typeof railCache!=="undefined"&&Array.isArray(railCache)?railCache:[];
+      const row=rows.find(r=>r&&r.request_id===CONNECT_REQUEST_ID);
+      return (row&&row.action&&row.action.setup)||{};
+    },
+    creditUrl(detail){
+      const match=/Add credit: (https:\/\/[^\s"]+)/.exec(typeof detail==="string"?detail:"");
+      if(!match) return null;
+      try{ const u=new URL(match[1]); return (u.protocol==="https:"&&!u.username&&!u.password)?u:null; }
+      catch(_e){ return null; }
+    },
+    resetText(detail){
+      const match=/Reset: (\d{4}-\d\d-\d\d) (\d\d):(\d\d) UTC/.exec(typeof detail==="string"?detail:"");
+      if(!match) return "";
+      const at=new Date(match[1]+"T"+match[2]+":"+match[3]+":00Z");
+      if(!Number.isFinite(at.getTime())) return "";
+      return " (they reset at about "+at.toLocaleTimeString([],{hour:"numeric",minute:"2-digit"})+")";
+    },
+    others(setup){
+      const names=[];
+      (Array.isArray(setup.sign_in_sources)?setup.sign_in_sources:[]).forEach(s=>{
+        if(s&&typeof s.name==="string") names.push(s.name); });
+      (Array.isArray(setup.subscriptions)?setup.subscriptions:[]).forEach(s=>{
+        if(s&&typeof s.name==="string") names.push("your "+s.name+" subscription"); });
+      names.push("a key");
+      return names.length>1?names.slice(0,-1).join(", ")+", or "+names[names.length-1]:names[0];
+    },
+    build(failure){
+      const detail=failure&&typeof failure.provider_detail==="string"?failure.provider_detail:"";
+      const setup=this.setup(), credit=this.creditUrl(detail);
+      const cap=credit&&(Array.isArray(setup.daily_caps)?setup.daily_caps:[])
+        .find(c=>c&&c.host===credit.host&&typeof c.name==="string");
+      const card=document.createElement("div");card.className="daily-cap";
+      card.setAttribute("role","group");
+      const head=document.createElement("p"), body=document.createElement("p");
+      const reset=this.resetText(detail), others=this.others(setup);
+      let creditLabel="", creditHref=credit?credit.href:"";
+      if(cap){
+        head.textContent="You've used today's free "+cap.name+" requests.";
+        body.textContent="On a free "+cap.name+" account that is "+cap.free_requests_per_day+
+          "/day. Adding "+cap.credit_amount+" credit to your own "+cap.name+
+          " account once raises your "+cap.name+" daily limit to "+
+          Number(cap.credit_requests_per_day).toLocaleString("en-US")+" requests; the money goes to "+
+          cap.name+", not TinyAssets. It can be used again after the daily reset"+reset+
+          ". Or connect another AI: "+others+".";
+        creditLabel="Add credit on "+cap.name;
+        try{ const u=new URL(cap.credit_url); if(u.protocol==="https:") creditHref=u.href; }catch(_e){}
+      }else{
+        head.textContent="This AI source reached its daily limit.";
+        body.textContent="It can be used again after the daily reset"+reset+"."+
+          (credit?" You can add credit at "+credit.host+
+            " (the money goes to that provider, not TinyAssets).":"")+
+          " Or connect another AI: "+others+".";
+        if(credit) creditLabel="Add credit at "+credit.host;
+      }
+      card.setAttribute("aria-label",head.textContent);
+      card.appendChild(head);card.appendChild(body);
+      const row=document.createElement("div");row.className="rtab-row";
+      if(creditLabel&&creditHref){
+        const add=document.createElement("a");add.className="btn btn--ghost";add.textContent=creditLabel;
+        add.href=creditHref;add.target="_blank";add.rel="noopener noreferrer";row.appendChild(add);
+      }
+      const another=document.createElement("button");another.type="button";
+      another.className="btn btn--ghost";another.textContent="Connect another AI";
+      another.addEventListener("click",()=>openConnectRequest());row.appendChild(another);
+      const wait=document.createElement("button");wait.type="button";wait.className="btn btn--link";
+      wait.textContent="Wait until tomorrow";
+      wait.addEventListener("click",()=>{card.hidden=true;});row.appendChild(wait);
+      card.appendChild(row);
+      return card;
+    },
+  };
+  // End connect screen sources.
 
   // ---- Native (Android / FCM) notifications ----
   // Same route, same ownership model as the browser: the token is POSTed to
@@ -7822,6 +8048,16 @@
     // not, because it is connecting something new.
     SignInConnect.configure(setup.service || "", setup.universe_id || "");
     HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
+    // The connect screen is every setup card that names no source; a reconnect
+    // card names the one it repairs and shows only that.
+    const screen = !setup.service;
+    $("connect-intro").hidden = !screen;
+    if(typeof SignInSourceCards!=="undefined") SignInSourceCards.render(screen ? setup.sign_in_sources : []);
+    if(typeof SubscriptionCards!=="undefined") SubscriptionCards.render(screen ? setup.subscriptions : []);
+    const keyCards = Array.isArray(setup.sources) ? setup.sources : [];
+    $("connect-paste").hidden = !keyCards.length;
+    $("connect-paste-summary").textContent = keyCards.length
+      ? "Paste a key: " + keyCards.map(s => s && s.name).filter(Boolean).join(", ") : "Paste a key";
     if(typeof FreeSourceCards!=="undefined") FreeSourceCards.render(setup.sources || []);
     ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
     const panel = $("connect-panel");
@@ -7849,6 +8085,11 @@
         const label=document.createElement("label");label.textContent="API key";
         const input=document.createElement("input");input.type="password";input.autocomplete="off";
         label.appendChild(input);card.appendChild(label);
+        if(typeof source.terms==="string"&&source.terms){
+          // The provider's own terms that matter before connecting, inline.
+          const caveat=document.createElement("p");caveat.className="connect-terms";
+          caveat.textContent=source.terms;card.appendChild(caveat);
+        }
         const terms=document.createElement("p");
         terms.textContent="Use your own free or trial account with paid usage disabled. Calls follow your provider's billing settings; TinyAssets cannot enforce them.";
         card.appendChild(terms);
@@ -7955,6 +8196,10 @@
   // daemon deposit; the credential never touches this page.
   const SignInConnect={
     flow:"", timer:0, busy:false, blips:0, epoch:0, service:"", universe:"",
+    // Where this instance draws. The connect screen's subscription sign-in is a
+    // second instance of the same client with its own elements and state.
+    ids:{code:"signin-code",value:"signin-code-value",link:"signin-code-link",result:"signin-result"},
+    connectedText:"Signed in. Your agent can use this connection again.",
     // Which source the visible card is for. Set from the card, so a reconnect for one
     // source can never start a flow for another: switching cards resets whatever was
     // in flight before the new service is adopted.
@@ -7968,7 +8213,7 @@
     // kept a timer alive against a flow that had already expired, polling for as
     // long as the page stayed open -- found by the test for this, not in review.
     MAX_BLIPS:5,
-    status(text){ $("signin-result").textContent=text; },
+    status(text){ $(this.ids.result).textContent=text; },
     stop(){ if(this.timer){ clearTimeout(this.timer); this.timer=0; } },
     reset(){
       // The epoch is what cancels work already in flight. Clearing the timer is not
@@ -7978,7 +8223,7 @@
       // P1 #6). Same generation pattern the model dialog above already uses.
       this.epoch++;
       this.stop(); this.flow=""; this.busy=false; this.blips=0;
-      $("signin-code").hidden=true; $("signin-code-value").textContent="";
+      $(this.ids.code).hidden=true; $(this.ids.value).textContent="";
       this.status("");
     },
     async start(){
@@ -8013,9 +8258,9 @@
           return;
         }
         this.flow=doc.flow; this.blips=0;
-        $("signin-code-value").textContent="Your code: "+(doc.user_code||"");
-        if(doc.verification_url) $("signin-code-link").href=doc.verification_url;
-        $("signin-code").hidden=false;
+        $(this.ids.value).textContent="Your code: "+(doc.user_code||"");
+        if(doc.verification_url) $(this.ids.link).href=doc.verification_url;
+        $(this.ids.code).hidden=false;
         this.status("Enter the code on the sign-in page, then come back here.");
         // The interval the SOURCE asked for, floored so a bad value cannot spin.
         const wait=Math.max(2,Math.min(Number(doc.interval)||5,30))*1000;
@@ -8040,7 +8285,12 @@
         }
         this.reset();
         if(doc.status==="connected"){
-          this.status("Signed in. Your agent can use this connection again.");
+          this.status(doc.confirmation
+            ? "Signed in. Confirm \""+frameTitle({title:doc.confirmation.title||"Use this source"})+
+              "\" under Waiting on you to add it to your agent."
+            : doc.serving&&doc.serving.status==="serving"
+              ? this.connectedText
+              : "Signed in. Your credential was saved, but your agent's model setup still needs review. Open Change model.");
           // The card is derived from the stored rejection, which the deposit just
           // cleared, so refreshing the rail is what makes it disappear.
           if(typeof refreshRail==="function") refreshRail();
@@ -8482,7 +8732,9 @@
       if(t.speaker==="platform"){
         const previous=ordered[index-1];
         const paired=previous&&typeof t.ts==="number"&&Number.isFinite(t.ts)&&previous.ts===t.ts;
-        appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code);
+        // Only the newest turn offers the daily-cap card: an old day's limit is history.
+        appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code,
+          index===ordered.length-1?t.failure:null);
         return;
       }
       const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
@@ -8623,7 +8875,8 @@
             if(!renderedConsumerTurns.has(turn.turn_id)){
               if(observed.reply)renderConverse(observed);
               else if(observed.turn_failure){
-                appendFailureNotice(observed.failure_notice,null,undefined,observed.turn_failure.code);
+                appendFailureNotice(observed.failure_notice,null,undefined,observed.turn_failure.code,
+                  observed.turn_failure);
                 renderedConsumerTurns.add(turn.turn_id);
               }
             }
