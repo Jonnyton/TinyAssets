@@ -25,6 +25,7 @@ from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_native_discovery_integration import install_discovery
 from tests.test_native_model_authority import _call, native  # noqa: F401
 from tinyassets.exceptions import ProviderAuthorityHeldError
+from tinyassets.providers.claude_provider import ClaudeProvider
 from tinyassets.providers.model_options import model_options_document
 from tinyassets.providers.model_policy import ModelRef
 from tinyassets.providers.model_preferences import ModelEffort, ModelPreferences
@@ -267,13 +268,11 @@ def test_enumerated_effort_evidence_round_trips_by_version(level):
 # The control envelope, against a real child process.
 # --------------------------------------------------------------------------
 
-CLAUDE_PROTOCOL = NativeControlProtocol(
-    list_method="list_models", items_key="models", model_key="resolvedModel",
-    default_key="value", default_match_value="default",
-    modalities_key="inputModalities", hidden_key="disabled",
-    effort_key="supportsEffort", effort_levels_key="supportedEffortLevels",
-    assumed_input_modalities=frozenset({"text"}),
-)
+#: The REAL registration, not a copy of it. A hand-mirrored protocol here
+#: would drift from the shipped one silently -- and it did: this was a local
+#: copy, so it lacked `unsupported_error_marker` and the feature-detection
+#: tests below passed against a protocol production does not use.
+CLAUDE_PROTOCOL = ClaudeProvider.native_discovery_protocol
 
 
 def control_peer(reply, *, noise=()):
@@ -676,3 +675,99 @@ def test_select_refuses_a_withdrawn_model_at_launch():
         snapshot.select(provider="codex", owner="owner-1", universe=universe,
                         custody=custody, model_id="withdrawn",
                         access=ModelAccess("discovered"))
+
+
+# --------------------------------------------------------------------------
+# Feature detection: production runs an older CLI than `list_models` needs.
+# --------------------------------------------------------------------------
+
+
+def test_an_older_cli_reads_as_unsupported_not_broken(tmp_path):
+    """The path production takes today, until the CLI pin moves (#4351).
+
+    2.1.183 predates `list_models`. It answers an explicit "Unsupported
+    control request subtype" in 0.6s (measured 2026-10-02), which is a
+    truthful "enumeration is unknown here" -- NOT a fault. Reading it as a
+    failure would tell the owner their source is broken when it is merely old.
+
+    Detected by ASKING. A version floor would be the static provider-release
+    table this repo refuses, and it would also go stale on every CLI release.
+    """
+    from tinyassets.providers.native_jsonrpc_discovery import NativeMetadataUnsupported
+
+    script = '''
+import json, sys
+request = json.loads(sys.stdin.readline())
+print(json.dumps({"type": "control_response", "response": {
+    "subtype": "error", "request_id": request["request_id"],
+    "error": "Unsupported control request subtype: list_models",
+}}), flush=True)
+'''
+    with pytest.raises(NativeMetadataUnsupported):
+        asyncio.run(read_native_catalogue(
+            [sys.executable, "-u", "-c", script], env=os.environ.copy(),
+            cwd=str(tmp_path), protocol=CLAUDE_PROTOCOL, timeout=10,
+        ))
+
+
+def test_unsupported_enumeration_becomes_the_unknown_contract(monkeypatch, tmp_path):
+    """`enumerate_models` returns None for it, like an executor with no protocol.
+
+    That is what makes the source report `native_enumeration_unsupported` and
+    keep its own default usable, which is the pre-change behaviour exactly.
+    """
+    from tinyassets.providers import base as base_module
+    from tinyassets.providers.claude_provider import ClaudeProvider
+    from tinyassets.providers.native_jsonrpc_discovery import NativeMetadataUnsupported
+
+    async def refuse(*args, **kwargs):
+        raise NativeMetadataUnsupported("native model enumeration unsupported")
+
+    monkeypatch.setattr(base_module, "read_native_catalogue", refuse, raising=False)
+    monkeypatch.setattr(
+        "tinyassets.providers.native_jsonrpc_discovery.read_native_catalogue", refuse,
+    )
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    assert asyncio.run(ClaudeProvider().enumerate_models(
+        universe_dir=tmp_path, credential_snapshot_dir=snapshot,
+    )) is None
+
+
+def test_a_real_failure_is_still_a_failure_not_an_unknown():
+    """Only the EXPLICIT unsupported answer is downgraded.
+
+    A generic error must stay an error: reading every failure as "unsupported"
+    would hide a genuinely broken source behind a benign-looking reason.
+    """
+    from tinyassets.providers.native_jsonrpc_discovery import NativeMetadataUnsupported
+
+    for text in ("internal error", "not signed in", "rate limited"):
+        with pytest.raises(ValueError):
+            CLAUDE_PROTOCOL.decode_response({
+                "type": "control_response",
+                "response": {"subtype": "error", "request_id": "t", "error": text},
+            }, "t")
+    # ...and the marker is matched case-insensitively on the real wording.
+    with pytest.raises(NativeMetadataUnsupported):
+        CLAUDE_PROTOCOL.decode_response({
+            "type": "control_response",
+            "response": {"subtype": "error", "request_id": "t",
+                         "error": "UNSUPPORTED CONTROL REQUEST subtype: list_models"},
+        }, "t")
+
+
+def test_claude_declares_the_unsupported_marker():
+    from tinyassets.providers.claude_provider import ClaudeProvider
+
+    assert (ClaudeProvider.native_discovery_protocol.unsupported_error_marker
+            == "unsupported control request")
+
+
+def test_a_protocol_without_a_marker_treats_every_error_as_an_error():
+    """Opt-in: codex's JSON-RPC envelope has no such concept and keeps none."""
+    from tinyassets.providers.codex_provider import CodexProvider
+
+    assert getattr(
+        CodexProvider.native_discovery_protocol, "unsupported_error_marker", None,
+    ) is None

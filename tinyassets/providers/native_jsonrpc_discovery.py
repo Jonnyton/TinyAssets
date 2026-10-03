@@ -23,6 +23,23 @@ from datetime import datetime, timezone
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
 
+
+class NativeMetadataUnsupported(ProviderError):
+    """The executor ANSWERED that it does not implement this metadata method.
+
+    Distinct from "discovery failed": a CLI older than the one that added the
+    method replies with an explicit unsupported-method error, which is a
+    truthful "enumeration is unknown here" rather than a fault. Callers turn it
+    into the same None that an executor with no protocol returns, so the picker
+    says "enumeration unsupported" instead of implying something broke.
+
+    This is how the feature is DETECTED rather than version-gated: a release
+    table would be exactly the static provider-release list this repo refuses.
+    Measured 2026-10-02 against the installed CLI: an unknown subtype is
+    rejected in 0.6s, so the fallback costs a round trip, not the 30s timeout.
+    """
+
+
 _MAX_BYTES = 4 * 1024 * 1024
 _MAX_MODELS = 4096
 _MAX_PAGES = 64
@@ -260,12 +277,17 @@ class NativeControlProtocol(_ModelRowFields):
     #: one execution id. Collapsing agreeing repeats is the designed shape here,
     #: not leniency: refusing them would reject a catalogue that is correct.
     aliased_rows: bool = True
+    #: A PLATFORM-OWNED substring that marks an executor's "I do not implement
+    #: this method" answer, matched case-insensitively against its error text.
+    #: Not relayed anywhere -- it is compared and discarded, so no upstream
+    #: prose, path or account material escapes the transport's sanitized exit.
+    unsupported_error_marker: str | None = None
     #: No handshake: a control stream answers a metadata request immediately.
     initialize_method: str | None = None
     initialized_notification: str | None = None
 
     def __post_init__(self):
-        _check_keys((self.list_method,), ())
+        _check_keys((self.list_method,), (self.unsupported_error_marker,))
         self._check_row_fields()
         if (self.cursor_key is None) != (self.cursor_param is None):
             raise ValueError("invalid native metadata protocol fields")
@@ -294,7 +316,17 @@ class NativeControlProtocol(_ModelRowFields):
         envelope = message.get("response")
         if type(envelope) is not dict or envelope.get("request_id") != token:
             raise ValueError("unexpected native discovery response")
-        # An error subtype is refused rather than read as an empty catalogue.
+        # An executor too old to implement the method says so explicitly. That
+        # is "enumeration is unknown here", not a fault, and it must not read
+        # as a broken source -- the deployed CLI is older than the one that
+        # added this method, so this is the path production takes today.
+        if (self.unsupported_error_marker is not None
+                and envelope.get("subtype") == "error"
+                and type(envelope.get("error")) is str
+                and self.unsupported_error_marker.lower() in envelope["error"].lower()):
+            raise NativeMetadataUnsupported("native model enumeration unsupported")
+        # Any other error subtype is refused rather than read as an empty
+        # catalogue: "no models" and "the call failed" are different answers.
         if envelope.get("subtype") != "success" or type(envelope.get("response")) is not dict:
             raise ValueError("unexpected native discovery response")
         return envelope["response"]

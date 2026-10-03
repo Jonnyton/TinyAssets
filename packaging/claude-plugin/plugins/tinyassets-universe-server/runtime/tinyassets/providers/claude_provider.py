@@ -680,6 +680,14 @@ class ClaudeProvider(BaseProvider):
         # Unreported must not read as "accepts nothing", which would make every
         # enumerated row fail the text requirement and vanish from the picker.
         assumed_input_modalities=frozenset({"text"}),
+        # Production pins an older CLI than the one that added `list_models`
+        # (2.1.183 today; #4351 moves it to 2.1.288). An older build answers
+        # "Unsupported control request subtype: list_models" in 0.6s, measured
+        # 2026-10-02, and this marker turns that into the honest
+        # `native_enumeration_unsupported` instead of a broken-source reason.
+        # The provider default and the reviewed list keep working meanwhile, so
+        # the fallback is the pre-change behaviour exactly.
+        unsupported_error_marker="unsupported control request",
         list_params_json="{}",
     )
 
