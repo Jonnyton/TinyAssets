@@ -64,8 +64,6 @@ ALLOWED = {
         "reads /sys/fs/cgroup/<jail>/cgroup.procs, not a universe path",
     ("tinyassets/universe_tools.py", "_try_lock_one"):
         "opens a slot lock under the data dir's .universe-tool-slots, O_NOFOLLOW",
-    ("tinyassets/soul_edit.py", "_soul_lock"):
-        "opens .soul.lock for flock; a hidden root entry the tool jail masks",
     ("tinyassets/universe_intelligence.py", "read_operating_instructions"):
         "creates the seed AGENTS.md with O_CREAT|O_EXCL|O_NOFOLLOW and writes it; "
         "reading it goes through universe_files",
