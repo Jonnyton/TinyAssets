@@ -1,0 +1,510 @@
+"""The shortlist comes from the provider, and effort rides validated authority.
+
+Founder, 2026-10-03: "the desktop app should auto grab latest short list from
+provider" and "effort level controls should also be avalible". The symptom was a
+model menu showing ``claude-code · opus`` while the current flagship read "model
+access opt-in required" -- because ClaudeProvider declared credential custody
+but no metadata protocol, so enumeration returned None and the picker fell back
+to the reviewed static list, where every row is an offer to GRANT.
+
+Real owned custody/member/serving boundaries via the native fixture; the
+executor is synthetic except where a test is explicitly marked as reading the
+installed CLI.
+"""
+
+import asyncio
+import json
+import os
+import sys
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.test_native_discovery_integration import install_discovery
+from tests.test_native_model_authority import _call, native  # noqa: F401
+from tinyassets.exceptions import ProviderAuthorityHeldError
+from tinyassets.providers.model_options import model_options_document
+from tinyassets.providers.model_policy import ModelRef
+from tinyassets.providers.model_preferences import ModelEffort, ModelPreferences
+from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
+from tinyassets.providers.native_jsonrpc_discovery import (
+    NativeControlProtocol,
+    read_native_catalogue,
+)
+from tinyassets.providers.served_model_plan import (
+    PUBLIC_LISTED_BASIS,
+    prepare_owned_model_plan,
+)
+from tinyassets.storage.model_preferences import ModelPreferenceStore
+
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
+
+#: The shape the installed Claude Code CLI actually answers `list_models` with,
+#: captured from 2.1.288 on 2026-10-02. Alias rows, a `default` marker, no
+#: reported modalities, and per-model effort -- including a model with none.
+CLI_ROWS = [
+    {"value": "default", "resolvedModel": "claude-opus-5-5",
+     "displayName": "Default (recommended)", "supportsEffort": True,
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus 5.5",
+     "supportsEffort": True,
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001",
+     "displayName": "Haiku 4.5"},
+    {"value": "claude-opus-4-6", "resolvedModel": "claude-opus-4-6",
+     "displayName": "Opus 4.6", "supportsEffort": True,
+     "supportedEffortLevels": ["low", "medium", "high", "max"]},
+]
+
+
+def effortful(ids, *, levels=("low", "medium", "high", "xhigh", "max"), age=0, hidden=()):
+    return NativeCatalogue(
+        tuple(NativeModel(name, frozenset({"text"}), name in hidden, bool(levels),
+                          tuple(levels))
+              for name in ids),
+        ids[0] if ids else None, datetime.now(timezone.utc) - timedelta(seconds=age),
+    )
+
+
+def save_effort(native, ref, level):  # noqa: F811
+    store = ModelPreferenceStore(native.base)
+    current = store.get("owner-1", native.universe.name)
+    store.save(
+        "owner-1", native.universe.name, expected_generation=current.generation,
+        policy=ModelPreferences("explicit", ref, (), (ModelEffort(ref, level),)),
+    )
+
+
+# --------------------------------------------------------------------------
+# Ask 1: the provider's own shortlist, as NORMAL choices.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_advertised_model_is_a_normal_choice_not_an_opt_in_offer(native, monkeypatch):  # noqa: F811
+    """The founder's exact symptom, pinned on both sides of the split.
+
+    An id the EXECUTOR advertised is selectable now. The same id arriving only
+    from the reviewed static list is an offer to grant and says so. Asserting
+    just the first half would pass with the bug, because the static list also
+    makes the row appear -- only with the wrong status.
+    """
+    async def discover():
+        return effortful(["claude-opus-5-5"])
+    install_discovery(native, monkeypatch, discover)
+    prepared = prepare_owned_model_plan(
+        base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
+        allow_empty=True,
+    )
+    document = model_options_document(prepared.catalog, prepared.plan, prepared.ineligible)
+    row = next(r for r in document["options"]
+               if r["reference"]["model_id"] == "claude-opus-5-5")
+
+    assert row["availability_basis"] == "executor_enumerated"
+    assert row["in_candidate_catalog"] is True
+    assert row["reasons"] == [], "an advertised model must carry no refusal reason"
+    assert all(reason["reason"] != "model_access_optin_required"
+               for reason in row["reasons"])
+    # The split that makes the assertion above meaningful: a reviewed-list row
+    # for a DIFFERENT id is still gated, so this is not vacuously true.
+    listed = [r for r in document["options"]
+              if r["availability_basis"] == PUBLIC_LISTED_BASIS]
+    for offer in listed:
+        assert offer["in_candidate_catalog"] is False
+        assert any(reason["reason"] == "model_access_optin_required"
+                   for reason in offer["reasons"])
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_a_row_the_executor_disabled_never_becomes_a_choice(native, monkeypatch):  # noqa: F811
+    """Advertised-and-unselectable must not be offered; it would fail at launch."""
+    async def discover():
+        return effortful(["usable-model", "withdrawn-model"], hidden=("withdrawn-model",))
+    install_discovery(native, monkeypatch, discover)
+    prepared = prepare_owned_model_plan(
+        base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
+        allow_empty=True,
+    )
+    enumerated = {m.model_id for m in prepared.catalog.connections[0].models
+                  if m.availability_basis == "executor_enumerated"}
+    assert "usable-model" in enumerated
+    assert "withdrawn-model" not in enumerated
+
+
+# --------------------------------------------------------------------------
+# Ask 2: effort, advertised per model and carried to the provider.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_only_a_model_that_advertises_effort_offers_the_control(native, monkeypatch):  # noqa: F811
+    """No control where the provider reports none, and only the levels it named.
+
+    A live Claude Code catalogue reports effort on Opus and NOT on Haiku, and
+    4.6 drops a level 5.x carries, so this cannot be a per-provider flag.
+    """
+    async def discover():
+        return NativeCatalogue(
+            (NativeModel("rich-model", frozenset({"text"}), False, True,
+                         ("low", "medium", "high", "xhigh", "max")),
+             NativeModel("narrow-model", frozenset({"text"}), False, True,
+                         ("low", "medium", "high", "max")),
+             NativeModel("plain-model", frozenset({"text"}))),
+            "rich-model", datetime.now(timezone.utc),
+        )
+    install_discovery(native, monkeypatch, discover)
+    prepared = prepare_owned_model_plan(
+        base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
+        allow_empty=True,
+    )
+    document = model_options_document(prepared.catalog, prepared.plan, prepared.ineligible)
+    levels = {row["reference"]["model_id"]: row.get("effort_levels")
+              for row in document["options"]}
+    assert levels["rich-model"] == ["low", "medium", "high", "xhigh", "max"]
+    assert levels["narrow-model"] == ["low", "medium", "high", "max"]
+    assert levels["plain-model"] == [], "no advertised levels means no control"
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_saved_effort_reaches_the_provider_invocation(native, monkeypatch):  # noqa: F811
+    """End to end through the REAL authority chain, not a stubbed selection."""
+    async def discover():
+        return effortful(["new-account-model"])
+    _seen, configs = install_discovery(native, monkeypatch, discover)
+    ref = ModelRef("codex", "new-account-model")
+    save_effort(native, ref, "xhigh")
+
+    context = replace(native.context, model_selection=ref)
+    assert _call(native, context).provider == "codex"
+    assert configs[0].native_model_id == "new-account-model"
+    assert configs[0].reasoning_effort == "xhigh"
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_unset_effort_leaves_the_executor_default(native, monkeypatch):  # noqa: F811
+    """Absent choice is empty, never a level this platform picked."""
+    async def discover():
+        return effortful(["new-account-model"])
+    _seen, configs = install_discovery(native, monkeypatch, discover)
+    context = replace(native.context,
+                      model_selection=ModelRef("codex", "new-account-model"))
+    assert _call(native, context).provider == "codex"
+    assert configs[0].reasoning_effort == ""
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_effort_outside_the_advertised_levels_is_refused_not_dropped(native, monkeypatch):  # noqa: F811
+    """Running at the default while the owner saved `max` would be a silent lie."""
+    async def discover():
+        return effortful(["new-account-model"], levels=("low", "medium", "high"))
+    _seen, configs = install_discovery(native, monkeypatch, discover)
+    ref = ModelRef("codex", "new-account-model")
+    save_effort(native, ref, "max")
+
+    context = replace(native.context, model_selection=ref)
+    with pytest.raises(ProviderAuthorityHeldError):
+        _call(native, context)
+    assert not configs, "no turn may run at a level the model did not advertise"
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_caller_config_cannot_raise_a_served_turns_effort(native, monkeypatch):  # noqa: F811
+    """Effort rides validated authority for the same reason the model id does."""
+    async def discover():
+        return effortful(["new-account-model"])
+    _seen, configs = install_discovery(native, monkeypatch, discover)
+    ref = ModelRef("codex", "new-account-model")
+    save_effort(native, ref, "low")
+
+    context = replace(
+        native.context, model_selection=ref,
+        config=replace(native.context.config, preferred_writer="claude-code"),
+    )
+    assert _call(native, context).provider == "codex"
+    # The owner's saved level wins over anything an ordinary caller supplied.
+    assert configs[0].reasoning_effort == "low"
+
+
+def test_declared_model_cannot_attest_an_effort_level():
+    """Without a catalogue there are no advertised levels to validate against."""
+    from tinyassets.providers.native_model_selection import NativeSelection
+
+    assert NativeSelection("codex", "typed-id").effort == ""
+    with pytest.raises(ValueError, match="cannot attest an effort level"):
+        NativeSelection("codex", "typed-id", effort="high")
+
+
+@pytest.mark.parametrize("level", ["high", ""])
+def test_enumerated_effort_evidence_round_trips_by_version(level):
+    """A stored version-2 evidence row must keep parsing after effort exists."""
+    from tinyassets.providers.native_model_selection import NativeSelection
+
+    now = datetime.now(timezone.utc)
+    selection = NativeSelection(
+        "codex", "model", "model", "executor_enumerated",
+        now.isoformat(), now.isoformat(), "digest", level,
+    )
+    document = selection.to_dict()
+    assert document["version"] == (3 if level else 2)
+    assert ("effort" in document) is bool(level)
+    assert NativeSelection.from_dict(document) == selection
+
+
+# --------------------------------------------------------------------------
+# The control envelope, against a real child process.
+# --------------------------------------------------------------------------
+
+CLAUDE_PROTOCOL = NativeControlProtocol(
+    list_method="list_models", items_key="models", model_key="resolvedModel",
+    default_key="value", default_match_value="default",
+    modalities_key="inputModalities", hidden_key="disabled",
+    effort_key="supportsEffort", effort_levels_key="supportedEffortLevels",
+    assumed_input_modalities=frozenset({"text"}),
+)
+
+
+def control_peer(reply, *, noise=()):
+    """A child that speaks the control envelope and rejects inference."""
+    return f'''
+import json, sys
+noise = {list(noise)!r}
+request = json.loads(sys.stdin.readline())
+assert request["type"] == "control_request", request
+assert request["request"]["subtype"] == "list_models", request
+assert "prompt" not in request, "metadata transport must not carry inference"
+for line in noise:
+    print(json.dumps(line), flush=True)
+print(json.dumps({{"type": "control_response", "response": {{
+    "subtype": "success", "request_id": request["request_id"],
+    "response": {reply!r},
+}}}}), flush=True)
+'''
+
+
+def run_control(tmp_path, reply, *, noise=(), protocol=CLAUDE_PROTOCOL):
+    return asyncio.run(read_native_catalogue(
+        [sys.executable, "-u", "-c", control_peer(reply, noise=noise)],
+        env=os.environ.copy(), cwd=str(tmp_path), protocol=protocol, timeout=10,
+    ))
+
+
+def test_control_envelope_reads_alias_rows_and_per_model_effort(tmp_path):
+    """The real CLI shape: alias rows, a default marker, unreported modalities."""
+    result = run_control(tmp_path, {"models": CLI_ROWS})
+
+    # `default` and `opus` resolve to ONE model, so one choice is offered.
+    assert [m.model_id for m in result.models] == [
+        "claude-opus-5-5", "claude-haiku-4-5-20251001", "claude-opus-4-6",
+    ]
+    assert result.default_model_id == "claude-opus-5-5"
+    by_id = {m.model_id: m for m in result.models}
+    assert by_id["claude-opus-5-5"].effort_levels == (
+        "low", "medium", "high", "xhigh", "max")
+    assert by_id["claude-opus-4-6"].effort_levels == ("low", "medium", "high", "max")
+    assert by_id["claude-haiku-4-5-20251001"].supports_effort is False
+    assert by_id["claude-haiku-4-5-20251001"].effort_levels == ()
+    # Unreported modalities take the transport's own text floor, so an
+    # enumerated row does not read as a model that accepts nothing.
+    assert all(m.input_modalities == frozenset({"text"}) for m in result.models)
+
+
+def test_control_envelope_skips_unrelated_stream_traffic(tmp_path):
+    """These streams carry session/system lines before the answer."""
+    result = run_control(tmp_path, {"models": [CLI_ROWS[1]]}, noise=(
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "system", "subtype": "hook_started", "hook_name": "x"},
+        {"type": "assistant", "message": {"content": []}},
+    ))
+    assert [m.model_id for m in result.models] == ["claude-opus-5-5"]
+
+
+@pytest.mark.parametrize("reply", [
+    {"models": [{**CLI_ROWS[1], "supportedEffortLevels": []}]},
+    {"models": [{**CLI_ROWS[1], "supportedEffortLevels": "high"}]},
+    {"models": [{**CLI_ROWS[1], "supportedEffortLevels": [7]}]},
+    # Claimed support with no levels at all: a control with unknown values.
+    {"models": [{"value": "x", "resolvedModel": "x", "supportsEffort": True}]},
+    {"models": [{**CLI_ROWS[1], "supportsEffort": "yes"}]},
+    {"models": [{**CLI_ROWS[1], "inputModalities": "text"}]},
+    {"models": [{"value": "x", "resolvedModel": "bad\nid"}]},
+    # One id with two different capability claims is a protocol fault.
+    {"models": [CLI_ROWS[1], {**CLI_ROWS[1], "supportedEffortLevels": ["low"]}]},
+    {"models": {}},
+    {},
+])
+def test_malformed_control_catalogue_refuses(tmp_path, reply):
+    from tinyassets.exceptions import ProviderError
+
+    with pytest.raises(ProviderError, match="^native model discovery unavailable$"):
+        run_control(tmp_path, reply)
+
+
+def test_control_error_subtype_is_not_an_empty_catalogue(tmp_path):
+    """An upstream refusal must not read as "this account has no models"."""
+    from tinyassets.exceptions import ProviderError
+
+    script = '''
+import json, sys
+request = json.loads(sys.stdin.readline())
+print(json.dumps({"type": "control_response", "response": {
+    "subtype": "error", "request_id": request["request_id"], "error": "nope",
+}}), flush=True)
+'''
+    with pytest.raises(ProviderError, match="^native model discovery unavailable$"):
+        asyncio.run(read_native_catalogue(
+            [sys.executable, "-u", "-c", script], env=os.environ.copy(),
+            cwd=str(tmp_path), protocol=CLAUDE_PROTOCOL, timeout=10,
+        ))
+
+
+def test_control_response_for_another_request_is_refused(tmp_path):
+    from tinyassets.exceptions import ProviderError
+
+    script = '''
+import json, sys
+json.loads(sys.stdin.readline())
+print(json.dumps({"type": "control_response", "response": {
+    "subtype": "success", "request_id": "someone-elses-request",
+    "response": {"models": []},
+}}), flush=True)
+'''
+    with pytest.raises(ProviderError, match="^native model discovery unavailable$"):
+        asyncio.run(read_native_catalogue(
+            [sys.executable, "-u", "-c", script], env=os.environ.copy(),
+            cwd=str(tmp_path), protocol=CLAUDE_PROTOCOL, timeout=10,
+        ))
+
+
+def test_control_protocol_registration_is_validated():
+    """A handshake belongs to JSON-RPC; this envelope answers immediately."""
+    base = dict(
+        list_method="list_models", items_key="models", model_key="resolvedModel",
+        default_key="value", modalities_key="inputModalities", hidden_key="disabled",
+    )
+    with pytest.raises(ValueError, match="takes no handshake"):
+        NativeControlProtocol(**base, initialize_method="initialize")
+    # Support without a levels field would admit a control of unknown values.
+    with pytest.raises(ValueError, match="must name its levels field"):
+        NativeControlProtocol(**base, effort_key="supportsEffort")
+    with pytest.raises(ValueError):
+        NativeControlProtocol(**base, cursor_key="nextCursor")
+
+
+# --------------------------------------------------------------------------
+# Claude Code's registration, and the installed CLI itself.
+# --------------------------------------------------------------------------
+
+
+def test_claude_registers_discovery_keyed_on_the_resolved_execution_id():
+    """Keyed on `resolvedModel`, because an alias means different things.
+
+    `--model opus` resolved to claude-opus-4-8 under the pinned CLI and to
+    claude-opus-5-5 under a newer one. A stored preference must mean one model.
+    """
+    from tinyassets.providers.claude_provider import ClaudeProvider
+
+    protocol = ClaudeProvider.native_discovery_protocol
+    assert type(protocol) is NativeControlProtocol
+    assert protocol.list_method == "list_models"
+    assert protocol.model_key == "resolvedModel"
+    assert protocol.effort_key == "supportsEffort"
+    assert ClaudeProvider.native_credential_service == "claude"
+    assert "--input-format" in ClaudeProvider.native_metadata_arguments
+    # Never --bare: it forces API-key auth and would fail a subscription read.
+    assert "--bare" not in ClaudeProvider.native_metadata_arguments
+
+
+def test_claude_reports_enumeration_support_on_the_read_surface(monkeypatch):
+    """The fact a client reads to know a shortlist exists at all.
+
+    This is the assertion that was false before: `_native_enumeration` returned
+    "unknown" for claude-code, which is why the picker had nothing but the
+    reviewed static list to show.
+    """
+    from tinyassets.api.model_options import _native_enumeration
+    from tinyassets.providers.claude_provider import ClaudeProvider
+    from tinyassets.providers.router import ProviderRouter
+
+    router = ProviderRouter({"claude-code": ClaudeProvider()})
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
+    assert _native_enumeration("claude-code") == "supported"
+
+
+@pytest.mark.parametrize("effort,expected", [
+    ("xhigh", ["--effort", "xhigh"]),
+    ("MAX", ["--effort", "max"]),
+    ("", []),
+    (None, []),
+])
+def test_claude_effort_flag_is_the_cli_setting_not_a_prompt_hint(effort, expected):
+    from tinyassets.providers.claude_provider import _effort_args
+
+    assert _effort_args(effort) == expected
+
+
+def test_claude_argv_carries_the_effort_from_its_model_config(monkeypatch):
+    """The flag must land in argv, not merely in a config object."""
+    import tinyassets.providers.claude_provider as module
+    from tinyassets.providers.base import ModelConfig
+
+    captured = {}
+
+    async def fake_spawn(cmd, **kwargs):
+        captured["cmd"] = cmd
+        raise RuntimeError("stop before inference")
+
+    monkeypatch.setattr(module, "aspawn_owned", fake_spawn)
+    monkeypatch.setattr(module, "_resolve_claude_cmd", lambda: (["claude"], False))
+    config = ModelConfig(native_model_id="claude-opus-5-5", reasoning_effort="xhigh")
+    with pytest.raises(RuntimeError, match="stop before inference"):
+        asyncio.run(module.ClaudeProvider().complete("hi", "", config))
+
+    cmd = captured["cmd"]
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "xhigh"
+    assert cmd[cmd.index("--model") + 1] == "claude-opus-5-5"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("TINYASSETS_LIVE_CLI_DISCOVERY"),
+    reason="reads the installed Claude Code CLI; set TINYASSETS_LIVE_CLI_DISCOVERY=1",
+)
+def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
+    """The claim this whole change rests on, against the real binary.
+
+    Opt-in because it spawns the installed CLI and depends on its version.
+    Verified by hand on 2.1.288, 2026-10-02: 12 rows in, 11 models out,
+    default claude-opus-5-5, effort on every model except haiku.
+    """
+    import shutil
+
+    from tinyassets.providers.claude_provider import (
+        _CLAUDE_METADATA_ARGUMENTS,
+        ClaudeProvider,
+        _resolve_claude_cmd,
+    )
+
+    if shutil.which("claude") is None:
+        pytest.skip("claude CLI is not installed")
+    base_cmd, use_shell = _resolve_claude_cmd()
+    assert not use_shell, "metadata discovery requires a direct executable"
+    catalogue = asyncio.run(read_native_catalogue(
+        [*base_cmd, *_CLAUDE_METADATA_ARGUMENTS],
+        protocol=ClaudeProvider.native_discovery_protocol,
+        env=os.environ.copy(), cwd=str(tmp_path),
+        spawn_kwargs=ClaudeProvider.native_process_options(), timeout=60,
+    ))
+    assert catalogue.models, "the CLI advertised no models"
+    assert catalogue.default_model_id
+    assert any(m.supports_effort and m.effort_levels for m in catalogue.models)
+    # Resolved execution ids, never the aliases.
+    assert all(m.model_id not in {"default", "opus", "sonnet", "haiku", "fable"}
+               for m in catalogue.models)
+    # Deduped: one row per execution id.
+    assert len({m.model_id for m in catalogue.models}) == len(catalogue.models)
+    print(json.dumps({
+        "default": catalogue.default_model_id,
+        "models": [[m.model_id, list(m.effort_levels)] for m in catalogue.models],
+    }, indent=1))

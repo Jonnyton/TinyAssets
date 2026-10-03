@@ -846,6 +846,12 @@ class ProviderRouter:
             None if model_authority is None else
             native_selection.requested_model_id if native_selection is not None else ""
         ))
+        # Effort rides the same validated authority as the model id, for the
+        # same reason: an ordinary caller's ModelConfig must not be able to
+        # raise the effort of a served turn. A native selection therefore
+        # REPLACES any inherited value, including with "" (executor default).
+        if native_selection is not None:
+            cfg = replace(cfg, reasoning_effort=native_selection.effort)
         if _agent_execution_kind == "native_agent" and (
             cfg.agent_request is not None or cfg.selected_model is not None
         ):

@@ -52,18 +52,32 @@ class NativeDiscoverySnapshot:
         if now < self.completed_at or now - self.observed_at > timedelta(minutes=5):
             raise ProviderError("native model discovery expired or source changed")
 
-    def select(self, *, provider, owner, universe, custody, model_id, access):
-        from tinyassets.providers.native_model_selection import NativeSelection
+    def select(self, *, provider, owner, universe, custody, model_id, access, effort=""):
+        from tinyassets.providers.native_model_selection import (
+            NativeSelection,
+            validate_effort_level,
+        )
 
         self.assert_fresh()
+        matched = next(
+            (model for model in self.catalogue.models
+             if model.model_id == model_id and "text" in model.input_modalities),
+            None,
+        )
         if (self.provider != provider or self.owner_id != owner
                 or self.universe != Path(universe).resolve() or self.custody != custody
-                or not any(model.model_id == model_id and "text" in model.input_modalities
-                           for model in self.catalogue.models)):
+                or matched is None):
             raise PermissionError("native catalogue does not match current model authority")
+        # The ONLY place a level is admitted, because it is the only place the
+        # advertised set is in hand. A level this model did not advertise is
+        # refused rather than dropped: silently running at the executor's
+        # default would report a setting the turn did not actually use.
+        if validate_effort_level(effort) and effort not in matched.effort_levels:
+            raise PermissionError("effort level is outside this model's advertised levels")
         selected = NativeSelection(
             provider, model_id, self.catalogue.default_model_id or "", "executor_enumerated",
             self.observed_at.isoformat(), self.completed_at.isoformat(), custody.reference_digest,
+            effort,
         )
         selected.assert_access(access, custody.reference_digest)
         return selected

@@ -202,7 +202,11 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
         models.extend(Model(
             model.model_id, True, model.input_modalities,
             pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
-        ) for model in native_snapshot.catalogue.models)
+            effort_levels=model.effort_levels,
+        # A row the executor itself marked unselectable must not become a normal
+        # choice. Offering it would hand the owner a pick that fails at launch,
+        # which is worse than not listing it (see the learned-id split below).
+        ) for model in native_snapshot.catalogue.models if not model.hidden)
     # What the PLATFORM has seen work on this KIND of source, newest of each class.
     # Without this the list is only what this owner typed into their own access
     # grant, so a newly released model was invisible until someone shipped a patch

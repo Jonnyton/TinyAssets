@@ -214,12 +214,37 @@ print(json.dumps({'id': request['id'], 'result': {'items': [
     assert result.default_model_id == "future-company/model"
 
 
-def test_unproven_native_adapter_reports_unknown():
-    from tinyassets.providers.claude_provider import ClaudeProvider
+def test_adapter_without_a_registered_protocol_reports_unknown():
+    """An executor that declares no metadata contract stays honestly unknown.
 
-    assert asyncio.run(ClaudeProvider().enumerate_models(
+    Previously ClaudeProvider stood in for this case. It now registers a real
+    control protocol, so the "no protocol" contract needs an executor that
+    genuinely has none -- otherwise this test silently stops covering it.
+    """
+    from tinyassets.providers.base import BaseProvider
+
+    class Unproven(BaseProvider):
+        name = "unproven"
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            raise AssertionError("metadata discovery must not run inference")
+
+    assert Unproven().native_discovery_protocol is None
+    assert asyncio.run(Unproven().enumerate_models(
         universe_dir=None, credential_snapshot_dir=None,
     )) is None
+
+
+def test_registered_adapter_requires_owned_credentials():
+    """A declared protocol must still refuse to run without owned custody."""
+    from tinyassets.exceptions import ProviderError
+    from tinyassets.providers.claude_provider import ClaudeProvider
+
+    assert ClaudeProvider.native_discovery_protocol is not None
+    with pytest.raises(ProviderError, match="requires owned credentials"):
+        asyncio.run(ClaudeProvider().enumerate_models(
+            universe_dir=None, credential_snapshot_dir=None,
+        ))
 
 
 @pytest.mark.parametrize("outcome", [
