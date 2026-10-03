@@ -103,7 +103,7 @@ def assert_contained(root: Path, path: Path) -> None:
     for candidate in (os.path.realpath(path), os.path.realpath(Path(path).parent)):
         if candidate != root_r and not candidate.startswith(prefix):
             raise SoulEditError(
-                f"path escapes the universe via a symlinked component: {path}"
+                f"path escapes the command center via a symlinked component: {path}"
             )
 
 
@@ -259,8 +259,15 @@ def apply_soul_edit(
     summary: str = "",
     name: str = "",
     expected_versions: dict[str, str] | None = None,
+    agent_id: str,
 ) -> dict[str, Any]:
     """Apply one governed learning event to the universe's soul bundle.
+
+    ``agent_id`` is the agent whose learning this is (harness §4.18), and is
+    REQUIRED: every writer states it, so no path defaults to the main agent.
+    The brain is shared by every agent, but the name and ``identity.md`` are
+    the MAIN agent's identity, so any other agent's edit that touches them is
+    refused here, at the one door every soul write goes through.
 
     ``changes`` maps governed filename → new markdown BODY (frontmatter is
     managed here: preserved, with ``status: learned`` + ``learned_from``
@@ -283,6 +290,13 @@ def apply_soul_edit(
             "event, not a blind overwrite"
         )
 
+    if not isinstance(agent_id, str) or not agent_id.strip():
+        raise SoulEditError("agent_id is required: whose learning is this edit?")
+    if agent_id.strip() != "main" and (name or "identity.md" in (changes or {})):
+        raise SoulEditError(
+            "only the main agent writes its name and identity.md; another agent's "
+            "learning goes into the shared brain's other files"
+        )
     governed = read_governed_files(universe_dir)
     changes = dict(changes or {})
     if name and "identity.md" not in changes:
@@ -342,7 +356,7 @@ def apply_soul_edit(
             resolved = path.resolve()
             if resolved != udir_resolved / filename:
                 raise SoulEditError(
-                    f"governed file resolves outside its universe slot, refusing: "
+                    f"governed file resolves outside its command center slot, refusing: "
                     f"{filename}"
                 )
             try:

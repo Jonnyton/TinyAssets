@@ -1,5 +1,5 @@
-  // ---- Custom universe UI: isolated renderer + closed bridge ----------------
-  // A universe can hold executable UI bundles (`tinyassets.app-ui.v1`) its own
+  // ---- Custom command center UI: isolated renderer + closed bridge ----------------
+  // A command center can hold executable UI bundles (`tinyassets.app-ui.v1`) its own
   // agent writes, and this renders them. A bundle is somebody's arbitrary code —
   // usually somebody the viewer has never met, because bundles are shared by
   // publish/remix — so nothing here sanitizes it. It runs in the sandboxed,
@@ -7,15 +7,15 @@
   // policy), which owns no storage, no cookies and no network of its own.
   //
   // Everything the bundle can do is in ACTIONS below and nowhere else. Each
-  // handler builds its own tool arguments and pins the universe to the VIEWING
-  // user's current home, so a bundle cannot name a universe: cross-user reach is
+  // handler builds its own tool arguments and pins the command center to the VIEWING
+  // user's current home, so a bundle cannot name a command center: cross-user reach is
   // not refused by a check, it is unrepresentable. Replies are assembled from
   // picked fields, never spread from a server payload, so a field added upstream
   // later cannot ride out to untrusted code.
   //
   // Storage is the viewer's own `app_ui` row (read_graph/write_graph
   // target="app_ui"): the bundles in `ui_library` and the choice in
-  // `ui_selection`, one row per person and universe, keyed server-side by who is
+  // `ui_selection`, one row per person and command center, keyed server-side by who is
   // signed in. It is not an agent binding and never appears to a binding reader.
   // Every write is compare-and-set on the row's revision.
   const AppUI={
@@ -27,15 +27,19 @@
     // `sessionStorage` (the access token), `localStorage` and the parent DOM.
     // The frame's own response header sandboxes it too, so this is the second of
     // two independent locks, not the only one.
-    SANDBOX:"allow-scripts",
-    // Per-UI bounds only. There is NO bound on the library as a whole -- neither
-    // a count of UIs nor a byte total. A 4 MiB library ceiling used to refuse an
-    // install once the stored library was full; those bytes are the universe's
-    // tier storage now, one of the two limits an account has (founder 2026-09-30).
-    // Sizes are UTF-8 BYTES, because that is what the server validates: counting
-    // UTF-16 units let multi-byte bundles pass here and fail at write time
-    // (Codex, 2026-09-26).
-    MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
+    // `allow-forms` lets a bundle's <form> fire its submit event, which a bundle
+    // handles in script. Without it the browser drops the submit silently and the
+    // button does nothing. The frame's `form-action 'none'` still refuses every
+    // real submission, so no form can navigate or send anything anywhere.
+    SANDBOX:"allow-scripts allow-forms",
+    // Per-UI bounds only, the same numbers the server enforces
+    // (custom_agents.APP_UI_MAX_*). There is NO bound on the library as a whole --
+    // neither a count of UIs nor a byte total: those bytes are the command center's
+    // tier storage, one of the two limits an account has (founder 2026-09-30).
+    // The 49,152-byte bundle bound these replace made a game impossible
+    // (founder's village, 2026-10-02). Sizes are UTF-8 BYTES, because that is
+    // what the server validates (Codex, 2026-09-26).
+    MAX_TEXT_BYTES:1048576,MAX_ASSET_FILES:500,MAX_ASSET_BYTES:16777216,MAX_UI_ASSET_BYTES:134217728,
     MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
     MAX_LIST_RUNS:50,MAX_OUTPUT_CHUNK:8192,MAX_ID:200,MAX_PATH:1024,MAX_FILE_CHUNK:65536,
     // The first page of a whole-list read; see readWhole.
@@ -48,6 +52,17 @@
     ROLE:"app_experience",TURN_KIND:"tinyassets.turn-graph.v1",
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
+    // Carried verbatim when present: the asset manifest the server checked,
+    // shared libraries by name, and whether `script` is a module.
+    OPTIONAL:["assets","libraries","script_type"],
+    SHA256_RE:/^[0-9a-f]{64}$/,
+    ASSET_PATH_RE:/^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
+    ASSET_FETCH:"/app/api/ui-asset",
+    // The vendored libraries and their SHA-384 pins, the same table as
+    // tinyassets/onboarding/ui_libraries.json (a test holds them equal). A
+    // library whose bytes do not match is refused, never posted to the frame.
+    LIBRARIES:Object.freeze({"howler":{format:"global",sha384:"sha384-SSf4pKRrGaeWL8bdA89QvGkhZo5WvIVCGwKVzfX7z+9sSaIHtE/AkOLehofI4JVY",requires:[]},"phaser":{format:"global",sha384:"sha384-AvQiDMZAVLda3VtAoU5MCfBz8pzXhteb2CiUJeKBmPlWzpXj1uJ96Km11+YuFNu/",requires:[]},"pixi.js":{format:"global",sha384:"sha384-sQhAUuZTvdanRcBHbVCTasnEWH28GGEK87FJGPj/JaqwL/15KWQwKe7whTHdCkwm",requires:[]},"three":{format:"module",sha384:"sha384-IDC7sAMAIMB/TZ6dgKKPPAKZ2bXXXP8+FBMBC8cU319eBhKITx+PaalhfDkDNH28",requires:[]},"three/addons/controls/OrbitControls.js":{format:"module",sha384:"sha384-aJoe4qqS/DgF2jh9njAuvA6QIveJYoCuYOfYjdFY8P3eawzmc9bEQ40jq2TvOyuP",requires:["three"]},"three/addons/loaders/GLTFLoader.js":{format:"module",sha384:"sha384-x79xjCNsFlRByL5E+VmRg4w6ppPmAVfP11fg7GzEVJ0wT+wuVfARjjZNLsq7iUmq",requires:["three", "three/addons/utils/BufferGeometryUtils.js"]},"three/addons/utils/BufferGeometryUtils.js":{format:"module",sha384:"sha384-wOjwauvHlJO7K6APr7FmMGH2nupQa3Ndzas9bJZhsAMOK055efJud8ns4aYmASKv",requires:["three"]}}),
+    libCache:new Map(),
 
     epoch:0,home:"",principal:"",enabled:false,busy:false,
     library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,
@@ -71,10 +86,10 @@
       if(!component||typeof component!=="object"||Array.isArray(component))
         return this.unsupported("UI component is not an object");
       const keys=Object.keys(component).sort();
-      const extra=keys.filter(k=>!this.FIELDS.includes(k));
+      const extra=keys.filter(k=>!this.FIELDS.includes(k)&&!this.OPTIONAL.includes(k));
       if(extra.length) return this.unsupported("UI component carries fields this app does not render: "+extra.join(", "));
-      if(keys.length!==this.FIELDS.length)
-        return this.unsupported("UI component is missing "+this.FIELDS.filter(k=>!keys.includes(k)).join(", "));
+      const missing=this.FIELDS.filter(k=>!keys.includes(k));
+      if(missing.length) return this.unsupported("UI component is missing "+missing.join(", "));
       if(component.kind!==this.KIND) return this.unsupported("not a "+this.KIND+" component");
       if(component.version!==this.VERSION)
         return this.unsupported("UI version "+String(component.version)+" is not supported; this app renders version 1");
@@ -82,17 +97,44 @@
         return this.unsupported("ui_id must be lowercase letters, digits or dashes");
       if(!this.text(component.name,this.MAX_NAME)||!component.name.trim())
         return this.unsupported("name must be a non-empty string of at most "+this.MAX_NAME+" characters");
-      if(!this.text(component.markup,this.MAX_MARKUP))
-        return this.unsupported("markup must be a string of at most "+this.MAX_MARKUP+" characters");
-      if(!this.text(component.style,this.MAX_STYLE))
-        return this.unsupported("style must be a string of at most "+this.MAX_STYLE+" characters");
-      if(!this.text(component.script,this.MAX_SCRIPT))
-        return this.unsupported("script must be a string of at most "+this.MAX_SCRIPT+" characters");
+      for(const field of ["markup","style","script"])
+        if(typeof component[field]!=="string") return this.unsupported(field+" must be a string");
       const size=this.bytes(JSON.stringify(component));
-      if(size>this.MAX_BUNDLE_BYTES)
-        return this.unsupported("this UI is "+size+" bytes; the limit is "+this.MAX_BUNDLE_BYTES);
-      return {ok:true,bundle:{kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
-        name:component.name.trim(),markup:component.markup,style:component.style,script:component.script}};
+      if(size>this.MAX_TEXT_BYTES)
+        return this.unsupported("this UI is "+size+" bytes of text; the limit is "+this.MAX_TEXT_BYTES);
+      if("script_type" in component&&component.script_type!=="classic"&&component.script_type!=="module")
+        return this.unsupported("script_type must be classic or module");
+      if("libraries" in component){
+        const libs=component.libraries;
+        if(!Array.isArray(libs)) return this.unsupported("libraries must be a list");
+        for(const name of libs)
+          if(typeof name!=="string"||!Object.prototype.hasOwnProperty.call(this.LIBRARIES,name))
+            return this.unsupported("library "+String(name)+" is not one this app provides");
+        if(new Set(libs).size!==libs.length) return this.unsupported("a library is listed twice");
+      }
+      if("assets" in component){
+        const assets=component.assets;
+        if(!assets||typeof assets!=="object"||Array.isArray(assets)) return this.unsupported("assets must be an object");
+        const paths=Object.keys(assets);
+        if(paths.length>this.MAX_ASSET_FILES) return this.unsupported("this UI has more than "+this.MAX_ASSET_FILES+" assets");
+        let total=0;
+        for(const path of paths){
+          const ref=assets[path];
+          if(path.length>200||!this.ASSET_PATH_RE.test(path)) return this.unsupported("asset path "+path+" is not a bundle path");
+          if(!ref||typeof ref!=="object"||!this.SHA256_RE.test(String(ref.sha256))||!Number.isInteger(ref.size)||
+             ref.size<0||ref.size>this.MAX_ASSET_BYTES||typeof ref.media_type!=="string"||!ref.media_type)
+            return this.unsupported("asset "+path+" is not a stored blob");
+          total+=ref.size;
+        }
+        if(total>this.MAX_UI_ASSET_BYTES) return this.unsupported("this UI's assets exceed "+this.MAX_UI_ASSET_BYTES+" bytes");
+      }
+      const bundle={kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
+        name:component.name.trim(),markup:component.markup,style:component.style,script:component.script};
+      // Optional fields pass through as stored, so a library rebuilt from parsed
+      // entries (install) never strips another UI's assets.
+      for(const field of this.OPTIONAL)
+        if(field in component) bundle[field]=JSON.parse(JSON.stringify(component[field]));
+      return {ok:true,bundle};
     },
     // The library is a LIST of any length, ordered as stored, with no
     // user-chosen keys; each entry names itself by `ui_id`.
@@ -162,7 +204,7 @@
       const id=String(home||"").trim();
       if(!this.enabled||!id||id===this.home) return;
       this.reset();
-      this.status("Your home universe changed; the custom UI was closed and its access ended.");
+      this.status("Your home command center changed; the custom UI was closed and its access ended.");
     },
     enable(home,principal){
       if(this.enabled&&this.home===home&&this.principal===principal) return;
@@ -200,7 +242,7 @@
         this.status("Could not read your installed UIs ("+(err&&err.message||"unknown error")+"). Default chat is in use.");
       }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
     },
-    // After each turn: the universe can switch or edit this row by talking
+    // After each turn: the command center can switch or edit this row by talking
     // (write_graph target="app_ui" operation="activate" ...). A bodiless index
     // read says whether the row moved; only then is it read whole and adopted,
     // so an unchanged row never remounts a UI mid-use.
@@ -245,6 +287,7 @@
       this.unmount();
       const host=$("ui-frame-host"),frame=document.createElement("iframe");
       frame.id="ui-frame"; frame.className="ui-frame"; frame.title=entry.name;
+      frame.setAttribute("tabindex","0");
       frame.setAttribute("sandbox",this.SANDBOX);
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
@@ -255,6 +298,12 @@
       host.replaceChildren(frame);
       host.hidden=false;
       $("view-chat").classList.add("ui-custom-active");
+      // Keep the command center visible and hand keyboard input back to it.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.paintHeader();
     },
     unmount(){
@@ -262,17 +311,23 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
+      // Keep the command center visible and hand keyboard input back to it.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();
     },
 
-    // ---- the bridge: one frame, one allowlist, one universe ----------------
+    // ---- the bridge: one frame, one allowlist, one command center ----------------
     // A frozen map. An action absent from it does not exist — the refusal names
     // what was asked and nothing is guessed from a near-match.
     ACTIONS:Object.freeze({
       whoami:"whoami",list_agents:"listAgents",
-      send_message:"sendMessage",read_conversation:"readConversation",
+      send_message:"sendMessage",open_chat:"openChat",read_conversation:"readConversation",
       list_automations:"listAutomations",list_runs:"listRuns",
       read_run:"readRun",read_run_output:"readRunOutput",
       list_files:"listFiles",read_file:"readFile",emit:"emit",
@@ -289,11 +344,99 @@
       if(message.type!=="call"||typeof message.id!=="string"||typeof message.action!=="string") return;
       this.serve(message.id,message.action,message.params);
     },
+    // The frame owns no network, so the bytes a UI loads are fetched HERE, with
+    // the viewer's bearer, checked against their pins, and posted in; the frame
+    // turns them into blob: URLs of its own. Fenced to the frame that asked: a
+    // remount while bytes download drops them.
     deliver(){
       if(!this.frame||!this.active||this.ready) return;
       this.ready=true;
-      this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:{
-        markup:this.active.markup,style:this.active.style,script:this.active.script}});
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
+      const entry=this.active;
+      const bundle={markup:entry.markup,style:entry.style,script:entry.script};
+      if(entry.script_type==="module") bundle.script_type="module";
+      // Nothing to fetch: handed over at once, exactly as before files existed.
+      if(!(entry.libraries||[]).length&&!Object.keys(entry.assets||{}).length){
+        this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle});
+        return;
+      }
+      return this.deliverWithFiles(entry,bundle);
+    },
+    async deliverWithFiles(entry,bundle){
+      const gen=this.frameGen,epoch=this.epoch,home=this.home;
+      let files=[],libraries=[];
+      try{
+        libraries=await this.libraryBytes(entry.libraries||[]);
+        files=await this.assetBytes(entry.assets||{},home);
+      }catch(err){
+        if(gen!==this.frameGen||!this.fence(epoch,home)) return;
+        if(err&&err.authRequired){ sessionExpired(); return; }
+        this.status(entry.name+" could not load its files ("+(err&&err.message||"unknown error")+").");
+        this.paint();
+        return;
+      }
+      if(gen!==this.frameGen||!this.fence(epoch,home)||!this.frame) return;
+      this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:Object.assign(bundle,{files,libraries})});
+    },
+    async fetchBytes(body){
+      try{ await ensureFreshToken(); }catch(_err){ /* the request reports it */ }
+      const headers={"Content-Type":"application/json"};
+      const tk=token(); if(tk) headers["Authorization"]="Bearer "+tk;
+      const resp=await fetch(this.ASSET_FETCH,{method:"POST",headers,credentials:"same-origin",
+        cache:"no-store",body:JSON.stringify(body)});
+      if(resp.status===401){ const e=new Error("authentication_required"); e.authRequired=true; throw e; }
+      if(!resp.ok){
+        let doc=null; try{ doc=await resp.json(); }catch(_e){ doc=null; }
+        throw new Error((doc&&typeof doc.error==="string"&&doc.error)||("answered "+resp.status));
+      }
+      return await resp.arrayBuffer();
+    },
+    async digest(algorithm,bytes){
+      return new Uint8Array(await crypto.subtle.digest(algorithm,bytes));
+    },
+    // Every library named, after what it requires, each verified against its
+    // SHA-384 pin. Libraries are public code, so a verified copy is kept for
+    // the page's life.
+    async libraryBytes(names){
+      const ordered=[],visit=name=>{
+        if(ordered.includes(name)) return;
+        const pin=this.LIBRARIES[name];
+        if(!pin) throw new Error("library "+name+" is not one this app provides");
+        for(const dep of pin.requires) visit(dep);
+        ordered.push(name);
+      };
+      for(const name of names) visit(name);
+      const out=[];
+      for(const name of ordered){
+        let bytes=this.libCache.get(name);
+        if(!bytes){
+          bytes=await this.fetchBytes({library:name});
+          const got="sha384-"+btoa(String.fromCharCode(...await this.digest("SHA-384",bytes)));
+          if(got!==this.LIBRARIES[name].sha384) throw new Error("library "+name+" failed its integrity check");
+          this.libCache.set(name,bytes);
+        }
+        out.push({name,format:this.LIBRARIES[name].format,bytes});
+      }
+      return out;
+    },
+    // The viewer's own blobs, a few at a time, each checked against the hash
+    // its manifest names before the frame sees it.
+    async assetBytes(assets,home){
+      const paths=Object.keys(assets),out=new Array(paths.length);
+      let next=0;
+      const hex=bytes=>Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");
+      const worker=async()=>{
+        while(next<paths.length){
+          const i=next++,path=paths[i],ref=assets[path];
+          const bytes=await this.fetchBytes({graph_id:home,sha256:ref.sha256});
+          if(hex(await this.digest("SHA-256",bytes))!==ref.sha256) throw new Error("asset "+path+" failed its integrity check");
+          out[i]={path,media_type:ref.media_type,bytes};
+        }
+      };
+      await Promise.all(Array.from({length:Math.min(4,paths.length)},worker));
+      return out;
     },
     post(payload){
       const frame=this.frame&&this.frame.contentWindow;
@@ -343,11 +486,11 @@
     // The viewer's identity, reduced to what a UI needs to greet them. No
     // principal id, no token, no provider or credential material.
     async whoami(){
-      return {protocol:this.PROTOCOL,universe_id:this.home,
-        universe_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
+      return {protocol:this.PROTOCOL,command_center_id:this.home,
+        command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
-    // bundle cannot enumerate anybody else's universe.
+    // bundle cannot enumerate anybody else's command center.
     // Every row of one of the viewer's OWN lists. The read takes a page size
     // and no offset, so ask for a page and, while the server fills it exactly,
     // ask for a bigger one: a bundle
@@ -360,55 +503,75 @@
         if(!doc||doc.error||!Array.isArray(doc[key])||doc[key].length<page) return doc;
       }
     },
+    // The viewer's agents a person can talk to: the main agent, then every agent
+    // they bound into THIS command center (harness §4.18). A conversation-design
+    // installation answers the main thread, so it is not one of them.
+    // `selected` is the agent the app's chat is talking to right now.
+    conversable(b){
+      return !!(b&&typeof b==="object"&&b.created_by===this.principal&&b.universe_id===this.home&&
+        b.status==="configured"&&b.agent_binding_id&&b.configuration&&typeof b.configuration==="object"&&
+        b.configuration.role!==this.ROLE&&
+        !Object.prototype.hasOwnProperty.call(b.configuration,"turn_consumer"));
+    },
     async listAgents(){
       const doc=await this.readWhole({target:"agent_bindings",graph_id:this.home},"bindings");
       if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
-      // Read from the same list, not from a cache: the one installation whose
-      // conversation design is active is the selected agent.
-      const mine=doc.bindings.filter(b=>this.eligible(b));
-      const selectedId=mine.length===1&&this.describe(mine[0]).state==="active"?String(mine[0].agent_binding_id):"";
-      const agents=[];
+      const current=typeof addressedAgentId==="function"?addressedAgentId():"main";
+      const agents=[{agent_id:"main",name:"Your agent",selected:current==="main"}];
       for(const b of doc.bindings){
-        if(!b||typeof b!=="object"||b.universe_id!==this.home) continue;
+        if(!this.conversable(b)) continue;
         // Picked fields only. A configuration is private operational data and
         // never crosses into a bundle, so only its NAME does.
-        agents.push({agent_id:String(b.agent_binding_id||""),
-          name:String((b.configuration&&b.configuration.name)||"Unnamed agent"),
-          selected:String(b.agent_binding_id||"")===selectedId&&selectedId!==""});
+        const id=String(b.agent_binding_id);
+        agents.push({agent_id:id,name:String(b.configuration.name||"Unnamed agent"),selected:current===id});
       }
       return {agents};
     },
+    // One of the viewer's own agents, by id or by name. Anything else is refused
+    // by name: never quietly answered by a different agent.
+    async agentNamed(wanted){
+      const agents=(await this.listAgents()).agents;
+      const match=agents.find(a=>a.agent_id===wanted)||agents.find(a=>a.name===wanted);
+      if(!match) throw new Error("no agent of yours is named "+wanted);
+      return match;
+    },
+    // Opens the app's chat talking to that agent: its own thread, its name on
+    // the chat. A room-per-agent screen calls this when the person picks a room.
+    async openChat(args){
+      const wanted=typeof args.agent==="string"?args.agent.trim():"";
+      if(!wanted) throw new Error("agent is required");
+      const match=await this.agentNamed(wanted);
+      await addressAgent({agent_id:match.agent_id,name:match.name});
+      return {opened:true,agent_id:match.agent_id,name:match.name};
+    },
     // Sends through the app's ordinary turn path, so a bundle's message gets the
-    // same recovery, queueing and thread record a typed one gets — and appears
-    // in the shared conversation rather than a private side channel.
-    //
-    // `agent` is NOT yet honoured per message: the server admits a turn only for
-    // the universe's ONE currently selected conversation
-    // (consumer_runtime.reserve_prepared_turn). Naming a different agent is
-    // refused by name rather than silently sent to the selected one.
+    // same recovery, queueing and thread record a typed one gets. Naming an agent
+    // opens the chat with that agent first, so the message and its reply appear
+    // on that agent's own thread; no agent means the one the chat is talking to.
     async sendMessage(args){
       const text=typeof args.text==="string"?args.text.trim():"";
       if(!text) throw new Error("text is required");
       if(text.length>this.MAX_MESSAGE) throw new Error("text exceeds "+this.MAX_MESSAGE+" characters");
       const wanted=typeof args.agent==="string"?args.agent.trim():"";
-      if(wanted){
-        const agents=await this.listAgents();
-        const match=agents.agents.find(a=>a.agent_id===wanted||a.name===wanted);
-        if(!match) throw new Error("no agent of yours is named "+wanted);
-        if(!match.selected) throw new Error(
-          "this universe sends turns to its selected conversation only, and "+match.name+" is not it; "+
-          "change the conversation design first (set_conversation_design)");
-      }
       if(this.sending) throw new Error("a message from this UI is already in flight");
       this.sending=true;
-      try{ await sendTurn(text,text,{inputMethod:"app_action"}); }
-      finally{ this.sending=false; }
+      try{
+        let agentId=typeof addressedAgentId==="function"?addressedAgentId():"main";
+        if(wanted){
+          const match=await this.agentNamed(wanted);
+          agentId=match.agent_id;
+          await addressAgent({agent_id:agentId,name:match.name});
+        }
+        if(typeof addressedAgentId==="function"&&addressedAgentId()!==agentId)
+          throw new Error("the chat switched to another agent; nothing was sent");
+        await sendTurn(text,text,{inputMethod:"app_action",agentId});
+      }finally{ this.sending=false; }
       return {sent:true};
     },
     // The viewer's own saved conversation, field by field.
     //
     // Pinned to `this.home` and the ANSWER is checked against it. `get_status`
-    // with no universe defaults to the caller's ACTIVE universe, so an unpinned
+    // with no command center defaults to the caller's ACTIVE command center, so an unpinned
     // read hands a bundle whichever home the account moved to rather than the one
     // it was granted (Codex, 2026-09-26). `verify()` closes the window; this
     // closes the read itself, so neither depends on the other being right.
@@ -420,10 +583,16 @@
       const limit=Number.isInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_READ_TURNS):this.MAX_READ_TURNS;
       const call={universe_id:this.home,include_conversation:true,conversation_limit:limit};
       if(Number.isSafeInteger(args.before)&&args.before>=0) call.conversation_before=args.before;
+      // Whose thread: a named agent of the viewer's, else the one the chat is
+      // talking to. The server re-checks that the agent is the viewer's own.
+      const wanted=typeof args.agent==="string"?args.agent.trim():"";
+      const agent=wanted?(await this.agentNamed(wanted)).agent_id:
+        (typeof addressedAgentId==="function"?addressedAgentId():"main");
+      if(agent!=="main") call.conversation_agent=agent;
       const doc=await Owner.status(call);
       if(!doc||doc.error) throw new Error("your conversation is unavailable");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that conversation belongs to another universe; this UI's access ended");
+        throw new Error("that conversation belongs to another command center; this UI's access ended");
       const conversation=doc.recent_conversation;
       if(!conversation||typeof conversation.error==="string"||!Array.isArray(conversation.turns))
         throw new Error("your conversation could not be read");
@@ -440,20 +609,20 @@
     // ---- live state: the viewer's own automations and runs, read-only -------
     // What a screen needs to show agents WORKING rather than a picture of them.
     // Same rules as the reads above: `graph_id` is always this.home, the answer
-    // is checked against it where it names a universe, and every reply is built
+    // is checked against it where it names a command center, and every reply is built
     // from picked fields. Automation `inputs` and a run's `actor` never cross:
     // the first is the owner's private configuration, the second a principal id.
     //
-    // The server scopes each of these to the named universe, so a run id from
+    // The server scopes each of these to the named command center, so a run id from
     // anywhere else reads as not found rather than being returned.
     async listAutomations(){
       const doc=await this.readWhole({target:"automations",graph_id:this.home},"automations");
       if(!doc||doc.error||!Array.isArray(doc.automations)) throw new Error("your automations are unavailable");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("those automations belong to another universe; this UI's access ended");
+        throw new Error("those automations belong to another command center; this UI's access ended");
       const automations=[];
       for(const a of doc.automations){
-        // A retired fleet-era row names no universe and runs nothing: skip it.
+        // A retired fleet-era row names no command center and runs nothing: skip it.
         if(!a||typeof a!=="object"||a.universe_id!==this.home) continue;
         const t=(a.trigger&&typeof a.trigger==="object")?a.trigger:{};
         automations.push({automation_id:String(a.automation_id||""),name:String(a.name||""),
@@ -524,7 +693,7 @@
     },
 
     // ---- the shared folder and the wake -------------------------------------
-    // Agents coordinate through files in the universe folder, so a screen of
+    // Agents coordinate through files in the command center folder, so a screen of
     // them reads those files. Owner-only on the server (an admin grant on this
     // home), pinned to this.home here, picked fields back.
     filePath(value,required){
@@ -536,10 +705,10 @@
     async listFiles(args){
       const path=this.filePath(args.path,false);
       const doc=await Owner.read(
-        {target:"universe_files",graph_id:this.home,query:path});
+        {target:"command_center_files",graph_id:this.home,query:path});
       if(!doc||doc.error||!Array.isArray(doc.entries)) throw new Error("that folder is not available");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that folder belongs to another universe; this UI's access ended");
+        throw new Error("that folder belongs to another command center; this UI's access ended");
       const entries=[];
       for(const e of doc.entries){
         if(!e||typeof e.name!=="string") continue;
@@ -552,11 +721,11 @@
     async readFile(args){
       const path=this.filePath(args.path,true);
       const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
-      const doc=await Owner.read({target:"universe_file",graph_id:this.home,
+      const doc=await Owner.read({target:"command_center_file",graph_id:this.home,
         query:path,file_offset:offset,file_max_bytes:this.MAX_FILE_CHUNK});
       if(!doc||doc.error) throw new Error("that file is not available");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that file belongs to another universe; this UI's access ended");
+        throw new Error("that file belongs to another command center; this UI's access ended");
       const text=doc.encoding==="text"&&typeof doc.text==="string";
       return {path:String(doc.path||path),encoding:text?"text":"base64",
         content:text?doc.text:String(doc.base64||""),size_bytes:Number.isInteger(doc.size_bytes)?doc.size_bytes:null,
@@ -681,7 +850,7 @@
         const rows=await this.installations();
         if(!this.fence(epoch,home)) throw new Error("your session changed");
         if(rows.length>1){
-          if(target||approve) throw new Error("more than one conversation installation exists; restore the default conversation in Switch UI first. Nothing was changed");
+          if(target||approve) throw new Error("more than one conversation installation exists; restore the default conversation in Switch command center first. Nothing was changed");
           return await this.clearAmbiguity(rows,epoch,home);
         }
         const b=rows[0]||null;
@@ -856,7 +1025,7 @@
     },
     // Install a bundle into the viewer's own library: a remix installs the
     // COMPONENT, so it runs against this viewer's bridge and this viewer's
-    // universe. The author's universe is never addressed by an installed copy.
+    // command center. The author's command center is never addressed by an installed copy.
     async install(component){
       if(!this.enabled||this.busy) return {ok:false,reason:"not ready"};
       const parsed=this.parseBundle(component);
@@ -880,7 +1049,7 @@
         next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
         // No library-wide limit, so no install is ever turned away for the size
         // of what is already there. The bundle itself was validated above, and
-        // its bytes are the universe's storage.
+        // its bytes are the command center's storage.
         return {ui_library:JSON.parse(JSON.stringify(next))};
       });
       if(!outcome.ok){
@@ -897,6 +1066,10 @@
     publishPayload(bundle,description){
       const parsed=this.parseBundle(bundle);
       if(!parsed.ok) return parsed;
+      // Its files live in this viewer's private UI storage; a published copy
+      // could not load them (the server's publish refuses them for the same reason).
+      if(parsed.bundle.assets&&Object.keys(parsed.bundle.assets).length)
+        return this.unsupported("a UI that loads its own files cannot be published yet");
       return {ok:true,payload:{schema_version:1,name:parsed.bundle.name,
         description:String(description||""),tags:[this.KIND],
         components:{ui:JSON.parse(JSON.stringify(parsed.bundle))}}};
@@ -930,7 +1103,7 @@
         list.appendChild(item);
       }
       if(!this.library.length)
-        this.line(list,"No custom UI installed. Ask your universe to build one.","muted");
+        this.line(list,"No custom UI installed. Ask your agent to build one.","muted");
       $("btn-ui-refresh").disabled=this.busy;
       this.paintConversation();
     },

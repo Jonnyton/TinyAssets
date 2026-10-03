@@ -470,6 +470,24 @@ def _reset_git_enabled_probe():
 
 
 @pytest.fixture(autouse=True)
+def _restore_auth_provider():
+    """Put back the process-global auth provider each test started with.
+
+    ``set_provider`` replaces a module global and returns nothing, so a test
+    that swaps it and "restores" from its return value leaves its provider for
+    every later test. tests/test_mcp_sse_keepalive.py did exactly that: a probe
+    provider that requires auth and grants only read stayed installed, and a
+    later first-contact test was refused its home universe (no_home_universe)
+    whenever shard packing put the two files together.
+    """
+    from tinyassets.auth import middleware
+
+    saved = middleware._provider
+    yield
+    middleware._provider = saved
+
+
+@pytest.fixture(autouse=True)
 def _reset_provider_request_state():
     """Clear the process-global provider-request capability state per test.
 

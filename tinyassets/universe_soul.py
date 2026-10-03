@@ -1,4 +1,4 @@
-"""Domain-neutral universe soul profile helpers.
+"""Domain-neutral command center soul profile helpers.
 
 PR-139 slice 3 keeps the old ``PROGRAM.md`` premise file as a compatibility
 mirror while introducing ``soul.md`` as the durable universe-intent artifact.
@@ -10,6 +10,8 @@ import hashlib
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from tinyassets.universe_files import write_data_path
 
 SOUL_FILENAME = "soul.md"
 SOUL_VERSIONS_DIR = "soul_versions"
@@ -84,7 +86,7 @@ class PinnedUniverseSoul:
             "loop_branch_def_id": self.soul.loop_branch_def_id,
             "effect_authority": list(self.soul.effect_authority),
             "identity_boundary": (
-                "Universe soul guides this context only; it does not change "
+                "Command center soul guides this context only; it does not change "
                 "the actor identity or user memory scope."
             ),
             "content": content,
@@ -216,7 +218,7 @@ def write_universe_soul(
     effect_authority: tuple[str, ...] = (),
     clear_loop_branch: bool = False,
 ) -> UniverseSoul:
-    """Write or update a universe soul.
+    """Write or update a command center soul.
 
     ``clear_loop_branch`` exists because an empty ``loop_branch_def_id``
     PRESERVES the existing value (every field here treats blank as "leave
@@ -282,7 +284,7 @@ def write_universe_soul(
         )
 
     rendered = render_soul_markdown(soul)
-    soul_path(universe_dir).write_text(rendered, encoding="utf-8")
+    write_data_path(soul_path(universe_dir), rendered)
     _write_soul_version(universe_dir, rendered)
     return soul
 
@@ -390,7 +392,6 @@ def _write_soul_version(universe_dir: Path, rendered: str) -> None:
     from tinyassets.universe_files import MAX_BRAIN_FILE_BYTES, read_universe_text
 
     versions_dir = universe_dir / SOUL_VERSIONS_DIR
-    versions_dir.mkdir(parents=True, exist_ok=True)
     versions = _soul_version_names(universe_dir)
     if versions:
         try:
@@ -408,7 +409,8 @@ def _write_soul_version(universe_dir: Path, rendered: str) -> None:
             next_number = int(versions[-1][:4]) + 1
         except ValueError:
             next_number = len(versions) + 1
-    (versions_dir / f"{next_number:04d}.md").write_text(rendered, encoding="utf-8")
+    # Exclusive and link-free: never through a planted soul_versions link.
+    write_data_path(versions_dir / f"{next_number:04d}.md", rendered, mode="exclusive")
 
 
 def _matching_soul_version_id(universe_dir: Path, content: str) -> str | None:

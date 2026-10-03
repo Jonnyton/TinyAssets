@@ -495,7 +495,9 @@ def _has_sign_in(action: dict[str, Any]) -> bool:
             and bool(offer.get("authorize_url")) and bool(offer.get("token_url")))
 
 
-def _with_sign_in_offer(action: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _with_sign_in_offer(
+    action: dict[str, Any], sign_in_hosts: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Resolve whether the provider offers OAuth for this connection.
 
     Returns the action to store (with ``oauth`` = the offer when there is one)
@@ -506,8 +508,13 @@ def _with_sign_in_offer(action: dict[str, Any]) -> tuple[dict[str, Any], dict[st
     from tinyassets.connection_oauth.flow import configured_redirect_uri
 
     requested = action.pop("oauth_request", {}) or {}
+    # ``sign_in_hosts`` are installed data from the platform's own source card
+    # (an issuer that is not the inference host), tried first. Server-set like
+    # ``origin``: never read from the payload, so a requester cannot root
+    # discovery anywhere its declared endpoints do not already reach.
     hosts = list(dict.fromkeys(
-        [str(e.get("host") or "") for e in action.get("endpoints") or []]
+        [str(h) for h in sign_in_hosts]
+        + [str(e.get("host") or "") for e in action.get("endpoints") or []]
         + [str(h) for h in action.get("hosts") or []]
     ))
     offer, reason = resolve_offer(requested, [h for h in hosts if h])
@@ -1085,11 +1092,14 @@ def _validated_items(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
 
 def request_from_user(
     *, universe_id: str = "", payload: Any = None, origin: str = "agent",
+    sign_in_hosts: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The agent raises a tab. Writes no credential.
 
     ``origin`` is server-set (keyword only, never read from ``payload``): the
     platform's own asks pass ``"platform"`` so the agent cannot withdraw them.
+    ``sign_in_hosts`` is server-set too: an installed source card's issuer host,
+    where sign-in discovery starts (see :func:`_with_sign_in_offer`).
     """
     from tinyassets.storage.pending_requests import create_request
 
@@ -1117,7 +1127,7 @@ def request_from_user(
     try:
         action = _validated_action(document.get("action"))
         if action.get("type") == "connect":
-            action, sign_in = _with_sign_in_offer(action)
+            action, sign_in = _with_sign_in_offer(action, tuple(sign_in_hosts))
     except ValueError as exc:
         return _refused(exc)
     except Exception as exc:  # noqa: BLE001 - endpoint validator
@@ -1576,7 +1586,7 @@ def _full_channel_sentence(action: dict[str, Any]) -> str:
         git_clause = (
             ". Where that serves git, this covers clone and push to any "
             "repository the key can reach there, including checking it out and "
-            "running its build in your universe's sandbox"
+            "running its build in your command center's sandbox"
         )
     else:
         # Several hosts: a git scope binds ONE host, so this channel carries no
@@ -1629,7 +1639,7 @@ def _grant_sentence(row: dict[str, Any]) -> str:
                 "against, so it cannot be granted. Ask again."
             )
         return (
-            "Let this universe " + ", ".join(operations) + " "
+            "Let this command center " + ", ".join(operations) + " "
             f"{action.get('repo')} on {host} with the key you already "
             "gave. Nothing to paste; this is the yes."
         )
@@ -1641,7 +1651,7 @@ def _grant_sentence(row: dict[str, Any]) -> str:
                 "it cannot be granted. Ask again."
             )
         return (
-            f"Let this universe send problem reports to {label} -- what it was "
+            f"Let this command center send problem reports to {label} -- what it was "
             "trying to do and what was missing. Only that one place, only what it "
             "sends, and nothing else of yours. Nothing to paste; this is the yes, "
             "and you can take it back."
@@ -1741,7 +1751,7 @@ def _sign_in_sentence(row: dict[str, Any]) -> str:
     return (f" Sign in at {host} to connect it - no key to copy.{asks} Tokens come "
             f"from {token_host}; sign-in talks only to {', '.join(offer_hosts(offer))}, "
             "found from the connection's own host. Its access renews itself, and "
-            "only your universe can use it." + paste)
+            "only your agent can use it." + paste)
 
 
 def _git_host_clause(value: Any) -> str:
@@ -1764,11 +1774,11 @@ def _uses_sentence(action: dict[str, Any]) -> str:
         billing = ("free of charge" if model.get("billing") == "free"
                    else "flat-rate (a plan you already pay for)")
         parts.append(
-            f" Your universe may also run its model on it ({model.get('wire')} wire): "
+            f" Your command center may also run its model on it ({model.get('wire')} wire): "
             f"{names}. The requester declared these {billing}; TinyAssets cannot "
             "check that. Calls use your key, so anything the provider charges is "
             "billed to your account there, and TinyAssets grants no spending on "
-            "them. If nothing powers your universe yet, this becomes its model."
+            "them. If nothing powers your command center yet, this becomes its model."
         )
     headers = action.get("constant_headers") or {}
     if headers:
@@ -1815,7 +1825,6 @@ def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
 #: has none. A ``command`` runner joins this list when one exists to run it.
 _MODEL_CONNECT_SHAPES = ("api_key", "local")
 
-
 def _first_power_preset() -> dict[str, object] | None:
     """The bundled guided sign-in the setup request offers first, as display data.
 
@@ -1857,9 +1866,22 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
     entry stays -- it is the only route to a second source -- but it is
     ``optional``: offered, answerable, and outstanding to nobody.
     """
-    from tinyassets.providers.free_sources import source_cards
+    from tinyassets.onboarding import DEVICE_SIGN_IN_SERVICE
+    from tinyassets.providers.free_sources import (
+        daily_cap_offers,
+        sign_in_cards,
+        source_cards,
+        subscription_cards,
+    )
 
-    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards()}
+    # One connect screen: the guided sign-in (``primary``), the sources completed
+    # by signing in, the key cards, the subscriptions, and the provider-stated daily
+    # limits the app's daily-cap card is worded from. All data, none in the page.
+    setup: dict[str, object] = {"shapes": list(_MODEL_CONNECT_SHAPES), "sources": source_cards(),
+                                "sign_in_sources": sign_in_cards(),
+                                "subscriptions": [{**s, "service": DEVICE_SIGN_IN_SERVICE}
+                                                  for s in subscription_cards()],
+                                "daily_caps": daily_cap_offers()}
     primary = None if connected else _first_power_preset()
     if primary is not None:
         setup["primary"] = primary
@@ -1867,11 +1889,11 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
         "request_id": _LLM_REQUEST_ID,
         "kind": "LLM",
         "title": ("Connect another LLM" if connected
-                  else "Connect the model your universe runs on"),
+                  else "Connect the model your command center runs on"),
         "body": (
-            "Add another model source. Your universe keeps running on the one it has."
+            "Add another model source. Your command center keeps running on the one it has."
             if connected else
-            "Your universe needs a model to think with. It only ever uses "
+            "Your agent needs a model to think with. It only ever uses "
             "connections you authorize."
         ),
         "fields": [],
@@ -1945,7 +1967,7 @@ def _reconnect_requests(base: Any, uid: str, udir: Any) -> list[dict[str, object
             "title": f"{service} needs you to sign in again",
             "body": (
                 f"Your {service} connection's saved sign-in is no longer accepted, so "
-                "your universe cannot use it. "
+                "your command center cannot use it. "
                 + (
                     "Signing in again takes one tap and replaces it."
                     if service == DEVICE_SIGN_IN_SERVICE
@@ -2343,7 +2365,7 @@ def _grant_patch_intake(
             "error": "patch_intake_grant_unavailable",
             "detail": (
                 "your approval was recorded but the connection could not be "
-                f"saved ({exc}); nothing can be sent yet -- ask your universe to "
+                f"saved ({exc}); nothing can be sent yet -- ask your command center to "
                 "raise the request again"
             ),
         }
@@ -2489,7 +2511,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "error": "not_answerable",
             "detail": (
                 "connect a model to clear this; it is not a question with an "
-                "answer, it is the thing your universe needs in order to think"
+                "answer, it is the thing your agent needs in order to think"
             ),
         }
     row = get_request(udir, request_id) if request_id else None
@@ -2825,8 +2847,11 @@ def displayed_row_matches(row: dict[str, Any]) -> bool:
     identity = [row["kind"], row["title"], row["body"], row["fields"], row["action"]]
     if row.get("items"):
         identity.append(row["items"])
+    from tinyassets.storage.pending_requests import scoped_dedupe_key
+
     expected = json.dumps(identity, sort_keys=True, separators=(",", ":"))
-    return stored == expected
+    # A non-main agent's key carries its agent (harness §4.18); main's is bare.
+    return stored == scoped_dedupe_key(expected, str(row.get("agent") or "main"))
 
 
 def _assembled_secret(

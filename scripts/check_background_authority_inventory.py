@@ -130,6 +130,13 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "DaemonController._run_graph",
         "compiled.stream",
     ),
+    # Reviewed 2026-10-02 (S7, change `control-plane-agent-loop`): the thin
+    # loop's box tools READ the output of a box execution through
+    # `BoxProvider.stream`, the box contract's output read (target architecture
+    # D2). It starts nothing: the execution was started by `start_exec` on a
+    # handle bound to the turn's own owner and command center, and runs no
+    # branch. The plugin mirror is no longer committed, so there is one entry.
+    CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
     # Reviewed 2026-08-29 (user-owned-automations 3.2). A due automation is a
     # background execution root, and it is registered here as one. It grants no
     # authority of its own: the provider call it hands in is the SAME foreground
