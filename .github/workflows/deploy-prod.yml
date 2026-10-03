@@ -526,6 +526,48 @@ jobs:
           set -euo pipefail
           python scripts/probe_app_surface.py --verbose
 
+      # Hard Rule 11: tinyassets.io/mcp is the ONLY public endpoint, and the
+      # direct origin is an Access-gated internal one that must never answer an
+      # unauthenticated request. This step PROVES the gate; it does not make the
+      # origin usable, and the name stays out of user-facing docs.
+      #
+      # #2442 dropped this check with the rest of the post-canary block, so
+      # since then a change that opened the internal origin would deploy green:
+      # the public canary goes through the Worker and says nothing about the
+      # origin behind it.
+      #
+      # Non-mutating: one unauthenticated GET, no credentials, 10s cap.
+      #
+      # The pass condition is POSITIVE -- the response must look like Access
+      # turning the request away -- rather than the old "anything but 200".
+      # With Access removed, a GET on the MCP endpoint would far more likely
+      # answer 405 or 404 than 200, so "not 200" would have passed while the
+      # origin was wide open. 000 and the 5xx edge codes stay ADVISORY: an
+      # unreachable tunnel is not proof the policy is gone, and a blip must not
+      # fail a good deploy.
+      #
+      # No rollback either way. The rollback below keys on the canary and
+      # app-probe outcomes, not on this step, so a red gate stops the deploy
+      # without swapping a healthy image back out of production.
+      - name: Verify CF Access gates the direct origin (expects 403/401)
+        id: access-gate
+        env:
+          DIRECT_ORIGIN: ${{ vars.TINYASSETS_INTERNAL_ORIGIN_NAME || 'mcp.tinyassets.io' }}
+        run: |
+          set -uo pipefail
+          direct_url="https://${DIRECT_ORIGIN}/mcp"
+          http_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${direct_url}" || echo 000)"
+          echo "direct origin answered HTTP ${http_code}"
+          if [ "${http_code}" = "401" ] || [ "${http_code}" = "403" ] || [ "${http_code}" = "302" ]; then
+            echo "Access gate confirmed: the direct origin turned an unauthenticated request away (HTTP ${http_code})"
+          elif [ "${http_code}" = "000" ] || [ "${http_code}" = "502" ] || [ "${http_code}" = "503" ] || [ "${http_code}" = "504" ]; then
+            echo "::warning::the direct origin is unreachable (HTTP ${http_code}); the Access gate could not be proved this run. Public MCP is served through the canonical endpoint, which was proved green above."
+          else
+            echo "::error::Cloudflare Access is NOT gating the direct origin: an unauthenticated request reached it and got HTTP ${http_code} instead of 401, 403 or 302."
+            echo "::error::Fix: Cloudflare dashboard -> Access -> Applications -> confirm the tunnel policy is active and covers this hostname."
+            exit 1
+          fi
+
       # Name kept verbatim: three test files key on this step by name
       # (test_deploy_prod_workflow, test_expected_instance_state_preparation,
       # test_prune_units). The CONDITION is what had to change — the app probe
