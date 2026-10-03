@@ -646,3 +646,78 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
     # on a failure the queue never produces.
     required = _load()["jobs"]["required-tests-shard"]["strategy"]["matrix"]["shard"]
     assert job["strategy"]["matrix"]["shard"] == required
+
+
+# ---- the conservative merge gate (round-2 fixes from the #4359 review) ------
+
+
+def test_select_installs_before_it_selects() -> None:
+    """Finding 1: without deps the conftest probe raises and selection is ALL.
+
+    That fallback is correct -- it is the only safe direction -- but it made the
+    gate INERT while still paying for the select job. The install is therefore
+    load-bearing, not an optimisation, and it has no `if`.
+    """
+    steps = _load()["jobs"]["select"]["steps"]
+    install = next(
+        i for i, s in enumerate(steps) if "pip install -e" in s.get("run", "")
+    )
+    pick = next(
+        i for i, s in enumerate(steps) if "affected_tests.py" in s.get("run", "")
+    )
+    assert install < pick
+    assert "if" not in steps[install]
+    assert not steps[install].get("continue-on-error", False)
+
+
+def test_the_gate_asks_for_the_conservative_selection() -> None:
+    """`--gate`, not the advisory PR-time mode.
+
+    Without it the merge group would trust a selection the import graph cannot
+    prove complete; the review reproduced two real omissions (a function-local
+    import and a json data file).
+    """
+    run = next(
+        s["run"] for s in _load()["jobs"]["select"]["steps"]
+        if "affected_tests.py" in s.get("run", "")
+    )
+    assert "--gate" in run
+    assert re.search(r"affected_tests\.py\s+--gate\s+--base", run), run
+
+
+def test_the_selection_is_pruned_before_it_is_digested() -> None:
+    """Finding 3: a slow-only file would fail coverage and exit its shard 5.
+
+    Order matters -- pruning after the digest would pin a digest for a
+    selection the shards never ran.
+    """
+    run = next(
+        s["run"] for s in _load()["jobs"]["select"]["steps"]
+        if "affected_tests.py" in s.get("run", "")
+    )
+    assert "--prune-to-collectible affected.txt" in run
+    assert run.index("--prune-to-collectible") < run.index("--print-selection-digest"), run
+
+
+def test_a_selective_run_still_refuses_a_skipped_browser_proof() -> None:
+    """Finding 4: coverage accepts a skip, and these tests skip themselves.
+
+    Both scopes must assert the proofs; the selective one is restricted to the
+    selected files because an absent case is exit 1 and the unselected marked
+    cases are legitimately absent there.
+    """
+    steps = _load()["jobs"]["required-tests"]["steps"]
+    proofs = [s for s in steps if "ci_assert_junit_case.py" in s.get("run", "")]
+    assert len(proofs) == 2, [s.get("name") for s in proofs]
+    by_scope = {_expr(s["if"]).split("&&")[-1].strip(): s for s in proofs}
+    assert set(by_scope) == {
+        "needs.select.outputs.scope == 'ALL'",
+        "needs.select.outputs.scope != 'ALL'",
+    }, list(by_scope)
+    whole = by_scope["needs.select.outputs.scope == 'ALL'"]["run"]
+    selective = by_scope["needs.select.outputs.scope != 'ALL'"]["run"]
+    assert "--only-files" not in whole
+    assert "--only-files affected.txt" in selective
+    for run in (whole, selective):
+        assert "--marker real_browser" in run
+        assert "|| true" not in run

@@ -84,13 +84,24 @@ from the 40 above:
 | inside the selection | 38 |
 | outside the selection | 24 |
 
-Every one of the 24 is accounted for. **No escape was found.**
+**Corrected 2026-10-03 after review: this table does NOT establish "no escape".**
+`classify` originally treated several distinct entries failing one test as proof
+that *every* occurrence was inherited. That is circular: if entry A introduces
+an unselected failure and B..N queue behind it, every group fails it, and the
+originating entry gets laundered into the evidence. Clustering only supports a
+claim about the entries BEHIND the first one. `miss_attr.py` now always reports
+the earliest entry per test as needing base/head evidence, and says so in its
+output; the two rows below that rest on something other than clustering are
+marked.
+
+Two of the three rows survive the correction, on evidence that is not
+clustering. The first does not, on its own.
 
 | outside the selection | occurrences | verdict |
 |---|---|---|
-| `test_storage_registry_complete.py::test_every_on_disk_name_is_classified` | 12 | carried in — 6 *unrelated* entries (4262, 4264, 4265, 4277, 4278, 4322) |
-| `test_branch_mutation_authority.py` (5 cases, pr-4297 only) | 10 | carried in — pr-4297's own Linux-oracle set-compare, posted on the PR 2026-10-02, reports **0 new failures** on its head vs the same base (base 218 failed, head 216) |
-| `test_wiki_file_bug.py::test_collision_retries_and_advances_id` (pr-4265 only) | 2 | consistent with main's flake floor below; not in `known-failing-tests.txt` |
+| `test_storage_registry_complete.py::test_every_on_disk_name_is_classified` | 12 | 11 inherited by the 5 entries behind the first; the EARLIEST entry still needs base/head evidence. It is an exact-count repo ratchet, which is the shape that fails from main's state rather than from a diff, but that is an argument, not the evidence. **Open.** |
+| `test_branch_mutation_authority.py` (5 cases, pr-4297 only) | 10 | **Settled, not by clustering**: pr-4297's own Linux-oracle set-compare, posted on the PR 2026-10-02, reports **0 new failures** on its head vs the same base (base 218 failed, head 216) |
+| `test_wiki_file_bug.py::test_collision_retries_and_advances_id` (pr-4265 only) | 2 | consistent with main's flake floor below, and not in `known-failing-tests.txt`. **Open** — a flake floor makes a lone failure weak evidence either way |
 
 Two method notes, because both nearly produced a wrong answer:
 
@@ -111,9 +122,57 @@ Two method notes, because both nearly produced a wrong answer:
 
 ## Design
 
+### Amended 2026-10-03 after cross-family review: the gate is SHAPE-restricted
+
+Round-2 review of the implementation found the selection unsound for a gate, by
+reproducing two real omissions:
+
+- changing `tinyassets/run_file_erasure.py` does not select
+  `tests/test_account_deletion.py` — the import is inside a function, and the
+  graph counts only import-time statements outside `tests/`;
+- changing `tinyassets/providers/daily_quota_shapes.json` selects none of the
+  six quota tests — a runtime data file is not a graph edge. A mutation to its
+  daily-match regex makes an unselected test fail.
+
+**Digests and coverage cannot see an OMISSION.** They prove the selection was
+honestly executed, never that it was complete. And soundness cannot be bought
+cheaply: `_imports` already records that following lazy imports made each test
+reach ~470 of the 525 modules in `tinyassets/`, so a sound import graph
+degenerates to ALL for essentially any code change.
+
+So the gate no longer trusts selection for code. `affected_tests.provable_shape`
+is a **whitelist of diff shapes that carry a completeness argument**, and
+everything else is ALL:
+
+- **`tests`** — every path is a `tests/test_*.py` file. It cannot change
+  production behaviour, and the only tests it can affect are those importing
+  it, which the graph captures in FULL for test files (`ast.walk` over the whole
+  tree, function bodies and patch-target strings included). A conftest or a
+  shared `tests/` helper is NOT this shape.
+- **`prose`** — every path is under `docs/`, `openspec/`, `ideas/`, or is a
+  top-level `.md`. Nothing imports or executes it, so it can only affect a test
+  that READS it, by name or by walking its directory.
+
+For both shapes the selection is additionally unioned with **every
+tree-walking test file**, not just the walkers naming the changed root, which
+is what shrinks the residual: a test that reaches one of these files through a
+path it builds without naming the file or its directory. That residual is
+stated rather than hidden, and it is why the list is two entries long.
+
+**Measured payoff of the narrow shape** (120 squash merges on main, 2026-10-03):
+prose-only **26%**, test-only **8%**, both **1%** — **34%** of merges. Those run
+a selection of ~120 of 1113 test files instead of the whole surface. The general
+affected-only gate would have covered the other 66% too, but could not be
+trusted to; this keeps roughly two thirds of the benefit with an argument that
+holds.
+
 ### The gate (`tests.yml`)
 
-- A new `select` job runs on every non-PR event.
+- A new `select` job runs on every non-PR event. **It installs dependencies
+  first**: selection imports every conftest, `tests/conftest.py` needs pytest
+  and langgraph, and on a bare runner that raises and falls back to ALL. The
+  fallback is correct and is the only safe direction, but it made the first
+  implementation of this gate completely inert while still paying for the job.
   - **On `merge_group`:** `git diff --name-only $merge_group.base_sha HEAD` is
     exactly this entry's diff. `affected_tests.py --changed-from` computes the
     selection: the static import graph, path mentions and tree walkers, or ALL

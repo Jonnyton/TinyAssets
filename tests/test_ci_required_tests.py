@@ -740,32 +740,26 @@ def test_an_empty_slice_still_reports_a_manifest_and_a_junit(tmp_path, monkeypat
     which is exactly right for a lost shard, so one that legitimately owns
     nothing has to report in the same shape.
     """
-    junit = tmp_path / "out" / "junit-shard-2.xml"
-    selection = _selection_file(tmp_path, "tests/test_ci_required_tests.py")
-    args = argparse.Namespace(
-        junit=str(junit),
-        affected=str(selection),
-        shard=(2, 6),
-        profile="affected",
-        exclude_from=None,
-        selection="sha256:aaa",
-        plan_shard=True,
-        aggregate=None,
-        print_selection_digest=None,
-        emit_quarantine=None,
-        include_from=None,
-        min_ran=0,
-        pytest_arg=[],
-        expect_shards=None,
-        shard_job_result=None,
-    )
-    monkeypatch.setattr(gate, "shard_of", lambda rel, total: 5)  # never this shard
-    monkeypatch.setattr(sys, "argv", ["ci_required_tests.py"])
-    monkeypatch.setattr(gate.argparse.ArgumentParser, "parse_args", lambda self, *a: args)
+    rel = "tests/test_ci_required_tests.py"
+    owner = gate.shard_of(rel, 6)
+    idle = 1 + (owner % 6)  # any shard that is not the owner
+    junit = tmp_path / "out" / f"junit-shard-{idle}.xml"
+    selection = _selection_file(tmp_path, rel)
+    # Real argv, so a new flag cannot silently break this the way a hand-built
+    # Namespace did: it only fails when the BEHAVIOUR changes.
+    monkeypatch.setattr(sys, "argv", [
+        "ci_required_tests.py",
+        "--junit", str(junit),
+        "--affected", str(selection),
+        "--shard", f"{idle}/6",
+        "--profile", "affected",
+        "--selection", "sha256:aaa",
+        "--plan-shard",
+    ])
     assert gate.main() == 0
     manifest = json.loads(junit.with_suffix(".json").read_text(encoding="utf-8"))
     assert manifest == {
-        "shard": 2,
+        "shard": idle,
         "total": 6,
         "pytest_exit": 0,
         "selection": "sha256:aaa",
@@ -786,3 +780,43 @@ def test_the_heavy_list_is_not_held_against_coverage(tmp_path):
         ["tests/test_ci_required_tests.py", "tests/test_integration.py"], str(heavy)
     )
     assert covered == ["tests/test_ci_required_tests.py"]
+
+
+def test_slow_only_files_are_dropped_before_the_digest():
+    """Finding 3 from the #4359 review, fixed at the source.
+
+    The required shards run `-m "not slow"`. A selected file whose tests are
+    ALL slow collects nothing here: pytest exits 5 and COVERAGE sees a file
+    that reported no case. Neither is a regression -- `slow-tests` runs them --
+    so the file leaves the selection before it is sharded or digested.
+    """
+    runnable, dropped = gate.collectible_under_gate(
+        ["tests/test_node_bid_claim_stress.py", "tests/test_ci_required_tests.py"]
+    )
+    assert dropped == ["tests/test_node_bid_claim_stress.py"], (runnable, dropped)
+    assert runnable == ["tests/test_ci_required_tests.py"]
+
+
+def test_an_empty_selection_prunes_to_nothing_without_running_pytest():
+    assert gate.collectible_under_gate([]) == ([], [])
+
+
+def test_pruning_rewrites_the_file_and_falls_back_to_all_when_empty(tmp_path, monkeypatch):
+    """Nothing collectible must not become a selective pass over an empty union."""
+    path = tmp_path / "affected.txt"
+    path.write_text("tests/test_node_bid_claim_stress.py\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [
+        "ci_required_tests.py", "--prune-to-collectible", str(path),
+    ])
+    assert gate.main() == 0
+    assert path.read_text(encoding="utf-8").strip() == "ALL"
+
+
+def test_pruning_an_all_selection_is_a_no_op(tmp_path, monkeypatch):
+    path = tmp_path / "affected.txt"
+    path.write_text("ALL\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [
+        "ci_required_tests.py", "--prune-to-collectible", str(path),
+    ])
+    assert gate.main() == 0
+    assert path.read_text(encoding="utf-8").strip() == "ALL"

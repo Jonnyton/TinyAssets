@@ -83,10 +83,23 @@ def classify(rows: list[Row]) -> Attribution:
     """Split failures into inside / carried-in / needs-a-look. Pure, so it is tested.
 
     A failure is INSIDE when the run selected ALL or the failing file is in the
-    selection. Outside failures are grouped by test: more than one distinct
-    entry means the base carried it in.
+    selection.
+
+    For outside failures, clustering across entries is evidence that LATER
+    entries inherited the failure -- and NOT evidence about the earliest one.
+    If entry A introduces an unselected failure and B..N queue behind it, every
+    group fails that test, and counting all of them as "carried in" would
+    launder A's own regression into the thing that proves nothing escaped. That
+    is the exact circularity cross-family review found in the first version of
+    this function.
+
+    So the FIRST entry to show a given test (ordered by the run id the API
+    returns, oldest last) is always reported as needing base/head evidence.
+    Only the later entries are counted as inherited, which is all clustering
+    can honestly support.
     """
     result = Attribution()
+    outside_rows: dict[str, list[Row]] = {}
     for row in rows:
         for nodeid in row.failures:
             path = nodeid.split("::", 1)[0]
@@ -95,15 +108,14 @@ def classify(rows: list[Row]) -> Attribution:
             else:
                 result.outside += 1
                 result.per_test.setdefault(nodeid, set()).add(row.pr)
-    for nodeid, prs in result.per_test.items():
-        occurrences = sum(
-            1 for row in rows if nodeid in row.failures and not row.selected_all
-            and nodeid.split("::", 1)[0] not in row.selected
-        )
-        if len(prs) > 1:
-            result.clustered += occurrences
-        else:
-            result.single_entry[nodeid] = occurrences
+                outside_rows.setdefault(nodeid, []).append(row)
+    for nodeid, hits in outside_rows.items():
+        # Oldest first. `failed_runs` returns newest first, and a larger run id
+        # is later, so sorting ascending puts the originating entry first.
+        ordered = sorted(hits, key=lambda r: r.run_id)
+        first_pr = ordered[0].pr
+        result.single_entry[nodeid] = sum(1 for r in ordered if r.pr == first_pr)
+        result.clustered += sum(1 for r in ordered if r.pr != first_pr)
     return result
 
 
@@ -243,11 +255,18 @@ def main() -> int:
               f"prs={sorted(prs)}")
     print(f"\nclustered across unrelated entries: {att.clustered} of {att.outside}")
     print(f"needing individual attribution: {att.unexplained}")
-    if not args.entry_tree and att.unexplained:
+    print(
+        "\nThis run cannot conclude 'no escape'. Clustering only shows that LATER "
+        "entries inherited a failure; the FIRST entry to show each test is listed "
+        "above as needing attribution and must be settled with base/head evidence "
+        "-- its own Linux set-compare if it posted one, else the test run on the "
+        "entry's base and its head."
+    )
+    if not args.entry_tree:
         print(
-            "\nRe-run with --entry-tree before treating any of those as an escape: "
-            "the selector's deletion rule reads the TREE, so a diff replayed "
-            "against today's tree misclassifies deletions."
+            "Re-measure any individual finding with --entry-tree first: the "
+            "selector's deletion rule reads the TREE, so a diff replayed against "
+            "today's tree misclassifies deletions."
         )
     return 0
 
