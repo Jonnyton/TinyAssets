@@ -163,6 +163,24 @@ def test_default_view_binds_the_universe_masks_launches_and_rebinds_its_own(tmp_
 
 
 @posix_paths
+def test_a_credential_dir_at_the_universe_root_is_not_rebound_over_the_masks(tmp_path):
+    """A rebind of the universe root after the masks would re-expose every hidden
+    entry (gpt-6-astra refute). The rebind is only for a snapshot under .runtime,
+    so a credential_dir that is the root itself (or outside .runtime) is ignored."""
+    universe = _universe(tmp_path).resolve()
+    (universe / ".credential-vault.json").write_text("secret", encoding="utf-8")
+    view = default_view(universe, credential_dir=universe)
+    argv = jail_argv(["cli"], view, bwrap_path="/usr/bin/bwrap")
+    # Exactly one bind of the root (the initial read-write bind), none after it.
+    root_binds = [i for i, a in enumerate(argv) if a == str(universe) and argv[i - 1] == "--bind"]
+    assert len(root_binds) == 1, argv
+    # The vault mask still stands (nothing rebound the root over it).
+    vault = argv.index(f"{universe}/.credential-vault.json")
+    assert argv[vault - 2] == "--ro-bind" and argv[vault - 1] == "/dev/null"
+    assert vault > root_binds[0]
+
+
+@posix_paths
 def test_an_install_path_reaching_universe_data_is_refused(tmp_path):
     universe = _universe(tmp_path).resolve()
     view = default_view(universe)

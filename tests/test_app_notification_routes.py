@@ -34,8 +34,11 @@ PUBLIC_APP_PATHS = {
     # The OAuth return lands in the browser with no bearer; only the shell is
     # open and the authenticated exchange after it is still challenged.
     "/app/model-callback/connect",
+    # The authorization server fetches the OAuth client metadata document without a bearer.
+    "/app/oauth/client-metadata.json",
     "/app/sw.js",        # the browser fetches a service worker with no bearer
     "/app/ui-frame",     # an <iframe src> carries no bearer; the frame holds no identity
+    "/app/m/b0/main.js",  # the app's ES modules load before sign-in; static, no identity
 }
 
 
@@ -74,6 +77,7 @@ def _app_route_paths() -> list[str]:
             continue
         paths.append(
             path.replace("{operation}", "probe").replace("{flow}", "connect")
+            .replace("{build}", "b0").replace("{name}", "main.js")
         )
     return paths
 
@@ -107,6 +111,15 @@ def test_the_service_worker_carve_out_is_exactly_one_path(app_env):
     assert not _auth_challenge_path("/app/sw.js")
     for near in ("/app/sw.js/x", "/app/sw.jsx", "/app/swx.js", "/app/sw",
                  "/app/sw.js.map", "/app/devices/sw.js"):
+        assert _auth_challenge_path(near), near
+
+
+def test_the_client_metadata_carve_out_is_exactly_one_path(app_env):
+    from tinyassets.auth.middleware import _auth_challenge_path
+
+    assert not _auth_challenge_path("/app/oauth/client-metadata.json")
+    for near in ("/app/oauth/client-metadata.json/x", "/app/oauth/client-metadata.jsonx",
+                 "/app/oauth"):
         assert _auth_challenge_path(near), near
 
 
