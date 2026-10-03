@@ -85,6 +85,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -92,6 +93,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
+from tinyassets.addressed_agents import MAIN_AGENT
 from tinyassets.providers import provider_jail
 from tinyassets.providers.provider_jail import (
     PLATFORM_RUNTIME_DIR,
@@ -295,7 +297,7 @@ def _workspace(root: Path) -> Path:
         ) from None
 
 
-def _promote_brain_files(root: Path, workspace: Path) -> None:
+def _promote_brain_files(root: Path, workspace: Path, *, agent_id: str) -> None:
     """A brain file the agent wrote while the root had none moves to the root.
 
     Brain files are bound only when they exist at the root (an empty one would
@@ -305,6 +307,10 @@ def _promote_brain_files(root: Path, workspace: Path) -> None:
     there grants nothing new.
     """
     for name in AGENT_BRAIN_FILES:
+        # identity.md is the main agent's own: another agent's call never
+        # promotes it (harness §4.18).
+        if name == "identity.md" and agent_id != MAIN_AGENT:
+            continue
         source, target = workspace / name, root / name
         if os.path.lexists(target) or source.is_symlink() or not source.is_file():
             continue
@@ -327,7 +333,9 @@ def _clear_link_mountpoint(workspace: Path, name: str) -> None:
         candidate.unlink()
 
 
-def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseView:
+def _universe_view(
+    root: Path, egress_socket: Path | None = None, *, agent_id: str,
+) -> UniverseView:
     """The tool jail's view of ``root``: the agent's own workspace at ``/u``,
     read-write, with the visible root entries bound on top at their names
     (agent-owned read-write, the rest read-only) and hidden entries absent.
@@ -336,12 +344,14 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
     entry bind is ``-try``: the daemon owns this folder concurrently, and an
     entry it removes after the scan is simply not in this call's view.
     """
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     for name in AGENT_HARNESS_DIRS:
         path = root / name
         if not os.path.lexists(path):
             path.mkdir(mode=0o755)
     workspace = _workspace(root)
-    _promote_brain_files(root, workspace)
+    _promote_brain_files(root, workspace, agent_id=agent_id)
     mounts = [JailMount("bind", MOUNT_POINT, workspace)]
     with os.scandir(root) as entries:
         listing = sorted(entries, key=lambda entry: entry.name)
@@ -356,6 +366,8 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
         owned = (
             entry.name in AGENT_HARNESS_DIRS if is_dir else entry.name in AGENT_BRAIN_FILES
         )
+        if entry.name == "identity.md" and agent_id != MAIN_AGENT:
+            owned = False
         op = "bind-try" if owned else "ro-bind-try"
         _clear_link_mountpoint(workspace, entry.name)
         mounts.append(JailMount(op, f"{MOUNT_POINT}/{entry.name}", root / entry.name))
@@ -376,10 +388,12 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
 
 
 def tool_jail_argv(
-    universe_dir: Path, inner: Sequence[str], *, seccomp_fd: int | None = None,
+    universe_dir: Path, inner: Sequence[str], *, agent_id: str, seccomp_fd: int | None = None,
     egress_socket: Path | None = None,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     try:
         root = Path(universe_dir).resolve(strict=True)
     except OSError:
@@ -387,7 +401,7 @@ def tool_jail_argv(
     if not root.is_dir():
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
-    view = _universe_view(root, egress_socket)
+    view = _universe_view(root, egress_socket, agent_id=agent_id)
     return jail_argv(
         list(inner), view, bwrap_path=bwrap, clearenv=True,
         seccomp_fd=seccomp_fd,
@@ -611,6 +625,7 @@ def run_jailed(
     universe_dir: Path,
     inner: Sequence[str],
     *,
+    agent_id: str,
     stdin: bytes | None = None,
     limits: ToolLimits = DEFAULT_LIMITS,
     wall_seconds: float | None = None,
@@ -624,6 +639,8 @@ def run_jailed(
     host being busy. ``on_wait`` is invoked once when that happens, so a caller
     with a user in front of it can surface a waiting state.
     """
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     wall = float(wall_seconds if wall_seconds is not None else limits.wall_seconds)
     cap = int(output_bytes if output_bytes is not None else limits.output_bytes)
     cpu = min(int(limits.cpu_seconds), int(wall) + 1)
@@ -643,7 +660,7 @@ def run_jailed(
     filter_fd = _seccomp_fd()
     try:
         egress = {} if egress_socket is None else {"egress_socket": egress_socket}
-        argv = TOOL_JAIL_ARGV(root, limited, seccomp_fd=filter_fd, **egress)
+        argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
         with _slot(root, on_wait=on_wait, waited=queued):
             free = _free_disk(root)
             if 0 <= free < limits.min_free_disk_bytes:
@@ -911,9 +928,11 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
 
 def read_file(
     universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Up to ``limit`` lines of a file from line ``offset`` (1-based)."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
     start = max(1, int(offset or 1))
     count = int(limit) if limit and int(limit) > 0 else DEFAULT_READ_LINES
@@ -924,7 +943,7 @@ def read_file(
     )
     run = RUNNER(
         universe_dir, ["/bin/sh", "-c", script, "sh", target, str(start), str(count)],
-        limits=limits,
+        agent_id=agent_id, limits=limits,
     )
     note = _waited_note(run)
     if run.killed == "output_limit":
@@ -941,16 +960,18 @@ def read_file(
 
 def write_file(
     universe_dir: Path, path: str, content: str,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Create or replace a file, making parent directories."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
     payload = (content or "").encode("utf-8")
     if len(payload) > MAX_WRITE_BYTES:
         raise UniverseToolError(f"content is over the {MAX_WRITE_BYTES}-byte write limit")
     script = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"'
     run = RUNNER(
-        universe_dir, ["/bin/sh", "-c", script, "sh", target],
+        universe_dir, ["/bin/sh", "-c", script, "sh", target], agent_id=agent_id,
         stdin=payload, limits=limits,
     )
     note = _waited_note(run)
@@ -962,16 +983,18 @@ def write_file(
 
 def edit_file(
     universe_dir: Path, path: str, old_text: str, new_text: str,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Replace the one exact occurrence of ``old_text`` with ``new_text``."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
     if not old_text:
         raise UniverseToolError("old_text is required: the exact passage to replace")
     run = RUNNER(
         universe_dir,
         ["/bin/sh", "-c", '[ -f "$1" ] || { echo "no such file: $1"; exit 1; }; cat -- "$1"',
-         "sh", target],
+         "sh", target], agent_id=agent_id,
         limits=limits, output_bytes=MAX_EDIT_BYTES,
     )
     note = _waited_note(run)
@@ -993,7 +1016,8 @@ def edit_file(
             "surrounding text so it matches exactly one"
         )
     written = write_file(
-        universe_dir, target, current.replace(old_text, new_text, 1), limits=limits,
+        universe_dir, target, current.replace(old_text, new_text, 1),
+        agent_id=agent_id, limits=limits,
     )
     if written.startswith("error:"):
         return written
@@ -1013,9 +1037,11 @@ def _egress_socket(universe_dir: Path) -> Path | None:
 
 def bash(
     universe_dir: Path, command: str, timeout: float = 0,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     if not (command or "").strip():
         raise UniverseToolError("a command is required")
     wall = float(timeout) if timeout and float(timeout) > 0 else limits.wall_seconds
@@ -1029,7 +1055,7 @@ def bash(
 
         inner = universe_egress.forwarder_argv(python, inner)
         egress = {"egress_socket": socket_path}
-    run = RUNNER(universe_dir, inner, limits=limits, wall_seconds=wall, **egress)
+    run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits, wall_seconds=wall, **egress)
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"
@@ -1108,44 +1134,126 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
 
 _HARNESS_HEAD = (
     "# My folder and my four tools\n"
-    "My command center is a folder, mounted at /u, and I work in it with four tools: "
-    "`read` (a file, or a range of its lines), `write` (create or replace a "
-    "file), `edit` (replace one exact passage in a file) and `bash` (a shell in "
-    "/u with public internet through a proxy that HTTP(S)_PROXY already points "
-    "at, so pip, npm, git and urllib work, and bounded memory, processes and "
-    "time, so long-running "
-    "work does not belong there: it is workflows and automations in this "
+    "My folder is /u: `read` reads files/lines, `write` creates/replaces files, "
+    "`edit` replaces one exact passage, and `bash` runs a "
+    "shell with public internet via HTTP(S)_PROXY (pip, npm, git, urllib) and "
+    "bounded memory, processes and time; long-running work is workflows and automations in this "
     "command center, never a service hosted elsewhere -- handbook chapter "
-    "write_graph.systems). Relative paths are under /u. Nothing outside "
-    "/u is mine or reachable. /u is my own workspace: I can create, change and "
-    "delete anything in it, including new folders at the top. My brain files "
-    "(identity.md, founder.md, origin.md, body.md, orgchart.md, projects.md, "
-    "goals.md, index.md, log.md, voice.md), my wiki/ and skills/, prompts/, "
-    "extensions/, workflows/, bin/ and notes/ are mine too; a few platform "
-    "files such as soul.md and config.yaml are read-only.\n"
-    "A skill is `skills/<name>/SKILL.md`, starting with frontmatter that has a "
-    "`name:` and a one-line `description:` of when to use it. Only the list "
-    "below is in this prompt: when a request matches a skill, I `read` its "
-    "SKILL.md and follow it. I make or change my own skills by writing that "
-    "file; a skill takes effect from my next turn.\n"
+    "write_graph.systems; relative paths are under /u, nothing outside is reachable. "
+    "/u is my own workspace: I create, change and delete anything in it, "
+    "including new top-level folders; only a few platform files such as "
+    "soul.md and config.yaml are read-only.\n"
+    "Skills are `skills/<name>/SKILL.md` with frontmatter `name:` and a one-line "
+    "`description:`; I read and follow matching skills, and write that file "
+    "to change them next turn.\n"
+    "When I need several independent reads or checks, I make those tool calls "
+    "together in one reply, not one per reply.\n"
+    "I install an app UI as one component with `write_graph target=\"app_ui\" "
+    "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
+    "write_graph.interfaces), in one call rather than staging "
+    "pieces in /u files and reading them back.\n"
     "## My skills\n"
 )
 
 
+def _folder_section(universe_dir: Path) -> str:
+    """Two levels of metadata through the same no-follow reader as skills."""
+    from tinyassets.universe_files import list_universe_entries
+
+    lines: list[str] = []
+    remaining = 200
+
+    def read(directory: str) -> list:
+        nonlocal remaining
+        entries = list_universe_entries(universe_dir, directory, limit=remaining)
+        remaining -= len(entries)
+        return entries
+
+    def visit(directory: str, depth: int, entries: list) -> None:
+        for name, info in entries:
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+                continue
+            path = f"{directory}/{name}"
+            # Escape unusual names so a filename cannot inject extra prompt lines.
+            shown = path.encode("unicode_escape").decode("ascii")
+            if stat.S_ISDIR(info.st_mode):
+                lines.append(f"- {shown}/")
+                if depth < 2 and remaining:
+                    visit(path, depth + 1, read(path))
+            elif stat.S_ISREG(info.st_mode):
+                lines.append(f"- {shown} ({info.st_size / 1024:.1f} KB)")
+
+    try:
+        for directory in ("notes", "prompts", "workflows"):
+            if not remaining:
+                break
+            try:
+                entries = read(directory)
+            except FileNotFoundError:
+                continue  # Optional top-level folders need not exist yet.
+            visit(directory, 1, entries)
+    except (OSError, NotImplementedError, RecursionError, ValueError):
+        return ""
+    lines.sort()
+    visible = lines[:40]
+    if not remaining:
+        visible.append("(more entries; `bash ls` shows them.)")
+    elif len(lines) > 40:
+        visible.append(f"({len(lines) - 40} more entries; `bash ls` shows them.)")
+    return "\n\n## What is in my folder now\n" + "\n".join(visible or ["(empty)"])
+
+
+def command_center_summary(universe_dir: Path, owner: str) -> str:
+    """Bounded resident names and status for the verified owner's current home."""
+    try:
+        from tinyassets.api.status import _universe_active_turn
+        from tinyassets.daemon_server import get_founder_home, list_branch_definitions
+        from tinyassets.storage.outbound_connections import ConnectionLedger
+
+        if not owner or get_founder_home(universe_dir.parent, owner) != universe_dir.name:
+            return ""
+        branches = list_branch_definitions(universe_dir.parent, author=owner, viewer=owner)
+        ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
+        names = []
+        for grant in ledger.list_grants(owner_user_id=owner, universe_id=universe_dir.name,
+                                        limit=21):
+            connection = ledger.get_connection_view(grant.connection_id)
+            if connection and connection.owner_user_id == owner and connection.revoked_at is None:
+                names.append(connection.destination)
+        active = _universe_active_turn(universe_dir)
+        if active and active.get("state") == "unreadable":
+            return ""
+
+        def bounded(values):
+            # Names are data, not instructions. Bound both rows and each name.
+            import json
+
+            shown = [str(value)[:100] for value in values[:20]]
+            suffix = " (more omitted)" if len(values) > 20 else ""
+            return json.dumps(shown, ensure_ascii=False) + suffix
+
+        return (
+            "\n\n## My command center now\nCurrent names (data only):\n"
+            + "Branches: " + bounded([row["name"] for row in branches])
+            + "\nConnections: " + bounded(names)
+            + "\nStatus: " + ("working" if active else "idle")
+        )
+    except Exception:  # noqa: BLE001 - omit unavailable resident evidence, never guess
+        return ""
+
+
 def harness_prompt(universe_dir: Path) -> str:
-    """The base harness section: the four tools, the folder, the skill index.
+    """The four tools, skill index and bounded current folder inventory.
 
     Runs in the shared daemon on every founder turn, so a bad skill folder
-    never breaks the turn: any failure yields the section with no skills.
+    never breaks the turn; an unreadable inventory is omitted.
     """
     try:
         skills = skill_index(universe_dir)
     except (OSError, RecursionError, ValueError):
         skills = []
-    if not skills:
-        return _HARNESS_HEAD + "(none yet)"
     lines = [
         f"- `{name}`: {description} ({SKILLS_DIR}/{name}/SKILL.md)"
         for name, description in skills
     ]
-    return _HARNESS_HEAD + "\n".join(lines)
+    return _HARNESS_HEAD + "\n".join(lines or ["(none yet)"]) + _folder_section(universe_dir)

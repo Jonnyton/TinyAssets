@@ -1786,8 +1786,11 @@ _WRITE_GRAPH_CODE_NODES_CHAPTER = """\
     fix ``run()`` with ``operation=patch`` and payload ``op=update_node``, then run again.
     The same ``update_node`` op also edits a node's ``llm_policy`` in place:
     a ``{"preferred": {"provider": "<name>"}}`` dict replaces the pin, explicit
-    ``null`` clears it, omitting the key leaves it unchanged. That is a routing
-    preference, not a provider grant (see ``connect_compute``).
+    ``null`` clears it, omitting the key leaves it unchanged. Add ``"model_id"``
+    to pin a model; ``<name>`` is a source ref from read_graph
+    target=model_options, or its access method (``api_key_http``) when one such
+    source offers that model. That is a routing preference, not a provider grant
+    (see ``connect_compute``).
     ``effects`` and ``workspace`` are editable the same way, so an existing
     workflow never has to be rebuilt to change what a node does: ``"effects":
     ["authenticated_external_call"]`` (or ``["workspace"]``) declares the sink,
@@ -2030,6 +2033,16 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``"./game/world.js"``; inside an asset module a sibling is ``"@ui/game/world.js"``.
     Anything else I vendor myself as a JS asset.
 
+    **One reserved key: "/".** My UI gets every other key, but "/" always takes
+    the person back to the chat with me -- the app focuses the composer, so a
+    screen that holds the keyboard is never a trap they cannot type their way
+    out of. I do not bind "/" to anything, and I do not need to forward it: the
+    app takes it before my UI sees it. It is NOT reserved while a text field in
+    my UI has focus, so a command box or a search field still receives "/" as
+    an ordinary character. Escape in the composer hands the keyboard back to my
+    UI. If I want a key that opens the chat with something already typed, that
+    is what the app's own chat prefill is for -- I do not reimplement "/".
+
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
     token, no reach into the surrounding page, and NO network of its own (only its
     own assets and libraries load) -- fetch,
@@ -2039,8 +2052,10 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
 
         await tinyassets.whoami()                  -> {command_center_id, command_center_name}
         await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
-        await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
-        await tinyassets.readConversation(limit, before) -> {turns:[{speaker,text,at}],
+                  # "main" first; selected = the agent the chat talks to now
+        await tinyassets.openChat(agent)           -> opens the chat with that agent
+        await tinyassets.sendMessage(text, agent)  -> sends a turn, as them, to that agent
+        await tinyassets.readConversation(limit, before, agent) -> {turns:[{speaker,text,at}],
                   has_more, next_before}   # pass next_before as `before` for older
         await tinyassets.listAutomations()         -> {automations:[{automation_id,name,
                   branch_id,trigger,state,last_run_id,last_result,next_due_at,...}]}
@@ -2073,10 +2088,12 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     where every id differs, so a UI finds its agents by automation or workflow
     NAME, never by an id written into its code.
 
-    Anything else it calls is refused by name. ``sendMessage`` reaches the
-    command center's currently selected conversation; naming a different agent is refused
-    rather than quietly redirected, so a room-per-agent screen should call
-    ``listAgents()`` and act on ``selected`` instead of assuming. Arranging,
+    Anything else it calls is refused by name. Each agent has its own thread
+    and they share one brain. ``agent`` is an ``agent_id`` or name from
+    ``listAgents()``; omitted, it is the agent the chat talks to now. Naming
+    one opens the chat with that agent, so a room-per-agent screen calls
+    ``openChat(agent)`` when the person picks a room. A name that is not one of
+    their agents is refused, never sent to another. Arranging,
     spacing and choosing which conversation design answers are all things a UI
     I build can do; the app has no separate design or layout screen.
 
@@ -2264,7 +2281,24 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       workflow goes public with a version, and ONE definition bundles the UI, a
       ``tinyassets.branch-ref.v1`` per workflow and a
       ``tinyassets.automation-spec.v1`` per trigger (never its inputs).
-    * **Installing someone else's**: ``browse_commons kind="agents"``, then
+    * **Sharing the WHOLE command center** is the same ask with a ``package``
+      block, ``"package": {}``: the files travel too (agents' instructions and
+      skills, workspace files, ``wiki/pages``) as one versioned package. The
+      platform leaves out memory, the brain files about the person, platform
+      state, binaries and any file with a credential or contact details, and
+      lists every file either way on the tab. ``"exclude": ["<path>", ...]``
+      leaves out more; ``"memory_items": ["m_7f3a",
+      "agents/<id>/MEMORY.md#m_..."]`` shares named memory items.
+    * **Installing a whole command center**: ``browse_commons kind="packages"``,
+      then ``write_graph target="pending_request" operation="ask"
+      payload_json={"action": {"type": "install", "agent_definition_id":
+      "<the package's>"}}``. The platform checks the package, shows the person
+      what lands where, and installs only when they confirm: private copies of
+      its workflows under their published names, its screen in their library,
+      its automations PAUSED, its files written beside theirs (never over one),
+      its agent's instructions under ``agents/<name>/``. Tell them to resume the
+      automations they want.
+    * **Installing someone else's** single system: ``browse_commons kind="agents"``, then
       ``read_commons_shape agent_definition_id=...``; ``remix_shape`` each
       branch-ref's ``published_version_id``; ``add_ui`` the ``ui`` component into
       this person's ``app_ui``; create an automation per automation-spec against the
@@ -2855,9 +2889,7 @@ def write_graph(
     then a "repair" with 36 typos).** The `connections` chapter has the
     two-node shape that does it correctly.
 
-    THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is chapters I read when I need one,
-    exactly as I read a skill's SKILL.md when a request matches it:
+    THE HANDBOOK. Read the relevant chapter on demand, like a matching skill's SKILL.md:
 
     * ``branches`` -- the minimal branch that builds, field by field: a working
       one-node and two-node ``operation="create"`` payload, which keys have
@@ -3270,7 +3302,7 @@ def write_graph(
 # gated by the same current-owner admission + rate-limit as run_graph.
 # PUBLISH to the global commons is a separate,
 # consent-gated slice — deliberately NOT exposed here.
-_COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals"})
+_COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals", "packages"})
 #: Hard server-side cap on a commons browse (Codex ADAPT 2026-08-22 #7): the
 #: branch catalog is global and unbounded, so cap the rows we return to the agent
 #: to protect its context window as the commons grows. (Cursor pagination is a
@@ -3483,20 +3515,20 @@ def browse_commons(
     author: str = "",
     limit: int = 30,
 ) -> str:
-    """Browse the SHARED TinyAssets commons — automation shapes other command centers
+    """Browse the SHARED TinyAssets commons — what other command centers
     published, that you can remix into your own.
 
     THIS is the commons to use — do NOT web-search other platforms (n8n, Make,
-    Zapier). These are live, remixable TinyAssets shapes.
+    Zapier).
 
     Args:
-        kind: What to list: ``branches`` (published workflow graph shapes — the
-            main commons; each row carries a ``published_version_id`` you pass to
-            ``remix_shape``), ``agents`` (public custom agent definitions), or
-            ``goals`` (shared goals). Defaults to ``branches``.
-        query: Optional search text (agents/goals).
+        kind: ``branches`` (published workflow shapes; each row's
+            ``published_version_id`` goes to ``remix_shape``), ``agents`` (public
+            agent definitions), ``packages`` (whole command centers; install via
+            an ``install`` ask) or ``goals``. Defaults to ``branches``.
+        query: Optional search text (not branches).
         author: Optional author filter.
-        limit: Max records (agents/goals).
+        limit: Max records (not branches).
     """
     import json
 
@@ -3546,6 +3578,14 @@ def browse_commons(
             # published rows come back beside it under `own`, so the notice is
             # true for everything under `content`.
             foreign, own = _split_own_rows(raw)
+            return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
+        if normalized == "packages":
+            from tinyassets.api.package_requests import list_packages
+
+            rows = list_packages(query=(query or "").strip(), author=(author or "").strip(),
+                                 limit=max(1, min(int(limit or 30), _COMMONS_BROWSE_MAX)))
+            foreign, own = _split_own_rows(
+                json.dumps({"packages": rows, "count": len(rows)}, default=str))
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
         from tinyassets.universe_server import read_graph as _impl
 
@@ -3808,6 +3848,23 @@ def read_brain(section: str = "") -> str:
         _current_identity.reset(token)
 
 
+def _acting_agent() -> str:
+    """The agent this engine call acts for, from the launch's own session key.
+
+    Set by the platform for one launch (``?session=``), never by the model. No
+    session is a background or main-thread launch: the main agent. A key that is
+    an agent's thread but does not parse as one of THIS owner's is never main.
+    """
+    from tinyassets.addressed_agents import MAIN_AGENT, agent_of_session
+    from tinyassets.engine_steering import STEERED_PREFIX, _session_key
+
+    session = _session_key()
+    if not session.startswith(STEERED_PREFIX + "agent:"):
+        return MAIN_AGENT
+    agent = agent_of_session(session[len(STEERED_PREFIX):], _ACTOR_ID)
+    return agent if agent and agent != MAIN_AGENT else "unresolved-agent"
+
+
 @mcp.tool
 def write_brain(
     identity: str = "",
@@ -3841,6 +3898,12 @@ def write_brain(
     err = _binding_error()
     if err is not None:
         return err
+    from tinyassets.engine_steering import _session_key
+
+    refused = ""
+    if _session_key().startswith("thread:agent:") and (identity.strip() or name.strip()):
+        refused = "custom agent turns may not set the main agent's name or write identity.md"
+        identity = name = ""
     section_values = {
         "identity": identity,
         "founder": founder,
@@ -3874,7 +3937,7 @@ def write_brain(
         })
     if not (soul or learned_name):
         return json.dumps({
-            "error": (
+            "error": refused or (
                 "nothing to write; pass a section body "
                 "(identity/founder/origin/body/orgchart) or a name."
             ),
@@ -3892,7 +3955,8 @@ def write_brain(
         udir = _universe_dir(_GRAPH_ID)
         proposed: dict = {"name": learned_name, "soul": soul}
         result = commit_learning(
-            udir, proposed, universe_id=_GRAPH_ID, actor_id=_ACTOR_ID
+            udir, proposed, universe_id=_GRAPH_ID, actor_id=_ACTOR_ID,
+            agent_id=_acting_agent(),
         )
         if result is None:
             return json.dumps({
@@ -3901,7 +3965,8 @@ def write_brain(
                     "rejected (e.g. a section that is not governed-editable)."
                 ),
             })
-        return json.dumps({"ok": True, "written": result})
+        return json.dumps({"ok": not refused, "written": result,
+                           **({"error": refused} if refused else {})})
     finally:
         _current_identity.reset(token)
 
@@ -3948,7 +4013,7 @@ def connect_compute(
 
     Do NOT try to select it by writing ``llm_policy`` on a node: the runtime reads
     only ``{"preferred": {"provider": "<name>"}}`` — a provider NAME such as
-    ``codex`` or ``claude-code``, never a ``provdef_...`` id — and a wrong key is
+    ``codex`` or ``api_key_http``, never a bare ``provdef_...`` id — and a wrong key is
     ignored, so the run fails later with ``permission_denied:provider_not_bound``.
     A workflow node normally needs NO ``llm_policy`` at all: leave it off and the run
     uses whatever provider the command center serves.
@@ -4211,7 +4276,7 @@ async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
     from tinyassets import universe_tools
 
     return await _universe_tool(
-        universe_tools.read_file, path=path, offset=offset, limit=limit,
+        universe_tools.read_file, agent_id=_acting_agent(), path=path, offset=offset, limit=limit,
     )
 
 
@@ -4220,7 +4285,9 @@ async def write_file(path: str, content: str) -> str:
     """Create or replace a file in /u, making parent folders."""
     from tinyassets import universe_tools
 
-    return await _universe_tool(universe_tools.write_file, path=path, content=content)
+    return await _universe_tool(
+        universe_tools.write_file, agent_id=_acting_agent(), path=path, content=content,
+    )
 
 
 @mcp.tool(name="edit")
@@ -4229,7 +4296,8 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
     from tinyassets import universe_tools
 
     return await _universe_tool(
-        universe_tools.edit_file, path=path, old_text=old_text, new_text=new_text,
+        universe_tools.edit_file, agent_id=_acting_agent(), path=path,
+        old_text=old_text, new_text=new_text,
     )
 
 
@@ -4240,7 +4308,9 @@ async def run_bash(command: str, timeout: int = 0) -> str:
     timeout: seconds (default 120, max 600)."""
     from tinyassets import universe_tools
 
-    return await _universe_tool(universe_tools.bash, command=command, timeout=timeout)
+    return await _universe_tool(
+        universe_tools.bash, agent_id=_acting_agent(), command=command, timeout=timeout,
+    )
 
 
 if __name__ == "__main__":
