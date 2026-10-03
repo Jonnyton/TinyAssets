@@ -26,12 +26,15 @@ read in the daemon turn-path modules, so this stays the only way in.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import stat
 import uuid
+from collections.abc import Callable
 from itertools import islice
 from pathlib import Path
+from typing import Any
 
 from tinyassets import workspace_fs as fs
 
@@ -465,6 +468,100 @@ def unlink_data_path(path: Path | str) -> None:
         Path(path).unlink()
         return
     unlink_universe_file(located[0], located[1])
+
+
+class SqliteIdentityChanged(UniverseFileError):
+    """The database name stopped pointing at the file we verified."""
+
+
+def connect_guarded(path: Path | str, connect: Callable[[], Any]) -> Any:
+    """Run ``connect`` on a universe database whose name was opened link-free.
+
+    Takes the factory rather than yielding, so the ordering this depends on
+    cannot be got wrong by a caller and a connection opened just before a
+    refusal is always closed. (A context manager here leaked one on exactly
+    that path, and this suite already exhausts descriptors --
+    ``docs/concerns/2026-10-03-full-suite-cannot-report-its-own-result.md``.)
+
+    **This is detection within a narrow window, not the no-follow guarantee a
+    reader might assume, and it cannot be.** Python's ``sqlite3`` takes a path:
+    there is no way to hand it a descriptor and no way to set
+    ``SQLITE_OPEN_NOFOLLOW``, which is a C open flag. Measured 2026-10-03 in
+    the Linux oracle (SQLite 3.46.1):
+
+    * a ``?nofollow=1`` URI parameter does nothing -- unrecognised URI
+      parameters are accepted silently, as is an invented one, so nothing ever
+      surfaces the mistake;
+    * ``sqlite3.connect("/proc/self/fd/<n>")`` is not a substitute either.
+      SQLite resolves it as a *path*; once the name has been replaced it reads
+      ``".../x.db (deleted)"`` and SQLite creates a new empty database under
+      that literal name.
+
+    What this gives:
+
+    1. the leaf is opened ``O_NOFOLLOW`` under a parent descriptor whose every
+       component was opened the same way, so a link at the name, or at any
+       component above it, refuses before SQLite is involved;
+    2. the device and inode are recorded from that descriptor, which is held
+       across the call so the inode cannot be recycled;
+    3. after ``connect`` returns, the name is resolved again and compared. Only
+       the connect runs in between, and that reads the header and no row -- so
+       a swap caught here has exposed nothing, and the connection is closed
+       before the refusal propagates.
+
+    What it does not give: the window between our open and SQLite's own is not
+    closed. A swap inside it is caught by (3) before any query, which is why
+    only the connect may run there. The real closures are structural --
+    platform databases outside universe-writable directories, or the per-role
+    uid split plus a sticky parent so a child uid cannot rename the daemon's
+    entry -- and both are larger than this function.
+
+    Why it matters: with the name alone, a planted link makes the daemon read
+    AND WRITE another universe's database. That is measured, not theorised
+    (the same oracle run committed a row into the decoy).
+    """
+    located = _data_relative(Path(path))
+    if located is None:
+        return connect()  # outside the data dir: in no universe, nothing to steer
+    root, relpath = located
+    parts = _split(relpath)
+    if not getattr(fs, "_POSIX", False):
+        # Check-then-use, as everywhere else on this host; the cross-universe
+        # guarantee is POSIX-only (see _windows_parent).
+        target = _windows_parent(root, parts, create=False) / parts[-1]
+        if target.is_symlink():
+            raise UniverseFileError(f"{relpath!r} is a link; it is not opened")
+        return connect()
+    nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    dir_fd = _parent_dir_fd(root, parts, create=False)
+    try:
+        try:
+            fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=dir_fd)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise UniverseFileError(
+                    f"{relpath!r} is a link; it is not opened") from exc
+            raise
+    finally:
+        os.close(dir_fd)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise UniverseFileError(f"{relpath!r} is not a regular file")
+        before = (opened.st_dev, opened.st_ino)
+        connection = connect()
+        try:
+            now = os.stat(path)  # follows links, which is the point of comparing
+            if (now.st_dev, now.st_ino) != before:
+                raise SqliteIdentityChanged(
+                    f"{relpath!r} changed identity while it was being opened; "
+                    "nothing was read from it")
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+    finally:
+        os.close(fd)
 
 
 def load_untrusted_yaml(text: str, *, max_bytes: int = MAX_CONFIG_BYTES) -> object:
