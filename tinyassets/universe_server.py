@@ -3139,9 +3139,14 @@ def converse(
         # registered as main whoever it was addressed to: a Stop aimed at a
         # custom agent matched nothing and did nothing, while a Stop aimed at
         # main stopped that custom agent's turn. ``addressed_id`` is the
-        # resolution this turn already did from authenticated ingress -- not a
-        # parsed session, which is never authority (change
-        # addressed-agent-control-provenance §3).
+        # resolution this turn already did from authenticated ingress, inside
+        # the owner/universe scope, and never a session key parsed back into an
+        # identity: a parsed session may locate or cross-check a record, but it
+        # cannot establish one, so it is not what selects whose controls apply.
+        # (Stated here rather than cited: the change that writes this rule down,
+        # addressed-agent-control-provenance, lands in #4343 and is not in this
+        # checkout, so a reference to it would point at nothing -- Codex refute
+        # of this PR, finding D.)
         with interactive_turn(current_actor_id(), uid, agent_id=addressed_id) as live_turn:
             live_id = live_turn.live_id
             _open_steering(memory_universe_dir, memory_session, uid, live_id,

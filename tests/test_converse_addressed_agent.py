@@ -399,8 +399,11 @@ def test_an_addressed_turn_registers_under_that_agent_so_stop_can_reach_it(world
     def capture(prompt, system="", **kwargs):
         live = ti.current()
         seen["registered_agent"] = None if live is None else live.agent_id
-        # A Stop addressed to MAIN must not match this turn. Checked before any
-        # matching stop, and side-effect free precisely because it matches none.
+        # A Stop addressed to MAIN must not match this turn. Side-effect free
+        # only because this fixture runs no main turn in the same
+        # (owner, universe) bucket -- if one existed this call would correctly
+        # stop it, so do not reuse this line where one does (Codex refute of
+        # this PR, finding E).
         seen["main_stop"] = ti.request_interrupt(OWNER, "u-home", agent_id="main")
         seen["still_running"] = live is not None and not live.requested()
         return provider(prompt, system=system, **kwargs)
