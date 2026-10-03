@@ -577,9 +577,13 @@ def test_the_final_stage_ships_the_ui_preview_headless_shell():
     install = final.index("playwright install --with-deps --only-shell chromium")
     assert install < final.index("USER tinyassets"), "installed as root, before USER"
     assert "chmod -R a+rX /opt/ms-playwright" in final
-    assert '".[mcp,preview]"' in text
+    assert '".[mcp,browser]"' in text
     extras = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    preview = extras["project"]["optional-dependencies"]["preview"]
-    assert preview == ["playwright==1.58.0"], "exact pin: it decides the Chromium build"
+    # One extra, shared with the real-browser CI proof: two names for the same
+    # pin would let the image and the proof drift onto different Chromium builds.
+    optional = extras["project"]["optional-dependencies"]
+    assert optional["browser"] == ["playwright==1.58.0"], (
+        "exact pin: it decides the Chromium build")
+    assert "preview" not in optional, "the image installs `browser`, not a second extra"
     # Interim placement is written where the box image will look for it.
     assert "sealed box image" in final
