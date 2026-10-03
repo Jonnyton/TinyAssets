@@ -29,7 +29,7 @@
 #
 # Post-bootstrap host action:
 #   1. Fill /etc/tinyassets/env with real secrets (CLOUDFLARE_TUNNEL_TOKEN,
-#      SUPABASE_*, GITHUB_OAUTH_*).
+#      SUPABASE_*).
 #   2. systemctl start tinyassets-daemon
 #   3. Verify: python3 /opt/tinyassets-host-uptime/current/scripts/mcp_public_canary.py
 #      --url https://tinyassets.io/mcp --verbose
@@ -214,7 +214,7 @@ if [[ ! -f "${ENV_DIR}/env" ]]; then
     cp "${TINYASSETS_HOME}/deploy/tinyassets-env.template" "${ENV_DIR}/env"
     chown "root:${TINYASSETS_USER}" "${ENV_DIR}/env"
     chmod 640 "${ENV_DIR}/env"
-    log "  → edit ${ENV_DIR}/env and fill in CLOUDFLARE_TUNNEL_TOKEN + SUPABASE_* + GITHUB_OAUTH_* before starting the service"
+    log "  → edit ${ENV_DIR}/env and fill in CLOUDFLARE_TUNNEL_TOKEN + SUPABASE_* before starting the service"
 else
     log "${ENV_DIR}/env already present; leaving contents alone"
 fi

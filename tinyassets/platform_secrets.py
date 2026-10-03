@@ -39,8 +39,15 @@ DAEMON_FORBIDDEN_ENV: frozenset[str] = frozenset({
     # Template placeholders no code reads (``host_pool`` is never imported).
     "SUPABASE_DB_URL",
     "SUPABASE_SERVICE_ROLE_KEY",
-    "GITHUB_OAUTH_CLIENT_SECRET",
 })
+# A name is removed from this list only once it cannot exist: deleted from
+# deploy/tinyassets-env.template so it is never set again, AND deleted from the
+# live host env by the deploy, which then asserts it absent. This list is a
+# DENY list filtered out of daemon.env (`install-tinyassets-env.sh
+# render-daemon-env`), so de-listing a key that is still in /etc/tinyassets/env
+# would hand it to the daemon rather than withhold it -- the opposite of the
+# point. ``GITHUB_OAUTH_CLIENT_SECRET`` went that way on 2026-10-03: nothing
+# read it anywhere, so the whole name is gone instead of guarded.
 
 DAEMON_ONLY_ENV: frozenset[str] = frozenset({
     "TINYASSETS_BILLING_ENTITLEMENT_KEY",

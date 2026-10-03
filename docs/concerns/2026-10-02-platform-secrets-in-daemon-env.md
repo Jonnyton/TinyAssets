@@ -53,7 +53,8 @@ Who reads what, by grep of `tinyassets/` (names only):
 | `DO_API_TOKEN` | nothing; workflows use the GitHub secret | nowhere on the box |
 | `CLOUDFLARE_TUNNEL_TOKEN` | compose interpolation into `cloudflared` | tunnel only |
 | `BETTERSTACK_SOURCE_TOKEN` | compose interpolation into `logs` | logs sidecar only |
-| `SUPABASE_DB_URL`, `GITHUB_OAUTH_CLIENT_SECRET` | nothing | nowhere |
+| `SUPABASE_DB_URL` | nothing under `tinyassets/`; `compose.yml` and `docker-entrypoint.sh` name it | nowhere |
+| ~~`GITHUB_OAUTH_CLIENT_SECRET`~~ | nothing, anywhere | **deleted 2026-10-03** — no reader and no OAuth flow, so the name is gone from the template, the deny-lists and the host env rather than guarded |
 | `SUPABASE_SERVICE_ROLE_KEY` | `host_pool/client.py`, which nothing imports | nowhere |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TINYASSETS_BILLING_ENTITLEMENT_KEY` | `billing/stripe_adapter.py`, called only by daemon HTTP routes in `onboarding/` | daemon process, no child |
 | `WORKOS_API_KEY` | `account_deletion.py`, called only by an `onboarding/` route | daemon process, no child |
@@ -135,7 +136,7 @@ reads `/etc/tinyassets/env` as before; `daemon.env` left behind is inert.
 The deploy prints `daemon environment holds none of: ...` only after reading
 the live container. Independently, on the host as root, names only:
 
-    forbidden='DO_API_TOKEN|CLOUDFLARE_TUNNEL_TOKEN|BETTERSTACK_SOURCE_TOKEN|SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE_KEY|GITHUB_OAUTH_CLIENT_SECRET'
+    forbidden='DO_API_TOKEN|CLOUDFLARE_TUNNEL_TOKEN|BETTERSTACK_SOURCE_TOKEN|SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE_KEY'
     for p in $(docker top tinyassets-daemon -eo pid | tail -n +2); do
       tr '\0' '\n' < /proc/$p/environ | cut -d= -f1 | grep -xE "$forbidden" | sed "s/^/pid $p: /"
     done
