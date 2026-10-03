@@ -22,7 +22,7 @@ The production runtime SHALL run the owner (daemon), the credential broker, and 
 
 ### Requirement: No owner-writable path lies on a privileged chain
 
-Every executable, interpreter, script and import-search-path entry reached by a process that still holds a capability SHALL be owned by root, SHALL NOT be a symlink, and SHALL NOT be group- or other-writable; the same SHALL hold for every ancestor directory of each, because write permission on a directory permits renaming any entry in it. The privileged entrypoint and launcher SHALL live outside every tree the image grants to a role uid. The launcher SHALL run with the interpreter's isolated mode so that an inherited `PYTHONPATH` and any `site-packages` path-configuration file cannot enter the privileged process, and SHALL verify its own chain and refuse before it binds a socket. A build-time gate SHALL assert the same properties against the built image, so the runtime refusal is a backstop rather than the only check.
+Every executable, interpreter, script and import-search-path entry reached by a process that still holds a capability SHALL be owned by root and SHALL NOT be group- or other-writable; the same SHALL hold for every ancestor directory of each, because write permission on a directory permits renaming any entry in it, and for every node of a symlink resolution — each link and what it resolves to — rather than symlinks being refused outright, since the image's own interpreter is a symlink. The privileged entrypoint and launcher SHALL live outside every tree the image grants to a role uid. The launcher SHALL run with the interpreter's isolated mode so that an inherited `PYTHONPATH` and any `site-packages` path-configuration file cannot enter the privileged process, SHALL drop the capabilities only the one-time ownership migration needs before it begins serving, and SHALL verify its own chain and refuse before it binds a socket. A build-time gate SHALL assert the same properties against the built image, so the runtime refusal is a backstop rather than the only check.
 
 #### Scenario: The owner cannot rewrite what root will run
 - **WHEN** the daemon (uid 1001) attempts to write, replace, rename or link over the entrypoint, the launcher, the broker's entry file, any privileged import-path entry, or any ancestor directory of one
@@ -50,7 +50,7 @@ The launcher SHALL build each child's environment from a static per-kind allowli
 
 ### Requirement: Owner-reachable IPC is separate from private broker state
 
-The broker's private state SHALL live in a directory owned by the broker uid at mode 0700 that no other role opens. Anything the owner must reach SHALL live outside it: the broker and launcher sockets SHALL live on a container-private tmpfs, owned by the broker uid with the broker-client group and mode 0660, so that no socket path sits in a role-writable directory and no stale socket survives a restart. The launcher SHALL own the broker's lifecycle — start, readiness, restart and shutdown — because the owner can neither write the broker's directory nor signal a process of another uid. The owner SHALL publish no credential-bearing handshake result to disk.
+The broker's private state SHALL live in a directory owned by the broker uid at mode 0700 that no other role opens. Anything the owner must reach SHALL live outside it, on a container-private tmpfs rather than on the data volume, so that no socket path sits in a role-writable directory and no stale socket survives a restart. The broker's socket SHALL be owned by the broker uid with the broker-client group at mode 0660, and its directory SHALL carry the setgid bit, because the broker creates the socket under its own primary group and performs no group change of its own — a socket directory without setgid yields a socket the owner cannot reach. The launcher's socket SHALL be root-owned with the owner's group at mode 0660. The launcher SHALL own the broker's lifecycle — start, readiness, restart and shutdown — because the owner can neither write the broker's directory nor signal a process of another uid, and the launcher's capability set SHALL include the capability to signal a process of another uid, since being its parent does not grant that. The owner SHALL publish no credential-bearing handshake result to disk.
 
 #### Scenario: The owner fences without writing the broker's directory
 - **WHEN** the daemon completes the owner's fence barrier
@@ -66,7 +66,7 @@ The broker's private state SHALL live in a directory owned by the broker uid at 
 
 ### Requirement: The owner channel requires a factor that is not on disk
 
-Because every process at the owner's uid — including short-lived tools the daemon execs for its own work — is indistinguishable from the daemon by peer credentials, the uid SHALL be necessary but not sufficient to open an owner stream. The second factor SHALL be held only in the daemon's process memory and SHALL NOT be written to any file. The legacy per-grant credential worker SHALL NOT be spawnable while the broker is selected, so that the two credential paths never coexist at the owner's uid. The daemon SHALL mark itself non-dumpable so that a descendant at the same uid cannot attach to it and read that factor, and the residual limits of that control SHALL be recorded rather than presented as a boundary.
+Because every process at the owner's uid — including short-lived tools the daemon execs for its own work — is indistinguishable from the daemon by peer credentials, the uid SHALL be necessary but not sufficient to open an owner stream. The second factor SHALL be held only in the daemon's process memory and SHALL NOT be written to any file. The legacy per-grant credential worker SHALL NOT be spawnable while the broker is selected, so that the two credential paths never coexist at the owner's uid. The daemon and the broker SHALL each mark themselves non-dumpable after exec — not before it, because an ordinary exec resets that flag — so that a same-uid process cannot attach and read that factor on a host whose ptrace policy would otherwise permit it. The residual limits of that control SHALL be recorded rather than presented as a boundary.
 
 #### Scenario: A sibling at the owner's uid cannot find the token
 - **WHEN** a process running as uid 1001 that is not the daemon searches the data root for the broker's socket, generation and token
@@ -76,13 +76,13 @@ Because every process at the owner's uid — including short-lived tools the dae
 - **WHEN** the broker is selected and a caller reaches the legacy per-grant worker spawn path
 - **THEN** the spawn is refused loudly rather than starting a second credential-resolving process at the owner's uid
 
-#### Scenario: A same-uid descendant cannot attach to the daemon
-- **WHEN** a process at uid 1001 descended from the daemon tries to attach to the daemon to read its memory
-- **THEN** the kernel refuses, because the daemon is marked non-dumpable
+#### Scenario: A same-uid process cannot attach to the daemon
+- **WHEN** a process at uid 1001 other than the daemon tries to attach to the daemon to read its memory, on a host whose ptrace policy does not already forbid it
+- **THEN** the kernel refuses, because the daemon marked itself non-dumpable after exec
 
 ### Requirement: Volume ownership follows the roles and never breaks an older image
 
-The ownership migration SHALL NOT change the owning uid of any path an older image reads; it SHALL grant access by adding a service group, setting the setgid bit so new files inherit it, and tightening other-bits. Only the broker's own state directory, which no older image opens, SHALL change owner. The vault file and the materialized credential artifacts SHALL keep the owner uid as their only writer and SHALL become readable by the broker through the vault group, so that the owner's existing atomic sibling-temp-then-replace write keeps working with no privileged step. Child-writable workspaces SHALL be group-owned by the work group with setgid directories, and all other platform state SHALL stay owned by the owner uid. The migration SHALL be idempotent and SHALL run under the exclusive data-layout lock before any role starts.
+The ownership migration SHALL NOT change the owning uid of any path an older image reads; it SHALL grant access by adding a service group, setting the setgid bit so new files inherit it, and tightening other-bits. Only the broker's own state directory, which no older image opens, SHALL change owner. The vault file and the materialized credential artifacts SHALL keep the owner uid as their only writer and SHALL become readable by the broker through the vault group, so that the owner's existing atomic sibling-temp-then-replace write keeps working with no privileged step. The vault's group SHALL be set explicitly on the temporary file before the atomic replace, not inherited from its directory, because that directory is the command-center root whose own group belongs to the work group; and because that assignment is a precondition of the write rather than a durability step, its failure SHALL propagate rather than commit a wrongly-grouped vault. Every mode and group these paths take SHALL come from one declaration read by both the migration and every runtime site that creates or re-modes them, so that a later provider launch cannot silently restore single-uid permissions. Child-writable workspaces SHALL be group-owned by the work group with setgid directories, and all other platform state SHALL stay owned by the owner uid. The migration SHALL be idempotent, SHALL run under the exclusive data-layout lock before any role starts, and SHALL hold the capabilities required to re-mode and traverse paths it does not own.
 
 #### Scenario: Re-running the migration changes nothing
 - **WHEN** the container restarts on a volume already migrated
@@ -92,9 +92,14 @@ The ownership migration SHALL NOT change the owning uid of any path an older ima
 - **WHEN** an older image that runs every role as the owner uid starts on a migrated volume
 - **THEN** it reads and writes every store it used before, because no path it reads changed owner
 
-#### Scenario: A deposit keeps the broker's read access
+#### Scenario: A deposit keeps the broker's read access and does not widen it
 - **WHEN** the owner writes a new credential through its sibling-temp-and-replace path
-- **THEN** the replacement file is group-owned by the vault group through the directory's setgid bit, and the broker can still read it without any ownership change
+- **THEN** the replacement file is group-owned by the vault group, set on the temporary file before the replace, and the broker can still read it without any ownership change
+- **AND** it is not group-owned by the work group, so no engine or provider child can read it
+
+#### Scenario: A provider launch does not restore single-uid permissions
+- **WHEN** a provider launch runs the code that creates or re-modes the artifact directory, the platform runtime directory, or a launch credential snapshot
+- **THEN** those paths keep the modes and groups the migration set, because both read the same declaration
 
 #### Scenario: The broker cannot write the vault
 - **WHEN** the broker attempts to modify the vault file or a materialized credential artifact
@@ -108,13 +113,17 @@ The ownership migration SHALL NOT change the owning uid of any path an older ima
 - **WHEN** the migration is killed part-way through
 - **THEN** the data-layout marker records that the role migration is in progress, and the next start re-runs it to completion before any role starts
 
-### Requirement: Shared-uid children are contained by the jail, not by the uid
+### Requirement: Shared-uid children are not separated by uid, and not all of them are jailed
 
-All engine and provider children SHALL share one uid across every command center, and cross-command-center containment for them SHALL remain the bubblewrap jail, which binds only the owning command center's paths, refuses a bind resolving outside it, and masks every hidden platform entry. This SHALL be recorded as the as-built limit of this change rather than claimed as uid isolation, and the reserved per-box uid range SHALL be what closes it by uid.
+All engine and provider children SHALL share one uid across every command center, so cross-command-center separation for them SHALL NOT be claimed from the uid; the reserved per-box uid range SHALL be what closes it by uid. For the jailed provider child, containment SHALL remain the bubblewrap jail, which binds only the owning command center's paths, refuses a bind resolving outside it, and masks every hidden platform entry. The child classes that run outside any such jail — the engine MCP child, native provider discovery, and the agent's own tool jail — SHALL be enumerated as such, and for them the uid and the allowlisted environment SHALL be stated as the whole of the containment rather than the jail being claimed on their behalf.
 
-#### Scenario: One child uid, jail-enforced separation
-- **WHEN** a provider child for one command center runs
+#### Scenario: One child uid, jail-enforced separation where a jail exists
+- **WHEN** a jailed provider child for one command center runs
 - **THEN** its uid is the same as every other command center's provider child, and the paths it can reach are limited by its jail's binds and masks
+
+#### Scenario: An unjailed child class is named, not assumed covered
+- **WHEN** the engine MCP child or native provider discovery runs
+- **THEN** it runs at the engine/provider uid outside the provider jail, with an environment built from its kind's allowlist rather than inherited whole, and the design records that the jail does not contain it
 
 #### Scenario: The vault is not reachable from a child at all
 - **WHEN** a provider child looks for the vault file or the materialized artifact directory of its own command center inside its jail
