@@ -167,12 +167,6 @@ PINNED: dict[str, list[str]] = {
         "last_verified_delivery: .read_text()",
         "record_verified_delivery: .write_text()",
     ],
-    "tinyassets/branch_tasks.py": [
-        "_file_lock: os.open()",
-        "_read_raw: .read_text()",
-        "_write_raw: .write_text()",
-        "_write_raw: os.replace()",
-    ],
     "tinyassets/bug_investigation.py": [
         "attach_patch_packet_comment: .read_text()",
         "attach_patch_packet_comment: .write_text()",
@@ -212,13 +206,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/daemon_memory.py": [
         "_read_section: .read_text()",
     ],
-    "tinyassets/daemon_server.py": [
-        "_bootstrap_notes_from_json: .read_text()",
-        "_bootstrap_payload_table_from_json: .read_text()",
-        "_mirror_notes_json: .write_text()",
-        "_mirror_payload_table_to_json: .write_text()",
-        "sync_universes_from_filesystem: .read_text()",
-    ],
     "tinyassets/daemon_wiki.py": [
         "_append_line: .open()",
         "_write_if_missing: .write_text()",
@@ -237,9 +224,6 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/dispatcher.py": [
         "load_dispatcher_config: .read_text()",
-    ],
-    "tinyassets/effectors/wiki_write_back.py": [
-        "_append_or_update_section: .write_text()",
     ],
     "tinyassets/engine_mcp_http.py": [
         "_write_routes: os.open()",
@@ -346,11 +330,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/runtime/assigned_queue_consumer.py": [
         "_hold_liveness: .unlink()",
         "_publish_heartbeat: .write_text()",
-    ],
-    "tinyassets/soul_edit.py": [
-        "_atomic_write_text: os.replace()",
-        "_atomic_write_text: os.unlink()",
-        "_soul_lock: os.open()",
     ],
     "tinyassets/storage/__init__.py": [
         "_reject_orphaned_legacy_sidecars: os.replace()",

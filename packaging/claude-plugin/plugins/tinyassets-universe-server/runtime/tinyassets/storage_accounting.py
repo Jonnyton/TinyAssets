@@ -548,6 +548,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".account_seats.db": "platform: per-account seat leases",
     ".engine_run_admissions.db": "platform: admission ledger",
     ".automations.db": "automations (user inputs by owner; schedule bookkeeping is platform)",
+    ".control_plane.db": "platform: control-plane trigger table and fire ledger (design D7)",
     ".universe-tool-slots": "platform: tool jail slots",
     ".agent-sessions": (
         "platform: which native session each thread resumes (bytes per thread; "

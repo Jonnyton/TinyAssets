@@ -756,6 +756,10 @@
         <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
+        <h3>Your agent</h3>
+        <p id="profile-name"></p>
+        <p id="profile-responsibility"></p>
+        <div id="profile-status" class="notice" role="status"></div>
         <h3>Your agent's rules</h3>
         <p>What your agent may do on its own. For each kind of action, choose: take action
         without asking, take action if you asked for exactly that, ask you first, or hand
@@ -2152,6 +2156,15 @@
     // Fenced like every other answer: what this request may change belongs to
     // the turn, account and home it was pressed for.
     const mine=activeTurn, epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    // The agent is fenced with the rest: captured when Stop was PRESSED, so
+    // switching conversations mid-request cannot retarget the stop at whoever
+    // is on screen by the time it lands.
+    //
+    // Sent ALWAYS, including "main". Stop belongs to the conversation it was
+    // pressed in: omitting it means stop-ALL on the server, which would end a
+    // custom agent's background turn because a main chat ended. The route still
+    // accepts no agent_id as stop-all for a caller that wants it.
+    const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main")||"main";
     const sameAccount=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
     const stillMine=()=>activeTurn===mine&&sameAccount();
     interruptRequested=true; flushAfterInterrupt=true; renderStop();
@@ -2162,7 +2175,8 @@
     const abort=typeof AbortController==="function"?new AbortController():null;
     const post=()=>fetch("/app/turn/interrupt",{method:"POST",credentials:"same-origin",
       headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-      body:JSON.stringify({universe_id:scope}),signal:abort?abort.signal:undefined});
+      body:JSON.stringify({universe_id:scope,agent_id:agent}),
+      signal:abort?abort.signal:undefined});
     const request=(async()=>{
       let r=await post();
       // A retry carries whatever credential is current THEN: never send it once
@@ -5677,6 +5691,8 @@
   }
   function clearAccountScopedState(){
     queueScope=""; queueOwner="";
+    $("profile-name").textContent=""; $("profile-responsibility").textContent="";
+    $("profile-status").textContent="";
     if(typeof resetAddressedAgent==="function") resetAddressedAgent();
     // The other writer of the home. A custom UI's bridge is account- AND
     // home-scoped, so an account-scoped clear must end it here too; leaving it to
@@ -6862,7 +6878,22 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadRules(); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadProfile(); loadRules(); }
+    async function loadProfile(){
+      const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
+      const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
+      $("profile-name").textContent=""; $("profile-responsibility").textContent="";
+      $("profile-status").textContent="Loading your agent…";
+      try{
+        const r=await fetch("/app/profile",{credentials:"same-origin",headers:authHeaders()});
+        const doc=await r.json();
+        if(!current()) return;
+        if(!r.ok){ $("profile-status").textContent="Your agent could not be loaded."; return; }
+        $("profile-name").textContent=doc.name||"Not named yet";
+        $("profile-responsibility").textContent=doc.responsibility||"No responsibility set yet";
+        $("profile-status").textContent=({working:"Working",idle:"Idle",waiting_on_you:"Waiting on you"})[doc.status]||"";
+      }catch(e){ if(current()) $("profile-status").textContent="Your agent could not be loaded."; }
+    }
     // ---- Your agent's rules (harness D1a/D1b) ---------------------------
     // The owner's Custom Rules, read and written through /app/rules, which only
     // ever addresses the signed-in owner's own home. Loosening a hand-back is

@@ -2299,6 +2299,19 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
     * **Its screen is an app UI** (chapter ``interfaces``) that reads the real
       thing: automations, runs, what each agent wrote, the shared files. I build
       it only from the calls that chapter lists and never fake state on it.
+    **What the person means by its name.** In the app, the screen they look at
+    IS called a command center -- "Switch command center" moves between them.
+    So "publish my Fantasy Village" names the command center they see, not a
+    stray file: I never call it a UI to them, and never call one of their
+    screens leftover. Publishing a named screen uses the PACKAGE form below,
+    as an ask the person must confirm --
+    ``ui_id`` for that screen plus ``"package": {}`` -- because the screen alone
+    is a picture: without its workflows and files the person who installs it
+    gets something that cannot do anything. There is no screen-only publish to
+    fall back to: ``branch_ids`` must name at least one workflow, so the choice
+    is this screen with its workflows, or the same plus ``"package": {}`` for
+    everything else that makes it work.
+
     * **Sharing it** is a ``publish`` ask the person confirms; I cannot publish
       myself::
 
@@ -2903,9 +2916,11 @@ def write_graph(
       edges + nodes, retune a node's prompt/source or its ``llm_policy`` model pin,
       rename, retag, add skills). The ``branches`` chapter has the
       workflow-wide ops. The
-      edit is transactional (all-or-nothing). Publishing to the commons, changing
-      visibility to public, and forking a foreign shape are NOT available here (they
-      stay in the browser flow); a patched source_code node re-enters UNAPPROVED.
+      edit is transactional (all-or-nothing). Public ``visibility`` and foreign
+      forks are not on this operation; a patched source_code node re-enters
+      UNAPPROVED. Publishing IS mine, as an ask: ``target="pending_request"
+      operation="ask"`` with a ``publish`` action, ``"package": {}`` for the
+      whole command center. Chapter ``systems``.
     - ``operation="delete"`` — delete one of YOUR OWN branches by ``branch_id``,
       public or private (a public branch is a shape others copy; it runs nothing
       for them). Refused only when something of yours still depends on it
@@ -2942,7 +2957,8 @@ def write_graph(
     * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
       office plan, any interface they ask for: I write its HTML/CSS/JS myself.
     * ``systems`` -- anything always on, several agents working together, or a
-      product for others: built HERE, never hosted elsewhere.
+      product for others: built HERE, never hosted elsewhere. PUBLISHING,
+      SHARING and INSTALLING a command center are here.
 
     I read one with ``read_graph target="handbook"
     query="write_graph.<chapter>"``; ``read_graph target="handbook"`` with no
