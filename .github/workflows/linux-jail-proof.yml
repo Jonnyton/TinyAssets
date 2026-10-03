@@ -13,6 +13,9 @@ name: linux-jail-proof
 #   * tests/test_native_refresh_jail.py runs the argv the shipping codex
 #     provider builds for a coding turn (tinyassets/providers/codex_provider.py)
 #     and proves the launch-credential mask holds, with a detection control;
+#   * tests/test_provider_jail_root_masks.py proves a provider cannot read,
+#     write or re-link the per-universe platform state kept in hidden root files
+#     (the credential vault, the run/consent/usage databases);
 #   * tests/test_provider_universe_jail.py runs the shipping claude and codex
 #     adapters, and a jail-unaware command adapter through the router, inside
 #     the shared provider jail (tinyassets/providers/provider_jail.py) and
@@ -106,6 +109,7 @@ on:
       # environment builder whose paths must resolve inside it.
       - "tests/test_provider_universe_jail.py"
       - "tests/test_provider_jail_network.py"
+      - "tests/test_provider_jail_root_masks.py"
       - "tinyassets/providers/provider_jail.py"
       - "tinyassets/providers/jail_seccomp.py"
       - "tinyassets/providers/owned_process.py"
