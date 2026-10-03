@@ -5,7 +5,6 @@ from datetime import datetime
 
 from tinyassets.providers.native_model_selection import validate_model_id
 
-
 #: Ceiling on reported effort levels. A transport guard, not a vocabulary: the
 #: platform never decides which level names an executor may advertise.
 MAX_EFFORT_LEVELS = 32
