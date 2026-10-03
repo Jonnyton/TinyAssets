@@ -173,7 +173,11 @@ def _effective_universe_provider_ceiling(
     use only providers the universe itself selected, never the process-global
     fallback chain. Missing/empty selection holds before provider access.
     """
+    from tinyassets.provider_authority import current
+
+    universe_dir = universe_context.universe_dir if universe_context is not None else None
     if carrier_armed or universe_context is None:
+        resolved_config = current(universe_dir, resolved_config)
         return (
             resolved_config.allowed_providers
             if resolved_config is not None
@@ -185,6 +189,7 @@ def _effective_universe_provider_ceiling(
     requester_config = universe_context.config
     if requester_config is None:
         raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+    requester_config = current(universe_dir, requester_config)
     if requester_config.allowed_providers is not None:
         ceiling = [
             str(provider).strip()
@@ -236,9 +241,9 @@ def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
 # only by the provider its owner's authority names. Status surfaces still use
 # this as the catalogue of executor names the host could register.
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "writer": ["claude-code", "codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "judge": ["codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "extract": ["codex", "gemini-free", "groq-free", "ollama-local"],
+    "writer": ["claude-code", "codex", "ollama-local"],
+    "judge": ["codex", "ollama-local"],
+    "extract": ["codex", "ollama-local"],
     "embed": ["ollama-local"],
 }
 
@@ -1362,7 +1367,6 @@ class ProviderRouter:
                         output_tokens=resp.output_tokens,
                         cost_microunits=resp.cost_microunits,
                     )
-                self._quota.record_success(provider_name)
                 if served_authority is not None:
                     from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
 
