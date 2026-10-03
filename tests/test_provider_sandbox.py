@@ -123,13 +123,16 @@ def test_workflow_node_call_is_pinned_to_its_universe_with_host_tools_denied(tmp
     # the node's own denies kept. Web tools are not the host's and stay.
     from tinyassets.providers.base import ACCOUNT_REACH_TOOLS, HOST_REACH_TOOLS
 
-    cfg = ModelConfig(workflow_node=True, disallowed_tools=("CronCreate",))
+    # ReportFindings is deliberately in NEITHER constant (it reports into the
+    # turn, not out of it), so it pins "the node's own denies are kept, first"
+    # without colliding with the dedupe that the next test covers.
+    cfg = ModelConfig(workflow_node=True, disallowed_tools=("ReportFindings",))
     flags, run_cwd = _sandbox_cli_args(cfg, tmp_path)
 
     assert run_cwd == str(tmp_path)
     assert flags[flags.index("--setting-sources") + 1] == "project"
     denied = flags[flags.index("--disallowedTools") + 1:]
-    assert denied == ["CronCreate", *HOST_REACH_TOOLS, *ACCOUNT_REACH_TOOLS]
+    assert denied == ["ReportFindings", *HOST_REACH_TOOLS, *ACCOUNT_REACH_TOOLS]
     assert "--allowedTools" not in flags
     assert "WebSearch" not in denied and "WebFetch" not in denied
 
@@ -202,3 +205,61 @@ def test_the_engine_denylist_has_no_duplicate_names(tmp_path):
     node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
     # A node that already denied one of them by name keeps exactly one copy.
     assert node_denied.count("Artifact") == 1
+
+
+def test_scheduling_push_and_remote_leave_the_platform_so_they_are_denied():
+    """Host decision 2026-10-03, recorded so the reason outlives the list.
+
+    Scheduling, push and remote runs belong to the user's own platform-side
+    automations -- the channels they build -- never to the CLI's account-side
+    features. A turn that scheduled its own wakeup or fired its own push would
+    run work the owner never authored and cannot see in their automations.
+    """
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS
+
+    for tool in ("ScheduleWakeup", "PushNotification", "RemoteTrigger",
+                 "CronCreate", "CronDelete", "CronList",
+                 "DesignSync", "DesignSyncTool"):
+        assert tool in ACCOUNT_REACH_TOOLS, tool
+
+
+def test_session_local_and_strict_mcp_bounded_tools_stay_allowed_on_a_node(tmp_path):
+    """The same decision's other half: do NOT sweep in what is already bounded.
+
+    ``Task*`` is the turn's own bookkeeping and ``ReportFindings`` reports into
+    the turn; the MCP resource readers are already bounded by
+    ``--strict-mcp-config``. A node keeps them, as it keeps web tools, subagents
+    and plans -- narrowing a node is about effects that ESCAPE it.
+    """
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS
+
+    node_flags, _cwd = _sandbox_cli_args(ModelConfig(workflow_node=True), tmp_path)
+    node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
+    still_allowed = (
+        "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+        "ReportFindings",
+        "ReadMcpResourceTool", "ReadMcpResourceDirTool", "ListMcpResourcesTool",
+        # Owner-level capability a node has always kept.
+        "WebFetch", "WebSearch", "Task", "Agent", "Skill",
+    )
+    for tool in still_allowed:
+        assert tool not in ACCOUNT_REACH_TOOLS, f"{tool} should not be account-reach"
+        assert tool not in node_denied, f"{tool} should stay callable on a node"
+
+
+def test_the_engine_turn_denies_everything_it_denied_before_the_refactor():
+    """Moving names from literals into the shared constant must LOSE nothing.
+
+    The engine denylist is the stricter of the two paths; this refactor pulled
+    SendMessage, ScheduleWakeup, PushNotification, RemoteTrigger, Cron* and
+    DesignSync* out of its literals and into ACCOUNT_REACH_TOOLS. Each must
+    still be denied, or the refactor quietly widened the founder's turn.
+    """
+    from tinyassets.universe_intelligence import _ENGINE_DISALLOWED_TOOLS
+
+    moved_out_of_literals = (
+        "SendMessage", "ScheduleWakeup", "PushNotification", "RemoteTrigger",
+        "CronCreate", "CronDelete", "CronList", "DesignSync", "DesignSyncTool",
+    )
+    for tool in moved_out_of_literals:
+        assert tool in _ENGINE_DISALLOWED_TOOLS, tool

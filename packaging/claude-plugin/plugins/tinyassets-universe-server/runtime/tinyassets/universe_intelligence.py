@@ -139,17 +139,17 @@ _ENGINE_DISALLOWED_TOOLS = (
     "Task", "Agent", "Workflow", "Skill", "ToolSearch", "SlashCommand",
     "TodoWrite", "EnterPlanMode", "ExitPlanMode",
     "EnterWorktree", "ExitWorktree",
-    # scheduling / messaging / remote side-effects
-    "ScheduleWakeup", "ReportFindings", "PushNotification", "RemoteTrigger",
-    "CronCreate", "CronDelete", "CronList",
+    # session-local bookkeeping: the turn's own task list and its findings
+    # report, which reports INTO the turn rather than out of it.
+    "ReportFindings",
     "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
-    # the daemon host's claude.ai account: the one account-reach definition,
-    # shared with the workflow-node denylist so the two cannot drift. Carries
-    # SendMessage, which used to be a literal here. Neither the OS jail nor
+    # Effects that leave the platform or outlive the turn -- the host's claude.ai
+    # account, the outside world, or a clock. The ONE definition, shared with the
+    # workflow-node denylist so the two cannot drift; it carries the names that
+    # used to be literals here (SendMessage, ScheduleWakeup, PushNotification,
+    # RemoteTrigger, Cron*, DesignSync*). Neither the OS jail nor
     # --strict-mcp-config bounds these.
     *ACCOUNT_REACH_TOOLS,
-    # remote integrations
-    "DesignSync", "DesignSyncTool",
     # MCP: all server tools (wildcard) + resource readers
     "mcp__*", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
     "ListMcpResourcesTool",

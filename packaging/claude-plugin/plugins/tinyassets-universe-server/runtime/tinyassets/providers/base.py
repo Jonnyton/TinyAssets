@@ -166,14 +166,21 @@ HOST_REACH_TOOLS: tuple[str, ...] = (
     "Glob", "Grep", "LS",
 )
 
-#: Claude CLI builtins that reach the DAEMON HOST'S logged-in claude.ai account.
+#: Claude CLI builtins whose effect leaves the platform or outlives the turn --
+#: the DAEMON HOST'S logged-in claude.ai account, the outside world, or a clock.
 #: Separate from :data:`HOST_REACH_TOOLS` because the boundary is a different
 #: one: these touch nothing on disk and start no shell, so the OS jail does not
 #: bound them, and they are not MCP servers, so ``--strict-mcp-config`` does not
-#: either. The account they act on is the host's, never the universe owner's --
-#: so an effect here leaves the owner's command center entirely.
+#: either.
 #:
-#: Verified against the installed CLI 2.1.288 and its changelog (2026-10-03):
+#: **Scheduling, push and remote runs belong to the user's own platform-side
+#: automations -- the channels they build -- never to the CLI's account-side
+#: features** (host decision 2026-10-03). A turn that scheduled its own wakeup
+#: or fired its own push would be running work the owner never built and cannot
+#: see, on the host's account rather than theirs.
+#:
+#: Verified against the installed CLI 2.1.288 and its changelog (2026-10-03).
+#: Account-side effects:
 #:   Artifact         publishes pages, uploads assets and reads other people's
 #:                    artifacts; artifact-database writes are visible to every
 #:                    viewer of the artifact.
@@ -183,16 +190,32 @@ HOST_REACH_TOOLS: tuple[str, ...] = (
 #:   SendFeedback     drafts and sends a report off-box.
 #:   ListPlugins      reads the plugins enabled on the claude.ai account.
 #:   EndConversation  can end the turn from inside it.
+#: Scheduled, pushed or remote:
+#:   ScheduleWakeup   starts work after the turn ends, outside any automation.
+#:   PushNotification notifies out of band, not through the owner's channel.
+#:   RemoteTrigger    reaches a remote runner.
+#:   Cron*            Create/Delete/List: a schedule the owner never authored
+#:                    and cannot see in their automations.
+#:   DesignSync*      DesignSync/DesignSyncTool: remote design I/O.
+#:
+#: Deliberately NOT here, and still callable on a node: ``Task*`` (session-local
+#: bookkeeping), ``ReportFindings`` (reports into the turn, not out of it), and
+#: the MCP resource readers (already bounded by ``--strict-mcp-config``).
 #:
 #: The ONE definition, denied on BOTH confined paths: the universe engine's
 #: denylist splats it (``universe_intelligence._ENGINE_DISALLOWED_TOOLS``) and a
 #: workflow node call denies it (``ModelConfig.workflow_node``). A workflow node
 #: keeps every owner-level capability on purpose -- web tools, subagents, plans
-#: -- but it has no business acting on the host's account, and before this it
-#: could (it denied only ``HOST_REACH_TOOLS``).
+#: -- but it has no business acting on the host's account or on a clock, and
+#: before this it could (it denied only ``HOST_REACH_TOOLS``).
 ACCOUNT_REACH_TOOLS: tuple[str, ...] = (
+    # account-side
     "Artifact", "SendMessage", "ListAgents", "SendFeedback", "ListPlugins",
     "EndConversation",
+    # scheduled / pushed / remote
+    "ScheduleWakeup", "PushNotification", "RemoteTrigger",
+    "CronCreate", "CronDelete", "CronList",
+    "DesignSync", "DesignSyncTool",
 )
 
 
