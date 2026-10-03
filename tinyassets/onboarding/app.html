@@ -296,6 +296,27 @@
       background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
       box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;z-index:5}
     .chat-cloud[data-mode="bubble"]{display:none}
+    /* WHICH SURFACE HAS THE KEYBOARD. Two surfaces share one window and a
+       focused cross-origin frame swallows keys, so the owner is never a guess:
+       the surface holding it wears an accent ring (founder, 2026-10-03, after
+       getting stuck in a UI with no visible way back). Rings are INSET so the
+       phone layout, where the cloud fills the stage with square corners,
+       cannot clip them; 2px reads at 390px wide. --accent carries it, as it
+       does every other focus ring on the page. */
+    .chat-stage[data-keys="chat"] #chat-cloud{border-color:var(--accent);
+      box-shadow:inset 0 0 0 2px var(--accent),0 12px 40px rgba(0,0,0,.45)}
+    .chat-stage[data-keys="chat"] #chat-cloud-bubble{border-color:var(--accent);
+      box-shadow:inset 0 0 0 2px var(--accent),0 8px 24px rgba(0,0,0,.45)}
+    .chat-stage[data-keys="cc"] #ui-frame-host:not([hidden]),
+    .chat-stage[data-keys="cc"] #cc-blank:not([hidden]){
+      box-shadow:inset 0 0 0 2px var(--accent)}
+    /* The way back, said in the chat's own bar while the keys are elsewhere. */
+    .chat-cloud-hint{font-size:.72rem;color:var(--ink-dim);white-space:nowrap;flex:0 0 auto}
+    .chat-stage[data-keys="chat"] .chat-cloud-hint{visibility:hidden}
+    /* Hidden only where the bar genuinely has no room -- a phone's 390px cloud,
+       where there is no "/" key on a touch keyboard anyway. The default desktop
+       cloud is 440px wide, so the threshold sits below that on purpose. */
+    @container (max-width:400px){.chat-cloud-hint{display:none}}
     .chat-cloud-bar{display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem .3rem .9rem;
       background:var(--surface);border-bottom:1px solid var(--line);cursor:grab;touch-action:none;
       user-select:none;flex:0 0 auto}
@@ -420,6 +441,10 @@
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </div>
         <span id="chat-cloud-title" class="chat-cloud-title">Your agent</span>
+        <!-- Shown only while the command center has the keyboard: the one key
+             that always comes back here. Hidden, not removed, so the bar does
+             not reflow as focus moves. -->
+        <span id="chat-cloud-hint" class="chat-cloud-hint" aria-hidden="true">Press / to chat</span>
         <button id="btn-cloud-shrink" class="chat-cloud-btn" type="button"
                 aria-label="Shrink the chat to a bubble" aria-controls="chat-cloud-body"
                 aria-expanded="true" title="Shrink">&#8211;</button>
@@ -4816,6 +4841,57 @@
         frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
       }
     }else if($("cc-blank")) $("cc-blank").focus();
+    if(typeof paintKeyboardOwner==="function") paintKeyboardOwner();
+  }
+  // ---- Which surface owns the keyboard, and the way out -----------------------
+  // The chat and the command center share one window, and a focused
+  // cross-origin frame swallows every key. So the owner is SHOWN (an accent
+  // ring, paintKeyboardOwner) and there is one key that always leads back to
+  // the chat (CHAT_KEY), because a person who cannot tell where their typing
+  // goes has no way to find out by trying (founder, 2026-10-03).
+  const CHAT_KEY="/";
+  function keyboardOwner(){
+    const active=document.activeElement;
+    if(active && active.closest && active.closest("#chat-cloud, #chat-cloud-bubble"))
+      return "chat";
+    // Nothing focused is the COMMAND CENTER's: forwardCommandCenterKey sends
+    // those keys to the frame, so saying "chat" would be a lie.
+    return "cc";
+  }
+  function paintKeyboardOwner(){
+    const stage=$("chat-stage");
+    if(!stage) return;
+    stage.dataset.keys=keyboardOwner();
+  }
+  // The guaranteed way IN. Opens the cloud first when it is a bubble, so the
+  // key works from every state rather than only the ones where chat is visible.
+  function focusChatComposer(){
+    const input=$("composer-input");
+    if(!input) return false;
+    if(cloudState && cloudState.mode==="bubble") setChatCloudMode("open");
+    input.focus();
+    paintKeyboardOwner();
+    return true;
+  }
+  // CHAT_KEY, and Enter when nothing in the chat holds the keys, land in the
+  // composer. Runs before forwardCommandCenterKey, which skips an event whose
+  // default is already prevented, so the frame never also receives it.
+  function reservedChatKey(event){
+    if(event.defaultPrevented) return;
+    if(event.ctrlKey || event.metaKey || event.altKey) return;
+    if(event.key!==CHAT_KEY && event.key!=="Enter") return;
+    const target=event.target;
+    // A text field keeps the key wherever it is: the composer, a dialog, or a
+    // field in this document. Typing "/" is typing "/".
+    if(typeof isTypingTarget==="function" && isTypingTarget(target)) return;
+    if(target && target.closest && target.closest("dialog[open]")) return;
+    if(target && target.closest && !$("cloud-menu").hidden && target.closest("#cloud-menu")) return;
+    // Enter still activates whatever control has focus.
+    if(event.key==="Enter" && target && target.closest &&
+       target.closest("button, a, [role=button]")) return;
+    if(keyboardOwner()==="chat") return;
+    event.preventDefault();
+    focusChatComposer();
   }
   function cloudCoversStage(){
     const cloud=$("chat-cloud"), stage=$("chat-stage");
@@ -4915,8 +4991,33 @@
         if(typeof focusCommandCenter === "function") focusCommandCenter();
       }
     });
+    // Before the forwarder: a reserved key is CLAIMED here, and the frame only
+    // ever sees what this did not take.
+    document.addEventListener("keydown",reservedChatKey);
     document.addEventListener("keydown",forwardCommandCenterKey);
     document.addEventListener("keyup",forwardCommandCenterKey);
+    // ...and the way back out. Escape in the composer returns the keyboard to
+    // the command center, so the pair is symmetric and neither surface is a
+    // trap. The cloud menu's own Escape handler runs in the capture phase and
+    // stops there, so this only sees an Escape no overlay wanted.
+    // ...only when there is a command center to go back TO. With no layout
+    // mounted the chat is the whole experience and nothing holds the keyboard
+    // hostage, so Escape stays the composer's own: a phone's keyboard "done"
+    // sends it mid-conversation and must not throw typing away
+    // (test_phone_send_keeps_composer_focus).
+    $("composer-input").addEventListener("keydown",event=>{
+      if(event.key!=="Escape" || event.defaultPrevented) return;
+      if(!cloudHasLayout()) return;
+      event.preventDefault();
+      focusCommandCenter();
+    });
+    // The ring follows focus however it moved -- a key, a click, a frame
+    // handoff, a dialog closing.
+    document.addEventListener("focusin",paintKeyboardOwner);
+    document.addEventListener("focusout",()=>setTimeout(paintKeyboardOwner,0));
+    window.addEventListener("blur",()=>setTimeout(paintKeyboardOwner,0));
+    window.addEventListener("focus",()=>setTimeout(paintKeyboardOwner,0));
+    paintKeyboardOwner();
   }
   function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
   function cloudStorageKey(owner, agentId, viewport){
