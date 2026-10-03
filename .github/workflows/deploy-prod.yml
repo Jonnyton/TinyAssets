@@ -526,6 +526,105 @@ jobs:
           set -euo pipefail
           python scripts/probe_app_surface.py --verbose
 
+      # Evidence BEFORE the rollback destroys it. #2442 dropped this step along
+      # with the stop-writer fence it was written beside, leaving
+      # scripts/sanitize_startup_diagnostics.py with no caller at all — so a
+      # failed prod deploy kept no container state and no logs, and the next
+      # step replaces the candidate with the previous image.
+      #
+      # Scope, stated because it is narrower than the step it restores: this
+      # covers the window where the swap SUCCEEDED (rc 0) and a public surface
+      # then went red, which is the only window where the candidate container
+      # still exists for the workflow to read. An unhealthy candidate (rc 2) is
+      # rolled back inside deploy_fail_safe.sh before control returns here, so
+      # its logs need capturing in that script —
+      # docs/concerns/2026-10-03-unhealthy-candidate-rollback-keeps-no-diagnostics.md
+      #
+      # It cannot turn a green deploy red: it runs only on failure/cancellation,
+      # every remote call is `timeout`-bounded, and it exits 0 regardless.
+      - name: Capture failed candidate startup diagnostics
+        id: candidate_diagnostics
+        if: ${{ always() && steps.deploy.outputs.rc == '0' && (failure() || cancelled()) }}
+        env:
+          TARGET_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+        run: |
+          set +e
+          evidence_dir="${RUNNER_TEMP}/candidate-startup-diagnostics"
+          state_raw="${RUNNER_TEMP}/candidate-daemon-state.raw"
+          raw_log="${RUNNER_TEMP}/candidate-daemon.raw.log"
+          candidate_identity_match=false
+          mkdir -p "${evidence_dir}"
+          printf '{"candidate_identity_match":false,"capture":"unavailable"}\n' \
+              > "${evidence_dir}/daemon-state.json"
+          : > "${raw_log}"
+
+          # The identity gate is the point: logs are only attributed to THIS
+          # candidate when the running container really carries the revision and
+          # image this run deployed. Otherwise a rollback that already happened
+          # would have its logs filed as the candidate's.
+          if timeout 25s ssh -i ~/.ssh/do_deploy \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                -o ServerAliveInterval=5 \
+                -o ServerAliveCountMax=2 \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "timeout 15s sudo docker inspect --type container tinyassets-daemon --format '{{.State.Status}}|{{.State.Running}}|{{.State.Restarting}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{index .Config.Labels \"org.opencontainers.image.revision\"}}|{{.Config.Image}}|{{json .State.Error}}' | head -c 16385" \
+                > "${state_raw}" 2>/dev/null; then
+            if python scripts/sanitize_startup_diagnostics.py \
+                --state \
+                --target-revision "${TARGET_REVISION}" \
+                --target-image-ref "${TARGET_IMAGE_REF}" \
+                < "${state_raw}" \
+                > "${evidence_dir}/daemon-state.json" 2>/dev/null; then
+              candidate_identity_match=true
+            fi
+          fi
+
+          if [ "${candidate_identity_match}" = "true" ]; then
+            timeout 25s ssh -i ~/.ssh/do_deploy \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                -o ServerAliveInterval=5 \
+                -o ServerAliveCountMax=2 \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "timeout 15s sudo docker logs --tail 200 tinyassets-daemon 2>&1 | tail -c 131072" \
+                > "${raw_log}" 2>/dev/null
+          fi
+          python scripts/sanitize_startup_diagnostics.py \
+              < "${raw_log}" \
+              > "${evidence_dir}/daemon-signals.json"
+          rm -f "${raw_log}" "${state_raw}"
+
+          python - \
+              "${evidence_dir}/manifest.json" \
+              "${evidence_dir}/daemon-state.json" <<'PY'
+          import datetime
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          revision = os.environ["TARGET_REVISION"]
+          if not re.fullmatch(r"[0-9a-f]{40}", revision):
+              revision = "unavailable"
+          state = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+          manifest = {
+              "schema_version": 1,
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "target_revision": revision,
+              "candidate_identity_match": state.get("candidate_identity_match") is True,
+              "captured_utc": datetime.datetime.now(datetime.UTC).isoformat(),
+          }
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          exit 0
+
       # Name kept verbatim: three test files key on this step by name
       # (test_deploy_prod_workflow, test_expected_instance_state_preparation,
       # test_prune_units). The CONDITION is what had to change — the app probe
@@ -661,6 +760,21 @@ jobs:
             --title "deploy-failed: run ${{ github.run_id }}" \
             --label "deploy-failed" \
             --body "Fail-safe deploy did not fully succeed. deploy rc=${{ steps.deploy.outputs.rc }}, result=${{ steps.deploy.outputs.result }}, deployed_image=${{ steps.deploy.outputs.deployed_image }}. Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}. Prod is NOT left at zero (the script restores the previous image), but the target release did not become healthy — investigate before retrying." 2>&1 | tail -2 || true
+
+      # After every rollback and bookkeeping step, so the artifact is written
+      # once the deploy has finished moving. Gated on the capture SUCCEEDING,
+      # not on the deploy failing: `if-no-files-found: error` would otherwise
+      # fail a green run that never captured anything. The old gate also
+      # required the stop-writer cleanup outputs, which #2442 retired with the
+      # fence itself -- there is nothing left to race.
+      - name: Upload failed candidate startup diagnostics
+        if: ${{ always() && steps.candidate_diagnostics.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-startup-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-startup-diagnostics
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Summary
         if: ${{ always() }}

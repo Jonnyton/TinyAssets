@@ -441,55 +441,75 @@ def test_rollback_step_present():
 
 
 def test_failed_candidate_diagnostics_are_preserved_before_rollback():
+    """Evidence outlives the rollback that destroys the container it came from.
+
+    Two of this test's landmarks are gone for different reasons, and the
+    difference matters:
+
+    * ``Wait for daemon health`` was REPLACED, not dropped. #2442 moved the wait
+      into ``deploy/deploy_fail_safe.sh``, which reaches 'healthy' within
+      ``HEALTH_TIMEOUT`` or rolls itself back (rc 2), and the workflow proves the
+      PUBLIC surfaces separately afterwards. Asserted here through the step that
+      now owns it.
+    * ``Rollback on failure``, the task 2.1 cleanup and the ``terminal`` receipt
+      outputs belonged to the stop-writer fence that the same PR retired, so
+      their orderings are not re-asserted -- there is nothing left to order
+      against.
+
+    What did NOT survive was the diagnostics path itself: #2442 took the capture
+    and upload with it and left ``scripts/sanitize_startup_diagnostics.py``
+    with no caller, so a failed prod deploy kept nothing. That is restored, and
+    this test is what holds it.
+    """
     wf = _load()
     steps = _steps(wf)
-    health = _step_named(wf, "Wait for daemon health")
+    deploy = _step_named(wf, "Run fail-safe deploy on the droplet")
     capture = _step_named(wf, "Capture failed candidate startup diagnostics")
     upload = _step_named(wf, "Upload failed candidate startup diagnostics")
-    rollback = _step_named(wf, "Rollback on failure")
-    cleanup = _step_named(wf, "Transitional task 2.1 restore restart racers when safe")
+    rollback = _step_named(wf, "Roll back if the public canary is red")
     terminal = _step_named(wf, "Publish release-state receipt")
 
-    assert steps.index(health) < steps.index(capture) < steps.index(rollback)
-    assert steps.index(rollback) < steps.index(cleanup) < steps.index(terminal)
-    assert steps.index(terminal) < steps.index(upload)
-    assert health.get("id") == "candidate_health"
+    # Capture sits between the deploy and the rollback: after the candidate is
+    # running, before anything replaces it.
+    assert steps.index(deploy) < steps.index(capture) < steps.index(rollback)
+    assert steps.index(rollback) < steps.index(terminal) < steps.index(upload)
+    assert deploy.get("id") == "deploy"
     assert capture.get("id") == "candidate_diagnostics"
+
+    # The health wait is the fail-safe script's, bounded and rolling itself
+    # back, which is why no workflow step polls for it any more.
+    assert "HEALTH_TIMEOUT=180" in str(deploy.get("run", ""))
+    assert "deploy_fail_safe.sh" in str(deploy.get("run", ""))
+    assert "rc" in str(deploy.get("run", "")), "the script's verdict is an output"
+
     capture_condition = str(capture.get("if", "")).strip()
     assert capture_condition == (
-        "${{ always() && steps.deploy.outputs.image_mutation_started == 'true' "
+        "${{ always() && steps.deploy.outputs.rc == '0' "
         "&& (failure() || cancelled()) }}"
     )
     assert "always()" in capture_condition
     assert "failure()" in capture_condition
     assert "cancelled()" in capture_condition
-    assert "steps.deploy.outputs.image_mutation_started == 'true'" in capture_condition
-    assert "steps.candidate_health.outcome" not in capture_condition, (
-        "post-mutation deploy and env-assert failures skip health but still "
-        "need identity-bound diagnostics"
+    # rc 0 means the swap succeeded, so a candidate container exists to read.
+    # An unhealthy candidate (rc 2) was already rolled back inside the script,
+    # which is why it is excluded rather than silently captured as the
+    # candidate: its logs need preserving in the script itself (see
+    # docs/concerns/2026-10-03-unhealthy-candidate-rollback-keeps-no-diagnostics.md).
+    assert "steps.deploy.outputs.rc == '0'" in capture_condition
+    assert "steps.canary.outcome" not in capture_condition, (
+        "a cancellation, or any later failure after a good swap, still needs "
+        "identity-bound diagnostics -- not only a red canary"
     )
+
     upload_condition = str(upload.get("if", "")).strip()
     assert upload_condition == (
-        "${{ always() && steps.candidate_diagnostics.outcome == 'success' "
-        "&& steps.terminal.outputs.terminal_receipt_result == 'published' "
-        "&& (steps.stop-writer-cleanup.outputs.cleanup_restored == 'true' "
-        "|| steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true') }}"
+        "${{ always() && steps.candidate_diagnostics.outcome == 'success' }}"
     )
     assert "always()" in upload_condition
-    assert "steps.candidate_diagnostics.outcome == 'success'" in upload_condition
-    assert (
-        "steps.terminal.outputs.terminal_receipt_result == 'published'"
-        in upload_condition
+    assert "steps.candidate_diagnostics.outcome == 'success'" in upload_condition, (
+        "gated on the CAPTURE, not on the deploy: if-no-files-found=error would "
+        "otherwise fail a green run that captured nothing"
     )
-    assert (
-        "steps.stop-writer-cleanup.outputs.cleanup_restored == 'true'"
-        in upload_condition
-    )
-    assert (
-        "steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true'"
-        in upload_condition
-    )
-    assert "steps.candidate_health.outcome" not in upload_condition
 
     capture_script = str(capture.get("run", ""))
     assert "docker inspect --type container tinyassets-daemon" in capture_script
@@ -567,10 +587,14 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
         upload.get("uses")
         == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     )
+    # The invariant is that every upload is pinned to the reviewed commit, not
+    # how many uploads there are: the count was 3 when two of them belonged to
+    # the stop-writer artifacts #2442 retired. Asserted as "no unpinned use,
+    # and every pinned use is this sha" so it keeps holding as steps come and go.
     assert "actions/upload-artifact@v4" not in _text()
-    assert _text().count(
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-    ) == 3
+    uploads = re.findall(r"actions/upload-artifact@(\S+)", _text())
+    assert uploads, "the diagnostics upload is the one artifact this job writes"
+    assert set(uploads) == {"ea165f8d65b6e75b540449e92b4886f43607fa02"}, uploads
     assert upload_with.get("if-no-files-found") == "error"
     assert 0 < int(upload_with["retention-days"]) <= 7
 
