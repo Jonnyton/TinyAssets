@@ -31,7 +31,7 @@ OTHER = "u-01ky3zh1arr8qth8jee7zx63pq"
 @pytest.mark.parametrize("name,expected", [
     ("soul.md", USER), ("soul_versions", USER), ("config.yaml", USER),
     ("AGENTS.md", USER), ("skills", USER), ("notes.json", USER),
-    ("workspace", USER), ("workspaces", USER),
+    ("workspace", USER), ("workspaces", USER), (".agent-workspace", USER),
     ("soul.edit.md", PLATFORM), ("dispatcher_config.yaml", PLATFORM),
     (".soul.lock", PLATFORM), (".lock", PLATFORM),
     (".credentials", PLATFORM), (".credentials.json", PLATFORM),

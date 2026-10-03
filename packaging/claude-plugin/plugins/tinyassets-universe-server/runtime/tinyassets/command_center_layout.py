@@ -30,9 +30,12 @@ USER_NAMES = frozenset({
     "notes.json", "wiki",
     # agent-editable settings; its authority fields move out (design E6)
     "config.yaml",
-    # fantasy_daemon/api.py creates workspace for verbatim uploads.
-    # content the agent or a run wrote, uploads, permanent workspaces
-    "workspace", "workspaces", "canon", "output", "artifacts", "PROGRAM.md", "progress.md",
+    # content the agent or a run wrote, uploads, permanent workspaces:
+    # `workspace` is where fantasy_daemon/api.py writes uploaded files, and
+    # `.agent-workspace` is the agent's own (provider_jail.py AGENT_WORKSPACE_DIR;
+    # storage_accounting calls it user bytes, harness W2)
+    "workspace", "workspaces", ".agent-workspace",
+    "canon", "output", "artifacts", "PROGRAM.md", "progress.md",
     "design-proposals", "feature-requests", "patch-requests",
     # fiction-domain brain data the agent maintains
     "timeline.json", "promises.json", "facts.json", "characters.json",
@@ -78,7 +81,8 @@ PLATFORM_LOCK_NAMES: frozenset[str] = frozenset({
 })
 
 VERBATIM_EXEMPT_NAMES: frozenset[str] = frozenset({
-    "workspace", "workspaces", "output", "artifacts", "canon", "notes", "wiki", "soul_versions",
+    "workspace", "workspaces", ".agent-workspace", "output", "artifacts", "canon",
+    "notes", "wiki", "soul_versions",
 })
 PRUNE_DIR_NAMES: frozenset[str] = frozenset({
     ".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache",
