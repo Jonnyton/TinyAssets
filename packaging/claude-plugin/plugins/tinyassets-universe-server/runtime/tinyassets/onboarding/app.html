@@ -2117,6 +2117,15 @@
     // Fenced like every other answer: what this request may change belongs to
     // the turn, account and home it was pressed for.
     const mine=activeTurn, epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    // The agent is fenced with the rest: captured when Stop was PRESSED, so
+    // switching conversations mid-request cannot retarget the stop at whoever
+    // is on screen by the time it lands.
+    //
+    // Sent ALWAYS, including "main". Stop belongs to the conversation it was
+    // pressed in: omitting it means stop-ALL on the server, which would end a
+    // custom agent's background turn because a main chat ended. The route still
+    // accepts no agent_id as stop-all for a caller that wants it.
+    const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main")||"main";
     const sameAccount=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
     const stillMine=()=>activeTurn===mine&&sameAccount();
     interruptRequested=true; flushAfterInterrupt=true; renderStop();
@@ -2127,7 +2136,8 @@
     const abort=typeof AbortController==="function"?new AbortController():null;
     const post=()=>fetch("/app/turn/interrupt",{method:"POST",credentials:"same-origin",
       headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-      body:JSON.stringify({universe_id:scope}),signal:abort?abort.signal:undefined});
+      body:JSON.stringify({universe_id:scope,agent_id:agent}),
+      signal:abort?abort.signal:undefined});
     const request=(async()=>{
       let r=await post();
       // A retry carries whatever credential is current THEN: never send it once
