@@ -573,19 +573,17 @@ def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     """Put ``png`` at ``/u/previews/<ui_id>.png``; the path as the agent sees it.
 
     The folder is the agent's own and the agent can change it WHILE this runs,
-    so no path is resolved twice (Codex, 2026-10-02: a ``previews`` swapped for a
-    link between a check and the write redirected it). On POSIX every step is
-    relative to a directory descriptor opened without following a link: the
-    universe, then ``previews``; the bytes go to a fresh, randomly named file
-    created exclusively in that directory, and ``os.replace`` between the same
-    descriptor swaps it in -- which replaces a planted hard link rather than
-    writing through it. Windows hosts are single-tenant trays: there a reparse
-    point anywhere on the path refuses the write.
+    so the bytes go through the one universe writer,
+    :func:`tinyassets.universe_files.write_universe_file`, rather than a second
+    copy of the same care: it opens every component following no link, creates
+    the temp file ``O_EXCL`` in the directory it just verified, and ``os.replace``s
+    it in between those same descriptors. So a ``previews`` swapped for a link
+    between a check and the write cannot redirect it (Codex, 2026-10-02), and a
+    planted hard link at the name is replaced rather than written through.
     """
-    import os
     import re
-    import secrets
-    import stat
+
+    from tinyassets.universe_files import write_universe_file
 
     # The server stores any non-empty ui_id; only the app's own id shape names
     # a file, so nothing like "../x" ever becomes a path.
@@ -593,59 +591,13 @@ def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", ui_id) or ui_id in _RESERVED:
         raise PreviewUnavailable(
             f"ui_preview_failed: ui_id {ui_id!r} is not lowercase letters, digits and dashes")
-    root = Path(universe_dir)
-    name, temp = f"{ui_id}.png", f".preview-{secrets.token_hex(12)}.tmp"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    name = f"{ui_id}.png"
     try:
-        from tinyassets import workspace_fs as fs
-
-        if fs._POSIX:
-            base_fd = os.open(root.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                universe_fd = fs.open_subdir_nofollow(base_fd, root.name)
-            finally:
-                os.close(base_fd)
-            try:
-                with contextlib.suppress(FileExistsError):
-                    os.mkdir(PREVIEW_DIR, 0o755, dir_fd=universe_fd)
-                folder_fd = fs.open_subdir_nofollow(universe_fd, PREVIEW_DIR)
-            finally:
-                os.close(universe_fd)
-            try:
-                fd = os.open(temp, flags, 0o644, dir_fd=folder_fd)
-                try:
-                    with os.fdopen(fd, "wb") as handle:
-                        handle.write(png)
-                    os.replace(temp, name, src_dir_fd=folder_fd, dst_dir_fd=folder_fd)
-                except BaseException:
-                    with contextlib.suppress(OSError):
-                        os.unlink(temp, dir_fd=folder_fd)
-                    raise
-            finally:
-                os.close(folder_fd)
-        else:
-            folder = root / PREVIEW_DIR
-            with contextlib.suppress(FileExistsError):
-                folder.mkdir()
-            for step in (root, folder):
-                info = os.lstat(step)
-                if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_reparse_tag", 0):
-                    raise PreviewUnavailable(
-                        f"ui_preview_failed: /u/{PREVIEW_DIR} is not a plain folder")
-            fd = os.open(folder / temp, flags | getattr(os, "O_BINARY", 0), 0o644)
-            try:
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(png)
-                os.replace(folder / temp, folder / name)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    os.unlink(folder / temp)
-                raise
-    except PreviewUnavailable:
-        raise
+        write_universe_file(universe_dir, f"{PREVIEW_DIR}/{name}", png)
     except Exception as exc:  # noqa: BLE001 - every filesystem refusal is a named failure
-        # UnsafePoolPath (a link or a non-directory), a directory at the target,
-        # permissions: the screenshot is not written, and the agent is told why.
+        # UniverseFileError (a link or a non-directory on the path), a directory
+        # at the target, permissions: the screenshot is not written, and the
+        # agent is told why.
         raise PreviewUnavailable(
             f"ui_preview_failed: /u/{PREVIEW_DIR}/{name} could not be written "
             f"({type(exc).__name__}: {str(exc)[:200]})") from None
