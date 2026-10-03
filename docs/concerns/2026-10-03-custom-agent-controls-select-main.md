@@ -39,3 +39,9 @@ Close only after reviewed implementation proves the served two-agent effector,
 queue/resume, request and owner-control flows; current owner/home revocation and
 cross-owner negatives; safe legacy handling; and separately authorized grouped
 live acceptance. The present PR contains a design, not a mitigation or fix.
+
+First Claude design ADAPT on f302de7 is folded but not yet accepted. The planned
+engine/effector checks do not intercept native internal tools: launch termination
+has an explicit pre-exit residual and D2 remains held. Per-launch transport
+credentials/isolation and owner reconfirmation of legacy recurring definitions
+are proposed, unimplemented requirements; they do not mitigate this concern yet.

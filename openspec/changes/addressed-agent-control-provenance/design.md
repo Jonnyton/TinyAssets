@@ -26,7 +26,10 @@ They describe WHAT executes and authorize its work. Branch work must keep its
 `branch_version` subject: relabeling it as an agent manifest would violate
 `provider_work_authority._validate_work_lineage`. The addressed agent describes
 WHOSE controls apply. Extend existing records with that attribution; do not add
-another grant registry, capability token, scheduler or admission bypass.
+another effect-grant registry, scheduler or admission bypass. The proposed
+per-launch transport credential below is a narrow authentication capability: it
+proves the caller belongs to one admitted launch, but grants no effect permission.
+It is distinct from the non-secret snapshot and existing execution grants.
 
 ## 2. One validated snapshot, existing authority still required
 
@@ -53,8 +56,8 @@ The snapshot is attribution and a freshness pin, not sufficient permission.
 Owner, universe, binding revision and fingerprint must agree with authoritative
 records. Duplicate owner/universe fields in enclosing records must match exactly.
 Missing, malformed, mismatched or unresolvable custom identity refuses before
-model launch, new tool dispatch, request creation or effect; it never retries as
-main. Agent names are escaped display metadata, never identifiers or authority.
+engine model launch, engine tool dispatch, request creation or effector admission;
+it never retries as main. Agent names are escaped display metadata, never identifiers or authority.
 
 ## 3. Capture and propagation
 
@@ -62,20 +65,11 @@ main. Agent names are escaped display metadata, never identifiers or authority.
    admission, capture the snapshot, and bind it to `LiveTurn` and journal creation.
    The current binding is checked again at launch. HTTP and native turns receive
    the same identity. Preserve main's existing session and conversation keys.
-2. Engine tool admission resolves its server-issued turn/run reference to this
-   record and cross-checks the authenticated engine owner/universe. A route's
-   `session` query, model JSON, branch input, environment chosen by a child, or a
-   tool's claimed `agent_id` cannot select another agent's controls. Existing
-   session parsing may locate or cross-check a record; it cannot mint the snapshot.
-   Native launch metadata and HTTP dispatch must both bind the reference through
-   existing trusted launcher/admission code. Scope the existing engine transport
-   authentication/session to the exact admitted launch, rather than accepting
-   any same-owner turn reference from a shared owner/universe bearer. An opaque
-   reference is not a secret or proof of origin. Replaying another launch's
-   reference, including main's from researcher, must refuse. This narrows the
-   existing engine authentication boundary; it creates no independent effect grant.
-   Unbound engine calls fail closed;
-   they are not classified as direct owner calls because metadata is absent.
+2. Engine tool admission resolves the reference through the proposed per-launch
+   transport binding below and cross-checks owner/universe against its persisted
+   turn/run. A route's `session` query, model JSON, branch input, child-selected
+   environment, or claimed `agent_id` cannot select another agent's controls.
+   Session parsing may locate or cross-check a record; it cannot mint a snapshot.
 3. Run admission copies the validated snapshot into the existing run row in the
    same transaction that records owner/universe and run admission. Queue messages
    carry the run reference; consumers reload the persisted snapshot. Existing
@@ -95,6 +89,61 @@ main. Agent names are escaped display metadata, never identifiers or authority.
    not independently select a binding or overwrite the existing subject/digests.
    If the subject resolver cannot establish the addressed binding, hold the work.
 
+### Proposed launch transport binding (F2)
+
+This protocol is to be implemented and proved; neither the existing shared
+owner/universe bearer nor a non-secret turn reference provides it today.
+
+- After authenticated admission, the trusted launcher generates a fresh random
+  256-bit opaque launch bearer. Extend the server-owned launch lifecycle to store
+  its digest bound to an immutable launch id, turn/run reference, owner, universe,
+  snapshot digest, expiry and active/revoked state. Raw credential bytes never
+  enter model inputs, journals, queue bodies, public projections or logs. Use TLS
+  for any network hop; local delivery must be launcher-controlled and satisfy
+  the isolation requirements below. No such delivery path is presumed available.
+- Engine authentication accepts this credential only for the engine-launch
+  audience. It resolves identity from the server binding, then cross-checks any
+  supplied reference against that binding. Reference A plus launch B's credential
+  refuses, even for the same owner or agent. Binding to a current admitted run
+  still requires existing execution authority and the persisted snapshot; the
+  token is not an effect grant or a user-controlled alternate provenance record.
+  An authenticated parent may ask the trusted server to admit a nested run; that
+  server records its immutable parent lineage and copies the snapshot. A new
+  worker/child launch receives its own fresh binding to that admitted run, not a
+  transferable parent credential or authority to choose an arbitrary run.
+- The HTTP adapter retains the credential in trusted dispatch context. A native
+  adapter receives only its own credential through a launch-private transport
+  configuration exposed read-only inside its sandbox. It must not receive a
+  shared owner bearer, another launch's credential, or the owner's public OAuth
+  credential. Main's credential must be unreadable from researcher's environment,
+  mounts, scratch/config files, process inspection and inherited descriptors;
+  the converse holds too. A shared OS uid or a filename convention alone proves
+  none of this. Implementation must prove sandbox/process isolation, including
+  proc/ptrace/descriptor access, before enabling this path. If the existing jail
+  cannot provide it, native launch binding remains held for that dependency;
+  do not substitute a shared token or claim this design supplies isolation.
+- The trusted supervisor revokes the binding on turn termination, Stop, loss of
+  current authority, or expiry. Resume/retry/restart creates a fresh credential
+  only after re-admission, invalidating the previous launch's binding first.
+  A restarted server must refuse orphaned active bindings until it has fenced the
+  prior launcher; persisted identity does not revive its secret. Concurrent calls
+  within a valid launch remain possible under existing gates, but credentials
+  from exited, stopped, superseded or foreign launches cannot be replayed.
+- Direct owner calls to public MCP use the separately authenticated public actor
+  context and capture explicit main at fresh admission. This is an authentication
+  audience/surface distinction established by server middleware, never a payload
+  flag, absent header, session name or claimed human origin. An engine credential
+  is invalid at the public-owner door; a shared owner bearer plus a turn id is
+  invalid at the launch door. A platform-served child has no access to the public
+  owner credential. Unbound engine calls refuse rather than becoming owner calls.
+  Public-owner authentication preserves existing public consent semantics; it
+  does not claim that every caller is a human typing directly.
+
+Credential lifetime, launcher registration and the exact sandbox delivery path
+must be enumerated against the implementation's actual adapters and lifecycle
+before activation. These are implementation acceptance obligations, not present
+facilities or authorization to create credentials in this documentation change.
+
 No runtime reader derives authority from request text or scans arbitrary session
 strings. The implementation must enumerate every run creator/resumer and existing
 record digest serializer before changing the schema; identity becomes part of
@@ -102,21 +151,38 @@ any digest that commits the enclosing input, without weakening old verification.
 
 ## 4. Current checks, changes and revocation
 
-At authenticated ingress, queue claim, model launch, each new tool/effect dispatch,
-and resumed/nested admission, recheck current owner/home admission, existing
-execution authority and the custom binding's creator, universe, conversable status,
+At authenticated ingress, queue claim, engine-controlled model launch, each
+engine-admitted tool call and effector dispatch, and resumed/nested admission,
+recheck current owner/home admission, existing execution authority and the custom binding's creator, universe, conversable status,
 revision and definition fingerprint. The snapshot never revives revoked ownership.
-Recheck current rules and review switches for that agent before each effect;
+Recheck current rules and review switches for that agent at each effector admission;
 capturing an older permissive rule with the turn is forbidden.
 
 Any custom binding revision change, including a rename, holds further dispatches
-from the old snapshot. Deletion, unavailable definition, ownership/home change,
-loss of existing execution authority, or promotion to serving also holds them.
+through these engine/effector doors from the old snapshot. Deletion, unavailable
+definition, ownership/home change, loss of existing execution authority, or
+promotion to serving also holds them.
 The response names stale/held work without exposing a foreign binding. Previously
 completed effects remain recorded. The owner can start a fresh turn under the
 new revision; the platform must not silently rebase or replay old effects.
 An in-flight external call may finish under the existing journal's outcome rules;
-revocation does not claim to undo it. No additional call is admitted afterward.
+revocation does not claim to undo it. No additional engine/effector call is
+admitted afterward under the revoked snapshot.
+
+**Native-loop limit (F1).** Provider-internal native CLI tools do not pass an
+engine pre-tool hook. This design cannot promise a freshness check before each
+such tool, and prompts are not enforcement. Binding revision or authority
+revocation marks the launch held, revokes its engine binding, and requests
+termination through the trusted native supervisor, including its child process
+group. Until termination is confirmed, internal native actions may continue;
+already-started actions and effects outside the effector door are not undone.
+Record termination requested, confirmed exit, or failure/unknown outcome honestly
+in the journal, and keep work held on failure. Implementation must specify and
+prove its bounded detection/termination deadline and escalation using fake native
+processes on Linux; do not equate sending a signal with stopping the launch.
+The separate D2 native-yield repair remains held: this change does not supply an
+internal-tool interception hook or establish full native per-tool rule/yield
+coverage. Neither design approval nor engine admission proofs unblock that claim.
 
 Freshness checking and marking a dispatch admitted require a common authoritative
 ordering with binding/owner revocation; a free-standing check followed by a later
@@ -192,6 +258,49 @@ action-bearing acceptance/automatic continuation requires a fresh pinned ask.
 Known historical main review-switch migration remains valid because it records
 the old global setting, not provenance of a custom run.
 
+**Recurring-definition blast radius and recovery (F3).** Existing recurring
+interval, cron and event definitions also lack this snapshot. Unless an existing
+authoritative execution subject proves their exact identity, every future firing
+must hold, including ordinary main automations; an active desired state is not
+proof. No grandfathering by timestamp, schema default or presumed pre-custom age
+is proposed. Old queued firings and in-progress resumptions remain independently
+held and are never relabelled by reconfirming their definition.
+
+Reuse the existing public owner automation door: `read_graph` targets
+`automations`/`automation` and `write_graph` target `automation`, operation
+`resume`, with `automation_id` and `expected_revision`. Today
+`api.automations._control` only changes desired state; it does not reconfirm
+provenance. Extend this existing operation with explicit
+`payload_json={"confirm_agent_provenance": true, "agent_id": "main"}` (or the
+owner's explicitly selected custom binding). An ordinary resume without that
+confirmation must return the held reason and make no provenance change. The
+owner must see the schedule, timezone, inputs and selected agent before issuing
+this confirmation; do not synthesize owner consent from the existing active bit.
+
+Only the stored definition owner, authenticated through the public owner surface
+in their current home, may reconfirm. An engine launch cannot do so via forged
+payload or an internal wrapper. Existing owner-or-admin pause/delete authority
+remains; admin control of someone else's automation must not mint that owner's
+snapshot. Re-resolve the chosen binding, its current revision/definition and
+existing authored-branch/execution eligibility exactly as at fresh creation.
+In one authoritative revision-guarded update, persist the fresh snapshot, advance
+the existing activation/claim fence and activate only future work. Preserve the
+schedule, timezone, inputs and overlap policy; do not replay missed firings or
+historical effects. A concurrent edit/deletion/revocation wins or produces an
+explicit conflict, never a partially reconfirmed definition. Retired definitions
+stay retired. One-shot work is reissued via the existing create door, not silently
+replayed by recurring reconfirmation.
+
+The existing list/get projection must expose a durable effective `held` state,
+`held_reason=agent_provenance_unverified`, the current definition revision and
+`reconfirmation_required` for affected rows, even when `desired_state=active`.
+The reason must not disappear when a transient refusal-ledger entry expires.
+Explain that future firings are blocked, identify the owner reconfirm action and
+show the selected identity after success. Do not present an executable next-run
+promise for a held row. Before rollout, preview/count affected definitions via
+this authorized owner surface and include the hold/reconfirm behaviour in owner
+acceptance. This design performs no inventory or live migration.
+
 Use nullable/versioned storage additions, with schema-shape tests and transactional
 writes; do not backfill ambiguous work as main. Old binaries must not execute new
 snapshot-bearing work while ignoring its controls. Rollout must drain/fence old
@@ -220,14 +329,37 @@ stale hold. Stop on researcher leaves main's live turn untouched.
 |---|---|
 | Served main/researcher turns through actual run admission and effector door | Distinct rules/switches, journal attribution and request ids; researcher hand-off sends zero calls |
 | Nested graph, delayed queue, process-restart resume, manifest activity | Same validated identity survives; subject/owner/universe mismatches refuse |
+| Launch B credential plus launch A reference (main/researcher and same-agent launches); expired/stopped/superseded binding; missing credential | Refuse before row/effect; no reclassification as direct owner, no shared-token fallback |
+| Fake native researcher attempts to read main credential through env/files/mounts/proc/fds; launch credential at public MCP and public bearer at engine door | Isolation and audience refusal proved on Linux; absent isolation blocks native activation |
+| Native turn revoked/revised mid-loop | No subsequent engine/effector admission; supervisor termination deadline/outcome recorded; internal-tool residual stated, D2 stays held |
 | Foreign/co-admin/other-home binding and forged tool/session/queue payload | Uniform refusal before row/effect; no foreign data, no default-to-main fallback |
 | Binding revision, deletion/promotion, owner/home revocation and rule update races | Acknowledged revocation wins before next admission; in-flight outcomes recorded, no replay |
 | Request dedupe/mute/withdraw and answers while another agent is selected | No cross-agent settlement/withdrawal; original agent receives answer or explicit held status |
 | Owner Rules panel and Stop, two tabs/two agents | Current-home/agent/revision gate, stale-response fence, addressed stop plus explicit stop-all |
+| Existing main recurring definition missing snapshot; owner reconfirms through public resume; admin/engine/ordinary resume attempts; concurrent edit | Visible durable held state before confirmation; only owner CAS creates fresh provenance for future firings; schedule preserved, old queued work held, no missed-fire replay |
 | Legacy main, ambiguous old work, corrupt snapshot, mixed executor versions | New main remains compatible; ambiguous/stale work holds; no migration grants authority |
 
 Mutation checks must kill removal of the agent predicate, current-home check,
-revision comparison, persisted identity on resume, and main-fallback refusal.
+revision comparison, persisted identity on resume, main-fallback refusal, and
+launch-binding replay/audience rejection.
 Run affected heavy tests, Ruff and mirror/import checks for the implementation;
 Linux is required for any process/fencing proof. A fresh cross-family implementation
 review and grouped owner live pass precede claiming complete per-agent controls.
+
+Grouped live acceptance must distinguish addressed chat Stop from background
+work: Stop targets the selected live turn and reports its observed outcome;
+its queued/background workflows remain
+subject to their own explicit automation controls. Do not label the whole agent
+or every workflow stopped because its chat ended.
+
+## 8. First Claude ADAPT disposition
+
+The review of `f302de7cef40c674473862b80ff1109530e375f8` is ADAPT, not an
+implementation or activation receipt. F1 is addressed by section 4's engine-only
+admission scope, native termination/residual contract and native proof row. F2 is
+addressed by the proposed launch credential protocol, isolation/audience boundary
+and replay proofs. F3 chooses explicit owner reconfirmation through the existing
+automation control surface, with visible holds and the full recurring blast
+radius. Task 2 remains open for acceptance of this fold. Cross-worker ordering,
+actual launch isolation/lifecycle, termination deadlines and reconfirmation
+transactions still require implementation proof; none is asserted available.

@@ -1,6 +1,6 @@
 # Addressed-agent control provenance
 
-Status: design only, awaiting cross-family design review. Owner: Codex handoff;
+Status: design only; first Claude ADAPT folded, awaiting acceptance of the fold. Owner: Codex handoff;
 implementation owner assigned by the lead after review. Tier 2: authority/storage.
 
 ## Why
@@ -45,3 +45,10 @@ the foundation dependencies, with the proof matrix in `design.md`, mirrors,
 focused CI and fresh implementation review. Deployment and live acceptance are
 separate steps; no schema migration, credential change or rollout is authorized
 by a design receipt.
+
+The first Claude design ADAPT is folded in the design/spec: enforcement is scoped
+to engine/effector admission with an explicit native termination residual; a
+proposed per-launch authentication credential requires proved process isolation;
+and existing recurring work visibly holds for explicit owner reconfirmation.
+These are proposed contracts, not available runtime facilities. The D2 native-yield
+hold and separate implementation/deployment acceptance remain unchanged.

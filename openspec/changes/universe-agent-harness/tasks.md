@@ -44,7 +44,10 @@ act, verify visually, iterate, stay always on, and run long?
 foundations with accepted D8 control-wiring residuals. The design-only
 [addressed-agent-control-provenance](../addressed-agent-control-provenance/proposal.md)
 owns that integration and its proof matrix. No complete per-agent controls,
-runtime mitigation or live acceptance is claimed by that design.
+runtime mitigation or live acceptance is claimed by that design. Its first
+Claude ADAPT fold retains native D2 and unproved launch-isolation holds, and adds
+explicit legacy recurring-work reconfirmation. Design acceptance and subsequent
+implementation proofs remain pending.
 
 ## 1. Design
 
