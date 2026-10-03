@@ -146,7 +146,7 @@ def _universe_files(base: Path, universe_id: str) -> int:
     2026-09-30-workspace-staging-leaks-on-failed-checkouts) -- and permanent
     workspaces, which are their own store."""
     if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
-        raise ValueError(f"not a universe id: {universe_id!r}")
+        raise ValueError(f"not a command center id: {universe_id!r}")
     return _walk_bytes(base / universe_id, exclude_top=_NOT_USER_BYTES)
 
 
@@ -203,16 +203,23 @@ def _project_memory(base: Path, account_id: str) -> int:
 
 
 def _ui_library(base: Path, account_id: str) -> int:
-    """A person's app-UI library, per universe they saved one in."""
+    """A person's app-UI library, per universe they saved one in, plus the asset
+    bytes their UIs load (one blob per hash, however many UIs share it)."""
     from tinyassets import custom_agents
 
-    return _sum_sql(
+    rows = _sum_sql(
         custom_agents.db_path(base),
         "SELECT SUM(length(CAST(ui_library_json AS BLOB)) "
         "+ COALESCE(length(CAST(ui_selection_json AS BLOB)), 0)) "
         "FROM universe_app_ui WHERE owner_user_id = ?",
         (account_id,),
     )
+    assets = _sum_sql(
+        custom_agents.db_path(base),
+        "SELECT SUM(size_bytes) FROM universe_app_ui_asset WHERE owner_user_id = ?",
+        (account_id,),
+    )
+    return rows + assets
 
 
 def _owned_daemon_ids(base: Path, account_id: str) -> list[str]:
@@ -271,7 +278,7 @@ def _workspaces(base: Path, universe_id: str) -> int:
     """A universe's permanent workspace generations (published, and any being
     built or awaiting discard): ``<uid>/workspaces``."""
     if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
-        raise ValueError(f"not a universe id: {universe_id!r}")
+        raise ValueError(f"not a command center id: {universe_id!r}")
     return _walk_bytes(base / universe_id / "workspaces")
 
 
@@ -518,6 +525,7 @@ ROOT_ENTRIES: dict[str, str] = {
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".consumer_liveness": "platform: process liveness locks",
+    ".deploy-pending.json": "platform: a waiting deploy's expiring status marker",
     ".runtime": "platform: provider runtime",
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",
@@ -526,13 +534,17 @@ ROOT_ENTRIES: dict[str, str] = {
     ".universe-tool-slots": "platform: tool jail slots",
     ".agent-sessions": (
         "platform: which native session each thread resumes (bytes per thread; "
-        "the session files themselves live in the universe and count there)"
+        "the session files themselves live in the command center and count there)"
     ),
     "rules.db": (
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"
     ),
     ".universe-sidecars": "platform: per-universe daemon sockets (egress proxy)",
+    "steering.db": (
+        "platform: the owner's mid-turn messages, inside .agent-sessions/<universe>/ "
+        "(harness S2); emptied at every turn end"
+    ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
@@ -574,6 +586,8 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
     ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
     ".manifest.json",  # canon/.manifest.json, inside the universe walk
+    # The agent's own workspace (harness W2): user bytes, counted by the walk.
+    ".agent-workspace",
 })
 
 #: Names the code creates that are NOT under the data root at all (a git repo,
@@ -1005,7 +1019,7 @@ class StorageRefused(Exception):
 
 _OTHER_ACCOUNT_FULL = {
     "error": (
-        "This universe's owner is out of cloud storage, so this write was not "
+        "This command center's owner is out of cloud storage, so this write was not "
         "accepted. The owner can free space or upgrade."
     ),
     "failure_class": FAILURE_QUOTA,
@@ -1035,7 +1049,7 @@ def visible_record(refused: StorageRefused, viewer: str | None = None) -> dict:
 def refusal_record(usage_: Usage, requested: int, *, universes: int) -> dict:
     from tinyassets.usage_policy import upgrade_sentence
 
-    across = f" across {universes} universes" if universes > 1 else ""
+    across = f" across {universes} command centers" if universes > 1 else ""
     message = (
         f"Your account is using {_human(usage_.used_bytes)} of its "
         f"{_human(usage_.quota_bytes)} of cloud storage{across}, and this write needs "

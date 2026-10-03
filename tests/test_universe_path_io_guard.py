@@ -88,7 +88,10 @@ def _scan() -> dict[str, list[str]]:
     return out
 
 
-#: module -> the raw file operations left, as ``"function: op"`` (2026-10-01).
+#: module -> the raw file operations left, as ``"function: op"``.
+#: Initial inventory reconciled with main 6004a636 on 2026-10-03 before this
+#: guard lands. Existing authority-record operations remain migration debt;
+#: listing them is not evidence that they refuse links (see the concern below).
 #: The migration checklist for the sealed-box move. Delete an entry when you
 #: convert its site to tinyassets.universe_files; never add one.
 PINNED: dict[str, list[str]] = {
@@ -115,10 +118,11 @@ PINNED: dict[str, list[str]] = {
         "_first_power_preset: .read_text()",
     ],
     "tinyassets/api/status.py": [
+        # Fixed platform data-root marker, outside universe-writable mounts.
+        "_load_deploy_pending: .read_text()",
         "_load_release_state: .read_text()",
     ],
     "tinyassets/api/universe.py": [
-        "_action_add_canon_from_path: .read_bytes()",
         "_action_control_daemon: .unlink()",
         "_action_create_universe: .write_text()",
         "_action_create_universe: shutil.rmtree()",
@@ -219,10 +223,6 @@ PINNED: dict[str, list[str]] = {
         "_write_routes: os.replace()",
         "read_engine_mcp_route: .read_text()",
     ],
-    "tinyassets/execution_authority/evidence_store.py": [
-        "_open_ancestors: os.open()",
-        "_open_ancestors: os.open()",
-    ],
     "tinyassets/idle_cycle.py": [
         "_read_stamp: .read_text()",
         "_try_lock_nonblocking: os.open()",
@@ -283,6 +283,15 @@ PINNED: dict[str, list[str]] = {
     ],
     "tinyassets/provider_assignment.py": [
         "_file_lock: .open()",
+    ],
+    # Inherited main operations, NOT certified link-safe. Parent-path lookup
+    # remains ordinary I/O; preserve atomic migration publication when fixing.
+    # docs/concerns/2026-10-03-provider-authority-parent-links.md
+    "tinyassets/provider_authority.py": [
+        "_read: .read_text()",
+        "authority_for: .unlink()",
+        "write_record: .unlink()",
+        "write_record: os.replace()",
     ],
     "tinyassets/providers/base.py": [
         "_codex_last_refresh_age_s: .read_text()",
@@ -347,6 +356,16 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/storage/run_file_lock.py": [
         "try_file_operation_lock: os.open()",
     ],
+    # Data-root files only (.layout.json, .layout.lock): no jail binds the data
+    # root, and the layout lock must be opened before anything else is.
+    "tinyassets/storage_layout.py": [
+        "_open_lock: os.open()",
+        "_open_lock: os.open()",
+        "_write_atomically: .unlink()",
+        "_write_atomically: os.open()",
+        "_write_atomically: os.replace()",
+        "read_marker: .read_text()",
+    ],
     "tinyassets/storage_accounting.py": [
         "_commons_pages: .read_bytes()",
     ],
@@ -366,6 +385,9 @@ PINNED: dict[str, list[str]] = {
         "read_operating_instructions: os.open()",
     ],
     "tinyassets/universe_tools.py": [
+        # Direct-child removals in the validated, provider-masked workspace.
+        "_clear_link_mountpoint: .unlink()",
+        "_promote_brain_files: .unlink()",
         "_remove_cgroup: .read_text()",
         "_remove_cgroup: .write_text()",
         "_root_cgroup: .read_text()",

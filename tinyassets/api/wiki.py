@@ -812,7 +812,7 @@ def _wiki_read(
             "required_permission": "read",
             "detail": (
                 "This page's declared visibility withholds its content from a "
-                "reader without a grant on this universe."
+                "reader without a grant on this command center."
             ),
         })
 

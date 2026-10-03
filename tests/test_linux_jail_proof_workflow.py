@@ -316,37 +316,29 @@ def _assert_bwrap_gated(nodeid: str) -> None:
     assert re.search(r'which\("bwrap"\)', src), f"{path} must skip {name} without bwrap"
 
 
-_CONTAINER_FLAGS = (
-    "--user 1001:1001",
-    "--security-opt seccomp=unconfined",
-    "--security-opt apparmor=ta-jail-userns",
-    "--security-opt systempaths=unconfined",
-)
+def test_the_jail_runs_through_the_shared_oracle_as_uid_1001():
+    """CI calls scripts/linux_oracle.py, the invocation developers run locally.
 
-
-def test_the_jail_runs_as_uid_1001_in_the_oracle_image_like_production():
-    """Production runs the daemon as uid 1001 in a container; so does the proof."""
+    The oracle owns the image, uid 1001, the seccomp/systempaths relaxation and
+    the fail-loud bubblewrap probe (exit 3 before pytest). CI adds only the
+    AppArmor profile its kernel needs, loaded in the step before.
+    """
     wf = _load()
-    build = _step(wf, "Build the jail image")
-    assert "docker/linux-oracle.Dockerfile" in build["run"]
-    probe = _step(wf, "Probe the jail as uid 1001")
     run = _step(wf, _RUN_STEP)["run"]
-    for step_run in (probe["run"], run):
-        for flag in _CONTAINER_FLAGS:
-            assert flag in step_run, flag
-    assert "--unshare-all" in probe["run"], "smoke must exercise the real userns flag"
-    assert "--die-with-parent" in probe["run"]
-    assert "exit 1" in probe["run"], "an unjailable runner must fail, not skip"
+    assert "python scripts/linux_oracle.py --out \"$OUT_DIR\" --apparmor ta-jail-userns" in run
+    assert "docker run" not in run and "docker build" not in _code_text(), (
+        "a second, inline container recipe is what the oracle replaced"
+    )
+    assert "--as-root" not in run and "--no-bwrap" not in run
     profile = _step(wf, "Allow user namespaces for the jail container only")["run"]
     assert "profile ta-jail-userns flags=(unconfined)" in profile
     assert "'  userns,'" in profile, "the one permission the kernel withholds"
     assert "sudo apparmor_parser -r" in profile
-    assert (_step_index(wf, "Build the jail image")
-            < _step_index(wf, "Allow user namespaces for the jail container only")
-            < _step_index(wf, "Probe the jail as uid 1001")
+    assert (_step_index(wf, "Allow user namespaces for the jail container only")
             < _step_index(wf, _RUN_STEP))
     paths = _triggers(wf)["pull_request"]["paths"]
-    assert "docker/linux-oracle.Dockerfile" in paths, "an image change must retrigger"
+    for path in ("docker/linux-oracle.Dockerfile", "scripts/linux_oracle.py"):
+        assert path in paths, f"{path} must retrigger the proof"
 
 
 def test_pytest_step_is_focused_and_off_repo():
@@ -361,7 +353,6 @@ def test_pytest_step_is_focused_and_off_repo():
     assert "--junitxml /out/junit-linux-jail.xml" in run
     assert "--basetemp /tmp/b" in run, "a short temp root: AF_UNIX paths cap at 108 bytes"
     assert "junit_family=xunit1" in run, "the assertion helper reads xunit1"
-    assert '"$GITHUB_WORKSPACE:/src:ro"' in run, "the checkout is mounted read-only"
     assert step["env"]["OUT_DIR"] == "${{ runner.temp }}/jail-out"
 
 

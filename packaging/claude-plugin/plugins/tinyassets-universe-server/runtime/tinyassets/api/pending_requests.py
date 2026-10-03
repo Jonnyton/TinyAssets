@@ -1576,7 +1576,7 @@ def _full_channel_sentence(action: dict[str, Any]) -> str:
         git_clause = (
             ". Where that serves git, this covers clone and push to any "
             "repository the key can reach there, including checking it out and "
-            "running its build in your universe's sandbox"
+            "running its build in your command center's sandbox"
         )
     else:
         # Several hosts: a git scope binds ONE host, so this channel carries no
@@ -1629,7 +1629,7 @@ def _grant_sentence(row: dict[str, Any]) -> str:
                 "against, so it cannot be granted. Ask again."
             )
         return (
-            "Let this universe " + ", ".join(operations) + " "
+            "Let this command center " + ", ".join(operations) + " "
             f"{action.get('repo')} on {host} with the key you already "
             "gave. Nothing to paste; this is the yes."
         )
@@ -1641,7 +1641,7 @@ def _grant_sentence(row: dict[str, Any]) -> str:
                 "it cannot be granted. Ask again."
             )
         return (
-            f"Let this universe send problem reports to {label} -- what it was "
+            f"Let this command center send problem reports to {label} -- what it was "
             "trying to do and what was missing. Only that one place, only what it "
             "sends, and nothing else of yours. Nothing to paste; this is the yes, "
             "and you can take it back."
@@ -1741,7 +1741,7 @@ def _sign_in_sentence(row: dict[str, Any]) -> str:
     return (f" Sign in at {host} to connect it - no key to copy.{asks} Tokens come "
             f"from {token_host}; sign-in talks only to {', '.join(offer_hosts(offer))}, "
             "found from the connection's own host. Its access renews itself, and "
-            "only your universe can use it." + paste)
+            "only your agent can use it." + paste)
 
 
 def _git_host_clause(value: Any) -> str:
@@ -1764,11 +1764,11 @@ def _uses_sentence(action: dict[str, Any]) -> str:
         billing = ("free of charge" if model.get("billing") == "free"
                    else "flat-rate (a plan you already pay for)")
         parts.append(
-            f" Your universe may also run its model on it ({model.get('wire')} wire): "
+            f" Your command center may also run its model on it ({model.get('wire')} wire): "
             f"{names}. The requester declared these {billing}; TinyAssets cannot "
             "check that. Calls use your key, so anything the provider charges is "
             "billed to your account there, and TinyAssets grants no spending on "
-            "them. If nothing powers your universe yet, this becomes its model."
+            "them. If nothing powers your command center yet, this becomes its model."
         )
     headers = action.get("constant_headers") or {}
     if headers:
@@ -1867,11 +1867,11 @@ def _connect_llm_request(*, connected: bool = False) -> dict[str, object]:
         "request_id": _LLM_REQUEST_ID,
         "kind": "LLM",
         "title": ("Connect another LLM" if connected
-                  else "Connect the model your universe runs on"),
+                  else "Connect the model your command center runs on"),
         "body": (
-            "Add another model source. Your universe keeps running on the one it has."
+            "Add another model source. Your command center keeps running on the one it has."
             if connected else
-            "Your universe needs a model to think with. It only ever uses "
+            "Your agent needs a model to think with. It only ever uses "
             "connections you authorize."
         ),
         "fields": [],
@@ -1945,7 +1945,7 @@ def _reconnect_requests(base: Any, uid: str, udir: Any) -> list[dict[str, object
             "title": f"{service} needs you to sign in again",
             "body": (
                 f"Your {service} connection's saved sign-in is no longer accepted, so "
-                "your universe cannot use it. "
+                "your command center cannot use it. "
                 + (
                     "Signing in again takes one tap and replaces it."
                     if service == DEVICE_SIGN_IN_SERVICE
@@ -2343,7 +2343,7 @@ def _grant_patch_intake(
             "error": "patch_intake_grant_unavailable",
             "detail": (
                 "your approval was recorded but the connection could not be "
-                f"saved ({exc}); nothing can be sent yet -- ask your universe to "
+                f"saved ({exc}); nothing can be sent yet -- ask your command center to "
                 "raise the request again"
             ),
         }
@@ -2489,7 +2489,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "error": "not_answerable",
             "detail": (
                 "connect a model to clear this; it is not a question with an "
-                "answer, it is the thing your universe needs in order to think"
+                "answer, it is the thing your agent needs in order to think"
             ),
         }
     row = get_request(udir, request_id) if request_id else None

@@ -11,7 +11,7 @@
       --line:#2a2c48;--radius:14px;
       /* The request-rail tab text. Named on purpose: changing this is a
          one-line, low-blast-radius edit, which is what makes it a safe
-         first change for the universe to ship end to end. */
+         first change for the command center to ship end to end. */
       --request-text:__TA_REQUEST_TEXT__}
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
@@ -51,7 +51,7 @@
       position:relative}   /* the anchor for #model-menu */
     .model-bar button{max-width:100%;overflow-wrap:anywhere;text-align:left}
     /* Choosing a model is a dropdown list, not a settings screen. Founder,
-       2026-09-26: "how you change what model the universe is using is not clear,
+       2026-09-26: "how you change what model the command center is using is not clear,
        it should just be a list dropdown menu when they click on it." Opens
        upwards: the bar sits just above the composer at the bottom of the view. */
     .model-menu{position:absolute;bottom:calc(100% - .2rem);left:1rem;z-index:15;
@@ -93,6 +93,10 @@
     .chat-body{flex:1;min-height:0;display:flex}
     .history-error{padding:.4rem 1.1rem;color:var(--warn);border-bottom:1px solid var(--line);font-size:.85rem}
     .rail-error{color:var(--warn);font-size:.8rem;margin:.3rem 0 .5rem}
+    .notify-prompt{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .6rem;padding:.45rem 1.1rem;
+      border-bottom:1px solid var(--line);font-size:.85rem}
+    .notify-prompt[hidden]{display:none}
+    .notify-prompt-text{flex:1 1 16rem}
     .thread-earlier{align-self:center}
     .rail{width:16rem;flex:0 0 auto;border-left:1px solid var(--line);
           overflow-y:auto;padding:.6rem;display:flex;flex-direction:column;gap:.5rem;
@@ -136,7 +140,7 @@
     .rtab-label{display:block;font-size:.78rem;color:var(--muted);margin-top:.5rem}
     .rtab-help{display:block;font-size:.72rem;color:var(--muted);opacity:.85;margin:.15rem 0 .1rem;line-height:1.35}
     .rtab-link{display:inline-block;max-width:100%;font-size:.72rem;margin:0 0 .3rem;text-decoration:underline}
-    /* An agent-composed field link is the UNIVERSE's suggestion, not platform
+    /* An agent-composed field link is the COMMAND CENTER's suggestion, not platform
        help. It says so, and it does not borrow the accent colour the platform's
        own links use (live 2026-09-30: an agent's invented tinyassets.io/settings
        rendered exactly like platform chrome next to a secret box). */
@@ -150,7 +154,7 @@
                color:var(--muted);margin-top:.5rem}
     .rtab-mute input{width:auto;margin:0}
     .rtab-note{font-size:.76rem;color:var(--muted);margin-top:.4rem;min-height:1rem}
-    /* Model setup inside the connect request. While the universe is unpowered
+    /* Model setup inside the connect request. While the command center is unpowered
        the request is the first thing to do, so the rail widens to hold it. */
     .rail--setup{width:22rem}
     .connect-go{width:100%;margin:.6rem 0 .25rem}
@@ -164,7 +168,7 @@
     .add-key-card{font-size:.85rem}
     .connect-panel .rtab-link{color:var(--accent)}
     /* ...but never an AGENT's link, wherever it ends up rendered. The accent is
-       the platform's own voice; a destination the universe chose must not
+       the platform's own voice; a destination the command center chose must not
        borrow it. Two classes, so this outranks any single-class accent rule
        regardless of source order. */
     .rtab-link.rtab-link--agent{color:var(--ink-dim)}
@@ -224,16 +228,17 @@
     .status-line--voice{padding-top:0}
     /* There is ONE working indicator and it is `.status-line` above. #4020 added
        a second, louder banner as well; the founder had both on screen at once and
-       said so: "there are now 2 indicators at once that my universe is thinking,
+       said so: "there are now 2 indicators at once that my command center is thinking,
        i preferred only the original one at the bottom" (2026-09-26). The banner is
        gone; what it knew (server-reported turn state) now drives that one line. */
     /* A line waiting behind an in-flight turn. It is the founder's own message
-       and stays their bubble; the mark says the universe has not seen it yet. */
+       and stays their bubble; the mark says the agent has not seen it yet. */
     .msg--queued{opacity:.72;border:1px dashed var(--accent-ink)}
     .msg-queued-note{display:block;margin-top:.35rem;font-size:.72rem;opacity:.9}
     .rule-row{display:flex;justify-content:space-between;align-items:center;gap:.5rem;padding:.25rem 0}
     .rules-declare{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
     .rules-declare input{min-width:7rem;flex:1}
+    .msg-steered-note{display:block;margin-top:.35rem;font-size:.72rem;opacity:.75}
     /* connect */
     .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
     .provider-head{display:flex;align-items:baseline;gap:.5rem;margin-bottom:.35rem}
@@ -268,9 +273,53 @@
     /* A custom UI replaces the chat body rather than sitting beside it, and the
        frame itself carries no border: whatever is inside is somebody's own
        design, so the app does not frame it with its own chrome. */
-    #ui-frame-host{flex:1;display:flex;min-height:0}
+    #ui-frame-host{position:absolute;inset:0;display:flex;min-height:0}
     .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
-    .ui-custom-active>.chat-body{display:none!important}
+    /* The chat cloud: the conversation floats over the command center. */
+    .chat-stage{position:relative;flex:1;min-height:0;overflow:hidden}
+    .chat-cloud{position:absolute;display:flex;flex-direction:column;min-width:0;min-height:0;
+      background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
+      box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;z-index:5}
+    .chat-cloud[data-mode="bubble"]{display:none}
+    .chat-cloud-bar{display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem .3rem .9rem;
+      background:var(--surface);border-bottom:1px solid var(--line);cursor:grab;touch-action:none;
+      user-select:none;flex:0 0 auto}
+    .chat-cloud-bar:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+    .chat-cloud.is-dragging .chat-cloud-bar{cursor:grabbing}
+    .chat-cloud-title{flex:1;font-size:.82rem;color:var(--ink-dim);white-space:nowrap;overflow:hidden;
+      text-overflow:ellipsis}
+    .chat-cloud-btn{background:none;border:0;color:var(--ink);font-size:1.1rem;line-height:1;
+      padding:.25rem .55rem;border-radius:8px;cursor:pointer}
+    .chat-cloud-btn:hover,.chat-cloud-btn:focus-visible{background:var(--surface-2)}
+    .chat-cloud-body{flex:1;min-height:0;display:flex;flex-direction:column}
+    /* The rail stacks under the thread when the CLOUD is narrow, not only the window. */
+    .chat-cloud{container-type:inline-size}
+    @container (max-width:760px){
+      .chat-body{flex-direction:column}
+      .rail{width:auto;max-height:45%;border-left:0;border-top:1px solid var(--line)}
+      .rail--setup{width:auto;max-height:none;order:-1}
+    }
+    /* A narrow CLOUD gets the compact composer too, so Send/Stop never clip. */
+    @container (max-width:520px){
+      .composer{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto}
+      .composer .voice-output-select{grid-column:1/-1;grid-row:1;width:100%;max-width:none;min-width:0}
+      .composer .btn--attach{grid-column:1;grid-row:2}
+      .composer .btn--voice{grid-column:2;grid-row:2}
+      .composer .composer-input{grid-column:3;grid-row:2;min-width:0}
+      .composer .btn--send{grid-column:4;grid-row:2}
+      .composer .btn--stop{grid-column:4;grid-row:2}
+    }
+    .chat-cloud-resize{position:absolute;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;
+      touch-action:none;background:linear-gradient(135deg,transparent 50%,var(--line) 50%)}
+    .chat-cloud-bubble{position:absolute;width:56px;height:56px;border-radius:50%;border:1px solid var(--line);
+      background:var(--surface);color:var(--ink);font-size:1.5rem;cursor:pointer;touch-action:none;
+      box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:6;padding:0}
+    .chat-cloud-bubble:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .chat-cloud-badge{position:absolute;top:2px;right:2px;min-width:14px;height:14px;border-radius:7px;
+      background:var(--accent);border:2px solid var(--surface)}
+    .chat-cloud-bubble.is-thinking{animation:cloud-pulse 1.4s ease-in-out infinite}
+    @keyframes cloud-pulse{0%,100%{box-shadow:0 0 0 0 rgba(120,140,255,.55)}50%{box-shadow:0 0 0 8px rgba(120,140,255,0)}}
+    @media (prefers-reduced-motion:reduce){.chat-cloud-bubble.is-thinking{animation:none;outline:2px dashed var(--accent)}}
     #ui-mode{font-size:.8rem}
   </style>
 </head>
@@ -280,7 +329,7 @@
     <section id="view-signin" class="view view--signin" hidden>
       <div class="card">
         <div class="brand"><span class="brand-dot"></span> TinyAssets</div>
-        <p class="lede">Your universe lives here. Sign in and meet the mind you're raising.</p>
+        <p class="lede">Your command center lives here. Sign in and meet the mind you're raising.</p>
         <button id="btn-signin" class="btn btn--primary">Sign in</button>
         <div id="signin-notice" class="notice" role="alert"></div>
         <!-- Google Play's User Data policy requires a privacy policy link "within
@@ -300,22 +349,46 @@
       <header class="chat-header">
         <div class="chat-title">
           <span id="dot" class="dot" title="checking..."></span>
-          <span id="universe-name" class="universe-name">Your universe</span>
+          <span id="universe-name" class="universe-name">Your command center</span>
         </div>
         <nav class="chat-actions">
           <span id="ui-mode" hidden></span>
-          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch UI</button>
+          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
           <button id="btn-account" class="btn btn--link">Account</button>
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </nav>
       </header>
       <div id="history-error" class="muted history-error" role="status" hidden></div>
+      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
+        <span id="notify-prompt-text" class="notify-prompt-text"></span>
+        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
+        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
+      </div>
+      <!-- The stage is the command center: a custom UI fills it, and the chat with
+           your agent floats above it as a movable, resizable "chat cloud" that can
+           shrink to a bubble. Every element of the chat keeps its id. -->
+      <div id="chat-stage" class="chat-stage">
+      <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
+           sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
+           bundle markup, style or script is ever assigned into this document. -->
+      <div id="ui-frame-host" hidden></div>
+      <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
+               aria-label="Chat with your agent">
+      <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
+           aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
+           aria-describedby="chat-cloud-title">
+        <span id="chat-cloud-title" class="chat-cloud-title">Your agent</span>
+        <button id="btn-cloud-shrink" class="chat-cloud-btn" type="button"
+                aria-label="Shrink the chat to a bubble" aria-controls="chat-cloud-body"
+                aria-expanded="true" title="Shrink">&#8211;</button>
+      </div>
+      <div id="chat-cloud-body" class="chat-cloud-body">
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
-            <div class="waking">Your universe is waking up.</div>
-            <div class="waking-sub">Say hello to begin.</div>
+            <div class="waking">Welcome, commander.</div>
+            <div class="waking-sub">Your command center is waking up. Say hello to begin.</div>
           </div>
         </div>
         <aside id="request-rail" class="rail" hidden>
@@ -331,7 +404,7 @@
           <div id="api-key-connection" class="add-key-card">
             <div class="provider-head"><strong id="api-key-title">Any API service</strong></div>
             <p id="api-key-description">Paste whatever the service gave you &mdash; a key, a page of values, all
-            four OAuth values, extra things it doesn't need. Your universe works out
+            four OAuth values, extra things it doesn't need. Your agent works out
             what the service is and what it may call. The key goes straight to the
             secure vault over TLS, <strong>never through chat</strong>.</p>
             <div id="paste-anything">
@@ -464,32 +537,41 @@
           <option value="">System voice</option>
         </select>
         <textarea id="composer-input" class="composer-input" rows="1"
-                  placeholder="Message your universe" autocomplete="off"></textarea>
+                  placeholder="Message your agent" autocomplete="off"></textarea>
         <button id="btn-send" class="btn btn--primary btn--send" type="submit">Send</button>
-        <!-- Stop: shown in Send's place while the universe is working (Escape does
+        <!-- Stop: shown in Send's place while the agent is working (Escape does
              the same on a keyboard). Messages typed meanwhile queue, and after a
              stop they go out together as the next turn. -->
         <button id="btn-stop" class="btn btn--stop" type="button" hidden
-                aria-label="Stop your universe's current turn"
+                aria-label="Stop your agent's current turn"
                 title="Stop this turn (Esc). Anything you queued is sent next.">Stop</button>
       </form>
       <div id="status-line" class="status-line" role="status" aria-live="polite"
            aria-label="Conversation status"></div>
+      <div id="deploy-pending-line" class="status-line" role="status"
+           aria-live="polite" hidden></div>
+      <button id="btn-try-model" class="btn btn--link" type="button" hidden
+              title="Pick another model for your next message. Stop this turn if you want to switch now; it is still working.">Try another model</button>
       <div id="voice-status-line" class="status-line status-line--voice" role="status"
            aria-live="polite" aria-label="Voice status" hidden></div>
-      <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
-           sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
-           bundle markup, style or script is ever assigned into this document. -->
-      <div id="ui-frame-host" hidden></div>
+      </div>
+      <div id="chat-cloud-resize" class="chat-cloud-resize" aria-hidden="true"></div>
+      </section>
+      <button id="chat-cloud-bubble" class="chat-cloud-bubble" type="button" hidden
+              aria-label="Open the chat with your agent" aria-controls="chat-cloud">
+        <span class="chat-cloud-bubble-icon" aria-hidden="true">&#128172;</span>
+        <span id="chat-cloud-badge" class="chat-cloud-badge" hidden></span>
+      </button>
+      </div>
     </section>
 
     <dialog id="ui-dialog" class="ui-dialog" aria-labelledby="ui-title">
-      <h2 id="ui-title">Your UI</h2>
-      <p>Switch between the default chat and any UI installed in this universe.
-      Ask your universe for any screen you like and it builds one. A custom UI
+      <h2 id="ui-title">Switch command center</h2>
+      <p>Switch between the default chat and any UI installed in this command center.
+      Ask your agent for any screen you like and it builds one. A custom UI
       runs isolated: it cannot read your sign-in, your other tabs, or anything
-      outside this universe. It acts as you, in this universe only: it can read
-      your universe's name, your agents, this conversation, your automations,
+      outside this command center. It acts as you, in this command center only: it can read
+      your command center's name, your agents, this conversation, your automations,
       runs and shared files, send messages, wake your own automations, and ask
       to change which conversation design answers you.</p>
       <p class="muted">What it can read, it could keep. Someone else's UI is
@@ -539,12 +621,12 @@
       <div class="voice-dialog-card">
         <h2 id="voice-disclosure-title">Before voice starts</h2>
         <p id="voice-disclosure-bridge">Voice will use <strong id="voice-service-name">the voice connection</strong>
-        that you bound to this universe. Your microphone audio goes directly to that service,
+        that you bound to this command center. Your microphone audio goes directly to that service,
         and any use belongs to that resource's account. TinyAssets never substitutes a shared
-        credential. TinyAssets keeps the words you send and your universe's text reply in this
+        credential. TinyAssets keeps the words you send and your agent's text reply in this
         conversation, but does not store the raw audio.</p>
         <p id="voice-disclosure-browser" hidden>Your browser or device speech service will turn
-        your microphone audio into text and read your universe's reply aloud. Depending on your
+        your microphone audio into text and read your agent's reply aloud. Depending on your
         browser, speech recognition may send audio to the browser vendor and may not work offline.
         TinyAssets sends the recognized text through the same conversation as typed chat and keeps
         that text exchange, but TinyAssets does not receive or store the raw audio.</p>
@@ -567,10 +649,10 @@
         </nav>
       </header>
       <div class="connect-body">
-        <p>Your account is your sign-in plus the one universe bound to it. There is nothing
+        <p>Your account is your sign-in plus the one command center bound to it. There is nothing
         else to sign into here — no separate website account, no profile.</p>
-        <h3>Your universe's connections</h3>
-        <p>Disconnect removes this universe's access and its saved key in TinyAssets.
+        <h3>Your command center's connections</h3>
+        <p>Disconnect removes this command center's access and its saved key in TinyAssets.
         Your history and designs stay. Your provider account is not deleted.
         Requests already sent may still finish.</p>
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
@@ -595,14 +677,14 @@
         </div>
         <div id="rules-status" class="notice" role="status"></div>
         <h3>Request notifications</h3>
-        <p>Get notified when your universe is waiting on you. Turning this off stops notifications on all your devices.</p>
+        <p>Get notified when your agent is waiting on you. Turning this off stops notifications on all your devices.</p>
         <button id="btn-notifications" class="btn btn--ghost" type="button" disabled>Loading notifications...</button>
         <button id="btn-browser-notifications" class="btn btn--ghost" type="button">Enable in this browser</button>
         <div id="notification-status" class="notice" role="status"></div>
         <ul id="notification-devices"></ul>
         <div class="danger-zone">
           <h3>Delete your account</h3>
-          <p>This deletes your universe — its memory, your conversation history, and any
+          <p>This deletes your command center — its memory, your conversation history, and any
           subscription credential you deposited — cancels a paid plan immediately, and
           removes your sign-in. It happens right away and cannot be undone.</p>
           <p class="muted">Kept: audit records with the actor replaced by an opaque id and their
@@ -668,6 +750,10 @@
   // (io.tinyassets.app.debug) so it can never block a Play update, and it must
   // sign back into itself rather than into the Play app.
   const APP_RETURN_PACKAGES = {"app.": "io.tinyassets.app", "appdebug.": "io.tinyassets.app.debug"};
+  // The desktop app is Electron over this page. Its shell refuses every
+  // permission request and Electron has no push service, so web push cannot
+  // work there: nothing offers it.
+  const DESKTOP_SHELL = (navigator.userAgent||"").indexOf("Electron/")>=0;
   function nativePlugin(name){ const P=window.Capacitor&&window.Capacitor.Plugins; return (P&&P[name])||null; }
   // PKCE state lives in localStorage on native (survives the WebView being
   // backgrounded behind the tab) and sessionStorage on the web.
@@ -980,7 +1066,7 @@
   //   1. ANY failure that could mean the session is gone invalidates it, so the
   //      next call re-initializes and the page heals itself.
   //   2. A call is replayed automatically ONLY when it provably never ran. A cut
-  //      stream is not that - the universe may have taken the turn and be
+  //      stream is not that - the command center may have taken the turn and be
   //      answering it - so those surface with a Send-again button and let the
   //      user decide, rather than silently double-sending.
   const MCP = {
@@ -1049,7 +1135,7 @@
       const h=name=>{ try{ return resp.headers.get(name)||null; }catch(_e){ return null; } };
       const http={status:resp.status, ray:h("cf-ray"), originStatus:h("x-ta-origin-status"),
         contentType:h("content-type"), body:String(bodyText||"").slice(0,300)};
-      const where=http.originStatus ? ", from your universe's server" : "";
+      const where=http.originStatus ? ", from your command center's server" : "";
       const err=transportError(code,
         lead+" (HTTP "+http.status+where+(http.ray ? ", ray "+http.ray : "")+")", false);
       err.http=http;
@@ -1153,7 +1239,7 @@
     // only somebody else's frames - equally unconfirmed either way.
     _noTerminal(empty){
       if(empty) throw transportError("stream_empty",
-        "the connection closed before your universe replied", false);
+        "the connection closed before your agent replied", false);
       throw transportError("stream_truncated",
         "the reply was cut off in transit", false);
     },
@@ -1172,7 +1258,7 @@
       const body=resp.body;
       const jsonBody=/application\/json/i.test(resp.headers.get("content-type")||"");
       const silence=()=>[this.SILENCE_MS, "stream_silent",
-        "your universe stopped sending anything back; it may still be working on this"];
+        "your agent stopped sending anything back; it may still be working on this"];
       if(!body || typeof body.getReader!=="function"){
         // No readable stream (an ordinary JSON body, or a transport shim).
         const text=await this._bound(Promise.resolve(resp.text()), ...silence());
@@ -1273,7 +1359,7 @@
         // (the shape that left a tab thinking with nothing to time it out)
         // without saying anything about how long the work may take.
         resp=await this._bound(Promise.resolve(fetch("/mcp",init)), this.HEADERS_MS,
-          "no_response", "your universe never answered this request");
+          "no_response", "your agent never answered this request");
       }catch(netErr){
         if(netErr && netErr.transport==="no_response"){
           if(ctl){ try{ ctl.abort(); }catch(_e){} }
@@ -1356,7 +1442,7 @@
         if(streaming) streamedDoc=await this._readTerminal(resp, wantId);
         else bodyText=await this._bound(Promise.resolve(resp.text()), this.SILENCE_MS,
           "stream_silent",
-          "your universe stopped sending anything back; it may still be working on this");
+          "your agent stopped sending anything back; it may still be working on this");
       }
       catch(_readErr){
         if(_readErr && _readErr.transport==="stream_silent"){
@@ -1408,7 +1494,7 @@
         if(attempt.session>=1){
           // Disowned twice, both times BEFORE dispatch: this request never ran.
           throw notSent(transportError("session_lost",
-            "your universe kept dropping this connection", false));
+            "your command center kept dropping this connection", false));
         }
         attempt.session++;
         // `_retire` above is a no-op once the generation has moved, so only the
@@ -1452,11 +1538,11 @@
         // story this told, and on 2026-09-24 it was false: the daemon logged no
         // 5xx at all, so the 503s the founder's tab received were authored in
         // front of the origin - and nothing on the page recorded which layer.
-        throw this._httpFailure("unavailable", "the connection to your universe failed",
+        throw this._httpFailure("unavailable", "the connection to your command center failed",
           resp, bodyText, method);
       }
       if(!resp.ok){
-        throw this._httpFailure("http_error", "your universe answered with an unexpected error",
+        throw this._httpFailure("http_error", "your agent answered with an unexpected error",
           resp, bodyText, method);
       }
 
@@ -1553,7 +1639,7 @@
     },
     // Deposit a generic outbound HTTP connection (an API key + the endpoints it
     // may call) DIRECTLY over /mcp — the secret rides the tool payload, never a
-    // converse/chat turn — so the universe can then register a model
+    // converse/chat turn — so the command center can then register a model
     // compute provider on it, or build a channel (Slack/X/...) via the
     // authenticated_external_call effect. The channel-agnostic way to add any API.
     connectHTTP(destination,secret,allowedEndpoints,authScheme){
@@ -1562,7 +1648,7 @@
       return this.callTool("write_graph",{target:"connection",operation:"connect_http",
         payload_json:JSON.stringify(payload)});
     },
-    // Ask the universe what a pasted credential IS, from its SHAPE only. The
+    // Ask the command center what a pasted credential IS, from its SHAPE only. The
     // credential itself never rides this call — see extractShape() below.
     resolveConnection(shape,hints,intent){
       return this.callTool("write_graph",{target:"connection",operation:"resolve_connection",
@@ -1640,7 +1726,7 @@
         }
         const e=transportError(resp.ok ? "unreadable" : "http_error",
           (doc && typeof doc.error==="string" && doc.error) ||
-          ("your universe answered "+resp.status), false);
+          ("your agent answered "+resp.status), false);
         e.status=resp.status; e.doc=doc;
         throw e;
       }
@@ -1701,9 +1787,9 @@
 
   // ---- Queued bubbles --------------------------------------------------
   //
-  // A line the founder has sent but the universe has NOT seen yet: it is waiting
+  // A line the founder has sent but the command center has NOT seen yet: it is waiting
   // behind an in-flight turn. It stays the founder's own bubble (from their side
-  // it is sent), marked so the thread does not claim the universe read it.
+  // it is sent), marked so the thread does not claim the command center read it.
   function isQueuedBubble(node){
     return !!node && String(node.className||"").split(" ").indexOf("msg--queued")>=0;
   }
@@ -1715,7 +1801,7 @@
     el.className=String(el.className||"")+" msg--queued";
     const note=document.createElement("span");
     note.className="msg-queued-note";
-    note.textContent="Queued — your universe sees this when its current turn ends.";
+    note.textContent="Queued — your agent sees this when its current turn ends.";
     el.appendChild(note); el.queuedNote=note;
     return el;
   }
@@ -1734,7 +1820,7 @@
     el.className="msg msg--"+role;
     const meta=document.createElement("span"); meta.className="msg-meta";
     const l=document.createElement("span"); l.className="msg-role";
-    l.textContent=role==="universe"?"Universe":role==="platform"?"Platform notice":role==="system"?"Notice":"You";
+    l.textContent=role==="universe"?"Command center":role==="platform"?"Platform notice":role==="system"?"Notice":"You";
     meta.appendChild(l);
     // A missing legacy timestamp stays visibly unknown. Using render/load time
     // here would invent history and make the page look more certain than its data.
@@ -1756,7 +1842,7 @@
     if(extra) el.appendChild(extra);
     if(queued) markQueued(el);
     // The thread is ordered the way the AGENT will see it, not the order the
-    // clicks happened in: anything the universe has not seen yet stays at the
+    // clicks happened in: anything the agent has not seen yet stays at the
     // bottom. The founder answered a rail card while an earlier turn was still
     // running; that "Approved:" bubble was appended at click time and the
     // earlier turn's reply — composed before the click arrived — landed BELOW
@@ -1772,7 +1858,7 @@
   function setVoiceStatusLine(t){ $("voice-status-line").textContent=t||""; }
   // ---- The working indicator -------------------------------------------
   //
-  // Whether the universe is working is a fact about the UNIVERSE, not about this
+  // Whether the agent is working is a fact about the COMMAND CENTER, not about this
   // page. It used to be a fact about this page: `sendTurn` set a 0.78rem grey
   // line and its `finally` cleared it, and nothing else ever set it. So a turn
   // started by answering a request, by a queued line, from another window or
@@ -1798,11 +1884,14 @@
   const STATUS_IDLE_MS=30000, STATUS_WORKING_MS=10000;
   let statusBeatMs=STATUS_IDLE_MS;
   let serverTurn=null;
-  // This universe's chat waiting for one of the account's seats (`seats` in the
+  let deployPending=false;
+  // This command center's chat waiting for one of the account's seats (`seats` in the
   // status payload, owner-only). Its line carries the upgrade link inline.
   let seatWait=null;
   let seatLineShown=false;
   function readServerTurn(payload){
+    const deploy=payload&&payload.deploy_pending;
+    deployPending=!!deploy&&typeof deploy==="object"&&deploy.pending===true;
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
       ?payload.seats:null;
     const row=payload&&payload.active_turn;
@@ -1815,14 +1904,56 @@
     const age=(typeof row.age_s==="number"&&Number.isFinite(row.age_s)&&row.age_s>0)?row.age_s:0;
     // Anchored to THIS page's clock. The row's own stamp is the server's, and a
     // device with a skewed clock would otherwise report a nonsense elapsed time.
+    // Which step, on which model, since when -- present once the turn opened a
+    // round. A ten-minute wait on one model request read exactly like a hang
+    // (live 2026-10-02); saying where the turn is lets the owner decide.
+    const roundAge=(typeof row.round_age_s==="number"&&Number.isFinite(row.round_age_s)
+      &&row.round_age_s>=0)?row.round_age_s:null;
     serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
-      startedMs:Date.now()-age*1000,observedAt:Date.now()};
+      startedMs:Date.now()-age*1000,observedAt:Date.now(),
+      round:(Number.isInteger(row.round)&&row.round>0)?row.round:0,
+      model:(typeof row.model==="string")?row.model:"",
+      roundSinceMs:roundAge===null?0:Date.now()-roundAge*1000};
+  }
+  // A model id as a person says it: no vendor prefix or ":variant" tag, and a
+  // very long name cut at a hyphen ("nemotron-3-ultra-550b-a55b" ->
+  // "nemotron-3-ultra-550b"), never down to a family word that names nothing.
+  function shortModelName(id){
+    let tail=String(id||"").split("/").pop().replace(/:[^:]*$/,"");
+    while(tail.length>24&&tail.lastIndexOf("-")>0) tail=tail.slice(0,tail.lastIndexOf("-"));
+    return tail;
+  }
+  // Minutes this step has waited on its model, or 0 when the server did not say.
+  function waitMinutes(){
+    if(!serverTurnLive()||!serverTurn.roundSinceMs) return 0;
+    return Math.floor((Date.now()-serverTurn.roundSinceMs)/60000);
+  }
+  // "step 4 · waiting on qwen3.8 for 7 min" while the model is being asked;
+  // "" when the server has not said, or when the step is running tools (that
+  // line belongs to the live tool painter).
+  function waitDetail(){
+    if(!serverTurnLive()||!serverTurn.round||
+       (serverTurn.state!=="inference_started"&&serverTurn.state!=="native_started"))
+      return "";
+    const mins=waitMinutes();
+    return "step "+serverTurn.round+(serverTurn.model
+      ? " \u00b7 waiting on "+shortModelName(serverTurn.model) : "")+
+      (mins>=1?" for "+mins+" min":"");
+  }
+  // After this long on one request the owner is offered another model. Their
+  // choice, never ours: a slow reply that is still coming is not abandoned
+  // (founder, 2026-10-02), and switching does not stop the request in flight.
+  const TRY_MODEL_AFTER_MIN=3;
+  function renderTryModel(){
+    const button=$("btn-try-model");
+    if(!button) return;
+    button.hidden=!(waitDetail()&&waitMinutes()>=TRY_MODEL_AFTER_MIN);
   }
   function serverTurnLive(){
     return !!serverTurn && (Date.now()-serverTurn.observedAt)<3*STATUS_WORKING_MS;
   }
   // When the work the indicator is about started, by this page's clock; 0 = the
-  // universe is not working as far as this page can tell.
+  // command center is not working as far as this page can tell.
   function workingSince(){
     const local=turnStartedAt||0, server=serverTurnLive()?serverTurn.startedMs:0;
     if(local&&server) return Math.min(local,server);
@@ -1838,8 +1969,10 @@
   // sentence is; a queue count, an attachment notice or a failure line belongs to
   // whoever wrote it and is never touched here.
   let serverStatusLine=false;
+  // This page's own turn line carries the server's step detail.
+  let ownDetailLine=false;
   // ---- Stop (founder 2026-09-30: "just like it works in claude code") --------
-  // While the universe is working, Send gives its place to Stop; Escape does the
+  // While the agent is working, Send gives its place to Stop; Escape does the
   // same. The server stops the turn at its next safe point (a tool call already
   // running finishes and is recorded), the in-flight reply comes back marked
   // "Interrupted", and THEN everything queued behind it goes out as ONE message,
@@ -1884,7 +2017,7 @@
     const stillMine=()=>activeTurn===mine&&sameAccount();
     interruptRequested=true; flushAfterInterrupt=true; renderStop();
     const waiting=sendQueue.length;
-    setStatusLine("Stopping your universe's turn..."+(waiting
+    setStatusLine("Stopping your agent's turn..."+(waiting
       ? " then sending the "+waiting+" waiting message"+(waiting===1?"":"s")+" together."
       : ""));
     const abort=typeof AbortController==="function"?new AbortController():null;
@@ -1930,7 +2063,7 @@
       interruptRequested=false;
       if(!turnStartedAt) flushAfterInterrupt=false;
       setStatusLine(turnStartedAt
-        ? "Your universe's reply is already on its way; anything queued goes out together when it lands."
+        ? "Your agent's reply is already on its way; anything queued goes out together when it lands."
         : "Nothing you can stop is running: the work shown is not a conversation turn.");
     }else if(!turnStartedAt){
       // A turn another window started ends on the server's word; stop painting
@@ -1942,6 +2075,14 @@
   }
   function renderWorking(){
     renderStop();
+    renderTryModel();
+    const updateLine=$("deploy-pending-line");
+    if(updateLine){
+      const pending=serverTurnLive()&&deployPending;
+      const text=pending?"An update is waiting for this turn to finish; it installs right after.":"";
+      if(updateLine.textContent!==text) updateLine.textContent=text;
+      updateLine.hidden=!pending;
+    }
     if(seatWait){
       // The waiting line, with the Upgrade link INSIDE it -- never a banner, card
       // or modal (founder, 2026-09-30). No link on the top tier: the server sends
@@ -1961,11 +2102,11 @@
     if(seatLineShown){
       // The seat came: the turn is running now, so the waiting line must not stay.
       seatLineShown=false;
-      setStatusLine(turnStartedAt?"Your universe is thinking...":"");
+      setStatusLine(turnStartedAt?"Your agent is thinking...":"");
     }
     // ONE indicator, and it is the original line under the composer. #4020 added a
     // second, louder banner alongside it and the founder had both at once: "there
-    // are now 2 indicators at once that my universe is thinking, i preferred only
+    // are now 2 indicators at once that my command center is thinking, i preferred only
     // the original one at the bottom" (2026-09-26).
     //
     // A turn THIS page started has already written that line in sendTurn /
@@ -1979,7 +2120,24 @@
     // The flag is dropped on the way out: a local turn has taken the line, so our
     // sentence is no longer on screen and we must not later "clear" what that path
     // wrote (a queue count outlives the turn it was queued behind).
-    if(turnStartedAt){ serverStatusLine=false; return; }
+    if(turnStartedAt){
+      serverStatusLine=false;
+      // This page's own sentence, with WHERE the turn is when the server says.
+      // Never over a queue count, the seat line or a Stop in progress, which
+      // know more; and never rewritten unchanged, so a screen reader hears the
+      // minute change and nothing else.
+      const detail=waitDetail();
+      const mine=!sendQueue.length&&!seatLineShown&&!interruptRequested;
+      if(detail&&mine){
+        const text="Your agent is thinking... "+detail;
+        if($("status-line").textContent!==text) setStatusLine(text);
+        ownDetailLine=true;
+      }else if(ownDetailLine&&!detail&&mine){
+        setStatusLine("Your agent is thinking..."); ownDetailLine=false;
+      }
+      return;
+    }
+    ownDetailLine=false;
     if(!serverTurnLive()){
       // Ours to clear, or nobody's. A line another path wrote stays.
       if(serverStatusLine){ serverStatusLine=false; setStatusLine(""); }
@@ -1989,21 +2147,21 @@
     const elapsed=workingElapsed(workingSince());
     // Said because this page did NOT start it: without it the founder is looking
     // at a turn they have no other evidence of.
-    const detail=[elapsed,"started in another window, by a request you answered, "+
+    const detail=[elapsed,waitDetail(),"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
-    setStatusLine("Your universe is thinking... " + detail);
+    setStatusLine("Your agent is thinking... " + detail);
   }
   // ---- Voice ----------------------------------------------------------
-  // Voice owns only speech transport and turn timing. The universe's actual
+  // Voice owns only speech transport and turn timing. The command center's actual
   // words still come from MCP.converse through sendVoiceTurn below.
   const VOICE_LABELS={
     unavailable:"Voice transport is temporarily unavailable. Typed chat still works.",
-    checking:"Checking this universe's voice capability...",
-    unpowered:"Voice needs the provider connection your universe will use.",
+    checking:"Checking this command center's voice capability...",
+    unpowered:"Voice needs the provider connection your agent will use.",
     incompatible:"Speech input is not supported in this browser or device.",
     idle:"Voice is off. Start it when you want to talk.", requesting_permission:"Voice is waiting for microphone permission...",
     connecting:"Connecting voice...", listening:"Listening...",
-    thinking:"Your universe is thinking...", speaking:"Your universe is speaking...",
+    thinking:"Your agent is thinking...", speaking:"Your agent is speaking...",
     reconnecting:"Reconnecting voice...", error:"Voice stopped. Typed chat still works."
   };
   const VOICE_TRANSITIONS={
@@ -2052,12 +2210,12 @@
   }
   function voiceFriendlyError(code){
     const messages={
-      provider_not_configured:"Voice needs the same provider connection your universe uses for conversation.",
+      provider_not_configured:"Voice needs the same provider connection your agent uses for conversation.",
       provider_voice_unsupported:"Your current provider can power typed conversation but does not expose compatible realtime Voice.",
       capability_not_declared:"Your current provider connection has not declared a compatible realtime Voice capability.",
       voice_capability_invalid:"Your current provider's Voice capability is invalid or no longer authorized.",
       voice_authority_invalid:"Voice cannot confirm the current provider's authority. Typed chat still works.",
-      voice_resource_rejected:"The bound voice service rejected this universe's connection.",
+      voice_resource_rejected:"The bound voice service rejected this command center's connection.",
       voice_resource_rate_limited:"The bound voice service is rate-limited right now. Try again shortly.",
       voice_resource_failed:"The bound voice service could not start a session. Typed chat still works.",
       voice_resource_unreachable:"The bound voice service could not be reached. Typed chat still works.",
@@ -2069,7 +2227,7 @@
       voice_turn_retired:"Voice stopped because the conversation on screen changed before its reply arrived. Typed chat still works.",
       browser_speech_unsupported:"Speech input is not supported in this browser or device. Typed chat still works.",
       browser_speech_failed:"Your browser or device speech service stopped. Typed chat still works.",
-      no_home_universe:"Send one typed message first so your universe is ready.",
+      no_home_universe:"Send one typed message first so your command center is ready.",
       same_origin_required:"Voice was blocked by the app's security boundary.",
       voice_disabled:"Voice transport is temporarily unavailable. Typed chat still works."
     };
@@ -2077,7 +2235,7 @@
   }
   function voiceConnectionGuidance(code){
     if(code==="provider_not_configured")
-      return "Voice needs a realtime-capable provider connection that you authorize for this universe. Connect the provider your universe should use; TinyAssets will not supply a platform credential.";
+      return "Voice needs a realtime-capable provider connection that you authorize for this command center. Connect the provider your command center should use; TinyAssets will not supply a platform credential.";
     return "Your current provider still powers typed conversation, but it does not provide compatible realtime Voice authority. Connect and select a realtime-capable provider connection you authorize; TinyAssets will not switch providers automatically.";
   }
   const Voice={
@@ -2107,7 +2265,7 @@
       this.state="checking"; this.capability=null;
       const btn=$("btn-voice");
       btn.disabled=true;
-      btn.title="Checking this universe's voice capability";
+      btn.title="Checking this command center's voice capability";
       this._render();
     },
     isActive(){
@@ -2225,7 +2383,7 @@
         this._render(detail);return false;
       }catch(_error){
         // Browser speech replaces only a missing media bridge. A failed status
-        // read cannot prove that a universe has a writer, so keep this closed
+        // read cannot prove that a command center has a writer, so keep this closed
         // rather than bypassing the unpowered setup state.
         this.capability=null;this.state="checking";
         this._render("Voice capability could not be confirmed. Typed chat still works.");return false;
@@ -2366,7 +2524,7 @@
           this.browserPendingLastSegment=pendingKey;
           this.browserPendingUtterance=[this.browserPendingUtterance,pendingSegment]
             .filter(Boolean).join(" ");
-          this._render("Your universe is thinking — I’ll take that next.");return;
+          this._render("Your agent is thinking — I’ll take that next.");return;
         }
         if(this.browserSubmitting&&this.state!=="speaking")return;
         if(this.state==="speaking"){
@@ -2724,7 +2882,7 @@
       if(announce){
         const stopped=detail||"Voice is off.";
         this._render(replyPending
-          ?stopped+" Your universe is still thinking; its text reply will still appear here, but it will not be spoken."
+          ?stopped+" Your agent is still thinking; its text reply will still appear here, but it will not be spoken."
           :stopped+" No pending reply was canceled.");
       }else this._render("");
     },
@@ -2736,13 +2894,13 @@
       this._teardownTransport();this.state="error";this.stoppedWithPending=replyPending;
       const detail=voiceFriendlyError(error&&error.message);
       this._render(replyPending
-        ?detail+" Your universe is still thinking; its text reply will still appear here, but it will not be spoken."
+        ?detail+" Your agent is still thinking; its text reply will still appear here, but it will not be spoken."
         :detail);
     },
     conversationSettled(delivered,record){
       if(!this.stoppedWithPending)return;
       if($("btn-send").disabled&&turnStartedAt>0){
-        setVoiceStatusLine("Voice is off. Your universe is still thinking; its text reply will still appear here, but it will not be spoken.");
+        setVoiceStatusLine("Voice is off. Your agent is still thinking; its text reply will still appear here, but it will not be spoken.");
         return;
       }
       this.stoppedWithPending=false;
@@ -2813,6 +2971,7 @@
       : "";
     const error=new Error((live||(recorded?payload.failure_notice:payload.error))+caution);
     error.served=true;
+    error.steering=(payload&&payload.steering)||null;
     error.failureRecorded=recorded;
     error.historySaved=recorded&&payload.history_saved===true;
     error.failureCode=recorded?failure.code:"";
@@ -2861,12 +3020,12 @@
       const b=document.createElement("button"); b.className="btn btn--ghost";
       b.textContent="Connect a model"; b.addEventListener("click",()=>openConnectRequest());
       cta.appendChild(b);
-      appendMessage("universe", payload.note||"This universe has no engine yet.", cta); return;
+      appendMessage("universe", payload.note||"This command center has no engine yet.", cta); return;
     }
     // Older servers lack durable-failure metadata. Keep their local recovery
     // path; a rendered error is not evidence of either storage or no effects.
     if(payload&&payload.error)throw servedFailureError(payload);
-    appendMessage("system","Your universe returned an unexpected response.");
+    appendMessage("system","Your agent returned an unexpected response.");
   }
 
   // A turn is saved after an answer or admitted terminal failure. A reload
@@ -2920,10 +3079,10 @@
     },
     // ---- the dropdown ---------------------------------------------------
     //
-    // "how you change what model the universe is using is not clear, it should
+    // "how you change what model the command center is using is not clear, it should
     // just be a list dropdown menu when they click on it" (founder, 2026-09-26).
     // Clicking the bar button opens THIS: Automatic, then every model the
-    // universe can actually use, current one ticked. One click applies it as the
+    // command center can actually use, current one ticked. One click applies it as the
     // saved default and closes. No confirm step, because a click IS the decision.
     //
     // It reads the same `rows()` the availability inventory reads, and applies
@@ -2987,7 +3146,7 @@
       const current=saved&&saved.mode==="explicit"?saved.saved_default:null;
       const pickable=!this.busy&&this.fresh();
       this.menuRow("Automatic",!current,pickable?()=>this.choose(""):null);
-      // Everything the universe can actually use, then - only if there are any -
+      // Everything the command center can actually use, then - only if there are any -
       // the ones that cannot be used yet, greyed under one small divider with
       // their reason. A model is never silently absent.
       const usable=[],blocked=[];
@@ -2999,9 +3158,9 @@
       }
       // The current choice is ALWAYS shown as current, at the top of the list,
       // even when it can no longer be used - whether its model went away entirely
-      // or merely stopped being available. The universe is configured that way and
+      // or merely stopped being available. The command center is configured that way and
       // a list that showed it unticked, or only down under "needs access", would
-      // misreport what the universe is set to.
+      // misreport what the command center is set to.
       if(current&&!usable.some(row=>isCurrent(this.key(row.reference)))){
         const row=this.row(current);
         const why=row ? "— currently unavailable" : "— unavailable";
@@ -3024,7 +3183,7 @@
       more.className+=" model-menu-item--more";
       // Adding a SOURCE, which is not choosing a model — and not an ask either.
       // It used to be a permanent card in "Waiting on you" that a working
-      // universe could neither act on nor remove (founder 2026-09-30: "optional
+      // command center could neither act on nor remove (founder 2026-09-30: "optional
       // extras live in the model picker"). This is that route: one tap from
       // "Change model", and the rail only shows the card while it is open.
       const connect=this.menuRow("Connect another model source…",false,()=>{
@@ -3436,7 +3595,7 @@
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(opts,"modelChoice")
         ? opts.modelChoice : modelChoiceForNextTurn)});
   }
-  // The record carries its universe for the same reason a saved queue line
+  // The record carries its command center for the same reason a saved queue line
   // does: another founder signing in on this browser must never be shown, or
   // offered to resend, a message this one held - nor the filenames it names
   // (Fable 21633 on the app byte-intake shape, 2026-09-20).
@@ -3537,7 +3696,7 @@
   // the longest turn the client would ever hold in flight, see
   // checkForNewBuild); nothing saved is ever sent without a click.
   const QUEUE_MAX_AGE_MS=3*60*60*1000;
-  // The universe this page is talking to, once known (status / history).
+  // The command center this page is talking to, once known (status / history).
   // Saved lines carry it, so another founder's session on this browser does
   // not send them (Codex round 1).
   let queueScope="";
@@ -3580,7 +3739,7 @@
   }
   let queuePersisted=true;
   // Saved lines this page holds for later: offers not yet acted on, and
-  // lines queued for another universe (kept for that universe's own page).
+  // lines queued for another command center (kept for that command center's own page).
   // They stay on disk until acted on - a second refresh must not lose an
   // offer nobody clicked (Codex round 3).
   let retainedItems=[];
@@ -3602,7 +3761,7 @@
       // Say so where the founder is looking, instead of a status line that
       // claims the line is waiting when a refresh would lose it.
       queuePersisted=false;
-      setStatusLine("Your universe is thinking... " + sendQueue.length +
+      setStatusLine("Your agent is thinking... " + sendQueue.length +
         " waiting (could not be saved in this browser \u2014 do not refresh)");
     }
   }
@@ -3643,7 +3802,7 @@
   // behind is still answering, whether another window holds the same line,
   // or what the founder typed since (Codex rounds 1-2: every auto-send
   // shape leaked one of those). One click sends it; one click drops it.
-  // Nothing happens until this page knows its universe: a line is offered
+  // Nothing happens until this page knows its command center: a line is offered
   // only where it belongs (Codex round 3).
   let queueRestored=false;
   function restoreQueue(){
@@ -3658,17 +3817,17 @@
   function offerSavedLine(item, now){
     // OWNERSHIP FIRST, and it is the SAME rule the in-flight record uses. A
     // saved line is disclosed, offered or droppable only where BOTH halves are
-    // proved: this account and this home. Anything else - another universe,
+    // proved: this account and this home. Anything else - another command center,
     // another account, or a legacy row that recorded neither - is KEPT on disk
     // unchanged and never shown, because clicking a button proves that someone
     // is here, never that this login is the one that saved it.
     if(!ownsSavedRow(item)){
       const foreign = !!item.scope && !!item.owner && !!queueScope && !!queueOwner;
       appendMessage("system", foreign
-        ? "A line queued in another universe's session on this browser is "+
-          "waiting there; open that universe to send or discard it."
+        ? "A line queued in another command center's session on this browser is "+
+          "waiting there; open that command center to send or discard it."
         : "A line saved on this browser is being kept, but it cannot be shown "+
-          "here: this page cannot tell which account and universe saved it. "+
+          "here: this page cannot tell which account and command center saved it. "+
           "Send your message again if you still need it.",
         null, now/1000);
       return;
@@ -3739,6 +3898,9 @@
       .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
   }
   function flushSendQueue(batch){
+    // A steer request still on the wire may answer "already heard" for a line
+    // that also sits in this queue: nothing goes out until it does.
+    if(pendingSteers>0){ steerHeldBatch=steerHeldBatch||batch===true; return; }
     if(sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
     if(batch===true) return flushBatch();
     const next=sendQueue.shift();
@@ -3773,7 +3935,7 @@
     if(last && last.message===message && !opts.relay &&
       JSON.stringify(last.opts.modelChoice)===JSON.stringify(opts.modelChoice)){
       if(opts.keepComposer)
-        setStatusLine("Your universe is thinking... that message is already waiting to be sent.");
+        setStatusLine("Your agent is thinking... that message is already waiting to be sent.");
       return;
     }
     const input=$("composer-input");
@@ -3781,7 +3943,7 @@
       // ...and never over a draft the founder is typing: put it below it.
       const draft=input.value.trim();
       input.value=draft ? draft + "\n" + message : message; autoGrow(input);
-      setStatusLine("Your universe is thinking... too many messages waiting; send this one when it replies.");
+      setStatusLine("Your agent is thinking... too many messages waiting; send this one when it replies.");
       return;
     }
     // From the founder's side the message IS sent: it shows in the thread now
@@ -3789,7 +3951,7 @@
     // on the wire and is not drawn again when it goes out.
     const queuedAt=Date.now();
     // Drawn as QUEUED: the founder's own bubble, at the bottom of the thread,
-    // saying the universe has not seen it yet. The in-flight turn's reply is
+    // saying the agent has not seen it yet. The in-flight turn's reply is
     // still to come and lands ABOVE it (appendMessage), which is the order the
     // agent will actually read them in.
     const bubble=opts.echoed
@@ -3802,16 +3964,114 @@
     // the one that wrote it.
     sendQueue.push({message, display, owner:queueOwner, scope:queueScope, bubble,
       opts: Object.assign({}, opts, {echoed:true,sentAt:queuedAt}), ts: queuedAt});
-    setStatusLine("Your universe is thinking... " + sendQueue.length + " waiting");
+    setStatusLine("Your agent is thinking... " + sendQueue.length + " waiting");
     renderWorking();
     saveQueue();   // last: a failed save replaces the status line with why
   }
 
+  // ---- Steering a running turn (harness S2) ------------------------------
+  //
+  // A plain line typed while the universe works goes INTO the running turn: it
+  // reaches the agent with the result of its next tool call, the way Claude
+  // Code takes a message mid-task, instead of waiting for the whole turn to
+  // end. Anything that cannot share the turn (a relayed answer, an attachment,
+  // a chosen conversation, a Stop in progress, no running turn on this page)
+  // queues exactly as before. When the turn ends, any steered line the agent
+  // never received comes back from the server and is queued for the next turn,
+  // so nothing typed is lost.
+  let steeredLines=[];
+  // Steer requests on the wire; a batch held behind them; the newest turn's
+  // settlement by line id, so a late steer answer is reconciled exactly.
+  let pendingSteers=0, steerHeldBatch=false, lastSettlement=null;
+  function markSteered(el){
+    if(!el) return el;
+    const note=document.createElement("span");
+    note.className="msg-steered-note";
+    note.textContent="Sent to your agent while it works \u2014 it sees this at its next step.";
+    el.appendChild(note); el.steeredNote=note;
+    return el;
+  }
+  function unmarkSteered(el){
+    if(el&&el.steeredNote&&el.steeredNote.remove) el.steeredNote.remove();
+    if(el) el.steeredNote=null;
+  }
+  async function steerOrQueue(message, display, opts){
+    // Queued first, exactly as before, so the line is on screen and saved the
+    // moment it is sent; it then moves INTO the running turn if the server
+    // takes it.
+    const before=sendQueue.length;
+    queueTurn(message, display, opts);
+    const plain=!interruptPending && !!activeTurn && !opts.relay && !opts.echoed &&
+      !opts.consumerRequest && (!display || display===message);
+    const item=sendQueue.length>before ? sendQueue[sendQueue.length-1] : null;
+    // Folded into an identical queued line, or returned to the composer when
+    // the queue is full: nothing new to steer.
+    if(!plain || !item || item.message!==message) return;
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    let doc=null;
+    pendingSteers++;
+    try{
+      const r=await fetch("/app/turn/steer",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:scope,text:message})});
+      doc=r.ok?await r.json():null;
+    }catch(e){ doc=null; }
+    finally{ pendingSteers--; }
+    if(epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+       doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    // The turn may have ended while this request was out: what was held goes now.
+    if(pendingSteers===0 && !activeTurn){
+      const batch=steerHeldBatch; steerHeldBatch=false; flushSendQueue(batch);
+    }
+  }
+  // The server took a queued line into the running turn (id = its steer id).
+  function adoptSteered(item, id, owner, scope){
+    const settled=lastSettlement;
+    // That turn already ended without it: it stays queued for the next turn
+    // (the server keeps it as carryover and will not repeat it).
+    if(settled && settled.undelivered.has(id)) return;
+    const at=sendQueue.indexOf(item);
+    if(at<0) return;
+    sendQueue.splice(at,1);
+    unmarkQueued(item.bubble);
+    // Heard before this answer arrived: sent, nothing more to do.
+    if(!(settled && settled.delivered.has(id))){
+      markSteered(item.bubble);
+      steeredLines.push({id, message:item.message, bubble:item.bubble, owner, scope,
+        opts:item.opts});
+    }
+    setStatusLine(activeTurn
+      ? "Your agent is thinking..."+(sendQueue.length?" "+sendQueue.length+" waiting":"")
+      : "");
+    saveQueue();
+  }
+  // The turn ended. ``receipt`` is the server's settlement by id, or null when
+  // the answer never arrived: then every steered line is queued again (said
+  // twice beats lost; the server drops a repeat of its own carryover).
+  function settleSteered(receipt){
+    const lost=!receipt;
+    const delivered=new Set(receipt&&Array.isArray(receipt.delivered)?receipt.delivered:[]);
+    const undelivered=new Map((receipt&&Array.isArray(receipt.undelivered)?receipt.undelivered:[])
+      .map(u=>[u&&u.id,u&&u.text]));
+    lastSettlement={delivered, undelivered};
+    const lines=steeredLines; steeredLines=[];
+    lines.forEach(line=>{
+      unmarkSteered(line.bubble);
+      if(!lost && !undelivered.has(line.id)) return;
+      if(line.owner!==queueOwner||line.scope!==queueScope) return;
+      markQueued(line.bubble);
+      sendQueue.push({message:line.message, display:line.message, owner:line.owner,
+        scope:line.scope, bubble:line.bubble,
+        opts:Object.assign({}, line.opts, {echoed:true,sentAt:Date.now()}), ts:Date.now()});
+    });
+    if(lines.length) saveQueue();
+  }
+
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
-    if($("btn-send").disabled || interruptPending) return queueTurn(message, display, opts);
+    if($("btn-send").disabled || interruptPending) return steerOrQueue(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
-    // attached); `message` is the full text sent to the universe (file content
+    // attached); `message` is the full text sent to the command center (file content
     // embedded verbatim). They differ only when an attachment rode along.
     // `opts.echoed` says the bubble is ALREADY on screen (a resend, or a message
     // restored after a reload) - drawing it twice would read as two sends.
@@ -3828,7 +4088,7 @@
     if(!opts.keepComposer){ input.value=""; input.style.height="auto"; }
     const myTurn={}; activeTurn=myTurn;
     $("btn-send").disabled=true; turnStartedAt=Date.now();
-    setStatusLine("Your universe is thinking...");
+    setStatusLine("Your agent is thinking...");
     renderWorking();
     let delivered=false;
     // An outcome the transport could not confirm: the turn may be running right
@@ -3848,11 +4108,16 @@
       const answer=await sendConversationRequest(message,display,sentAt,opts);
       if(!stillHere()) return;
       renderConverse(answer);
+      settleSteered((answer&&answer.steering)||{delivered:[],undelivered:[]});
       delivered=true;setStatusLine("");
       if(typeof AppUI!=="undefined") AppUI.turnSettled();
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(!stillHere()) return;
+      // A turn that ended without a reply hands back every steered line. When
+      // the answer never arrived at all, every steered line is queued again:
+      // said twice is better than lost.
+      settleSteered(err&&err.served ? (err.steering||{delivered:[],undelivered:[]}) : null);
       // Signing out clears the composer (it is account-scoped), so the text
       // cannot be "left in the box". What survives is the in-flight record on
       // disk, which the same account is offered again after signing in.
@@ -3891,7 +4156,7 @@
       // touched by a turn that outlived its own login or home.
       if(stillHere()&&mine){
         // An unconfirmed outcome is not a finished turn. Draining the queue
-        // behind one sends the NEXT message into a universe that may still be
+        // behind one sends the NEXT message into a command center that may still be
         // working on this one, on the strength of a guess the transport
         // explicitly refused to make. The lines stay queued, on disk, until
         // the user explicitly resumes them, even after another manual send.
@@ -3933,7 +4198,7 @@
     // see that it is no longer the one holding it.
     const myTurn={}; activeTurn=myTurn;
     $("btn-send").disabled=true; turnStartedAt=Date.now();
-    setStatusLine("Your universe is thinking...");
+    setStatusLine("Your agent is thinking...");
     renderWorking();
     let delivered=false, unconfirmed=false;
     const voiceSentAt=Date.now();
@@ -4003,8 +4268,8 @@
 
   // Explain a failed turn in the user's own terms and hand back a working
   // button. Transport failures carry `err.transport`; anything else is a real
-  // reply from the universe and is reported as it came.
-  // A read-only look at what the universe has actually SAVED, offered before
+  // reply from the command center and is reported as it came.
+  // A read-only look at what the command center has actually SAVED, offered before
   // the user decides anything. It is the existing idempotent conversation peek
   // - no new authority, no new storage, and no send: a draft in the composer
   // and anything queued behind the turn are untouched.
@@ -4058,13 +4323,13 @@
     // cautious "may already have acted" and the saved-conversation check.
     const unsent=!!(err&&err.notSent);
     const notice=unsent
-      ? "Not sent — "+((err&&err.message)||"your universe could not be reached")+
-        ". This message did not reach your universe, so nothing ran."
+      ? "Not sent — "+((err&&err.message)||"your command center could not be reached")+
+        ". This message did not reach your command center, so nothing ran."
       : (err&&err.transport)
       ? "Delivery could not be confirmed: "+err.message+". Check progress before sending again; the request may already have acted."
       : (err&&err.served)
         ? err.message+(err.failureRecorded?" This failure was not saved to conversation history. Keep this message to retry.":"")
-        : "Couldn\u2019t reach your universe: "+((err&&err.message)||"unknown error");
+        : "Couldn\u2019t reach your command center: "+((err&&err.message)||"unknown error");
     const again=document.createElement("button");
     again.className="btn btn--link";
     again.textContent=unsent?"Send again":opts&&opts.consumerRequest?"Check this conversation":"Send it again";
@@ -4124,7 +4389,7 @@
     const more=document.createElement("button");
     more.className="btn btn--link";
     // One neutral label for every speaker: the founder's own words and the
-    // universe's reply are the same kind of thing to recover.
+    // command center's reply are the same kind of thing to recover.
     const label=total>preview.length
       ? "Show full message ("+total.toLocaleString()+" characters)"
       : "Show full message";
@@ -4197,18 +4462,16 @@
       const host=s.active_host, alive=host&&host!=="none";
       dot.className="dot "+(alive?"dot--ok":"dot--warn");
       dot.title=alive?("host: "+host):"no active host";
-      const name=s.universe_name||s.universe||s.universe_id||"";
-      if(name) $("universe-name").textContent=name;
       if(ModelPicker.snapshot&&s.universe_id&&ModelPicker.snapshot.universe_id!==s.universe_id) ModelPicker.reset();
       setQueueScope(s.universe_id || s.universe);
-      // The universe's own working state, whatever started the turn. This is the
+      // The command center's own working state, whatever started the turn. This is the
       // only thing that tells a tab which did not send about a live turn, and
       // the only thing left after a reload.
       readServerTurn(s); renderWorking(); pulseHeartbeat();
       restoreQueue();   // no-op once done, or until the scope is known
       restoreUploadRecords();   // same rule, and it makes no request of its own
       // A held message waits for the same thing the queue does. If the history
-      // peek failed, THIS is where the page finally learns its universe, so
+      // peek failed, THIS is where the page finally learns its command center, so
       // the unconfirmed turn is offered here rather than lost.
       if(!inflightRestored) restoreInflight([]);
       healServing(s);
@@ -4247,14 +4510,14 @@
     pollStatus();
   }
 
-  // The status says which engine this universe THINKS on (active_host.llm_endpoint_bound)
+  // The status says which engine this command center THINKS on (active_host.llm_endpoint_bound)
   // and whether anything is serving its background work (no_serving_runtime). A mind
   // with nothing serving on it is the deposit-without-bind state; heal it once per
   // page rather than telling the user to reconnect (founder, 2026-09-01: a naive
   // user would not know to).
   let servingHealAttempted = false;
   // Candidate engines, the one the status names first. The writer health here
-  // is host-level presence, not this universe's vault, so each candidate is an
+  // is host-level presence, not this command center's vault, so each candidate is an
   // ATTEMPT: the route refuses ("held") when nothing is deposited for it.
   function unservedCandidates(s){
     try{
@@ -4279,17 +4542,30 @@
     for(const service of candidates){
       const sv=await serveOn(service);
       if(sv&&sv.status==="serving"){
-        appendMessage("system","Your universe now runs its background work on your "+serviceLabel(service)+" subscription.");
+        appendMessage("system","Your command center now runs its background work on your "+serviceLabel(service)+" subscription.");
         return;
       }
     }
   }
 
   // Connecting a mind is part of signing in (founder 2026-08-21), and it
-  // happens IN the connect request (founder 2026-09-24): an unpowered universe
+  // happens IN the connect request (founder 2026-09-24): an unpowered command center
   // lands in its normal chat with that request first in the rail, never on a
   // separate full-page screen.
   let engineConnected = null;   // null = unknown yet
+  // The header names the command center, never its id. The server sends a name
+  // only once one is learned; anything id-shaped is refused here as well, so no
+  // reader that falls back to an id can ever put one in front of the owner.
+  const COMMAND_CENTER_FALLBACK="Your command center";
+  function commandCenterName(value){
+    const name=typeof value==="string" ? value.trim() : "";
+    if(!name || /^(u|cc)-[0-9a-z]{8,}$/i.test(name)) return COMMAND_CENTER_FALLBACK;
+    return name;
+  }
+  function showCommandCenterName(value){
+    const node=$("universe-name");
+    if(node) node.textContent=commandCenterName(value);
+  }
   async function fetchMe(){
     try{
       await ensureFreshToken();
@@ -4320,6 +4596,205 @@
       });
     }catch(_e){ /* a clock we could not report is not a broken sign-in */ }
   }
+  // ---- Chat cloud -------------------------------------------------------------
+  // The chat with an agent floats over the command center as a "chat cloud" the
+  // owner can move, resize and shrink to a bubble (founder, 2026-10-02). It
+  // starts BIG for an owner with no command-center layout and SMALL when a
+  // layout is active; once the owner moves, resizes or shrinks it, their last
+  // state is restored instead. Remembered per owner, per agent and per viewport
+  // class, because a phone and a desktop want different windows. There is no
+  // server store for UI preferences, so this device remembers it.
+  const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
+        CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
+  let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
+  function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
+  function cloudStorageKey(owner, agentId, viewport){
+    return CLOUD_KEY_PREFIX+":"+(owner||"")+":"+(agentId||"main")+":"+viewport;
+  }
+  // Keeps the window and the bubble wholly on the stage, and the window no
+  // smaller than usable (or the stage, when the stage itself is smaller).
+  function cloudClamp(state, stage){
+    const fit=(v,lo,hi)=>Math.min(Math.max(v,lo),Math.max(lo,hi));
+    const w=fit(state.open.w, Math.min(CLOUD_MIN_W,stage.w), stage.w);
+    const h=fit(state.open.h, Math.min(CLOUD_MIN_H,stage.h), stage.h);
+    return {
+      mode:state.mode==="bubble" ? "bubble" : "open",
+      open:{x:fit(state.open.x,0,stage.w-w), y:fit(state.open.y,0,stage.h-h), w:w, h:h},
+      bubble:{x:fit(state.bubble.x,0,stage.w-CLOUD_BUBBLE), y:fit(state.bubble.y,0,stage.h-CLOUD_BUBBLE)},
+      userSet:!!state.userSet,
+    };
+  }
+  function cloudDefaultState(hasLayout, stage){
+    const m=cloudViewportClass(stage.w)==="phone" ? 0 : CLOUD_MARGIN;
+    return cloudClamp({
+      mode:hasLayout ? "bubble" : "open",
+      open:{x:m, y:m, w:stage.w-2*m, h:stage.h-2*m},
+      bubble:{x:stage.w-CLOUD_BUBBLE-CLOUD_MARGIN, y:stage.h-CLOUD_BUBBLE-CLOUD_MARGIN},
+      userSet:false,
+    }, stage);
+  }
+  // A saved state exists only because the owner moved, resized or shrank the
+  // cloud, so a valid one always wins over the default.
+  function cloudParseSaved(raw){
+    let doc=null;
+    try{ doc=JSON.parse(raw); }catch(_error){ return null; }
+    const num=v=>typeof v==="number" && isFinite(v);
+    if(!doc || doc.v!==1 || !doc.open || !doc.bubble) return null;
+    if(doc.mode!=="open" && doc.mode!=="bubble") return null;
+    const o=doc.open, b=doc.bubble;
+    if(![o.x,o.y,o.w,o.h,b.x,b.y].every(num)) return null;
+    return {mode:doc.mode, open:{x:o.x,y:o.y,w:o.w,h:o.h}, bubble:{x:b.x,y:b.y}, userSet:true};
+  }
+  function cloudResolveState(saved, hasLayout, stage){
+    return saved ? cloudClamp(saved, stage) : cloudDefaultState(hasLayout, stage);
+  }
+  function cloudStageSize(){ const s=$("chat-stage"); return {w:s.clientWidth, h:s.clientHeight}; }
+  function cloudHasLayout(){ const v=$("view-chat"); return !!(v && v.classList.contains("ui-custom-active")); }
+  // Re-reads the right saved state (owner, agent and viewport class may all have
+  // changed) and lays the cloud out. Called on sign-in, on a stage resize and
+  // when a command-center layout comes or goes.
+  function refreshChatCloud(){
+    const stageEl=$("chat-stage"), cloud=$("chat-cloud");
+    if(!stageEl || !cloud) return;
+    if(!cloudWired) wireChatCloud();
+    const stage=cloudStageSize();
+    if(!stage.w || !stage.h) return;             // not laid out yet; the resize observer retries
+    const key=cloudStorageKey(queueOwner, cloud.dataset.agent, cloudViewportClass(stage.w));
+    if(key===cloudStoreKey && cloudState && cloudState.userSet){
+      // Same owner, agent and viewport class, and the owner has placed it: the
+      // live state is the truth (it may be mid-drag, or storage may be off).
+      cloudState=cloudClamp(cloudState, stage);
+    }else{
+      cloudStoreKey=key;
+      let saved=null;
+      try{ saved=cloudParseSaved(localStorage.getItem(key)); }catch(_error){ saved=null; }
+      cloudState=cloudResolveState(saved, cloudHasLayout(), stage);
+    }
+    applyChatCloud();
+  }
+  function applyChatCloud(){
+    const cloud=$("chat-cloud"), bubble=$("chat-cloud-bubble"), s=cloudState;
+    if(!cloud || !bubble || !s) return;
+    cloud.dataset.mode=s.mode;
+    cloud.style.left=s.open.x+"px"; cloud.style.top=s.open.y+"px";
+    cloud.style.width=s.open.w+"px"; cloud.style.height=s.open.h+"px";
+    bubble.style.left=s.bubble.x+"px"; bubble.style.top=s.bubble.y+"px";
+    const stage=cloudStageSize(), size=Math.min(CLOUD_BUBBLE, stage.w, stage.h);
+    bubble.style.width=size+"px"; bubble.style.height=size+"px";
+    // Shrinking on its own (a layout arrived) must not strand focus inside a
+    // hidden window: it moves to the bubble.
+    const strand=s.mode==="bubble" && bubble.hidden && document.activeElement && cloud.contains(document.activeElement);
+    bubble.hidden=s.mode!=="bubble";
+    if(strand) bubble.focus();
+    $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
+    if(s.mode==="open") setCloudUnread(false);
+  }
+  function saveChatCloud(){
+    if(!cloudState || !cloudStoreKey) return;
+    cloudState.userSet=true;
+    try{
+      localStorage.setItem(cloudStoreKey, JSON.stringify(
+        {v:1, mode:cloudState.mode, open:cloudState.open, bubble:cloudState.bubble}));
+    }catch(_error){ /* storage full or disabled: the cloud still works, unremembered */ }
+  }
+  function setChatCloudMode(mode){
+    if(!cloudState) return;
+    cloudState.mode=mode;
+    applyChatCloud(); saveChatCloud();
+    const target=mode==="open" ? $("composer-input") : $("chat-cloud-bubble");
+    if(target) target.focus();
+  }
+  // Moves (dx, dy) and resizes (dw, dh) from a starting state, clamped.
+  function cloudShifted(from, dx, dy, dw, dh){
+    const s={mode:from.mode, open:Object.assign({}, from.open), bubble:Object.assign({}, from.bubble),
+             userSet:from.userSet};
+    if(s.mode==="bubble"){ s.bubble.x+=dx; s.bubble.y+=dy; }
+    else{ s.open.x+=dx; s.open.y+=dy; s.open.w+=dw; s.open.h+=dh; }
+    return cloudClamp(s, cloudStageSize());
+  }
+  function setCloudUnread(on){
+    const badge=$("chat-cloud-badge"); if(badge) badge.hidden=!on;
+    paintCloudBubbleLabel();
+  }
+  function paintCloudBubbleLabel(){
+    const bubble=$("chat-cloud-bubble"), badge=$("chat-cloud-badge");
+    if(!bubble) return;
+    const parts=["Open the chat with your agent"];
+    if(bubble.classList.contains("is-thinking")) parts.push("your agent is working");
+    if(badge && !badge.hidden) parts.push("new message");
+    bubble.setAttribute("aria-label", parts.join(", "));
+  }
+  // One pointer gesture (mouse, pen or touch): drag the window, drag its resize
+  // corner, or drag the bubble. A bubble that moved is not also a click.
+  function wireCloudDrag(handle, kind){
+    handle.addEventListener("pointerdown", ev=>{
+      if(ev.button!==0 || !cloudState) return;
+      if(kind==="move" && ev.target.closest && ev.target.closest(".chat-cloud-btn")) return;
+      const start={x:ev.clientX, y:ev.clientY}, origin=cloudState;
+      let moved=false;
+      try{ handle.setPointerCapture(ev.pointerId); }catch(_error){ /* synthetic pointer */ }
+      const move=e=>{
+        const dx=e.clientX-start.x, dy=e.clientY-start.y;
+        if(!moved && Math.abs(dx)+Math.abs(dy)<4) return;
+        moved=true;
+        $("chat-cloud").classList.add("is-dragging");
+        cloudState=kind==="resize" ? cloudShifted(origin,0,0,dx,dy) : cloudShifted(origin,dx,dy,0,0);
+        applyChatCloud();
+        e.preventDefault();
+      };
+      const end=e=>{
+        handle.removeEventListener("pointermove",move);
+        handle.removeEventListener("pointerup",end);
+        handle.removeEventListener("pointercancel",end);
+        $("chat-cloud").classList.remove("is-dragging");
+        // Only a completed drag produces a click to swallow; a cancelled one does not.
+        if(moved){ saveChatCloud(); if(kind==="bubble" && e.type==="pointerup") cloudSuppressClick=true; }
+      };
+      handle.addEventListener("pointermove",move);
+      handle.addEventListener("pointerup",end);
+      handle.addEventListener("pointercancel",end);
+    });
+  }
+  // Arrow keys move the window or bubble; Shift and an arrow resize the window.
+  function cloudKeydown(ev){
+    const arrows={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]};
+    const dir=arrows[ev.key];
+    if(!dir || !cloudState) return;
+    ev.preventDefault();
+    const dx=dir[0]*CLOUD_STEP, dy=dir[1]*CLOUD_STEP;
+    cloudState=ev.shiftKey && cloudState.mode==="open"
+      ? cloudShifted(cloudState,0,0,dx,dy) : cloudShifted(cloudState,dx,dy,0,0);
+    applyChatCloud(); saveChatCloud();
+  }
+  function wireChatCloud(){
+    cloudWired=true;
+    wireCloudDrag($("chat-cloud-bar"),"move");
+    wireCloudDrag($("chat-cloud-resize"),"resize");
+    wireCloudDrag($("chat-cloud-bubble"),"bubble");
+    $("btn-cloud-shrink").addEventListener("click",()=>setChatCloudMode("bubble"));
+    $("chat-cloud-bubble").addEventListener("click",()=>{
+      if(cloudSuppressClick){ cloudSuppressClick=false; return; }
+      setChatCloudMode("open");
+    });
+    $("chat-cloud-bar").addEventListener("keydown",cloudKeydown);
+    $("chat-cloud-bubble").addEventListener("keydown",cloudKeydown);
+    if(typeof ResizeObserver==="function") new ResizeObserver(()=>refreshChatCloud()).observe($("chat-stage"));
+    window.addEventListener("resize",()=>refreshChatCloud());
+    // The bubble still says what the agent is doing: working while Stop is
+    // showing, and a badge for a reply that arrived while it was shrunk.
+    if(typeof MutationObserver==="function"){
+      const stop=$("btn-stop"), bubble=$("chat-cloud-bubble");
+      if(stop) new MutationObserver(()=>{
+        bubble.classList.toggle("is-thinking", !stop.hidden); paintCloudBubbleLabel();
+      }).observe(stop,{attributes:true,attributeFilter:["hidden"]});
+      new MutationObserver(records=>{
+        if(!cloudState || cloudState.mode!=="bubble") return;
+        for(const r of records) for(const node of r.addedNodes){
+          if(node.classList && node.classList.contains("msg--universe")){ setCloudUnread(true); return; }
+        }
+      }).observe($("thread"),{childList:true});
+    }
+  }
   async function enterSignedIn(){
     ModelPicker.reset();
     // The login this answer is FOR. A /app/me that lands after a sign-out
@@ -4334,11 +4809,18 @@
     // before anything this page may restore (held lines, the in-flight record,
     // saved attachments), which is readable only once owner and home are known.
     if(me&&me.universe_id) setQueueScope(me.universe_id);
+    if(typeof showCommandCenterName === "function") showCommandCenterName(me&&me.name);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
     // In this order: a reply left by a previous owner is discarded by the rebind
     // before this page can collect it.
-    if(typeof rebindNativeNotifications === "function") rebindNativeNotifications().then(collectNotificationReply);
+    // Then notifications come on by default: a phone that was never asked is
+    // asked now, and a browser is offered a one-tap card.
+    if(typeof rebindNativeNotifications === "function") rebindNativeNotifications().then(()=>{
+      collectNotificationReply();
+      if(typeof autoEnableNativeNotifications === "function") autoEnableNativeNotifications();
+    });
+    if(typeof offerBrowserNotifications === "function") offerBrowserNotifications();
     // Not awaited: the owner's clock is for the NEXT schedule they create, so
     // it must not sit in front of the page they are waiting for.
     reportTimezone();
@@ -4350,9 +4832,10 @@
     if(typeof AppUI!=="undefined"){
       if(connected) AppUI.enable(me.universe_id,me.principal_id); else AppUI.reset();
     }
-    // Powered or not, this is the universe's own chat. The owner and home were
+    // Powered or not, this is the command center's own chat. The owner and home were
     // taken above, from the same verified `me`.
     showView("chat"); startHeartbeat(); warmSession();
+    if(typeof refreshChatCloud === "function") refreshChatCloud();
     // Build 3's App Review Notes and submitted product surface are voice-dark.
     // The hosted web app may expose Voice, but a Capacitor shell must not make it
     // reachable until a later store submission declares and verifies that surface.
@@ -4362,7 +4845,7 @@
     HostedModelConnect.paint();
     if(connected){ $("composer-input").focus(); refreshRail(); return; }
     if(HostedModelConnect.setup==="unavailable")
-      HostedModelConnect.status("Could not confirm your universe's connections. Nothing new was started; try again in a moment.");
+      HostedModelConnect.status("Could not confirm your command center's connections. Nothing new was started; try again in a moment.");
     else if(HostedModelConnect.setup==="recovery"&&!HostedModelConnect.busy&&!HostedModelConnect.request)
       HostedModelConnect.status("A connection was started earlier. Tap Finish connecting to complete it; your settings are kept.");
     openConnectRequest();
@@ -4444,9 +4927,9 @@
   const CHECKOUT_REFUSALS = {
     already_subscribed: "You already have an active subscription.",
     checkout_already_in_progress:
-      "A checkout for this universe is already open. Finish it in the other tab, "
+      "A checkout for this command center is already open. Finish it in the other tab, "
       + "or wait a few minutes for it to expire and try again.",
-    no_home_universe: "You don't have a universe to subscribe yet.",
+    no_home_universe: "You don't have a command center to subscribe yet.",
   };
 
   async function startSubscribe(){
@@ -4606,6 +5089,7 @@
     MCP.endLogin(); Voice.stop(false);
     if(typeof unsubscribeBrowserNotifications === "function") unsubscribeBrowserNotifications();
     if(typeof unregisterNativeNotifications === "function") unregisterNativeNotifications();
+    if(typeof hideNotifyPrompt === "function") hideNotifyPrompt();
     // Pending attachments belong to the account that picked them. They are
     // dropped, never released (release needs that same login and home) and
     // never carried into whoever signs in next.
@@ -4708,7 +5192,7 @@
       let timedOut=false;
       const current=()=>epoch===this.epoch&&view===viewGeneration;
       this.busy=true;this.paint();
-      this.status("Connecting your universe…");
+      this.status("Connecting your command center…");
       const timer=setTimeout(()=>{
         timedOut=true;
         if(current())this.status("Still not confirmed. Do not paste the key again; tap Finish connecting once this settles.");
@@ -4809,7 +5293,7 @@
         return;
       }
       const epoch=this.epoch;this.busy=true;this.paint();
-      this.status("Connecting your universe…");
+      this.status("Connecting your command center…");
       let req=null;
       try{
         const result=await this.post(callback?"exchange":"resume",callback||{preset_id:this.preset});
@@ -4826,7 +5310,7 @@
         if(epoch!==this.epoch) return;
         const code=error&&error.message;
         if(code==="no_eligible_free_agent_model"){
-          this.status("Your account there offers no free model that can run your universe right now. Check its model and privacy settings, then tap Finish connecting, or connect another way below. Nothing paid was approved.");
+          this.status("Your account there offers no free model that can run your command center right now. Check its model and privacy settings, then tap Finish connecting, or connect another way below. Nothing paid was approved.");
         }else if(["model_authorization_required","model_connection_expired","unknown_model_connection",
                   "invalid_pkce_verifier","invalid_authorization_code","model_authorization_not_completed"].includes(code)){
           this.status(["empty","disconnected"].includes(this.setup)
@@ -4854,7 +5338,7 @@
     async answer(accepted){
       if(this.busy||!this.request) return;
       const epoch=this.epoch;this.busy=true;this.paint();
-      this.status(accepted?"Connecting your universe…":"Leaving model access unapproved…");
+      this.status(accepted?"Connecting your command center…":"Leaving model access unapproved…");
       let answered=false;
       try{
         const payload={request_id:this.request.request_id};
@@ -4863,7 +5347,7 @@
         if(epoch!==this.epoch) return;
         // Only an explicit "answered" is an answer. Live 2026-09-24 a deploy
         // restarted the daemon mid-approval; the page read the non-answer as
-        // done, said the universe "already has connection setup", and left it
+        // done, said the command center "already has connection setup", and left it
         // unpowered with the request still open.
         answered=!!result&&!result.error&&result.status==="answered";
         if(answered) this.request=null;
@@ -4872,17 +5356,17 @@
         if(error&&error.authRequired){ this.busy=false; enterSignedOut(); return; }
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
       if(epoch!==this.epoch) return;
-      // Either way, re-read what powers the universe: an answer whose reply was
+      // Either way, re-read what powers the command center: an answer whose reply was
       // lost may still have landed, and that is the truth to show.
       await enterSignedIn();
       if(epoch!==this.epoch) return;
       if(this.setup==="connected"){
         this.request=null;this.status("");this.paint();
-        appendMessage("system","Your universe is connected. Say hello.");
+        appendMessage("system","Your command center is connected. Say hello.");
         return;
       }
       this.status(answered
-        ?"Your answer was recorded, but your universe is not running yet. Tap Finish connecting to check again."
+        ?"Your answer was recorded, but your command center is not running yet. Tap Finish connecting to check again."
         :"Not connected yet, and nothing was lost. Tap Finish connecting to try again.");
     },
     wire(){
@@ -4895,7 +5379,7 @@
   };
   // End hosted model connection controller.
 
-  // A deposit is only half of "connect": the universe must also SERVE on it, or
+  // A deposit is only half of "connect": the command center must also SERVE on it, or
   // chat works while every run fails with provider_not_bound. Same route the
   // phone uses; idempotent; returns {status:"serving"|"held", ...}, never throws.
   async function serveOn(service){
@@ -4909,9 +5393,9 @@
   const SERVICE_LABELS={claude:"Claude",codex:"OpenAI"};
   function serviceLabel(service){ return SERVICE_LABELS[service] || service; }
   function servingSentence(service, sv){
-    if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your universe thinks and works on it from the next turn.";
+    if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your agent thinks and works on it from the next turn.";
     const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
-    return serviceLabel(service)+" credential saved, but your universe is not running on it yet"+why+".";
+    return serviceLabel(service)+" credential saved, but your command center is not running on it yet"+why+".";
   }
 
   // ---- File attachments: every accepted file is uploaded ------------------
@@ -5033,8 +5517,8 @@
       return !!a&&!!b&&a.epoch===b.epoch&&!!a.universeId&&a.universeId===b.universeId;
     }
     // The scope STAMPED AT SELECTION, compared with what is on screen NOW. A
-    // file chosen before this page had resolved its universe matches only the
-    // SAME login still waiting for that universe - never a different login.
+    // file chosen before this page had resolved its command center matches only the
+    // SAME login still waiting for that command center - never a different login.
     function scopeHolds(item){
       const here=scopeNow(), was=item.scope;
       if(!was||was.epoch!==here.epoch) return false;
@@ -5060,7 +5544,7 @@
       const aborter=item.aborter; item.aborter=null;
       if(aborter&&typeof aborter.abort==="function"){ try{ aborter.abort(); }catch(_e){} }
     }
-    // Resolve the universe ONLY for the narrow case where this page had not
+    // Resolve the command center ONLY for the narrow case where this page had not
     // learned it when the file was chosen and the login has not changed since:
     // the same session finishing its own load, never the next account arriving.
     function resolveScope(item){
@@ -5232,7 +5716,7 @@
       const scope=resolveScope(item);
       if(!scope||!scope.universeId){
         item.state="failed"; item.retryable=true;
-        item.error="your universe is not connected yet — check it in a moment";
+        item.error="your command center is not connected yet — check it in a moment";
         changed(); return;
       }
       // A retry keeps the ORIGINAL label and request. The server resolves a
@@ -5397,9 +5881,9 @@
         item.error="the upload did not come back with a file"; changed(); return;
       }
       if(payload.universe_id&&String(payload.universe_id)!==item.scope.universeId){
-        // A reference answered for another universe is never adopted here.
+        // A reference answered for another command center is never adopted here.
         item.state="failed"; item.retryable=false;
-        item.error="that upload answered for a different universe"; changed(); return;
+        item.error="that upload answered for a different command center"; changed(); return;
       }
       const stated=Object.prototype.hasOwnProperty.call(payload,"unbound_expires_at");
       if(!stated||!(payload.unbound_expires_at===null||typeof payload.unbound_expires_at==="number")){
@@ -5638,6 +6122,8 @@
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
     $("btn-stop").addEventListener("click",()=>interruptTurn());
+    // Opens the model menu for the NEXT message; Stop stays the owner's call.
+    $("btn-try-model").addEventListener("click",()=>{ $("btn-models").click(); });
     // Escape stops the turn, as in Claude Code -- unless something else on the
     // page already used this Escape (a menu or dialog closing handles it first).
     document.addEventListener("keydown",(e)=>{
@@ -5662,7 +6148,7 @@
     $("btn-signout").addEventListener("click",async()=>{ MCP.endLogin(); sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     // Legal links open OUTSIDE the app. In the Capacitor shell a plain <a> would
     // navigate the WebView itself to tinyassets.io and strand the user with no
-    // way back to their universe; openExternal uses the in-app browser instead.
+    // way back to their command center; openExternal uses the in-app browser instead.
     document.addEventListener("click", (e)=>{
       const a = e.target && e.target.closest && e.target.closest("a[data-external]");
       if(!a) return;
@@ -5771,7 +6257,10 @@
     $("btn-browser-notifications").addEventListener("click", ()=>toggleNotifications(true));
     // The phone app has no browser push; its one switch registers the phone.
     if(typeof NATIVE !== "undefined" && NATIVE) $("btn-browser-notifications").hidden=true;
-    // ---- your universe's connections ----
+    if(typeof DESKTOP_SHELL !== "undefined" && DESKTOP_SHELL) $("btn-browser-notifications").hidden=true;
+    $("btn-notify-prompt-on").addEventListener("click", ()=>enableFromPrompt());
+    $("btn-notify-prompt-dismiss").addEventListener("click", ()=>dismissNotifyPrompt());
+    // ---- your command center's connections ----
     // Disconnect is a deliberate TWO-STEP, in-page confirmation. It used to
     // raise the browser's own confirm(): one string, drawn outside the page,
     // that an embedded WebView, an assistive client and an automated client
@@ -5798,7 +6287,7 @@
     // is neither permission to act for a different owner nor a reason to stop
     // acting for the same one. The account and the home it is bound to are the
     // durable pair (learned from the verified /app/me, both cleared on
-    // sign-out), the universe id is the target this write actually names, and
+    // sign-out), the command center id is the target this write actually names, and
     // token presence catches a sign-out that has not yet learned a new pair.
     // Compared field by field, so not-yet-known is a DIFFERENT value from any
     // id rather than something a joined string could collide with.
@@ -5839,7 +6328,7 @@
         // signed in now, and never repaints a newer list.
         if(!live())return;
         if(!response.ok||doc.error||!Array.isArray(doc.connections))throw new Error("unavailable");
-        status.textContent=doc.connections.length?"":"No HTTP connections are saved for this universe.";
+        status.textContent=doc.connections.length?"":"No HTTP connections are saved for this command center.";
         for(const row of doc.connections) list.append(connectionRow(doc.universe_id,row,generation));
       }catch(_e){
         if(!live())return;
@@ -5872,7 +6361,7 @@
       panel.setAttribute("aria-label","Confirm disconnecting "+label);
       explain.id=panelId+"-detail";
       panel.setAttribute("aria-describedby",explain.id);
-      explain.textContent="Disconnect "+label+" from your universe? Its saved key and its "
+      explain.textContent="Disconnect "+label+" from your command center? Its saved key and its "
         +"model access are removed from TinyAssets. Your conversation history and your designs stay. "
         +"Your provider account itself is not changed or deleted. Requests already sent may still finish.";
       approve.type="button";approve.className="btn btn--danger";approve.textContent="Confirm disconnect";
@@ -5886,7 +6375,7 @@
       // row with one built from an answer that was actually received.
       let armed=false,sending=false,uncertain=false;
       // Live means: still the list on screen, still the view it was drawn in,
-      // and still the same account, home and universe this row was read for.
+      // and still the same account, home and command center this row was read for.
       const live=()=>generation===connectionsGeneration&&sameConnectionFence(connectionFence(universeId),fence);
       function putAway(returnFocus){
         armed=false;panel.hidden=true;reveal.setAttribute("aria-expanded","false");
@@ -5927,7 +6416,7 @@
           return;}
         if(!sameConnectionFence(connectionFence(universeId),fence)){
           putAway(false);
-          status.textContent="Your sign-in, account, universe or page changed while the confirmation was open. Nothing was sent. Refresh connections and check before trying again.";
+          status.textContent="Your sign-in, account, command center or page changed while the confirmation was open. Nothing was sent. Refresh connections and check before trying again.";
           return;}
         const ticket=holdConnections();
         if(!ticket){status.textContent="Another connection change is still finishing. Nothing was sent; try again once it settles.";return;}
@@ -5963,7 +6452,7 @@
         }
         if(!removedHere||!live())return;
         // The removal is already confirmed. Re-reading what powers this
-        // universe is a SEPARATE step: if it fails, the disconnect still
+        // command center is a SEPARATE step: if it fails, the disconnect still
         // happened and must not be reported back as uncertain.
         try{
           const me=await fetch("/app/me",{headers:authHeaders(),credentials:"same-origin"});
@@ -5980,7 +6469,7 @@
       return item;
     }
     $("btn-refresh-connections").addEventListener("click",loadConnections);
-    // Back to the universe's chat, re-reading what powers it: after a
+    // Back to the command center's chat, re-reading what powers it: after a
     // disconnect that is chat with the connect request first, never a
     // separate setup screen.
     function leaveAccount(){ enterSignedIn(); }
@@ -6015,7 +6504,7 @@
           btn.disabled=false; return;
         }
         sessionStorage.setItem("ta_force_login","1"); clearSessionRef(); enterSignedOut();
-        let note="Your account and universe were deleted.";
+        let note="Your account and command center were deleted.";
         if(body.identity!=="deleted") note+=" Your sign-in identity couldn't be removed automatically — email legal@tinyassets.io and we'll finish it.";
         if(body.billing==="error"||body.billing==="unavailable") note+=" We couldn't reach the payment processor to cancel a paid plan — email legal@tinyassets.io so we can.";
         if((body.unfinished||[]).length) note+=" Some of it needs finishing by hand; we've recorded exactly what, and legal@tinyassets.io can complete it.";
@@ -6220,7 +6709,7 @@
         // and reported "i think i deposited it" twice while the connection did not
         // exist (2026-08-27). The model setup does this too.
         if(r&&r.error){ out.textContent="Couldn't add it: "+(r.detail||r.error); }
-        else{ out.textContent="Added — your universe can now use "+host+". Ask it to use this in a workflow or wire a channel with it.";
+        else{ out.textContent="Added — your agent can now use "+host+". Ask it to use this in a workflow or wire a channel with it.";
               $("http-destination").value=""; $("http-host").value=""; $("http-path").value=""; }
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } out.textContent="Couldn't add it: "+err.message; }
       finally{ btn.disabled=false; }
@@ -6311,7 +6800,7 @@
         const result=await this.post("oauth_exchange",payload);
         appendMessage("system","Connected. "+(result.receipt||""));
         await refreshRail();
-        // The owner's own line, as for any answered request: the universe
+        // The owner's own line, as for any answered request: the command center
         // hears that its ask was completed.
         sendTurn("Signed in to answer \""+frameTitle({title:cb.title})+"\"",undefined,
           {relay:true,keepComposer:true,inputMethod:"app_action"});
@@ -6372,6 +6861,9 @@
   const NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner",
         NATIVE_PUSH_RECIPIENT="app.push.recipient";
   let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
+  // The last sign-out's native teardown. A registration started after it must
+  // wait for it: its late `unregister()` would delete the new owner's token.
+  let nativeTeardown=Promise.resolve();
   function nativePush(){ return (typeof NATIVE !== "undefined" && NATIVE) ? nativePlugin("PushNotifications") : null; }
   // Tells the native message service whether the signed-in owner wants
   // notifications on this phone. It is checked on every arriving message, so
@@ -6436,6 +6928,7 @@
     let permission=await P.checkPermissions();
     if(permission.receive!=="granted") permission=await P.requestPermissions();
     if(permission.receive!=="granted") throw new Error("Notifications are blocked. Allow them in Android settings to turn them on.");
+    if(!session.current()) throw new Error("Account changed. Open Account again.");
     const value=await nativeFcmToken();
     if(!value) throw new Error("Couldn't get a notification address for this phone. Try again.");
     const created=await notificationAPI(session,"/app/devices",{platform:"fcm",token:value,label:"This phone"});
@@ -6472,6 +6965,10 @@
     }
   }
   async function unregisterNativeNotifications(){
+    let finished; nativeTeardown=new Promise(resolve=>{ finished=resolve; });
+    try{ await removeNativeRegistration(); } finally{ finished(); }
+  }
+  async function removeNativeRegistration(){
     const P=nativePush(), R=nativePlugin("NotificationReply");
     localStorage.removeItem(NATIVE_PUSH_FLAG);
     localStorage.removeItem(NATIVE_PUSH_OWNER);
@@ -6485,6 +6982,60 @@
     try{ await P.unregister(); await P.removeAllDeliveredNotifications(); }
     catch(_error){ console.warn("Could not remove this phone's push registration."); }
   }
+  // Notifications are on by default: nobody should have to find a switch to
+  // learn they exist. After sign-in, a phone that was never asked is asked once
+  // (Android 13+ shows its own dialog) and one that already allows them
+  // registers silently. A refusal is remembered, so the phone is not asked on
+  // every launch, and a dismissible line says how to turn them on later. An
+  // owner who turned notifications off chose that; it is never overridden.
+  const NATIVE_PUSH_ASKED="app.push.asked", NOTIFY_PROMPT_DISMISSED="app.push.prompt.dismissed";
+  async function autoEnableNativeNotifications(){
+    const P=nativePush();
+    if(!P || localStorage.getItem(NATIVE_PUSH_FLAG)==="1") return;   // on already: the rebind owns it
+    const session=notificationSession();
+    try{
+      await nativeTeardown;
+      const settings=await notificationAPI(session,"/app/notify");
+      if(!settings.enabled) return;
+      const permission=await P.checkPermissions();
+      // Each native step can outlast the login it started for; the next
+      // account is never asked, nor registered, on this one's behalf.
+      if(!session.current()) return;
+      if(permission.receive!=="granted"){
+        if(permission.receive==="denied" || localStorage.getItem(NATIVE_PUSH_ASKED)==="1"){
+          if(session.current()) showNotifyPrompt("blocked");
+          return;
+        }
+        localStorage.setItem(NATIVE_PUSH_ASKED,"1");
+      }
+      await registerNativeNotifications(session);
+      if(session.current()) hideNotifyPrompt();
+    }catch(_error){
+      // A "no" in the dialog lands here. Anything else (a build without
+      // Firebase, the network) is simply tried again at the next sign-in.
+      try{
+        const after=await P.checkPermissions();
+        if(after.receive!=="granted" && session.current()) showNotifyPrompt("blocked");
+      }catch(_e){ /* nothing to say */ }
+    }
+  }
+  // One line above the conversation: an offer on the web, or after a refusal on
+  // the phone, where to turn notifications on. Dismissed once, gone for good on
+  // this device; Account keeps the switch either way.
+  const NOTIFY_PROMPT_COPY={
+    offer:"Get a notification when your agent needs you: a question, a proposal to approve, or work that's done.",
+    blocked:"Notifications are off, so you won't hear when your agent needs you. To turn them on, allow notifications for TinyAssets in your phone's Settings, then reopen the app.",
+  };
+  function showNotifyPrompt(mode){
+    if(localStorage.getItem(NOTIFY_PROMPT_DISMISSED)==="1") return;
+    $("notify-prompt-text").textContent=NOTIFY_PROMPT_COPY[mode];
+    $("btn-notify-prompt-on").hidden=mode!=="offer";
+    $("btn-notify-prompt-on").disabled=false;
+    $("btn-notify-prompt-dismiss").textContent=mode==="offer" ? "No thanks" : "Dismiss";
+    $("notify-prompt").hidden=false;
+  }
+  function hideNotifyPrompt(){ $("notify-prompt").hidden=true; }
+  function dismissNotifyPrompt(){ localStorage.setItem(NOTIFY_PROMPT_DISMISSED,"1"); hideNotifyPrompt(); }
   // The text typed into a notification's inline Reply arrives natively, only
   // after MainActivity verified the intent came from this app. It is submitted
   // here, through the signed-in session, like any other answer.
@@ -6575,6 +7126,70 @@
     if(!response.ok) throw new Error(response.status===401 ? "Sign in again to change notifications." : "Notifications are unavailable. Try again.");
     return response.json();
   }
+  // Subscribes this browser and files the subscription under the session. The
+  // caller has already been granted the permission.
+  async function subscribeBrowserPush(session, settings){
+    const registration=await navigator.serviceWorker.register("/app/sw.js",{scope:"/app"});
+    await navigator.serviceWorker.ready;
+    if(!session.current()) throw new Error("Account changed. Open Account again.");
+    const key=settings.vapid_public_key.replace(/-/g,"+").replace(/_/g,"/");
+    const bytes=Uint8Array.from(atob(key + "=".repeat((4-key.length%4)%4)),c=>c.charCodeAt(0));
+    let subscription=await registration.pushManager.getSubscription(), created=false;
+    if(!subscription){
+      subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});
+      created=true;
+    }
+    // A sign-out that landed while subscribing found nothing to remove: this
+    // subscription is for nobody now, so it does not outlive the login.
+    if(!session.current()){
+      if(created){ try{ await subscription.unsubscribe(); }catch(_error){ /* best effort */ } }
+      throw new Error("Account changed. Open Account again.");
+    }
+    await notificationAPI(session,"/app/devices",{platform:"web",token:subscription.toJSON(),label:"Browser"});
+  }
+  // On by default in a browser too. A browser only shows its permission dialog
+  // from a tap, so after sign-in it gets a one-tap card instead; a browser that
+  // already allows them is subscribed silently. Never offered when the owner
+  // turned notifications off, nor in the desktop app, where push cannot work.
+  async function offerBrowserNotifications(){
+    if((typeof NATIVE !== "undefined" && NATIVE) || (typeof DESKTOP_SHELL !== "undefined" && DESKTOP_SHELL)) return;
+    if(!("Notification" in window) || !navigator.serviceWorker || !("PushManager" in window)) return;
+    if(Notification.permission==="denied") return;
+    const session=notificationSession();
+    try{
+      const registration=await navigator.serviceWorker.getRegistration("/app");
+      if(registration && await registration.pushManager.getSubscription()) return;   // the rebind owns it
+      const settings=await notificationAPI(session,"/app/notify");
+      if(!session.current() || !settings.enabled || !settings.vapid_public_key) return;
+      if(Notification.permission==="granted"){ await subscribeBrowserPush(session, settings); return; }
+      showNotifyPrompt("offer");
+    }catch(_error){ /* an offer, not a requirement: Account keeps the switch */ }
+  }
+  async function enableFromPrompt(){
+    const session=notificationSession(), button=$("btn-notify-prompt-on"), text=$("notify-prompt-text");
+    button.disabled=true;
+    try{
+      // Ask while the tap's user activation is still available.
+      const permission=await Notification.requestPermission();
+      if(permission!=="granted"){
+        button.hidden=true;
+        throw new Error("Notifications are blocked in this browser. Allow them in its site settings, then turn them on in Account.");
+      }
+      const settings=await notificationAPI(session,"/app/notify");
+      if(!settings.enabled){
+        // Turned off in Account since the card appeared: that choice stands.
+        button.hidden=true;
+        throw new Error("Notifications are off for your account. Turn them on in Account.");
+      }
+      if(!settings.vapid_public_key) throw new Error("Browser notifications are not configured yet.");
+      await subscribeBrowserPush(session, settings);
+      if(!session.current()) return;
+      text.textContent="Notifications are on. You'll get one when your agent needs you.";
+      button.hidden=true;
+      $("btn-notify-prompt-dismiss").textContent="Done";
+    }catch(error){ if(session.current()) text.textContent=error.message; }
+    finally{ button.disabled=false; }
+  }
   async function loadNotifications(){
     const session=notificationSession(), generation=++notificationLoad;
     const button=$("btn-notifications"), status=$("notification-status");
@@ -6610,17 +7225,11 @@
         if(permission!=="granted") throw new Error("Notifications are blocked. Allow them in your browser settings to turn them on.");
         const settings=await notificationAPI(session,"/app/notify");
         if(!settings.vapid_public_key) throw new Error("Browser notifications are not configured yet.");
-        const registration=await navigator.serviceWorker.register("/app/sw.js",{scope:"/app"});
-        await navigator.serviceWorker.ready;
-        if(!session.current()) return;
-        const key=settings.vapid_public_key.replace(/-/g,"+").replace(/_/g,"/");
-        const bytes=Uint8Array.from(atob(key + "=".repeat((4-key.length%4)%4)),c=>c.charCodeAt(0));
-        const subscription=await registration.pushManager.getSubscription()
-          || await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:bytes});
-        await notificationAPI(session,"/app/devices",{platform:"web",token:subscription.toJSON(),label:"Browser"});
+        await subscribeBrowserPush(session, settings);
       }
       await notificationAPI(session,"/app/notify",{enabled:enable});
       if(session.current()) status.textContent=enable ? "Notifications are on." : "Notifications are off on all devices.";
+      if(session.current() && typeof hideNotifyPrompt === "function") hideNotifyPrompt();
     }catch(error){ if(session.current()) status.textContent=error.message; }
     finally{
       notificationBusy=false;
@@ -6715,7 +7324,7 @@
   // card carried straight over into the optional state: live 2026-09-25,
   // returning from a source's sign-in showed "Connect another LLM" fully open,
   // its Model URL / API key / Model id fields and its Connect button still on
-  // screen, over a universe that was already connected. The TRANSITION is what
+  // screen, over a command center that was already connected. The TRANSITION is what
   // resets it, not the tap — tapping an optional row must still open it.
   // EITHER transition forgets it. Finishing setup (blocking -> optional) is the
   // 2026-09-25 case above. The reverse, optional -> blocking, is the founder losing
@@ -6746,7 +7355,7 @@
     const rail = $("request-rail"), host = $("rail-items"), head = $("rail-head");
     if(!rail || !host) return;
     forgetFinishedSetup(railCache);
-    // The heading is a claim about the user's queue. A connected universe's
+    // The heading is a claim about the user's queue. A connected command center's
     // "Connect another LLM" row is offered, not outstanding, and a heading that
     // keeps saying "Waiting on you" over it is simply false (live 2026-09-25).
     if(head){
@@ -6776,7 +7385,7 @@
     railCache.forEach(req=>{
       if(folded && req.request_id === folded.request_id) return;
       // A sticky ask is a PRECONDITION, not a question: it opens itself and has
-      // no dismiss, because a universe with no model cannot be asked to accept
+      // no dismiss, because a command center with no model cannot be asked to accept
       // having no model.
       const open = req.sticky ? (railOpen !== "closed:" + req.request_id)
                               : (railOpen === req.request_id);
@@ -6885,7 +7494,7 @@
 
   // "Other ways to connect": each shape is explicit fields completed through
   // the same connect request an agent would raise. Nothing is inferred - an
-  // unpowered universe has no model to infer with - and no provider is named.
+  // unpowered command center has no model to infer with - and no provider is named.
   const FreeSourceCards={
     signature:"",busy:false,
     render(sources){
@@ -7038,7 +7647,7 @@
       if(this.busy||this.flow) return;
       if(!this.service){
         // No card named a source, so there is nothing to sign back in to. The route
-        // would pick the user's home universe and deposit for its own service, which
+        // would pick the user's home command center and deposit for its own service, which
         // is not necessarily what the owner is looking at.
         this.status("Open this from the connection that needs signing in again.");
         return;
@@ -7052,9 +7661,9 @@
           // The source the card names, and the home the rail is showing. The route
           // validates both rather than choosing for us; before this it always picked
           // the user's home and deposited for its own service, so it could not repair
-          // another universe's connection (Codex refute-review, P1 #5).
-          // The source AND the universe the card names. The route resolves the
-          // universe against this caller's admin ACL and refuses one they do not
+          // another command center's connection (Codex refute-review, P1 #5).
+          // The source AND the command center the card names. The route resolves the
+          // command center against this caller's admin ACL and refuses one they do not
           // administer, so naming it here asks rather than asserts.
           body:JSON.stringify({service:this.service,universe_id:this.universe})});
         const doc=await r.json().catch(()=>({}));
@@ -7093,7 +7702,7 @@
         }
         this.reset();
         if(doc.status==="connected"){
-          this.status("Signed in. Your universe can use this connection again.");
+          this.status("Signed in. Your agent can use this connection again.");
           // The card is derived from the stored rejection, which the deposit just
           // cleared, so refreshing the rail is what makes it disappear.
           if(typeof refreshRail==="function") refreshRail();
@@ -7139,7 +7748,7 @@
     try{
       const asked=await MCP.requestFromUser({
         kind:"LLM", title:"Connect "+host+" as a model",
-        body:"You asked for this under Connect a model. The key goes straight to your universe's vault.",
+        body:"You asked for this under Connect a model. The key goes straight to your command center's vault.",
         fields:[{name:"key",label:"API key",type:"secret"}],
         action:{type:"connect",destination,auth_scheme:"bearer",host,path_template:path,methods:["POST"],
           uses:{model:{wire,models:[{id:model,tools:true,context:ENDPOINT_CONTEXT}],billing:"flat"}}},
@@ -7160,12 +7769,12 @@
         out.textContent="";
         $("endpoint-url").value=""; $("endpoint-model").value="";
         await enterSignedIn();
-        appendMessage("system","Your universe now runs on "+model+". Say hello.");
+        appendMessage("system","Your command center now runs on "+model+". Say hello.");
       }else if(serving.status==="unchanged"){
-        out.textContent="Connected. Your universe keeps its current model; pick "+model+" in Change model when you want it.";
+        out.textContent="Connected. Your command center keeps its current model; pick "+model+" in Change model when you want it.";
         refreshRail();
       }else{
-        out.textContent="Saved, but your universe is not running on it yet"+(serving.detail?": "+serving.detail:"")+".";
+        out.textContent="Saved, but your command center is not running on it yet"+(serving.detail?": "+serving.detail:"")+".";
         refreshRail();
       }
     }catch(err){
@@ -7175,7 +7784,7 @@
   }
 
   // "Add a key yourself": a key for a platform, not a model. The paste-anything
-  // proposal needs the universe's own model, so an unpowered universe gets the
+  // proposal needs the command center's own model, so an unpowered command center gets the
   // explicit fields.
   function toggleAddKey(){
     const panel=$("rail-add-panel"), btn=$("btn-rail-add");
@@ -7189,7 +7798,7 @@
   }
 
   // A field's `url` is composed by the AGENT, so the app renders it as the
-  // universe's suggestion and never as platform help. Live 2026-09-30, a free
+  // command center's suggestion and never as platform help. Live 2026-09-30, a free
   // account's credential card carried "Get it from tinyassets.io" over
   // https://tinyassets.io/settings — a page that does not exist. Styled like
   // the platform's own links, an agent-chosen destination in a secret prompt is
@@ -7198,11 +7807,11 @@
   // So: say who suggested it, show the real host AND path (the host alone hid
   // that the path was invented), https only, and never the accent colour. A
   // value that is not a usable https link is shown as plain text, not a link:
-  // the owner still sees what the universe said, and cannot click it.
+  // the owner still sees what the command center said, and cannot click it.
   function railFieldLink(raw, lab){
     const note = document.createElement("span");
     note.className = "rtab-suggest";
-    note.textContent = "Suggested by your universe:";
+    note.textContent = "Suggested by your agent:";
     lab.appendChild(note);
     let url = null;
     try { url = new URL(String(raw)); } catch (_e) { url = null; }
@@ -7294,7 +7903,7 @@
     note.className = "rtab-note"; note.id = "note_" + req.request_id;
 
     // Four verbs, the founder's (2026-09-02, after an approval that failed was
-    // read back as a decline): Accept and Deny are decisions the universe reads;
+    // read back as a decline): Accept and Deny are decisions the agent reads;
     // Clear closes the tab with nothing decided; Send reply talks back and
     // leaves the ask open.
     const row = document.createElement("div"); row.className = "rtab-row";
@@ -7352,14 +7961,14 @@
     return line;
   }
 
-  // A reply leaves the ask open: it is a message to the universe about the
+  // A reply leaves the ask open: it is a message to the command center about the
   // ask, not a decision on it.
   function replyLine(req, text){
     return "About \"" + frameTitle(req) + "\": " + String(text).replace(new RegExp("\\s+", "g"), " ").trim().slice(0, 2000);
   }
 
   // A grant the platform refused after the founder said yes is the AGENT's
-  // to fix (the ask was mis-shaped), so the reason goes to the universe as
+  // to fix (the ask was mis-shaped), so the reason goes to the command center as
   // the founder's line, and the founder reads one plain sentence.
   function refusedGrantLine(req, detail){
     return "Could not grant \"" + frameTitle(req) + "\": " + String(detail || "").replace(new RegExp("\\s+", "g"), " ").trim().slice(0, 600);
@@ -7404,7 +8013,7 @@
           note.textContent = "Setup is not confirmed: " + (r.detail || r.error)
             + ". This request stays open. You can retry it after checking the problem.";
         } else if(mode === "accept" && actionAsk){
-          note.textContent = "This ask can't be granted as written. Your universe has been told why.";
+          note.textContent = "This ask can't be granted as written. Your agent has been told why.";
           sendTurn(refusedGrantLine(req, r.detail || r.error), undefined,
             {relay:true, keepComposer:true, inputMethod:"app_action"});
         } else {
@@ -7415,14 +8024,14 @@
         itemAnswered=!!req.item_id;
         if(r && r.suppressed === false) delete payload.dont_ask_again;
         // The answer is the founder's own line in the thread. Live 2026-08-29:
-        // after each approval the universe sat idle until the founder typed
+        // after each approval the command center sat idle until the founder typed
         // "approved - go ahead", twice. The click IS that line; say it where
-        // the universe listens, through the same send path as any message.
+        // the command center listens, through the same send path as any message.
         // While a turn is in flight the line waits in sendTurn's queue and
         // goes out when the turn ends - never dropped, never overlapping.
         const busy = $("btn-send").disabled;
         note.textContent = (r.receipt || (mode === "clear" ? "Cleared." : mode === "deny" ? "Denied." : "Sent."))
-          + (busy ? " Your universe will see it when its current turn ends." : "");
+          + (busy ? " Your agent will see it when its current turn ends." : "");
         if(!req.item_id || r.request_status !== "pending") railOpen = null;
         await refreshRail();
         sendTurn(answerLine(req, mode, payload), undefined,
@@ -7465,7 +8074,7 @@
   }
 
   // Restore the conversation on load. Without this the thread only ever showed
-  // what this page instance had appended, so a refresh looked like the universe
+  // what this page instance had appended, so a refresh looked like the command center
   // had forgotten everything — it had not; the app just never asked for it.
   // A turn still in flight is NOT in the store yet (the exchange is recorded on
   // completion), so a refresh mid-reply legitimately shows nothing for it; that
@@ -7610,7 +8219,7 @@
     if(inflightRestored){ restoreQueue(); return; }
     // The saved queue's rule, applied to the in-flight record: nothing about a
     // held message - not its text, not a filename it names - is shown or even
-    // OBSERVED until this page knows which universe it is, and never for
+    // OBSERVED until this page knows which command center it is, and never for
     // another account or home.
     if(!queueScope||!queueOwner){ restoreQueue(); return; }
     // Nothing held, and the pair is known: this page's one restore pass is
@@ -7622,12 +8231,12 @@
     if((pending.scope && pending.scope!==queueScope)||
        (pending.owner && pending.owner!==queueOwner)){
       inflightRestored = true;
-      appendMessage("system","An unconfirmed message from another universe's session "+
-        "on this browser is waiting there; open that universe to see it.");
-      restoreQueue(); return;   // preserved on disk for that universe's own page
+      appendMessage("system","An unconfirmed message from another command center's session "+
+        "on this browser is waiting there; open that command center to see it.");
+      restoreQueue(); return;   // preserved on disk for that command center's own page
     }
     if(!pending.scope||!pending.owner){
-      // Written before this page recorded its universe, so it may belong to
+      // Written before this page recorded its command center, so it may belong to
       // another account signed in on this browser. CLICKING A BUTTON DOES NOT
       // PROVE OWNERSHIP: a confirmation only says someone is here, never that
       // this login is the one that saved it. So nothing about it is disclosed
@@ -7636,7 +8245,7 @@
       // page that can prove it; this one says only that something is held.
       inflightRestored = true;
       appendMessage("system","An unconfirmed message saved on this browser before "+
-        "the page had recorded its universe is being kept, but it cannot be shown "+
+        "the page had recorded its command center is being kept, but it cannot be shown "+
         "here: this page cannot tell which account saved it. Send your message "+
         "again if you still need it.");
       restoreQueue(); return;
@@ -7753,13 +8362,13 @@
     const held=()=>{
       const active=document.activeElement;
       if(active && (active.tagName==="INPUT"||active.tagName==="TEXTAREA") && active.value) return true;
-    // Never mid-turn either: a reload while the universe is answering, or while
+    // Never mid-turn either: a reload while the command center is answering, or while
     // a failed message is waiting to be resent, throws away what the user is
     // looking at. On 2026-08-29 the 10-minute tick fired seconds after a served
     // error and the thread jumped back to history. Both holds are BOUNDED, so
     // one wedged request can never freeze updates for good (Codex round 1, P1).
     // The in-flight hold is three hours: the default served cap is 3600s and a
-    // universe may raise its own `absolute_cap_s` (Codex round 2, P2 - a valid
+    // command center may raise its own `absolute_cap_s` (Codex round 2, P2 - a valid
     // 7200s turn must not be reloaded over), while a fetch that truly never
     // settles is cut by the proxy long before that, so the bound only has to
     // exist, not be tight. Past it a reload IS the recovery - the message

@@ -755,7 +755,7 @@ def _write_identity(
     if owner_user_id is not None and not owner:
         raise ValueError("credential owner must be a non-empty server principal")
     if uid != universe.name:
-        raise ValueError("credential universe does not match its canonical directory")
+        raise ValueError("credential command center does not match its canonical directory")
     return owner, uid
 
 

@@ -102,7 +102,7 @@ def assert_contained(root: Path, path: Path) -> None:
     for candidate in (os.path.realpath(path), os.path.realpath(Path(path).parent)):
         if candidate != root_r and not candidate.startswith(prefix):
             raise SoulEditError(
-                f"path escapes the universe via a symlinked component: {path}"
+                f"path escapes the command center via a symlinked component: {path}"
             )
 
 
@@ -343,7 +343,7 @@ def apply_soul_edit(
             resolved = path.resolve()
             if resolved != udir_resolved / filename:
                 raise SoulEditError(
-                    f"governed file resolves outside its universe slot, refusing: "
+                    f"governed file resolves outside its command center slot, refusing: "
                     f"{filename}"
                 )
             try:
