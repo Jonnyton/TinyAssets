@@ -44,6 +44,9 @@ TURN_PATH = (
     "tinyassets/config.py",
     "tinyassets/universe_tools.py",
     "tinyassets/engine_mcp_server.py",
+    # The agent writes its own MEMORY.md (harness D7a): every reader of it.
+    "tinyassets/memory_items.py",
+    "tinyassets/harness_history.py",
     # The agent writes its own wiki (harness W): every wiki reader.
     "tinyassets/api/helpers.py",
     "tinyassets/api/wiki.py",

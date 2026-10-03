@@ -145,7 +145,7 @@ MOUNT_POINT = "/u"
 #: would read as "learned"); the harness directories are created first.
 AGENT_BRAIN_FILES: tuple[str, ...] = (
     "identity.md", "founder.md", "origin.md", "body.md", "orgchart.md",
-    "projects.md", "goals.md", "index.md", "log.md", "voice.md", "AGENTS.md",
+    "projects.md", "goals.md", "index.md", "log.md", "voice.md", "AGENTS.md", "MEMORY.md",
 )
 AGENT_HARNESS_DIRS: tuple[str, ...] = (
     "skills", "prompts", "extensions", "workflows", "bin", "notes", "wiki",
