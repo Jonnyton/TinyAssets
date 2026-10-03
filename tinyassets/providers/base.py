@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
+from tinyassets.addressed_agents import MAIN_AGENT
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 
 if TYPE_CHECKING:
@@ -141,6 +142,28 @@ class UniverseContext:
 
     universe_dir: Path | None = None
     config: "UniverseConfig | None" = None
+    agent_id: str = MAIN_AGENT
+    """WHICH of the owner's agents this work belongs to (harness §4.18).
+
+    The one carrier for the addressed agent through a turn. Set ONLY at
+    authenticated ingress, from the resolution that ingress already performed
+    (``universe_intelligence.converse`` passes the ``addressed_agent`` it was
+    handed, which ``universe_server.converse`` resolved inside the owner/universe
+    scope). It is ``MAIN_AGENT`` only where ingress genuinely had no addressed
+    agent -- the main agent, or a caller with no conversation at all.
+
+    Deliberately NOT derived anywhere downstream. Not from
+    ``turn_interrupt.current()``, which is in-process state a workflow-node turn
+    does not have and which would make the journal's attribution depend on
+    whether a Stop happened to be registrable; and not from a session key, which
+    may locate or cross-check a record but can never establish one, so it is not
+    what may select whose controls apply. A downstream reader that cannot see
+    this field is missing a thread, not licensed to guess.
+
+    The per-launch snapshot that change ``addressed-agent-control-provenance``
+    proposes reads THIS field rather than introducing a second source, so
+    extending provenance later does not mean replacing this carrier.
+    """
     provider_invocation: "ProviderInvocationCarrier | None" = None
     provider_request: "ProviderRequestCarrier | None" = None
     served_provider: "ServedProviderAuthority | None" = None
