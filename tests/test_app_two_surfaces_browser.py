@@ -106,19 +106,11 @@ def _drag(page, selector, dx, dy, *, at=(0.5, 0.5)):
 
 
 
-def test_blank_command_center(app_url, browser):
-    page = browser.new_page(viewport={"width": 1280, "height": 800})
-    _enter_chat(page, app_url)
-    assert page.locator("#cc-blank").is_visible()
-    assert _box(page, "#cc-blank") == _box(page, "#chat-stage")
-    page.mouse.click(5, 5)
-    assert page.evaluate("document.activeElement.id") == "cc-blank"
-    page.click("#btn-cloud-shrink")
-    page.click("#btn-cc-build")
-    assert page.input_value("#composer-input") == "Build me a command center for "
-    assert page.evaluate("document.activeElement.id") == "composer-input"
-    assert page.locator("#composer-input").evaluate("e=>e.selectionStart") == 30
-    page.close()
+# The in-document #cc-blank stand-in, and the test that covered it, are gone
+# with cc-package: the empty command center is now the platform's own bundle,
+# mounted in the frame like any other (AppUI.mountDefault). Its offer -- "Build
+# one with your agent", "Try one", the build prompt it prefills -- is covered by
+# tests/test_command_center_picker.py, which runs that bundle's own script.
 
 
 def test_play_never_needs_a_second_click(app_url, browser):
@@ -149,7 +141,6 @@ def test_play_never_needs_a_second_click(app_url, browser):
             expect(hero).to_have_attribute("data-trusted", "true")
 
     walk()
-    assert page.locator("#cc-blank").is_hidden()
     page.click("#chat-cloud-bubble")
     assert _box(page, "#chat-cloud")["width"] <= 440
     # Put the cloud centrally so all four stage edges and corners are exposed.
@@ -255,9 +246,16 @@ def test_play_never_needs_a_second_click(app_url, browser):
         page.keyboard.press("ArrowRight")
         position += 10
         expect(hero).to_have_css("left", f"{position}px")
+    # Unmounting ends the forwarding: with no frame there is nothing to forward
+    # to, and the keys stay with the control that has them. In the app a bare
+    # unmount does not happen -- chooseDefault mounts the platform's blank
+    # command center in its place -- so this only pins that the teardown is
+    # clean, not where focus lands.
     page.evaluate("AppUI.unmount()")
-    assert page.locator("#cc-blank").is_visible()
-    assert page.evaluate("document.activeElement.id") == "cc-blank"
+    assert page.locator("#ui-frame").count() == 0
+    assert page.locator("#ui-frame-host").is_hidden()
+    page.keyboard.press("ArrowRight")
+    assert page.evaluate("document.activeElement.id") == "btn-models", "keys stay put"
     page.close()
 
 
