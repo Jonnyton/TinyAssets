@@ -97,8 +97,23 @@ POSIX shell.
 
 ### 5. Switch, and the failure when it is on without a box
 
-`TINYASSETS_AGENT_LOOP=thin` selects `ThinLoopChatAdapter` in
-`make_interactive_agent_turn`. With the switch on and no box provider
+`account_agent_loop` stores one typed `engine` or `thin` value per
+`owner_user_id` in the data root database, with `updated_at` and `updated_by`.
+Missing rows default to `engine`; reads do not create a missing database.
+Rejected values leave the previous setting alone. The turn resolves its owner
+through `check_served_agent_tool_authority`, just as the coordinator does;
+unresolved owners keep today's path, never a guessed account. Only that owner's
+`thin` setting selects `ThinLoopChatAdapter` in `make_interactive_agent_turn`.
+
+The harness owner flips the founder's account first on the production host:
+`python scripts/set_agent_loop.py --owner <owner_user_id> --loop thin --data-root <production-root>`.
+The script records `updated_by="maintainer-script"`; verify the write by reading
+`account_agent_loop` back from that root for the same owner. Other accounts
+follow once proven. Rollback writes `engine` for that account. Task 3.4 deletes
+the setting, its maintainer script, and the engine path once every HTTP turn
+uses the thin loop. Account deletion discovers the table by `owner_user_id`.
+
+With the account on `thin` and no box provider
 configured, a turn granted a box tool is refused before its first inference
 (`box_unavailable`). It is never served by the tool jail instead: a fallback
 that looks like the new path would make the switch unfalsifiable.
@@ -142,8 +157,8 @@ share is two to three orders of magnitude smaller, inside the ~1 MB D6 estimated
   its thread and its slot. The S4 driver must give `stream` an I/O deadline
   (or end it on `cancel`), so a dead box host surfaces as an unknown outcome
   instead of a slot leak.
-- **Two tool routes during the cutover.** While the switch is off the engine
-  route serves the four tools; while it is on, the box does. No turn ever has
+- **Two tool routes during the cutover.** While an account is on `engine` the engine
+  route serves the four tools; while it is on `thin`, the box does. No turn ever has
   both.
 
 ## Appendix R. Cross-family refute (gpt-6-astra), three rounds, cap reached
@@ -164,3 +179,117 @@ share is two to three orders of magnitude smaller, inside the ~1 MB D6 estimated
   threads bypassed the bound. Both fixed in c6418af3 (directory lock, cancel
   slots), each with a test that is red on the old code; NOT re-reviewed, per
   the three-round cap. Taken to the lead with this list.
+
+## PR 2 shape (tasks 2.1, 2.2), proposed before any code
+
+PR 1's three REJECT rounds all came from one source. A **synchronous,
+possibly never-returning** box interface was wrapped in threads, and every
+round exposed another way a thread or a late reply could escape its turn. So
+the fixes layered: per-op threads, slots, a launch lock, cancel slots. PR 2
+removes that cause rather than adding another layer.
+
+### 2.1 Box operations are bounded awaitables, by contract
+
+- **The bound moves into the box contract.** #4274's `stream(timeout=)` ends
+  its iterator within the timeout, with no exit event if the execution is
+  still running. `start_exec` and `cancel` are short local operations on the
+  box host. PR 2 states the requirement explicitly, as a contract the driver
+  owns: **every `BoxProvider` call returns within a bounded time.**
+- **The executor collapses to one coroutine per execution:**
+  - `start_exec(op_id)` is awaited;
+  - then a loop of `stream(from_offset, timeout=SLICE)` slices, each awaited
+    on the turn's executor;
+  - the wall clock and the turn's cancellation are checked between slices;
+  - a timeout or cancel awaits `cancel` and keeps slicing to the exit event
+    within a grace period, else the outcome is unknown.
+- **No per-op threads, no slots, no `_Launch` lock.** A cancelled slice
+  strands a worker for at most `SLICE`. A cancel during start awaits the start
+  (bounded), then cancels what it named.
+- **Lost replies** keep PR 1's rule: same `op_id`, once, else unknown.
+- **What this deletes:** `_in_thread`, `_BOX_CALL_SLOTS`, `_BOX_CANCEL_SLOTS`
+  and `_Launch`. Their tests become slice-and-resume tests.
+
+### 2.2 The provider-assignment admission never spans an `await`
+
+- **The cause.** `_authorize_served_provider_call` holds
+  `ProviderAssignmentAdmission.shared()`, a thread-keyed reader/writer lock,
+  across `yield authority`, and so across the whole provider call. That hold
+  breaks a shared loop (decision 1).
+- **Proposal: shrink the critical section, don't redesign the lock.** For an
+  HTTP turn (no credential snapshot), the admission covers authorization and
+  the pre-launch fence, and is released before the coroutine awaits the
+  broker.
+  - **Why the hold isn't needed for HTTP.** The broker re-validates the grant,
+    the connection and revocation on its own request (I14 makes that per
+    stream).
+  - **What the hold still matters for.** It protects a CLI launch's
+    credential snapshot, so a CLI path keeps it, on the CLI's own thread.
+- **Consequence.** No task holds the lock across a suspension point, so tasks
+  sharing one loop thread can never interleave inside it. The thread-keyed
+  reentrancy guard stays correct, and the deadlock (a reader on the loop
+  waiting behind a writer that waits for another reader on the same loop) has
+  no holder to wait on.
+- **Writers.** A writer on another thread can still make a reader briefly
+  block the loop thread. That is a short synchronous section, measured by the
+  lag watchdog rather than assumed away.
+- **Open question for review: binding races.** With the hold released before
+  the launch, a binding generation changed by a concurrent
+  `provider_serving_binding` writer could interleave between authorization
+  and the HTTP request. PR 2 must show what catches that (the reservation's
+  binding digest, the broker's grant check, or a launch-time recheck) before
+  it ships. If nothing does, a recheck right before the broker call is added.
+- **Journal off the loop.** `AgentTurnJournal` writes are SQLite transactions
+  with a busy timeout. The coordinator awaits them through
+  `asyncio.to_thread`, without editing the journal module, which #4228 is
+  changing.
+
+### Shape review (gpt-6-astra, 310570b5): ADAPT, and what PR 2 builds instead
+
+**2.1: the bounded-call premise is false today.** #4274's local driver:
+- takes an untimed per-box `RLock` in all four calls;
+- starts the stream deadline only after the lock and authentication;
+- can `proc.wait()` without a timeout on a failed start;
+- holds the same lock through export and import.
+
+So PR 2:
+- **Keeps an owned, capacity-bounded blocking boundary,** with cancel
+  capacity independent of stuck reads, and keeps ownership of a late start's
+  result. Collection becomes a slice loop now.
+- **Asks the box contract** (#4274 / S4) to bound queueing, lock
+  acquisition, launch and I/O. PR 1's thread machinery is deleted only once
+  the driver guarantees that.
+- **Preserves these rules:**
+  - a cancel acknowledgement means the request was accepted, not that the
+    execution ended;
+  - an exit event with `killed="unknown_after_restore"` HOLDS, never
+    completes;
+  - resume from `offset + len(data)`.
+
+**2.2: the hold protects launch authority, not only credential snapshots.**
+- **What the hold covers.** Assignment and serving-binding writers take the
+  exclusive admission (`provider_serving_binding.py:563`, `:1040`). The
+  shared hold excludes them across reservation, the provider-slot wait,
+  invocation consumption, `after_provider_claim` and the call itself.
+- **What breaks without it.** After reservation nothing rechecks the
+  provider binding's generation. A binding-only change made after
+  reservation passes every remaining check. An unlocked "recheck right
+  before" is insufficient, because `provider.complete(...)` only creates a
+  coroutine.
+
+So PR 2 defines a **launch-commit section**, a synchronous unit run start to
+finish on ONE worker thread, which acquires and releases the admission
+itself:
+1. Take the shared admission.
+2. Revalidate the request, the agent revision, the assignment and selected
+   member, the exact provider-binding generation, digest, state, scope and
+   expiry, custody, and selected-model access.
+3. Reserve against that state.
+4. Consume the invocation and journal the round.
+5. **Commit the launch:** for HTTP, the I14 stream's `OPEN` is admitted and
+   its operation is durably `may_have_sent`.
+6. Release the admission.
+
+The coroutine awaits only the stream's bytes, outside the lock. No task ever
+holds the admission across an `await`, and the loop thread never blocks on
+it. This couples the shared loop (2.2) to S6's streaming client: the launch
+commit IS the broker `OPEN`.

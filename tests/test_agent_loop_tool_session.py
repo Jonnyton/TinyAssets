@@ -17,8 +17,8 @@ THREAD = "thread:owner-chat"
 
 def _open(universe, box, *, granted=("bash",), reads=(), session_key=THREAD, turn="live-1"):
     def bind():
-        handle = box.bind(universe.name, account="owner", turn="t1")
-        return BoxTools(BoxExecutor(box, handle, limits=None)), "/cc"
+        handle = box.bind(universe.name, account_id="owner", turn_id="t1")
+        return BoxTools(BoxExecutor(box, handle)), "/cc"
 
     def no_engine():
         raise AssertionError("the engine route must not open for loop-only tools")

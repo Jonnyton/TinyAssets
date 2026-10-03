@@ -1,17 +1,20 @@
-"""A scripted ``BoxProvider`` (target architecture D2) for the thin-loop tests.
+"""A scripted ``BoxProvider`` (``tinyassets.boxes``, target architecture D2).
 
-It runs nothing. Each ``start_exec`` is recorded with its ``op_id`` and argv,
+It runs nothing. Each ``start_exec`` is recorded with its ``op_id`` and argv
 and answered by a script the test supplies; a repeated ``op_id`` returns the
 recorded execution and never runs the script again, which is the D2 contract
-the loop's lost-reply handling relies on.
+the loop's lost-reply handling relies on. Events use the real types:
+``output`` (merged stdout/stderr, ``offset`` = chunk start) and ``exit``
+(``exit_code``, ``killed``).
 """
 
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import Any, Callable
+
+from tinyassets.boxes import BoxHandle, ExecEvent, ExecState, ExecStatus
 
 
 @dataclass
@@ -20,16 +23,17 @@ class Exec:
     argv: list[str]
     stdin: Any
     cwd: str
+    limits: Any
     events: list[Any] = field(default_factory=list)
     cancelled: bool = False
 
 
-def out(data: bytes, offset: int) -> Any:
-    return SimpleNamespace(kind="stdout", data=data, offset=offset)
+def out(data: bytes, offset: int = 0) -> ExecEvent:
+    return ExecEvent("output", offset=offset, data=data)
 
 
-def exit_event(code: int) -> Any:
-    return SimpleNamespace(kind="exit", code=code)
+def exit_event(code: int | None, killed: str | None = None) -> ExecEvent:
+    return ExecEvent("exit", exit_code=code, killed=killed)
 
 
 class FakeBox:
@@ -41,50 +45,60 @@ class FakeBox:
         self.starts: list[str] = []
         self.cancels: list[str] = []
         self.binds: list[tuple[str, str, str | None]] = []
+        self.awakened = 0
         self.fail_start: int = 0
         self.fail_stream: int = 0
         self.hang = False
-        self.status = SimpleNamespace(state="unknown_after_restore")
+        self.status_state = ExecState.UNKNOWN_AFTER_RESTORE
         self.released = threading.Event()
         self.lock = threading.Lock()
 
     # ── D2 surface ──────────────────────────────────────────────────────────
-    def bind(self, cc, *, account, turn):
-        self.binds.append((cc, account, turn))
-        return SimpleNamespace(cc=cc, account=account, turn=turn, root="/cc")
+    def bind(self, command_center_id, *, account_id, turn_id=None):
+        self.binds.append((command_center_id, account_id, turn_id))
+        return BoxHandle(command_center_id, account_id, 1, turn_id)
 
-    def start_exec(self, h, op_id, argv, *, stdin=None, env=None, cwd="/cc", limits=None):
+    def ensure_awake(self, handle, *, reason):
+        self.awakened += 1
+
+    def start_exec(self, handle, op_id, argv, *, stdin=b"", env=None, cwd="/cc",
+                   limits=None):
         with self.lock:
             self.starts.append(op_id)
             first = op_id not in self.execs
             if first:
-                self.execs[op_id] = Exec(op_id, list(argv), stdin, cwd)
+                self.execs[op_id] = Exec(op_id, list(argv), stdin, cwd, limits)
         if first:
             # Outside the lock: concurrent executions really run concurrently.
-            data, code = self.script(list(argv), stdin)
+            data, code = self.script(list(argv), stdin or None)
             self.execs[op_id].events = (
-                [out(data, len(data)), exit_event(code)] if data else [exit_event(code)])
+                [out(data, 0), exit_event(code)] if data else [exit_event(code)])
         with self.lock:
             if self.fail_start:
                 self.fail_start -= 1
                 raise ConnectionError("synthetic lost reply")
         return op_id
 
-    def stream(self, h, exec_id, *, from_offset=0):
+    def stream(self, handle, exec_id, *, from_offset=0, timeout=None):
         record = self.execs[exec_id]
         if self.fail_stream:
             self.fail_stream -= 1
             raise ConnectionError("synthetic stream break")
         if self.hang:
-            self.released.wait(10)
-            yield exit_event(137)
+            # Running: a slice ends at its timeout without an exit event, until
+            # a cancel lands.
+            if self.released.wait(timeout if timeout is not None else 10):
+                yield exit_event(137, "cancelled")
             return
-        yield from record.events
+        for event in record.events:
+            if event.kind == "output" and event.offset + len(event.data) <= from_offset:
+                continue
+            yield event
 
-    def cancel(self, h, exec_id):
+    def cancel(self, handle, exec_id):
         self.cancels.append(exec_id)
         self.execs[exec_id].cancelled = True
         self.released.set()
 
-    def exec_status(self, h, op_id):
-        return self.status
+    def exec_status(self, handle, op_id):
+        return ExecStatus(op_id, op_id, self.status_state)
