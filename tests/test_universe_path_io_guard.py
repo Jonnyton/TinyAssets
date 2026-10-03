@@ -38,6 +38,15 @@ _RAW_ATTRS = {"read_text", "read_bytes", "write_text", "write_bytes", "open",
 _RAW_OS = {"replace", "rename", "unlink", "remove", "open"}
 _RAW_SHUTIL = {"copy", "copy2", "copyfile", "move", "rmtree"}
 
+#: ``(receiver, attribute)`` pairs that READ like a path operation but whose
+#: receiver is a module, so no file is opened and no link can be followed.
+#: ``storage_accounting.touch()`` marks a measurement row dirty with a SQLite
+#: UPDATE (``storage_accounting.touch``); counting it would pin a phantom
+#: operation that this file's shrink-only ratchet could then never drop.
+#: Exact pairs only -- never a bare receiver name, which would hide every other
+#: operation on it.
+_NOT_PATH_CALLS = {("storage_accounting", "touch")}
+
 
 def _raw_ops(source: str) -> list[tuple[int, str, str]]:
     """``(line, enclosing function, operation)`` for every raw file call.
@@ -62,7 +71,8 @@ def _raw_ops(source: str) -> list[tuple[int, str, str]]:
                         what = f"os.{target.attr}()"
                     elif owner == "shutil" and target.attr in _RAW_SHUTIL:
                         what = f"shutil.{target.attr}()"
-                    elif owner not in ("os", "shutil") and target.attr in _RAW_ATTRS:
+                    elif (owner not in ("os", "shutil") and target.attr in _RAW_ATTRS
+                          and (owner, target.attr) not in _NOT_PATH_CALLS):
                         what = f".{target.attr}()"
                 if what is not None:
                     found.append((child.lineno, name, what))
@@ -485,3 +495,17 @@ def test_the_scan_sees_a_raw_read_and_write():
         "    return open(udir / 'd').read()\n"
     )}
     assert {".write_text()", "os.replace()", "open()"} <= ops
+
+
+def test_the_module_call_exemption_is_exactly_one_pair():
+    """``storage_accounting.touch()`` is a SQLite UPDATE, so it is not counted --
+    but a real ``Path.touch()``, and every other call on that module, still is."""
+    ops = {what for _l, _f, what in _raw_ops(
+        "from tinyassets import storage_accounting\n"
+        "def f(udir):\n"
+        "    storage_accounting.touch(udir.parent, udir.name, 'workspaces')\n"
+        "    storage_accounting.unlink(udir / 'z')\n"
+        "    (udir / 'a').touch()\n"
+    )}
+    assert ".touch()" in ops, "a path touch is still raw file I/O"
+    assert ".unlink()" in ops, "only the touch pair is exempt, not the module"

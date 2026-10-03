@@ -1234,6 +1234,49 @@ async def _handle_serving_bind(request: Any) -> Any:
 
 
 
+async def _handle_profile(request: Any) -> Any:
+    """Read the signed-in owner's own agent, like the rules GET door."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.api.status import _universe_active_turn
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding_note import agent_identity
+    from tinyassets.storage.agent_turn_journal import WORKING_STATES
+    from tinyassets.storage.pending_requests import list_pending
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+    home = await run_in_threadpool(_read_home, identity)
+    if not home:
+        return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
+
+    def _profile():
+        universe = _universe_dir(home)
+        name, responsibility = agent_identity(universe)
+        active = _universe_active_turn(universe)
+        if active and active.get("state") == "unreadable":
+            raise OSError("agent turn activity unreadable")
+        working = bool(active and not active.get("stale") and active.get("state") in WORKING_STATES)
+        status = "working" if working else "waiting_on_you" if list_pending(universe) else "idle"
+        # The live journal carries the serving model's label when known. A
+        # preference or provider id is not evidence of which model is serving.
+        model = active.get("model", "") if working else ""
+        return {"name": name, "responsibility": responsibility[:500], "status": status,
+                "model": model if isinstance(model, str) else "", "agent_id": "main"}
+
+    try:
+        profile = await run_in_threadpool(_profile)
+    except OSError:
+        return JSONResponse({"error": "profile_unavailable"}, status_code=503, headers=_NO_STORE)
+    return JSONResponse(profile, headers=_NO_STORE)
+
+
 async def _handle_rules(request: Any) -> Any:
     """The signed-in owner's Custom Rules for their own agent (harness D1a).
 
@@ -1266,23 +1309,61 @@ async def _handle_rules(request: Any) -> Any:
 
         return resolve(home)
 
-    def _listing():
-        rules = agent_rules.list_rules(_universe_dir())
+    def _addressed_agent(raw: object) -> str:
+        """The agent whose rules this request is about (harness §4.18).
+
+        Resolved the same way a steer is, and for the same reason: the panel
+        edits the rules of the agent the owner is talking to. Every per-agent
+        store already keys on the agent and defaults to ``main``; this caller
+        passed nothing, so the panel read and wrote MAIN's rules whoever the
+        conversation was with -- an owner could turn a custom agent's review
+        off in the UI and change main instead.
+
+        Resolved inside the caller's OWN home, so an id that is not one of
+        their agents is refused by name rather than silently becoming main.
+        """
+        from tinyassets import addressed_agents
+        from tinyassets.api.helpers import _base_path
+
+        addressed = addressed_agents.resolve(
+            _base_path(), universe_id=home, owner=identity.user_id, agent_id=raw,
+        )
+        return (addressed.agent_id if addressed is not None
+                else addressed_agents.MAIN_AGENT)
+
+    def _listing(agent: str):
+        rules = agent_rules.list_rules(_universe_dir(), agent)
         return {
             "universe_id": home,
+            "agent_id": agent,
             "rules": [rule.as_dict() for rule in rules],
             "behaviours": agent_rules.BEHAVIOUR_LABELS,
             "classes": agent_rules.ACTION_CLASSES,
             "handbacks": agent_rules.HANDBACK_CONSEQUENCES,
+            # Operation kinds are declared per CONNECTION for the whole command
+            # center, not per agent, so they are not narrowed here.
             "operation_kinds": [k.as_dict() for k in agent_rules.list_kinds(_universe_dir())],
             "kinds": agent_rules.OPERATION_KINDS,
-            "review_off": sorted(agent_review.switched_off(_universe_dir())),
+            "review_off": sorted(agent_review.switched_off(_universe_dir(), agent)),
             "review_never": sorted(agent_review.NOT_CONSEQUENTIAL),
             "review_always": sorted(agent_review.ALWAYS_REVIEWED),
         }
 
+    from tinyassets.addressed_agents import AgentNotAddressable
+
     if request.method == "GET":
-        return JSONResponse(await run_in_threadpool(_listing), headers=_NO_STORE)
+        # GET carries no body, so the agent rides the query, like /app/memory's
+        # home check does. Absent means main, which is what every caller that
+        # predates per-agent rules sends.
+        wanted = request.query_params.get("agent_id")
+        try:
+            listing = await run_in_threadpool(lambda: _listing(_addressed_agent(wanted)))
+        except AgentNotAddressable as exc:
+            return JSONResponse(
+                {"error": "agent_not_found", "detail": str(exc)},
+                status_code=404, headers=_NO_STORE,
+            )
+        return JSONResponse(listing, headers=_NO_STORE)
     cfg = app_config()
     if not _same_origin_json(request, str(cfg.get("resource") or "")):
         return JSONResponse(
@@ -1293,13 +1374,15 @@ async def _handle_rules(request: Any) -> Any:
         return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
 
     def _save():
+        agent = _addressed_agent(data.get("agent_id"))
         if "review" in data:
             spec = data["review"]
             if not isinstance(spec, dict) or type(spec.get("enabled")) is not bool:
                 raise ValueError("review needs action_class and enabled")
             agent_review.set_review(_universe_dir(), str(spec.get("action_class") or ""),
-                                    spec["enabled"], confirm=data.get("confirm") is True)
-            return {"reviewed": spec, **_listing()}
+                                    spec["enabled"], confirm=data.get("confirm") is True,
+                                    agent=agent)
+            return {"reviewed": spec, **_listing(agent)}
         if "declare" in data:
             spec = data["declare"]
             if not isinstance(spec, dict):
@@ -1310,14 +1393,14 @@ async def _handle_rules(request: Any) -> Any:
                 path_prefix=str(spec.get("path_prefix") or "/"),
                 confirm=data.get("confirm") is True,
             )
-            return {"declared": declared.as_dict(), **_listing()}
+            return {"declared": declared.as_dict(), **_listing(agent)}
         if "undeclare" in data:
             kind_id = data["undeclare"]
             if type(kind_id) is not int or kind_id <= 0 or kind_id > 9_223_372_036_854_775_807:
                 raise ValueError("undeclare must be a declaration id")
             return {"undeclared": agent_rules.delete_kind(
                         _universe_dir(), kind_id, confirm=data.get("confirm") is True),
-                    **_listing()}
+                    **_listing(agent)}
         if "delete" in data:
             rule_id = data["delete"]
             # A positive JSON integer only: no float truncation, no bool, no
@@ -1326,22 +1409,30 @@ async def _handle_rules(request: Any) -> Any:
                     or rule_id > 9_223_372_036_854_775_807):
                 raise ValueError("delete must be a rule id")
             removed = agent_rules.delete_rule(
-                _universe_dir(), rule_id,
+                _universe_dir(), rule_id, agent=agent,
                 confirm_handback=data.get("confirm_handback") is True,
             )
-            return {"deleted": removed, **_listing()}
+            return {"deleted": removed, **_listing(agent)}
         rule = agent_rules.set_rule(
             _universe_dir(), str(data.get("action_class") or ""),
             str(data.get("behaviour") or ""),
             connection=str(data.get("connection") or ""),
             operation=str(data.get("operation") or ""),
-            note=str(data.get("note") or ""),
+            note=str(data.get("note") or ""), agent=agent,
             confirm_handback=data.get("confirm_handback") is True,
         )
-        return {"saved": rule.as_dict(), **_listing()}
+        return {"saved": rule.as_dict(), **_listing(agent)}
 
     try:
         return JSONResponse(await run_in_threadpool(_save), headers=_NO_STORE)
+    except AgentNotAddressable as exc:
+        # A LookupError, so the TypeError/ValueError arm below would NOT catch
+        # it and an unknown agent id would have left here as a 500. Refused by
+        # name, exactly as a steer to the same id is.
+        return JSONResponse(
+            {"error": "agent_not_found", "detail": str(exc)},
+            status_code=404, headers=_NO_STORE,
+        )
     except (agent_rules.RuleRefused, agent_review.ReviewSwitchRefused) as exc:
         return JSONResponse(
             {"error": "rule_refused", "detail": str(exc)}, status_code=409, headers=_NO_STORE,
@@ -1461,11 +1552,46 @@ async def _handle_turn_interrupt(request: Any) -> Any:
             universe_id = ""
     if not universe_id:
         return JSONResponse({"interrupted": 0}, headers=_NO_STORE)
+    # Stop the turn of the agent the owner is TALKING TO (harness §4.18),
+    # resolved in their own home exactly as a steer to the same id is. Absent
+    # ``agent_id`` keeps the explicit stop-all this route has always been, which
+    # is what every page that predates the agent switcher sends -- and what the
+    # owner wants when they are not in a particular agent's conversation.
+    # Imported here, not reused from the branch above: that one is inside
+    # ``if not universe_id`` and is an unbound local on every other path.
+    from starlette.concurrency import run_in_threadpool as _in_thread
+
+    from tinyassets import addressed_agents
+    from tinyassets.addressed_agents import AgentNotAddressable
+    from tinyassets.api.helpers import _base_path
+
+    wanted = data.get("agent_id")
     try:
-        count = request_interrupt(identity.user_id, universe_id)
+        if wanted is None or str(wanted).strip() == "":
+            agent_id = None
+        else:
+            addressed = await _in_thread(
+                lambda: addressed_agents.resolve(
+                    _base_path(), universe_id=universe_id,
+                    owner=identity.user_id, agent_id=wanted,
+                )
+            )
+            agent_id = (addressed.agent_id if addressed is not None
+                        else addressed_agents.MAIN_AGENT)
+    except AgentNotAddressable as exc:
+        return JSONResponse(
+            {"error": "agent_not_found", "detail": str(exc)},
+            status_code=404, headers=_NO_STORE,
+        )
+    try:
+        count = request_interrupt(identity.user_id, universe_id, agent_id=agent_id)
     except ValueError:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
-    return JSONResponse({"interrupted": count, "universe_id": universe_id}, headers=_NO_STORE)
+    return JSONResponse(
+        {"interrupted": count, "universe_id": universe_id,
+         **({} if agent_id is None else {"agent_id": agent_id})},
+        headers=_NO_STORE,
+    )
 
 
 async def _handle_turn_steer(request: Any) -> Any:
@@ -2226,6 +2352,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
+        Route("/app/profile", _handle_profile, methods=["GET"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
         Route("/app/turn/steer", _handle_turn_steer, methods=["POST"]),
         Route("/app/turn/pending", _handle_turn_pending, methods=["POST"]),

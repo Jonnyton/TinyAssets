@@ -1253,6 +1253,24 @@ def commit(reservation: Reservation, actual_bytes: int | None = None) -> None:
         )
 
 
+def renew(reservation: Reservation) -> None:
+    """Keep a still-running write's reservation from expiring.
+
+    A measurement drops a reserved row older than `RESERVED_TTL_S` as a crashed
+    writer's. A write that is genuinely still running (a long jailed provider
+    turn) re-stamps its row so its headroom stays spent. Never raises."""
+    if reservation.id is None:
+        return
+    try:
+        with _txn(reservation.base) as conn:
+            conn.execute(
+                "UPDATE pending SET created_at = ? WHERE id = ? AND state = 'reserved'",
+                (time.time(), reservation.id),
+            )
+    except Exception:  # noqa: BLE001 -- worst case the row expires as before
+        _log.warning("storage renew failed for reservation %s", reservation.id, exc_info=True)
+
+
 def release(reservation: Reservation) -> None:
     """The write did not happen. Never raises: the caller is already failing."""
     if reservation.id is None:
@@ -1362,6 +1380,7 @@ __all__ = [
     "measure",
     "refusal_record",
     "release",
+    "renew",
     "reserve",
     "touch",
     "usage",

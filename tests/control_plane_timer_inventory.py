@@ -146,6 +146,11 @@ SITES: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "admission wait",
     ),
     "tinyassets/providers/codex_provider.py::_stream_codex_exec": (CALL_SCOPED, "stream poll"),
+    "tinyassets/providers/owned_process.py::_watch_disk.watch": (
+        CALL_SCOPED,
+        "host-side disk-budget watch for one jailed provider launch; ends with "
+        "proc.wait or budget-breach family teardown and settles that launch's budget",
+    ),
     "tinyassets/run_file_upload.py::StreamBridge.chunks": (CALL_SCOPED, "upload stream"),
     "tinyassets/run_file_upload.py::StreamBridge.push": (CALL_SCOPED, "upload stream"),
     "tinyassets/runs.py::await_run_events": (CALL_SCOPED, "caller waits on a run"),
