@@ -74,7 +74,7 @@ _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
                    # a card, which makes clearing them an account-change step.
                    # Optional like their siblings, so these harnesses stay green
                    # against a tree without the change.
-                   "clearRailCards", "clearTypedValues",
+                   "clearRailCards", "clearTypedValues", "clearMemoryState",
                    # The Stop control: a turn's cleanup asks whether the queue
                    # goes out as one batch.
                    "takeInterruptFlush", "flushAfterTurn", "drainAfterStop",

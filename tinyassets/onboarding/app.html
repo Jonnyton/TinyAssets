@@ -5039,6 +5039,15 @@
     clearComposerState();
     clearThread();
     clearRailCards();
+    clearMemoryState();
+  }
+  function clearMemoryState(){
+    const list=$("memory-list");
+    if(list){ clearTypedValues(list); list.textContent=""; }
+    const draft=$("memory-new"); if(draft) draft.value="";
+    const status=$("memory-status"); if(status) status.textContent="";
+    const undo=$("btn-memory-undo");
+    if(undo){ undo.disabled=true; undo.onclick=null; undo.textContent="Undo latest change"; }
   }
   // Every control under a node, cleared by WALKING it rather than by a selector
   // list. A `value` that is a string is a control holding typed text, whatever
@@ -6154,6 +6163,13 @@
     // ---- account / deletion (the in-app path Google Play requires) ----
     function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadRules(); loadMemory(); }
     // ---- Memory items and Undo (harness D7a) ---------------------------
+    function memoryContext(){
+      return {epoch:MCP._loginEpoch,owner:queueOwner,home:queueScope};
+    }
+    function ownsMemory(context){
+      return !!context.owner&&!!context.home&&context.epoch===MCP._loginEpoch&&
+        context.owner===queueOwner&&context.home===queueScope;
+    }
     async function memoryRequest(body){
       const init={method:body?"POST":"GET",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders())};
@@ -6162,7 +6178,8 @@
       const doc=await r.json().catch(()=>({}));
       return {ok:r.ok,status:r.status,doc};
     }
-    function renderMemory(doc){
+    function renderMemory(doc,context){
+      if(!ownsMemory(context)) return;
       const list=$("memory-list"); list.textContent="";
       (doc.items||[]).forEach(item=>{
         const row=document.createElement("div"); row.className="rule-row";
@@ -6170,34 +6187,43 @@
         text.setAttribute("aria-label","Memory item");
         const save=document.createElement("button"); save.type="button";
         save.className="btn btn--link"; save.textContent="Save";
-        save.addEventListener("click",()=>saveMemory({id:item.id,text:text.value}));
+        save.addEventListener("click",()=>saveMemory({id:item.id,text:text.value},context));
         const drop=document.createElement("button"); drop.type="button";
         drop.className="btn btn--link"; drop.textContent="Delete";
-        drop.addEventListener("click",()=>saveMemory({delete:item.id}));
+        drop.addEventListener("click",()=>saveMemory({delete:item.id},context));
         row.appendChild(text); row.appendChild(save); row.appendChild(drop); list.appendChild(row);
       });
       if(!(doc.items||[]).length) list.textContent="No memories yet.";
       const latest=(doc.history||[])[0], undo=$("btn-memory-undo");
       undo.disabled=!latest||latest.prior_state==="too large";
       undo.textContent=latest?"Undo latest change to "+latest.path:"Undo latest change";
-      undo.onclick=latest?()=>saveMemory({undo:latest.id}):null;
+      undo.onclick=latest?()=>saveMemory({undo:latest.id},context):null;
     }
     async function loadMemory(){
+      const context=memoryContext();
       $("memory-status").textContent="";
-      $("memory-list").textContent=""; $("btn-memory-undo").disabled=true;
+      clearTypedValues($("memory-list")); $("memory-list").textContent="";
+      const undo=$("btn-memory-undo");
+      undo.disabled=true; undo.onclick=null; undo.textContent="Undo latest change";
+      if(!ownsMemory(context)) return;
       try{
         const res=await memoryRequest(null);
+        if(!ownsMemory(context)) return;
         if(!res.ok){ $("memory-status").textContent=res.doc.detail||"Memory could not be loaded."; return; }
-        renderMemory(res.doc);
-      }catch(e){ $("memory-status").textContent="Memory could not be loaded."; }
+        renderMemory(res.doc,context);
+      }catch(e){ if(ownsMemory(context)) $("memory-status").textContent="Memory could not be loaded."; }
     }
-    async function saveMemory(body){
+    async function saveMemory(body,context=memoryContext()){
+      // A retained row/Undo belongs to the login and home that rendered it.
+      // Check before reading fresh auth headers as well as after the response.
+      if(!ownsMemory(context)) return;
       try{
         const res=await memoryRequest(body);
+        if(!ownsMemory(context)) return;
         if(!res.ok){ $("memory-status").textContent=res.doc.detail||"Memory was not saved."; return; }
-        renderMemory(res.doc); $("memory-status").textContent="Saved.";
+        renderMemory(res.doc,context); $("memory-status").textContent="Saved.";
         if(!body.id&&!body.delete&&!body.undo) $("memory-new").value="";
-      }catch(e){ $("memory-status").textContent="Memory was not saved."; }
+      }catch(e){ if(ownsMemory(context)) $("memory-status").textContent="Memory was not saved."; }
     }
     $("btn-memory-add").addEventListener("click",()=>saveMemory({text:$("memory-new").value}));
     // ---- Your agent's rules (harness D1a/D1b) ---------------------------
