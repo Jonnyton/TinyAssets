@@ -2272,7 +2272,8 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
     IS called a command center -- "Switch command center" moves between them.
     So "publish my Fantasy Village" names the command center they see, not a
     stray file: I never call it a UI to them, and never call one of their
-    screens leftover. Publishing a named screen means the PACKAGE form below --
+    screens leftover. Publishing a named screen uses the PACKAGE form below,
+    as an ask the person must confirm --
     ``ui_id`` for that screen plus ``"package": {}`` -- because the screen alone
     is a picture: without its workflows and files the person who installs it
     gets something that cannot do anything. There is no screen-only publish to
