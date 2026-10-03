@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from tinyassets.billing import SECRET_ENV_NAMES as _BILLING_SECRET_ENV
+
 DAEMON_FORBIDDEN_ENV: frozenset[str] = frozenset({
     # Account-wide DigitalOcean token. Only GitHub workflows use one, and they
     # read their own repository secret.
@@ -41,11 +43,9 @@ DAEMON_FORBIDDEN_ENV: frozenset[str] = frozenset({
 })
 
 DAEMON_ONLY_ENV: frozenset[str] = frozenset({
-    "STRIPE_SECRET_KEY",
-    "STRIPE_WEBHOOK_SECRET",
     "TINYASSETS_BILLING_ENTITLEMENT_KEY",
     "WORKOS_API_KEY",
-})
+}) | _BILLING_SECRET_ENV  # the payment processor's keys, named by its adapter
 
 CHILD_FORBIDDEN_ENV: frozenset[str] = DAEMON_FORBIDDEN_ENV | DAEMON_ONLY_ENV
 
