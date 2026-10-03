@@ -122,10 +122,39 @@ def test_assertion_step_always_runs_over_the_marker():
 
 
 def test_junit_uploaded_even_on_failure():
-    step = _step(_load(), "actions/upload-artifact@")
+    step = _step(_load(), "Upload junit")
     assert step["if"] == "always()"
     assert step["with"]["path"].endswith("/junit-real-browser.xml")
 
 
 def test_not_the_required_context():
     assert _job(_load())["name"] == _JOB != "required-tests"
+
+
+def test_preview_dependency_has_no_privileged_install_or_fallback():
+    steps = _job(_load())["steps"]
+    dependency = _step(_load(), "Deliver the unprivileged preview dependency")
+    assert dependency["run"].strip() == (
+        'python scripts/ci_bwrap_dependency.py --runner-temp "$RUNNER_TEMP" >> "$GITHUB_PATH"'
+    )
+    assert "if" not in dependency and not dependency.get("continue-on-error", False)
+    assert steps.index(dependency) < steps.index(_step(_load(), "Run the real-browser proofs"))
+    assert "scripts/ci_bwrap_dependency.py" in _triggers(_load())["pull_request"]["paths"]
+
+
+def test_complete_preview_module_is_executed_and_every_collected_case_asserted():
+    run = _step(_load(), "Run the complete preview containment module")
+    assert "python -m pytest tests/test_ui_preview.py -q" in run["run"]
+    pytest_args = run["run"].split("python -m pytest", 1)[1]
+    assert " -m " not in pytest_args and " -k " not in pytest_args
+    assert "|| true" not in run["run"] and not run.get("continue-on-error", False)
+    check = _step(_load(), "Assert every preview case executed")
+    assert check["if"] == "always()"
+    assert "tests/test_ui_preview.py --collect-only" in check["run"]
+    assert '"${#cases[@]}" -eq 0' in check["run"]
+    assert 'args+=(--nodeid "$case")' in check["run"]
+    assert 'ci_assert_junit_case.py --junit "$JUNIT_PATH"' in check["run"]
+    assert check["env"]["JUNIT_PATH"] == run["env"]["OUT_DIR"] + "/junit-preview.xml"
+    artifact = _step(_load(), "Upload preview junit")
+    assert artifact["if"] == "always()"
+    assert artifact["with"]["path"].endswith("/junit-preview.xml")
