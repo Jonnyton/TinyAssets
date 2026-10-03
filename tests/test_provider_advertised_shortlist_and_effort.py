@@ -184,14 +184,25 @@ def test_saved_effort_reaches_the_provider_invocation(native, monkeypatch):  # n
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
 def test_unset_effort_leaves_the_executor_default(native, monkeypatch):  # noqa: F811
-    """Absent choice is empty, never a level this platform picked."""
+    """Absent choice is empty, never a level this platform picked.
+
+    Asserted against a config that ALREADY carries a level, so this pins the
+    security property rather than restating ModelConfig's default: an
+    enumerated selection speaks for effort absolutely, and "the owner saved
+    nothing" must clear an inherited value rather than let it through.
+    """
+    from tinyassets.providers.base import ModelConfig
+
     async def discover():
         return effortful(["new-account-model"])
     _seen, configs = install_discovery(native, monkeypatch, discover)
     context = replace(native.context,
                       model_selection=ModelRef("codex", "new-account-model"))
-    assert _call(native, context).provider == "codex"
-    assert configs[0].reasoning_effort == ""
+    asyncio.run(native.router.call(
+        "writer", "hello", "system", operation="converse", universe_context=context,
+        config=ModelConfig(reasoning_effort="max"),
+    ))
+    assert configs and configs[0].reasoning_effort == ""
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
@@ -508,3 +519,157 @@ def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
         "default": catalogue.default_model_id,
         "models": [[m.model_id, list(m.effort_levels)] for m in catalogue.models],
     }, indent=1))
+
+
+@pytest.mark.parametrize("native", ["explicit"], indirect=True)
+def test_a_declared_native_selection_does_not_clobber_a_node_effort(native, monkeypatch):  # noqa: F811
+    """A workflow node's own effort must survive the served authority path.
+
+    A node declares effort for itself (`api/branches.py`, reaching the provider
+    as ModelConfig.reasoning_effort). A DECLARED native selection carries no
+    level -- it has no advertised list to validate one against -- so overwriting
+    the config from it unconditionally would silently downgrade every node that
+    runs on a native source with an explicit model id.
+    """
+    configs = []
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: native.router)
+    complete = native.provider.complete
+
+    async def record(prompt, system, config, **kwargs):
+        configs.append(config)
+        return await complete(prompt, system, config, **kwargs)
+
+    monkeypatch.setattr(native.provider, "complete", record)
+    context = replace(native.context,
+                      model_selection=ModelRef("codex", "future-native-model"))
+    from tinyassets.providers.base import ModelConfig
+
+    asyncio.run(native.router.call(
+        "writer", "hello", "system", operation="converse", universe_context=context,
+        config=ModelConfig(reasoning_effort="minimal"),
+    ))
+    assert configs, "the provider was never invoked"
+    assert configs[0].native_model_id == "future-native-model"
+    assert configs[0].reasoning_effort == "minimal", (
+        "a declared selection with no level erased the node's own effort"
+    )
+
+
+# --------------------------------------------------------------------------
+# Codex round 1 findings (ADAPT), each pinned.
+# --------------------------------------------------------------------------
+
+
+def test_codex_registers_its_own_effort_shape():
+    """Codex advertises effort too, in a different shape -- finding 3.
+
+    Live `model/list` from the installed Codex app-server reports
+    `supportedReasoningEfforts` as OBJECTS with no boolean support gate, and
+    includes `ultra`, a level Claude Code does not offer. Registering only
+    Claude's shape left every Codex row with no levels, so the founder's
+    explicit ask (codex `model_reasoning_effort`) had no control at all.
+    """
+    from tinyassets.providers.codex_provider import CodexProvider
+
+    protocol = CodexProvider.native_discovery_protocol
+    assert protocol.effort_levels_key == "supportedReasoningEfforts"
+    assert protocol.effort_level_key == "reasoningEffort"
+    assert protocol.effort_key is None, "Codex implies support by listing levels"
+    # The real row shape, captured from the installed app-server.
+    supports, levels = protocol.row_effort({
+        "model": "gpt-6.1-sol",
+        "supportedReasoningEfforts": [
+            {"reasoningEffort": "low", "description": "Fast responses"},
+            {"reasoningEffort": "xhigh", "description": "Extra high"},
+            {"reasoningEffort": "ultra", "description": "Maximum"},
+        ],
+        "defaultReasoningEffort": "low",
+    })
+    assert supports is True
+    assert levels == ("low", "xhigh", "ultra")
+
+
+def test_a_source_with_no_boolean_gate_and_no_levels_has_no_control():
+    """Absence is a truthful "no control", not a fault, without a gate."""
+    from tinyassets.providers.codex_provider import CodexProvider
+
+    protocol = CodexProvider.native_discovery_protocol
+    assert protocol.row_effort({"model": "m"}) == (False, ())
+    assert protocol.row_effort({"model": "m", "supportedReasoningEfforts": []}) == (False, ())
+
+
+@pytest.mark.parametrize("row", [
+    {"model": "m", "supportedReasoningEfforts": ["low"]},          # not objects
+    {"model": "m", "supportedReasoningEfforts": [{"other": "low"}]},
+    {"model": "m", "supportedReasoningEfforts": [{"reasoningEffort": 7}]},
+    {"model": "m", "supportedReasoningEfforts": "low"},
+])
+def test_malformed_codex_effort_entries_refuse(row):
+    from tinyassets.providers.codex_provider import CodexProvider
+
+    with pytest.raises(ValueError):
+        CodexProvider.native_discovery_protocol.row_effort(row)
+
+
+def test_a_gated_source_claiming_support_without_levels_still_refuses():
+    """Claude's shape keeps the stricter rule: a claim must name its levels."""
+    assert CLAUDE_PROTOCOL.effort_key == "supportsEffort"
+    with pytest.raises(ValueError):
+        CLAUDE_PROTOCOL.row_effort({"resolvedModel": "m", "supportsEffort": True})
+    with pytest.raises(ValueError):
+        CLAUDE_PROTOCOL.row_effort({"resolvedModel": "m", "supportsEffort": True,
+                                    "supportedEffortLevels": []})
+    assert CLAUDE_PROTOCOL.row_effort({"resolvedModel": "m"}) == (False, ())
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_a_withdrawn_id_does_not_return_as_a_learned_candidate(native, monkeypatch):  # noqa: F811
+    """Finding 4: filtering enumeration alone let the id back in elsewhere.
+
+    The candidate sources dedupe against the rows that were KEPT, so a hidden
+    id was absent from the choices and then reappeared as a reviewed-list or
+    own-history candidate. A source saying "not this one" outranks our own
+    record of it.
+    """
+    async def discover():
+        return effortful(["usable-model", "withdrawn-model"], hidden=("withdrawn-model",))
+    install_discovery(native, monkeypatch, discover)
+    # The reviewed list vouches for the withdrawn id AND for an unrelated one,
+    # so this cannot pass by the list contributing nothing at all.
+    monkeypatch.setattr(
+        "tinyassets.providers.public_model_lists.newest_listed_cached",
+        lambda kind: ("withdrawn-model", "some-other-id"),
+    )
+    prepared = prepare_owned_model_plan(
+        base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
+        allow_empty=True,
+    )
+    offered = {m.model_id for m in prepared.catalog.connections[0].models}
+    assert "usable-model" in offered
+    assert "some-other-id" in offered, "the reviewed list must still contribute"
+    assert "withdrawn-model" not in offered, (
+        "a withdrawn id came back through a candidate source"
+    )
+
+
+def test_select_refuses_a_withdrawn_model_at_launch():
+    """Hiding a choice and refusing to run it are two separate guarantees."""
+    from pathlib import Path
+
+    from tinyassets.credential_vault import LLMCredentialCustodyReference
+    from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
+
+    custody = LLMCredentialCustodyReference(
+        "ref", "owner-1", "home", "codex", 1, "digest", "record-digest")
+    now = datetime.now(timezone.utc)
+    universe = Path.cwd().resolve()
+    snapshot = NativeDiscoverySnapshot(
+        "codex", "owner-1", universe, custody, now, now,
+        NativeCatalogue((NativeModel("withdrawn", frozenset({"text"}), True),), None, now),
+    )
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    with pytest.raises(PermissionError, match="does not match current model authority"):
+        snapshot.select(provider="codex", owner="owner-1", universe=universe,
+                        custody=custody, model_id="withdrawn",
+                        access=ModelAccess("discovered"))

@@ -59,9 +59,15 @@ class NativeDiscoverySnapshot:
         )
 
         self.assert_fresh()
+        # `hidden` is checked HERE too, not only where the picker is built.
+        # Codex found admission matching on id and modality alone, so an id the
+        # executor had withdrawn could still launch if it reached selection by
+        # another route. Hiding a choice and refusing to run it are two
+        # different guarantees and both are wanted.
         matched = next(
             (model for model in self.catalogue.models
-             if model.model_id == model_id and "text" in model.input_modalities),
+             if model.model_id == model_id and "text" in model.input_modalities
+             and not model.hidden),
             None,
         )
         if (self.provider != provider or self.owner_id != owner

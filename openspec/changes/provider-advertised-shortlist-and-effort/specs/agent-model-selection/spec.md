@@ -90,19 +90,35 @@ The owner's effort level SHALL be stored per model, independently of selection
 mode and of which model is currently default, so that changing model or
 returning to automatic does not clear a level set for another model.
 
-A level SHALL be admitted only against the advertised levels of the exact model
-being launched, checked where the catalogue is in hand. A level outside that set
-SHALL refuse the launch rather than run at the executor's default, because
-running at a level the owner did not choose while reporting success is a silent
-failure.
+An OWNER-PREFERENCE level SHALL be admitted only against the advertised levels
+of the exact enumerated model being launched, checked where the catalogue is in
+hand. A level outside that set SHALL refuse the launch rather than run at the
+executor's default, because running at a level the owner did not choose while
+reporting success is a silent failure.
 
-An admitted level SHALL be carried to the provider as that provider's own real
-setting, not as prompt text. It SHALL travel on the same validated per-attempt
-authority as the selected model id, so an ordinary caller's configuration cannot
-raise a served turn's effort.
+An admitted owner-preference level SHALL be carried to the provider as that
+provider's own real setting, not as prompt text, and SHALL travel on the same
+validated per-attempt authority as the selected model id, so an ordinary
+caller's configuration cannot raise a served turn's effort. Where that authority
+carries an enumerated selection, it SHALL be the only source of the level —
+including when the owner saved none, which clears any inherited value.
 
 An owner-declared model id, which carries no advertised level list, SHALL NOT
 attest an effort level.
+
+This requirement governs the owner-preference path only. A workflow node's own
+declared effort is separate, pre-existing node configuration on a path that has
+no advertised level list to check against (a provider-default invocation names
+no model), and SHALL continue to reach the provider unchanged. An enumerated
+selection SHALL NOT overwrite it, because a selection that could not validate a
+level has nothing to say about one.
+
+#### Scenario: A workflow node's own effort is not erased by selection
+
+- **GIVEN** a workflow node declaring its own effort
+- **WHEN** it runs on a native source whose selection is owner-declared or a
+  provider default
+- **THEN** the provider receives the node's declared effort
 
 #### Scenario: A saved level reaches the invocation
 

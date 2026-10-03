@@ -77,15 +77,20 @@ class _ModelRowFields:
         _check_keys(
             (self.items_key, self.model_key, self.default_key,
              self.modalities_key, self.hidden_key),
-            (self.effort_key, self.effort_levels_key),
+            (self.effort_key, self.effort_levels_key, self.effort_level_key),
         )
         if (type(self.assumed_input_modalities) is not frozenset
                 or any(type(item) is not str or not item or len(item) > 100
                        for item in self.assumed_input_modalities)):
             raise ValueError("invalid native metadata assumed modalities")
-        # Support without levels would admit a control whose values are unknown.
-        if (self.effort_key is None) != (self.effort_levels_key is None):
+        # The levels field is what makes effort readable at all. A boolean
+        # support gate is OPTIONAL, because sources disagree about whether one
+        # exists: Claude Code carries `supportsEffort`, while Codex implies
+        # support purely by listing `supportedReasoningEfforts`.
+        if self.effort_key is not None and self.effort_levels_key is None:
             raise ValueError("native effort support must name its levels field")
+        if self.effort_level_key is not None and self.effort_levels_key is None:
+            raise ValueError("native effort entries need a levels field")
         if self.default_match_value is not None and (
             type(self.default_match_value) is not str or not self.default_match_value
             or len(self.default_match_value) > 200
@@ -123,19 +128,47 @@ class _ModelRowFields:
         return frozenset(modalities)
 
     def row_effort(self, row):
-        """The executor's own per-model effort answer; never a platform default."""
-        if self.effort_key is None or not row.get(self.effort_key, False):
+        """The executor's own per-model effort answer; never a platform default.
+
+        Two advertised shapes, both live: Claude Code gates on a boolean and
+        lists plain level names, while Codex omits the boolean and lists
+        objects (``{"reasoningEffort": "high", "description": ...}``). The
+        protocol names which, so neither source has to be guessed at.
+        """
+        if self.effort_levels_key is None:
             return False, ()
-        if type(row[self.effort_key]) is not bool:
-            raise ValueError("invalid native effort support")
+        if self.effort_key is not None:
+            claimed = row.get(self.effort_key, False)
+            if type(claimed) is not bool:
+                raise ValueError("invalid native effort support")
+            if not claimed:
+                return False, ()
+        elif self.effort_levels_key not in row:
+            # No boolean gate and no levels field: this model has no control.
+            return False, ()
         levels = row.get(self.effort_levels_key)
         # Claimed support whose levels are missing or malformed is refused
         # rather than downgraded: a control with invented values is worse than
         # no control, and silently dropping it would hide a protocol change.
-        if (type(levels) is not list or not levels
-                or any(type(level) is not str for level in levels)):
+        if type(levels) is not list:
             raise ValueError("invalid native effort levels")
-        return True, tuple(levels)
+        if not levels:
+            # An empty list from a source with no boolean gate is a truthful
+            # "no levels", not a fault. With a gate, support was claimed and
+            # then not named, which is a fault.
+            if self.effort_key is None:
+                return False, ()
+            raise ValueError("invalid native effort levels")
+        names = []
+        for level in levels:
+            if self.effort_level_key is not None:
+                if type(level) is not dict:
+                    raise ValueError("invalid native effort level entry")
+                level = level.get(self.effort_level_key)
+            if type(level) is not str:
+                raise ValueError("invalid native effort levels")
+            names.append(level)
+        return True, tuple(names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +189,9 @@ class NativeJsonRpcProtocol(_ModelRowFields):
     list_params_json: str = "{}"
     effort_key: str | None = None
     effort_levels_key: str | None = None
+    #: Set when a levels entry is an OBJECT rather than a bare level name;
+    #: this is the field inside it holding the name (Codex's `reasoningEffort`).
+    effort_level_key: str | None = None
     assumed_input_modalities: frozenset[str] = frozenset()
     default_match_value: str | None = None
     #: A row IS a model here, so a repeated execution id is a contradiction.
@@ -215,6 +251,9 @@ class NativeControlProtocol(_ModelRowFields):
     list_params_json: str = "{}"
     effort_key: str | None = None
     effort_levels_key: str | None = None
+    #: Set when a levels entry is an OBJECT rather than a bare level name;
+    #: this is the field inside it holding the name (Codex's `reasoningEffort`).
+    effort_level_key: str | None = None
     assumed_input_modalities: frozenset[str] = frozenset()
     default_match_value: str | None = None
     #: Rows are selectable ENTRIES, several of which may be aliases resolving to
