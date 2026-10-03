@@ -45,6 +45,7 @@ from tinyassets.command_center_names import CommandCenterNames
 from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 from tinyassets.engine_steering import OwnerSteering
+from tinyassets.engine_tool_activity import ToolActivity
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
 #: inputs_json``) accepts on the wire: the JSON TEXT, or the value itself
@@ -423,6 +424,7 @@ class RefusalsAreErrors(Middleware):
 # First added is OUTERMOST: attention acknowledges only the final bounded
 # result, then the ceiling wraps the refusal flag.
 mcp.add_middleware(OwnerSteering())
+mcp.add_middleware(ToolActivity())
 mcp.add_middleware(ConversationAttention())
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
@@ -1786,8 +1788,11 @@ _WRITE_GRAPH_CODE_NODES_CHAPTER = """\
     fix ``run()`` with ``operation=patch`` and payload ``op=update_node``, then run again.
     The same ``update_node`` op also edits a node's ``llm_policy`` in place:
     a ``{"preferred": {"provider": "<name>"}}`` dict replaces the pin, explicit
-    ``null`` clears it, omitting the key leaves it unchanged. That is a routing
-    preference, not a provider grant (see ``connect_compute``).
+    ``null`` clears it, omitting the key leaves it unchanged. Add ``"model_id"``
+    to pin a model; ``<name>`` is a source ref from read_graph
+    target=model_options, or its access method (``api_key_http``) when one such
+    source offers that model. That is a routing preference, not a provider grant
+    (see ``connect_compute``).
     ``effects`` and ``workspace`` are editable the same way, so an existing
     workflow never has to be rebuilt to change what a node does: ``"effects":
     ["authenticated_external_call"]`` (or ``["workspace"]``) declares the sink,
@@ -2005,6 +2010,32 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
          "style": ".floor{display:grid}",
          "script": "async function enter(room){...}"}
 
+    **Only these calls change what the person sees.** A UI exists in that row
+    and nowhere else. Keeping a copy under ``extensions/<name>/component.json``
+    in my own folder is fine as a working file, but editing that file changes
+    NOTHING the person looks at -- the platform never reads it. Every change has
+    to go through ``write_graph target="app_ui"`` (``add_ui``, ``replace_ui``,
+    ``edit_ui``), and I confirm it landed by reading the row back. If I edit the
+    file and tell the person their screen is updated, I am wrong.
+
+    ``version`` is the FORMAT version of this component and is always ``1``. It
+    is not a revision, a build number or a cache-buster: the app renders version
+    1 and refuses anything else, and a UI it refuses cannot be shown until the
+    field is 1 again. Nothing needs busting: the app re-reads this row after a
+    turn whose revision moved, and on the person's Refresh, and it asks for each
+    asset by its own ``sha256`` with caching off -- so there is no stale copy for
+    a version number to defeat. There is nowhere to put a build id either: a
+    field outside the ten above is refused too. To publish a change, change the
+    content with ``replace_ui`` or ``edit_ui``; the person's screen picks it up
+    on its next turn, or at once if they Refresh.
+
+    ``add_ui`` and ``replace_ui`` REFUSE a component the app could not render,
+    and the refusal says what to change -- so a receipt means the person can
+    really see it. For a UI stored before that check existed, a read tells me:
+    ``read_graph target="app_ui"`` carries ``renderable`` per UI, with ``reason``
+    and ``fix`` when it is false. Worth reading whenever someone says a screen
+    is not what I think I saved.
+
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
     does NOT run -- the only code that runs is ``script``. Bounds: the component's
     text (markup, style, script and the asset list) under 1048576 UTF-8 bytes;
@@ -2030,6 +2061,16 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``"./game/world.js"``; inside an asset module a sibling is ``"@ui/game/world.js"``.
     Anything else I vendor myself as a JS asset.
 
+    **One reserved key: "/".** My UI gets every other key, but "/" always takes
+    the person back to the chat with me -- the app focuses the composer, so a
+    screen that holds the keyboard is never a trap they cannot type their way
+    out of. I do not bind "/" to anything, and I do not need to forward it: the
+    app takes it before my UI sees it. It is NOT reserved while a text field in
+    my UI has focus, so a command box or a search field still receives "/" as
+    an ordinary character. Escape in the composer hands the keyboard back to my
+    UI. If I want a key that opens the chat with something already typed, that
+    is what the app's own chat prefill is for -- I do not reimplement "/".
+
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
     token, no reach into the surrounding page, and NO network of its own (only its
     own assets and libraries load) -- fetch,
@@ -2049,6 +2090,9 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,
                   status,started_at,finished_at,last_node_id}], has_more}
                   # newest first, at most 50; has_more says there are older
+        await tinyassets.readLive()                -> {as_of, agents:[{agent_id,name,
+                  state:"working"|"idle", since, steps:[{tool,summary,state,age_s}]}]}
+                  # each agent's live state; poll it to animate agents at work
         await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
                   error,output_fields:[...]}
         await tinyassets.readRunOutput(run_id, field, offset)
@@ -2268,7 +2312,24 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       workflow goes public with a version, and ONE definition bundles the UI, a
       ``tinyassets.branch-ref.v1`` per workflow and a
       ``tinyassets.automation-spec.v1`` per trigger (never its inputs).
-    * **Installing someone else's**: ``browse_commons kind="agents"``, then
+    * **Sharing the WHOLE command center** is the same ask with a ``package``
+      block, ``"package": {}``: the files travel too (agents' instructions and
+      skills, workspace files, ``wiki/pages``) as one versioned package. The
+      platform leaves out memory, the brain files about the person, platform
+      state, binaries and any file with a credential or contact details, and
+      lists every file either way on the tab. ``"exclude": ["<path>", ...]``
+      leaves out more; ``"memory_items": ["m_7f3a",
+      "agents/<id>/MEMORY.md#m_..."]`` shares named memory items.
+    * **Installing a whole command center**: ``browse_commons kind="packages"``,
+      then ``write_graph target="pending_request" operation="ask"
+      payload_json={"action": {"type": "install", "agent_definition_id":
+      "<the package's>"}}``. The platform checks the package, shows the person
+      what lands where, and installs only when they confirm: private copies of
+      its workflows under their published names, its screen in their library,
+      its automations PAUSED, its files written beside theirs (never over one),
+      its agent's instructions under ``agents/<name>/``. Tell them to resume the
+      automations they want.
+    * **Installing someone else's** single system: ``browse_commons kind="agents"``, then
       ``read_commons_shape agent_definition_id=...``; ``remix_shape`` each
       branch-ref's ``published_version_id``; ``add_ui`` the ``ui`` component into
       this person's ``app_ui``; create an automation per automation-spec against the
@@ -2859,9 +2920,7 @@ def write_graph(
     then a "repair" with 36 typos).** The `connections` chapter has the
     two-node shape that does it correctly.
 
-    THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is chapters I read when I need one,
-    exactly as I read a skill's SKILL.md when a request matches it:
+    THE HANDBOOK. Read the relevant chapter on demand, like a matching skill's SKILL.md:
 
     * ``branches`` -- the minimal branch that builds, field by field: a working
       one-node and two-node ``operation="create"`` payload, which keys have
@@ -3274,7 +3333,7 @@ def write_graph(
 # gated by the same current-owner admission + rate-limit as run_graph.
 # PUBLISH to the global commons is a separate,
 # consent-gated slice — deliberately NOT exposed here.
-_COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals"})
+_COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals", "packages"})
 #: Hard server-side cap on a commons browse (Codex ADAPT 2026-08-22 #7): the
 #: branch catalog is global and unbounded, so cap the rows we return to the agent
 #: to protect its context window as the commons grows. (Cursor pagination is a
@@ -3487,20 +3546,20 @@ def browse_commons(
     author: str = "",
     limit: int = 30,
 ) -> str:
-    """Browse the SHARED TinyAssets commons — automation shapes other command centers
+    """Browse the SHARED TinyAssets commons — what other command centers
     published, that you can remix into your own.
 
     THIS is the commons to use — do NOT web-search other platforms (n8n, Make,
-    Zapier). These are live, remixable TinyAssets shapes.
+    Zapier).
 
     Args:
-        kind: What to list: ``branches`` (published workflow graph shapes — the
-            main commons; each row carries a ``published_version_id`` you pass to
-            ``remix_shape``), ``agents`` (public custom agent definitions), or
-            ``goals`` (shared goals). Defaults to ``branches``.
-        query: Optional search text (agents/goals).
+        kind: ``branches`` (published workflow shapes; each row's
+            ``published_version_id`` goes to ``remix_shape``), ``agents`` (public
+            agent definitions), ``packages`` (whole command centers; install via
+            an ``install`` ask) or ``goals``. Defaults to ``branches``.
+        query: Optional search text (not branches).
         author: Optional author filter.
-        limit: Max records (agents/goals).
+        limit: Max records (not branches).
     """
     import json
 
@@ -3550,6 +3609,14 @@ def browse_commons(
             # published rows come back beside it under `own`, so the notice is
             # true for everything under `content`.
             foreign, own = _split_own_rows(raw)
+            return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
+        if normalized == "packages":
+            from tinyassets.api.package_requests import list_packages
+
+            rows = list_packages(query=(query or "").strip(), author=(author or "").strip(),
+                                 limit=max(1, min(int(limit or 30), _COMMONS_BROWSE_MAX)))
+            foreign, own = _split_own_rows(
+                json.dumps({"packages": rows, "count": len(rows)}, default=str))
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
         from tinyassets.universe_server import read_graph as _impl
 
@@ -3977,7 +4044,7 @@ def connect_compute(
 
     Do NOT try to select it by writing ``llm_policy`` on a node: the runtime reads
     only ``{"preferred": {"provider": "<name>"}}`` — a provider NAME such as
-    ``codex`` or ``claude-code``, never a ``provdef_...`` id — and a wrong key is
+    ``codex`` or ``api_key_http``, never a bare ``provdef_...`` id — and a wrong key is
     ignored, so the run fails later with ``permission_denied:provider_not_bound``.
     A workflow node normally needs NO ``llm_policy`` at all: leave it off and the run
     uses whatever provider the command center serves.
@@ -4230,6 +4297,9 @@ async def _universe_tool(op, /, **kwargs) -> str:
     try:
         return await asyncio.to_thread(op, udir, **kwargs)
     except (universe_tools.UniverseToolError, ProviderConfinementError) as exc:
+        from tinyassets.engine_tool_activity import note_refusal
+
+        note_refusal(str(exc))
         return f"error: {exc}"
 
 

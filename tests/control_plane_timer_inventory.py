@@ -63,6 +63,11 @@ SITES: dict[str, tuple[str, str]] = {
     "tinyassets/universe_seats.py::_refresh_loop": (
         CONTROL_PLANE, "account seat stamp refresh while a seat is held",
     ),
+    "tinyassets/broker/supervisor.py::BrokerSupervisor._supervise": (
+        CONTROL_PLANE,
+        "daemon-owned broker restart duty until stop(); production start_broker "
+        "still refuses activation pending the per-role UID split",
+    ),
     # -- bounded waits inside one call -----------------------------------------
     "tinyassets/agent_turn_coordinator.py::AgentTurnCoordinator._pause_before_retry": (
         CALL_SCOPED,
@@ -75,7 +80,53 @@ SITES: dict[str, tuple[str, str]] = {
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/bid/execution_log.py::_exec_log_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/bid/node_bid.py::_bid_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/boxes/local.py::LocalBoxProvider._supervise": (
+        CALL_SCOPED,
+        "host-side thread for one exec; stops at leader exit, cancel, wall or "
+        "output bound, then kills/reaps the group; not an in-box scheduler",
+    ),
+    "tinyassets/boxes/local.py::LocalBoxProvider.destroy": (
+        CALL_SCOPED,
+        "one destroy waits on its finite victim set after cancellation, with "
+        "a per-exec destroy_wait_s bound before refusing removal",
+    ),
+    "tinyassets/boxes/local.py::LocalBoxProvider.export": (
+        CALL_SCOPED, "one snapshot waits for pending mutations up to busy_wait_s",
+    ),
+    "tinyassets/boxes/local.py::LocalBoxProvider.read_many": (
+        CALL_SCOPED, "one coherent read waits for pending mutations up to busy_wait_s",
+    ),
+    "tinyassets/boxes/local.py::LocalBoxProvider.stream.events": (
+        CALL_SCOPED,
+        "caller-consumed iterator for one bounded exec; ends on terminal or "
+        "restore state, optional caller timeout, or iterator close",
+    ),
     "tinyassets/branch_tasks.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/fence.py::Fence.barrier": (
+        CALL_SCOPED,
+        "one verified fence barrier cancels older streams then waits for active "
+        "send guards to release the condition lock; no periodic wake",
+    ),
+    "tinyassets/broker/fence.py::Fence.send": (
+        CALL_SCOPED,
+        "one network-write guard waits for the barrier writer, then rechecks "
+        "generation/token and releases its reader count after the send",
+    ),
+    "tinyassets/broker/server.py::_Connection._pump_body": (
+        CALL_SCOPED,
+        "outer response pump for one admitted stream; ends at EOF, cancel, "
+        "fence refusal or the stream's absolute deadline",
+    ),
+    "tinyassets/broker/server.py::_Connection._pump_body#2": (
+        CALL_SCOPED,
+        "inner credit wait for the same response; condition wait is bounded by "
+        "the remaining stream deadline and cancellation wakes it",
+    ),
+    "tinyassets/broker/supervisor.py::BrokerSupervisor._spawn": (
+        CALL_SCOPED,
+        "one broker startup waits for its socket for at most 30 seconds, "
+        "refusing if the child exits or startup times out before fencing",
+    ),
     "tinyassets/credential_refresh.py::_hold_vault": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/credential_refresh.py::_refresh_locked": (CALL_SCOPED, "single-flight wait"),
     "tinyassets/credential_refresh.py::file_lock": (CALL_SCOPED, "lock acquisition"),

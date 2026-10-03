@@ -77,8 +77,6 @@
     .model-dialog li{margin:.5rem 0;overflow-wrap:anywhere}
     .model-dialog .model-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin:.7rem 0}
     /* chat */
-    .chat-header{display:flex;align-items:center;justify-content:space-between;padding:.8rem 1rem;
-      border-bottom:1px solid var(--line);background:var(--surface);padding-top:max(.8rem,env(safe-area-inset-top))}
     .chat-title{display:flex;align-items:center;gap:.55rem;font-weight:600}
     .universe-name{max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .chat-actions{display:flex;gap:.3rem}
@@ -160,6 +158,16 @@
     .connect-go{width:100%;margin:.6rem 0 .25rem}
     .connect-other{margin-top:.6rem}
     .connect-other summary{cursor:pointer;font-size:.8rem;color:var(--ink-dim)}
+    /* The connect screen: one heading, then each source as a small card. */
+    .connect-heading{font-size:.95rem;margin:.6rem 0 .1rem}
+    .connect-source{border-top:1px solid var(--line);padding:.55rem 0 .2rem;margin-top:.5rem}
+    .connect-source .btn{width:100%;margin-top:.4rem}
+    .connect-source-name{font-size:.85rem}
+    .connect-terms{font-size:.72rem;color:var(--muted);margin:.25rem 0}
+    /* The daily-cap card under a failed turn: plain, dismissable, never a modal. */
+    .daily-cap{border:1px solid var(--line);border-radius:10px;padding:.6rem .75rem;margin-top:.5rem}
+    .daily-cap p{margin:.2rem 0}
+    .daily-cap .rtab-row .btn{text-decoration:none}
     .connect-shapes{display:flex;flex-wrap:wrap;gap:.35rem;margin:.5rem 0}
     .connect-shapes .btn{padding:.3rem .6rem;font-size:.8rem}
     .connect-shapes .btn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
@@ -276,11 +284,39 @@
     #ui-frame-host{position:absolute;inset:0;display:flex;min-height:0}
     .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
     /* The chat cloud: the conversation floats over the command center. */
+    #cc-blank{position:absolute;inset:0;padding:2rem;box-sizing:border-box;background:var(--bg)}
+    #cc-blank[hidden]{display:none}
+    #cloud-menu{position:absolute;right:.5rem;top:2.5rem;z-index:10;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.4rem}
+    #cloud-menu button{display:block}
+    .chat-cloud-bar .universe-name{max-width:40%;font-size:.82rem}
     .chat-stage{position:relative;flex:1;min-height:0;overflow:hidden}
+    /* With no header, the stage itself keeps clear of a phone's status bar. */
+    .view--chat{padding-top:env(safe-area-inset-top)}
     .chat-cloud{position:absolute;display:flex;flex-direction:column;min-width:0;min-height:0;
       background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
       box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;z-index:5}
     .chat-cloud[data-mode="bubble"]{display:none}
+    /* WHICH SURFACE HAS THE KEYBOARD. Two surfaces share one window and a
+       focused cross-origin frame swallows keys, so the owner is never a guess:
+       the surface holding it wears an accent ring (founder, 2026-10-03, after
+       getting stuck in a UI with no visible way back). Rings are INSET so the
+       phone layout, where the cloud fills the stage with square corners,
+       cannot clip them; 2px reads at 390px wide. --accent carries it, as it
+       does every other focus ring on the page. */
+    .chat-stage[data-keys="chat"] #chat-cloud{border-color:var(--accent);
+      box-shadow:inset 0 0 0 2px var(--accent),0 12px 40px rgba(0,0,0,.45)}
+    .chat-stage[data-keys="chat"] #chat-cloud-bubble{border-color:var(--accent);
+      box-shadow:inset 0 0 0 2px var(--accent),0 8px 24px rgba(0,0,0,.45)}
+    .chat-stage[data-keys="cc"] #ui-frame-host:not([hidden]),
+    .chat-stage[data-keys="cc"] #cc-blank:not([hidden]){
+      box-shadow:inset 0 0 0 2px var(--accent)}
+    /* The way back, said in the chat's own bar while the keys are elsewhere. */
+    .chat-cloud-hint{font-size:.72rem;color:var(--ink-dim);white-space:nowrap;flex:0 0 auto}
+    .chat-stage[data-keys="chat"] .chat-cloud-hint{visibility:hidden}
+    /* Hidden only where the bar genuinely has no room -- a phone's 390px cloud,
+       where there is no "/" key on a touch keyboard anyway. The default desktop
+       cloud is 440px wide, so the threshold sits below that on purpose. */
+    @container (max-width:400px){.chat-cloud-hint{display:none}}
     .chat-cloud-bar{display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem .3rem .9rem;
       background:var(--surface);border-bottom:1px solid var(--line);cursor:grab;touch-action:none;
       user-select:none;flex:0 0 auto}
@@ -321,17 +357,10 @@
     @keyframes cloud-pulse{0%,100%{box-shadow:0 0 0 0 rgba(120,140,255,.55)}50%{box-shadow:0 0 0 8px rgba(120,140,255,0)}}
     @media (prefers-reduced-motion:reduce){.chat-cloud-bubble.is-thinking{animation:none;outline:2px dashed var(--accent)}}
     #ui-mode{font-size:.8rem}
-    #btn-header-menu{display:none}
     @media (max-width:600px){
-      #view-chat > .chat-header{position:relative;flex:0 0 auto;min-height:52px;box-sizing:border-box;
-        padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));
-        gap:8px;z-index:20}
-      #view-chat .chat-title{min-width:0;flex:1}
-      #universe-name{max-width:none;min-width:0}
-      #btn-header-menu{display:block;flex:none;padding:6px 10px}
-      #view-chat .chat-actions{display:none;position:absolute;top:100%;right:8px;flex-direction:column;
-        padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #0008}
-      #view-chat .header-menu--open .chat-actions{display:flex}
+      #chat-cloud-bar{flex-wrap:nowrap;min-height:40px}
+      #chat-cloud-bar button{min-width:36px;min-height:36px}
+      #cloud-menu button{min-height:40px}
       #chat-cloud{border-radius:0}
       #chat-cloud-resize{display:none}
       #chat-cloud-body > *{flex:0 0 auto}
@@ -381,27 +410,6 @@
 
     <!-- Signed-in: the single chat thread. -->
     <section id="view-chat" class="view view--chat" hidden>
-      <header class="chat-header">
-        <div class="chat-title">
-          <span id="dot" class="dot" title="checking..."></span>
-          <span id="universe-name" class="universe-name">Your command center</span>
-        </div>
-        <button id="btn-header-menu" class="btn btn--ghost" type="button"
-                aria-haspopup="true" aria-expanded="false" aria-label="Menu">&#9776;</button>
-        <nav class="chat-actions">
-          <span id="ui-mode" hidden></span>
-          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
-          <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
-          <button id="btn-account" class="btn btn--link">Account</button>
-          <button id="btn-signout" class="btn btn--link">Sign out</button>
-        </nav>
-      </header>
-      <div id="history-error" class="muted history-error" role="status" hidden></div>
-      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
-        <span id="notify-prompt-text" class="notify-prompt-text"></span>
-        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
-        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
-      </div>
       <!-- The stage is the command center: a custom UI fills it, and the chat with
            your agent floats above it as a movable, resizable "chat cloud" that can
            shrink to a bubble. Every element of the chat keeps its id. -->
@@ -409,18 +417,46 @@
       <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
            sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
            bundle markup, style or script is ever assigned into this document. -->
+      <div id="cc-blank" tabindex="-1" aria-label="Command center">
+        <p>Your command center is empty.</p>
+        <p>Build your own with your agent, or try one.</p>
+        <button id="btn-cc-build" class="btn" type="button">Build one with my agent</button>
+        <button id="btn-cc-try" class="btn" type="button">Try one</button>
+        <div id="cc-blank-picker"></div>
+      </div>
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
       <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
            aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
            aria-describedby="chat-cloud-title">
+        <span id="dot" class="dot" title="checking..."></span>
+        <span id="universe-name" class="universe-name">Your command center</span>
+        <button id="btn-cloud-menu" class="chat-cloud-btn" type="button" aria-label="Command center menu" aria-haspopup="true" aria-expanded="false" aria-controls="cloud-menu">&#8943;</button>
+        <div id="cloud-menu" hidden>
+          <span id="ui-mode" hidden></span>
+          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
+          <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
+          <button id="btn-account" class="btn btn--link">Account</button>
+          <button id="btn-signout" class="btn btn--link">Sign out</button>
+        </div>
         <span id="chat-cloud-title" class="chat-cloud-title">Your agent</span>
+        <!-- Shown only while the command center has the keyboard: the one key
+             that always comes back here. Hidden, not removed, so the bar does
+             not reflow as focus moves. -->
+        <span id="chat-cloud-hint" class="chat-cloud-hint" aria-hidden="true">Press / to chat</span>
         <button id="btn-cloud-shrink" class="chat-cloud-btn" type="button"
                 aria-label="Shrink the chat to a bubble" aria-controls="chat-cloud-body"
                 aria-expanded="true" title="Shrink">&#8211;</button>
       </div>
       <div id="chat-cloud-body" class="chat-cloud-body">
+      <div id="history-error" class="muted history-error" role="status" hidden></div>
+      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
+        <span id="notify-prompt-text" class="notify-prompt-text"></span>
+        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
+        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
+      </div>
+
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
@@ -500,7 +536,14 @@
                the notification request"). ONE node: renderRail moves it into the
                request's tab, so what the user typed survives the rail refresh. -->
           <div id="connect-panel" class="connect-panel" hidden>
-            <div id="free-source-cards"></div>
+            <!-- The connect screen (founder 2026-10-02): the guided free sign-in
+                 first, a backup free source, a subscription for more volume, and
+                 pasted keys folded away. Every provider name arrives as data. -->
+            <div id="connect-intro" hidden>
+              <h3 class="connect-heading">Connect free AI</h3>
+              <span class="rtab-help">Your agent thinks with AI you connect. Each source runs on
+                your own account there, and you approve it at the provider.</span>
+            </div>
             <div id="connect-primary">
               <button id="btn-hosted-model" class="btn btn--primary connect-go" type="button"></button>
               <span id="connect-primary-note" class="rtab-help">Free models only; nothing is bought.
@@ -521,6 +564,23 @@
             </div>
             <a id="hosted-manage-link" class="rtab-link" data-external target="_blank"
               rel="noreferrer noopener" hidden>Manage your keys there</a>
+            <!-- Ordered by what an agent can actually run on: the guided sign-in
+                 above, then pasted keys (largest daily allowances first, as data),
+                 then the small monthly sign-in source, then a subscription. -->
+            <details id="connect-paste" class="connect-other" hidden>
+              <summary id="connect-paste-summary">Paste a key</summary>
+              <div id="free-source-cards"></div>
+            </details>
+            <div id="connect-sign-in-sources"></div>
+            <div id="connect-subscriptions"></div>
+            <div id="sub-signin" class="connect-source" hidden>
+              <div id="sub-signin-code" class="rtab-note" hidden>
+                <span id="sub-signin-code-value"></span>
+                <a id="sub-signin-code-link" class="rtab-link" data-external target="_blank"
+                  rel="noreferrer noopener">Open the sign-in page</a>
+              </div>
+              <div id="sub-signin-result" class="rtab-note" role="status" aria-live="polite"></div>
+            </div>
             <details id="connect-other" class="connect-other">
               <summary>Other ways to connect</summary>
               <div id="connect-shapes" class="connect-shapes" role="group" aria-label="How to connect"></div>
@@ -693,6 +753,7 @@
         Your history and designs stay. Your provider account is not deleted.
         Requests already sent may still finish.</p>
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
+        <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
         <h3>Your agent's rules</h3>
@@ -1933,6 +1994,16 @@
   let seatWait=null;
   let seatLineShown=false;
   function readServerTurn(payload){
+    const wasLive=serverTurnLive();
+    readServerTurnRow(payload);
+    if(serverTurnLive() || activeTurn) return;
+    // A turn this page did not start just ended: its reply is drawn, and what it
+    // did not take (steered lines left undelivered) comes back from the server.
+    if(wasLive){ finishActiveTurn(); restoreHeldSteers(); return; }
+    // Idle and something waits: send it (a missed transition never strands it).
+    if(sendQueue.length) flushSendQueue();
+  }
+  function readServerTurnRow(payload){
     const deploy=payload&&payload.deploy_pending;
     deployPending=!!deploy&&typeof deploy==="object"&&deploy.pending===true;
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
@@ -1954,6 +2025,7 @@
       &&row.round_age_s>=0)?row.round_age_s:null;
     serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
       startedMs:Date.now()-age*1000,observedAt:Date.now(),
+      tools:Array.isArray(row.tools)?row.tools:[],
       round:(Number.isInteger(row.round)&&row.round>0)?row.round:0,
       model:(typeof row.model==="string")?row.model:"",
       roundSinceMs:roundAge===null?0:Date.now()-roundAge*1000};
@@ -1991,6 +2063,30 @@
     const button=$("btn-try-model");
     if(!button) return;
     button.hidden=!(waitDetail()&&waitMinutes()>=TRY_MODEL_AFTER_MIN);
+  }
+  // What the agent's tools are doing, newest call first (harness S4): said on
+  // the ONE status line, after the sentence it already shows, never as a second
+  // indicator. Only this owner's own thread is reported by the server.
+  function toolLine(){
+    const t=serverTurnLive()&&serverTurn.tools&&serverTurn.tools[0];
+    if(!t||typeof t.tool!=="string"||!t.tool) return "";
+    const what=t.tool+(t.summary?": "+String(t.summary):"");
+    if(t.state==="running") return "running "+what;
+    if(t.state==="failed") return "ran "+what+" (failed"+(t.error?": "+String(t.error):"")+")";
+    return "ran "+what;
+  }
+  const TOOL_SEP=" \u00b7 ";
+  // The working sentence other paths write ("Your agent is thinking...", the
+  // agent being the actor). The older wording is still recognised so a line
+  // written before an update keeps its tool step.
+  const THINKING_LINE=/^Your (agent|universe) is thinking\.\.\./;
+  function paintToolLine(){
+    const line=$("status-line");
+    const text=String(line.textContent||"");
+    if(!THINKING_LINE.test(text)||waitDetail()) return;
+    const base=text.split(TOOL_SEP)[0], tl=toolLine();
+    const next=tl?base+TOOL_SEP+tl:base;
+    if(next!==text) setStatusLine(next);
   }
   function serverTurnLive(){
     return !!serverTurn && (Date.now()-serverTurn.observedAt)<3*STATUS_WORKING_MS;
@@ -2178,6 +2274,7 @@
       }else if(ownDetailLine&&!detail&&mine){
         setStatusLine("Your agent is thinking..."); ownDetailLine=false;
       }
+      paintToolLine();
       return;
     }
     ownDetailLine=false;
@@ -2192,7 +2289,8 @@
     // at a turn they have no other evidence of.
     const detail=[elapsed,waitDetail(),"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
-    setStatusLine("Your agent is thinking... " + detail);
+    const tl=toolLine();
+    setStatusLine("Your agent is thinking... " + detail + (tl?TOOL_SEP+tl:""));
   }
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The command center's actual
@@ -2496,13 +2594,20 @@
         this.capability=null;this.disclosureOpen=false;$("voice-disclosure").hidden=true;
         this.returnFocus=null;this.state="checking";
         this._render("Voice capability could not be confirmed. Typed chat still works.");
-      }finally{this.acceptingDisclosure=false;button.disabled=false;}
+      }finally{
+        this.acceptingDisclosure=false;button.disabled=false;
+        if(!this.disclosureOpen && typeof focusCommandCenter === "function" &&
+           !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+           !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
+      }
     },
     cancelDisclosure(){
       this.disclosureOpen=false;$("voice-disclosure").hidden=true;
       const target=this.returnFocus&&typeof this.returnFocus.focus==="function"
         ?this.returnFocus:$("btn-voice");
-      target.focus(); this.returnFocus=null;
+      if(typeof isTypingTarget === "function" && isTypingTarget(target)) target.focus();
+      else if(typeof focusCommandCenter === "function") focusCommandCenter();
+      this.returnFocus=null;
     },
     async _session(offerSdp){
       await ensureFreshToken();
@@ -3018,9 +3123,10 @@
     error.failureRecorded=recorded;
     error.historySaved=recorded&&payload.history_saved===true;
     error.failureCode=recorded?failure.code:"";
+    error.failure=recorded?failure:null;
     return error;
   }
-  function appendFailureNotice(text,original,instant,failureCode){
+  function appendFailureNotice(text,original,instant,failureCode,failure){
     // No guessed/page-truncated original, no automatic replay. A saved failure
     // remains history; a user click starts a NEW turn rather than erasing it.
     let again=null;
@@ -3042,6 +3148,9 @@
       connect.className="btn btn--link"; connect.textContent="Connect a model";
       connect.addEventListener("click",()=>openConnectRequest());
       note.appendChild(connect);
+    }
+    if(failureCode==="provider_daily_quota"&&failure&&typeof DailyCapCard!=="undefined"){
+      note.appendChild(DailyCapCard.build(failure));
     }
     return note;
   }
@@ -3145,7 +3254,7 @@
       const menu=$("model-menu");if(!menu||menu.hidden) return;
       menu.hidden=true;menu.replaceChildren();
       $("btn-models").setAttribute("aria-expanded","false");
-      if(!opts||opts.restoreFocus!==false) $("btn-models").focus();
+      if((!opts||opts.restoreFocus!==false) && typeof focusCommandCenter === "function") focusCommandCenter();
     },
     menuItems(){
       return Array.from(($("model-menu")||{children:[]}).children)
@@ -3624,7 +3733,6 @@
         this.menuClose({restoreFocus:false});
       });
       $("btn-model-close").addEventListener("click",()=>$("model-dialog").close());
-      $("model-dialog").addEventListener("close",()=>$("btn-models").focus());
       $("btn-model-refresh").addEventListener("click",()=>this.refresh());
       $("btn-model-fallback-add").addEventListener("click",()=>this.addFallback($("model-fallback-add").value));
       $("btn-model-restore").addEventListener("click",()=>this.restoreAccess());
@@ -3643,12 +3751,18 @@
   // does: another founder signing in on this browser must never be shown, or
   // offered to resend, a message this one held - nor the filenames it names
   // (Fable 21633 on the app byte-intake shape, 2026-09-20).
-  function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null){
+  function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null,
+                            agent=null){
     const record={message, display: display||message,
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
-       agent:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
+       // The agent this turn was SENT to. A pinned line (a claimed held line)
+       // names it, because the owner may have switched agents since: the
+       // record has to describe the turn on the wire, not the screen, or the
+       // recovery offer reappears under the wrong agent.
+       agent:String((typeof agent==="string"&&agent)||
+         (typeof addressedAgentId==="function"?addressedAgentId():"main")),
        owner:queueOwner,
        scope:queueScope,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()};
@@ -3693,7 +3807,8 @@
       if(opts.keepInflight)throw new Error("Resolve the earlier unconfirmed conversation first.");
       opts.consumerRequest={version:1,request_key:crypto.randomUUID(),
         binding_id:s.binding_id,binding_revision:s.binding_revision};
-      rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+      rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest,
+        opts.agentId);
       const saved=readInflight();
       if(!saved||JSON.stringify(saved.consumerRequest)!==JSON.stringify(opts.consumerRequest))
         throw new Error("Could not save safe conversation recovery. No workflow was started.");
@@ -3938,9 +4053,19 @@
     // AND the home, it cannot tell an own row from a stranger's, so it says
     // nothing and leaves every row on disk.
     if(queueRestored || !queueScope || !queueOwner) return; queueRestored=true;
-    const now=Date.now();
+    // Read the device's own saved rows FIRST: restoring the server's lines
+    // saves the queue, and must keep every row this device was holding.
     retainedItems=readSavedQueue();
-    retainedItems.forEach(i=>offerSavedLine(i, now));
+    const offer=(serverLines)=>{
+      const now=Date.now();
+      // A line the server holds is already queued again above; its copy saved
+      // on this device is not offered a second time.
+      retainedItems=retainedItems.filter(i=>!(ownsSavedRow(i)&&serverLines.includes(i.message)));
+      saveQueue();
+      retainedItems.forEach(i=>offerSavedLine(i, now));
+    };
+    if(typeof fetch!=="function"){ offer([]); return; }
+    restoreHeldSteers().then(offer, ()=>offer([]));
   }
   function offerSavedLine(item, now){
     // OWNERSHIP FIRST, and it is the SAME rule the in-flight record uses. A
@@ -4018,8 +4143,19 @@
     return group;
   }
   function flushBatch(){
-    const group=takeBatch();
+    const taken=takeBatch();
     saveQueue();
+    if(!taken.length) return flushSendQueue();
+    if(taken.some(item=>item.heldId)){
+      claimHeldLines(taken).then(kept=>{
+        taken.filter(item=>kept.indexOf(item)<0).forEach(alreadyHandled);
+        sendBatch(kept);
+      });
+      return;
+    }
+    sendBatch(taken);
+  }
+  function sendBatch(group){
     if(!group.length) return flushSendQueue();
     group.forEach(item=>unmarkQueued(item.bubble));
     const methods=group.map(item=>turnInputMethod(item.opts.inputMethod));
@@ -4037,6 +4173,8 @@
     // that also sits in this queue: nothing goes out until it does.
     if(pendingSteers>0){ steerHeldBatch=steerHeldBatch||batch===true; return; }
     if(sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
+    // A turn this page did not start is still running: everything waits for it.
+    if(!activeTurn && serverTurnLive()) return;
     if(batch===true) return flushBatch();
     const next=sendQueue.shift();
     // A queued line goes out only under the account and home that queued it.
@@ -4053,6 +4191,16 @@
     }
     if(claimedElsewhere(next)){ unmarkQueued(next.bubble); saveQueue(); return flushSendQueue(); }
     saveQueue();
+    if(next.heldId){
+      claimHeldLines([next]).then(kept=>{
+        if(kept.length){
+          unmarkQueued(next.bubble);
+          sendTurn(next.message, next.display, next.opts)
+            .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
+        }else{ alreadyHandled(next); flushSendQueue(); }
+      });
+      return;
+    }
     // Its turn starts now: from here it is a sent message like any other.
     unmarkQueued(next.bubble);
     // A rejection before sendTurn's own try/finally (a missing node) must not
@@ -4126,6 +4274,140 @@
     el.appendChild(note); el.steeredNote=note;
     return el;
   }
+  // A queued line's honest state: saved on the server for the next turn, or
+  // kept only on this device because the server could not be reached.
+  function markHeld(el, saved){
+    if(!el) return el;
+    if(el.heldNote&&el.heldNote.remove) el.heldNote.remove();
+    const note=document.createElement("span");
+    note.className="msg-steered-note";
+    note.textContent=saved
+      ? "Saved \u2014 your agent gets this as soon as its current work ends."
+      : "Not saved yet \u2014 kept on this device; it goes out when your agent finishes.";
+    el.appendChild(note); el.heldNote=note;
+    return el;
+  }
+  // Held lines are removed from the server's keeping before this page sends
+  // them itself, atomically: a line another tab or a turn already took comes
+  // back unclaimed and is not sent again. Unreachable server: sent as before
+  // (the next turn's carryover check still drops an exact repeat).
+  async function claimHeldLines(items){
+    const ids=items.filter(i=>i.heldId).map(i=>i.heldId);
+    if(!ids.length) return items;
+    // PINNED before the request suspends. A claim DELETES the server's copy,
+    // and the lines are already out of the queue -- which is what lets
+    // addressAgent switch while this is in flight. So the claim and the send
+    // that follows it must name the one agent the line was held for, or the
+    // line is deleted from one agent's thread and spoken to another's
+    // (gpt-6-astra on #4290, P1). Dropping the line instead is not an option:
+    // its server copy is gone.
+    const agent=pinLineAgent(items);
+    let doc=null;
+    try{
+      const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:queueScope,claim:ids,agent_id:agent})});
+      doc=r.ok?await r.json():null;
+    }catch(e){ doc=null; }
+    if(!doc||!Array.isArray(doc.claimed)) return items;
+    return items.filter(i=>!i.heldId||doc.claimed.indexOf(i.heldId)>=0);
+  }
+  // The agent a queued line belongs to, written onto the line itself so every
+  // later step reads the same answer. The precedence is captureTurnOptions's,
+  // so a pinned line and a fresh send resolve their agent identically.
+  function pinLineAgent(items){
+    const live=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const held=items.filter(i=>i&&i.heldId);
+    const first=held.length?held[0]:items[0];
+    const agent=String((first&&first.opts&&typeof first.opts.agentId==="string"
+      &&first.opts.agentId)||live);
+    items.forEach(item=>{ if(item&&item.opts) item.opts.agentId=agent; });
+    return agent;
+  }
+  function alreadyHandled(item){
+    unmarkQueued(item.bubble);
+    if(item.bubble&&item.bubble.heldNote) item.bubble.heldNote.textContent=
+      "Already passed to your agent.";
+  }
+  // The message a running turn is answering, drawn after a reload with the
+  // working state on it (P2, live 2026-10-02: a reload mid-turn showed neither
+  // the message nor that it was being worked on, so it was sent twice).
+  let watchedActive=null, lastActiveText="";
+  function showActiveTurn(active){
+    if(!active||typeof active.text!=="string"||!active.text||watchedActive||
+       active.text===lastActiveText) return false;
+    lastActiveText=active.text;
+    const bubble=appendMessage("founder", active.text, null,
+      typeof active.started_at==="number"?active.started_at:Date.now()/1000);
+    if(bubble){
+      const note=document.createElement("span");
+      note.className="msg-steered-note";
+      note.textContent="Your agent is working on this.";
+      bubble.appendChild(note); bubble.workingNote=note;
+    }
+    watchedActive={text:active.text, bubble};
+    return true;
+  }
+  // That turn ended: its reply is drawn under the message, read from the store.
+  async function finishActiveTurn(){
+    const watched=watchedActive; if(!watched) return;
+    watchedActive=null;
+    if(watched.bubble&&watched.bubble.workingNote&&watched.bubble.workingNote.remove)
+      watched.bubble.workingNote.remove();
+    let r=null;
+    try{ r=await Owner.getConversation(); }catch(_e){ return; }
+    const turns=(r&&r.recent_conversation&&Array.isArray(r.recent_conversation.turns))
+      ? r.recent_conversation.turns : [];
+    let at=-1;
+    turns.forEach((t,i)=>{ if(t&&t.speaker==="founder"&&t.text===watched.text) at=i; });
+    if(at>=0) drawHistoryTurns(turns.slice(at+1));
+    const held=readInflight();
+    if(held&&held.message===watched.text) forgetInflightIf(held);
+  }
+  // What the server holds or is running for this thread, read once.
+  async function readPendingTurns(){
+    const agentNow=()=>(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const owner=queueOwner, scope=queueScope, epoch=MCP._loginEpoch, agent=agentNow();
+    try{
+      const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:scope,agent_id:agent})});
+      const doc=r.ok?await r.json():null;
+      // The agent this asked FOR, as well as the account and home: an answer
+      // landing after the owner switched agents holds ANOTHER thread's lines.
+      if(!doc||epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope||
+         agent!==agentNow()) return null;
+      return doc;
+    }catch(e){ return null; }
+  }
+  // After a reload: what the server still holds for this thread comes back on
+  // screen -- a line saved for the next turn is queued again and goes out when
+  // the work ends; one already handed to the running turn shows as sent there.
+  async function restoreHeldSteers(){
+    const doc=await readPendingTurns();
+    if(!doc||!Array.isArray(doc.pending)) return [];
+    if(doc.active && !activeTurn) showActiveTurn(doc.active);
+    const restored=[];
+    // The agent this answer is FOR: readPendingTurns asked for it by name and
+    // refuses an answer that lands after a switch, so a restored line is
+    // stamped with it rather than with whichever agent is on screen later.
+    const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    for(const line of doc.pending){
+      const text=line&&typeof line.text==="string"?line.text:"";
+      if(!text||sendQueue.some(q=>q.message===text)) continue;
+      if(line.state==="steered"){
+        markSteered(appendMessage("founder", text, null,
+          (typeof line.created_at==="number"?line.created_at:Date.now()/1000)));
+      }else{
+        queueTurn(text, text, {inputMethod:"typed", keepComposer:true, agentId:agent});
+        const item=sendQueue[sendQueue.length-1];
+        if(item&&item.message===text){ item.heldId=line.id; markHeld(item.bubble, true); }
+      }
+      restored.push(text);
+    }
+    if(!activeTurn && !serverTurnLive()) flushSendQueue();
+    return restored;
+  }
   function unmarkSteered(el){
     if(el&&el.steeredNote&&el.steeredNote.remove) el.steeredNote.remove();
     if(el) el.steeredNote=null;
@@ -4136,8 +4418,8 @@
     // takes it.
     const before=sendQueue.length;
     queueTurn(message, display, opts);
-    const plain=!interruptPending && !!activeTurn && !opts.relay && !opts.echoed &&
-      !opts.consumerRequest && (!display || display===message);
+    const plain=!interruptPending && (!!activeTurn || serverTurnLive()) && !opts.relay &&
+      !opts.echoed && !opts.consumerRequest && (!display || display===message);
     const item=sendQueue.length>before ? sendQueue[sendQueue.length-1] : null;
     // Folded into an identical queued line, or returned to the composer when
     // the queue is full: nothing new to steer.
@@ -4153,8 +4435,13 @@
       doc=r.ok?await r.json():null;
     }catch(e){ doc=null; }
     finally{ pendingSteers--; }
-    if(epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
-       doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    const same=epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    if(same&&doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    // No turn could take it: the server SAVED it for the next one. It stays
+    // queued here too and goes out when the work ends; the next turn does not
+    // repeat a line its own message already carries.
+    else if(same&&doc&&doc.held===true){ item.heldId=doc.steer_id; markHeld(item.bubble, true); }
+    else if(same) markHeld(item.bubble, false);
     // The turn may have ended while this request was out: what was held goes now.
     if(pendingSteers===0 && !activeTurn){
       const batch=steerHeldBatch; steerHeldBatch=false; flushSendQueue(batch);
@@ -4205,7 +4492,13 @@
 
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
-    if($("btn-send").disabled || interruptPending) return steerOrQueue(message, display, opts);
+    // A turn running on the server that this page did not start (another
+    // window, an answered request) is just as busy as this page's own: a send
+    // now steers or waits, never starts a second turn beside it (P1, live
+    // 2026-10-02: such a send was lost).
+    const otherTurn=!activeTurn && serverTurnLive();
+    if($("btn-send").disabled || interruptPending || otherTurn)
+      return steerOrQueue(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the command center (file content
     // embedded verbatim). They differ only when an attachment rode along.
@@ -4217,7 +4510,8 @@
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
     if(!opts.keepInflight) rememberInflight(
-      message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null);
+      message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null,
+      opts.agentId);
     // A relayed answer or a side send did not come from the composer: what
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
@@ -4266,7 +4560,7 @@
       // at a parser string with nothing to do (founder, 2026-08-28).
       if(err.historySaved){
         if(!opts.keepInflight)forgetInflight();
-        appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode);
+        appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode,err.failure);
       }else{
         unconfirmed=!!(err&&err.transport)&&!err.notSent;
         offerResend(message, display, err, Object.assign({}, opts||{}, {sentAt}));
@@ -4330,7 +4624,7 @@
     if($("btn-send").disabled || interruptPending) throw new Error("voice_turn_busy");
     const opts=captureTurnOptions({inputMethod:"spoken"});
     appendMessage("founder",message);
-    rememberInflight(message,message,undefined,"spoken",opts.modelChoice);
+    rememberInflight(message,message,undefined,"spoken",opts.modelChoice,null,opts.agentId);
     // A spoken turn takes the composer too, so a typed turn's late cleanup can
     // see that it is no longer the one holding it.
     const myTurn={}; activeTurn=myTurn;
@@ -4372,7 +4666,7 @@
       if(error&&error.authRequired){ sessionExpired(); throw error; }
       if(error.historySaved){
         forgetInflight();
-        appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode);
+        appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode,error.failure);
       }else{
         unconfirmed=!!(error&&error.transport)&&!error.notSent;
         offerResend(message,message,error,
@@ -4738,7 +5032,7 @@
   // ---- Chat cloud -------------------------------------------------------------
   // The chat with an agent floats over the command center as a "chat cloud" the
   // owner can move, resize and shrink to a bubble (founder, 2026-10-02). It
-  // starts BIG for an owner with no command-center layout and SMALL when a
+  // starts MEDIUM for an owner with no command-center layout and SMALL when a
   // layout is active; once the owner moves, resizes or shrinks it, their last
   // state is restored instead. Remembered per owner, per agent and per viewport
   // class, because a phone and a desktop want different windows. There is no
@@ -4746,6 +5040,204 @@
   const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
         CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
   let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
+  function refreshCommandCenter(){
+    $("cc-blank").hidden=!$("ui-frame-host").hidden;
+  }
+  function isTypingTarget(el){
+    if(!el) return false;
+    const tag=(el.tagName||"").toLowerCase();
+    return el.isContentEditable===true || tag==="textarea" || tag==="select" ||
+      (tag==="input" && !["button","submit","checkbox","radio","range","file","color","reset","image"].includes((el.type||"text").toLowerCase()));
+  }
+  function focusCommandCenter(){
+    const frame=$("ui-frame");
+    if(frame){
+      frame.setAttribute("tabindex","0"); frame.focus();
+      if(frame.contentWindow){
+        // Restore native frame focus now; the queued body handoff must not
+        // later override a newer composer or menu gesture.
+        frame.contentWindow.focus();
+        frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
+      }
+    }else if($("cc-blank")) $("cc-blank").focus();
+    if(typeof paintKeyboardOwner==="function") paintKeyboardOwner();
+  }
+  // ---- Which surface owns the keyboard, and the way out -----------------------
+  // The chat and the command center share one window, and a focused
+  // cross-origin frame swallows every key. So the owner is SHOWN (an accent
+  // ring, paintKeyboardOwner) and there is one key that always leads back to
+  // the chat (CHAT_KEY), because a person who cannot tell where their typing
+  // goes has no way to find out by trying (founder, 2026-10-03).
+  const CHAT_KEY="/";
+  function keyboardOwner(){
+    const active=document.activeElement;
+    if(active && active.closest && active.closest("#chat-cloud, #chat-cloud-bubble"))
+      return "chat";
+    // Nothing focused is the COMMAND CENTER's: forwardCommandCenterKey sends
+    // those keys to the frame, so saying "chat" would be a lie.
+    return "cc";
+  }
+  function paintKeyboardOwner(){
+    const stage=$("chat-stage");
+    if(!stage) return;
+    stage.dataset.keys=keyboardOwner();
+  }
+  // The guaranteed way IN. Opens the cloud first when it is a bubble, so the
+  // key works from every state rather than only the ones where chat is visible.
+  function focusChatComposer(){
+    const input=$("composer-input");
+    if(!input) return false;
+    if(cloudState && cloudState.mode==="bubble") setChatCloudMode("open");
+    input.focus();
+    paintKeyboardOwner();
+    return true;
+  }
+  // CHAT_KEY, and Enter when nothing in the chat holds the keys, land in the
+  // composer. Runs before forwardCommandCenterKey, which skips an event whose
+  // default is already prevented, so the frame never also receives it.
+  function reservedChatKey(event){
+    if(event.defaultPrevented) return;
+    if(event.ctrlKey || event.metaKey || event.altKey) return;
+    if(event.key!==CHAT_KEY && event.key!=="Enter") return;
+    const target=event.target;
+    // A text field keeps the key wherever it is: the composer, a dialog, or a
+    // field in this document. Typing "/" is typing "/".
+    if(typeof isTypingTarget==="function" && isTypingTarget(target)) return;
+    if(target && target.closest && target.closest("dialog[open]")) return;
+    if(target && target.closest && !$("cloud-menu").hidden && target.closest("#cloud-menu")) return;
+    // Enter still activates whatever control has focus.
+    if(event.key==="Enter" && target && target.closest &&
+       target.closest("button, a, [role=button]")) return;
+    if(keyboardOwner()==="chat") return;
+    event.preventDefault();
+    focusChatComposer();
+  }
+  function cloudCoversStage(){
+    const cloud=$("chat-cloud"), stage=$("chat-stage");
+    if(!cloud || !stage || !cloudState || cloudState.mode!=="open") return false;
+    if(window.matchMedia("(max-width:600px)").matches) return true;
+    const c=cloud.getBoundingClientRect(), s=stage.getBoundingClientRect();
+    return c.x===s.x && c.y===s.y && c.width===s.width && c.height===s.height;
+  }
+  function forwardCommandCenterKey(event){
+    const frame=$("ui-frame"), host=$("ui-frame-host");
+    if(!frame || !host || host.hidden || !frame.contentWindow) return;
+    const target=event.target;
+    if(event.defaultPrevented || event.key==="Tab" ||
+       (typeof isTypingTarget === "function" && isTypingTarget(target))) return;
+    if(target.closest && (target.closest("dialog[open]") ||
+       (!$("cloud-menu").hidden && target.closest("#cloud-menu")))) return;
+    if((event.key==="Enter" || event.key===" ") && target.closest &&
+       target.closest("button, a, [role=button]")) return;
+    const {key,code,shiftKey,altKey,ctrlKey,metaKey,repeat}=event;
+    frame.contentWindow.postMessage({ta_ui:1,type:"key",key,code,shiftKey,altKey,ctrlKey,metaKey,repeat,
+      phase:event.type==="keyup" ? "up" : "down"},"*");
+    event.preventDefault();
+  }
+  // Puts text in the chat input without sending it, opening the cloud first if
+  // it is a bubble. The one entry point for "start this sentence for me": the
+  // blank command center's button, and the default bundle's chat.prefill.
+  function chatCloudPrefill(text){
+    if(cloudState && cloudState.mode==="bubble") setChatCloudMode("open");
+    const input=$("composer-input");
+    if(!input) return;
+    input.value=String(text||""); input.focus();
+    input.setSelectionRange(input.value.length,input.value.length);
+  }
+  // TEMPORARY: #cc-blank and these two buttons stand in until cc-package's
+  // platform-default command-center bundle lands; that change mounts the bundle
+  // in the frame when no layout is active and deletes #cc-blank, so
+  // focusCommandCenter only ever targets the frame (one code path).
+  function ccBlankBuild(){ chatCloudPrefill("Build me a command center for "); }
+  function ccBlankTryOne(){ $("btn-ui-switch").click(); }
+  function closeCloudMenu(){
+    if($("cloud-menu").hidden) return;
+    $("cloud-menu").hidden=true;
+    $("btn-cloud-menu").setAttribute("aria-expanded","false");
+    if(!(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement))) focusCommandCenter();
+  }
+  function wireCommandCenter(){
+    $("btn-cc-build").addEventListener("click",ccBlankBuild);
+    $("btn-cc-try").addEventListener("click",ccBlankTryOne);
+    $("view-chat").addEventListener("pointerdown",event=>{
+      if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
+        // Avoid the pointer's default focus step undoing the handoff; buttons still click.
+        if(!event.target.closest("button")) event.preventDefault();
+        focusCommandCenter();
+      }
+    });
+    $("chat-cloud").addEventListener("pointerdown",event=>{
+      if(event.target===$("chat-cloud")) event.preventDefault();
+    });
+    $("chat-cloud").addEventListener("pointerup",event=>{
+      if(event.target===$("chat-cloud")) focusCommandCenter();
+    });
+    $("btn-cloud-menu").addEventListener("click",()=>{
+      if(!$("cloud-menu").hidden){ closeCloudMenu(); return; }
+      $("cloud-menu").hidden=false;
+      $("btn-cloud-menu").setAttribute("aria-expanded","true");
+    });
+    $("cloud-menu").addEventListener("click",event=>{
+      if(event.target.closest("button")) closeCloudMenu();
+    });
+    document.addEventListener("click",event=>{
+      if(!event.target.closest("#cloud-menu, #btn-cloud-menu")) closeCloudMenu();
+    });
+    document.addEventListener("keydown",event=>{
+      if(event.key==="Escape" && !$("cloud-menu").hidden){
+        event.preventDefault(); event.stopImmediatePropagation(); closeCloudMenu();
+      }
+    },true);
+    // Clicks inside an opaque frame do not bubble into the parent document.
+    window.addEventListener("blur",()=>{
+      setTimeout(()=>{
+        if(document.activeElement===$("ui-frame")) closeCloudMenu();
+      },0);
+    });
+    document.addEventListener("close",event=>{
+      if(event.target.tagName!=="DIALOG") return;
+      if(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) return;
+      if(document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) return;
+      if(typeof focusCommandCenter === "function") focusCommandCenter();
+    },true);
+    window.addEventListener("focus",()=>{
+      const active=document.activeElement;
+      if(document.querySelector("dialog[open]")) return;
+      if(typeof isTypingTarget === "function" && isTypingTarget(active)) return;
+      if(active.closest("dialog[open], #cloud-menu:not([hidden])")) return;
+      if(active===document.body || active===document.documentElement ||
+         active.closest("#chat-cloud")){
+        if(typeof focusCommandCenter === "function") focusCommandCenter();
+      }
+    });
+    // Before the forwarder: a reserved key is CLAIMED here, and the frame only
+    // ever sees what this did not take.
+    document.addEventListener("keydown",reservedChatKey);
+    document.addEventListener("keydown",forwardCommandCenterKey);
+    document.addEventListener("keyup",forwardCommandCenterKey);
+    // ...and the way back out. Escape in the composer returns the keyboard to
+    // the command center, so the pair is symmetric and neither surface is a
+    // trap. The cloud menu's own Escape handler runs in the capture phase and
+    // stops there, so this only sees an Escape no overlay wanted.
+    // ...only when there is a command center to go back TO. With no layout
+    // mounted the chat is the whole experience and nothing holds the keyboard
+    // hostage, so Escape stays the composer's own: a phone's keyboard "done"
+    // sends it mid-conversation and must not throw typing away
+    // (test_phone_send_keeps_composer_focus).
+    $("composer-input").addEventListener("keydown",event=>{
+      if(event.key!=="Escape" || event.defaultPrevented) return;
+      if(!cloudHasLayout()) return;
+      event.preventDefault();
+      focusCommandCenter();
+    });
+    // The ring follows focus however it moved -- a key, a click, a frame
+    // handoff, a dialog closing.
+    document.addEventListener("focusin",paintKeyboardOwner);
+    document.addEventListener("focusout",()=>setTimeout(paintKeyboardOwner,0));
+    window.addEventListener("blur",()=>setTimeout(paintKeyboardOwner,0));
+    window.addEventListener("focus",()=>setTimeout(paintKeyboardOwner,0));
+    paintKeyboardOwner();
+  }
   function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
   function cloudStorageKey(owner, agentId, viewport){
     return CLOUD_KEY_PREFIX+":"+(owner||"")+":"+(agentId||"main")+":"+viewport;
@@ -4767,9 +5259,11 @@
   }
   function cloudDefaultState(hasLayout, stage){
     const m=cloudViewportClass(stage.w)==="phone" ? 0 : CLOUD_MARGIN;
+    const w=m ? Math.min(440,stage.w-2*m) : stage.w;
+    const h=m ? Math.min(620,stage.h-2*m) : Math.round(stage.h*.6);
     return cloudClamp({
       mode:hasLayout ? "bubble" : "open",
-      open:{x:m, y:m, w:stage.w-2*m, h:stage.h-2*m},
+      open:{x:stage.w-w-m, y:stage.h-h-m, w:w, h:h},
       bubble:{x:stage.w-CLOUD_BUBBLE-CLOUD_MARGIN, y:stage.h-CLOUD_BUBBLE-CLOUD_MARGIN},
       userSet:false,
     }, stage);
@@ -4816,6 +5310,10 @@
   function applyChatCloud(){
     const cloud=$("chat-cloud"), bubble=$("chat-cloud-bubble"), s=cloudState;
     if(!cloud || !bubble || !s) return;
+    // A default layout may arrive while the owner is still writing a draft.
+    // Leave it unsaved so the next refresh can shrink once typing focus leaves.
+    if(s.mode==="bubble" && !s.userSet && bubble.hidden &&
+       cloud.contains(document.activeElement) && isTypingTarget(document.activeElement)) s.mode="open";
     cloud.dataset.mode=s.mode;
     cloud.style.left=s.open.x+"px"; cloud.style.top=s.open.y+"px";
     cloud.style.width=s.open.w+"px"; cloud.style.height=s.open.h+"px";
@@ -4823,10 +5321,10 @@
     const stage=cloudStageSize(), size=Math.min(CLOUD_BUBBLE, stage.w, stage.h);
     bubble.style.width=size+"px"; bubble.style.height=size+"px";
     // Shrinking on its own (a layout arrived) must not strand focus inside a
-    // hidden window: it moves to the bubble.
+    // hidden window: it moves to the command center.
     const strand=s.mode==="bubble" && bubble.hidden && document.activeElement && cloud.contains(document.activeElement);
     bubble.hidden=s.mode!=="bubble";
-    if(strand) bubble.focus();
+    if(strand && typeof focusCommandCenter === "function") focusCommandCenter();
     $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
     if(s.mode==="open") setCloudUnread(false);
   }
@@ -4841,9 +5339,11 @@
   function setChatCloudMode(mode){
     if(!cloudState) return;
     cloudState.mode=mode;
+    cloudState.userSet=true;
+    cloudState=cloudClamp(cloudState, cloudStageSize());
     applyChatCloud(); saveChatCloud();
-    const target=mode==="open" ? $("composer-input") : $("chat-cloud-bubble");
-    if(target) target.focus();
+    if(mode==="open") $("composer-input").focus();
+    else if(typeof focusCommandCenter === "function") focusCommandCenter();
   }
   // Moves (dx, dy) and resizes (dw, dh) from a starting state, clamped.
   function cloudShifted(from, dx, dy, dw, dh){
@@ -4870,7 +5370,7 @@
   function wireCloudDrag(handle, kind){
     handle.addEventListener("pointerdown", ev=>{
       if(ev.button!==0 || !cloudState) return;
-      if(kind==="move" && ev.target.closest && ev.target.closest(".chat-cloud-btn")) return;
+      if(kind==="move" && ev.target.closest && ev.target.closest("button, #cloud-menu, .chat-cloud-btn")) return;
       const start={x:ev.clientX, y:ev.clientY}, origin=cloudState;
       let moved=false;
       try{ handle.setPointerCapture(ev.pointerId); }catch(_error){ /* synthetic pointer */ }
@@ -4888,6 +5388,8 @@
         handle.removeEventListener("pointerup",end);
         handle.removeEventListener("pointercancel",end);
         $("chat-cloud").classList.remove("is-dragging");
+        if(e.type==="pointerup" && (kind!=="bubble" || moved) && !cloudCoversStage() &&
+           typeof focusCommandCenter === "function") focusCommandCenter();
         // Only a completed drag produces a click to swallow; a cancelled one does not.
         if(moved){ saveChatCloud(); if(kind==="bubble" && e.type==="pointerup") cloudSuppressClick=true; }
       };
@@ -4909,6 +5411,7 @@
   }
   function wireChatCloud(){
     cloudWired=true;
+    if(typeof wireCommandCenter === "function") wireCommandCenter();
     wireCloudDrag($("chat-cloud-bar"),"move");
     wireCloudDrag($("chat-cloud-resize"),"resize");
     wireCloudDrag($("chat-cloud-bubble"),"bubble");
@@ -6194,11 +6697,6 @@
       root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
     else root.style.removeProperty("--app-h");
   }
-  function setHeaderMenu(open){
-    const button=$("btn-header-menu");
-    button.setAttribute("aria-expanded",String(open));
-    button.closest("header").classList.toggle("header-menu--open",open);
-  }
   function paintRailChip(){
     const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
     const count=$("rail-items").children.length;
@@ -6229,20 +6727,13 @@
       window.visualViewport.addEventListener("resize",fitToVisualViewport);
       window.visualViewport.addEventListener("scroll",fitToVisualViewport);
     }
-    const button=$("btn-header-menu"), header=button.closest("header");
-    button.addEventListener("click",()=>setHeaderMenu(button.getAttribute("aria-expanded")!=="true"));
-    header.querySelector("nav").addEventListener("click",event=>{if(event.target.closest("button,a")) setHeaderMenu(false);});
-    document.addEventListener("click",event=>{if(!header.contains(event.target)) setHeaderMenu(false);});
-    document.addEventListener("keydown",event=>{if(event.key==="Escape" && button.getAttribute("aria-expanded")==="true"){
-      setHeaderMenu(false); button.focus();
-    }});
     $("rail-head").addEventListener("click",toggleRailChip);
     $("rail-head").addEventListener("keydown",toggleRailChip);
     new MutationObserver(paintRailChip).observe($("rail-items"),{childList:true,subtree:true});
     new MutationObserver(()=>{
       if(window.matchMedia("(max-width:600px)").matches) paintRailChip();
     }).observe($("rail-head"),{childList:true});
-    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();setHeaderMenu(false);fitToVisualViewport();});
+    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();fitToVisualViewport();});
     paintRailChip();
   }
   function wire(){
@@ -6312,7 +6803,10 @@
       });
     }
     $("btn-attach").addEventListener("click",()=>$("file-input").click());
-    $("file-input").addEventListener("change",(e)=>{ Uploads.add(e.target.files); e.target.value=""; });
+    $("file-input").addEventListener("change",(e)=>{
+      Uploads.add(e.target.files); e.target.value="";
+      if(!isTypingTarget(document.activeElement)) focusCommandCenter();
+    });
     $("composer").addEventListener("submit",(e)=>{ e.preventDefault();
       const typed=$("composer-input").value.trim();
       const turn=Uploads.buildTurn(typed);
@@ -6321,7 +6815,9 @@
       if(turn.blocked){ setStatusLine(turn.reason); return; }
       if(!turn.send) return;            // nothing typed and no usable attachment
       Uploads.clear();
-      sendTurn(turn.send, turn.display, {inputMethod:"typed"}); });
+      sendTurn(turn.send, turn.display, {inputMethod:"typed"});
+      if(cloudCoversStage()) $("composer-input").focus();
+      else if(typeof focusCommandCenter === "function") focusCommandCenter(); });
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
@@ -6332,9 +6828,15 @@
     // page already used this Escape (a menu or dialog closing handles it first).
     document.addEventListener("keydown",(e)=>{
       if(e.key!=="Escape"||e.defaultPrevented||e.isComposing) return;
-      if($("btn-stop").hidden||$("btn-stop").disabled) return;
+      if($("btn-stop").hidden||$("btn-stop").disabled){
+        if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && !cloudCoversStage() && typeof focusCommandCenter === "function"){
+          e.preventDefault(); focusCommandCenter();
+        }
+        return;
+      }
       if(document.querySelector("dialog[open]")) return;
       e.preventDefault(); interruptTurn();
+      if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && !cloudCoversStage() && typeof focusCommandCenter === "function") focusCommandCenter();
     });
     $("btn-rail-add").addEventListener("click",toggleAddKey);
     $("btn-rail-retry").addEventListener("click",()=>{ refreshRail(); });
@@ -6673,6 +7175,8 @@
       return item;
     }
     $("btn-refresh-connections").addEventListener("click",loadConnections);
+    // Settings' way into the one connect screen: the chat, with it open.
+    $("btn-connect-free-ai").addEventListener("click",()=>openConnectRequest());
     // Back to the command center's chat, re-reading what powers it: after a
     // disconnect that is chat with the connect request first, never a
     // separate setup screen.
@@ -6947,6 +7451,7 @@
         return {error:true,title:saved&&saved.title};
       }
       const out={flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier,title:saved.title};
+      if(saved.source===true) out.source=true;
       // RFC 9207: the server's own issuer, checked server-side against discovery.
       const iss=query.get("iss");
       if(iss&&iss.length<=2048) out.iss=iss;
@@ -6967,13 +7472,15 @@
       }
       return result;
     },
-    async begin(req,note,button){
+    async begin(req,note,button,opts){
       if(NATIVE) return;
+      // Server-confirmed platform provenance survives retries from the rail.
+      const source=req.origin==="platform"||!!(opts&&opts.source);
       button.disabled=true;
       note.textContent="Opening the provider's sign-in. You choose there whether to allow it.";
       try{
         const verifier=randToken(32),code_challenge=await challengeFor(verifier);
-        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title}));
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source}));
         const result=await this.post("oauth_begin",{request_id:req.request_id,code_challenge});
         const url=new URL(result.authorize_url);
         if(url.protocol!=="https:"||url.username||url.password||
@@ -6981,7 +7488,7 @@
            !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600){
           throw new Error("invalid_sign_in_response");
         }
-        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source,
           flow:result.flow,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(err){
@@ -7002,6 +7509,19 @@
         const payload={flow:cb.flow,code:cb.code,code_verifier:cb.code_verifier};
         if(cb.iss) payload.iss=cb.iss;
         const result=await this.post("oauth_exchange",payload);
+        if(cb.source){
+          // The platform's own ask: nothing for the agent to hear, and no turn
+          // spent telling it. A powered command center adds the source on the
+          // owner's explicit yes, which is now waiting in the rail.
+          appendMessage("system",result.confirmation
+            ?"Signed in. Confirm \""+frameTitle({title:result.confirmation.title||cb.title})+
+              "\" under Waiting on you to add it to your agent."
+            :result.confirmation_error
+              ?"Signed in, but adding it to your agent needs a look: open Change model."
+              :"Signed in. Your agent can use it now.");
+          await refreshRail();
+          return;
+        }
         appendMessage("system","Connected. "+(result.receipt||""));
         await refreshRail();
         // The owner's own line, as for any answered request: the command center
@@ -7056,6 +7576,175 @@
   ConnectOAuth.pending=ConnectOAuth.takeCallback();
   ConnectOAuth.resumeWhenSignedIn();
   // End connect OAuth controller.
+
+  // The connect screen's subscription sign-in: the same device client as "Sign in
+  // again", with its own elements and its own state, started from its own button.
+  // Built on first use, because that client is defined further down the page.
+  let subscriptionConnect=null;
+  function subscriptionClient(){
+    if(!subscriptionConnect) subscriptionConnect=Object.assign({},SignInConnect,{
+      ids:{code:"sub-signin-code",value:"sub-signin-code-value",link:"sub-signin-code-link",
+        result:"sub-signin-result"},
+      connectedText:"Signed in. Your agent can run on your subscription now.",
+    });
+    return subscriptionConnect;
+  }
+
+  // Subscriptions the connect screen offers for more volume (data on the setup
+  // request: a service and its words). The page names none of them itself.
+  const SubscriptionCards={
+    signature:"",
+    render(subscriptions){
+      const host=$("connect-subscriptions");
+      const valid=(Array.isArray(subscriptions)?subscriptions:[]).filter(s=>s&&
+        typeof s.service==="string"&&/^[a-z0-9_-]{1,32}$/.test(s.service)&&
+        typeof s.label==="string"&&s.label.length>0&&s.label.length<=80);
+      $("sub-signin").hidden=!valid.length;
+      const signature=JSON.stringify(valid);
+      if(this.signature===signature) return;
+      this.signature=signature;host.replaceChildren();
+      for(const subscription of valid){
+        const card=document.createElement("div");card.className="connect-source";
+        const note=document.createElement("p");note.className="connect-terms";
+        note.textContent=typeof subscription.note==="string"?subscription.note:"";card.appendChild(note);
+        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
+        button.textContent=subscription.label;card.appendChild(button);
+        button.addEventListener("click",()=>{
+          const client=subscriptionClient();
+          client.configure(subscription.service,"");
+          client.start();
+        });
+        host.appendChild(card);
+      }
+    },
+  };
+
+  // Sources completed by SIGNING IN (installed data on the setup request). One tap
+  // asks the server for the platform's own connect request, then hands it to the
+  // generic sign-in client: the browser names only the source's id.
+  const SignInSourceCards={
+    signature:"",busy:false,
+    render(sources){
+      const host=$("connect-sign-in-sources");
+      const valid=(Array.isArray(sources)?sources:[]).filter(s=>s&&typeof s.id==="string"&&
+        /^[a-z0-9_]{1,64}$/.test(s.id)&&typeof s.name==="string"&&typeof s.label==="string"&&
+        s.label.length>0&&s.label.length<=80);
+      const signature=JSON.stringify(valid);
+      if(this.signature===signature) return;
+      this.signature=signature;host.replaceChildren();
+      for(const source of valid){
+        const card=document.createElement("div");card.className="connect-source";
+        const name=document.createElement("strong");name.className="connect-source-name";
+        name.textContent=source.name;card.appendChild(name);
+        const offer=document.createElement("p");offer.className="connect-terms";
+        offer.textContent=typeof source.offer==="string"?source.offer:"";card.appendChild(offer);
+        const terms=document.createElement("p");terms.className="connect-terms";
+        terms.textContent=typeof source.billing_note==="string"?source.billing_note:"";
+        card.appendChild(terms);
+        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
+        button.textContent=source.label;card.appendChild(button);
+        const status=document.createElement("p");status.className="rtab-note";
+        status.setAttribute("role","status");card.appendChild(status);
+        button.addEventListener("click",()=>this.start(source,button,status));
+        host.appendChild(card);
+      }
+    },
+    async start(source,button,status){
+      if(this.busy||NATIVE) return;
+      this.busy=true;button.disabled=true;status.textContent="Opening the sign-in…";
+      try{
+        const result=await ConnectOAuth.post("source_sign_in",{preset_id:source.id});
+        const req=result&&result.request;
+        if(!req||typeof req.request_id!=="string"||!req.action||req.action.type!=="connect"||
+           !req.action.oauth) throw new Error("sign_in_unavailable");
+        await ConnectOAuth.begin(req,status,button,{source:true});
+      }catch(error){
+        status.textContent="Sign-in could not be started ("+((error&&error.message)||"unknown error")+
+          "). Nothing was connected; try again in a moment.";
+        button.disabled=false;
+      }finally{this.busy=false;}
+    },
+  };
+
+  // Under a turn that stopped because a source spent its free requests for the
+  // day: what happened, and the three honest ways on. The limit, the credit and
+  // the provider's name are installed data on the setup request, matched by the
+  // credit page the failure itself names; without a match the card says less,
+  // never more. Dismissable; never a modal; never a sales line.
+  const DailyCapCard={
+    setup(){
+      const rows=typeof railCache!=="undefined"&&Array.isArray(railCache)?railCache:[];
+      const row=rows.find(r=>r&&r.request_id===CONNECT_REQUEST_ID);
+      return (row&&row.action&&row.action.setup)||{};
+    },
+    creditUrl(detail){
+      const match=/Add credit: (https:\/\/[^\s"]+)/.exec(typeof detail==="string"?detail:"");
+      if(!match) return null;
+      try{ const u=new URL(match[1]); return (u.protocol==="https:"&&!u.username&&!u.password)?u:null; }
+      catch(_e){ return null; }
+    },
+    resetText(detail){
+      const match=/Reset: (\d{4}-\d\d-\d\d) (\d\d):(\d\d) UTC/.exec(typeof detail==="string"?detail:"");
+      if(!match) return "";
+      const at=new Date(match[1]+"T"+match[2]+":"+match[3]+":00Z");
+      if(!Number.isFinite(at.getTime())) return "";
+      return " (they reset at about "+at.toLocaleTimeString([],{hour:"numeric",minute:"2-digit"})+")";
+    },
+    others(setup){
+      const names=[];
+      (Array.isArray(setup.sign_in_sources)?setup.sign_in_sources:[]).forEach(s=>{
+        if(s&&typeof s.name==="string") names.push(s.name); });
+      (Array.isArray(setup.subscriptions)?setup.subscriptions:[]).forEach(s=>{
+        if(s&&typeof s.name==="string") names.push("your "+s.name+" subscription"); });
+      names.push("a key");
+      return names.length>1?names.slice(0,-1).join(", ")+", or "+names[names.length-1]:names[0];
+    },
+    build(failure){
+      const detail=failure&&typeof failure.provider_detail==="string"?failure.provider_detail:"";
+      const setup=this.setup(), credit=this.creditUrl(detail);
+      const cap=credit&&(Array.isArray(setup.daily_caps)?setup.daily_caps:[])
+        .find(c=>c&&c.host===credit.host&&typeof c.name==="string");
+      const card=document.createElement("div");card.className="daily-cap";
+      card.setAttribute("role","group");
+      const head=document.createElement("p"), body=document.createElement("p");
+      const reset=this.resetText(detail), others=this.others(setup);
+      let creditLabel="", creditHref=credit?credit.href:"";
+      if(cap){
+        head.textContent="You've used today's free "+cap.name+" requests.";
+        body.textContent="On a free "+cap.name+" account that is "+cap.free_requests_per_day+
+          "/day. Adding "+cap.credit_amount+" credit to your own "+cap.name+
+          " account once raises your "+cap.name+" daily limit to "+
+          Number(cap.credit_requests_per_day).toLocaleString("en-US")+" requests; the money goes to "+
+          cap.name+", not TinyAssets. It can be used again after the daily reset"+reset+
+          ". Or connect another AI: "+others+".";
+        creditLabel="Add credit on "+cap.name;
+        try{ const u=new URL(cap.credit_url); if(u.protocol==="https:") creditHref=u.href; }catch(_e){}
+      }else{
+        head.textContent="This AI source reached its daily limit.";
+        body.textContent="It can be used again after the daily reset"+reset+"."+
+          (credit?" You can add credit at "+credit.host+
+            " (the money goes to that provider, not TinyAssets).":"")+
+          " Or connect another AI: "+others+".";
+        if(credit) creditLabel="Add credit at "+credit.host;
+      }
+      card.setAttribute("aria-label",head.textContent);
+      card.appendChild(head);card.appendChild(body);
+      const row=document.createElement("div");row.className="rtab-row";
+      if(creditLabel&&creditHref){
+        const add=document.createElement("a");add.className="btn btn--ghost";add.textContent=creditLabel;
+        add.href=creditHref;add.target="_blank";add.rel="noopener noreferrer";row.appendChild(add);
+      }
+      const another=document.createElement("button");another.type="button";
+      another.className="btn btn--ghost";another.textContent="Connect another AI";
+      another.addEventListener("click",()=>openConnectRequest());row.appendChild(another);
+      const wait=document.createElement("button");wait.type="button";wait.className="btn btn--link";
+      wait.textContent="Wait until tomorrow";
+      wait.addEventListener("click",()=>{card.hidden=true;});row.appendChild(wait);
+      card.appendChild(row);
+      return card;
+    },
+  };
+  // End connect screen sources.
 
   // ---- Native (Android / FCM) notifications ----
   // Same route, same ownership model as the browser: the token is POSTed to
@@ -7688,6 +8377,16 @@
     // not, because it is connecting something new.
     SignInConnect.configure(setup.service || "", setup.universe_id || "");
     HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
+    // The connect screen is every setup card that names no source; a reconnect
+    // card names the one it repairs and shows only that.
+    const screen = !setup.service;
+    $("connect-intro").hidden = !screen;
+    if(typeof SignInSourceCards!=="undefined") SignInSourceCards.render(screen ? setup.sign_in_sources : []);
+    if(typeof SubscriptionCards!=="undefined") SubscriptionCards.render(screen ? setup.subscriptions : []);
+    const keyCards = Array.isArray(setup.sources) ? setup.sources : [];
+    $("connect-paste").hidden = !keyCards.length;
+    $("connect-paste-summary").textContent = keyCards.length
+      ? "Paste a key: " + keyCards.map(s => s && s.name).filter(Boolean).join(", ") : "Paste a key";
     if(typeof FreeSourceCards!=="undefined") FreeSourceCards.render(setup.sources || []);
     ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
     const panel = $("connect-panel");
@@ -7715,6 +8414,11 @@
         const label=document.createElement("label");label.textContent="API key";
         const input=document.createElement("input");input.type="password";input.autocomplete="off";
         label.appendChild(input);card.appendChild(label);
+        if(typeof source.terms==="string"&&source.terms){
+          // The provider's own terms that matter before connecting, inline.
+          const caveat=document.createElement("p");caveat.className="connect-terms";
+          caveat.textContent=source.terms;card.appendChild(caveat);
+        }
         const terms=document.createElement("p");
         terms.textContent="Use your own free or trial account with paid usage disabled. Calls follow your provider's billing settings; TinyAssets cannot enforce them.";
         card.appendChild(terms);
@@ -7821,6 +8525,10 @@
   // daemon deposit; the credential never touches this page.
   const SignInConnect={
     flow:"", timer:0, busy:false, blips:0, epoch:0, service:"", universe:"",
+    // Where this instance draws. The connect screen's subscription sign-in is a
+    // second instance of the same client with its own elements and state.
+    ids:{code:"signin-code",value:"signin-code-value",link:"signin-code-link",result:"signin-result"},
+    connectedText:"Signed in. Your agent can use this connection again.",
     // Which source the visible card is for. Set from the card, so a reconnect for one
     // source can never start a flow for another: switching cards resets whatever was
     // in flight before the new service is adopted.
@@ -7834,7 +8542,7 @@
     // kept a timer alive against a flow that had already expired, polling for as
     // long as the page stayed open -- found by the test for this, not in review.
     MAX_BLIPS:5,
-    status(text){ $("signin-result").textContent=text; },
+    status(text){ $(this.ids.result).textContent=text; },
     stop(){ if(this.timer){ clearTimeout(this.timer); this.timer=0; } },
     reset(){
       // The epoch is what cancels work already in flight. Clearing the timer is not
@@ -7844,7 +8552,7 @@
       // P1 #6). Same generation pattern the model dialog above already uses.
       this.epoch++;
       this.stop(); this.flow=""; this.busy=false; this.blips=0;
-      $("signin-code").hidden=true; $("signin-code-value").textContent="";
+      $(this.ids.code).hidden=true; $(this.ids.value).textContent="";
       this.status("");
     },
     async start(){
@@ -7879,9 +8587,9 @@
           return;
         }
         this.flow=doc.flow; this.blips=0;
-        $("signin-code-value").textContent="Your code: "+(doc.user_code||"");
-        if(doc.verification_url) $("signin-code-link").href=doc.verification_url;
-        $("signin-code").hidden=false;
+        $(this.ids.value).textContent="Your code: "+(doc.user_code||"");
+        if(doc.verification_url) $(this.ids.link).href=doc.verification_url;
+        $(this.ids.code).hidden=false;
         this.status("Enter the code on the sign-in page, then come back here.");
         // The interval the SOURCE asked for, floored so a bad value cannot spin.
         const wait=Math.max(2,Math.min(Number(doc.interval)||5,30))*1000;
@@ -7906,7 +8614,12 @@
         }
         this.reset();
         if(doc.status==="connected"){
-          this.status("Signed in. Your agent can use this connection again.");
+          this.status(doc.confirmation
+            ? "Signed in. Confirm \""+frameTitle({title:doc.confirmation.title||"Use this source"})+
+              "\" under Waiting on you to add it to your agent."
+            : doc.serving&&doc.serving.status==="serving"
+              ? this.connectedText
+              : "Signed in. Your credential was saved, but your agent's model setup still needs review. Open Change model.");
           // The card is derived from the stored rejection, which the deposit just
           // cleared, so refreshing the rail is what makes it disappear.
           if(typeof refreshRail==="function") refreshRail();
@@ -8348,7 +9061,9 @@
       if(t.speaker==="platform"){
         const previous=ordered[index-1];
         const paired=previous&&typeof t.ts==="number"&&Number.isFinite(t.ts)&&previous.ts===t.ts;
-        appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code);
+        // Only the newest turn offers the daily-cap card: an old day's limit is history.
+        appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code,
+          index===ordered.length-1?t.failure:null);
         return;
       }
       const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
@@ -8489,7 +9204,8 @@
             if(!renderedConsumerTurns.has(turn.turn_id)){
               if(observed.reply)renderConverse(observed);
               else if(observed.turn_failure){
-                appendFailureNotice(observed.failure_notice,null,undefined,observed.turn_failure.code);
+                appendFailureNotice(observed.failure_notice,null,undefined,observed.turn_failure.code,
+                  observed.turn_failure);
                 renderedConsumerTurns.add(turn.turn_id);
               }
             }
@@ -8521,6 +9237,13 @@
       (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
     if(already){ forgetInflightIf(pending); restoreQueue(); return; }
     inflightRestored = true;
+    // Still being answered on the server: shown with its working state, and its
+    // reply is drawn when that turn ends -- never offered as unconfirmed.
+    const running=await readPendingTurns();
+    if(running&&running.active&&running.active.text===pending.message&&
+       showActiveTurn(running.active)){
+      restoreQueue(); return;
+    }
     appendMessage("founder", pending.display, null,
       typeof pending.ts==="number"?pending.ts/1000:null);
     const again = document.createElement("button");

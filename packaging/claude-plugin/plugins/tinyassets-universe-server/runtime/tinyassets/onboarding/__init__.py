@@ -183,7 +183,7 @@ def app_config() -> dict[str, Any]:
     }
 
 
-def _csp(nonce: str, issuer: str) -> str:
+def _csp(nonce: str, issuer: str, resource: str = "") -> str:
     """Strict CSP: inline script/style only via this request's nonce; network
     limited to same-origin ``/mcp`` plus the AuthKit token endpoint origin.
 
@@ -191,8 +191,13 @@ def _csp(nonce: str, issuer: str) -> str:
     grants only the fixed ``/app/ui-frame`` bootstrap — which sandboxes itself
     to an opaque origin from its own response header (``ui_frame.FRAME_CSP``).
     ``script-src`` stays nonce-only on purpose: a bug that inserted bundle script
-    into this page would still not execute it.
+    into this page would still not execute it. Its one addition is the app's
+    own ES-module path (``app_modules.script_source``): a path-restricted source
+    that can only load our allowlisted module files, NOT ``'strict-dynamic'``.
     """
+    from tinyassets.onboarding.app_modules import script_source
+
+    modules = f" {script_source(resource)}" if script_source(resource) else ""
     connect = "'self'"
     if issuer:
         parts = urlsplit(issuer)
@@ -200,7 +205,7 @@ def _csp(nonce: str, issuer: str) -> str:
             connect += f" {parts.scheme}://{parts.netloc}"
     return (
         "default-src 'none'; "
-        f"script-src 'nonce-{nonce}'; "
+        f"script-src 'nonce-{nonce}'{modules}; "
         "worker-src 'self'; "
         f"style-src 'nonce-{nonce}'; "
         f"connect-src {connect}; "
@@ -230,7 +235,7 @@ def render_app_html() -> tuple[str, str]:
         .replace(_CONFIG_PLACEHOLDER, blob)
         .replace(_REQUEST_TEXT_PLACEHOLDER, request_theme()["request_text"])
     )
-    return html, _csp(nonce, cfg["issuer"])
+    return html, _csp(nonce, cfg["issuer"], cfg["resource"])
 
 
 def request_theme() -> dict[str, str]:
@@ -784,7 +789,22 @@ async def _handle_openai_device_poll(request: Any) -> Any:
         # Re-pin the identity inside the worker thread (same pattern as the
         # browser deposit form) so connect_llm's actor resolution sees the user.
         with identity_context(identity):
-            return deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
+            result = deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
+            if (isinstance(result, dict) and not result.get("error")
+                    and (result.get("serving") or {}).get("status") == "held"):
+                from tinyassets.api.helpers import _base_path
+                from tinyassets.onboarding.source_connect import offer_subscription_source
+
+                try:
+                    offered = offer_subscription_source(
+                        base=_base_path(), uid=flow.universe_id, owner=identity.user_id,
+                        service=DEVICE_SIGN_IN_SERVICE,
+                    )
+                    if offered is not None:
+                        result = {**result, "confirmation": offered["request"]}
+                except Exception:  # noqa: BLE001 - deposit succeeded; expose no private detail
+                    result = {**result, "confirmation_error": "model_confirmation_requires_review"}
+            return result
 
     result = await run_in_threadpool(_deposit)
     if not isinstance(result, dict) or result.get("error"):
@@ -793,8 +813,16 @@ async def _handle_openai_device_poll(request: Any) -> Any:
             err = str(result["error"])
         status = 401 if err == "authentication_required" else 400
         return JSONResponse({"status": "failed", "error": err}, status_code=status)
+    serving = result.get("serving") or {}
+    response = {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE,
+                "serving": {"status": "serving" if serving.get("status") == "serving"
+                            else "held"}}
+    if "confirmation" in result:
+        response["confirmation"] = result["confirmation"]
+    if "confirmation_error" in result:
+        response["confirmation_error"] = result["confirmation_error"]
     return JSONResponse(
-        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
+        response,
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1486,10 +1514,7 @@ async def _handle_turn_steer(request: Any) -> Any:
     if not universe_id:
         return JSONResponse({"steered": False}, headers=_NO_STORE)
     try:
-        if not live_count(identity.user_id, universe_id):
-            return JSONResponse(
-                {"steered": False, "universe_id": universe_id}, headers=_NO_STORE,
-            )
+        live = bool(live_count(identity.user_id, universe_id))
     except ValueError:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
 
@@ -1499,6 +1524,8 @@ async def _handle_turn_steer(request: Any) -> Any:
 
         # A steer goes to the agent the owner is talking to (harness §4.18):
         # that agent's own thread, resolved inside the owner's own universe.
+        # The main agent's session is `principal:<owner>`, so this is the same
+        # key the main thread always used.
         addressed = addressed_agents.resolve(
             _base_path(), universe_id=universe_id, owner=identity.user_id,
             agent_id=data.get("agent_id"),
@@ -1507,7 +1534,20 @@ async def _handle_turn_steer(request: Any) -> Any:
             identity.user_id,
             addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT,
         )
-        return agent_steering.enqueue(_universe_dir(universe_id), f"thread:{session}", text)
+        udir, key = _universe_dir(universe_id), f"thread:{session}"
+        queued = agent_steering.enqueue(udir, key, text) if live else None
+        if queued is not None:
+            return True, queued
+        # No turn of this thread is open to steer (none running, or one another
+        # window started that is not steerable here): the line is SAVED for the
+        # next turn before the page is told, never left only in the browser
+        # (P1, live 2026-10-02: a send during another window's turn was lost).
+        # Only in a command center the caller may write to.
+        from tinyassets.api.permissions import universe_access_allows
+
+        if not universe_access_allows(universe_id, write=True):
+            return False, None
+        return False, agent_steering.hold(udir, key, text)
 
     from tinyassets.addressed_agents import AgentNotAddressable
     from tinyassets.agent_steering import SteeringRefused
@@ -1526,14 +1566,98 @@ async def _handle_turn_steer(request: Any) -> Any:
         )
     except ValueError:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
-    if queued is None:
-        # The turn settled between the check above and the queue: admission and
-        # settle share one transaction, so the line was refused, never stranded.
+    steered, line = queued
+    if line is None:
         return JSONResponse({"steered": False, "universe_id": universe_id}, headers=_NO_STORE)
+    if not steered:
+        return JSONResponse(
+            {"steered": False, "held": True, "universe_id": universe_id, "steer_id": line.id},
+            headers=_NO_STORE,
+        )
     return JSONResponse(
-        {"steered": True, "universe_id": universe_id, "steer_id": queued.id},
+        {"steered": True, "universe_id": universe_id, "steer_id": line.id},
         headers=_NO_STORE,
     )
+
+
+async def _handle_turn_pending(request: Any) -> Any:
+    """The signed-in user's lines no turn has handled yet, for a reloaded page
+    to show and send (harness S2). Only the caller's own thread."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    identity = current_identity()
+    universe_id = str(data.get("universe_id", "") or "").strip()
+    if not universe_id:
+        try:
+            universe_id = await run_in_threadpool(_read_home, identity, raise_errors=True)
+        except Exception:  # noqa: BLE001 - no home: nothing waiting
+            universe_id = ""
+    if not universe_id:
+        return JSONResponse({"pending": []}, headers=_NO_STORE)
+
+    claim = data.get("claim")
+    if claim is not None and not (isinstance(claim, list) and len(claim) <= 50):
+        return JSONResponse({"error": "invalid_claim"}, status_code=400, headers=_NO_STORE)
+
+    def _list():
+        from tinyassets import addressed_agents, agent_steering
+        from tinyassets.api.helpers import _base_path, _universe_dir
+        from tinyassets.api.permissions import universe_access_allows
+
+        if not universe_access_allows(universe_id, write=True):
+            return None
+        # The SAME key the steer path writes and holds under (harness §4.18):
+        # the addressed agent's own thread, defaulting to main. Reading the main
+        # thread here regardless would leave a line held for another agent
+        # invisible after a reload -- which is the one thing S2 promises not to
+        # do. The main agent's session is `principal:<owner>`, so the main
+        # thread keeps the key it always had.
+        addressed = addressed_agents.resolve(
+            _base_path(), universe_id=universe_id, owner=identity.user_id,
+            agent_id=data.get("agent_id"),
+        )
+        session = addressed_agents.memory_session(
+            identity.user_id,
+            addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT,
+        )
+        udir, key = _universe_dir(universe_id), f"thread:{session}"
+        if claim is not None:
+            return {"claimed": agent_steering.claim(udir, key, claim)}
+        return {"pending": [
+            {"id": r.id, "text": r.text, "state": r.state, "created_at": r.created_at}
+            for r in agent_steering.pending(udir, key)],
+            "active": agent_steering.active(udir, key)}
+
+    from tinyassets.addressed_agents import AgentNotAddressable
+
+    try:
+        doc = await run_in_threadpool(_list)
+    except AgentNotAddressable as exc:
+        return JSONResponse(
+            {"error": "agent_not_found", "detail": str(exc)},
+            status_code=404, headers=_NO_STORE,
+        )
+    except ValueError:
+        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
+    if doc is None:
+        doc = {"claimed": []} if claim is not None else {"pending": [], "active": None}
+    return JSONResponse({"universe_id": universe_id, **doc}, headers=_NO_STORE)
 
 
 async def _handle_account_delete(request: Any) -> Any:
@@ -2058,9 +2182,14 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
+    from tinyassets.onboarding.app_modules import handle_app_module
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
-    from tinyassets.onboarding.model_connect import handle_model_callback, handle_model_connect
+    from tinyassets.onboarding.model_connect import (
+        handle_client_metadata,
+        handle_model_callback,
+        handle_model_connect,
+    )
     from tinyassets.onboarding.model_preferences import handle_model_preferences
     from tinyassets.onboarding.notifications import (
         handle_devices,
@@ -2075,6 +2204,10 @@ def onboarding_routes() -> list[Any]:
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
         Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
+        # Public (carve-out in `_auth_challenge_path`): an authorization server
+        # fetches this client metadata document with no bearer.
+        Route("/app/oauth/client-metadata.json", handle_client_metadata,
+              methods=["GET", "HEAD"]),
         Route("/app/token", _handle_token, methods=["POST"]),
         Route("/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
         Route("/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
@@ -2095,6 +2228,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
         Route("/app/turn/steer", _handle_turn_steer, methods=["POST"]),
+        Route("/app/turn/pending", _handle_turn_pending, methods=["POST"]),
         Route("/app/connections", handle_connections, methods=["GET", "POST"]),
         Route("/app/files", handle_file_upload, methods=["POST"]),
         # Notifications. `/app/devices` and `/app/notify` are identity-gated by
@@ -2105,6 +2239,8 @@ def onboarding_routes() -> list[Any]:
         Route("/app/devices", handle_devices, methods=["GET", "POST"]),
         Route("/app/notify", handle_notify_settings, methods=["GET", "POST"]),
         Route("/app/sw.js", handle_service_worker, methods=["GET", "HEAD"]),
+        # The app's ES modules (app_modules.py): static, public, build-keyed.
+        Route("/app/m/{build}/{name}", handle_app_module, methods=["GET", "HEAD"]),
         # The OWNER door: every read the app renders, complete. Identity-gated by
         # `_is_app_path` like every route above; see `tinyassets/owner_door`.
         *owner_door_routes(),
