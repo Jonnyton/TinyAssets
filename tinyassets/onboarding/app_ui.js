@@ -74,7 +74,11 @@
     libCache:new Map(),
 
     epoch:0,home:"",principal:"",enabled:false,busy:false,
-    library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,platformDefault:null,
+    // `library` is the bundles this app can render; `broken` is one record per
+    // stored entry it cannot, each keeping the component VERBATIM so an install
+    // puts it back untouched. `unreadable` is reserved for a library that is not
+    // a list at all -- the only failure that really is library-wide.
+    library:[],broken:[],unreadable:"",selection:null,active:null,frame:null,listener:null,platformDefault:null,
     // The conversation installation as last read (null: none, so default), the
     // reason it could not be read, and the selection it replaced this visit.
     conversation:null,conversationNote:"",previousTurn:null,selecting:false,ambiguous:false,
@@ -147,20 +151,54 @@
         if(field in component) bundle[field]=JSON.parse(JSON.stringify(component[field]));
       return {ok:true,bundle};
     },
+    // A name for an entry this app could not read, for the person to recognise
+    // it by. Its own `name`, else its `ui_id`, else where it sits in the list --
+    // all three are untrusted text, so they are bounded here and only ever
+    // reach the screen through textContent.
+    brokenLabel(component,index){
+      const pick=field=>{
+        const value=component&&typeof component==="object"?component[field]:null;
+        return typeof value==="string"&&value.trim()?value.trim().slice(0,this.MAX_NAME):"";
+      };
+      return pick("name")||pick("ui_id")||("the UI in position "+(index+1));
+    },
     // The library is a LIST of any length, ordered as stored, with no
     // user-chosen keys; each entry names itself by `ui_id`.
+    //
+    // One entry this app cannot render does NOT make the library unreadable.
+    // It used to: the first failure was returned for the whole list, so a
+    // single component with a bad `version` hid every UI the person had built
+    // and disabled installing (founder, P1, 2026-10-03). Each entry is read on
+    // its own now; the ones that parse are usable, and the ones that do not are
+    // kept verbatim in `broken` so nothing is lost and each can be named with
+    // its reason. Only a non-list `ui_library` is still a library-wide refusal.
     readLibrary(configuration){
       const raw=configuration&&configuration.ui_library;
-      if(raw===undefined||raw===null) return {ok:true,entries:[]};
+      if(raw===undefined||raw===null) return {ok:true,entries:[],broken:[]};
       if(!Array.isArray(raw)) return this.unsupported("ui_library is not a list");
-      const entries=[],seen=new Set();
-      for(const component of raw){
-        const parsed=this.parseBundle(component);
-        if(!parsed.ok) return parsed;
-        if(seen.has(parsed.bundle.ui_id)) return this.unsupported("ui_id "+parsed.bundle.ui_id+" is listed twice");
-        seen.add(parsed.bundle.ui_id); entries.push(parsed.bundle);
-      }
-      return {ok:true,entries};
+      // Of several entries sharing a ui_id, the LAST is used. `install` appends,
+      // so the later entry is the more recently written one; taking the first
+      // would let a stale copy win silently (Codex, 2026-10-03). A write refuses
+      // duplicates, so this only arises in a row that already has them.
+      const read=raw.map((component,index)=>({component,index,parsed:this.parseBundle(component)}));
+      const newest=new Map();
+      for(const item of read) if(item.parsed.ok) newest.set(item.parsed.bundle.ui_id,item.index);
+      const entries=[],broken=[];
+      read.forEach(({component,index,parsed})=>{
+        const superseded=parsed.ok&&newest.get(parsed.bundle.ui_id)!==index;
+        const reason=!parsed.ok?parsed.reason
+          :superseded?"ui_id "+parsed.bundle.ui_id+" is listed twice; the later entry is the one in use":"";
+        if(reason){
+          // The id is recorded only when it is a well-formed one, so a saved
+          // choice can still be matched to the entry that cannot render.
+          const id=component&&typeof component==="object"&&this.text(component.ui_id,64)
+            &&this.ID_RE.test(component.ui_id)?component.ui_id:"";
+          broken.push({ui_id:id,label:this.brokenLabel(component,index),reason,component});
+          return;
+        }
+        entries.push(parsed.bundle);
+      });
+      return {ok:true,entries,broken};
     },
     readSelection(configuration){
       const raw=configuration&&configuration.ui_selection;
@@ -199,7 +237,7 @@
     reset(){
       this.epoch++; this.unmount();
       this.enabled=false; this.home=""; this.principal="";
-      this.library=[]; this.unreadable=""; this.selection=null; this.busy=false;
+      this.library=[]; this.broken=[]; this.unreadable=""; this.selection=null; this.busy=false;
       this.platformDefault=null; this.defaultMounted=false;
       this.revision=0;
       this.conversation=null; this.conversationNote=""; this.previousTurn=null; this.selecting=false; this.ambiguous=false;
@@ -268,6 +306,14 @@
         if(row.revision!==this.revision) await this.load();
       }catch(_err){ /* the next turn asks again; the current screen stays */ }
     },
+    // Appended to the status when some entries could not be read, so the person
+    // is told without the working UIs being hidden. Switch command center names
+    // each one and its reason.
+    brokenNote(){
+      if(!this.broken.length) return "";
+      return " "+this.broken.length+(this.broken.length===1?" installed UI cannot be shown":
+        " installed UIs cannot be shown")+"; open Switch command center to see why.";
+    },
     adopt(row){
       if(!this.enabled) return;
       this.revision=row.revision;
@@ -278,7 +324,7 @@
         // An unreadable library is remembered as unreadable, NOT as empty. An
         // empty cache here is what let a later install rewrite `ui_library` from
         // nothing and drop the bundles it could not parse (Codex, 2026-09-26).
-        this.library=[]; this.unreadable=library.reason; this.selection=null;
+        this.library=[]; this.broken=[]; this.unreadable=library.reason; this.selection=null;
         // "Default chat is in use" has to BE true: every branch that says it
         // mounts the platform's blank command center, or the stage is left
         // empty with the explanation inside a closed dialog and no way back
@@ -286,7 +332,7 @@
         this.mountDefault();
         this.status("Installed UIs unreadable: "+library.reason+". Default chat is in use. Installing would overwrite them, so it is disabled."); this.paint(); return;
       }
-      this.library=library.entries; this.unreadable="";
+      this.library=library.entries; this.broken=library.broken; this.unreadable="";
       if(!selection.ok){
         this.selection=null;
         this.mountDefault();
@@ -295,12 +341,23 @@
       this.selection=selection.selection;
       if(this.selection&&this.selection.state==="active"){
         const entry=this.library.find(b=>b.ui_id===this.selection.ui_id);
-        if(entry){ this.mount(entry); this.status("Using "+entry.name+"."); }
+        const spoiled=this.broken.find(b=>b.ui_id&&b.ui_id===this.selection.ui_id);
+        if(entry){ this.mount(entry); this.status("Using "+entry.name+"."+this.brokenNote()); }
+        // The chosen UI is still installed; it is the one that cannot render,
+        // so say which and why rather than "no longer installed".
+        else if(spoiled){
+          this.mountDefault();
+          this.status(spoiled.label+" cannot be shown: "+spoiled.reason
+            +". Default chat is in use; your other UIs still work.");
+        }
         else{
           this.mountDefault();
-          this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use.");
+          this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use."+this.brokenNote());
         }
-      }else{ this.mountDefault(); this.status(""); }
+      }else{
+        this.mountDefault();
+        this.status((this.library.length?"Default chat is in use.":"")+this.brokenNote());
+      }
       this.paint();
     },
 
@@ -1156,7 +1213,7 @@
         this.status("Your installed UIs cannot be read ("+this.unreadable+"), so installing would overwrite them. Nothing was changed.");
         this.paint(); return this.unsupported("library unreadable");
       }
-      let next=null;
+      let next=null,keptBroken=null;
       const outcome=await this.save("UI install",row=>{
         // Built from the row the save actually read, not from the cache -- so a
         // library that changed since the last read is re-checked here instead
@@ -1164,17 +1221,33 @@
         const observed=this.readLibrary(row);
         if(!observed.ok) throw Error("Your installed UIs cannot be read ("+observed.reason+"); nothing was overwritten");
         next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
+        // Entries this app cannot render are written back as they were read.
+        // This write replaces the whole list, so anything left out is destroyed:
+        // carrying them is what lets an install proceed beside a component with
+        // a bad version instead of being refused (founder, P1, 2026-10-03). An
+        // entry whose ui_id this install replaces is the one case that drops.
+        //
+        // NOT byte-exact, and it cannot be from here: `fetchRow` has already
+        // parsed the row as JSON, so an integer outside JavaScript's exact
+        // range was rounded before this code saw it (Codex, 2026-10-03:
+        // 9007199254740993 -> ...92 inside a field the app does not render).
+        // Reachable only through an extra field on an already-unrenderable
+        // entry. The fix is for the client to stop rewriting entries it did not
+        // author -- splice server-side with add_ui/replace_ui --
+        // docs/concerns/2026-10-03-whole-library-write-rounds-carried-numbers.md
+        keptBroken=observed.broken.filter(b=>!b.ui_id||b.ui_id!==parsed.bundle.ui_id);
         // No library-wide limit, so no install is ever turned away for the size
         // of what is already there. The bundle itself was validated above, and
         // its bytes are the command center's storage.
-        return {ui_library:JSON.parse(JSON.stringify(next))};
+        return {ui_library:JSON.parse(JSON.stringify(
+          next.concat(keptBroken.map(b=>b.component))))};
       });
       if(!outcome.ok){
         const why=outcome.error&&outcome.error.message||outcome.reason||"unavailable";
         this.status("The UI was not installed ("+why+")."); this.paint(); return outcome;
       }
-      this.library=next;
-      this.status("Installed "+parsed.bundle.name+". Switch to it whenever you like.");
+      this.library=next; this.broken=keptBroken;
+      this.status("Installed "+parsed.bundle.name+". Switch to it whenever you like."+this.brokenNote());
       this.paint();
       return {ok:true,bundle:parsed.bundle};
     },
@@ -1224,7 +1297,17 @@
           ()=>this.choose(bundle.ui_id),this.busy||current));
         list.appendChild(item);
       }
-      if(!this.library.length)
+      // Each entry this app cannot render, named with its reason, BELOW the ones
+      // that work. The reason is the parser's own sentence, so "version must be
+      // 1" reaches the person and their agent rather than a blanket "unreadable".
+      for(const entry of this.broken){
+        const item=document.createElement("li");
+        this.line(item,entry.label+" cannot be shown: "+entry.reason,"muted");
+        list.appendChild(item);
+      }
+      if(this.broken.length)
+        this.line(list,"Ask your agent to fix the ones above; your other UIs and installing are unaffected.","muted");
+      if(!this.library.length&&!this.broken.length)
         this.line(list,"No custom UI installed. Ask your agent to build one.","muted");
       $("btn-ui-refresh").disabled=this.busy;
       this.paintConversation();

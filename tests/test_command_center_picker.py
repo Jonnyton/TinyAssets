@@ -396,3 +396,44 @@ console.log('picker fallback passed');
     out = _run(tmp_path, "picker_fallback.js", checks,
                extra="const DEFAULT_BUNDLE=" + json.dumps(PLATFORM_DEFAULT_UI) + ";\n")
     assert "picker fallback passed" in out
+
+
+def test_an_unrenderable_choice_mounts_default_and_preserves_the_library(tmp_path):
+    """A broken selected UI leaves the platform offer and usable UIs available."""
+    from tests.test_custom_ui_bridge import _run
+
+    checks = r"""
+(async()=>{
+const u=AppUI;
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;
+const broken={...bundleOf({ui_id:'broken',name:'Broken screen'}),version:1791005187};
+const good=bundleOf({ui_id:'office',name:'Office'});
+appUi={...stored([broken,good],{version:1,state:'active',ui_id:'broken'}),
+ platform_default:DEFAULT_BUNDLE};
+const before=clone(appUi);
+u.adopt(clone(appUi));
+assert(u.frame,'the stage mounts the fallback instead of staying empty');
+assert.equal(u.isPlatformDefault(),true,'the fallback is the platform bundle');
+assert.equal($('ui-frame-host').hidden,false,'the fallback is visible');
+assert.equal(u.active.ui_id,'platform:blank');
+const why=$('ui-status').textContent;
+assert.match(why,/Broken screen cannot be shown/);
+assert.match(why,/1791005187/);
+assert.match(why,/Default chat is in use/);
+assert.match(why,/your other UIs still work/);
+assert(!/no longer installed/.test(why),'the broken screen is still installed');
+assert.deepEqual(u.library.map(entry=>entry.ui_id),['office']);
+assert.equal(u.broken.length,1);
+assert.equal(u.selection.ui_id,'broken','fallback does not rewrite the saved choice');
+assert.deepEqual(appUi,before,'displaying the fallback does not write storage');
+await u.choose('office');
+assert.equal(u.active.ui_id,'office','the working UI remains selectable');
+assert.equal(u.isPlatformDefault(),false,'the replacement does not gain platform authority');
+assert.deepEqual(appUi.ui_library.find(entry=>entry.ui_id==='broken'),broken,
+ 'switching leaves the broken component intact');
+console.log('spoiled picker fallback passed');
+})().catch(e=>{console.error(e);process.exit(1);});
+"""
+    out = _run(tmp_path, "picker_spoiled_fallback.js", checks,
+               extra="const DEFAULT_BUNDLE=" + json.dumps(PLATFORM_DEFAULT_UI) + ";\n")
+    assert "spoiled picker fallback passed" in out

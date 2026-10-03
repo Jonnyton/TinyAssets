@@ -2008,6 +2008,32 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
          "style": ".floor{display:grid}",
          "script": "async function enter(room){...}"}
 
+    **Only these calls change what the person sees.** A UI exists in that row
+    and nowhere else. Keeping a copy under ``extensions/<name>/component.json``
+    in my own folder is fine as a working file, but editing that file changes
+    NOTHING the person looks at -- the platform never reads it. Every change has
+    to go through ``write_graph target="app_ui"`` (``add_ui``, ``replace_ui``,
+    ``edit_ui``), and I confirm it landed by reading the row back. If I edit the
+    file and tell the person their screen is updated, I am wrong.
+
+    ``version`` is the FORMAT version of this component and is always ``1``. It
+    is not a revision, a build number or a cache-buster: the app renders version
+    1 and refuses anything else, and a UI it refuses cannot be shown until the
+    field is 1 again. Nothing needs busting: the app re-reads this row after a
+    turn whose revision moved, and on the person's Refresh, and it asks for each
+    asset by its own ``sha256`` with caching off -- so there is no stale copy for
+    a version number to defeat. There is nowhere to put a build id either: a
+    field outside the ten above is refused too. To publish a change, change the
+    content with ``replace_ui`` or ``edit_ui``; the person's screen picks it up
+    on its next turn, or at once if they Refresh.
+
+    ``add_ui`` and ``replace_ui`` REFUSE a component the app could not render,
+    and the refusal says what to change -- so a receipt means the person can
+    really see it. For a UI stored before that check existed, a read tells me:
+    ``read_graph target="app_ui"`` carries ``renderable`` per UI, with ``reason``
+    and ``fix`` when it is false. Worth reading whenever someone says a screen
+    is not what I think I saved.
+
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
     does NOT run -- the only code that runs is ``script``. Bounds: the component's
     text (markup, style, script and the asset list) under 1048576 UTF-8 bytes;
@@ -2889,9 +2915,7 @@ def write_graph(
     then a "repair" with 36 typos).** The `connections` chapter has the
     two-node shape that does it correctly.
 
-    THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is chapters I read when I need one,
-    exactly as I read a skill's SKILL.md when a request matches it:
+    THE HANDBOOK. Read the relevant chapter on demand, like a matching skill's SKILL.md:
 
     * ``branches`` -- the minimal branch that builds, field by field: a working
       one-node and two-node ``operation="create"`` payload, which keys have
