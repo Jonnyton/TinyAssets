@@ -2008,6 +2008,18 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
          "style": ".floor{display:grid}",
          "script": "async function enter(room){...}"}
 
+    ``version`` is the FORMAT version of this component and is always ``1``. It
+    is not a revision, a build number or a cache-buster: the app renders version
+    1 and refuses anything else, and a UI it refuses cannot be shown until the
+    field is 1 again. Nothing needs busting -- the app re-reads this row whenever
+    its revision moves, and every asset is addressed by its own ``sha256``, so
+    changed bytes are already a different URL. There is nowhere to put a build id
+    either: a field outside the ten above is refused too. To publish a change,
+    change the content with ``replace_ui`` or ``edit_ui``; the person's screen
+    picks it up on its own. A read tells me whether the app can render each UI:
+    ``read_graph target="app_ui"`` carries ``renderable`` per UI, with ``reason``
+    and ``fix`` when it is false.
+
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
     does NOT run -- the only code that runs is ``script``. Bounds: the component's
     text (markup, style, script and the asset list) under 1048576 UTF-8 bytes;

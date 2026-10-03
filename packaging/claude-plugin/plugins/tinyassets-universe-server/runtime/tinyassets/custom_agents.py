@@ -1811,6 +1811,72 @@ def app_ui_etag(component: Any) -> str:
     return hashlib.sha256(_canonical_json(component).encode("utf-8")).hexdigest()[:16]
 
 
+#: The app's rendering contract, mirrored here so a READ can say which stored
+#: UI the app will refuse and why. The app stays the authority on rendering
+#: (see ``_check_component``: the server owns only what its own stores depend
+#: on); this adds no refusal, it only reports.
+#: ``tests/test_app_ui_renderability.py`` holds these equal to app_ui.js.
+APP_UI_KIND = "tinyassets.app-ui.v1"
+#: The FORMAT version of the component, not a revision and not a cache-buster.
+#: It is always 1. An agent that set it to a timestamp hid every UI the person
+#: had built (founder, P1, 2026-10-03).
+APP_UI_FORMAT_VERSION = 1
+APP_UI_COMPONENT_FIELDS = ("kind", "markup", "name", "script", "style", "ui_id", "version")
+APP_UI_OPTIONAL_COMPONENT_FIELDS = ("assets", "libraries", "script_type")
+_APP_UI_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+APP_UI_MAX_NAME = 120
+
+
+def app_ui_renderability(entry: Any) -> dict[str, str]:
+    """``{}`` when the app can render ``entry``, else its reason and a fix.
+
+    Only the checks the WRITE path does not already make, which is exactly the
+    set a stored entry can still fail: the field list, ``kind``, the format
+    ``version``, and the shape of ``ui_id``, ``name`` and the three text
+    fields. Bounds, assets, libraries and ``script_type`` are enforced by
+    ``_check_component`` on the way in, so a stored entry has passed them.
+    """
+    if not isinstance(entry, dict):
+        return {"reason": "UI component is not an object",
+                "hint": "replace_ui with a JSON object component"}
+    keys = set(entry)
+    extra = sorted(keys - set(APP_UI_COMPONENT_FIELDS) - set(APP_UI_OPTIONAL_COMPONENT_FIELDS))
+    if extra:
+        return {"reason": "UI component carries fields this app does not render: "
+                          + ", ".join(extra),
+                "hint": f"remove {', '.join(extra)}; the app refuses any field outside "
+                        f"{list(APP_UI_COMPONENT_FIELDS)} plus "
+                        f"{list(APP_UI_OPTIONAL_COMPONENT_FIELDS)}"}
+    missing = [f for f in APP_UI_COMPONENT_FIELDS if f not in keys]
+    if missing:
+        return {"reason": "UI component is missing " + ", ".join(missing),
+                "hint": f"replace_ui with all of {list(APP_UI_COMPONENT_FIELDS)} present"}
+    if entry["kind"] != APP_UI_KIND:
+        return {"reason": f"not a {APP_UI_KIND} component",
+                "hint": f'set "kind" to "{APP_UI_KIND}"'}
+    if entry["version"] != APP_UI_FORMAT_VERSION or isinstance(entry["version"], bool):
+        return {"reason": f"UI version {entry['version']!r} is not supported; this app renders "
+                          f"version {APP_UI_FORMAT_VERSION}",
+                "hint": f'"version" is the component FORMAT version and is always '
+                        f'{APP_UI_FORMAT_VERSION}; it is not a revision or a cache-buster. '
+                        f'Set it back to {APP_UI_FORMAT_VERSION} with replace_ui. Nothing needs '
+                        "busting: the app re-reads this row whenever its revision moves, and an "
+                        "asset is addressed by its own sha256"}
+    if not isinstance(entry["ui_id"], str) or not _APP_UI_ID_RE.match(entry["ui_id"]):
+        return {"reason": "ui_id must be lowercase letters, digits or dashes",
+                "hint": "use up to 64 characters of lowercase letters, digits or dashes"}
+    if (not isinstance(entry["name"], str) or not entry["name"].strip()
+            or len(entry["name"]) > APP_UI_MAX_NAME):
+        return {"reason": "name must be a non-empty string of at most "
+                          f"{APP_UI_MAX_NAME} characters",
+                "hint": f"set a name of 1 to {APP_UI_MAX_NAME} characters"}
+    for field in ("markup", "style", "script"):
+        if not isinstance(entry[field], str):
+            return {"reason": f"{field} must be a string",
+                    "hint": f'set "{field}" to a string (empty is fine)'}
+    return {}
+
+
 def app_ui_index(document: dict[str, Any]) -> dict[str, Any]:
     """The row without any UI body: what a model reads to pick a target."""
     entries = []
@@ -1824,6 +1890,13 @@ def app_ui_index(document: dict[str, Any]) -> dict[str, Any]:
             "chars": {field: len(entry[field]) for field in ("markup", "style", "script")
                       if isinstance(entry.get(field), str)},
         }
+        # Per UI, so one bad component is diagnosable instead of making the
+        # whole library read as broken (founder, P1, 2026-10-03).
+        refusal = app_ui_renderability(entry)
+        summary["renderable"] = not refusal
+        if refusal:
+            summary["reason"] = refusal["reason"]
+            summary["fix"] = refusal["hint"]
         if isinstance(entry.get("assets"), dict):
             # Paths and sizes, not bodies: what a model needs to reference one.
             summary["assets"] = {path: ref.get("size") for path, ref in entry["assets"].items()
