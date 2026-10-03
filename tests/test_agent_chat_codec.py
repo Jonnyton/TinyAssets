@@ -221,6 +221,22 @@ def test_an_image_result_is_shown_to_the_model_as_a_line():
     {"type": "resource", "resource": {"uri": "https://example.invalid/file", "text": "data"}},
     {"type": "resource_link", "uri": "https://example.invalid/file", "name": "file"},
 ])
+def test_mixed_image_result_rejects_remaining_unsupported_content(block):
+    """Image projection must not conceal another unsupported content block."""
+    result = CallToolResult(content=[
+        TextContent(type="text", text="image and unsupported content"),
+        ImageContent(type="image", data="aW1hZ2U=", mimeType="image/png"),
+        block,
+    ])
+    with pytest.raises(ProtocolDecodeError, match="non-text"):
+        codec.tool_outcome(decode(response()).tool_requests[0], result)
+
+
+@pytest.mark.parametrize("block", [
+    {"type": "audio", "data": "YXVkaW8=", "mimeType": "audio/wav"},
+    {"type": "resource", "resource": {"uri": "https://example.invalid/file", "text": "data"}},
+    {"type": "resource_link", "uri": "https://example.invalid/file", "name": "file"},
+])
 def test_other_non_text_mcp_blocks_cannot_masquerade_as_plain_text(block):
     with pytest.raises(ProtocolDecodeError, match="non-text"):
         codec.tool_outcome(decode(response()).tool_requests[0], CallToolResult(content=[block]))
