@@ -521,6 +521,86 @@ def test_a_line_with_no_open_turn_is_held_on_the_server_and_listed(monkeypatch, 
     assert refused == {"steered": False, "universe_id": "u-alpha"}, "nothing saved for a stranger"
 
 
+def test_a_line_held_for_another_agent_comes_back_for_that_agent(monkeypatch, tmp_path):
+    """A line typed to one of the owner's OTHER agents is held under THAT
+    agent's thread, and the reload that asks for that agent gets it back.
+
+    The steer path routes per agent (harness §4.18) while the hold is what makes
+    a line survive (S2). Reading the main thread regardless -- which is what the
+    pending route did -- lost every line held for another agent on reload: held
+    on the server, invisible to the page, never sent.
+    """
+    from tests.conftest import own_universe
+    from tests.test_turn_interrupt import _Request
+    from tinyassets import addressed_agents, onboarding
+    from tinyassets.api import helpers, permissions
+    from tinyassets.auth import middleware
+    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.daemon_server import ensure_universe_registered
+
+    base = tmp_path / "data"
+    universe = _universe(tmp_path)
+    own_universe(base, "u-alpha")
+    ensure_universe_registered(base, universe_id="u-alpha", universe_path=universe)
+    monkeypatch.setattr(helpers, "_base_path", lambda: base)
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    caller = SimpleNamespace(user_id="owner-1")
+    monkeypatch.setattr(middleware, "current_identity", lambda: caller)
+    monkeypatch.setattr(permissions, "universe_access_allows",
+                        lambda uid, write=False: caller.user_id == "owner-1" and uid == "u-alpha")
+
+    definition = publish_definition(base, author_id="owner-1", payload={
+        "schema_version": 1, "name": "Evidence Weaver",
+        "components": {"identity": {"kind": "soul", "config": {"instructions": "Weave."}}},
+    })
+    weaver = create_binding(
+        base, universe_id="u-alpha", definition_id=definition["agent_definition_id"],
+        created_by="owner-1", payload={"schema_version": 1, "name": "Evidence Weaver"},
+    )["agent_binding_id"]
+
+    held = json.loads(asyncio.run(onboarding._handle_turn_steer(
+        _Request({"universe_id": "u-alpha", "agent_id": weaver,
+                  "text": "check the methods section"}))).body)
+    assert held["steered"] is False and held["held"] is True
+
+    # Held under the WEAVER's thread, which is where its turn will look.
+    weaver_thread = f"thread:{addressed_agents.memory_session('owner-1', weaver)}"
+    assert [m.text for m in agent_steering.pending(universe, weaver_thread)] == [
+        "check the methods section"]
+    assert agent_steering.pending(universe, THREAD) == [], "not on the main thread"
+
+    # The reload: the page asks for the agent it is showing and gets it back.
+    listed = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha", "agent_id": weaver}))).body)
+    assert [(p["text"], p["state"]) for p in listed["pending"]] == [
+        ("check the methods section", "held")]
+
+    # The main thread's reload does not show another agent's line...
+    on_main = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha"}))).body)
+    assert on_main["pending"] == []
+    # ...and claiming it from the main thread does not take it.
+    claimed = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha", "claim": [listed["pending"][0]["id"]]}))).body)
+    assert claimed["claimed"] == []
+    assert [m.text for m in agent_steering.pending(universe, weaver_thread)] == [
+        "check the methods section"], "still held for its own agent"
+
+    # Claimed once, by the agent it was held for.
+    claimed = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha", "agent_id": weaver,
+                  "claim": [listed["pending"][0]["id"]]}))).body)
+    assert claimed["claimed"] == [listed["pending"][0]["id"]]
+
+    # An id that is not one of the owner's agents is refused by name, never
+    # answered with the main thread's lines.
+    unknown = asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha", "agent_id": "not-an-agent"})))
+    assert unknown.status_code == 404
+    assert json.loads(unknown.body)["error"] == "agent_not_found"
+
+
 _OTHER_WINDOW = r"""
 globalThis.authHeaders=()=>({});
 const posts=[];
@@ -534,6 +614,10 @@ globalThis.fetch=(url,init)=>{
 };
 // The page learns its account and home with the server answering, as on load.
 setQueueOwner("p-1"); setQueueScope("u-1");
+// Which agent the page is showing, when the scenario names one. Injected as
+// the global collaborator the page asks for through `typeof`, which is how the
+// agent switcher reaches this code; with none, the page is on the main agent.
+if(SCENARIO.agent) globalThis.addressedAgentId=()=>SCENARIO.agent.agent_id;
 const working={active_turn:{turn_id:"t9",state:"inference_started",age_s:5,stale:false}};
 readServerTurn(working);
 if(SCENARIO.reload){ queueRestored=false; restoreQueue(); }
@@ -541,6 +625,7 @@ else { sendTurn("also check the invoice"); }
 await settle(); await settle(); await settle();
 const during={converse:converseCalls.slice(), queued:sendQueue.length,
   posts:posts.filter(p=>p.url==="/app/turn/steer").map(p=>p.body&&p.body.text),
+  pending:posts.filter(p=>p.url==="/app/turn/pending").map(p=>p.body),
   thread:bubbles().map(b=>b.text)};
 readServerTurn({active_turn:null});
 await settle(); await settle(); await settle();
@@ -578,6 +663,26 @@ def test_a_held_line_survives_a_reload_and_still_goes_out(tmp_path):
     assert "also check the invoice" in out["during"]["thread"], "back on screen after reload"
     assert out["during"]["queued"] == 1 and out["during"]["converse"] == []
     assert out["sent"] == ["also check the invoice"]
+    # The read names the agent it is for, so the server can answer from that
+    # agent's thread; the main agent is "main".
+    assert [p["agent_id"] for p in out["during"]["pending"]] == ["main"]
+
+
+def test_a_reload_showing_another_agent_asks_for_that_agents_held_line(tmp_path):
+    """The reload of a page showing one of the owner's other agents asks for
+    THAT agent's held lines, and puts them back on screen.
+
+    Without the agent id on the read the server answers from the main thread,
+    so a line held for this agent stays on the server and is never sent."""
+    held = {"pending": [{"id": 4, "text": "check the methods section", "state": "held"}]}
+    out = _other_window(tmp_path, {
+        "reload": True, "pending": held,
+        "agent": {"agent_id": "w1", "name": "Evidence Weaver"}})
+
+    assert [p["agent_id"] for p in out["during"]["pending"]] == ["w1"]
+    assert "check the methods section" in out["during"]["thread"], "back on screen"
+    assert out["during"]["queued"] == 1 and out["during"]["converse"] == []
+    assert out["sent"] == ["check the methods section"]
 
 
 # -- gpt-6-astra on #4290: ids, not text, decide what is sent once -------------

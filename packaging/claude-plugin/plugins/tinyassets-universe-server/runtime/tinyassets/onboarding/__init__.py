@@ -1611,13 +1611,27 @@ async def _handle_turn_pending(request: Any) -> Any:
         return JSONResponse({"error": "invalid_claim"}, status_code=400, headers=_NO_STORE)
 
     def _list():
-        from tinyassets import agent_steering
-        from tinyassets.api.helpers import _universe_dir
+        from tinyassets import addressed_agents, agent_steering
+        from tinyassets.api.helpers import _base_path, _universe_dir
         from tinyassets.api.permissions import universe_access_allows
 
         if not universe_access_allows(universe_id, write=True):
             return None
-        udir, key = _universe_dir(universe_id), f"thread:principal:{identity.user_id}"
+        # The SAME key the steer path writes and holds under (harness §4.18):
+        # the addressed agent's own thread, defaulting to main. Reading the main
+        # thread here regardless would leave a line held for another agent
+        # invisible after a reload -- which is the one thing S2 promises not to
+        # do. The main agent's session is `principal:<owner>`, so the main
+        # thread keeps the key it always had.
+        addressed = addressed_agents.resolve(
+            _base_path(), universe_id=universe_id, owner=identity.user_id,
+            agent_id=data.get("agent_id"),
+        )
+        session = addressed_agents.memory_session(
+            identity.user_id,
+            addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT,
+        )
+        udir, key = _universe_dir(universe_id), f"thread:{session}"
         if claim is not None:
             return {"claimed": agent_steering.claim(udir, key, claim)}
         return {"pending": [
@@ -1625,8 +1639,15 @@ async def _handle_turn_pending(request: Any) -> Any:
             for r in agent_steering.pending(udir, key)],
             "active": agent_steering.active(udir, key)}
 
+    from tinyassets.addressed_agents import AgentNotAddressable
+
     try:
         doc = await run_in_threadpool(_list)
+    except AgentNotAddressable as exc:
+        return JSONResponse(
+            {"error": "agent_not_found", "detail": str(exc)},
+            status_code=404, headers=_NO_STORE,
+        )
     except ValueError:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
     if doc is None:

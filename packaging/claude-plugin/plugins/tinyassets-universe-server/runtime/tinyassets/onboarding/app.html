@@ -4266,7 +4266,8 @@
     try{
       const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({universe_id:queueScope,claim:ids})});
+        body:JSON.stringify({universe_id:queueScope,claim:ids,
+          agent_id:(typeof addressedAgentId==="function"?addressedAgentId():"main")})});
       doc=r.ok?await r.json():null;
     }catch(e){ doc=null; }
     if(!doc||!Array.isArray(doc.claimed)) return items;
@@ -4314,13 +4315,17 @@
   }
   // What the server holds or is running for this thread, read once.
   async function readPendingTurns(){
-    const owner=queueOwner, scope=queueScope, epoch=MCP._loginEpoch;
+    const agentNow=()=>(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const owner=queueOwner, scope=queueScope, epoch=MCP._loginEpoch, agent=agentNow();
     try{
       const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({universe_id:scope})});
+        body:JSON.stringify({universe_id:scope,agent_id:agent})});
       const doc=r.ok?await r.json():null;
-      if(!doc||epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope) return null;
+      // The agent this asked FOR, as well as the account and home: an answer
+      // landing after the owner switched agents holds ANOTHER thread's lines.
+      if(!doc||epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope||
+         agent!==agentNow()) return null;
       return doc;
     }catch(e){ return null; }
   }
