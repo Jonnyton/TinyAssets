@@ -239,14 +239,15 @@ def test_auto_shrink_preserves_typing_until_focus_leaves_the_composer(app_url, b
     assert page.locator("#composer-input").evaluate(
         "e => [e.selectionStart, e.selectionEnd]") == [5, 9]
 
-    # Focus leaves the composer. No layout is mounted in this harness, so
-    # focusCommandCenter has no frame to hand the keyboard to and would leave
-    # the draft focused -- the owner moving off the composer is what releases
-    # the hold, so that is what this does.
-    page.evaluate("""() => {
-        document.getElementById('composer-input').blur();
-        refreshChatCloud();
-    }""")
+    # Focus leaves the composer by a real gesture. What this test is about is
+    # the TYPING hold, not the command-center handoff: this file's server does
+    # not serve /app/ui-frame, so no bundle can mount here and
+    # focusCommandCenter would have nothing to hand the keyboard to. The
+    # handoff itself is exercised in test_app_two_surfaces_browser.py, which
+    # does serve the frame (gpt-6-astra on #4358 was right that the earlier
+    # `blur()` here proved nothing).
+    page.focus("#btn-cloud-menu")
+    page.evaluate("refreshChatCloud()")
     assert page.locator("#chat-cloud").is_hidden()
     assert page.evaluate(
         "document.activeElement.closest('#chat-cloud') === null"), "not the chat's any more"

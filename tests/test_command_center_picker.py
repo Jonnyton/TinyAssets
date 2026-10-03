@@ -305,3 +305,94 @@ def test_the_allowlist_names_exactly_the_platform_only_actions():
     # Enforced in serve(), the one place every call passes through.
     served = source.split("async serve(id,action,params){", 1)[1].split("\n    },", 1)[0]
     assert "this.PLATFORM_ONLY.indexOf(action)>=0 && !this.isPlatformDefault()" in served
+def test_a_platform_request_does_nothing_once_another_bundle_takes_the_screen(tmp_path):
+    """verify() is a server round-trip. The owner can replace the bundle while
+    it is in flight, and the generation checks used to run only on the way
+    OUT: the reply was discarded but the WORK had already happened.
+    gpt-6-astra reproduced chat.prefill running with a third-party bundle on
+    screen. The effect belongs to the bundle that asked, so serve() re-checks
+    after the await and before the method.
+    """
+    from tests.test_custom_ui_bridge import _run
+
+    checks = r"""
+(async()=>{
+const u=AppUI;
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;
+let prefilled=0;global.chatCloudPrefill=()=>{prefilled++;};
+let installs=0;
+MCP.callTool=async()=>{installs++;return {request_id:'r1'};};
+
+// verify() is held open so the swap lands between the gate and the method.
+let releaseVerify;
+const held=new Promise(r=>{releaseVerify=r;});
+u.verify=async()=>{ await held; };
+
+u.platformDefault=DEFAULT_BUNDLE;u.mountDefault();
+assert.equal(u.isPlatformDefault(),true);
+const win=u.frame.contentWindow,before=win.posts.length;
+
+// The platform asks for both privileged actions...
+u.receive({source:win,data:{ta_ui:1,type:'call',id:'p1',action:'chat.prefill',
+ params:{text:'build'}}});
+u.receive({source:win,data:{ta_ui:1,type:'call',id:'p2',action:'packages.try',
+ params:{agent_definition_id:'d1'}}});
+for(let i=0;i<4;i++)await new Promise(r=>setImmediate(r));
+assert.equal(prefilled,0,'nothing runs while verify is in flight');
+assert.equal(installs,0);
+
+// ...and the owner switches bundles before verify answers.
+u.mount({kind:u.KIND,version:1,ui_id:'third-party',name:'Theirs',
+ markup:'<p>x</p>',style:'',script:''});
+assert.equal(u.isPlatformDefault(),false);
+releaseVerify();
+for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
+
+assert.equal(prefilled,0,'the composer was never filled for the replaced bundle');
+assert.equal(installs,0,'no install was requested for the replaced bundle');
+// Neither frame is told anything: the asker is gone and the new frame never asked.
+assert.equal(win.posts.length,before,'the replaced frame gets no reply');
+assert.equal(u.frame.contentWindow.posts.length,0,'the new frame gets no reply');
+console.log('picker fence passed');
+})().catch(e=>{console.error(e);process.exit(1);});
+"""
+    out = _run(tmp_path, "picker_fence.js", checks,
+               extra="const DEFAULT_BUNDLE=" + json.dumps(PLATFORM_DEFAULT_UI) + ";\n")
+    assert "picker fence passed" in out
+
+
+def test_every_branch_that_says_default_chat_mounts_it(tmp_path):
+    """"Default chat is in use" has to be true.
+
+    An unreadable library, an unreadable selection and a selection naming a
+    missing entry all claimed it while mounting nothing, which left the stage
+    empty with the explanation inside a dialog that is normally closed
+    (gpt-6-astra on #4358, reproduced). The recovery button was disabled in
+    exactly that state too.
+    """
+    from tests.test_custom_ui_bridge import _run
+
+    checks = r"""
+(async()=>{
+const u=AppUI;
+const row=extra=>Object.assign({universe_id:HOME,revision:1,
+ platform_default:DEFAULT_BUNDLE},extra);
+const cases={
+ 'unreadable library':row({ui_library:'nonsense',ui_selection:null}),
+ 'unreadable selection':row({ui_library:[],ui_selection:'nonsense'}),
+ 'missing entry':row({ui_library:[],ui_selection:{version:1,state:'active',ui_id:'gone'}}),
+};
+for(const [name,doc] of Object.entries(cases)){
+ u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.busy=false;
+ u.adopt(doc);
+ assert(u.frame,name+': the stage must hold the default, not nothing');
+ assert.equal(u.isPlatformDefault(),true,name+': and it is the platform bundle');
+ assert(/Default chat is in use/.test($('ui-status').textContent),
+  name+': and it says so, got '+$('ui-status').textContent);
+}
+console.log('picker fallback passed');
+})().catch(e=>{console.error(e);process.exit(1);});
+"""
+    out = _run(tmp_path, "picker_fallback.js", checks,
+               extra="const DEFAULT_BUNDLE=" + json.dumps(PLATFORM_DEFAULT_UI) + ";\n")
+    assert "picker fallback passed" in out

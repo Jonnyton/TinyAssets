@@ -279,18 +279,27 @@
         // empty cache here is what let a later install rewrite `ui_library` from
         // nothing and drop the bundles it could not parse (Codex, 2026-09-26).
         this.library=[]; this.unreadable=library.reason; this.selection=null;
+        // "Default chat is in use" has to BE true: every branch that says it
+        // mounts the platform's blank command center, or the stage is left
+        // empty with the explanation inside a closed dialog and no way back
+        // (gpt-6-astra on #4358, reproduced).
+        this.mountDefault();
         this.status("Installed UIs unreadable: "+library.reason+". Default chat is in use. Installing would overwrite them, so it is disabled."); this.paint(); return;
       }
       this.library=library.entries; this.unreadable="";
       if(!selection.ok){
         this.selection=null;
+        this.mountDefault();
         this.status("Saved UI choice unreadable: "+selection.reason+". Default chat is in use."); this.paint(); return;
       }
       this.selection=selection.selection;
       if(this.selection&&this.selection.state==="active"){
         const entry=this.library.find(b=>b.ui_id===this.selection.ui_id);
         if(entry){ this.mount(entry); this.status("Using "+entry.name+"."); }
-        else this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use.");
+        else{
+          this.mountDefault();
+          this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use.");
+        }
       }else{ this.mountDefault(); this.status(""); }
       this.paint();
     },
@@ -304,14 +313,23 @@
     isPlatformDefault(){
       return !!(this.active && this.active.ui_id===this.PLATFORM_UI_ID && this.defaultMounted);
     },
+    // Returns whether the stage now holds it. It does NOT throw: it is the
+    // fallback several branches above fall back TO, and a throw there would
+    // replace their explanation with a blank stage. A malformed platform
+    // bundle is ours, not the owner's, so it is reported loudly and the caller
+    // keeps its own message.
     mountDefault(){
-      if(!this.enabled||!this.platformDefault) return;
+      if(!this.enabled||!this.platformDefault) return false;
       const parsed=this.parseBundle(this.platformDefault);
-      if(!parsed.ok) throw new Error("The blank command center is unavailable: "+parsed.reason);
+      if(!parsed.ok){
+        console.error("the platform's blank command center did not parse: "+parsed.reason);
+        return false;
+      }
       this.mount(parsed.bundle);
       // Set AFTER mount: mount() clears it, so this is only ever true for the
       // bundle this call put on screen.
       this.defaultMounted=true;
+      return true;
     },
     mount(entry){
       this.unmount();
@@ -514,6 +532,16 @@
       this.pending++;
       try{
         await this.verify();
+        // AGAIN, after the await. verify() is a server round-trip, and the
+        // owner can replace the bundle while it is in flight: the checks below
+        // used to run only on the way OUT, which discarded the reply but had
+        // already DONE the work -- gpt-6-astra reproduced chat.prefill running
+        // with a third-party bundle on screen. The effect, not just the
+        // answer, belongs to the bundle that asked.
+        if(!this.fence(epoch,home)||gen!==this.frameGen||!this.frame) return;
+        if(this.PLATFORM_ONLY.indexOf(action)>=0 && !this.isPlatformDefault()){
+          this.refuse(id,"action not available: "+action); return;
+        }
         const result=await this[method](args,asker);
         if(!this.fence(epoch,home)||gen!==this.frameGen||!this.frame) return;
         this.post({ta_ui:this.PROTOCOL,type:"result",id,ok:true,result});
@@ -1176,7 +1204,12 @@
       if(!list) return;
       list.replaceChildren();
       const row=document.createElement("li");
-      row.appendChild(this.button("Default chat",()=>this.chooseDefault(),this.busy||!this.active));
+      // Disabled only while a save is in flight. It used to also require
+      // something to BE active, which disabled the way back at exactly the
+      // moment it is needed -- nothing mounted (gpt-6-astra on #4358).
+      // chooseDefault works from no bundle: it unmounts, then mounts the
+      // platform's blank command center.
+      row.appendChild(this.button("Default chat",()=>this.chooseDefault(),this.busy));
       list.appendChild(row);
       for(const bundle of this.library){
         const item=document.createElement("li"),current=!!(this.active&&this.active.ui_id===bundle.ui_id);
