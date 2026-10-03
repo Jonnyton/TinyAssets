@@ -26,6 +26,12 @@ from tinyassets.api import app_ui as _app_ui  # noqa: F401
 OWNER, HOME = "alice", "u-alice"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_preview_data_dir(tmp_path, monkeypatch):
+    """Keep the real host-slot lock in this test's existing data directory."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+
 def _png(rgb=(32, 160, 64), size=8) -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + kind + data

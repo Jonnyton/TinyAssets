@@ -30,6 +30,7 @@ on:
       # This job and its assertion helper.
       - ".github/workflows/real-browser-proof.yml"
       - "scripts/ci_assert_junit_case.py"
+      - "scripts/ci_bwrap_dependency.py"
       # The custom-UI frame: the sandbox attribute, the frame document and its
       # headers, and the page that hosts it.
       - "tinyassets/onboarding/app_ui.js"
@@ -43,6 +44,7 @@ on:
       - "tests/test_app_two_surfaces_browser.py"
       - "tests/test_custom_ui_real_browser.py"
       - "tests/test_connect_free_ai_real_browser.py"
+      - "tests/test_ui_preview.py"
   workflow_dispatch:
 
 permissions:
@@ -86,6 +88,10 @@ jobs:
         # browser itself comes from the cache when the pinned version matches.
         run: python -m playwright install --with-deps chromium
 
+      - name: Deliver the unprivileged preview dependency
+        run: |
+          python scripts/ci_bwrap_dependency.py --runner-temp "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
       - name: Run the real-browser proofs
         env:
           OUT_DIR: ${{ runner.temp }}/browser-out
@@ -118,10 +124,45 @@ jobs:
             --label real-browser-proof \
             --summary "$GITHUB_STEP_SUMMARY"
 
+      - name: Run the complete preview containment module
+        env:
+          OUT_DIR: ${{ runner.temp }}/browser-out
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          python -m pytest tests/test_ui_preview.py -q -p no:cacheprovider \
+            -o junit_family=xunit1 --basetemp "$RUNNER_TEMP/preview" \
+            --junitxml "$OUT_DIR/junit-preview.xml"
+
+      - name: Assert every preview case executed
+        if: always()
+        env:
+          JUNIT_PATH: ${{ runner.temp }}/browser-out/junit-preview.xml
+        run: |
+          set -euo pipefail
+          listed="$(python -m pytest tests/test_ui_preview.py --collect-only -q -p no:cacheprovider)"
+          mapfile -t cases < <(printf '%s\n' "$listed" | awk '/^tests\/test_ui_preview.py::/')
+          if [ "${#cases[@]}" -eq 0 ]; then
+            echo "::error::no preview test cases collected"
+            exit 1
+          fi
+          args=()
+          for case in "${cases[@]}"; do args+=(--nodeid "$case"); done
+          python scripts/ci_assert_junit_case.py --junit "$JUNIT_PATH" \
+            --label preview-containment "${args[@]}" --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Upload junit
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-real-browser-proof
           path: ${{ runner.temp }}/browser-out/junit-real-browser.xml
+          if-no-files-found: warn
+
+      - name: Upload preview junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-preview-containment
+          path: ${{ runner.temp }}/browser-out/junit-preview.xml
           if-no-files-found: warn

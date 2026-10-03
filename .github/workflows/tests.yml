@@ -189,6 +189,10 @@ jobs:
           pip install -e '.[dev,browser]'
           python -m playwright install --with-deps chromium
 
+      - name: Deliver the unprivileged preview dependency
+        run: |
+          python scripts/ci_bwrap_dependency.py --runner-temp "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
       - name: Run this shard of the required test surface
         env:
           # Keep the suite off the real repo tree and off any host state. The

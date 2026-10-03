@@ -101,6 +101,18 @@ def test_required_aggregate_rejects_missing_or_skipped_browser_proofs():
     assert "|| true" not in step["run"]
 
 
+def test_required_shards_deliver_unprivileged_bwrap_before_execution():
+    steps = _load()["jobs"]["required-tests-shard"]["steps"]
+    dependency = next(s for s in steps
+                      if s.get("name") == "Deliver the unprivileged preview dependency")
+    assert dependency["run"].strip() == (
+        'python scripts/ci_bwrap_dependency.py --runner-temp "$RUNNER_TEMP" >> "$GITHUB_PATH"'
+    )
+    execute = next(s for s in steps if "ci_required_tests.py" in s.get("run", ""))
+    assert steps.index(dependency) < steps.index(execute)
+    assert "if" not in dependency and not dependency.get("continue-on-error", False)
+
+
 def _triggers(wf: dict) -> dict:
     # PyYAML parses a bare `on:` key as the boolean True.
     return wf[True] if True in wf else wf["on"]
