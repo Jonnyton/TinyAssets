@@ -680,22 +680,7 @@ rejected against its prior attachment.
 
 ### Requirement: An invoke_branch edge never widens execution authority
 
-Every invoked child branch — live or frozen, blocking or async, at any nesting
-depth — SHALL execute under an immutable execution context built ONCE at the
-authenticated run entry and threaded compile → node builder → invoke closure →
-child run → the child's own builders. The context SHALL carry the actor the run
-executes as, the execution universe, the running definition's provenance
-(`own` | `public-foreign`), the recursion depth, the persisted authenticated owner,
-the compiled definition's author, and the persisted workspace-family member that
-is the child's budget parent. A nested edge MAY narrow it and SHALL NOT widen it.
-Execution authority MUST NOT be read from a node spec, from a caller-supplied
-`child_actor`, or re-read from the mutable run record, and there SHALL be no
-synthetic or anonymous actor: an absent authenticated actor refuses the node
-fail-closed. The actor SHALL be resolved through the canonical principal
-normalizer rather than used as a raw string. A missing workspace-family member
-SHALL resolve to the unmanaged budget parent, so absent legacy authority does not
-turn each child into a new budget root. Nesting SHALL be bounded by the runtime
-invocation-depth cap, refused at compile time.
+Every invoked child branch — live or frozen, blocking or async, at any nesting depth — SHALL execute under an immutable execution context built ONCE at the authenticated run entry and threaded compile → node builder → invoke closure → child run → the child's own builders. The context SHALL carry the actor the run executes as, the execution universe, the running definition's provenance (`own` | `public-foreign`), the recursion depth, the persisted authenticated owner, the compiled definition's author, and the persisted workspace-family member that is the child's budget parent. A nested edge MAY narrow it and SHALL NOT widen it. Execution authority MUST NOT be read from a node spec, from a caller-supplied `child_actor`, or re-read from the mutable run record, and there SHALL be no synthetic or anonymous actor: an absent authenticated actor refuses the node fail-closed. The actor SHALL be resolved through the canonical principal normalizer rather than used as a raw string. A missing workspace-family member SHALL resolve to the unmanaged budget parent, so absent legacy authority does not turn each child into a new budget root. A BLOCKING live invocation is not capped by a compile-time depth limit (the former cap is retired; a blocking invoke past the old cap compiles). ASYNC live and frozen-version invocations SHALL be bounded by the shared invocation pool's capacity rather than by a depth cap.
 
 Provenance SHALL be recomputed at each authenticated run entry from that run's own
 definition rather than inherited as a token: `own` when the definition's author is
@@ -741,7 +726,10 @@ malformed visibility SHALL NOT count as public.
 - `public-foreign` provenance MAY reference ONLY a public child.
 
 A version reference SHALL be authorized through its definition BEFORE the snapshot
-is loaded. Every other outcome — absent, unreadable, corrupt, unauthorized, or any
+is loaded, AND the snapshot's own publication SHALL be checked independently
+(`branch_version_is_public`): an unmarked or private snapshot SHALL require
+delegated authorship (the authoring definition's author may reference it) even when
+its live definition is public. Every other outcome — absent, unreadable, corrupt, unauthorized, or any
 failure of the authority lookups — SHALL raise ONE uniform refusal, so the invoke
 surface is neither an existence nor an authorization oracle.
 
