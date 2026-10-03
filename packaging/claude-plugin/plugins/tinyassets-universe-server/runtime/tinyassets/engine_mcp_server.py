@@ -45,6 +45,7 @@ from tinyassets.command_center_names import CommandCenterNames
 from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 from tinyassets.engine_steering import OwnerSteering
+from tinyassets.engine_tool_activity import ToolActivity
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
 #: inputs_json``) accepts on the wire: the JSON TEXT, or the value itself
@@ -423,6 +424,7 @@ class RefusalsAreErrors(Middleware):
 # First added is OUTERMOST: attention acknowledges only the final bounded
 # result, then the ceiling wraps the refusal flag.
 mcp.add_middleware(OwnerSteering())
+mcp.add_middleware(ToolActivity())
 mcp.add_middleware(ConversationAttention())
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
@@ -2008,6 +2010,32 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
          "style": ".floor{display:grid}",
          "script": "async function enter(room){...}"}
 
+    **Only these calls change what the person sees.** A UI exists in that row
+    and nowhere else. Keeping a copy under ``extensions/<name>/component.json``
+    in my own folder is fine as a working file, but editing that file changes
+    NOTHING the person looks at -- the platform never reads it. Every change has
+    to go through ``write_graph target="app_ui"`` (``add_ui``, ``replace_ui``,
+    ``edit_ui``), and I confirm it landed by reading the row back. If I edit the
+    file and tell the person their screen is updated, I am wrong.
+
+    ``version`` is the FORMAT version of this component and is always ``1``. It
+    is not a revision, a build number or a cache-buster: the app renders version
+    1 and refuses anything else, and a UI it refuses cannot be shown until the
+    field is 1 again. Nothing needs busting: the app re-reads this row after a
+    turn whose revision moved, and on the person's Refresh, and it asks for each
+    asset by its own ``sha256`` with caching off -- so there is no stale copy for
+    a version number to defeat. There is nowhere to put a build id either: a
+    field outside the ten above is refused too. To publish a change, change the
+    content with ``replace_ui`` or ``edit_ui``; the person's screen picks it up
+    on its next turn, or at once if they Refresh.
+
+    ``add_ui`` and ``replace_ui`` REFUSE a component the app could not render,
+    and the refusal says what to change -- so a receipt means the person can
+    really see it. For a UI stored before that check existed, a read tells me:
+    ``read_graph target="app_ui"`` carries ``renderable`` per UI, with ``reason``
+    and ``fix`` when it is false. Worth reading whenever someone says a screen
+    is not what I think I saved.
+
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
     does NOT run -- the only code that runs is ``script``. Bounds: the component's
     text (markup, style, script and the asset list) under 1048576 UTF-8 bytes;
@@ -2062,6 +2090,9 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,
                   status,started_at,finished_at,last_node_id}], has_more}
                   # newest first, at most 50; has_more says there are older
+        await tinyassets.readLive()                -> {as_of, agents:[{agent_id,name,
+                  state:"working"|"idle", since, steps:[{tool,summary,state,age_s}]}]}
+                  # each agent's live state; poll it to animate agents at work
         await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
                   error,output_fields:[...]}
         await tinyassets.readRunOutput(run_id, field, offset)
@@ -4266,6 +4297,9 @@ async def _universe_tool(op, /, **kwargs) -> str:
     try:
         return await asyncio.to_thread(op, udir, **kwargs)
     except (universe_tools.UniverseToolError, ProviderConfinementError) as exc:
+        from tinyassets.engine_tool_activity import note_refusal
+
+        note_refusal(str(exc))
         return f"error: {exc}"
 
 

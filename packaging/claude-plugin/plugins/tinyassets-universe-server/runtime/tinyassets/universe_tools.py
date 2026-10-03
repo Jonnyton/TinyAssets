@@ -93,6 +93,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
+from tinyassets import jail_disk
 from tinyassets.addressed_agents import MAIN_AGENT
 from tinyassets.providers import provider_jail
 from tinyassets.providers.provider_jail import (
@@ -229,10 +230,10 @@ class ToolLimits:
     tree_memory_bytes: int = 768 * _MiB
     #: Free space the shared data volume must keep: a call is refused below it,
     #: and a running jail is killed when its writes take the volume below it.
-    min_free_disk_bytes: int = 1024 * _MiB
+    min_free_disk_bytes: int = jail_disk.MIN_FREE_DISK_BYTES
     #: Free inodes the shared data volume must keep: a full inode table is a
     #: cross-user outage that free BYTES do not show (many tiny files).
-    min_free_inodes: int = 4096
+    min_free_inodes: int = jail_disk.MIN_FREE_INODES
     #: ``nice`` increment for jail processes: they yield to the daemon's own
     #: work on the shared 1 vCPU box.
     nice_increment: int = 10
@@ -264,13 +265,18 @@ class ToolRun:
     exit_code: int | None
     output: bytes
     #: ``timeout``, ``output_limit``, ``memory_limit``, ``process_limit``,
-    #: ``disk_limit`` or None.
+    #: ``disk_limit``, ``storage_limit`` or None.
     killed: str | None
     elapsed: float
     #: Seconds this call spent QUEUED for a host tool slot before it started.
     #: Reported in the result trailer: every tool here answers with text, and a
     #: wait the caller cannot see is indistinguishable from a hang.
     waited: float = 0.0
+    #: Said before the tool's answer: the owner is out of storage (the call
+    #: still ran, on a small grace budget -- see `jail_disk`).
+    notice: str = ""
+    #: Bytes this call could add to the universe before ``storage_limit``.
+    disk_bound: int = 0
 
 
 # ── the jail ────────────────────────────────────────────────────────────────
@@ -437,26 +443,8 @@ def _seccomp_fd() -> int:
     return program_fd()
 
 
-def _statvfs(path: Path) -> os.statvfs_result | None:
-    try:
-        return os.statvfs(path)
-    except (AttributeError, OSError):
-        return None
-
-
-def _free_disk(path: Path) -> int:
-    stats = _statvfs(path)
-    return -1 if stats is None else int(stats.f_bavail) * int(stats.f_frsize)
-
-
-def _free_inodes(path: Path) -> int:
-    stats = _statvfs(path)
-    if stats is None:
-        return -1
-    favail = getattr(stats, "f_favail", -1)
-    # Some filesystems (e.g. btrfs) report 0 inodes: they have no fixed table,
-    # so the inode floor does not apply -- treat as "unmeasurable", never full.
-    return -1 if favail in (-1, 0) and getattr(stats, "f_files", 0) == 0 else int(favail)
+_free_disk = jail_disk.free_bytes
+_free_inodes = jail_disk.free_inodes
 
 
 #: Set from the parent right after spawn: no ``preexec_fn`` (the daemon is
@@ -662,29 +650,33 @@ def run_jailed(
         egress = {} if egress_socket is None else {"egress_socket": egress_socket}
         argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
         with _slot(root, on_wait=on_wait, waited=queued):
-            free = _free_disk(root)
-            if 0 <= free < limits.min_free_disk_bytes:
+            try:
+                budget = jail_disk.open_budget(
+                    root, min_free_bytes=limits.min_free_disk_bytes,
+                    min_free_inodes=limits.min_free_inodes,
+                )
+            except jail_disk.DiskFloorRefused as below:
                 raise UniverseToolError(
-                    "the shared disk is nearly full, so the tool jail will not start; "
-                    "nothing ran"
-                )
-            inodes = _free_inodes(root)
-            if 0 <= inodes < limits.min_free_inodes:
-                raise UniverseToolError(
-                    "the shared disk is nearly out of inodes, so the tool jail will "
-                    "not start; nothing ran"
-                )
-            with _root_cgroup(limits, process_cap) as cgroup:
-                if cgroup is not None:
-                    # The shell joins the cgroup, THEN becomes bwrap: nothing of
-                    # the jail ever runs outside it. A failed join never execs.
-                    argv = ["/bin/sh", "-c", 'echo $$ > "$0" && exec "$@"',
-                            str(cgroup / "cgroup.procs"), *argv]
-                run = _supervise(
-                    argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
-                    cap=cap, process_cap=process_cap,
-                )
-                return replace(run, waited=queued[0] if queued else 0.0)
+                    f"{below}, so the tool jail will not start; nothing ran"
+                ) from None
+            try:
+                with _root_cgroup(limits, process_cap) as cgroup:
+                    if cgroup is not None:
+                        # The shell joins the cgroup, THEN becomes bwrap: nothing
+                        # of the jail ever runs outside it. A failed join never
+                        # execs.
+                        argv = ["/bin/sh", "-c", 'echo $$ > "$0" && exec "$@"',
+                                str(cgroup / "cgroup.procs"), *argv]
+                    run = _supervise(
+                        argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
+                        cap=cap, process_cap=process_cap, budget=budget,
+                    )
+            finally:
+                budget.settle()
+            return replace(
+                run, waited=queued[0] if queued else 0.0, notice=budget.notice,
+                disk_bound=budget.bound,
+            )
     finally:
         os.close(filter_fd)
 
@@ -772,6 +764,7 @@ def _remove_cgroup(path: Path) -> None:
 def _supervise(
     argv: list[str], root: Path, filter_fd: int, *, stdin: bytes | None,
     limits: ToolLimits, wall: float, cap: int, process_cap: int,
+    budget: jail_disk.DiskBudget,
 ) -> ToolRun:
     """Start the jail and watch it until it ends or a limit kills it."""
     started = time.monotonic()
@@ -801,7 +794,7 @@ def _supervise(
         feeder.start()
     killed = None
     try:
-        killed = _watch(proc, out, root, limits=limits, wall=wall,
+        killed = _watch(proc, out, budget, limits=limits, wall=wall,
                         process_cap=process_cap, started=started)
     finally:
         try:
@@ -832,8 +825,8 @@ def _supervise(
 
 
 def _watch(
-    proc: subprocess.Popen, out: _Drain, root: Path, *, limits: ToolLimits,
-    wall: float, process_cap: int, started: float,
+    proc: subprocess.Popen, out: _Drain, budget: jail_disk.DiskBudget, *,
+    limits: ToolLimits, wall: float, process_cap: int, started: float,
 ) -> str | None:
     """Poll the running jail; kill it and name the limit the moment one breaks."""
     next_tree = 0.0
@@ -847,16 +840,12 @@ def _watch(
         elif now >= next_tree:
             next_tree = now + 0.2
             count, rss = _tree(proc.pid)
-            free = _free_disk(root)
-            inodes = _free_inodes(root)
             if count > process_cap:
                 killed = "process_limit"
             elif rss > limits.tree_memory_bytes:
                 killed = "memory_limit"
-            elif 0 <= free < limits.min_free_disk_bytes:
-                killed = "disk_limit"
-            elif 0 <= inodes < limits.min_free_inodes:
-                killed = "disk_limit"
+            else:
+                killed = budget.breach()
         if killed:
             _kill(proc)
             return killed
@@ -903,9 +892,10 @@ def _waited_note(run: ToolRun) -> str:
     caller learns that its 40-second read was 38 seconds of queueing is if the
     answer says so.
     """
+    notice = f"{run.notice}\n" if run.notice else ""
     if run.waited < 1.0:
-        return ""
-    return f"[waited {run.waited:.0f}s for a free tool slot on this host]\n"
+        return notice
+    return notice + f"[waited {run.waited:.0f}s for a free tool slot on this host]\n"
 
 
 def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
@@ -919,6 +909,11 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
         return f"[killed: more than {limits.processes} processes]"
     if run.killed == "disk_limit":
         return "[killed: the shared disk was nearly full]"
+    if run.killed == "storage_limit":
+        return (
+            f"[killed: this call added more than {run.disk_bound} bytes to the command center, "
+            "all the owner's cloud storage had room for]"
+        )
     if run.exit_code == 128 + _SIGXCPU:
         return "[killed: cpu time limit]"
     if run.exit_code == 128 + _SIGKILL:
