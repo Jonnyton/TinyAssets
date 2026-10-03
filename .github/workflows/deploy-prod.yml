@@ -185,6 +185,73 @@ jobs:
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
+      # A full root volume makes the forward deploy AND the rollback fail, and
+      # the rollback is what keeps prod up -- so a deploy that cannot recover
+      # must be refused BEFORE anything is pulled or swapped, not discovered
+      # halfway through. #2442 deleted this step; main handles the CHRONIC
+      # condition after the fact (post-canary image retention, the daily timer,
+      # the hourly disk-watch) but nothing refuses an acute one up front.
+      #
+      # First host contact in the job, before TINYASSETS_IMAGE is written,
+      # before any secret is installed, and before deploy_fail_safe.sh pulls
+      # (deploy/deploy_fail_safe.sh: `docker pull "$NEW_IMAGE"`).
+      #
+      # The prune is CONDITIONAL at 85% on purpose. `docker system prune -af`
+      # removes every image no container is using, which includes the daemon
+      # images #3960's retention keeps for rollback -- so a healthy deploy
+      # (under 85%) never runs it and the retention set survives. Above 85% the
+      # trade inverts: losing older rollback images is better than a disk too
+      # full to roll back to any of them. Still over 90% after pruning and the
+      # deploy refuses while production is untouched.
+      - name: Preflight droplet disk before image pull
+        id: disk-preflight
+        run: |
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+
+          threshold=85
+          fail_threshold=90
+
+          max_disk_pct() {
+            max=0
+            for path in / /var/lib/docker /data; do
+              [ -e "$path" ] || continue
+              pct="$(df -P "$path" | awk 'NR==2 {gsub("%", "", $5); print $5}')"
+              case "$pct" in
+                ''|*[!0-9]*) pct=0 ;;
+              esac
+              if [ "$pct" -gt "$max" ]; then
+                max="$pct"
+              fi
+            done
+            echo "$max"
+          }
+
+          echo "disk preflight before cleanup:"
+          df -h / /var/lib/docker /data 2>&1 || true
+
+          before="$(max_disk_pct)"
+          if [ "$before" -ge "$threshold" ]; then
+            echo "::warning::disk usage ${before}% >= ${threshold}%; pruning disposable Docker/build/journal state before deploy"
+            docker system prune -af 2>&1 | tail -80 || true
+            docker builder prune -af 2>&1 | tail -80 || true
+            journalctl --vacuum-time=3d 2>&1 | tail -20 || true
+          else
+            echo "disk usage ${before}% < ${threshold}%; no pre-deploy prune needed"
+          fi
+
+          echo "disk preflight after cleanup:"
+          df -h / /var/lib/docker /data 2>&1 || true
+
+          after="$(max_disk_pct)"
+          if [ "$after" -ge "$fail_threshold" ]; then
+            echo "::error::disk usage still ${after}% >= ${fail_threshold}% after prune; refusing deploy before image pull/restart"
+            exit 1
+          fi
+          SH
+
       - name: Capture current image (for public-canary rollback)
         id: capture
         run: |

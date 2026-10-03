@@ -1520,19 +1520,47 @@ def test_stop_writer_ancestry_gate_has_complete_git_history():
 
 
 def test_disk_preflight_precedes_every_remote_image_pull():
+    """Nothing pulls an image before the disk is checked.
+
+    The pull used to be a ``docker pull`` line in a workflow step, which is what
+    this test scanned for. It now lives in ``deploy/deploy_fail_safe.sh``, run
+    by the ``deploy`` step, so a workflow-only scan found no pull at all and the
+    test could not pass however correct the ordering was. It follows the pull to
+    where it actually is, and additionally forbids a future step from pulling
+    directly ahead of the check.
+    """
     wf = _load()
     steps = _steps(wf)
     disk_index = steps.index(_step_named(wf, "Preflight droplet disk before image pull"))
-    pull_indexes = []
+
+    script = Path("deploy/deploy_fail_safe.sh").read_text(encoding="utf-8")
+    pulls = [
+        line.strip()
+        for line in script.splitlines()
+        if "docker pull" in line and not line.strip().startswith("#")
+    ]
+    assert pulls, "the fail-safe script is still what pulls the candidate image"
+
+    # Every step that can reach that script must come after the disk check.
+    runner_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if "deploy_fail_safe.sh" in str(step.get("run", ""))
+    ]
+    assert runner_indexes, "some step runs the fail-safe script"
+    assert all(disk_index < index for index in runner_indexes), (
+        "the disk check must precede every step that can pull or swap"
+    )
+
+    # A step that pulls directly would bypass the script and the check with it.
     for index, step in enumerate(steps):
         for line in str(step.get("run", "")).splitlines():
             stripped = line.strip()
-            if stripped.startswith("#"):
+            if stripped.startswith("#") or "docker pull" not in stripped:
                 continue
-            if "docker pull" in stripped:
-                pull_indexes.append(index)
-    assert pull_indexes
-    assert all(disk_index < index for index in pull_indexes)
+            assert disk_index < index, (
+                f"step {index} ({step.get('name')!r}) pulls before the disk check"
+            )
 
 
 def test_stop_writer_workflow_invokes_transitional_helper_subcommands():
