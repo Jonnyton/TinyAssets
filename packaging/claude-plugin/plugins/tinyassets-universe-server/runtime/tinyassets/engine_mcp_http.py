@@ -267,7 +267,11 @@ class _EngineServer:
         self.proc = None
 
     def start(self) -> bool:
-        env = dict(os.environ)
+        from tinyassets.platform_secrets import child_env
+
+        # The engine server serves MCP tools only; billing and account deletion
+        # are daemon HTTP routes, so it holds none of the platform's secrets.
+        env = child_env(os.environ)
         env["TINYASSETS_ENGINE_ACTOR_ID"] = self.owner
         env["TINYASSETS_ENGINE_GRAPH_ID"] = self.universe_id
         env["TINYASSETS_DATA_DIR"] = self._data_dir
