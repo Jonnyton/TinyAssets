@@ -341,10 +341,18 @@ def test_real_pytest_shards_cover_every_test_exactly_once(tmp_path):
 # ---- sharding: the aggregate -----------------------------------------------
 
 
-def _shard(dir_: Path, index: int, total: int, body: str | None, exit_code: int = 0) -> None:
-    (dir_ / f"junit-shard-{index}.json").write_text(
-        json.dumps({"shard": index, "total": total, "pytest_exit": exit_code}), encoding="utf-8"
-    )
+def _shard(
+    dir_: Path,
+    index: int,
+    total: int,
+    body: str | None,
+    exit_code: int = 0,
+    selection: str | None = None,
+) -> None:
+    record = {"shard": index, "total": total, "pytest_exit": exit_code}
+    if selection is not None:
+        record["selection"] = selection
+    (dir_ / f"junit-shard-{index}.json").write_text(json.dumps(record), encoding="utf-8")
     if body is not None:
         (dir_ / f"junit-shard-{index}.xml").write_text(
             f"<testsuites><testsuite>{body}</testsuite></testsuites>", encoding="utf-8"
@@ -367,9 +375,22 @@ def shards(tmp_path):
 
 
 def _aggregate(
-    shards: Path, expected: int = 3, min_ran: int = 1, result: str = "success"
+    shards: Path,
+    expected: int = 3,
+    min_ran: int = 1,
+    result: str = "success",
+    expect_selection: str | None = None,
+    must_cover: list[str] | None = None,
 ) -> int:
-    return gate.aggregate(shards, expected, shards.parent / "junit.xml", min_ran, result)
+    return gate.aggregate(
+        shards,
+        expected,
+        shards.parent / "junit.xml",
+        min_ran,
+        result,
+        expect_selection=expect_selection,
+        must_cover=must_cover,
+    )
 
 
 def test_aggregate_passes_when_every_shard_is_present_and_clean(shards):
@@ -601,3 +622,167 @@ def test_an_untracked_test_file_does_not_reshuffle_the_packing(tmp_path, monkeyp
         assert gate._packed(6) == before
     finally:
         gate._packed.cache_clear()
+
+
+# ---- the affected-only merge gate ------------------------------------------
+#
+# The selective path cannot use the vacuity floor: a selection can honestly be
+# one test, so no count is meaningful. Two checks replace it -- every shard must
+# report the digest the `select` job published, and every selected file must
+# report at least one case (docs/design-notes/2026-10-02-affected-only-merge-gate.md).
+
+
+def _selection_file(tmp_path: Path, *entries: str) -> Path:
+    path = tmp_path / "affected.txt"
+    path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+    return path
+
+
+def test_the_digest_is_order_and_duplicate_insensitive(tmp_path):
+    """It answers "the same SET of files?" and must not depend on anything else."""
+    a = gate.selection_entries(_selection_file(tmp_path, "tests/b.py", "tests/a.py"))
+    b = gate.selection_entries(
+        _selection_file(tmp_path, "tests/a.py", "tests/b.py", "tests/a.py")
+    )
+    assert gate.selection_digest(a) == gate.selection_digest(b)
+
+
+def test_all_has_its_own_digest(tmp_path):
+    """"The whole surface" and "a selection I could not read" must never match."""
+    assert gate.selection_entries(_selection_file(tmp_path, "ALL")) is None
+    assert gate.selection_digest(None) != gate.selection_digest([])
+    assert gate.selection_digest(None) != ""
+
+
+def test_all_must_be_the_only_entry(tmp_path):
+    with pytest.raises(SystemExit):
+        gate.selection_entries(_selection_file(tmp_path, "ALL", "tests/a.py"))
+
+
+def test_aggregate_refuses_a_shard_that_ran_another_selection(shards, capsys):
+    """The property the digest exists for: shards cannot each pick their own."""
+    for i in (1, 2, 3):
+        _shard(shards, i, 3, _cases(f"test_s{i}", 4), selection="sha256:aaa")
+    assert _aggregate(shards, expect_selection="sha256:aaa") == 0
+    _shard(shards, 2, 3, _cases("test_s2", 4), selection="sha256:bbb")
+    assert _aggregate(shards, expect_selection="sha256:aaa") == 1
+    out = capsys.readouterr().out
+    assert "ran selection sha256:bbb" in out
+    # And it is reported as absent too, so the union is never judged complete.
+    assert "missing shard(s) [2]" in out
+
+
+def test_a_manifest_with_no_selection_cannot_satisfy_the_contract(shards, capsys):
+    """A shard from before this contract must not pass it by omission."""
+    for i in (1, 2, 3):
+        _shard(shards, i, 3, _cases(f"test_s{i}", 4))
+    assert _aggregate(shards, expect_selection="sha256:aaa") == 1
+    assert "ran selection <none>" in capsys.readouterr().out
+
+
+def test_coverage_fails_when_a_selected_file_reported_nothing(shards, capsys):
+    """Replaces the floor, and catches what a ">=5 files" rule would pass.
+
+    One selected file of three reporting no case at all is a collapse -- a
+    collection error, a bad slice, or a shard that ran something else. A count
+    threshold cannot see it; naming the file does.
+    """
+    for i in (1, 2):
+        _shard(shards, i, 3, _cases(f"test_s{i}", 4), selection="sha256:aaa")
+    _shard(shards, 3, 3, "", selection="sha256:aaa")
+    verdict = _aggregate(
+        shards,
+        expect_selection="sha256:aaa",
+        must_cover=["tests/test_s1.py", "tests/test_s2.py", "tests/test_s3.py"],
+    )
+    assert verdict == 1
+    out = capsys.readouterr().out
+    assert "1 of 3 selected test file(s) reported no case at all" in out
+    assert "tests/test_s3.py" in out
+
+
+def test_coverage_counts_a_skip_as_reported(shards):
+    """A platform-guarded file legitimately only skips; that is not a collapse."""
+    _shard(shards, 1, 3, _cases("test_s1", 4), selection="sha256:aaa")
+    _shard(shards, 2, 3, _cases("test_s2", 4), selection="sha256:aaa")
+    _shard(
+        shards,
+        3,
+        3,
+        '<testcase file="tests/test_s3.py" classname="tests.test_s3" name="t0">'
+        "<skipped/></testcase>",
+        selection="sha256:aaa",
+    )
+    assert (
+        _aggregate(
+            shards,
+            expect_selection="sha256:aaa",
+            must_cover=["tests/test_s1.py", "tests/test_s2.py", "tests/test_s3.py"],
+        )
+        == 0
+    )
+
+
+def test_coverage_passes_a_one_file_selection(shards):
+    """The case a floor cannot express: a selection of one test is honest."""
+    _shard(shards, 1, 3, _cases("test_s1", 1), selection="sha256:aaa")
+    for i in (2, 3):
+        _shard(shards, i, 3, "", selection="sha256:aaa")
+    assert (
+        _aggregate(shards, expect_selection="sha256:aaa", must_cover=["tests/test_s1.py"]) == 0
+    )
+
+
+def test_an_empty_slice_still_reports_a_manifest_and_a_junit(tmp_path, monkeypatch):
+    """A shard with nothing to do must look different from a shard that vanished.
+
+    Without both files the aggregate reports it missing and fails the gate --
+    which is exactly right for a lost shard, so one that legitimately owns
+    nothing has to report in the same shape.
+    """
+    junit = tmp_path / "out" / "junit-shard-2.xml"
+    selection = _selection_file(tmp_path, "tests/test_ci_required_tests.py")
+    args = argparse.Namespace(
+        junit=str(junit),
+        affected=str(selection),
+        shard=(2, 6),
+        profile="affected",
+        exclude_from=None,
+        selection="sha256:aaa",
+        plan_shard=True,
+        aggregate=None,
+        print_selection_digest=None,
+        emit_quarantine=None,
+        include_from=None,
+        min_ran=0,
+        pytest_arg=[],
+        expect_shards=None,
+        shard_job_result=None,
+    )
+    monkeypatch.setattr(gate, "shard_of", lambda rel, total: 5)  # never this shard
+    monkeypatch.setattr(sys, "argv", ["ci_required_tests.py"])
+    monkeypatch.setattr(gate.argparse.ArgumentParser, "parse_args", lambda self, *a: args)
+    assert gate.main() == 0
+    manifest = json.loads(junit.with_suffix(".json").read_text(encoding="utf-8"))
+    assert manifest == {
+        "shard": 2,
+        "total": 6,
+        "pytest_exit": 0,
+        "selection": "sha256:aaa",
+        "slice": 0,
+    }
+    assert ET.parse(junit).getroot().tag == "testsuites"
+
+
+def test_the_heavy_list_is_not_held_against_coverage(tmp_path):
+    """A selected file that lives in the heavy list runs in `heavy-tests`.
+
+    It must not be required to report here, or every selection touching one
+    would fail the gate for a file this job deliberately does not run.
+    """
+    heavy = tmp_path / "heavy.txt"
+    heavy.write_text("tests/test_integration.py\n", encoding="utf-8")
+    covered = gate.gating_selection(
+        ["tests/test_ci_required_tests.py", "tests/test_integration.py"], str(heavy)
+    )
+    assert covered == ["tests/test_ci_required_tests.py"]
