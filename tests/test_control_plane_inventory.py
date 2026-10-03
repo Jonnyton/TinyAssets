@@ -153,7 +153,7 @@ def test_jailed_processes_cannot_outlive_their_call(tmp_path, monkeypatch):
     universe = tmp_path / "data" / "cc-jail"
     universe.mkdir(parents=True)
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    tool = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    tool = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
     node = _bwrap_argv(bwrap_path="/usr/bin/bwrap")
     for argv in (tool, node):
         assert "--die-with-parent" in argv

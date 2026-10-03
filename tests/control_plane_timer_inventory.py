@@ -64,6 +64,11 @@ SITES: dict[str, tuple[str, str]] = {
         CONTROL_PLANE, "account seat stamp refresh while a seat is held",
     ),
     # -- bounded waits inside one call -----------------------------------------
+    "tinyassets/agent_turn_coordinator.py::AgentTurnCoordinator._pause_before_retry": (
+        CALL_SCOPED,
+        "bad-reply backoff bounded by the remaining turn deadline; polls Stop "
+        "at most every 0.25 seconds and ends with this turn",
+    ),
     "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._refresh_lease": (
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
