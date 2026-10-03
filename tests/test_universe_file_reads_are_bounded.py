@@ -69,10 +69,6 @@ ALLOWED = {
     ("tinyassets/universe_intelligence.py", "read_operating_instructions"):
         "creates the seed AGENTS.md with O_CREAT|O_EXCL|O_NOFOLLOW and writes it; "
         "reading it goes through universe_files",
-    ("tinyassets/harness_history.py", "_replace"):
-        "writes a fresh .history-<uuid> inode with O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW "
-        "inside a link-free dir fd and os.replace()s it; never reads existing "
-        "content, and the prior bytes it keeps are read through universe_files",
     ("tinyassets/wiki/okf_export.py", "_conformance_report"):
         "reads the bundle this export just wrote into target_dir, which is refused "
         "when inside the wiki root; not an agent-written file",

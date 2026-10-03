@@ -2,15 +2,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
 import time
-import uuid
 from contextlib import closing, contextmanager
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from tinyassets import agent_sessions, universe_files
-from tinyassets import workspace_fs as fs
 
 MAX_PRIOR_BYTES = 256 * 1024
 _FILE = "history.db"
@@ -66,50 +63,21 @@ def _prior(universe_dir: Path, path: str) -> tuple[bytes | None, str]:
 
 
 def _replace(universe_dir: Path, path: str, content: bytes | None) -> None:
-    """Fresh inode + replace, like soul_edit; POSIX parents held link-free."""
-    parts = PurePosixPath(path).parts
-    if fs._POSIX:
-        parent = fs.open_dir_nofollow(universe_dir)
-        try:
-            for part in parts[:-1]:
-                child = fs.open_subdir_nofollow(parent, part)
-                os.close(parent)
-                parent = child
-            if content is None:
-                os.unlink(parts[-1], dir_fd=parent)
-                return
-            temp = ".history-" + uuid.uuid4().hex
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                         0o600, dir_fd=parent)
-            try:
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(content)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temp, parts[-1], src_dir_fd=parent, dst_dir_fd=parent)
-            finally:
-                try:
-                    os.unlink(temp, dir_fd=parent)
-                except FileNotFoundError:
-                    pass
-        finally:
-            os.close(parent)
-    else:
-        import tempfile
+    """Publish one harness file through the daemon's only universe writer.
 
-        if len(parts) > 1:
-            universe_files._lstat_nofollow_windows(universe_dir, "/".join(parts[:-1]))
-        target = universe_dir / path
-        if content is None:
-            target.unlink()
-            return
-        fd, temp = tempfile.mkstemp(dir=target.parent, prefix=".history-")
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(content)
-            os.replace(temp, target)
-        finally:
-            Path(temp).unlink(missing_ok=True)
+    ``universe_files`` already is fresh-inode-plus-rename inside a parent whose
+    every component was opened following no link, so the owner door gets the
+    same guarantee as every other write into a universe folder without a second
+    implementation of it: a link planted at the name is replaced rather than
+    written through, and a linked parent refuses loudly.
+
+    Parents are never created -- a harness path writes only into a directory
+    that already exists (``tests/test_harness_history.py``).
+    """
+    if content is None:
+        universe_files.unlink_universe_file(universe_dir, path)
+        return
+    universe_files.write_universe_file(universe_dir, path, content, make_parents=False)
 
 
 def _write(conn, universe_dir: Path, path: str, content: bytes | None, who: str) -> int:

@@ -109,6 +109,23 @@ def test_hardlink_is_replaced_without_changing_other_inode(universe, tmp_path):
     assert other.read_text() == "private"
 
 
+def test_link_at_the_name_is_replaced_not_written_through(universe, tmp_path):
+    """``_replace`` alone, with no prior read in front of it to refuse first."""
+    other = tmp_path / "secret"
+    other.write_text("private")
+    _symlink(universe / "AGENTS.md", other)
+    history._replace(universe, "AGENTS.md", b"mine")
+    assert other.read_text() == "private"
+    assert not (universe / "AGENTS.md").is_symlink()
+    assert (universe / "AGENTS.md").read_bytes() == b"mine"
+
+
+def test_a_harness_write_never_creates_its_parent_directory(universe):
+    with pytest.raises(OSError):
+        history.write_file(universe, "skills/absent/SKILL.md", "skill")
+    assert not (universe / "skills").exists()
+
+
 def test_nested_skill_can_be_undone(universe):
     (universe / "skills" / "example").mkdir(parents=True)
     change = history.write_file(universe, "skills/example/SKILL.md", "skill")
