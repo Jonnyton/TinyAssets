@@ -127,3 +127,43 @@ def test_the_agent_is_taught_the_persons_word_for_their_screen() -> None:
     assert "never call it a ui to them" in lowered
     assert re.search(r"package form", lowered), (
         "publishing a named screen must route to the package form")
+
+
+def test_the_documented_payload_is_one_the_validator_accepts() -> None:
+    """A recipe that fails validation is the same bug one layer down.
+
+    The chapter is the only thing standing between "the agent knows publish
+    exists" and "the agent composes a call that lands", so the shapes it
+    documents are submitted here against the real validator.
+    """
+    from tinyassets.api.publish_requests import validate_action
+
+    documented = {"type": "publish", "name": "Fantasy Village",
+                  "description": "A village that shows my projects",
+                  "branch_ids": ["b-1"], "ui_id": "ui-7", "automation_ids": ["a-1"]}
+    assert validate_action(dict(documented))["type"] == "publish"
+    # The whole-command-center form, and the two options the chapter names.
+    assert "package" in validate_action({**documented, "package": {}})
+    assert "package" in validate_action(
+        {**documented, "package": {"exclude": ["notes/private.md"],
+                                    "memory_items": ["m_7f3a"]}})
+
+
+def test_the_chapter_does_not_promise_a_screen_only_publish() -> None:
+    """``branch_ids`` is required, so "just the screen" cannot be sent.
+
+    An earlier draft of this guidance offered it as a fallback. The validator
+    refuses it, so the agent would have composed a call that could never land --
+    and told the person it could.
+    """
+    import pytest
+
+    from tinyassets.api.publish_requests import validate_action
+
+    with pytest.raises(ValueError, match="branch_ids"):
+        validate_action({"type": "publish", "name": "Fantasy Village",
+                         "description": "", "branch_ids": [], "ui_id": "ui-7"})
+
+    text = json.loads(_handbook_read(f"write_graph.{CHAPTER}"))["text"].lower()
+    assert "no screen-only publish" in text, (
+        "the chapter must say the screen cannot go alone, not imply it can")

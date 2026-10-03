@@ -2275,8 +2275,10 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
     screens leftover. Publishing a named screen means the PACKAGE form below --
     ``ui_id`` for that screen plus ``"package": {}`` -- because the screen alone
     is a picture: without its workflows and files the person who installs it
-    gets something that cannot do anything. Publish the screen on its own only
-    if they say they want just the screen.
+    gets something that cannot do anything. There is no screen-only publish to
+    fall back to: ``branch_ids`` must name at least one workflow, so the choice
+    is this screen with its workflows, or the same plus ``"package": {}`` for
+    everything else that makes it work.
 
     * **Sharing it** is a ``publish`` ask the person confirms; I cannot publish
       myself::
