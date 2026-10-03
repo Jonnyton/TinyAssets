@@ -445,30 +445,59 @@ class GVisorBoxProvider:
             raise
         except OSError as exc:
             raise _BoxKilled(f"box {cc!r}: cannot reach boxd for {op} ({exc})") from None
-        def expire() -> None:
-            with contextlib.suppress(OSError):
-                conn.shutdown(socket.SHUT_RDWR)
+        def remaining() -> float:
+            """What is left of the budget; refuses at zero.
 
-        watchdog = threading.Timer(max(0.0, deadline - time.monotonic()), expire)
-        watchdog.daemon = True
-        watchdog.start()
+            Every send and every read re-arms the socket from this, so ONE
+            deadline bounds the whole exchange and no second thread ever touches
+            the connection. A timer that shut the socket down could still fire
+            after the ``finally`` closed it -- ``Timer.cancel()`` does not stop a
+            timer already running -- and once the fd number is free, that
+            shutdown lands on whatever connection was handed the number next.
+            """
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise BoxDeadline(f"box {cc!r}: {op} exceeded its deadline")
+            return left
+
+        def send(frame: bytes) -> None:
+            # Re-armed per frame: sendall applies a socket timeout to each
+            # underlying send, not to the total, so a box reading one byte at a
+            # time would otherwise stretch the request past the deadline.
+            conn.settimeout(remaining())
+            conn.sendall(frame)
+
+        class _Bounded:
+            """``recv`` re-armed from the one deadline before every read.
+
+            ``read_frame_blocking`` takes a frame in pieces, so a box dribbling a
+            byte at a time keeps each individual ``recv`` inside its own timeout
+            while the frame never completes -- the socket timeout alone cannot
+            end that. Bounding each ``recv`` by what is LEFT ends it, and
+            ``remaining()`` raising `BoxDeadline` propagates straight out:
+            ``_recv_exactly`` re-raises anything that is not a `TimeoutError`.
+            """
+
+            def recv(self, count: int) -> bytes:
+                conn.settimeout(remaining())
+                return conn.recv(count)
+
+        bounded = _Bounded()
+
         try:
             request = {"op": op.upper(), "args": args,
                        "deadline_ms": int((time.time() + (deadline - time.monotonic())) * 1000)}
             output: dict | None = None
             try:
-                conn.sendall(rpc_frames.control(_STREAM, request))
+                send(rpc_frames.control(_STREAM, request))
                 if payload is not None:
                     for frame in rpc_frames.data(_STREAM, payload):
-                        conn.sendall(frame)
-                    conn.sendall(rpc_frames.control(_STREAM, {"op": "END",
-                                                              "outcome": "completed"}))
+                        send(frame)
+                    send(rpc_frames.control(_STREAM, {"op": "END", "outcome": "completed"}))
                 while True:
-                    if time.monotonic() >= deadline:
-                        raise BoxDeadline(f"box {cc!r}: {op} exceeded its deadline")
-                    conn.settimeout(max(0.01, deadline - time.monotonic()))
+                    conn.settimeout(remaining())
                     try:
-                        frame = rpc_frames.read_frame_blocking(conn)
+                        frame = rpc_frames.read_frame_blocking(bounded)
                     except (TimeoutError, socket.timeout):
                         raise BoxDeadline(f"box {cc!r}: {op} did not answer in time; "
                                           "outcome unknown") from None
@@ -515,7 +544,6 @@ class GVisorBoxProvider:
                                       "unknown") from None
                 raise _BoxKilled(f"box {cc!r}: {op} lost its connection ({exc})") from None
         finally:
-            watchdog.cancel()
             conn.close()
 
     def _mutate(self, handle: BoxHandle, op_id: str, op: str, args: dict,

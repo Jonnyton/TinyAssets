@@ -251,6 +251,48 @@ def test_exchange_deadline_bounds_a_trickling_frame(monkeypatch):
         sender.join(timeout=3)
 
 
+def test_exchange_deadline_bounds_a_box_that_reads_slowly(monkeypatch):
+    """The SEND side is bounded by the same deadline, re-armed per frame.
+
+    A box that DRAINS slowly is the case a single socket timeout cannot catch:
+    every individual ``sendall`` makes progress and so never times out, while
+    the request as a whole runs past its deadline (``sendall`` applies the
+    timeout to each underlying send, not to the total). Re-arming from what is
+    left of the budget ends it -- and without a second thread shutting the
+    socket down, which can fire after the connection is closed and land on
+    whatever reused its descriptor.
+    """
+    client, peer = _socketpair()
+    try:
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+    except OSError:
+        pytest.skip("the send buffer cannot be shrunk here")
+    stop = threading.Event()
+
+    def drain():
+        with peer:
+            try:
+                while not stop.wait(0.05):
+                    peer.recv(256)
+            except OSError:
+                pass
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    host = object.__new__(GVisorBoxProvider)
+    monkeypatch.setattr(host, "_connect", lambda cc, deadline: client)
+    deadline = time.monotonic() + 0.4
+    try:
+        with pytest.raises(BoxDeadline):
+            list(host._exchange("cc-a", "write", {}, payload=b"x" * (8 << 20),
+                                deadline=deadline))
+        assert time.monotonic() < deadline + 2
+    finally:
+        stop.set()
+        reader.join(timeout=3)
+        client.close()
+
+
 def test_kill_box_keeps_live_box_when_teardown_fails(monkeypatch):
     host = object.__new__(GVisorBoxProvider)
     host._runsc = ["runsc"]
