@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import time
 from contextlib import closing, contextmanager
 from pathlib import Path
 
 from tinyassets import agent_sessions, universe_files
+from tinyassets import workspace_fs as fs
 
 MAX_PRIOR_BYTES = 256 * 1024
 _FILE = "history.db"
@@ -73,7 +75,15 @@ def _replace(universe_dir: Path, path: str, content: bytes | None) -> None:
 
     Parents are never created -- a harness path writes only into a directory
     that already exists (``tests/test_harness_history.py``).
+
+    The root is checked here, not there. ``universe_files`` resolves the
+    universe dir before its no-follow walk, so that walk is link-free only
+    BELOW the root and cannot refuse a link at or above the universe dir
+    itself (``docs/concerns/2026-10-02-universe-files-resolves-its-root.md``).
+    Checking it keeps the refusal this function had before it delegated.
     """
+    if fs._POSIX:
+        os.close(fs.open_dir_nofollow(universe_dir))
     if content is None:
         universe_files.unlink_universe_file(universe_dir, path)
         return

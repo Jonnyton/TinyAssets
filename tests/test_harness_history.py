@@ -120,6 +120,24 @@ def test_link_at_the_name_is_replaced_not_written_through(universe, tmp_path):
     assert (universe / "AGENTS.md").read_bytes() == b"mine"
 
 
+def test_a_link_at_or_above_the_universe_root_is_refused(universe, tmp_path):
+    """Delegating to ``universe_files`` must not lose the root's own check.
+
+    That writer resolves the universe dir before walking it link-free, so the
+    walk can only refuse a link BELOW the root. Reaching a universe through a
+    linked ancestor has to refuse before any byte is written.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "AGENTS.md").write_text("original")
+    _symlink(tmp_path / "via", real, directory=True)
+    with pytest.raises(OSError):
+        history._replace(tmp_path / "via", "AGENTS.md", b"new")
+    with pytest.raises(OSError):
+        history._replace(tmp_path / "via", "AGENTS.md", None)
+    assert (real / "AGENTS.md").read_text() == "original"
+
+
 def test_a_harness_write_never_creates_its_parent_directory(universe):
     with pytest.raises(OSError):
         history.write_file(universe, "skills/absent/SKILL.md", "skill")
