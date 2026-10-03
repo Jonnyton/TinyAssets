@@ -94,7 +94,9 @@ def require_founder_home(base_path: Path, universe_id: str, principal_id: str) -
     if (
         not has_named_principal(principal_id)
         or get_founder_home(base, principal_id) != universe_id
-        or universe_access_permission(base, universe_id=universe_id, actor_id=principal_id) != "admin"
+        or universe_access_permission(
+            base, universe_id=universe_id, actor_id=principal_id,
+        ) != "admin"
     ):
         raise PermissionError("shared_self_requires_current_founder")
     return root
@@ -112,11 +114,11 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
     D2): the turn continues that activity's own session instead of the node's,
     without the owner's conversation, which is not part of the activity.
     """
+    from tinyassets import universe_intelligence as intelligence
+    from tinyassets.api.permissions import owner_run_identity
     from tinyassets.config import load_universe_config
     from tinyassets.conversation_store import load_recent_readonly
     from tinyassets.providers.base import UniverseContext
-    from tinyassets import universe_intelligence as intelligence
-    from tinyassets.api.permissions import owner_run_identity
 
     root = require_founder_home(Path(base_path), universe_id, principal_id)
     ctx = UniverseContext(universe_dir=root, config=load_universe_config(root))
