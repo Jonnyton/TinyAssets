@@ -23,7 +23,10 @@ on:
 permissions: {}
 
 concurrency:
-  group: main-red
+  # A shared pending slot drops older events. Isolate every run attempt so
+  # unrelated SHAs/runs cannot replace each other's queued red notification.
+  # Concurrent reds may create duplicate alarms; a green tip closes open alarms.
+  group: main-red-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
   cancel-in-progress: false
 
 jobs:
