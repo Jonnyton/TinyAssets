@@ -442,6 +442,12 @@ def test_tree_files_live_only_at_the_data_root(base):
     touches is a registered data-root platform entry, so the claim has to stay
     true as the module changes: a universe folder sitting beside them is never
     written into, and the names stay classified in ``ROOT_ENTRIES``.
+
+    Scope, so it is not read as more than it is: this proves where the files
+    PERSIST for this invocation, not that a future caller cannot hand
+    ``base_path`` a universe directory. Nothing stops that but the callers
+    (``storage/agent_turn_journal.py``, ``agent_turn_reconcile.py``), which
+    pass the ledger base.
     """
     from tinyassets import storage_accounting
 
@@ -454,9 +460,15 @@ def test_tree_files_live_only_at_the_data_root(base):
 
     founder = OwnerTree.start(base)
     try:
-        assert founder.founder_alive() is True
+        assert founder.founder_alive() is True  # the founder short-circuits
         member = OwnerTree(base, founder.tree_id).join()
-        member.leave()
+        try:
+            # Only a NON-founder member reads the `founder` file, which is the
+            # .read_text() the guard pins; the founder returns self.alive.
+            assert member.founder is False
+            assert member.founder_alive() is True
+        finally:
+            member.leave()
         acquire(base, A)
     finally:
         founder.leave()
