@@ -63,11 +63,35 @@ it reports none, so this never overrides a source's own answer.
 
 **Effort is per model.** The live catalogue settles this: `haiku` reports no
 effort support at all, and `claude-opus-4-6` offers `[low, medium, high, max]`
-where 5.x offers `xhigh` too. A provider-wide flag or enum would offer `xhigh`
-on a model that rejects it. Worse, the families disagree on vocabulary —
-Claude Code has `max` and no `minimal`, Codex `minimal` and no `max` — so any
-shared enum would have to refuse one of them. Hence: the platform validates
-shape only, and membership is checked against the advertised list.
+where 5.x offers `xhigh` too. The live Codex catalogue says the same
+independently — `gpt-5.5` and `gpt-6-luna` lack the `ultra` their siblings
+carry. A provider-wide flag or enum would offer a level the model rejects.
+Worse, the families disagree on vocabulary: Claude Code has `max` and no
+`minimal`, Codex has `minimal` and `ultra` and no `max`. Any shared enum would
+have to refuse one of them. Hence the platform validates shape only, and
+membership is checked against the advertised list.
+
+The two sources also disagree about the *shape* of that list. Claude Code gates
+on a boolean `supportsEffort` and lists plain level names; Codex omits the
+boolean entirely and lists objects (`{"reasoningEffort": "high", ...}`),
+implying support by listing anything at all. The protocol names which shape it
+is reading (`effort_key` optional, `effort_level_key` for an object entry)
+rather than sniffing, so a third executor registers its shape instead of
+breaking. A *gated* source that claims support and then names no levels is a
+fault; an *ungated* source listing none is a truthful "no control".
+
+## Residual risk, accepted
+
+Codex raised a `DISAGREE_CONCERN` on the modality floor that is worth keeping
+visible: a text-based *metadata* transport does not prove every model the
+executor *lists* accepts text. The exposure is narrow — a row that reports its
+modalities is always believed, and `select()` still requires `text` at launch —
+so the uncovered case is a source that reports no modalities at all **and**
+lists a non-text model. Both current registrations are safe (Codex reports
+modalities; every Claude Code row is text). Engineering around it would mean
+inventing a per-model capability the source declines to state, so this is
+recorded rather than guessed at. If a future executor reports no modalities and
+lists image-only models, the floor is the thing to revisit.
 
 ## Where the level is admitted, and why there
 
