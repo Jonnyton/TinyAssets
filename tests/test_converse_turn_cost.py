@@ -82,7 +82,8 @@ FINAL_REPLY = "Nebula is a good cat name."
 #: has no publish surface at all -- it was obeying this text. A chapter the agent
 #: has no reason to fetch cannot fix that, so the correction is resident: the ask
 #: exists, and chapter `systems` has the payload. Cost: ~41 tokens per
-#: round-trip, so ~124 on a two-tool turn, against a block of ~30k chars.
+#: round-trip; ~124 if a two-tool turn takes three model rounds. A token
+#: estimate, not measured latency.
 MAX_SERVED_TOOL_DESCRIPTION_CHARS = 30_100
 
 

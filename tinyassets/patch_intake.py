@@ -502,57 +502,78 @@ _DETAIL_NAMES = frozenset({
 
 
 def _report_outputs(contract: list[dict], title: str, details: str) -> dict[str, str]:
-    """Fill EVERY required text input of the receiver's declared contract.
+    """Map the report onto the receiver's declared inputs.
 
-    The sender has two pieces of information, the receiver may declare any
-    number of inputs, and the old mapping could not bridge that: when no name
-    matched it put the whole report in ONE field, then refused the contract
-    because the other required fields were empty. The intake this platform
-    actually offers declares three required inputs
+    The mapping that shipped is used UNCHANGED wherever it worked, because the
+    sender branch is created once per (command center, principal) and a later
+    send refuses outright if the output KEY SET no longer matches the stored
+    one (``set(owned.node_defs[0].output_keys) != set(outputs)`` below). So
+    anyone whose channel already worked must keep getting the same keys; only a
+    contract the old mapping REFUSED may be mapped differently.
+
+    What it refused: it placed the whole report in ONE field when no name
+    matched, then failed the contract because the other required inputs were
+    empty. The intake this platform offers declares three required inputs
     (``what_they_tried``/``what_was_missing_or_broken``/``request_type``), so
-    EVERY patch request the agent sent came back
-    ``invalid_patch_request`` -- "the channel rejects every submission", live on
-    prod 2026-10-03.
+    every patch request came back ``invalid_patch_request`` -- the agent's one
+    channel for telling us something is broken was itself broken (live
+    2026-10-03).
 
-    Named fields get their own part. Every required field left over gets the
-    FULL report, which is accurate rather than invented: an input asking what
-    broke, and one asking what was tried, are both answered by the report. A
-    required input that is not text cannot be filled from a text report at all,
-    and that refusal names the field so the owner can see which input to relax.
+    For those, and only those: every required text input is filled, a named one
+    with its own part and an unnamed one with the full report, which is accurate
+    rather than invented. Both halves of the report always reach the receiver --
+    an input matched to the title alone never leaves the details unsent. A
+    required input that is NOT text cannot be filled from a text report, and
+    that refusal names it so the owner can see which input to relax.
     """
     text_fields = [field for field in contract if field["type"] in {"str", "string"}]
     whole = title + "\n\n" + details
     if len(contract) == len(text_fields) == 1:
         return {text_fields[0]["name"]: whole}
 
-    unfillable = [field["name"] for field in contract
-                  if field["required"] and field["type"] not in {"str", "string"}]
+    def _named() -> dict[str, str]:
+        found: dict[str, str] = {}
+        for field in text_fields:
+            name = re.sub(r"[^a-z0-9]", "", field["name"].lower())
+            if name in _TITLE_NAMES:
+                found[field["name"]] = title
+            elif name in _DETAIL_NAMES:
+                found[field["name"]] = details
+        return found
+
+    # --- exactly what shipped, for every contract it could satisfy ---
+    outputs = _named()
+    if title not in outputs.values() or details not in outputs.values():
+        target = next((f for f in text_fields if f["required"]),
+                      text_fields[0] if text_fields else None)
+        outputs = {target["name"]: whole} if target else {}
+    if outputs and not any(field["required"] and field["name"] not in outputs
+                           for field in contract):
+        return outputs
+
+    # --- only now: a contract the mapping above refuses ---
+    unfillable = sorted(field["name"] for field in contract
+                        if field["required"] and field["type"] not in {"str", "string"})
     if unfillable:
         raise ValueError(
             "patch intake declares required non-text input(s) a text report cannot "
-            f"fill: {', '.join(sorted(unfillable))}. Make them optional or text."
+            f"fill: {', '.join(unfillable)}. Make them optional or text."
         )
-
-    outputs: dict[str, str] = {}
-    for field in text_fields:
-        name = re.sub(r"[^a-z0-9]", "", field["name"].lower())
-        if name in _TITLE_NAMES:
-            outputs[field["name"]] = title
-        elif name in _DETAIL_NAMES:
-            outputs[field["name"]] = details
-    # Every REQUIRED input must carry something, or the receiver refuses the
-    # whole send. An unnamed required input gets the full report rather than a
-    # fabricated value; optional ones are left alone so the tab stays readable.
+    if not text_fields:
+        raise ValueError("patch intake contract declares no text input to report into")
+    outputs = _named()
     for field in text_fields:
         if field["required"] and field["name"] not in outputs:
             outputs[field["name"]] = whole
-
     if not outputs:
-        # No required input and no recognised name: send the report once, into a
-        # real declared input, rather than sending an empty document.
-        if not text_fields:
-            raise ValueError("patch intake contract declares no text input to report into")
         outputs = {text_fields[0]["name"]: whole}
+    # No half of the report may be dropped: if one of them is nowhere, the field
+    # that would carry it least surprisingly carries the whole thing instead.
+    if not any(title in value for value in outputs.values()) or not any(
+            details in value for value in outputs.values()):
+        carrier = next((f["name"] for f in text_fields if f["required"]),
+                       text_fields[0]["name"])
+        outputs[carrier] = whole
     return outputs
 
 

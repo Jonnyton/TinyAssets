@@ -222,3 +222,43 @@ def test_an_optional_input_is_left_alone():
                 {"name": "details", "type": "str", "required": True},
                 {"name": "stack_trace", "type": "str", "required": False}]
     assert _report_outputs(contract, "T", "D") == {"title": "T", "details": "D"}
+
+
+def test_a_contract_the_old_mapping_satisfied_keeps_its_exact_output_keys():
+    """Changing the key set permanently breaks a channel that already worked.
+
+    The sender branch is created once per (command center, principal), and a
+    later send refuses outright when the stored output keys no longer match
+    (`set(owned.node_defs[0].output_keys) != set(outputs)`). So the fix for the
+    refused contracts had to leave every satisfied one untouched -- otherwise
+    the people for whom patch requests DID work would be the ones broken, with
+    no way back (Codex refute of this PR, finding D).
+    """
+    from tinyassets.patch_intake import _report_outputs
+
+    # Required `report` + optional `title`: the earlier draft of the fix added a
+    # second key here, which an existing branch would then reject forever.
+    assert _report_outputs(
+        [{"name": "report", "type": "str", "required": True},
+         {"name": "title", "type": "str", "required": False}], "T", "D",
+    ) == {"report": "T\n\nD"}
+
+
+def test_no_half_of_the_report_is_ever_dropped():
+    """A name matching only the title must not leave the details unsent.
+
+    The earlier draft returned `{"title": "T"}` for a required `title` plus an
+    optional `notes` -- the body of the report silently gone, which is worse
+    than the loud rejection it replaced.
+    """
+    from tinyassets.patch_intake import _report_outputs
+
+    for contract in (
+        [{"name": "title", "type": "str", "required": True},
+         {"name": "notes", "type": "str", "required": False}],
+        [{"name": "title", "type": "str", "required": False},
+         {"name": "notes", "type": "str", "required": False}],
+    ):
+        outputs = _report_outputs(contract, "T", "D")
+        sent = "\n".join(outputs.values())
+        assert "T" in sent and "D" in sent, (outputs, "half the report was dropped")
