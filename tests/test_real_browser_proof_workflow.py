@@ -106,7 +106,8 @@ def test_every_marked_file_retriggers_the_proof():
 def test_the_browser_is_installed_from_the_pinned_extra():
     wf = _load()
     assert "'.[dev,browser]'" in _step(wf, "Install the project")["run"]
-    assert "playwright install --with-deps chromium" in _step(wf, "Install Chromium")["run"]
+    assert "playwright install --with-deps chromium" in (
+        _REPO / "docker/linux-oracle.Dockerfile").read_text()
     pyproject = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
     assert re.search(r'browser = \[\s*"playwright==\d+\.\d+\.\d+"', pyproject)
 
@@ -132,20 +133,31 @@ def test_not_the_required_context():
 
 
 def test_preview_dependency_has_no_privileged_install_or_fallback():
-    steps = _job(_load())["steps"]
-    dependency = _step(_load(), "Deliver the unprivileged preview dependency")
-    assert dependency["run"].strip() == (
-        'python scripts/ci_bwrap_dependency.py --runner-temp "$RUNNER_TEMP" >> "$GITHUB_PATH"'
-    )
-    assert "if" not in dependency and not dependency.get("continue-on-error", False)
-    assert steps.index(dependency) < steps.index(_step(_load(), "Run the real-browser proofs"))
-    assert "scripts/ci_bwrap_dependency.py" in _triggers(_load())["pull_request"]["paths"]
+    wf = _load()
+    steps = _job(wf)["steps"]
+    profile = _step(wf, "Allow user namespaces for the jail container only")
+    jail = yaml.safe_load((_REPO / ".github/workflows/linux-jail-proof.yml").read_text())
+    expected = next(s for s in jail["jobs"]["linux-jail-proof"]["steps"]
+                    if s.get("name") == profile["name"])
+    assert profile == expected
+    assert "if" not in profile and not profile.get("continue-on-error", False)
+    assert steps.index(profile) < steps.index(_step(wf, "Run the real-browser proofs"))
+    assert "scripts/ci_bwrap_dependency.py" in _triggers(wf)["pull_request"]["paths"]
+    assert all("ci_bwrap_dependency.py" not in s.get("run", "") for s in steps)
+    for name in ("Run the real-browser proofs", "Run the complete preview containment module"):
+        run = _step(wf, name)["run"]
+        assert 'python scripts/linux_oracle.py --out "$OUT_DIR" --apparmor ta-jail-userns' in run
+        assert "--env TINYASSETS_DATA_DIR=/tmp/ta-data" in run
+        assert "--no-bwrap" not in run and "--as-root" not in run
+        assert "|| true" not in run
+    assert "sysctl" not in _WORKFLOW.read_text()
+    assert "--privileged" not in _WORKFLOW.read_text()
 
 
 def test_complete_preview_module_is_executed_and_every_collected_case_asserted():
     run = _step(_load(), "Run the complete preview containment module")
-    assert "python -m pytest tests/test_ui_preview.py -q" in run["run"]
-    pytest_args = run["run"].split("python -m pytest", 1)[1]
+    assert "-- tests/test_ui_preview.py -q" in run["run"]
+    pytest_args = run["run"].split("-- tests/test_ui_preview.py", 1)[1]
     assert " -m " not in pytest_args and " -k " not in pytest_args
     assert "|| true" not in run["run"] and not run.get("continue-on-error", False)
     check = _step(_load(), "Assert every preview case executed")
@@ -158,3 +170,19 @@ def test_complete_preview_module_is_executed_and_every_collected_case_asserted()
     artifact = _step(_load(), "Upload preview junit")
     assert artifact["if"] == "always()"
     assert artifact["with"]["path"].endswith("/junit-preview.xml")
+
+
+def test_approved_trial_is_branch_isolated_and_records_the_actual_image():
+    job = _job(_load())
+    assert job["if"] == (
+        "(github.event_name == 'pull_request' && "
+        "github.head_ref == 'codex/cloud-4316-approved-oracle-trial-20261003') || "
+        "(github.event_name == 'workflow_dispatch' && "
+        "github.ref_name == 'codex/cloud-4316-approved-oracle-trial-20261003')"
+    )
+    step = _step(_load(), "Build and record the approved oracle image")
+    assert 'docker image inspect "$tag"' in step["run"]
+    assert 'docker build -f docker/linux-oracle.Dockerfile -t "$tag" .' in step["run"]
+    assert "oracle._image_tag(Path.cwd())" in step["run"]
+    assert "oracle.docker_command" in step["run"] and "oracle.ORACLE_UID" in step["run"]
+    assert "continue-on-error" not in step

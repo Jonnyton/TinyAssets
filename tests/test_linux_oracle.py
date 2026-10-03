@@ -27,6 +27,7 @@ def test_classic_builder_gets_real_dependency_generation():
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert result.stdout.splitlines() == (
         project["dependencies"] + project["optional-dependencies"]["dev"]
+        + project["optional-dependencies"]["browser"]
     )
     assert result.stdout.strip()
     assert "test -s /tmp/oracle/requirements.txt" in dockerfile
@@ -158,3 +159,19 @@ def test_a_failed_source_copy_stops_the_run():
     script = _command("-q")[-1]
     assert "set -o pipefail" in script
     assert script.index("set -o pipefail") < script.index("tar -C /src")
+
+
+def test_browser_trial_image_shares_chromium_with_the_unprivileged_user():
+    dockerfile = (Path(__file__).resolve().parents[1] / linux_oracle.DOCKERFILE).read_text()
+    assert "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright" in dockerfile
+    assert "python -m playwright install --with-deps chromium" in dockerfile
+    assert "chmod -R a+rX /opt/playwright" in dockerfile
+    assert "/root/.cache/ms-playwright" not in dockerfile
+    assert "--no-sandbox" not in dockerfile
+    command = _command("--apparmor", "ta-jail-userns", "tests/test_ui_preview.py")
+    assert _opts(command) == [
+        "seccomp=unconfined", "apparmor=ta-jail-userns", "systempaths=unconfined",
+    ]
+    assert linux_oracle.JAIL_PROBE in _user_script(command)
+    assert "runuser -u oracle" in command[-1]
+    assert "--privileged" not in command and "--cap-add" not in command

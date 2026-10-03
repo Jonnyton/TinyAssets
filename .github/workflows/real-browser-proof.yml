@@ -1,5 +1,9 @@
 name: real-browser-proof
 
+# APPROVED ONE-OFF TRIAL ONLY: never merge this branch. The existing oracle's
+# named AppArmor + seccomp/systempaths exceptions apply to this ephemeral job.
+# Required-shard venue changes remain separately reviewable.
+
 # Why this exists
 # ---------------
 # Some proofs only mean anything in a real browser. The custom-UI frame is the
@@ -11,8 +15,8 @@ name: real-browser-proof
 #
 # The required shards install Chromium and assert these cases in their union.
 # This job provides the same proof before a PR enters the merge queue. It
-# installs Playwright and Chromium on a disposable GitHub-hosted Ubuntu VM and
-# FAILS unless EVERY case marked `@pytest.mark.real_browser` is present in
+# runs Playwright and Chromium in the approved oracle container on a disposable
+# GitHub-hosted Ubuntu VM and FAILS unless EVERY case marked `@pytest.mark.real_browser` is present in
 # JUnit with no skip, failure or error. The marker is the only list: a new
 # browser proof joins by carrying it (and adding its file to `paths:` below so
 # it retriggers).
@@ -31,6 +35,8 @@ on:
       - ".github/workflows/real-browser-proof.yml"
       - "scripts/ci_assert_junit_case.py"
       - "scripts/ci_bwrap_dependency.py"
+      - "scripts/linux_oracle.py"
+      - "docker/linux-oracle.Dockerfile"
       # The custom-UI frame: the sandbox attribute, the frame document and its
       # headers, and the page that hosts it.
       - "tinyassets/onboarding/app_ui.js"
@@ -57,9 +63,13 @@ concurrency:
 jobs:
   real-browser-proof:
     name: real-browser-proof
+    # Only the explicitly approved trial branch; not an ordinary proof rollout.
+    if: >-
+      (github.event_name == 'pull_request' && github.head_ref == 'codex/cloud-4316-approved-oracle-trial-20261003') ||
+      (github.event_name == 'workflow_dispatch' && github.ref_name == 'codex/cloud-4316-approved-oracle-trial-20261003')
     # Ephemeral GitHub-hosted VM only, never self-hosted.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -77,20 +87,38 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e '.[dev,browser]'
 
-      - name: Cache the Playwright browser
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-
-      - name: Install Chromium
-        # --with-deps installs the system libraries Chromium needs (apt); the
-        # browser itself comes from the cache when the pinned version matches.
-        run: python -m playwright install --with-deps chromium
-
-      - name: Deliver the unprivileged preview dependency
+      - name: Allow user namespaces for the jail container only
+        env:
+          PROFILE: ${{ runner.temp }}/ta-jail-userns
         run: |
-          python scripts/ci_bwrap_dependency.py --runner-temp "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          set -euo pipefail
+          # Unconfined like Docker's apparmor=unconfined, plus the one permission
+          # the kernel's userns restriction withholds. Applied only to the
+          # containers below, by name.
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            'profile ta-jail-userns flags=(unconfined) {' \
+            '  userns,' \
+            '}' > "$PROFILE"
+          sudo apparmor_parser -r "$PROFILE"
+
+      - name: Build and record the approved oracle image
+        run: |
+          set -euo pipefail
+          tag="$(python -c 'from pathlib import Path; from scripts.linux_oracle import _image_tag; print(_image_tag(Path.cwd()))')"
+          echo "[approved trial] oracle image $tag"
+          docker build -f docker/linux-oracle.Dockerfile -t "$tag" .
+          docker image inspect "$tag"
+          python - <<'PYSETTINGS'
+          import json
+          from pathlib import Path
+          from scripts import linux_oracle as oracle
+          args = oracle.build_parser().parse_args(['--apparmor', 'ta-jail-userns', '--', 'tests/test_ui_preview.py'])
+          command = oracle.docker_command(args, Path.cwd(), oracle._image_tag(Path.cwd()))
+          options = [command[i + 1] for i, part in enumerate(command) if part == '--security-opt']
+          print('[approved trial] ' + json.dumps({'image': oracle._image_tag(Path.cwd()), 'pytest_uid': oracle.ORACLE_UID, 'security_options': options, 'namespace_probe_required': not args.no_bwrap}))
+          PYSETTINGS
 
       - name: Run the real-browser proofs
         env:
@@ -107,9 +135,11 @@ jobs:
             exit 1
           fi
           mkdir -p "$OUT_DIR"
-          python -m pytest "${files[@]}" -m real_browser -q -p no:cacheprovider \
-            -o junit_family=xunit1 --basetemp "$RUNNER_TEMP/b" \
-            --junitxml "$OUT_DIR/junit-real-browser.xml"
+          python scripts/linux_oracle.py --out "$OUT_DIR" --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            -- "${files[@]}" -m real_browser -q -p no:cacheprovider \
+            -o junit_family=xunit1 --basetemp /tmp/b \
+            --junitxml /out/junit-real-browser.xml
 
       - name: Assert every real-browser case executed (a skip is not a pass)
         # Runs even when pytest is red so the summary names each case's state.
@@ -130,9 +160,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$OUT_DIR"
-          python -m pytest tests/test_ui_preview.py -q -p no:cacheprovider \
-            -o junit_family=xunit1 --basetemp "$RUNNER_TEMP/preview" \
-            --junitxml "$OUT_DIR/junit-preview.xml"
+          python scripts/linux_oracle.py --out "$OUT_DIR" --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            -- tests/test_ui_preview.py -q -p no:cacheprovider \
+            -o junit_family=xunit1 --basetemp /tmp/preview \
+            --junitxml /out/junit-preview.xml
 
       - name: Assert every preview case executed
         if: always()
