@@ -662,6 +662,7 @@ def test_a_jail_writing_many_small_files_past_its_budget_is_killed(world, monkey
             world.universe_a,
             "mkdir -p notes/many && for i in $(seq 1 400); do "
             "head -c 262144 /dev/zero > notes/many/f$i || exit 3; done; echo filled",
+            agent_id="main",
             timeout=120,
         )
         assert "[killed: this call added more than" in out, out[-500:]
@@ -669,7 +670,9 @@ def test_a_jail_writing_many_small_files_past_its_budget_is_killed(world, monkey
         written = sum(path.stat().st_size for path in many.iterdir())
         assert 24 * _MiB < written < 100 * _MiB, written
         # Another universe is untouched by this one's stop.
-        assert tools.bash(world.universe_b, "echo still-runs").startswith("still-runs")
+        assert tools.bash(
+            world.universe_b, "echo still-runs", agent_id="main",
+        ).startswith("still-runs")
     finally:
         shutil.rmtree(many, ignore_errors=True)
 
@@ -682,6 +685,7 @@ def test_the_jails_private_tmp_is_capped(world):
         world.universe_a,
         "for i in $(seq 1 12); do head -c 30000000 /dev/zero > /tmp/f$i "
         "|| { echo full-at-$i; exit 0; }; done; echo all-written",
+        agent_id="main",
         timeout=120,
     )
     assert "all-written" not in out, out[-500:]
@@ -700,7 +704,7 @@ def test_a_full_account_can_still_free_space_through_its_agent(world, monkeypatc
     monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(1024 / 1024**3))
     junk = world.universe_a / "notes" / "junk.bin"
     junk.write_bytes(b"x" * 64 * 1024)
-    out = tools.bash(world.universe_a, "rm notes/junk.bin && echo removed")
+    out = tools.bash(world.universe_a, "rm notes/junk.bin && echo removed", agent_id="main")
     assert "out of cloud storage" in out and "removed" in out, out
     assert not junk.exists()
 
