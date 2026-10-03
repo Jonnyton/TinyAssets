@@ -102,6 +102,12 @@ from tinyassets.providers.provider_jail import (
     UniverseView,
     jail_argv,
 )
+from tinyassets.tool_images import (
+    MAX_IMAGE_SOURCE_BYTES,
+    ToolImage,
+    bound_image,
+    is_image_path,
+)
 
 __all__ = [
     "MASKED_DIRS",
@@ -924,11 +930,14 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
 def read_file(
     universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
-) -> str:
-    """Up to ``limit`` lines of a file from line ``offset`` (1-based)."""
+) -> str | ToolImage:
+    """Up to ``limit`` lines of a file from line ``offset`` (1-based), or, for an
+    image path, the image itself (bounded by :mod:`tinyassets.tool_images`)."""
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
+    if is_image_path(target):
+        return _read_image(universe_dir, target, limits, agent_id=agent_id)
     start = max(1, int(offset or 1))
     count = int(limit) if limit and int(limit) > 0 else DEFAULT_READ_LINES
     script = (
@@ -951,6 +960,29 @@ def read_file(
         return (f"error: {note}"
                 f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
     return note + _text(run.output)
+
+
+def _read_image(
+    universe_dir: Path, target: str, limits: ToolLimits, *, agent_id: str,
+) -> str | ToolImage:
+    """The whole file, read inside the same jail with a larger output cap for
+    this one call, then bounded for the model outside it."""
+    script = ('[ -f "$1" ] || { echo "no such file: $1"; exit 1; }; cat -- "$1"')
+    image_limits = replace(limits, output_bytes=MAX_IMAGE_SOURCE_BYTES)
+    run = RUNNER(
+        universe_dir, ["/bin/sh", "-c", script, "sh", target],
+        agent_id=agent_id, limits=image_limits,
+    )
+    note = _waited_note(run)
+    if run.killed == "output_limit":
+        return f"error: {note}{target} is over {MAX_IMAGE_SOURCE_BYTES} bytes; too large to show"
+    if run.killed or run.exit_code != 0:
+        return (f"error: {note}"
+                f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
+    shown = bound_image(run.output, target)
+    if isinstance(shown, ToolImage) and note:
+        return replace(shown, text=note + shown.text)
+    return shown
 
 
 def write_file(

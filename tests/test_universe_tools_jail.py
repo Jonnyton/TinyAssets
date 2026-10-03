@@ -882,3 +882,26 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
     assert seen["root_write"].startswith("wrote"), seen["root_write"]
     assert (a / WORKSPACE_DIR / "root-note.md").read_text(encoding="utf-8") == "lost?\n"
     assert not (a / "root-note.md").exists()
+
+
+def test_read_shows_an_image_in_its_own_universe_and_no_other(world, monkeypatch):
+    """The image path reads through the same jail: its own PNG comes back as
+    image content, another universe's is as unreachable as its text."""
+    import io
+
+    from PIL import Image
+
+    def png(color):
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), color).save(buffer, "PNG")
+        return buffer.getvalue()
+
+    (world.universe_a / "notes" / "own.png").write_bytes(png((1, 2, 3)))
+    (world.universe_b / "secret.png").write_bytes(png((9, 9, 9)))
+    s = _engine(monkeypatch, world)
+    shown = _run(s.read_file(path="notes/own.png"))
+    blocks = shown.content
+    assert [b.type for b in blocks] == ["text", "image"], shown
+    for path in (str(world.universe_b / "secret.png"), "../u-bravo/secret.png"):
+        out = _run(s.read_file(path=path))
+        assert isinstance(out, str) and out.startswith("error:"), (path, out)

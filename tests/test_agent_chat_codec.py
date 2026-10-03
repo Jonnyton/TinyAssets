@@ -201,6 +201,21 @@ def test_result_envelope_preserves_text_structured_error_but_excludes_metadata()
     assert "verbatim" not in repr(actual)
 
 
+def test_an_image_result_is_shown_to_the_model_as_a_line():
+    """`read` returns an image file as an image; this connection is text-only, so
+    the model is told it was not shown rather than the turn being held."""
+    result = CallToolResult(content=[
+        TextContent(type="text", text="a.png: 8x8"),
+        ImageContent(type="image", data="aW1hZ2U=", mimeType="image/png"),
+    ])
+    outcome = codec.tool_outcome(decode(response()).tool_requests[0], result)
+    assert json.loads(outcome.result_json)["content"] == [
+        {"type": "text", "text": "a.png: 8x8"},
+        {"type": "text", "text": codec.IMAGE_NOT_SHOWN},
+    ]
+    assert "aW1hZ2U=" not in outcome.result_json
+
+
 @pytest.mark.parametrize("block", [
     {"type": "audio", "data": "YXVkaW8=", "mimeType": "audio/wav"},
     {"type": "resource", "resource": {"uri": "https://example.invalid/file", "text": "data"}},
