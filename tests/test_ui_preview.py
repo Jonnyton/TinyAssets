@@ -195,6 +195,28 @@ def test_a_previews_symlink_is_refused(tmp_path):
     assert list(elsewhere.iterdir()) == []
 
 
+@pytest.mark.skipif(__import__("os").name != "posix", reason="needs symlink creation")
+def test_a_link_at_or_above_the_universe_root_is_refused(tmp_path):
+    """The one writer resolves its root, so the root is checked before it runs.
+
+    `api/helpers._universe_dir` resolves before calling, so this cannot fire
+    through the served handle; it keeps a future caller that passes an
+    unresolved path from writing through a linked ancestor.
+    """
+    import os
+
+    real = tmp_path / "real"
+    (real / "previews").mkdir(parents=True)
+    os.symlink(real, tmp_path / "via", target_is_directory=True)
+    with pytest.raises(ui_preview.PreviewUnavailable, match="ui_preview_failed"):
+        ui_preview.write_preview(tmp_path / "via", "village", b"png")
+    assert list((real / "previews").iterdir()) == []
+    # the same path, resolved, is still written: the check refuses the LINK,
+    # not the directory it pointed at.
+    assert ui_preview.write_preview(real, "village", b"png") == "/u/previews/village.png"
+    assert (real / "previews" / "village.png").read_bytes() == b"png"
+
+
 # --------------------------------------------------------------------------- #
 # the served handle: read_graph target="app_ui_preview"
 # --------------------------------------------------------------------------- #
