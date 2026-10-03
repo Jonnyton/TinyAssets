@@ -1077,3 +1077,36 @@ def test_an_expired_catalogue_offers_no_effort_either(tmp_path):
       await ModelPicker.chooseEffort(""" + json.dumps(ref("first")) + ""","high");
     """, effort_catalogue())
     assert result["requests"] == [], "a stale catalogue must not save a level"
+
+
+def test_a_provider_advertised_model_renders_as_a_normal_choice(tmp_path):
+    """The founder's symptom, closed in the UI layer.
+
+    An executor-enumerated row must be pickable and must NOT appear under
+    "Needs access". The same id arriving only from the reviewed public list is
+    an offer to grant and belongs under that divider with its reason -- so this
+    asserts both halves, because the broken build also SHOWED the model, just
+    in the wrong group.
+    """
+    doc = catalogue()
+    advertised, offered = doc["options"][0], doc["options"][1]
+    advertised["availability_basis"] = "executor_enumerated"
+    advertised["in_candidate_catalog"] = True
+    advertised["reasons"] = []
+    offered["availability_basis"] = "publicly_listed"
+    offered["in_candidate_catalog"] = False
+    offered["reasons"] = [{"reason": "model_access_optin_required"}]
+    result = run_picker(tmp_path, "await ModelPicker.menuOpen();", doc)
+
+    rows = menu_rows(result)
+    divider = next((i for i, r in enumerate(rows) if "Needs access" in r["text"]), len(rows))
+    above = [row_label(r) for r in rows[:divider] if r["cls"] == "model-menu-item"]
+    below = [row_label(r) for r in rows[divider:] if r["cls"] == "model-menu-item"]
+
+    assert "first" in " ".join(above), "the advertised model was not offered as a choice"
+    advertised_row = next(r for r in rows if row_label(r).endswith("first"))
+    assert advertised_row["disabled"] is False, "the advertised model was not pickable"
+    assert "opt in" not in advertised_row["text"].replace("_", " ")
+    # ...and the grant-only row is still gated, with its reason said out loud.
+    assert "second" in " ".join(below), "a grant-only row escaped the Needs access group"
+    assert any("model access optin required" in r["text"] for r in rows[divider:])
