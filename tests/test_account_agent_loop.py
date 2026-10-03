@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets.storage import DB_FILENAME
+from tinyassets.storage import account_agent_loop as account_agent_loop_module
 from tinyassets.storage.account_agent_loop import account_agent_loop, set_account_agent_loop
 
 
@@ -18,6 +19,55 @@ def test_default_does_not_create_a_database(tmp_path):
     assert account_agent_loop(root, owner_user_id="owner") == "engine"
     assert not (root / DB_FILENAME).exists()
     assert not root.exists()
+
+
+def test_the_read_path_runs_no_ddl_on_a_database_without_the_table(tmp_path):
+    """A reader must not be what creates this table, nor touch the journal mode.
+
+    An existing account DB whose table no writer has made yet is the normal
+    pre-rollout state, so the read answers the default and leaves the file
+    exactly as it found it.
+    """
+    path = tmp_path / DB_FILENAME
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE unrelated (x TEXT)")
+        before = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert before != "wal", "the fixture must start outside WAL for this to prove anything"
+
+    assert account_agent_loop(tmp_path, owner_user_id="owner") == "engine"
+
+    with sqlite3.connect(path) as conn:
+        tables = {
+            name for (name,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert "account_agent_loop" not in tables, "the read path created the table"
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == before, (
+            "the read path switched the journal mode"
+        )
+    assert not (tmp_path / f"{DB_FILENAME}-wal").exists()
+
+
+def test_a_sqlite_failure_that_is_not_a_missing_table_still_raises(tmp_path, monkeypatch):
+    """Only 'no such table' means the default; everything else is a real fault."""
+    closed: list[bool] = []
+
+    class _Locked:
+        row_factory = None
+
+        def execute(self, *_args, **_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(
+        account_agent_loop_module, "_connect", lambda *_a, **_k: _Locked(),
+    )
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        account_agent_loop(tmp_path, owner_user_id="owner")
+    assert closed == [True], "the connection must still be closed"
 
 
 def test_set_get_and_owner_isolation(tmp_path):

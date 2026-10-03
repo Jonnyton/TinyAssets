@@ -554,6 +554,8 @@ ROOT_ENTRIES: dict[str, str] = {
     ".run-file-operation-locks": "platform: locks",
     ".connect": "platform: connection handshakes",
     ".executors": "platform: executor registry",
+    "boxhost.db": "platform: box-host record of the local dev box driver; "
+                  "per-host control state, never user bytes",
     ".external_write_receipts.db": "platform: effect receipts (also per-universe, counted there)",
     ".idempotency.db": "platform: idempotency keys (also per-universe, counted there)",
     ".node_eval.db": "platform: node evaluation scores",

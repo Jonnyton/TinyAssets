@@ -18,6 +18,7 @@ jail instead.
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
 
@@ -30,13 +31,32 @@ from tinyassets.provider_assignment import check_served_agent_tool_authority
 from tinyassets.served_tools import granted_tools
 from tinyassets.storage.account_agent_loop import account_agent_loop
 
+_LOG = logging.getLogger(__name__)
+
 
 def thin_loop_selected(universe_context) -> bool:
+    """Whether this turn takes the thin loop, per the owner's account setting.
+
+    An owner we cannot resolve keeps the engine path -- the safe direction --
+    but it is not the same as an owner who chose ``engine``, so it says so in
+    the log rather than defaulting silently.
+    """
     try:
         owner = check_served_agent_tool_authority(universe_context)
-    except (PermissionError, ProviderAuthorityHeldError):
+    except (PermissionError, ProviderAuthorityHeldError) as exc:
+        _LOG.warning(
+            "thin-loop switch: no served-agent tool authority for %s, keeping the "
+            "engine path: %s: %s",
+            getattr(universe_context, "universe_dir", "<no universe>"),
+            type(exc).__name__, exc,
+        )
         return False
     if not owner:
+        _LOG.warning(
+            "thin-loop switch: the owner of %s did not resolve to an account, "
+            "keeping the engine path",
+            getattr(universe_context, "universe_dir", "<no universe>"),
+        )
         return False
     return account_agent_loop(
         universe_context.universe_dir.parent, owner_user_id=owner,

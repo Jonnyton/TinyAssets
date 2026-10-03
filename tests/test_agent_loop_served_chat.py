@@ -5,6 +5,7 @@ a scripted box and synthetic model wires (``test_interactive_http_agent``'s rig)
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -113,3 +114,45 @@ def test_unresolved_owner_keeps_todays_path(agent, monkeypatch):
 
     monkeypatch.setattr(served_chat, "check_served_agent_tool_authority", refuse)
     assert not served_chat.thin_loop_selected(agent.served.context)
+
+
+def test_an_owner_who_does_not_resolve_is_logged_not_defaulted_silently(
+    agent, monkeypatch, caplog,
+):
+    """The engine path is the safe answer, but it must not be a silent one.
+
+    An owner whose authority check refuses, and an owner who resolves to
+    nothing, are both different from an owner who CHOSE engine -- the setting
+    here is thin, so a quiet False would be indistinguishable from a real
+    choice. Each says so at WARNING.
+    """
+    def refuse(context):
+        raise PermissionError("no current served request")
+
+    monkeypatch.setattr(served_chat, "check_served_agent_tool_authority", refuse)
+    with caplog.at_level(logging.WARNING, logger=served_chat.__name__):
+        assert not served_chat.thin_loop_selected(agent.served.context)
+    refused = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(refused) == 1, caplog.text
+    assert "no served-agent tool authority" in refused[0].getMessage()
+    assert "PermissionError" in refused[0].getMessage()
+
+    caplog.clear()
+    monkeypatch.setattr(served_chat, "check_served_agent_tool_authority", lambda _c: "")
+    with caplog.at_level(logging.WARNING, logger=served_chat.__name__):
+        assert not served_chat.thin_loop_selected(agent.served.context)
+    blank = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(blank) == 1, caplog.text
+    assert "did not resolve to an account" in blank[0].getMessage()
+
+
+def test_a_resolved_owners_choice_is_not_warned_about(agent, caplog):
+    """The quiet path stays quiet: a real choice logs nothing at WARNING."""
+    with caplog.at_level(logging.WARNING, logger=served_chat.__name__):
+        assert served_chat.thin_loop_selected(agent.served.context)
+        set_account_agent_loop(
+            agent.served.context.universe_dir.parent,
+            owner_user_id="owner", agent_loop="engine", updated_by="test",
+        )
+        assert not served_chat.thin_loop_selected(agent.served.context)
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
