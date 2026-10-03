@@ -954,7 +954,7 @@ after #4287 and #4228. Their accepted foundation residual remains open: keyed
 storage alone does not make custom-agent rules, Stop or request routing work.
 That design owns current-binding/revocation checks and safe legacy handling;
 the shared-brain and visibility requirements below remain here. The first Claude
-ADAPT is folded there, pending acceptance: native internal tools have no claimed
+ADAPT is folded there, with [design approval at 6bf7923](https://github.com/TinyAssets/TinyAssets/pull/4343#issuecomment-5965426542): native internal tools have no claimed
 pre-tool interception (D2 remains held), launch identity requires a proposed
 isolated per-launch transport credential, and legacy recurring definitions need
 visible holds plus owner reconfirmation. None of these facilities is implemented

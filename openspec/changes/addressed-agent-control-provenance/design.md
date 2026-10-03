@@ -360,6 +360,7 @@ admission scope, native termination/residual contract and native proof row. F2 i
 addressed by the proposed launch credential protocol, isolation/audience boundary
 and replay proofs. F3 chooses explicit owner reconfirmation through the existing
 automation control surface, with visible holds and the full recurring blast
-radius. Task 2 remains open for acceptance of this fold. Cross-worker ordering,
+radius. [Actual Claude design APPROVE](https://github.com/TinyAssets/TinyAssets/pull/4343#issuecomment-5965426542)
+at `6bf7923597983ec9af61968b99001745a981f2a7` closes task 2 only. Cross-worker ordering,
 actual launch isolation/lifecycle, termination deadlines and reconfirmation
 transactions still require implementation proof; none is asserted available.

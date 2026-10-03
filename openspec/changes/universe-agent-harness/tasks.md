@@ -46,8 +46,8 @@ foundations with accepted D8 control-wiring residuals. The design-only
 owns that integration and its proof matrix. No complete per-agent controls,
 runtime mitigation or live acceptance is claimed by that design. Its first
 Claude ADAPT fold retains native D2 and unproved launch-isolation holds, and adds
-explicit legacy recurring-work reconfirmation. Design acceptance and subsequent
-implementation proofs remain pending.
+explicit legacy recurring-work reconfirmation. [Claude design acceptance](https://github.com/TinyAssets/TinyAssets/pull/4343#issuecomment-5965426542)
+is recorded at 6bf7923597983ec9af61968b99001745a981f2a7; implementation proofs remain pending.
 
 ## 1. Design
 

@@ -1,6 +1,7 @@
 # Addressed-agent control provenance
 
-Status: design only; first Claude ADAPT folded, awaiting acceptance of the fold. Owner: Codex handoff;
+Status: design only; [Claude approved the fold](https://github.com/TinyAssets/TinyAssets/pull/4343#issuecomment-5965426542)
+at 6bf7923597983ec9af61968b99001745a981f2a7. Owner: Codex handoff;
 implementation owner assigned by the lead after review. Tier 2: authority/storage.
 
 ## Why
