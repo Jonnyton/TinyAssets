@@ -5,7 +5,11 @@
 ### Requirement: A whole command center publishes as one immutable package, scrubbed of private items
 An owner SHALL be able to publish their whole command center as one package through the owner-confirmed `publish` ask, using the shared bundle manifest with profile `publish`.
 
-The package SHALL contain the harness files, the workspace files and the wiki's curated pages, alongside the workflows, UI and automation triggers the ask already publishes. The owner MAY leave out any path, and MAY name memory items, per file, to include.
+The package SHALL contain the harness files, the roster agents, the wiki's curated pages and the app, alongside the workflows, UI and automation triggers the ask already publishes, plus the owner's own folders. The owner MAY leave out any path, and MAY name memory items, per file, to include.
+
+**At the command center's top folder the carried files SHALL be a closed set**, and a file there that is not in it SHALL stay home and SHALL be listed with that reason. The top folder is where the platform writes its own state, so an enumeration of private names there can only ever be as complete as the last person to extend it: `orgchart.md` and `requests.json` travelled because nothing named them, and a subsequent grep of the root-level filenames platform code writes found twenty-one more, including the branch-task queue. A file of the same name inside the owner's own folder is the owner's content and SHALL still travel, because every private-name rule is scoped to the top folder only. Top-level FOLDERS SHALL NOT be a closed set -- the owner may create any -- so they remain a refusal list, and the platform-created ones SHALL be held to it by test.
+
+The owner-facing sentence SHALL describe what the package carries rather than what was removed, for the same reason: a removal list cannot be more complete than itself. It SHALL say that private brain files stay home while naming `identity.md`'s exception implicitly (it travels as the published roster agent's own identity), and SHALL state that memory travels only where the owner named entries.
 
 The package SHALL never contain:
 - dot-prefixed entries or managed repository checkouts;
@@ -29,6 +33,16 @@ The tab SHALL list every included file, and every excluded file with its reason,
 #### Scenario: an over-quota package is refused with its size
 - **WHEN** a package's content would take the publisher over their storage quota
 - **THEN** nothing becomes public and the refusal names the package's size
+
+#### Scenario: a file nobody enumerated stays home
+- **GIVEN** a command center whose top folder holds a file no rule names -- a future platform state file, or anything a later change writes there
+- **WHEN** the owner confirms a package publish
+- **THEN** that file is not in the package, and the tab lists it with the reason that it is not one of the files a package carries from the top folder
+
+#### Scenario: the owner's own content still travels
+- **GIVEN** the same command center with a note inside the owner's own folder, including one whose filename matches a private platform name
+- **WHEN** the owner confirms a package publish
+- **THEN** those notes are in the package, because the top-folder rules are scoped to the top folder and the scrub is what protects their contents
 
 ### Requirement: Installing a package is quarantined until the owner activates it, and materialises as the installer's own copy
 A served agent SHALL be able to raise an `install` ask naming a package's definition. The platform SHALL verify the package content against its pinned digest, and SHALL run the ingestion boundary, which:

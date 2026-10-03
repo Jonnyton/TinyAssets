@@ -922,10 +922,12 @@ def test_the_founders_private_grounding_never_travels(tmp_path):
     universe.mkdir()
     for name in ("orgchart.md", "origin.md", "body.md"):
         (universe / name).write_text(f"private {name}\n", encoding="utf-8")
-    (universe / "keep.md").write_text("a shareable note\n", encoding="utf-8")
+    # The control lives in a subfolder: the ROOT is an allowlist, so a new
+    # root file stays home by design (test_an_unlisted_root_file_stays_home).
+    _write(universe, "notes/keep.md", "a shareable note\n")
 
     files, excluded = ccp.collect(universe, exclude=[], memory_items={})
-    assert "keep.md" in files
+    assert "notes/keep.md" in files
     for name in ("orgchart.md", "origin.md", "body.md"):
         assert name not in files
         assert any(row["path"] == name for row in excluded)
@@ -968,12 +970,122 @@ def test_the_publishers_own_request_queue_never_travels(tmp_path):
     (universe / REQUESTS_FILENAME).write_text(
         '[{"id":"demo","status":"pending","text":"Prepare the acquisition offer"}]',
         encoding="utf-8")
-    (universe / "keep.md").write_text("a shareable note\n", encoding="utf-8")
+    _write(universe, "notes/keep.md", "a shareable note\n")
 
     files, excluded = ccp.collect(universe, exclude=[], memory_items={})
-    assert "keep.md" in files
+    assert "notes/keep.md" in files
     assert REQUESTS_FILENAME not in files
     assert any(row["path"] == REQUESTS_FILENAME for row in excluded)
+
+
+def test_the_publish_sentence_names_what_travels(tmp_path):
+    """The sentence describes the carried kinds, not a removal list.
+
+    A sentence that lists what was removed can only ever be as complete as the
+    removal list was, and the previous one promised "your brain files and
+    platform state were left out" while orgchart.md, requests.json and 21
+    other platform root files travelled. Two exactness points are pinned here
+    because they are easy to "simplify" back into falsehood: "private" brain
+    files (identity.md travels as the roster agent's identity) and memory being
+    conditional (named entries do travel).
+    """
+    from tinyassets.api.publish_requests import PACKAGE_SENTENCE
+
+    # Case-insensitive: these phrases may start a sentence, and which one does
+    # is incidental to the claim being made.
+    said = PACKAGE_SENTENCE.lower()
+    assert "your private brain files" in said
+    assert "your brain files" not in said.replace("your private brain files", "")
+    assert "your memory unless you named entries" in said
+    assert "anything else sitting in the top folder stay home" in said
+    # The existing tab test asserts this phrase in lowercase; keep it so.
+    assert "detection cannot prove" in PACKAGE_SENTENCE
+
+    # identity.md really does travel, which is why the wording is qualified.
+    assert ccp.structural_exclusion("identity.md") is None
+    # Memory is conditional in both directions.
+    memory = b"- [m_abc] a remembered line\n"
+    assert ccp.classify(ccp.MEMORY_FILE, memory, exclude=[], memory_items={})[0] is None
+    assert ccp.classify(ccp.MEMORY_FILE, memory, exclude=[],
+                        memory_items={ccp.MEMORY_FILE: ["m_abc"]})[0] is not None
+
+
+def test_an_unlisted_root_file_stays_home(tmp_path):
+    """The root is an ALLOWLIST, which is the whole point of this change.
+
+    Both real leaks were root files, and a grep of the root-level filenames
+    platform code writes found 21 more that travelled -- including
+    ``branch_tasks.json``, the work queue. Enumerating private names could
+    never finish; the root being closed does.
+    """
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    for name in ("README.md", "surprise.yaml", "a-feature-nobody-wrote-yet.json"):
+        _write(universe, name, "content\n")
+    _write(universe, "notes/keep.md", "a shareable note\n")
+
+    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "notes/keep.md" in files, "a user's own folder still travels"
+    for name in ("README.md", "surprise.yaml", "a-feature-nobody-wrote-yet.json"):
+        assert name not in files, name
+        assert any(row["path"] == name and row["reason"] == ccp.R_ROOT_UNLISTED
+                   for row in excluded), name
+
+
+def test_every_platform_written_root_file_stays_home():
+    """The 21 found after #4363, plus the two it closed.
+
+    None of these is named in ``ROOT_FILES``, so each is already covered by the
+    allowlist -- this pins that, so nobody has to keep a private-name list
+    complete ever again. The four with a verified ``Path(universe_path) /
+    FILENAME`` site are marked.
+    """
+    platform_root = [
+        "branch_tasks.json",            # branch_tasks.py:36  (the work queue)
+        "branch_tasks_archive.json",    # branch_tasks.py:37
+        "enrichment_signals.json",      # enrichment_signals.py:19
+        "hard_priorities.json",         # work_targets.py:134
+        "requests.json", "orgchart.md", "onboarding.json", "preferences.json",
+        "priorities.yaml", "goals.md", "plan.md", "progress.md", "projects.md",
+        "proposals.md", "characters.md", "acquisition_presets.json",
+        "bid_ledger.json", "bid_execution_log.json", "assignment.json",
+        "host.json", "current.json", "output.json", "auth.json",
+    ]
+    for name in platform_root:
+        assert ccp.structural_exclusion(name) is not None, name
+        assert ccp.fold(name) not in ccp._ROOT_FILES_F, name
+
+
+def test_the_root_folders_the_platform_creates_are_denied(tmp_path):
+    """Root FOLDERS cannot be a closed allowlist -- a user may make any folder,
+    and their content is most of what sharing a command center means. So this
+    holds the platform-created root folders to ``NEVER_DIRS`` and friends,
+    making the addition of one a reviewed step rather than a silent default.
+    """
+    for rel_dir in ("workspaces", "soul_versions", ".runtime", ".credentials",
+                    "__pycache__", "node_modules"):
+        assert ccp.dir_exclusion(rel_dir) is not None, rel_dir
+
+    # And a user's own folder is not denied, which is the line being held.
+    assert ccp.dir_exclusion("notes") is None
+    assert ccp.dir_exclusion("data") is None
+
+
+def test_the_preview_and_the_bundle_agree_on_every_allowed_kind(tmp_path):
+    """Every kind that travelled before this change still travels, and the
+    listing the owner reads is the set that is actually carried."""
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    for rel, body in TRAVELS.items():
+        _write(universe, rel, body)
+    _write(universe, "app.html", "<main>ui</main>\n")
+
+    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    for rel in TRAVELS:
+        assert rel in files, rel
+    assert "app.html" in files
+    # preview == bundle: nothing is listed as both carried and left out.
+    assert not ({row["path"] for row in excluded} & set(files))
 
 
 def test_a_one_class_value_is_neither_excluded_nor_flagged():

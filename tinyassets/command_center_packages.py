@@ -124,15 +124,43 @@ _BRAIN_FILES = (
     | _FOUNDER_PRIVATE
     | (frozenset(_GOVERNED_BRAIN) - HARNESS_ROOT_FILES)
 )
-#: Platform-written runtime state at the folder root. ``requests.json`` is named
-#: from ``work_targets.REQUESTS_FILENAME`` for the same reason: it holds the
-#: publisher's own pending request text, and the daemon turns pending rows into
-#: active work targets, so an installed copy would carry someone else's queue.
+#: Platform-written runtime state at the folder root. RETAINED only to name a
+#: reason in the tab: since the root became an allowlist (:data:`ROOT_FILES`)
+#: an unlisted root file stays home whether or not it appears here, so this set
+#: no longer has to be complete. It was never close: a grep of the root-level
+#: filenames platform code writes found 21 more that travelled, including
+#: ``branch_tasks.json`` -- the work queue, the same class as
+#: ``requests.json``. Enumerating private names was the losing half of the game.
 _RUNTIME_FILES = frozenset({
     "activity.log", "status.json", "ledger.json", "work_targets.json", "notes.json",
     "timeline.json", "promises.json", "facts.json", "characters.json",
     "dispatcher_config.yaml", "config.yaml", _REQUESTS_FILENAME,
+    "branch_tasks.json", "branch_tasks_archive.json", "enrichment_signals.json",
+    "hard_priorities.json",
 })
+
+#: **The root is an allowlist.** Every file directly at the command center's
+#: root that may travel, and nothing else.
+#:
+#: This is the boundary that matters, because the root is where the platform
+#: writes its own state -- every known-private name is checked at depth 1
+#: only, and a same-named file in a user's own folder (``notes/orgchart.md``) is
+#: that user's note and still travels. So a closed set here, and the existing
+#: per-folder rules below it, is the whole fix: a platform file added to the
+#: root by a future change is private by default instead of public by default.
+#:
+#: The members are exactly the kinds the ask already publishes:
+#: ``HARNESS_ROOT_FILES`` (remapped into ``agents/<slug>/`` by
+#: :func:`destination`, so a published command center arrives as a roster
+#: agent) plus the UI bundle's entry point.
+UI_ROOT_FILE = "app.html"
+ROOT_FILES = HARNESS_ROOT_FILES | frozenset({UI_ROOT_FILE})
+_ROOT_FILES_F = frozenset(fold(n) for n in ROOT_FILES)
+
+#: Root folders that never travel. Unlike :data:`ROOT_FILES` this cannot be a
+#: closed allowlist: a user may make any folder, and their content is most of
+#: what sharing a command center means. ``tests`` holds the platform-created
+#: root folders to this list so adding one is a reviewed step.
 NEVER_DIRS = frozenset({"workspaces", "soul_versions"})
 _BRAIN_F = frozenset(fold(n) for n in _BRAIN_FILES)
 _RUNTIME_F = frozenset(fold(n) for n in _RUNTIME_FILES)
@@ -254,6 +282,7 @@ R_TOO_BIG = "over the per-file size bound"
 R_UNREADABLE = "a link or not a regular file"
 R_CHECKOUT = "a managed repository checkout"
 R_DEEP = "deeper than a package may go"
+R_ROOT_UNLISTED = "not one of the files a package carries from the top folder"
 
 
 class PackageError(ValueError):
@@ -337,6 +366,13 @@ def structural_exclusion(rel: str) -> str | None:
         return R_WIKI
     if parts[-1].lower().endswith(_DB_SUFFIXES):
         return R_DATABASE
+    if len(parts) == 1 and head not in _ROOT_FILES_F:
+        # THE ROOT IS AN ALLOWLIST, and this is deliberately the LAST root rule:
+        # every specific reason above keeps its own wording in the tab, so a
+        # database still reads "a database file" rather than this catch-all.
+        # What lands here is a root file nobody enumerated -- where both real
+        # leaks lived, and the 21 found after them.
+        return R_ROOT_UNLISTED
     return None
 
 
