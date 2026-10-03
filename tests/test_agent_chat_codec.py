@@ -201,9 +201,17 @@ def test_result_envelope_preserves_text_structured_error_but_excludes_metadata()
     assert "verbatim" not in repr(actual)
 
 
-def test_non_text_tool_result_is_explicitly_unsupported():
+@pytest.mark.parametrize("block", [
+    {"type": "audio", "data": "YXVkaW8=", "mimeType": "audio/wav"},
+    {"type": "resource", "resource": {"uri": "https://example.invalid/file", "text": "data"}},
+    {"type": "resource_link", "uri": "https://example.invalid/file", "name": "file"},
+])
+def test_mixed_image_result_rejects_remaining_unsupported_content(block):
+    """Image projection must not conceal another unsupported content block."""
     result = CallToolResult(content=[
+        TextContent(type="text", text="image and unsupported content"),
         ImageContent(type="image", data="aW1hZ2U=", mimeType="image/png"),
+        block,
     ])
     with pytest.raises(ProtocolDecodeError, match="non-text"):
         codec.tool_outcome(decode(response()).tool_requests[0], result)
