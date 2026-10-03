@@ -6,17 +6,23 @@ visibility, activities or delegation requirements.
 
 ## 1. Existing carriers and missing links
 
-Source references below are at combined foundation `6684a082d923d7db6288b4639a507719b94ab742`.
+Source references below are at `origin/main`
+`3e1587b3e500d81919c0c299b862d31b5360757c` (re-verified 2026-10-03). They were
+pinned to a combined pre-merge foundation sha that never reached `main`, so two
+had already drifted and three pointed past the end of the wrong file (design
+review 2026-10-03, finding 2). Each row now names the **enclosing symbol** as
+well as the line, because the symbol survives the drift that made the first set
+stale -- if a line has moved, trust the symbol and correct the number here.
 
 | Existing owner | Missing integration |
 |---|---|
 | `addressed_agents.resolve`, owner/home admission, `custom_agents` binding revision and immutable definition fingerprint | Capture resolved agent facts once; a display name or parsed session alone is not authority |
-| `universe_server.py:3135`, `turn_interrupt.LiveTurn` | Served registration omits the resolved agent; browser Stop omits it too |
-| `interactive_http_agent.py:40`, `storage.agent_turn_journal.create` | Journal supports `agent_id`, but the adapter defaults it to main |
-| `engine_mcp_server.py:897`, authenticated run admission and persisted `runs` | No addressed agent passes from chat to a run |
+| `universe_server.py:3135` `converse()`, `turn_interrupt.LiveTurn` | Served registration omits the resolved agent; browser Stop omits it too |
+| `interactive_http_agent.py:41` `create_turn()`, `storage.agent_turn_journal.create` | Journal supports `agent_id`, but the adapter defaults it to main |
+| `engine_mcp_server.py:897` `run_graph()`, authenticated run admission and persisted `runs` | No addressed agent passes from chat to a run |
 | `graph_compiler.BranchExecutionContext`, `NodeEnqueueContext` | Carry owner/universe and branch provenance, not addressed-agent provenance |
-| `runs.py:4691,5387,6593`, `effectors.EffectChain` | Initial execution, nested dispatch and resume cannot reconstruct the acting agent |
-| `authenticated_external_call.py:672`, `agent_review.py:171` | Rules/switches use main; review instructions use only shared `AGENTS.md` |
+| `tinyassets/runs.py:4691` `_invoke_graph()`, `:5387` `_execution_context_for_run()`, `:6593` `_invoke_graph_resume()`, `effectors.EffectChain` | Initial execution, nested dispatch and resume cannot reconstruct the acting agent |
+| `authenticated_external_call.py:673` `_rule_refusal()`, `agent_review.py:175` `_responsibility()` | Rules/switches use main; review instructions use only shared `AGENTS.md` |
 | `api.pending_requests.request_from_user`, storage dedupe/agent columns | Served creation omits agent; withdrawal lacks agent predicate; app answer relays omit request agent |
 | `onboarding._handle_rules`, existing Rules panel | Owner reads and edits main regardless of addressed conversation |
 
@@ -262,9 +268,39 @@ the old global setting, not provenance of a custom run.
 interval, cron and event definitions also lack this snapshot. Unless an existing
 authoritative execution subject proves their exact identity, every future firing
 must hold, including ordinary main automations; an active desired state is not
-proof. No grandfathering by timestamp, schema default or presumed pre-custom age
-is proposed. Old queued firings and in-progress resumptions remain independently
+proof. Old queued firings and in-progress resumptions remain independently
 held and are never relabelled by reconfirming their definition.
+
+**The hold MUST NOT activate before audience separation is live (task 4).**
+This is a hard ordering constraint, not a preference. The hold's only exit is an
+owner reconfirmation through the public owner automation door, and §3 states that
+the design cannot yet tell that door apart from an engine call -- the automation
+write door is also on the engine surface: `engine_mcp_server.py:3012`
+`write_graph()` routes `target="automation"` into
+`:2661 _write_served_automation()`. (The review cited `:2821` for this; that
+line is inside `write_graph()` but is docstring prose about output links. The
+claim holds at the lines above, re-verified on `origin/main` 2026-10-03.)
+Shipping the hold first would therefore stop every recurring
+workflow, including every ordinary main automation, with no reachable restart:
+a self-inflicted outage on a surface the Forever Rule says must work with no
+host online. Either land the hold together with task 4, or ship it inert behind
+the same switch and enable it only once audience separation is proven. Any slice
+that enables the hold must cite the passing audience-separation proof from task 4
+(`launch replay / audience rejection`) in its own evidence (design review
+2026-10-03, finding 3 -- raised as blocking before implementation).
+
+**Grandfathering is a founder decision, not settled here** (design review
+2026-10-03, finding 4). The draft proposed no grandfathering at all. The reviewer
+observed that custom-agent `converse` first existed with #4287, merged
+2026-10-03 01:41Z, so any definition authored before that moment can only have
+come from the owner or `main` -- which makes stamping those explicit-`main` and
+holding only later ones a clean cutover that does not halt live automations. That
+is sound, and it is also exactly the kind of "trust a timestamp" inference the
+paragraph above forbids, so the two cannot both stand unexamined: the question is
+whether the #4287 merge time is authoritative enough to act as lineage. It needs
+the founder's call, with the smallest ask recorded in `docs/host-actions.md`.
+Until that is answered, assume no grandfathering, which is why the ordering
+constraint above is what keeps the Forever Rule intact in the meantime.
 
 Reuse the existing public owner automation door: `read_graph` targets
 `automations`/`automation` and `write_graph` target `automation`, operation
@@ -364,3 +400,50 @@ radius. [Actual Claude design APPROVE](https://github.com/TinyAssets/TinyAssets/
 at `6bf7923597983ec9af61968b99001745a981f2a7` closes task 2 only. Cross-worker ordering,
 actual launch isolation/lifecycle, termination deadlines and reconfirmation
 transactions still require implementation proof; none is asserted available.
+
+## 9. Second Claude ADAPT disposition (2026-10-03, lead's reviewer)
+
+The review of `be52aa8191e97cd265beb58de5a67b36111fe89a` is ADAPT. Its item 1
+(premises match `origin/main`) and item 7 (branch_version subject kept, native
+limit stated honestly, one ordering tested in both race orders, proof matrix) are
+AGREE and need no change. The rest is folded here:
+
+- **Finding 2, citations pinned to a sha that is not on `main`.** Fixed in §1.
+  Re-pinned to `origin/main` `3e1587b3e500d81919c0c299b862d31b5360757c` and
+  re-verified line by line, which found more drift than the review reported:
+  `authenticated_external_call.py` `:672 → :673` and `agent_review.py`
+  `:171 → :175` as it said, and additionally that the three bare `runs.py`
+  citations resolve only in `tinyassets/runs.py` — they point past the end of
+  `tinyassets/api/runs.py`, so the bare filename was ambiguous between two real
+  files. Every row now carries its enclosing symbol, so the next drift is
+  self-correcting. `universe_server.py:3135` and `engine_mcp_server.py:897` were
+  already correct.
+- **Finding 3, the hold breaks the Forever Rule (blocking).** Accepted in §6 as a
+  hard ordering constraint: the hold must not activate before task 4's audience
+  separation is live, either landing together or shipping inert behind the same
+  switch, and any slice enabling it must cite task 4's passing audience-rejection
+  proof. While verifying this, the review's own citation for the engine-side
+  automation door (`:2821`) proved to be docstring prose; the claim is true at
+  `engine_mcp_server.py:3012 write_graph()` routing into
+  `:2661 _write_served_automation()`, and §6 now cites those.
+- **Finding 4, grandfathering.** Recorded in §6 as an open founder decision
+  rather than resolved here, with the review's pre-#4287 proposal stated as the
+  cheaper option and its one tension named: it trusts a merge timestamp as
+  lineage, which this design forbids elsewhere. Smallest ask filed in
+  `docs/host-actions.md`. Until answered, no grandfathering is assumed, which is
+  what makes the ordering constraint above load-bearing.
+- **Finding 5, the "no new permission/policy/setting" overclaim.** Reworded in
+  `proposal.md`, which now lists the transport credential and its digest, the
+  launch-binding table and snapshot columns, the new durable `held` state, and
+  the public `write_graph` payload and projection fields — while keeping the
+  accurate half: no existing permission is widened, because each control keeps
+  its authority and only changes which agent it selects.
+- **Finding 6, founder approval before implementation.** Filed as one
+  `docs/host-actions.md` row with two asks: the grandfathering judgement, and a
+  single go on the hard-to-reverse shape (public MCP surface delta needing a
+  canary `--assert-handles`, the per-launch credential, the storage additions,
+  the held behaviour). Money: none.
+
+This disposition closes the design gate only. No implementation, activation or
+deployment is granted, and the §6 held items (NativeD2 yield, cross-worker
+ordering) stay held unless a slice needs them.

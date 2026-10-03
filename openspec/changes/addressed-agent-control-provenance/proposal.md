@@ -9,10 +9,10 @@ implementation owner assigned by the lead after review. Tier 2: authority/storag
 Carry the authenticated addressed agent through its work so each existing control
 selects that agent's rules, requests, journal and Stop target.
 
-The combined foundation at `6684a082d923d7db6288b4639a507719b94ab742`
-(#4287 `8475c6d7f9371375082726fba01182ae1a76932e` plus #4228
-`6951282aca0636bb389a4d16385b43e3cd2fb770`) has addressed conversation threads
-and per-agent storage, but several callers still select `main`. A disposable
+#4287 and #4228 both landed and are on `main`; their work is re-verified against
+`origin/main` `3e1587b3e500d81919c0c299b862d31b5360757c` (2026-10-03), which is
+what every citation in `design.md` is now pinned to. Addressed conversation
+threads and per-agent storage exist, but several callers still select `main`. A disposable
 characterization set researcher `app.write=hand_off` and disabled main's review;
 the actual effector rule door returned no refusal. No provider or outbound call
 was made. This is an owner-level control mismatch, not a new cross-owner finding.
@@ -31,9 +31,28 @@ validated addressed-agent snapshot; carry it through direct, nested, queued and
 resumed work. Use it at the existing rules/review, pending-request and journal
 doors. Wire the existing owner Rules and Stop controls to the addressed agent.
 
-No new permission, policy behaviour, provider budget, model, shared-brain boundary,
-agent delegation feature, broad UI redesign or setting is introduced. Existing
-connection consent, authored-branch checks and owner/home authority remain required.
+No new provider budget, model, shared-brain boundary, agent delegation feature or
+broad UI redesign is introduced, and no existing permission is widened: every
+control keeps the authority it has and merely selects the addressed agent instead
+of always selecting `main`.
+
+What this DOES add, stated plainly because an earlier draft claimed "no new
+permission, policy behaviour or setting" and that was not accurate (design review
+2026-10-03, finding 5):
+
+- a per-launch transport credential with a server-side digest, which is a new
+  authentication capability and a new stored secret shape (`design.md` §3, F2);
+- a launch-binding table plus addressed-agent snapshot columns on runs, turns,
+  the journal, pending requests and automations (new storage shape);
+- a new durable automation state (`held`) with `held_reason` and
+  `reconfirmation_required`, which is new policy behaviour for existing rows;
+- a public `write_graph` payload field (`confirm_agent_provenance`) and new read
+  projection fields, which is a public MCP surface delta.
+
+Each is listed in the founder-decision row below, because storage shape,
+authority and public surface are the things a wrong guess makes expensive.
+Existing connection consent, authored-branch checks and owner/home authority
+remain required.
 Activities/manifest work reuse their existing execution subject and lease lineage;
 this change does not replace that protocol. Visibility configuration and other D8
 features remain in their existing slices.

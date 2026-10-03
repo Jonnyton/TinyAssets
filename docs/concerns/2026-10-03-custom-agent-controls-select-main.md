@@ -5,10 +5,12 @@ filed: '2026-10-03'
 summary: Addressed-agent foundations preserve an owner-level control gap; effector rules/review and several control doors still default to main.
 ---
 
-Verified at combined foundation `6684a082d923d7db6288b4639a507719b94ab742`
-(#4287 `8475c6d7f9371375082726fba01182ae1a76932e` plus #4228
-`6951282aca0636bb389a4d16385b43e3cd2fb770`). No production mutation or new
-cross-owner bypass is claimed.
+Re-verified on `origin/main` `3e1587b3e500d81919c0c299b862d31b5360757c`
+(2026-10-03), after #4287 and #4228 landed. It was first filed against a combined
+pre-merge foundation sha that never reached `main`; the finding survived the
+re-check unchanged, but every line citation moved, so `design.md` now pins each
+one to a symbol as well as a line. No production mutation or new cross-owner
+bypass is claimed.
 
 ## Evidence and impact
 
