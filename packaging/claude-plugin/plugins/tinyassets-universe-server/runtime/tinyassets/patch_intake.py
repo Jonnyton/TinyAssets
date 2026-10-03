@@ -488,28 +488,71 @@ def send_patch_request(universe_id: str, principal_id: str, title: Any, details:
     return {"sent": True, "delivery_id": receipt["delivery_id"], "to": intake["label"]}
 
 
+#: Declared input names that mean "the one-line summary".
+_TITLE_NAMES = frozenset({"title", "summary", "subject", "reporttitle", "requesttitle"})
+#: Declared input names that mean "the body of the report". ``tried``/``missing``
+#: and ``broken`` are here because the intake this platform actually offers asks
+#: ``what_they_tried`` / ``what_was_missing_or_broken`` (docs/host-actions.md):
+#: both are asking for the body, in the owner's own wording.
+_DETAIL_NAMES = frozenset({
+    "details", "description", "body", "reportdetails", "requestdetails",
+    "whattheytried", "whattried", "tried",
+    "whatwasmissingorbroken", "whatwasmissing", "missing", "broken",
+})
+
+
 def _report_outputs(contract: list[dict], title: str, details: str) -> dict[str, str]:
-    """Map only declared text inputs; unsupported required inputs fail loudly."""
+    """Fill EVERY required text input of the receiver's declared contract.
+
+    The sender has two pieces of information, the receiver may declare any
+    number of inputs, and the old mapping could not bridge that: when no name
+    matched it put the whole report in ONE field, then refused the contract
+    because the other required fields were empty. The intake this platform
+    actually offers declares three required inputs
+    (``what_they_tried``/``what_was_missing_or_broken``/``request_type``), so
+    EVERY patch request the agent sent came back
+    ``invalid_patch_request`` -- "the channel rejects every submission", live on
+    prod 2026-10-03.
+
+    Named fields get their own part. Every required field left over gets the
+    FULL report, which is accurate rather than invented: an input asking what
+    broke, and one asking what was tried, are both answered by the report. A
+    required input that is not text cannot be filled from a text report at all,
+    and that refusal names the field so the owner can see which input to relax.
+    """
     text_fields = [field for field in contract if field["type"] in {"str", "string"}]
+    whole = title + "\n\n" + details
     if len(contract) == len(text_fields) == 1:
-        return {text_fields[0]["name"]: title + "\n\n" + details}
-    outputs = {}
+        return {text_fields[0]["name"]: whole}
+
+    unfillable = [field["name"] for field in contract
+                  if field["required"] and field["type"] not in {"str", "string"}]
+    if unfillable:
+        raise ValueError(
+            "patch intake declares required non-text input(s) a text report cannot "
+            f"fill: {', '.join(sorted(unfillable))}. Make them optional or text."
+        )
+
+    outputs: dict[str, str] = {}
     for field in text_fields:
         name = re.sub(r"[^a-z0-9]", "", field["name"].lower())
-        if name in {"title", "summary", "subject", "reporttitle", "requesttitle"}:
+        if name in _TITLE_NAMES:
             outputs[field["name"]] = title
-        elif name in {"details", "description", "body", "reportdetails", "requestdetails"}:
+        elif name in _DETAIL_NAMES:
             outputs[field["name"]] = details
-    if title not in outputs.values() or details not in outputs.values():
-        # Names that say neither title nor details: the whole report goes into one
-        # text input (a required one first), so an intake's own wording never
-        # makes a report unsendable.
-        target = next((f for f in text_fields if f["required"]),
-                      text_fields[0] if text_fields else None)
-        outputs = {target["name"]: title + "\n\n" + details} if target else {}
-    if not outputs or any(field["required"] and field["name"] not in outputs
-                          for field in contract):
-        raise ValueError("patch intake contract must accept one text input or title/details inputs")
+    # Every REQUIRED input must carry something, or the receiver refuses the
+    # whole send. An unnamed required input gets the full report rather than a
+    # fabricated value; optional ones are left alone so the tab stays readable.
+    for field in text_fields:
+        if field["required"] and field["name"] not in outputs:
+            outputs[field["name"]] = whole
+
+    if not outputs:
+        # No required input and no recognised name: send the report once, into a
+        # real declared input, rather than sending an empty document.
+        if not text_fields:
+            raise ValueError("patch intake contract declares no text input to report into")
+        outputs = {text_fields[0]["name"]: whole}
     return outputs
 
 

@@ -165,3 +165,60 @@ def test_an_intake_with_its_own_field_names_still_receives_the_whole_report():
     titled = [{"name": "title", "type": "str", "required": True},
               {"name": "details", "type": "str", "required": True}]
     assert _report_outputs(titled, "T", "D") == {"title": "T", "details": "D"}
+
+
+def test_the_intake_this_platform_offers_is_satisfiable():
+    """Live 2026-10-03: every patch request came back `invalid_patch_request`.
+
+    The intake in docs/host-actions.md declares THREE required inputs. No name
+    matched, so the old mapper put the whole report in one field and then
+    refused the contract because the other two required inputs were empty --
+    which the engine surfaced as `invalid_patch_request` on every send. The
+    agent's one channel for telling us something is broken was itself broken.
+    """
+    from tinyassets.patch_intake import _report_outputs
+
+    contract = [{"name": "what_they_tried", "type": "str", "required": True},
+                {"name": "what_was_missing_or_broken", "type": "str", "required": True},
+                {"name": "request_type", "type": "str", "required": True}]
+    outputs = _report_outputs(contract, "Cannot publish", "Asked to publish; no action offered.")
+
+    assert set(outputs) == {f["name"] for f in contract}, (
+        "a required input left empty makes the receiver refuse the whole send")
+    assert all(value.strip() for value in outputs.values()), "an input carries nothing"
+    # The named ones get the body they ask for; the unnamed required one gets the
+    # whole report rather than an invented value.
+    assert outputs["what_they_tried"] == "Asked to publish; no action offered."
+    assert outputs["what_was_missing_or_broken"] == "Asked to publish; no action offered."
+    assert outputs["request_type"].startswith("Cannot publish")
+
+
+def test_every_required_text_input_is_filled_whatever_it_is_called():
+    from tinyassets.patch_intake import _report_outputs
+
+    contract = [{"name": f"q{n}", "type": "str", "required": True} for n in range(4)]
+    outputs = _report_outputs(contract, "T", "D")
+    assert set(outputs) == {"q0", "q1", "q2", "q3"}
+    assert set(outputs.values()) == {"T\n\nD"}
+
+
+def test_a_required_non_text_input_is_refused_by_name():
+    """It cannot be filled from a text report, so say which one and why."""
+    import pytest
+
+    from tinyassets.patch_intake import _report_outputs
+
+    contract = [{"name": "details", "type": "str", "required": True},
+                {"name": "severity", "type": "int", "required": True}]
+    with pytest.raises(ValueError, match="severity"):
+        _report_outputs(contract, "T", "D")
+
+
+def test_an_optional_input_is_left_alone():
+    """Filling every optional field too would make the owner's tab unreadable."""
+    from tinyassets.patch_intake import _report_outputs
+
+    contract = [{"name": "title", "type": "str", "required": True},
+                {"name": "details", "type": "str", "required": True},
+                {"name": "stack_trace", "type": "str", "required": False}]
+    assert _report_outputs(contract, "T", "D") == {"title": "T", "details": "D"}
