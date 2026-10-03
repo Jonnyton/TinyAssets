@@ -187,3 +187,60 @@ def test_wiki_write_back_never_writes_through_a_swapped_parent(data, monkeypatch
             _alpha(data) / "wiki" / "pages" / "page.md", "section", "hint",
         )
     assert (bravo_pages / "page.md").read_text(encoding="utf-8") == FOREIGN
+
+
+def test_a_planted_soul_lock_link_does_not_create_a_file_outside_the_universe(data):
+    """The LOCK was the last link-following open (post-merge review of #4291).
+
+    A lock is opened ``O_RDWR|O_CREAT`` and never read or written, so it looked
+    harmless. But the name sits in a directory the universe's own processes can
+    write: point it at a path that does not exist in ANOTHER universe and
+    ``O_CREAT`` creates that file. Nothing is written through it, yet occupying
+    a name another component expects to create exclusively is enough -- it is
+    the same primitive a pre-seeded database would use.
+    """
+    from tinyassets.soul_edit import SOUL_LOCK_FILENAME, _soul_lock
+
+    alpha = _alpha(data)
+    victim = data / "u-bravo" / "planted-by-alpha.db"
+    _link(victim, alpha / SOUL_LOCK_FILENAME)
+
+    with pytest.raises(OSError):
+        with _soul_lock(alpha):
+            pass
+    assert not victim.exists(), "the lock open created a file in another universe"
+
+
+def test_a_planted_queue_lock_link_does_not_create_a_file_outside_the_universe(data):
+    """The branch-task queue lock had the identical defect."""
+    from tinyassets.branch_tasks import LOCK_FILENAME, _file_lock
+
+    alpha = _alpha(data)
+    victim = data / "u-bravo" / "planted-by-alpha-queue.db"
+    _link(victim, alpha / LOCK_FILENAME)
+
+    with pytest.raises(OSError):
+        with _file_lock(alpha):
+            pass
+    assert not victim.exists(), "the lock open created a file in another universe"
+
+
+def test_a_refused_work_target_read_idles_the_foundation_phase(data):
+    """Claim 7's early path: ``finalize_eligible_discards`` ran BEFORE the
+    handler, so a refused work-targets read escaped the phase instead of
+    returning foundation/idle."""
+    from domains.fantasy_daemon.phases.foundation_priority_review import (
+        foundation_priority_review,
+    )
+    from tinyassets.work_targets import WORK_TARGETS_FILENAME
+
+    alpha = _alpha(data)
+    _link(data / "u-bravo" / "founder.md", alpha / WORK_TARGETS_FILENAME)
+
+    result = foundation_priority_review({
+        "universe_path": str(alpha),
+        "health": {"review_cycles_completed": 1},
+    })
+    assert result["review_stage"] == "foundation"
+    assert result["current_task"] == "idle"
+    assert _bravo_founder(data) == FOREIGN

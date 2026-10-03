@@ -158,15 +158,16 @@ def _file_lock(universe_path: Path) -> Iterator[None]:
     operations; that is intentional — deleting it while another
     process holds the lock would unlink the descriptor and break the
     contract.
+
+    Opened through ``universe_files.open_lock_file``: the lock name sits in a
+    directory the universe's own processes can write, and a plain
+    ``O_RDWR|O_CREAT`` on it follows a planted link and CREATES the link's
+    target outside this universe.
     """
+    from tinyassets.universe_files import open_lock_file
+
     Path(universe_path).mkdir(parents=True, exist_ok=True)
-    lock_file = _lock_path(universe_path)
-    # Open for read+write, creating if missing.
-    fd = os.open(
-        str(lock_file),
-        os.O_RDWR | os.O_CREAT,
-        0o644,
-    )
+    fd = open_lock_file(universe_path, LOCK_FILENAME)
     try:
         if sys.platform == "win32":
             import msvcrt

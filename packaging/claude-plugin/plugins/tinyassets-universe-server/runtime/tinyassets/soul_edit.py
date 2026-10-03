@@ -34,6 +34,7 @@ from tinyassets.universe_files import (
     MAX_BRAIN_FILE_BYTES,
     MAX_FRONTMATTER_BYTES,
     load_untrusted_yaml,
+    open_lock_file,
     read_universe_text,
 )
 from tinyassets.universe_soul import SOUL_FILENAME, SOUL_VERSIONS_DIR
@@ -189,11 +190,15 @@ def _soul_lock(universe_dir: Path) -> Iterator[None]:
     Mirrors the sidecar-lock pattern in ``branch_tasks._file_lock`` (msvcrt on
     Windows, fcntl on POSIX). Held across the whole read→write→snapshot section
     of :func:`apply_soul_edit` so the snapshot-number allocation cannot race.
+
+    Opened through :func:`~tinyassets.universe_files.open_lock_file`: the lock
+    name sits in a directory the universe's own processes can write, and a plain
+    ``O_RDWR|O_CREAT`` on it follows a planted link and CREATES the link's
+    target outside this universe.
     """
     universe_dir = Path(universe_dir)
     universe_dir.mkdir(parents=True, exist_ok=True)
-    lock_file = universe_dir / SOUL_LOCK_FILENAME
-    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_lock_file(universe_dir, SOUL_LOCK_FILENAME)
     try:
         if sys.platform == "win32":
             import msvcrt

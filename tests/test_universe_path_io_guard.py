@@ -157,9 +157,6 @@ PINNED: dict[str, list[str]] = {
         "last_verified_delivery: .read_text()",
         "record_verified_delivery: .write_text()",
     ],
-    "tinyassets/branch_tasks.py": [
-        "_file_lock: os.open()",
-    ],
     "tinyassets/bug_investigation.py": [
         "attach_patch_packet_comment: .read_text()",
         "attach_patch_packet_comment: .write_text()",
@@ -323,9 +320,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/runtime/assigned_queue_consumer.py": [
         "_hold_liveness: .unlink()",
         "_publish_heartbeat: .write_text()",
-    ],
-    "tinyassets/soul_edit.py": [
-        "_soul_lock: os.open()",
     ],
     "tinyassets/storage/__init__.py": [
         "_reject_orphaned_legacy_sidecars: os.replace()",
