@@ -1087,30 +1087,30 @@ The system SHALL request every engine-inference agent reply as a stream and SHAL
 - **WHEN** the next request would exceed the selected model's window and no accepted model is larger
 - **THEN** older tool results are sent clipped with a marker saying the tool can be called again for the whole result, and only when clipping no longer shrinks the request is the record `context_window_exceeded`
 
-### Requirement: Request economy uses the command center's remaining daily pool
-The served conversation coordinator SHALL NOT impose a per-turn or per-step request ceiling. It SHALL read daily cap facts through `daily_cap_for_host`, using the connect-screen's installed data, and count the owner's journaled free-model requests, including failed attempts. Successful requests beyond the declared free cap SHALL retain the existing credit-tier self-correction. The accepted `AgentModelPlan` order, including capacity exclusions, SHALL determine which sources contribute, counted once per connection. Any usable uncapped source, non-free candidate, or unreadable evidence SHALL make the pool UNBOUNDED; an unbounded pool SHALL add no budget prompt and SHALL NOT force a budget wrap-up.
+### Requirement: Request economy uses advisory daily compute estimates
+The served conversation coordinator SHALL NOT impose a per-turn or per-step request ceiling. It SHALL read daily cap facts through `daily_cap_for_host`, using the connect-screen's installed data, and count the owner's journaled free-model requests, including failed attempts. Successful requests beyond the declared free cap SHALL retain the existing credit-tier self-correction. The accepted `AgentModelPlan` order, including capacity exclusions, SHALL determine which sources contribute, counted once per connection. Any usable uncapped source, non-free candidate, or unreadable evidence SHALL make the pool UNBOUNDED; an unbounded pool SHALL add no budget prompt.
 
-For a finite pool, the prompt SHALL describe its total and per-source remaining requests and midnight reset timezones. It SHALL ask the agent to save progress to `notes/<project>-progress.md` before its final inference. When one pooled request remains, that inference SHALL carry `tool_choice="none"` and request a final reply describing completed work, the saved progress location, remaining work, and the earliest capped-source reset as a UTC time plus a relative "in about N hours". It SHALL explicitly say the owner can connect another source to continue now. The final reply SHALL complete through the normal journal path. The platform SHALL NOT claim that a file was saved or a wake armed without evidence.
+Installed cap facts and local counts SHALL be advisory, not proof of this account's applicable quota. A zero or low estimate SHALL NOT exclude a source, force `tool_choice="none"`, or truncate accepted work. The provider must remain reachable beyond the estimated free cap so a successful request can correct the tier. Genuine provider capacity failures SHALL retain the existing scoped exhaustion, retry, fallback, and journal behavior.
 
-Before dispatch and between tool rounds, a source known to have zero remaining requests SHALL be excluded through the existing account-scoped `Exhaustion` policy. On every `list_requests` read, a finite pool below ten SHALL derive pending status and a short suggestion on the existing `sys_connect_llm` card, using credit amount and URL from `daily_cap_for_host` when present. The card SHALL never be stored. The next rail read SHALL clear budget urgency when compute is replenished or unbounded, without requiring a turn. Learning extraction SHALL still skip a capped selected source below ten remaining; batching and resident context remain efficiency guidance rather than a request ceiling.
+For a finite estimate, the prompt SHALL describe its total and per-source remaining requests and installed midnight reset timezones, explicitly distinguishing them from confirmed account limits and recovery times. It SHALL ask the agent to save progress to `notes/<project>-progress.md` as it works, without claiming an unsaved file exists or an automatic wake is armed. On every `list_requests` read, an estimate below ten SHALL derive pending status and a short advisory suggestion on the existing `sys_connect_llm` card, using credit amount and URL from `daily_cap_for_host` when present and acknowledging that the account may already qualify. The card SHALL never be stored. The next rail read SHALL clear budget urgency when the estimate rises or becomes unbounded, without requiring a turn. Optional learning extraction SHALL still skip a capped selected source below ten estimated remaining; accepted user work SHALL continue.
 
-#### Scenario: Five remaining requests are all available to one task
-- **WHEN** the finite pool has five requests and the agent keeps asking for tools
-- **THEN** four tool rounds run and the fifth request is text-only and completes normally
+#### Scenario: A higher-tier account reaches its fifty-first request
+- **WHEN** local evidence reaches the installed free cap of fifty but the provider accepts further requests
+- **THEN** the next request retains tools, its success updates the tier estimate, and the task continues through its normal journaled completion
 
 #### Scenario: A long task has enough compute
-- **WHEN** fifteen tool rounds are needed and the pool starts at fifty or is unbounded
-- **THEN** all fifteen tool rounds and the final reply run without a per-turn budget stop
+- **WHEN** fifteen tool rounds are needed and the local estimate is low, high, or unbounded
+- **THEN** all fifteen tool rounds and the final reply remain permitted while the provider accepts them
 
-#### Scenario: The selected source is already spent
-- **WHEN** the first accepted source has zero remaining and an independent accepted source has room
-- **THEN** the first inference goes to the source with room without spending a request on the empty source
+#### Scenario: A source really refuses for capacity
+- **WHEN** a provider reports a capacity refusal after earlier tools completed
+- **THEN** existing scoped capacity handling applies and completed tools remain journaled without replay
 
-#### Scenario: A low pool spans two turns
-- **WHEN** successive turns observe fewer than ten requests remaining
-- **THEN** the app receives one pending `sys_connect_llm` card rather than duplicate requests
+#### Scenario: A low estimate spans two turns
+- **WHEN** successive turns observe fewer than ten estimated requests remaining
+- **THEN** the app receives one advisory pending `sys_connect_llm` card rather than duplicate requests or a claim that work cannot continue
 
-#### Scenario: A conversation needs to continue after reset
-- **WHEN** an interactive conversation exhausts its finite pool
-- **THEN** its reply states when compute becomes available without claiming an automatic resume
+#### Scenario: A conversation needs to continue after confirmed exhaustion
+- **WHEN** an interactive conversation encounters a real provider capacity refusal
+- **THEN** known progress remains journaled without claiming an automatic resume or treating an installed reset estimate as confirmed recovery
 - **AND** no new scheduler or owner-authored Branch is invented: activity start awaits #4221; the one-shot control-plane WakeTarget integration is tracked in `docs/concerns/2026-10-02-budget-exhaustion-auto-resume.md`

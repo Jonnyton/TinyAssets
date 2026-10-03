@@ -98,6 +98,9 @@ def test_prompt_only_describes_daily_pool(remaining):
     assert "resets 00:00 UTC" in line
     assert "notes/<project>-progress.md" in line
     assert "working slice" not in line
+    assert "not a confirmed account quota" in line
+    assert "Even at zero I continue the requested work" in line
+    assert "request can only reply in text" not in line
 
 
 def test_adaptive_cap_is_removed():
@@ -158,3 +161,5 @@ def test_credit_suggestion_uses_installed_amount_and_url(tmp_path):
     suggestion = PooledBudget((("source", source),)).connect_suggestion()
     assert "$7" in suggestion and "https://example.com/credit" in suggestion
     assert "700" in suggestion and "$10" not in suggestion
+    assert "local free-request estimate" in suggestion
+    assert "your account may already qualify" in suggestion

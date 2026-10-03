@@ -99,6 +99,10 @@ def test_low_compute_is_derived_each_read(rig, monkeypatch, remaining):
         if remaining is not None and remaining < 10:
             assert card["status"] == "pending"
             assert f"({remaining} left)" in card["suggestion"]
+            assert "local free-request estimate" in card["suggestion"]
+            assert "Your account may have a higher allowance; work can continue" in (
+                card["suggestion"]
+            )
             assert "Connect another free AI source" in card["suggestion"]
         else:
             assert card["status"] == original["status"]

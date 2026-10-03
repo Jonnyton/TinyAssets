@@ -29,7 +29,7 @@ from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
 from tinyassets.providers.native_agent_input import render_native_input
-from tinyassets.request_budget import budget_for_context, pooled_budget
+from tinyassets.request_budget import pooled_budget
 from tinyassets.served_tools import granted_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
@@ -116,7 +116,6 @@ class AgentTurnCoordinator:
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
         self.spent_attempts = []
-        self.budget_wrap_up = False
         # Replies that failed in flight (in-band source error, unreadable
         # body) retried so far this turn, and the models already given their
         # one same-model retry. See ``_next_after_bad_reply``.
@@ -443,24 +442,17 @@ class AgentTurnCoordinator:
             self._release_turn()
 
     def _daily_budget(self):
-        """Recompute between rounds and exclude spent accounts before dispatch."""
-        from tinyassets.providers.model_policy import Exhaustion
+        """Refresh advisory evidence without manufacturing provider exhaustion.
 
-        budget = pooled_budget(
+        Installed caps do not identify this account's tier. In particular, a
+        successful request beyond the free tier is how local evidence learns
+        a larger allowance; stopping at that estimate prevents the correction.
+        Actual capacity failures still use the existing exhaustion policy.
+        """
+        return pooled_budget(
             self.context.universe_dir.parent, self.owner, self.context,
             exhaustion=self.exhaustion,
         )
-        while True:
-            selected = budget_for_context(self.context, owner=self.owner)
-            if selected is None or selected.remaining > 0:
-                return budget
-            failed = self.context.model_selection
-            self.exhaustion += (Exhaustion("account", failed),)
-            candidate = self._next_candidate() if self._has_candidate_order() else None
-            if candidate is None:
-                raise ProviderAuthorityHeldError("the pooled daily request allowance is spent")
-            self._leave_hot_source(candidate)
-            self.context = replace(self.context, model_selection=candidate)
 
     async def _run(self):
         self.owner = self._check_scope()
@@ -500,7 +492,6 @@ class AgentTurnCoordinator:
                         self.context.model_selection,
                     )
                     if self.execution_kind == "engine_inference":
-                        self.budget_wrap_up = budget is not None and budget.remaining == 1
                         if engine is None:
                             engine = await stack.enter_async_context(
                                 self._open_tools(timeout),
@@ -512,33 +503,11 @@ class AgentTurnCoordinator:
                                 history=codec.compact_history(
                                     self._history(), self.compaction,
                                 ),
-                                tool_choice="none" if self.budget_wrap_up else "auto",
                             ),
                         )
                         prompt, system, observer = self.prompt, self.system, self._begin
                         if budget is not None:
                             system += "\n\n" + budget.prompt_line()
-                            if budget.remaining == 2:
-                                system += (
-                                    "\nI save my current progress to notes/<project>-progress.md "
-                                    "in this round; the next inference has no tools."
-                                )
-                        if self.budget_wrap_up:
-                            # Spent sources still have reset times even after the
-                            # account exhaustion policy excludes them from dispatch.
-                            reset_pool = pooled_budget(
-                                self.context.universe_dir.parent, self.owner, self.context,
-                            ) or budget
-                            system += (
-                                "\n\nThis is the last request in my pooled daily allowance. "
-                                "I reply in text now: what I finished, where progress was "
-                                "saved in notes/<project>-progress.md, what is left, and "
-                                f"when budget returns: {reset_pool.reset_description()}. "
-                                "I explicitly say the owner can connect another source "
-                                "to continue now. "
-                                "I never claim an unsaved file exists or an automatic "
-                                "wake is armed."
-                            )
                     else:
                         self.native_input = render_native_input(
                             self.prompt, self.system, self._history(),

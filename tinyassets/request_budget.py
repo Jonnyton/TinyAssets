@@ -61,16 +61,18 @@ class PooledBudget:
 
     def connect_suggestion(self):
         text = (
-            f"Today's free model requests are nearly used up ({self.remaining} left). "
+            f"The local free-request estimate is low ({self.remaining} left). "
+            "Your account may have a higher allowance; work can continue. "
             "Connect another free AI source"
         )
         for _, budget in self.sources:
             if (budget.credit_amount and budget.credit_url
                     and budget.credit_requests_per_day
                     and budget.credit_requests_per_day > budget.cap):
-                return (text + f", or add {budget.credit_amount} of credit at "
-                        f"{budget.source_name} ({budget.credit_url}) to raise its daily limit "
-                        f"to {budget.credit_requests_per_day}.")
+                return (text + f", or check {budget.source_name}'s credit tier "
+                        f"({budget.credit_url}): {budget.credit_amount} of purchased credit "
+                        f"qualifies for {budget.credit_requests_per_day} daily requests; "
+                        "your account may already qualify.")
         return text + "."
 
     def prompt_line(self):
@@ -79,11 +81,18 @@ class PooledBudget:
             f"resets 00:00 {budget.reset_timezone})" for _, budget in self.sources
         )
         return (
-            f"Compute today: about {self.remaining} requests left across {split}. "
-            "I work normally; if it runs out I save progress to notes/<project>-progress.md, "
-            "say what is left, and continue when a source resets or my founder connects "
-            "more compute. Before the last request I save progress, because the last "
-            "request can only reply in text."
+            f"Compute today: local estimate of about {self.remaining} requests left "
+            f"across {split}. "
+            "This estimate uses installed limits and local journal counts, not a confirmed "
+            "account quota. A higher allowance or usage elsewhere may change it. "
+            "Even at zero I continue the requested work while the provider accepts requests; "
+            "this is not a final-request signal. I save progress to notes/<project>-progress.md "
+            "as I work. If the provider actually refuses for capacity, I describe the known "
+            "progress and remaining work without claiming an unsaved file exists or an "
+            "automatic wake is armed. "
+            f"The earliest installed daily reset is {self.reset_description()}, "
+            "not a confirmed recovery time for a provider refusal. "
+            "The owner can connect another source for more compute."
         )
 
 

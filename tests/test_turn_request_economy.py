@@ -211,8 +211,46 @@ def seed_budget(agent, monkeypatch, remaining):
     )
 
 
+def test_served_request_beyond_free_estimate_updates_credit_tier(agent, monkeypatch):
+    """The 51st success must be reachable to correct an unconfirmed free tier."""
+    import hashlib
+    import json
+
+    from tinyassets.request_budget import budget_for_context
+
+    seed_budget(agent, monkeypatch, remaining=5)
+    assert budget_for_context(agent.served.context).remaining == 5
+    agent.requested_rounds = 12
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 13 and len(agent.tools) == 12
+    assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
+    turn = agent.latest()
+    assert turn.state == "completed"
+    assert all(tool.state == "completed" for row in turn.rounds for tool in row.tools)
+    # 45 seeded calls + five successes reach the default 50; the next call
+    # still has tools. Its success teaches the following round the larger tier.
+    at_estimate = agent.wires[5][1]["body"]["messages"][0]["content"]
+    assert "local estimate of about 0 requests left" in at_estimate
+    assert "Even at zero I continue the requested work" in at_estimate
+    after_success = agent.wires[6][1]["body"]["messages"][0]["content"]
+    assert "local estimate of about 949 requests left" in after_success
+    assert "save progress to notes/<project>-progress.md" in after_success
+    final_body = agent.wires[-1][1]["body"]
+    assert turn.rounds[-1].candidate.request_digest == (
+        "sha256:" + hashlib.sha256(json.dumps(final_body).encode("utf-8")).hexdigest()
+    )
+    budget = budget_for_context(agent.served.context)
+    assert (budget.used, budget.cap, budget.remaining) == (58, 1000, 942)
 
 
+@pytest.mark.parametrize("remaining", [3, 2, 1, 0])
+def test_low_or_exhausted_estimate_keeps_tools_and_completes_work(agent, monkeypatch, remaining):
+    seed_budget(agent, monkeypatch, remaining)
+    agent.requested_rounds = 3
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 4 and len(agent.tools) == 3
+    assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
+    assert agent.latest().state == "completed"
 
 
 def test_unknown_budget_preserves_requested_rounds_and_omits_prompt(agent):
@@ -238,6 +276,21 @@ def test_learning_budget_threshold(agent, monkeypatch, caplog, remaining, skippe
     assert ("Skipping learning extraction" in caplog.text) == skipped
 
 
+def test_served_converse_conserves_optional_learning_on_low_estimate(
+    agent, monkeypatch, signed_in,
+):
+    from tinyassets import daemon_server
+
+    seed_budget(agent, monkeypatch, remaining=5)
+    root = agent.served.context.universe_dir
+    agent.requested_rounds = 1
+    monkeypatch.setattr(daemon_server, "get_founder_home", get_founder_home)
+    signed_in("owner")
+    monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
+    assert run(agent, greeting=True) == "finished exact answer"
+    assert len(agent.wires) == 2 and len(agent.tools) == 1
+    assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
+    assert agent.latest().state == "completed"
 
 
 def test_large_daily_pool_does_not_cap_a_long_turn(agent, monkeypatch):
@@ -338,6 +391,21 @@ def add_second_source(agent, monkeypatch):
     return first, second
 
 
+@pytest.mark.parametrize("remaining", [0, 2])
+def test_exhausted_estimate_does_not_change_the_accepted_source(agent, monkeypatch, remaining):
+    from tinyassets.request_budget import pooled_budget
+
+    seed_budget(agent, monkeypatch, remaining=remaining)
+    first, second = add_second_source(agent, monkeypatch)
+    pool = pooled_budget(agent.served.rig.base, "owner", agent.served.context)
+    assert pool.remaining == 50 + remaining
+    assert len(pool.sources) == 2
+    agent.requested_rounds = 4
+    assert run(agent) == "finished exact answer"
+    refs = [item.candidate.source_ref for item in agent.latest().rounds]
+    assert refs == [first.connection_id] * 5
+    assert second.connection_id not in refs
+    assert len(agent.tools) == 4
 
 
 def test_uncapped_member_makes_whole_pool_unbounded(agent, monkeypatch, signed_in):
@@ -367,6 +435,26 @@ def test_uncapped_member_makes_whole_pool_unbounded(agent, monkeypatch, signed_i
     assert card["status"] == "optional" and "suggestion" not in card
 
 
+def test_low_estimates_across_the_pool_do_not_truncate_requested_work(agent, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from tests.test_request_budget import seed_requests
+    from tinyassets.request_budget import pooled_budget
+
+    seed_budget(agent, monkeypatch, remaining=2)
+    first, second = add_second_source(agent, monkeypatch)
+    seed_requests(agent.served.rig.base, 47, source=second.connection_id,
+                  model=second.model_id, turn_id="second-source-used",
+                  created_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    assert pooled_budget(agent.served.rig.base, "owner", agent.served.context).remaining == 5
+    agent.requested_rounds = 15
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 16 and len(agent.tools) == 15
+    assert [item.candidate.source_ref for item in agent.latest().rounds] == (
+        [first.connection_id] * 16
+    )
+    assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
+    assert agent.latest().state == "completed"
 
 
 def test_new_served_turn_after_reset_has_full_pool(agent, monkeypatch):
@@ -424,3 +512,56 @@ def test_real_rail_reads_current_served_pool(agent, monkeypatch, signed_in, rema
         assert "nearly used up" not in card.get("suggestion", "")
     assert not any(row["request_id"] == "sys_connect_llm"
                    for row in list_pending(agent.served.context.universe_dir))
+
+
+def test_prompt_labels_earliest_installed_reset_as_an_estimate(agent, monkeypatch):
+    from dataclasses import replace
+    from datetime import datetime, timedelta, timezone
+
+    from tests.test_request_budget import seed_requests
+    from tinyassets import request_budget as budgets
+
+    seed_budget(agent, monkeypatch, remaining=2)
+    first, second = add_second_source(agent, monkeypatch)
+    seed_requests(agent.served.rig.base, 47, source=second.connection_id,
+                  model=second.model_id, turn_id="other-used",
+                  created_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    zones = sorted(("UTC", "Asia/Tokyo", "America/Los_Angeles"), key=lambda zone:
+                   budgets.RequestBudget(0, 50, "source", zone).next_reset)
+    original = budgets.budget_for_context
+
+    def source_budget(context, **kwargs):
+        value = original(context, **kwargs)
+        zone = zones[0] if context.model_selection == first else zones[-1]
+        return replace(value, reset_timezone=zone)
+
+    monkeypatch.setattr(budgets, "budget_for_context", source_budget)
+    expected = budgets.pooled_budget(agent.served.rig.base, "owner", agent.served.context)
+    agent.requested_rounds = 1
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 2 and len(agent.tools) == 1
+    guidance = agent.wires[-1][1]["body"]["messages"][0]["content"]
+    assert expected.next_reset.strftime("%Y-%m-%d %H:%M UTC") in guidance
+    assert "earliest installed daily reset" in guidance
+    assert "not a confirmed recovery time" in guidance
+    assert "automatic wake is armed" in guidance
+
+
+@pytest.mark.parametrize("status", [429, 402])
+def test_real_provider_exhaustion_still_stops_after_the_local_estimate(
+    agent, monkeypatch, status,
+):
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    seed_budget(agent, monkeypatch, remaining=0)
+    agent.requested_rounds = 3
+    agent.capacity_failures[2] = status
+    with pytest.raises(AllProvidersExhaustedError) as error:
+        run(agent)
+    assert len(agent.wires) == 2 and len(agent.tools) == 1
+    assert error.value.retry_after == 60
+    turn = agent.latest()
+    assert turn.state == "held_transport"
+    assert turn.rounds[0].tools[0].state == "completed"
+    assert "exact result" in turn.rounds[0].tools[0].result_json
+    assert turn.rounds[1].state == "failed"
