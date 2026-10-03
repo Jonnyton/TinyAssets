@@ -73,6 +73,34 @@ def _load() -> dict:
     return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
 
 
+def test_required_shards_install_the_browser_before_running_tests():
+    steps = _load()["jobs"]["required-tests-shard"]["steps"]
+    install = next(i for i, s in enumerate(steps)
+                   if "playwright install --with-deps chromium" in s.get("run", ""))
+    execute = next(i for i, s in enumerate(steps)
+                   if "ci_required_tests.py" in s.get("run", ""))
+    assert install < execute
+    assert "'.[dev,browser]'" in steps[install]["run"]
+    assert "if" not in steps[install]
+    assert not steps[install].get("continue-on-error", False)
+
+
+def test_required_aggregate_rejects_missing_or_skipped_browser_proofs():
+    steps = _load()["jobs"]["required-tests"]["steps"]
+    aggregate = next(i for i, s in enumerate(steps)
+                     if "--aggregate shards/" in s.get("run", ""))
+    proof = next(i for i, s in enumerate(steps)
+                 if "ci_assert_junit_case.py" in s.get("run", ""))
+    step = steps[proof]
+    assert aggregate < proof
+    assert step["if"] == "github.event_name != 'pull_request'"
+    assert "--junit junit.xml" in step["run"]
+    assert "--marker real_browser" in step["run"]
+    assert "'.[dev,browser]'" in step["run"]
+    assert not step.get("continue-on-error", False)
+    assert "|| true" not in step["run"]
+
+
 def _triggers(wf: dict) -> dict:
     # PyYAML parses a bare `on:` key as the boolean True.
     return wf[True] if True in wf else wf["on"]

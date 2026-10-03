@@ -221,6 +221,8 @@ def test_route_is_apex_app_get(monkeypatch):
     assert set(by_path) == {
         "/app", "/app/token", "/app/me", "/app/ui-frame",
         "/app/model-connect/{operation}", "/app/model-callback/{flow}",
+        # The public OAuth client metadata document a sign-in source names.
+        "/app/oauth/client-metadata.json",
         "/app/openai/device/start", "/app/openai/device/poll",
         "/app/openai/begin", "/app/openai/exchange", "/app/trace",
         "/app/voice/status", "/app/voice/session",
@@ -231,6 +233,8 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/turn/interrupt", "/app/turn/steer",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
+        # The app's own ES modules (app_modules.py), static and allowlisted.
+        "/app/m/{build}/{name}",
         # The owner door: every read the app renders, complete.
         "/app/api/read", "/app/api/status",
         # The bytes a custom UI loads, fetched by the app for its sealed frame.
