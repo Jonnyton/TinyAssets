@@ -784,7 +784,22 @@ async def _handle_openai_device_poll(request: Any) -> Any:
         # Re-pin the identity inside the worker thread (same pattern as the
         # browser deposit form) so connect_llm's actor resolution sees the user.
         with identity_context(identity):
-            return deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
+            result = deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
+            if (isinstance(result, dict) and not result.get("error")
+                    and (result.get("serving") or {}).get("status") == "held"):
+                from tinyassets.api.helpers import _base_path
+                from tinyassets.onboarding.source_connect import offer_subscription_source
+
+                try:
+                    offered = offer_subscription_source(
+                        base=_base_path(), uid=flow.universe_id, owner=identity.user_id,
+                        service=DEVICE_SIGN_IN_SERVICE,
+                    )
+                    if offered is not None:
+                        result = {**result, "confirmation": offered["request"]}
+                except Exception:  # noqa: BLE001 - deposit succeeded; expose no private detail
+                    result = {**result, "confirmation_error": "model_confirmation_requires_review"}
+            return result
 
     result = await run_in_threadpool(_deposit)
     if not isinstance(result, dict) or result.get("error"):
@@ -793,8 +808,16 @@ async def _handle_openai_device_poll(request: Any) -> Any:
             err = str(result["error"])
         status = 401 if err == "authentication_required" else 400
         return JSONResponse({"status": "failed", "error": err}, status_code=status)
+    serving = result.get("serving") or {}
+    response = {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE,
+                "serving": {"status": "serving" if serving.get("status") == "serving"
+                            else "held"}}
+    if "confirmation" in result:
+        response["confirmation"] = result["confirmation"]
+    if "confirmation_error" in result:
+        response["confirmation_error"] = result["confirmation_error"]
     return JSONResponse(
-        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
+        response,
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1491,10 +1514,22 @@ async def _handle_turn_steer(request: Any) -> Any:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
 
     def _queue():
-        from tinyassets import agent_steering
-        from tinyassets.api.helpers import _universe_dir
+        from tinyassets import addressed_agents, agent_steering
+        from tinyassets.api.helpers import _base_path, _universe_dir
 
-        udir, key = _universe_dir(universe_id), f"thread:principal:{identity.user_id}"
+        # A steer goes to the agent the owner is talking to (harness §4.18):
+        # that agent's own thread, resolved inside the owner's own universe.
+        # The main agent's session is `principal:<owner>`, so this is the same
+        # key the main thread always used.
+        addressed = addressed_agents.resolve(
+            _base_path(), universe_id=universe_id, owner=identity.user_id,
+            agent_id=data.get("agent_id"),
+        )
+        session = addressed_agents.memory_session(
+            identity.user_id,
+            addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT,
+        )
+        udir, key = _universe_dir(universe_id), f"thread:{session}"
         queued = agent_steering.enqueue(udir, key, text) if live else None
         if queued is not None:
             return True, queued
@@ -1509,10 +1544,16 @@ async def _handle_turn_steer(request: Any) -> Any:
             return False, None
         return False, agent_steering.hold(udir, key, text)
 
+    from tinyassets.addressed_agents import AgentNotAddressable
     from tinyassets.agent_steering import SteeringRefused
 
     try:
         queued = await run_in_threadpool(_queue)
+    except AgentNotAddressable as exc:
+        return JSONResponse(
+            {"error": "agent_not_found", "detail": str(exc)},
+            status_code=404, headers=_NO_STORE,
+        )
     except SteeringRefused as exc:
         return JSONResponse(
             {"error": "steering_refused", "detail": str(exc)},
@@ -2117,7 +2158,11 @@ def onboarding_routes() -> list[Any]:
 
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
-    from tinyassets.onboarding.model_connect import handle_model_callback, handle_model_connect
+    from tinyassets.onboarding.model_connect import (
+        handle_client_metadata,
+        handle_model_callback,
+        handle_model_connect,
+    )
     from tinyassets.onboarding.model_preferences import handle_model_preferences
     from tinyassets.onboarding.notifications import (
         handle_devices,
@@ -2132,6 +2177,10 @@ def onboarding_routes() -> list[Any]:
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
         Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
+        # Public (carve-out in `_auth_challenge_path`): an authorization server
+        # fetches this client metadata document with no bearer.
+        Route("/app/oauth/client-metadata.json", handle_client_metadata,
+              methods=["GET", "HEAD"]),
         Route("/app/token", _handle_token, methods=["POST"]),
         Route("/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
         Route("/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
