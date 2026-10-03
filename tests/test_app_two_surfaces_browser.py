@@ -412,3 +412,134 @@ def test_phone_play(app_url, browser, tmp_path):
     assert page.locator("#chat-cloud").is_visible()
     assert errors == []
     context.close()
+
+
+# A UI that grabs the keyboard the way a real game does (Furry House): a canvas
+# it focuses itself, and a keydown handler that swallows everything it sees.
+_GRABBER = """() => AppUI.mount({ui_id:'play', name:'Play',
+  markup:'<canvas id="scene" tabindex="0"></canvas><input id="say">',
+  style:'#scene{width:100%;height:60%;background:#234}#say{width:50%}',
+  script:`const scene=document.getElementById('scene');
+    scene.focus();
+    window.keysSeen=[];
+    document.addEventListener('keydown',e=>{
+      window.keysSeen.push(e.key);
+      e.stopPropagation(); e.preventDefault();   // a game that eats every key
+    });`})"""
+
+
+@pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
+def test_the_reserved_key_is_the_way_out_of_a_ui_that_holds_the_keyboard(
+        app_url, browser, phone):
+    """Founder, 2026-10-03: stuck inside a UI with no visible way back.
+
+    The whole loop in a real browser: a UI that focuses itself and swallows
+    keys, "/" to the chat, typing lands there, Escape back into the UI -- and
+    the ring says who has the keyboard at every step.
+    """
+    context = browser.new_context(
+        viewport={"width": 390 if phone else 1280, "height": 844 if phone else 800},
+        is_mobile=phone, has_touch=phone,
+    )
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate(_GRABBER)
+    scene = page.frame_locator("#ui-frame").locator("#scene")
+    scene.wait_for()
+    page.evaluate("focusCommandCenter()")
+    from playwright.sync_api import expect
+
+    expect(page.locator("#ui-frame")).to_be_focused()
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "cc"
+    # A mounted layout shrinks the chat to a bubble, so there is no composer on
+    # screen to click: this is the state the founder got stuck in.
+    assert page.evaluate("cloudState.mode") == "bubble"
+    assert not page.locator("#composer-input").is_visible()
+
+    # "/" pressed inside the frame: the UI never gets it, the composer does,
+    # and the collapsed chat opens to receive it.
+    page.frame_locator("#ui-frame").locator("#scene").press("/")
+    page.wait_for_function("() => document.activeElement.id === 'composer-input'")
+    assert page.evaluate("cloudState.mode") == "open"
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "chat"
+    assert page.frame_locator("#ui-frame").locator("#scene").evaluate(
+        "() => window.keysSeen.indexOf('/')") == -1, "the UI must not also see it"
+    # Now the chat is on screen, the hint is hidden: these keys are already here.
+    if not phone:
+        assert page.locator("#chat-cloud-hint").is_hidden()
+
+    # Typing lands in the chat, not in the UI.
+    page.keyboard.type("hello")
+    assert page.input_value("#composer-input") == "hello"
+
+    # Escape hands the keyboard back to the command center.
+    page.keyboard.press("Escape")
+    expect(page.locator("#ui-frame")).to_be_focused()
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "cc"
+    assert page.input_value("#composer-input") == "hello", "the draft is not discarded"
+    # Back in the UI, with the chat open, the way out is named again.
+    if not phone:
+        assert page.locator("#chat-cloud-hint").is_visible()
+    context.close()
+
+
+# The same UI without the key-swallowing handler: this one lets its own input
+# receive what it is given, which is the point of the test below.
+_TEXT_UI = """() => AppUI.mount({ui_id:'play', name:'Play',
+  markup:'<canvas id="scene" tabindex="0"></canvas><input id="say">',
+  style:'#scene{width:100%;height:40%;background:#234}#say{width:50%}',
+  script:`document.getElementById('scene').focus();`})"""
+
+
+@pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
+def test_a_text_field_in_the_ui_still_receives_the_reserved_key(app_url, browser, phone):
+    """A game's own command box keeps "/": typing a slash is typing a slash.
+
+    This is the carve-out that makes the reserved key safe to reserve -- without
+    it, every UI with a search or chat field would lose the character."""
+    context = browser.new_context(
+        viewport={"width": 390 if phone else 1280, "height": 844 if phone else 800},
+        is_mobile=phone, has_touch=phone,
+    )
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate(_TEXT_UI)
+    say = page.frame_locator("#ui-frame").locator("#say")
+    say.wait_for()
+    say.click()
+    say.press("/")
+
+    assert say.input_value() == "/", "the UI's own field keeps the character"
+    # Not stolen: the page's keyboard owner never changed.
+    assert page.evaluate("document.activeElement.id") == "ui-frame"
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "cc"
+    assert page.input_value("#composer-input") == ""
+    context.close()
+
+
+@pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
+def test_clicking_the_composer_while_the_ui_holds_focus_gives_the_chat_the_keys(
+        app_url, browser, phone):
+    """The stuck scenario exactly as it happened: the UI holds the keyboard and
+    the owner clicks the composer. The chat is highlighted and typing lands."""
+    context = browser.new_context(
+        viewport={"width": 390 if phone else 1280, "height": 844 if phone else 800},
+        is_mobile=phone, has_touch=phone,
+    )
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate(_GRABBER)
+    page.frame_locator("#ui-frame").locator("#scene").wait_for()
+    # The owner opens the chat, then the UI takes the keyboard back.
+    page.click("#chat-cloud-bubble")
+    page.evaluate("focusCommandCenter()")
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "cc"
+    if not phone:
+        assert page.locator("#chat-cloud-hint").is_visible()
+
+    page.click("#composer-input")
+    page.wait_for_function("() => document.activeElement.id === 'composer-input'")
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "chat"
+    page.keyboard.type("typed after the click")
+    assert page.input_value("#composer-input") == "typed after the click"
+    context.close()

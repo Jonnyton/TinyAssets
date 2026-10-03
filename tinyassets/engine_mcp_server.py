@@ -2030,6 +2030,16 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``"./game/world.js"``; inside an asset module a sibling is ``"@ui/game/world.js"``.
     Anything else I vendor myself as a JS asset.
 
+    **One reserved key: "/".** My UI gets every other key, but "/" always takes
+    the person back to the chat with me -- the app focuses the composer, so a
+    screen that holds the keyboard is never a trap they cannot type their way
+    out of. I do not bind "/" to anything, and I do not need to forward it: the
+    app takes it before my UI sees it. It is NOT reserved while a text field in
+    my UI has focus, so a command box or a search field still receives "/" as
+    an ordinary character. Escape in the composer hands the keyboard back to my
+    UI. If I want a key that opens the chat with something already typed, that
+    is what the app's own chat prefill is for -- I do not reimplement "/".
+
     **What my UI can do.** It runs sealed off from the app: no cookies, no sign-in
     token, no reach into the surrounding page, and NO network of its own (only its
     own assets and libraries load) -- fetch,
