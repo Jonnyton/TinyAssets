@@ -214,12 +214,14 @@ print(json.dumps({'id': request['id'], 'result': {'items': [
     assert result.default_model_id == "future-company/model"
 
 
-def test_adapter_without_a_registered_protocol_reports_unknown():
+def test_unproven_native_adapter_reports_unknown():
     """An executor that declares no metadata contract stays honestly unknown.
 
-    Previously ClaudeProvider stood in for this case. It now registers a real
-    control protocol, so the "no protocol" contract needs an executor that
-    genuinely has none -- otherwise this test silently stops covering it.
+    The NAME is kept deliberately: this contract is unchanged and still
+    covered. Only the stand-in moved. ClaudeProvider used to be the example of
+    an executor with no metadata protocol; it now registers a real control
+    protocol, so the case needs an executor that genuinely has none -- else
+    this test would quietly stop covering anything while still passing.
     """
     from tinyassets.providers.base import BaseProvider
 

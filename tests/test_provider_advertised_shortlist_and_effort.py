@@ -480,7 +480,10 @@ def test_claude_argv_carries_the_effort_from_its_model_config(monkeypatch):
 
 @pytest.mark.skipif(
     not os.environ.get("TINYASSETS_LIVE_CLI_DISCOVERY"),
-    reason="reads the installed Claude Code CLI; set TINYASSETS_LIVE_CLI_DISCOVERY=1",
+    reason="spawns the installed Claude Code CLI, so it is version-dependent and "
+           "not hermetic; owner=claude-code "
+           "runs-in=a host with the Claude Code CLI installed and "
+           "TINYASSETS_LIVE_CLI_DISCOVERY=1 (not CI)",
 )
 def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
     """The claim this whole change rests on, against the real binary.
