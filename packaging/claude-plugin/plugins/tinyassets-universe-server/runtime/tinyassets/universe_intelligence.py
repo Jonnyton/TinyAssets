@@ -25,7 +25,12 @@ from tinyassets.api import interlocutor
 from tinyassets.api.helpers import _request_universe, _universe_dir
 from tinyassets.config import load_universe_config
 from tinyassets.persona import read_persona_voice, resolve_persona
-from tinyassets.providers.base import HOST_REACH_TOOLS, ModelConfig, UniverseContext
+from tinyassets.providers.base import (
+    ACCOUNT_REACH_TOOLS,
+    HOST_REACH_TOOLS,
+    ModelConfig,
+    UniverseContext,
+)
 from tinyassets.providers.call import call_provider
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.soul_edit import (
@@ -136,8 +141,13 @@ _ENGINE_DISALLOWED_TOOLS = (
     "EnterWorktree", "ExitWorktree",
     # scheduling / messaging / remote side-effects
     "ScheduleWakeup", "ReportFindings", "PushNotification", "RemoteTrigger",
-    "SendMessage", "CronCreate", "CronDelete", "CronList",
+    "CronCreate", "CronDelete", "CronList",
     "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+    # the daemon host's claude.ai account: the one account-reach definition,
+    # shared with the workflow-node denylist so the two cannot drift. Carries
+    # SendMessage, which used to be a literal here. Neither the OS jail nor
+    # --strict-mcp-config bounds these.
+    *ACCOUNT_REACH_TOOLS,
     # remote integrations
     "DesignSync", "DesignSyncTool",
     # MCP: all server tools (wildcard) + resource readers

@@ -121,7 +121,7 @@ def test_workflow_node_call_is_pinned_to_its_universe_with_host_tools_denied(tmp
     # A workflow node call (2026-09-24 latency root cause): cwd pinned to the
     # universe, project-only settings, shell/filesystem builtins denied, and
     # the node's own denies kept. Web tools are not the host's and stay.
-    from tinyassets.providers.base import HOST_REACH_TOOLS
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS, HOST_REACH_TOOLS
 
     cfg = ModelConfig(workflow_node=True, disallowed_tools=("CronCreate",))
     flags, run_cwd = _sandbox_cli_args(cfg, tmp_path)
@@ -129,7 +129,7 @@ def test_workflow_node_call_is_pinned_to_its_universe_with_host_tools_denied(tmp
     assert run_cwd == str(tmp_path)
     assert flags[flags.index("--setting-sources") + 1] == "project"
     denied = flags[flags.index("--disallowedTools") + 1:]
-    assert denied == ["CronCreate", *HOST_REACH_TOOLS]
+    assert denied == ["CronCreate", *HOST_REACH_TOOLS, *ACCOUNT_REACH_TOOLS]
     assert "--allowedTools" not in flags
     assert "WebSearch" not in denied and "WebFetch" not in denied
 
@@ -141,3 +141,64 @@ def test_workflow_node_call_without_a_universe_fails_closed():
 
     with pytest.raises(ProviderError):
         _sandbox_cli_args(ModelConfig(workflow_node=True), None)
+
+
+def test_account_reach_tools_are_denied_on_both_confined_paths(tmp_path):
+    """One constant, both call paths -- the gap found reviewing CLI 2.1.288.
+
+    These act on the DAEMON HOST'S claude.ai account, so neither the OS jail
+    (nothing touches disk, no shell starts) nor ``--strict-mcp-config`` (they
+    are builtins, not MCP servers) bounds them. The engine turn denied them; a
+    WORKFLOW NODE denied only ``HOST_REACH_TOOLS``, so a node could publish an
+    artifact or message another session on the host's account.
+    """
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS
+    from tinyassets.universe_intelligence import (
+        _ENGINE_DISALLOWED_TOOLS,
+        _ENGINE_DISALLOWED_TOOLS_WITH_MCP,
+    )
+
+    assert ACCOUNT_REACH_TOOLS, "the constant must not be empty"
+
+    node_flags, _cwd = _sandbox_cli_args(ModelConfig(workflow_node=True), tmp_path)
+    node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
+    for tool in ACCOUNT_REACH_TOOLS:
+        assert tool in node_denied, f"{tool} callable on a workflow node"
+        assert tool in _ENGINE_DISALLOWED_TOOLS, f"{tool} callable on an engine turn"
+        # Also denied when engine MCP is on: that turn drops only the ``mcp__*``
+        # wildcard and ``ToolSearch``, never a builtin.
+        assert tool in _ENGINE_DISALLOWED_TOOLS_WITH_MCP, f"{tool} callable with MCP on"
+
+
+def test_the_two_reach_constants_stay_separate_and_disjoint():
+    """Host reach and account reach are different boundaries, not one list.
+
+    ``HOST_REACH_TOOLS`` is bounded by the OS jail and is also a latency
+    control on nodes; ``ACCOUNT_REACH_TOOLS`` is bounded by neither the jail
+    nor strict MCP. Merging them would lose the reason either exists.
+    """
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS, HOST_REACH_TOOLS
+
+    assert not set(HOST_REACH_TOOLS) & set(ACCOUNT_REACH_TOOLS)
+    assert len(set(ACCOUNT_REACH_TOOLS)) == len(ACCOUNT_REACH_TOOLS), "no duplicates"
+    # SendMessage lives in the account constant, not as a second literal in the
+    # engine list: one definition is the point.
+    assert "SendMessage" in ACCOUNT_REACH_TOOLS
+
+
+def test_the_engine_denylist_has_no_duplicate_names(tmp_path):
+    """Splatting a shared constant must not leave a name listed twice."""
+    from tinyassets.universe_intelligence import _ENGINE_DISALLOWED_TOOLS
+
+    duplicated = sorted({
+        t for t in _ENGINE_DISALLOWED_TOOLS
+        if _ENGINE_DISALLOWED_TOOLS.count(t) > 1
+    })
+    assert duplicated == [], duplicated
+
+    node_flags, _cwd = _sandbox_cli_args(
+        ModelConfig(workflow_node=True, disallowed_tools=("Artifact",)), tmp_path,
+    )
+    node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
+    # A node that already denied one of them by name keeps exactly one copy.
+    assert node_denied.count("Artifact") == 1

@@ -166,6 +166,35 @@ HOST_REACH_TOOLS: tuple[str, ...] = (
     "Glob", "Grep", "LS",
 )
 
+#: Claude CLI builtins that reach the DAEMON HOST'S logged-in claude.ai account.
+#: Separate from :data:`HOST_REACH_TOOLS` because the boundary is a different
+#: one: these touch nothing on disk and start no shell, so the OS jail does not
+#: bound them, and they are not MCP servers, so ``--strict-mcp-config`` does not
+#: either. The account they act on is the host's, never the universe owner's --
+#: so an effect here leaves the owner's command center entirely.
+#:
+#: Verified against the installed CLI 2.1.288 and its changelog (2026-10-03):
+#:   Artifact         publishes pages, uploads assets and reads other people's
+#:                    artifacts; artifact-database writes are visible to every
+#:                    viewer of the artifact.
+#:   SendMessage      messages another session on the machine.
+#:   ListAgents       enumerates those sessions -- SendMessage's discovery half,
+#:                    which is why they belong to one constant.
+#:   SendFeedback     drafts and sends a report off-box.
+#:   ListPlugins      reads the plugins enabled on the claude.ai account.
+#:   EndConversation  can end the turn from inside it.
+#:
+#: The ONE definition, denied on BOTH confined paths: the universe engine's
+#: denylist splats it (``universe_intelligence._ENGINE_DISALLOWED_TOOLS``) and a
+#: workflow node call denies it (``ModelConfig.workflow_node``). A workflow node
+#: keeps every owner-level capability on purpose -- web tools, subagents, plans
+#: -- but it has no business acting on the host's account, and before this it
+#: could (it denied only ``HOST_REACH_TOOLS``).
+ACCOUNT_REACH_TOOLS: tuple[str, ...] = (
+    "Artifact", "SendMessage", "ListAgents", "SendFeedback", "ListPlugins",
+    "EndConversation",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
@@ -226,7 +255,7 @@ class ModelConfig:
     every provider launch made for a command center is OS-jailed to that command center by
     the shared spawn point, whatever its config (``provider_jail``). A provider
     may use the mark to narrow further, e.g. pin cwd to the command center and deny
-    :data:`HOST_REACH_TOOLS`."""
+    :data:`HOST_REACH_TOOLS` and :data:`ACCOUNT_REACH_TOOLS`."""
 
     sandbox_workspace: bool = False
     # A chat turn (converse): still OS-isolated, but NOT handed the universe as a
