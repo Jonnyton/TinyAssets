@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Provider authority records still resolve parent links
+filed: '2026-10-03'
+summary: 'Authority migration uses ordinary parent-path resolution after an absent assignment-file check. Existing hidden-directory masking does not prove parent provisioning before every launch. Static validation gap; production reachability is not established.'
+---
+
 # Provider authority records still resolve parent links
 
 Inherited from main `6004a6364b9a6fb3fbff4c9e7719bb5c00e697b7` during
