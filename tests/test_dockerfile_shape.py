@@ -577,7 +577,7 @@ def test_the_final_stage_ships_the_ui_preview_headless_shell():
     install = final.index("playwright install --with-deps --only-shell chromium")
     assert install < final.index("USER tinyassets"), "installed as root, before USER"
     assert "chmod -R a+rX /opt/ms-playwright" in final
-    assert '".[mcp,gemini,groq,grok,preview]"' in text
+    assert '".[mcp,preview]"' in text
     extras = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     preview = extras["project"]["optional-dependencies"]["preview"]
     assert preview == ["playwright==1.58.0"], "exact pin: it decides the Chromium build"
