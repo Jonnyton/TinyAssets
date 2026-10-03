@@ -267,13 +267,15 @@ def test_a_start_that_loses_its_claim_cancels_the_run(monkeypatch, universe):
 
 
 def test_start_refuses_when_the_owner_no_longer_owns_the_universe(monkeypatch, universe):
-    from tinyassets import automations
+    from tinyassets import automations, runs
     from tinyassets.api import permissions
 
     monkeypatch.setattr(permissions, "owner_run_identity",
                         contextlib.contextmanager(lambda *a: (yield False)))
     monkeypatch.setattr(automations, "_bind_automation_provider_call", lambda *a: None)
     monkeypatch.setattr(automations, "_authority_guard", lambda *a: None)
+    monkeypatch.setattr(runs, "execute_branch_async",
+                        lambda *a, **kw: pytest.fail("an unbound owner must never start a run"))
     aid = _new(universe)
     generation = acts.claim(universe, aid, replaceable=lambda r: False)
     with pytest.raises(acts.ActivityRefused) as refused:
