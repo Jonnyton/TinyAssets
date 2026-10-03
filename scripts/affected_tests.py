@@ -313,61 +313,51 @@ def select(
     return sorted(selected), reasons
 
 
-#: A changed test file, as opposed to a conftest or a shared tests/ helper.
-_TEST_FILE = re.compile(r"tests/test_[^/]+\.py")
 #: Trees that hold prose and specs: never imported, never executed.
 _PROSE_DIRS = ("docs/", "openspec/", "ideas/")
 
 
 def provable_shape(changed: list[str]) -> str | None:
-    """``tests``, ``prose``, ``mixed``, or ``None`` when no argument covers the diff.
+    """``prose``, or ``None`` when no argument covers the diff. ONE shape.
 
-    This is the whole safety story of the merge gate, so it is a WHITELIST.
+    This is the whole safety story of the merge gate, so it is a WHITELIST, and
+    it is as short as it can be.
 
-    The static import graph is not sound for production code and cannot cheaply
-    be made so: it counts only import-time statements outside ``tests/``,
-    because following lazy imports made each test reach ~470 of the 525 modules
-    in ``tinyassets/`` (see ``_imports``) -- a graph that selects everything
-    selects nothing. Measured holes, both real: changing
-    ``tinyassets/run_file_erasure.py`` does not select
-    ``tests/test_account_deletion.py`` (the import is inside a function), and
+    The static import graph is not sound and cannot cheaply be made so: it
+    counts only import-time statements outside ``tests/``, because following
+    lazy imports made each test reach ~470 of the 525 modules in
+    ``tinyassets/`` (see ``_imports``) -- a graph that selects everything
+    selects nothing. Measured holes, all real and all found by cross-family
+    review: changing ``tinyassets/run_file_erasure.py`` does not select
+    ``tests/test_account_deletion.py`` (the import is inside a function);
     changing ``tinyassets/providers/daily_quota_shapes.json`` selects none of
-    the six quota tests (a data file is not an edge). No digest or
-    coverage check can see an OMISSION, so a gate must not rely on selection
-    for a diff that touches code or data.
+    the six quota tests (a data file is not an edge); DELETING
+    ``tests/test_agent_turn_journal.py`` omits all four test modules that
+    import it. No digest or coverage check can see an OMISSION.
 
-    Two shapes DO carry an argument:
+    ``prose`` is the one shape with an argument: every path is under docs/,
+    openspec/, ideas/, or is a top-level ``.md``. Nothing imports or executes
+    it, so it can only affect a test that READS it -- by name
+    (``_mention_keys``) or by walking its directory (``_WALKS``).
 
-    * ``tests`` -- every path is a ``tests/test_*.py`` file. It cannot change
-      production behaviour, and the only tests that can be affected are the
-      ones importing it, which the graph captures in FULL for test files
-      (``ast.walk`` over the whole tree, function bodies and patch strings
-      included). A conftest or a shared ``tests/`` helper is NOT this shape;
-      those are in ``FULL_SUITE_TRIGGERS`` or reach it through the conftest
-      closure.
-    * ``prose`` -- every path is under docs/, openspec/, ideas/, or is a
-      top-level ``.md``. Nothing imports or executes it, so it can only affect
-      a test that READS it: by name (``_mention_keys``) or by walking its
-      directory (``_WALKS``).
+    A ``tests``-only shape was tried and REMOVED in round 3 (2026-10-03). Its
+    argument was that a changed ``tests/test_*.py`` can only affect the tests
+    importing it, which the graph captures in full for test files -- but that
+    leans on the import graph being complete, which is the exact class of claim
+    the deletion hole above breaks. Not worth 8% of merges.
 
-    Residual, stated rather than hidden: a test that reaches one of these files
+    Residual, stated rather than hidden: a test that reaches a prose file
     through a path it builds without naming the file or its directory. The
-    tree-walking superset in ``gate_selection`` is what shrinks that; it is not
-    a proof, and it is the reason this list is two entries long rather than a
-    guess at more.
+    tree-walking superset in ``gate_selection`` is what shrinks that. It is not
+    a proof, and it is why this list has one entry.
     """
-    kinds = set()
+    if not changed:
+        return None
     for raw in changed:
         rel = raw.replace("\\", "/")
-        if _TEST_FILE.fullmatch(rel):
-            kinds.add("tests")
-        elif rel.startswith(_PROSE_DIRS) or (rel.endswith(".md") and "/" not in rel):
-            kinds.add("prose")
-        else:
+        if not (rel.startswith(_PROSE_DIRS) or (rel.endswith(".md") and "/" not in rel)):
             return None
-    if not kinds:
-        return None
-    return kinds.pop() if len(kinds) == 1 else "mixed"
+    return "prose"
 
 
 def walking_tests(graph: Graph) -> set[str]:

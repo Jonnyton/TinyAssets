@@ -700,27 +700,14 @@ def gating_selection(entries: list[str], exclude_from: str | None) -> list[str]:
     ]
 
 
-def collectible_under_gate(files: list[str]) -> tuple[list[str], list[str]]:
-    """Split a selection into (files this gate can run, files it cannot).
-
-    The required shards run ``-m "not slow"``, so a selected file whose tests
-    are ALL slow collects nothing here: pytest exits 5 and the coverage check
-    sees a file that reported no case. Neither is a regression --
-    ``tests/test_node_bid_claim_stress.py`` is six slow tests and the separate
-    `slow-tests` job runs them -- so such a file is dropped from the selection
-    before it is sharded or digested, and named in the summary.
-
-    Collection only: no test runs, and a file that cannot even be imported is
-    kept (a collection error is a real failure the gate must report, not a
-    reason to drop the file).
-    """
-    if not files:
-        return [], []
+def _files_collected(files: list[str], marker: str | None) -> set[str]:
+    """Which of `files` yield at least one node id under `marker`. Collection only."""
     proc = subprocess.run(
         [
             sys.executable, "-m", "pytest", "--collect-only", "-q", "--no-header",
-            "-m", "not slow", "-p", "no:cacheprovider",
-            "--continue-on-collection-errors", *files,
+            "-p", "no:cacheprovider", "--continue-on-collection-errors",
+            *(["-m", marker] if marker else []),
+            *files,
         ],
         cwd=REPO_ROOT, capture_output=True, text=True,
     )
@@ -729,15 +716,42 @@ def collectible_under_gate(files: list[str]) -> tuple[list[str], list[str]]:
         head = line.strip().split("::", 1)[0].replace("\\", "/")
         if head.endswith(".py"):
             seen.add(head)
-    # An unimportable file appears as an error, not a node id. Keep it: the
-    # shard must run it so the collection error is reported as a failure.
-    for line in (proc.stdout or "") .splitlines():
-        if line.startswith("ERROR ") or " ERROR " in line:
-            for rel in files:
-                if rel in line:
-                    seen.add(rel)
-    runnable = [rel for rel in files if rel in seen]
-    return runnable, [rel for rel in files if rel not in seen]
+    return seen
+
+
+def collectible_under_gate(files: list[str]) -> tuple[list[str], list[str]]:
+    """Split a selection into (files the gate keeps, files positively proven slow-only).
+
+    KEEP IS THE DEFAULT. A file leaves the selection only on POSITIVE proof that
+    it collects cases and that none of them is non-slow: it must appear with no
+    marker filter AND be absent under ``-m "not slow"``. Absence of node ids is
+    never enough.
+
+    That asymmetry is the fix for a real escape found in round-3 cross-family
+    review. The `select` job installs only ``.[dev]``, so a browser test whose
+    ``pytest.importorskip`` sits at MODULE scope collects nothing there. The
+    earlier version read "no node ids" as "all slow" and dropped the file; the
+    shards (which DO have Playwright) then never saw it, and the browser no-skip
+    assertion filters against the pruned selection and accepts an empty
+    intersection -- so a broken non-slow browser test could land, with
+    `slow-tests` skipping the module too for the same missing dependency.
+
+    Keeping such a file costs nothing and is self-correcting: the shards have
+    the full extras, so they collect and run it, and if nothing reports it the
+    coverage check fails and names it. The same reasoning covers an unimportable
+    file and any module-level skip -- a collection error is a failure the gate
+    must report, not a reason to stop looking.
+
+    Collecting here with the shards' extras installed would also close the
+    specific Playwright case, but it is the weaker fix: it only moves the line,
+    since any other module-level skip reintroduces the same hole.
+    """
+    if not files:
+        return [], []
+    collected = _files_collected(files, None)
+    fast = _files_collected(files, "not slow")
+    prunable = [rel for rel in files if rel in collected and rel not in fast]
+    return [rel for rel in files if rel not in prunable], prunable
 
 
 def _write_shard_manifest(

@@ -144,27 +144,64 @@ So the gate no longer trusts selection for code. `affected_tests.provable_shape`
 is a **whitelist of diff shapes that carry a completeness argument**, and
 everything else is ALL:
 
-- **`tests`** — every path is a `tests/test_*.py` file. It cannot change
-  production behaviour, and the only tests it can affect are those importing
-  it, which the graph captures in FULL for test files (`ast.walk` over the whole
-  tree, function bodies and patch-target strings included). A conftest or a
-  shared `tests/` helper is NOT this shape.
 - **`prose`** — every path is under `docs/`, `openspec/`, `ideas/`, or is a
   top-level `.md`. Nothing imports or executes it, so it can only affect a test
   that READS it, by name or by walking its directory.
 
-For both shapes the selection is additionally unioned with **every
-tree-walking test file**, not just the walkers naming the changed root, which
-is what shrinks the residual: a test that reaches one of these files through a
-path it builds without naming the file or its directory. That residual is
-stated rather than hidden, and it is why the list is two entries long.
+That is the only entry. A **`tests`-only** shape (every path a
+`tests/test_*.py`) shipped in round 2 and was **removed in round 3**: its
+argument was that such a change can only affect the tests importing it, which
+the graph captures in full for test files — but review then showed that
+*deleting* a shared test module omits all four modules that import it, which is
+the same class of hole that disqualified code changes. The argument leaned on
+the import graph being complete, so it went.
 
-**Measured payoff of the narrow shape** (120 squash merges on main, 2026-10-03):
-prose-only **26%**, test-only **8%**, both **1%** — **34%** of merges. Those run
-a selection of ~120 of 1113 test files instead of the whole surface. The general
-affected-only gate would have covered the other 66% too, but could not be
-trusted to; this keeps roughly two thirds of the benefit with an argument that
-holds.
+The selection is additionally unioned with **every tree-walking test file**,
+not just the walkers naming the changed root, which is what shrinks the
+residual: a test that reaches a prose file through a path it builds without
+naming the file or its directory. That residual is stated rather than hidden,
+and it is why the list has one entry.
+
+**Measured payoff** (120 squash merges on main, 2026-10-03): prose-only is
+**26%** of merges, running ~120 of 1113 test files instead of the whole
+surface. The removed test-only shape was a further 8%, and mixed prose+test 1%.
+The general affected-only gate would have covered the other 66% too but could
+not be trusted to.
+
+### Round 3 (2026-10-03): absence of node ids proves nothing
+
+One real escape, and it was in the pruner that round 2 added. Changing only
+`tests/test_custom_ui_forms_browser.py`, with its Playwright `importorskip`
+moved to module scope and a broken expectation introduced:
+
+1. `select` installs only `.[dev]`, so collection skips the whole module and it
+   yields no node ids;
+2. the pruner read "no node ids" as "all slow" and dropped it from the
+   selection — without proving anything about its markers;
+3. the shards DO install Playwright, but the file had already left their
+   selection;
+4. the browser no-skip assertion filters against that pruned selection and
+   accepts an empty intersection;
+5. `slow-tests` installs only `.[dev]` too, so it skips the module as well.
+
+A broken non-slow browser test lands. The other selected walkers keep the
+selection non-empty, so the ALL fallback does not save it.
+
+**Fix: keep is the default, and a file leaves the selection only on POSITIVE
+proof.** It must appear with no marker filter AND be absent under
+`-m "not slow"`. Collecting with the shards' full extras would also close this
+specific case, but it is the weaker fix — it moves the line rather than
+removing it, since any other module-level skip reopens the same hole. Keeping a
+file is free and self-correcting: the shards have the extras, so they collect
+and run it, and if nothing reports it the coverage check fails and names it.
+Pinned by `test_a_module_scope_skip_never_removes_a_selected_file` and
+`test_a_file_that_cannot_be_imported_is_kept`.
+
+Round 3's other two probes were `DISAGREE_EVIDENCE`: deleting a shared test
+module defeats selection but `slow-tests` collects the whole suite and catches
+the broken imports, and cumulative mixed paths cannot evade the whitelist
+because every reported path is checked. Noted caveat: `git diff --name-only`
+reports only a rename's destination.
 
 ### The gate (`tests.yml`)
 

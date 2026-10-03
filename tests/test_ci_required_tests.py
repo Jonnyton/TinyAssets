@@ -782,6 +782,45 @@ def test_the_heavy_list_is_not_held_against_coverage(tmp_path):
     assert covered == ["tests/test_ci_required_tests.py"]
 
 
+def test_a_module_scope_skip_never_removes_a_selected_file(tmp_path, monkeypatch):
+    """The round-3 escape: absence of node ids is not proof of anything.
+
+    `select` installs only `.[dev]`, so a browser test whose
+    `pytest.importorskip` sits at MODULE scope collects nothing there. The first
+    pruner read that as "all slow" and dropped the file; the shards -- which DO
+    install Playwright -- then never saw it, and the browser no-skip assertion
+    filters against the pruned selection and accepts an empty intersection. A
+    broken non-slow browser test could land.
+
+    Keeping it is free and self-correcting: the shards collect it, and if
+    nothing reports it the coverage check fails and names it.
+    """
+    skipped = tmp_path / "tests"
+    skipped.mkdir()
+    (skipped / "test_module_scope_skip.py").write_text(
+        'import pytest\n'
+        'pytest.importorskip("a_module_that_is_not_installed")\n'
+        'def test_never_collected():\n    assert True\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
+    runnable, prunable = gate.collectible_under_gate(["tests/test_module_scope_skip.py"])
+    assert prunable == [], "a module-level skip is not proof the cases are slow"
+    assert runnable == ["tests/test_module_scope_skip.py"]
+
+
+def test_a_file_that_cannot_be_imported_is_kept(tmp_path, monkeypatch):
+    """Same asymmetry: a collection error is a failure to report, not to hide."""
+    broken = tmp_path / "tests"
+    broken.mkdir()
+    (broken / "test_broken.py").write_text("import a_module_that_is_not_installed\n",
+                                           encoding="utf-8")
+    monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
+    runnable, prunable = gate.collectible_under_gate(["tests/test_broken.py"])
+    assert prunable == []
+    assert runnable == ["tests/test_broken.py"]
+
+
 def test_slow_only_files_are_dropped_before_the_digest():
     """Finding 3 from the #4359 review, fixed at the source.
 

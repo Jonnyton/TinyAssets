@@ -218,25 +218,36 @@ def test_a_code_change_has_no_completeness_argument():
         assert at.provable_shape([rel]) is None, rel
 
 
-def test_a_shared_test_helper_is_not_the_test_only_shape():
-    """Only `tests/test_*.py`. A conftest or helper can change any test's run."""
-    for rel in ("tests/conftest.py", "tests/engine_authority_helpers.py",
-                "tests/__init__.py", "tests/fixtures/thing.py"):
+def test_no_change_under_tests_is_a_provable_shape():
+    """The `tests`-only shape was tried and REMOVED in round 3.
+
+    Its argument leaned on the import graph being complete for test files, and
+    review showed deleting a shared test module omits all four modules that
+    import it -- the same class of hole that disqualified code changes. One
+    shape, not two.
+    """
+    for rel in ("tests/test_a.py", "tests/conftest.py", "tests/__init__.py",
+                "tests/engine_authority_helpers.py", "tests/fixtures/thing.py"):
         assert at.provable_shape([rel]) is None, rel
 
 
-def test_the_two_provable_shapes():
-    assert at.provable_shape(["tests/test_a.py", "tests/test_b.py"]) == "tests"
+def test_prose_is_the_only_provable_shape():
     assert at.provable_shape(["docs/concerns/x.md", "openspec/specs/y/spec.md"]) == "prose"
     assert at.provable_shape(["README.md"]) == "prose"
-    assert at.provable_shape(["tests/test_a.py", "docs/x.md"]) == "mixed"
+    assert at.provable_shape(["ideas/INBOX.md"]) == "prose"
     assert at.provable_shape([]) is None
+
+
+def test_a_nested_md_outside_the_prose_trees_is_not_prose():
+    """Only a TOP-LEVEL .md. `tinyassets/x/README.md` could be packaged data."""
+    assert at.provable_shape(["tinyassets/plugin/README.md"]) is None
+    assert at.provable_shape([".github/PULL_REQUEST_TEMPLATE.md"]) is None
 
 
 def test_one_code_path_poisons_an_otherwise_provable_diff():
     """A whitelist over EVERY path, not a majority vote."""
     assert at.provable_shape(["docs/a.md", "tinyassets/runs.py"]) is None
-    assert at.provable_shape(["tests/test_a.py", "tinyassets/runs.py"]) is None
+    assert at.provable_shape(["docs/a.md", "tests/test_a.py"]) is None
 
 
 def test_gate_selection_runs_everything_for_a_code_change(tmp_path):
