@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from tinyassets.universe_files import write_data_path
+
 SOUL_FILENAME = "soul.md"
 SOUL_VERSIONS_DIR = "soul_versions"
 LEGACY_PREMISE_FILENAME = "PROGRAM.md"
@@ -282,7 +284,7 @@ def write_universe_soul(
         )
 
     rendered = render_soul_markdown(soul)
-    soul_path(universe_dir).write_text(rendered, encoding="utf-8")
+    write_data_path(soul_path(universe_dir), rendered)
     _write_soul_version(universe_dir, rendered)
     return soul
 
@@ -390,7 +392,6 @@ def _write_soul_version(universe_dir: Path, rendered: str) -> None:
     from tinyassets.universe_files import MAX_BRAIN_FILE_BYTES, read_universe_text
 
     versions_dir = universe_dir / SOUL_VERSIONS_DIR
-    versions_dir.mkdir(parents=True, exist_ok=True)
     versions = _soul_version_names(universe_dir)
     if versions:
         try:
@@ -408,7 +409,8 @@ def _write_soul_version(universe_dir: Path, rendered: str) -> None:
             next_number = int(versions[-1][:4]) + 1
         except ValueError:
             next_number = len(versions) + 1
-    (versions_dir / f"{next_number:04d}.md").write_text(rendered, encoding="utf-8")
+    # Exclusive and link-free: never through a planted soul_versions link.
+    write_data_path(versions_dir / f"{next_number:04d}.md", rendered, mode="exclusive")
 
 
 def _matching_soul_version_id(universe_dir: Path, content: str) -> str | None:
