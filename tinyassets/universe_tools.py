@@ -990,6 +990,11 @@ def write_file(
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Create or replace a file, making parent directories."""
+    from tinyassets.research_capability import research_refusal
+
+    refusal = research_refusal("write")
+    if refusal is not None:
+        return refusal
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
@@ -1013,6 +1018,11 @@ def edit_file(
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Replace the one exact occurrence of ``old_text`` with ``new_text``."""
+    from tinyassets.research_capability import research_refusal
+
+    refusal = research_refusal("edit")
+    if refusal is not None:
+        return refusal
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
@@ -1067,6 +1077,13 @@ def bash(
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome."""
+    from tinyassets.research_capability import research_refusal
+
+    # D3a refuses all bash, stricter than a read-only mount: no shell or egress
+    # is started during research, including when called below the MCP boundary.
+    refusal = research_refusal("bash")
+    if refusal is not None:
+        return refusal
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
     if not (command or "").strip():
