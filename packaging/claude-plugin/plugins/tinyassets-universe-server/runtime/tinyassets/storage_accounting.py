@@ -571,6 +571,8 @@ ROOT_ENTRIES: dict[str, str] = {
     ".owner_devices.db": "platform: device registrations",
     ".effector_consents.db": "platform: consent records",
     ".outbound-proxy": "platform: egress proxy state",
+    ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
+    "ops.db": "platform: bounded broker idempotency records under .broker/state",
     ".run-execution-locks": "platform: locks",
     ".run-file-operation-locks": "platform: locks",
     ".connect": "platform: connection handshakes",

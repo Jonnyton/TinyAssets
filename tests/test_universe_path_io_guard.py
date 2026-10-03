@@ -356,6 +356,9 @@ PINNED: dict[str, list[str]] = {
         "__call__: .open()",
         "__call__: .read_text()",
         "_execute_pinned_https_request: .open()",
+        # S6 broker: the streaming sibling of _execute_pinned_https_request; this
+        # .open() is urllib opener.open() (network), not a file.
+        "_open_pinned_https_stream: .open()",
     ],
     "tinyassets/storage/rotation.py": [
         "prune_universe_outputs: .unlink()",
