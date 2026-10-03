@@ -390,6 +390,13 @@
       const message=event.data;
       if(!message||typeof message!=="object"||message.ta_ui!==this.PROTOCOL) return;
       if(message.type==="ready"){ this.deliver(); return; }
+      // The reserved key, handed back by a frame that would otherwise swallow
+      // it. The frame can only ask for THIS: focus moves to the composer, and
+      // nothing about the bundle, the turn or the account changes.
+      if(message.type==="reserved_key"){
+        if(typeof focusChatComposer==="function") focusChatComposer();
+        return;
+      }
       if(message.type!=="call"||typeof message.id!=="string"||typeof message.action!=="string") return;
       this.serve(message.id,message.action,message.params);
     },
