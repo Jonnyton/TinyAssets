@@ -19,6 +19,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -980,24 +981,90 @@ def test_rollback_emits_safe_defaults_and_final_outputs_before_exit():
             )
 
 
-def test_rollback_identity_failure_preserves_the_passed_canary_tuple():
-    wf = _load()
-    rollback_step = _step_named(wf, "Rollback on failure")
-    run_script = rollback_step.get("run", "") or ""
+def test_rollback_identity_failure_preserves_the_passed_canary_tuple(tmp_path):
+    """A healthy rollback with the wrong image must never report success.
 
-    passed_idx = run_script.find("rollback_canary_status=passed")
-    identity_check_idx = run_script.find('if [ "${identity_status}" -ne 0 ]')
-    assert 0 <= passed_idx < identity_check_idx
-    pre_identity = run_script[passed_idx:identity_check_idx]
-    assert "rollback_result=succeeded" in pre_identity, (
-        "a passed rollback canary must retain the valid succeeded/passed tuple "
-        "so terminal classification can record rollback_failed when the "
-        "separate identity proof fails"
+    The old workflow emitted a separate canary/identity tuple. Its classifier
+    matrix remains in test_deploy_terminal_receipt; the active producer is now
+    deploy_fail_safe.sh. Execute its rollback branch and real acceptance/output
+    functions, faking only host operations. No Docker, host files or network.
+    """
+    git_bash = Path(r"C:\Program Files\Git\bin\bash.exe")
+    bash = str(git_bash) if sys.platform == "win32" and git_bash.exists() else shutil.which("bash")
+    assert bash is not None and not (sys.platform == "win32" and "system32" in bash.lower()), (
+        "this rollback contract requires a POSIX bash executable (Git Bash on Windows)"
     )
-    identity_failure = run_script[identity_check_idx : run_script.find("fi", identity_check_idx)]
-    assert "rollback_result=failed" not in identity_failure, (
-        "failed/passed is a contradictory tuple rejected by the pure builder"
-    )
+    source = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    functions = []
+    for name in ("container_state", "health_ok", "tunnel_up",
+                 "running_image_matches", "accept", "finish"):
+        match = re.search(rf"^{name}\(\) \{{[^\n]*\n.*?^\}}\n", source, re.M | re.S)
+        assert match, f"cannot find current rollback collaborator {name}"
+        functions.append(match.group(0))
+    marker = "# --- 6. unhealthy -> restore the bundle, then roll back the image"
+    assert source.count(marker) == 1
+    rollback = source[source.index(marker):]
+    harness = tmp_path / "rollback.sh"
+    harness.write_text(r'''
+set -uo pipefail
+PREV_IMAGE="ghcr.io/tinyassets/tinyassets-daemon@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+RUNNING_ID="$1"
+CALLS="$2"
+: > "$CALLS"
+DAEMON_CONTAINER=tinyassets-daemon
+TUNNEL_CONTAINER=tinyassets-tunnel
+LOGS_CONTAINER=tinyassets-logs
+INSTALLED_THIS_RUN=0
+MARKER_STALE=0
+HEALTH_TIMEOUT=10
+HEALTH_INTERVAL=0
+INSPECT_ERR_TOLERANCE=1
+HEALTH_FORMAT='{{if .State.Health}}{{.State.Health.Status}}'
+HEALTH_FORMAT+='{{else}}{{.State.Status}}{{end}}'
+log() { :; }
+err() { printf '%s\n' "$*" >&2; }
+layout_marker_path() { echo fixture-layout; }
+layout_allows_any_image() { return 0; }
+set_image() { printf 'set_image:%s\n' "$1" >> "$CALLS"; }
+restart_stack() { echo restart_stack >> "$CALLS"; }
+docker() {
+  printf 'docker:%s\n' "$*" >> "$CALLS"
+  case "$*" in
+    "inspect -f ${HEALTH_FORMAT} tinyassets-daemon") echo healthy ;;
+    "image inspect -f {{.Id}} ${PREV_IMAGE}") echo sha256:previous ;;
+    "inspect -f {{.Image}} tinyassets-daemon") echo "$RUNNING_ID" ;;
+    "inspect -f {{.Config.Image}} tinyassets-daemon") echo "$RUNNING_ID" ;;
+    "inspect -f {{.State.Status}} tinyassets-tunnel"|\
+    "inspect -f {{.State.Status}} tinyassets-logs") echo running ;;
+    *) echo "unexpected docker call: $*" >> "$CALLS"; return 97 ;;
+  esac
+}
+''' + "\n".join(functions) + rollback, encoding="utf-8", newline="\n")
+    for identity, expected_code, expected_result in (
+        ("sha256:previous", 2, "rolled_back"),
+        ("sha256:other", 3, "rollback_unhealthy"),
+    ):
+        calls = tmp_path / "rollback-calls.txt"
+        result = subprocess.run(
+            [bash, harness.as_posix(), identity, calls.as_posix()],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        assert result.returncode == expected_code, result.stderr
+        assert f"deploy_result={expected_result}\n" in result.stdout
+        # Both scenarios reached real health AND identity checks after converge;
+        # a refusal in fixture setup would not exercise the guarantee.
+        trace = calls.read_text(encoding="utf-8")
+        assert "unexpected docker call" not in trace
+        assert trace.index("set_image:") < trace.index("restart_stack\n")
+        assert trace.index("restart_stack\n") < trace.index("{{.State.Health.Status}}")
+        assert trace.index("{{.State.Health.Status}}") < trace.index("{{.Image}}")
+        if identity == "sha256:previous":
+            assert "deployed_image=ghcr.io/tinyassets/tinyassets-daemon@sha256:" in result.stdout
+            assert "{{.State.Status}} tinyassets-logs" in trace
+        else:
+            assert "daemon is healthy but NOT running" in result.stderr
+            assert "deploy_result=rolled_back" not in result.stdout
+            assert "deployed_image=" not in result.stdout
 
 
 def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
