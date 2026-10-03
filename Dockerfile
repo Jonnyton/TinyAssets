@@ -177,7 +177,7 @@ RUN gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c \
 # final image free of pip metadata + build tools.
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/venv/bin/pip install --no-cache-dir -e ".[mcp,gemini,groq,grok]"
+    /opt/venv/bin/pip install --no-cache-dir -e ".[mcp]"
 
 # ---------- Stage 2: final ----------
 
