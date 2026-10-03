@@ -1,0 +1,254 @@
+diff --git a/.agents/worktrees.md b/.agents/worktrees.md
+index 382f6c374b..60bbc7191a 100644
+--- a/.agents/worktrees.md
++++ b/.agents/worktrees.md
+@@ -2501,3 +2501,194 @@ Notes:
+ - Review gate: mutation proof, full relevant tests, mirror parity, exact-head dual-family review, isolated canary, then production-SHA proof.
+ - Publish/cleanup: no merge, deploy, canary mutation, u-tiny mutation, or live Slack effect from this build lane.
+ - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-byo-llm-slice1/_PURPOSE.md`.
++- 2026-08-27 CREATE wf-outbound-proxy-start-diagnosable branch=claude/outbound-proxy-start-diagnosable base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-metering-tiers-billing branch=claude/metering-tiers-billing base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-droplet-key-fallback branch=claude/droplet-key-fallback base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-fix-http-deposit-error-detail branch=claude/fix-http-deposit-error-detail base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-billing-subscribe-cancel branch=claude/billing-subscribe-cancel base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-billing-refusal-status branch=claude/billing-refusal-status base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-worker-5xx-passthrough branch=claude/worker-5xx-passthrough base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-pending-cancellation-visible branch=claude/pending-cancellation-visible base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-checkout-session-lease branch=claude/checkout-session-lease base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-effect-quota-dark branch=claude/effect-quota-dark base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-checkout-lease-build branch=claude/checkout-lease-build base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-webhook-delivery-proof branch=claude/webhook-delivery-proof base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-tier-lookup-fail-safe branch=claude/tier-lookup-fail-safe base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-golive-check-accuracy branch=claude/golive-check-accuracy base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-refresh-session-hardening branch=claude/refresh-session-hardening base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-session-credential-source branch=claude/session-credential-source base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-source-approval-gate branch=claude/source-approval-gate base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-branch-run-read-check branch=claude/branch-run-read-check base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-founder-tier-is-admin branch=claude/founder-tier-is-admin base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-multiuser-review-record branch=claude/multiuser-review-record base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-universe-create-gate branch=claude/universe-create-gate base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-mcp-session-recovery branch=claude/mcp-session-recovery base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-mirror-guard-html branch=claude/mirror-guard-html base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-pat-blocker-row branch=claude/pat-blocker-row base=origin/main provider=claude-code
++- 2026-08-28 CREATE wf-status-storage-cache branch=claude/status-storage-cache base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-workos-subject-migration branch=claude/workos-subject-migration base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-host-actions-google-published branch=claude/host-actions-google-published base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-refresh-session-seal branch=claude/refresh-session-seal base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-principle-user-controlled-execution branch=claude/principle-user-controlled-execution base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-bg-loop-shape branch=claude/bg-loop-shape base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-fleet-prune branch=claude/fleet-prune base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-brain-provenance branch=claude/brain-provenance base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-seal-close branch=claude/seal-close base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-openspec-stream-sync branch=claude/openspec-stream-sync base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-codex-turn-wait branch=claude/codex-turn-wait base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-fleet-ops-tail branch=claude/fleet-ops-tail base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-brain-user-boundary branch=claude/brain-user-boundary base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-sse-keepalive-proof branch=claude/sse-keepalive-proof base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-automations-11 branch=claude/automations-11 base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-boundary-closeout branch=claude/boundary-closeout base=origin/main provider=claude-code
++- 2026-08-29 REMOVE wf-fleet-prune branch=claude/fleet-prune merged=True forced=False
++- 2026-08-29 REMOVE wf-fleet-ops-tail branch=claude/fleet-ops-tail merged=True forced=False
++- 2026-08-29 REMOVE wf-brain-user-boundary branch=claude/brain-user-boundary merged=True forced=False
++- 2026-08-29 REMOVE wf-automations-11 branch=claude/automations-11 merged=True forced=False
++- 2026-08-29 REMOVE wf-boundary-closeout branch=claude/boundary-closeout merged=True forced=False
++- 2026-08-29 CREATE wf-purpose-untracked branch=claude/purpose-untracked base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-automations branch=claude/automations base=origin/main provider=claude-code
++- 2026-08-29 REMOVE wf-codex-turn-wait branch=claude/codex-turn-wait merged=True forced=False
++- 2026-08-29 CREATE wf-github-put-base64 branch=claude/github-put-base64 base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-schedules branch=claude/schedules base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-compose-sync branch=claude/compose-sync base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-test-carryovers branch=claude/test-carryovers base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-fence-rescope branch=claude/fence-rescope base=origin/main provider=claude-code
++- 2026-08-29 CREATE wf-external-call-body-encoding branch=claude/external-call-body-encoding base=origin/main provider=claude-code
++- 2026-08-29 REMOVE wf-test-carryovers branch=claude/test-carryovers merged=True forced=False
++- 2026-08-29 REMOVE wf-fence-rescope branch=claude/fence-rescope merged=True forced=False
++- 2026-08-29 CREATE wf-dated-binding-expiry branch=claude/dated-binding-expiry base=origin/main provider=claude-code
++- 2026-08-30 CREATE wf-approval-wakes-the-universe branch=claude/approval-wakes-the-universe base=origin/main provider=claude-code
++- 2026-08-30 CREATE wf-deploy-env-file-mapping branch=claude/deploy-env-file-mapping base=origin/main provider=claude-code
++- 2026-08-30 CREATE wf-compose-sync-fix branch=claude/compose-sync-fix base=origin/main provider=claude-code
++- 2026-08-30 CREATE wf-text-id-redaction-concern branch=claude/text-id-redaction-concern base=origin/main provider=claude-code
++- 2026-08-30 REMOVE wf-text-id-redaction-concern branch=claude/text-id-redaction-concern merged=True forced=False
++- 2026-08-30 CREATE wf-automations-residuals branch=claude/automations-residuals base=origin/main provider=claude-code
++- 2026-08-30 REMOVE wf-compose-sync branch=claude/compose-sync merged=True forced=False
++- 2026-08-30 CREATE wf-automations-closeout branch=claude/automations-closeout base=origin/main provider=claude-code
++- 2026-08-30 REMOVE wf-automations-residuals branch=claude/automations-residuals merged=True forced=False
++- 2026-08-30 REMOVE wf-schedules branch=claude/schedules merged=True forced=False
++- 2026-08-30 REMOVE wf-automations branch=claude/automations merged=False forced=True
++- 2026-08-30 REMOVE wf-compose-sync-fix branch=claude/compose-sync-fix merged=True forced=False
++- 2026-08-30 CREATE wf-activity-signal branch=claude/activity-signal base=origin/main provider=claude-code
++- 2026-08-30 CREATE wf-owner-schedule-controls branch=claude/owner-schedule-controls base=origin/main provider=claude-code
++- 2026-08-30 CREATE wf-text-channel-id-leak branch=claude/text-channel-id-leak base=origin/main provider=claude-code
++- 2026-08-30 REMOVE wf-automations-closeout branch=claude/automations-closeout merged=False forced=True
++- 2026-08-30 CREATE wf-review-artifacts branch=claude/review-artifacts base=origin/main provider=claude-code
++- 2026-08-30 REMOVE wf-owner-schedule-controls branch=claude/owner-schedule-controls merged=False forced=True
++- 2026-08-30 REMOVE wf-text-channel-id-leak branch=claude/text-channel-id-leak merged=True forced=False
++- 2026-08-30 REMOVE wf-activity-signal branch=claude/activity-signal merged=True forced=False
++- 2026-08-30 CREATE wf-runs-db-race branch=claude/runs-db-race base=origin/main provider=claude-code
++- 2026-08-30 REMOVE wf-runs-db-race branch=claude/runs-db-race merged=True forced=False
++- 2026-08-30 REMOVE wf-review-artifacts branch=claude/review-artifacts merged=True forced=False
++- 2026-08-30 CREATE wf-workspace-git branch=claude/workspace-git base=origin/main provider=claude-code
++- 2026-08-30 CREATE wf-workspace-provision branch=claude/workspace-provision base=origin/main provider=claude-code
++- 2026-08-30 CREATE wf-workspace-pool branch=claude/workspace-pool base=origin/main provider=claude-code
++- 2026-08-31 CREATE wf-sandbox-probe-unify branch=claude/sandbox-probe-unify base=origin/main provider=claude-code
++- 2026-08-31 CREATE wf-repo-key-case branch=claude/repo-key-case base=origin/main provider=claude-code
++- 2026-08-31 CREATE wf-fastmcp-pin branch=claude/fastmcp-pin base=origin/main provider=claude-code
++- 2026-08-31 CREATE wf-workspace-packet-sink branch=claude/workspace-packet-sink base=origin/main provider=claude-code
++- 2026-08-31 CREATE wf-hardcoded-policy-audit branch=claude/hardcoded-policy-audit base=origin/main provider=claude-code
++- 2026-08-31 CREATE wf-script-authoring-surface branch=claude/script-authoring-surface base=origin/main provider=claude-code
++- 2026-08-31 CREATE wf-real-cancellation branch=claude/real-cancellation base=origin/main provider=claude-code
++- 2026-08-31 CREATE wf-workspace-grant-id-docs branch=claude/workspace-grant-id-docs base=origin/main provider=claude-code
++- 2026-08-31 CREATE wf-labeled-credential-fields branch=claude/labeled-credential-fields base=origin/main provider=claude-code
++- 2026-09-01 CREATE wf-honest-provider-failure branch=claude/honest-provider-failure base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-serving-is-the-whole-gesture branch=claude/serving-is-the-whole-gesture base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-generic-path-gap-map branch=claude/generic-path-gap-map base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-branch-delete-is-first-class branch=claude/branch-delete-is-first-class base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-status-says-what-is-true branch=claude/status-says-what-is-true base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-sync-branch-delete-spec branch=claude/sync-branch-delete-spec base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-no-anonymous-principal branch=claude/no-anonymous-principal base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-request-rail-honest-asks branch=claude/request-rail-honest-asks base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-runnable-receipt-tells-the-truth branch=claude/runnable-receipt-tells-the-truth base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-raise-per-user-caps branch=claude/raise-per-user-caps base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-full-channel-access branch=claude/full-channel-access base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-play-store-launch branch=claude/play-store-launch base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-website-rewrite branch=claude/website-rewrite base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-universe-list-is-a-directory-listing branch=claude/universe-list-is-a-directory-listing base=origin/main provider=claude-code
++- 2026-09-02 CREATE wf-site-preview branch=claude/site-preview base=origin/main provider=claude-code
++- 2026-09-03 CREATE wf-workspace-slot-is-host-wide branch=claude/workspace-slot-is-host-wide base=origin/main provider=claude-code
++- 2026-09-03 CREATE wf-a-patch-that-changes-nothing branch=claude/a-patch-that-changes-nothing base=origin/main provider=claude-code
++- 2026-09-03 CREATE wf-connect-any-llm branch=claude/connect-any-llm base=origin/main provider=claude-code
++- 2026-09-03 CREATE wf-play-host-actions-stale branch=claude/play-host-actions-stale base=origin/main provider=claude-code
++- 2026-09-03 CREATE wf-ios-release-pipeline branch=claude/ios-release-pipeline base=origin/main provider=claude-code
++- 2026-09-03 CREATE wf-store-launch-long-poles branch=claude/store-launch-long-poles base=origin/main provider=claude-code
++- 2026-09-03 CREATE wf-workspace-queue branch=claude/workspace-queue base=origin/main provider=claude-code
++- 2026-09-03 CREATE wf-host-actions-tidy branch=claude/host-actions-tidy base=origin/main provider=claude-code
++- 2026-09-03 CREATE wf-row5-agnostic-proof branch=claude/row5-agnostic-proof base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-branch-eval-cloud-admission branch=claude/branch-eval-cloud-admission base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-agents-parallel-completion-norms branch=claude/agents-parallel-completion-norms base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-native-tool-floor branch=claude/native-tool-floor base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-app-send-503-drop branch=claude/app-send-503-drop base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-durable-workspace-wait branch=claude/durable-workspace-wait base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-provider-latency-rootcause branch=claude/provider-latency-rootcause base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-basic-capability-checklist branch=claude/basic-capability-checklist base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-agent-access-controls branch=claude/agent-access-controls base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-owner-triggers-hostless branch=claude/owner-triggers-hostless base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-vendor-neutral-compute branch=claude/vendor-neutral-compute base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-unify-connection-uses branch=claude/unify-connection-uses base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-confine-provider-node-calls branch=claude/confine-provider-node-calls base=origin/claude/provider-latency-rootcause provider=claude-code
++- 2026-09-24 CREATE wf-platform-has-no-llm branch=claude/platform-has-no-llm base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-platform-has-no-llm-enforce branch=claude/platform-has-no-llm-enforce base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-host-image-retention branch=claude/host-image-retention base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-market-emerges-later branch=claude/market-emerges-later base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-notification-is-the-setup branch=claude/notification-is-the-setup base=origin/claude/unify-connection-uses provider=claude-code
++- 2026-09-24 CREATE wf-chat-codec-tool-call-shapes branch=claude/chat-codec-tool-call-shapes base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-retire-platform-llm-logins branch=claude/retire-platform-llm-logins base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-structured-failure-records branch=claude/structured-failure-records base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-github-via-owner-connection branch=claude/github-via-owner-connection base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-prefer-oauth-connections branch=claude/prefer-oauth-connections base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-generic-oauth-connections branch=claude/generic-oauth-connections base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-durable-wait-owner-check branch=claude/durable-wait-owner-check base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-universe-is-the-harness branch=claude/universe-is-the-harness base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-harness-s1-four-tools branch=claude/harness-s1-four-tools base=origin/claude/confine-provider-node-calls provider=claude-code
++- 2026-09-24 CREATE wf-capability-progress-0924 branch=claude/capability-progress-0924 base=origin/main provider=claude-code
++- 2026-09-24 CREATE wf-skip-deploy-docs-only branch=claude/skip-deploy-docs-only base=origin/main provider=claude-code
++- 2026-09-25 CREATE wf-free-model-resilience branch=claude/free-model-resilience base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-private-by-default branch=claude/private-by-default base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-open-receivers branch=claude/open-receivers base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-thinking-indicator branch=claude/thinking-indicator base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-credential-rotate branch=claude/credential-rotate base=origin/main provider=claude-code
++- 2026-09-26 REMOVE wf-thinking-indicator branch=claude/thinking-indicator merged=False forced=True
++- 2026-09-26 CREATE wf-rulebook-cut branch=claude/rulebook-cut base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-one-indicator branch=claude/one-indicator base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-model-dropdown branch=claude/model-dropdown base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-credrot-sync branch=claude/credrot-sync base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-credential-refresh branch=claude/credential-refresh base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-model-catalog branch=claude/model-catalog base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-notif-setup-sync branch=claude/notif-setup-sync base=origin/main provider=claude-code
++- 2026-09-26 REMOVE wf-open-receivers branch=claude/open-receivers merged=False forced=True
++- 2026-09-26 CREATE wf-openrecv-sync branch=claude/openrecv-sync base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-orphan-turns branch=claude/orphan-turns base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-custom-ui branch=claude/custom-ui base=origin/main provider=claude-code
++- 2026-09-26 CREATE wf-bounded-results branch=claude/bounded-results base=origin/main provider=claude-code
++- 2026-09-26 REMOVE wf-openrecv-sync branch=claude/openrecv-sync merged=True forced=True
++- 2026-09-26 CREATE wf-openrecv-offline-test branch=claude/openrecv-offline-test base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-drain-before-recreate branch=claude/drain-before-recreate base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-bounded-catalogue-spec branch=claude/bounded-catalogue-spec base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-turn-boot-spec-sync branch=claude/turn-boot-spec-sync base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-codex-model-pin branch=claude/codex-model-pin base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-registry-name-wipe branch=claude/registry-name-wipe base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-ci-speed branch=claude/ci-speed base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-deploy-coalesce branch=claude/deploy-coalesce base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-concerns-index branch=claude/concerns-index base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-diff-receipts branch=claude/diff-receipts base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-spec-sync-signin branch=claude/spec-sync-signin base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-org-cutover branch=claude/org-cutover base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-org-host-action branch=claude/org-host-action base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-canary-concern branch=claude/canary-concern base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-wake-visibility branch=claude/wake-visibility base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-completion-trigger branch=claude/completion-trigger base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-heavy-schedule branch=claude/heavy-schedule base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-drop-dns-cutover branch=claude/drop-dns-cutover base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-merge-queue-triggers branch=claude/merge-queue-triggers base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-org-cutover-units branch=claude/org-cutover-units base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-peer-agents-model-flag branch=claude/peer-agents-model-flag base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-answer-wakes branch=claude/answer-wakes base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-agent-node branch=claude/agent-node base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-enroll-fail-loud branch=claude/enroll-fail-loud base=origin/main provider=claude-code
++- 2026-09-27 CREATE wf-queue-push-attribution branch=claude/queue-push-attribution base=origin/main provider=claude-code
++- 2026-09-30 CREATE wf-outbound-user-agent branch=claude/outbound-user-agent base=origin/main provider=claude-code
++- 2026-09-30 REMOVE wf-outbound-user-agent branch=claude/outbound-user-agent merged=True forced=False
++- 2026-10-02 CREATE wf-play-updates branch=claude/play-updates base=origin/main provider=claude-code
+diff --git a/PLAN.md b/PLAN.md
+index 3d3af1c215..04b3a19a54 100644
+--- a/PLAN.md
++++ b/PLAN.md
+@@ -63,6 +63,25 @@ progress, pause, resume, revise, roll back, or replace that composition while
+ the user's computers remain off. A rendered connector conversation is the
+ final acceptance proof for this journey once all underlying boundaries exist.
+ 
++**User-universe mutation boundary (host-confirmed 2026-09-03):** Maintainer,
++release, patch, test, and orchestration lanes build and verify the generic
++capabilities that let a user or the user's bound universe agent create, edit,
++repair, run, and evaluate workflows. They do not obtain authority to mutate a
++user's stored workflow merely because a live workflow is useful as a test or a
++bug reproduction. A maintainer lane may inspect authorized evidence, diagnose
++the platform gap, and present a proposed workflow change; the user or that
++universe's own agent performs the mutation through ordinary user-scoped
++primitives and authority. Test fixtures that require maintainer-owned mutation
++belong in isolated test custody, never in a user's private universe. Discovery
++of a broken user workflow is evidence for improving the capability, not
++permission to repair that one user's state as an operator workaround.
++
++This boundary covers the whole branch lifecycle. TinyAssets builds the
++capability for a user or that user's bound universe agent to create, inspect,
++edit, run, and delete branches; maintainer lanes do not curate or operate the
++branches inside a user's universe. A user branch is user state, not a platform
++deliverable.
++
+ This is also the MVP scope test: platform code is justified only when it closes
+ a generic input, durable-execution, authority, output, evidence, discovery, or
+ remix gap that a user graph cannot safely compose. A first-party automation is
+@@ -518,6 +537,12 @@ _Last audited: 2026-05-19_
+   market-supplied compute. Market compute is an optional later extension or
+   fallback, never the prerequisite path, and maintainer quota is never an
+   implicit substitute for either.
++- *Universe authority is the capability boundary.* A universe may use only the
++  provider capabilities its user has explicitly bound to it. Voice is available
++  when that universe has a compatible user-owned subscription, credential, or
++  local resource; otherwise Voice is shown as a capability the user can unlock
++  by binding one. Platform or maintainer credentials MUST NOT silently supply a
++  missing capability or aggregate usage across users.
+ - *Fallback chain correctness is a first-class invariant.* Every provider named in a fallback chain must be either registered AND reachable at startup, or explicitly excluded with a logged reason. Phantom chain entries are a bug. A chain that reads `[claude-code, codex, gemini-free, ...]` but whose first entry's CLI binary is absent silently degrades the whole chain; operators reading config see one chain, the runtime iterates a different one. Register-and-probe at startup; emit structured evidence of the effective chain via `get_status`; refuse to advertise unreachable providers. (Corroborated by BUG-025 + 2026-04-21 prod-LLM-binding incident + 2026-04-23 revert-loop P0.)
+ - *Required files must be probed at startup and fail loud if missing.* When code declares a required on-disk artifact (ASP rule files, schema definitions, seeded fixtures, vendored configs), startup must probe for it and refuse to start if absent — not log a WARNING and continue with an empty fallback. Silent substrate-degradation from missing artifacts produces runs that report success while behaving as no-ops; that violates Hard Rule #8 at an earlier lifecycle phase. (Corroborated by BUG-026: `data/world_rules.lp` absent silently reduced the ASP constraint engine to a no-op.)
+ 
+diff --git a/docs/concerns/README.md b/docs/concerns/README.md
+index a1ecb8f445..9087f1e8c8 100644
+--- a/docs/concerns/README.md
++++ b/docs/concerns/README.md
+@@ -37,6 +37,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
+ | **P1** | [Unsafe-fence recovery path deleted](2026-08-27-unsafe-fence-recovery-path-deleted.md) — #2442 removed the only exit from `phase=unsafe_fenced` (observed live 2026-08-05, all five containers Exited) while three workflows still arm the fence | 2026-08-27 |
+ | **P1** | [GitHub App token refresh never reaches the daemon](2026-08-27-github-app-token-refresh-never-reaches-daemon.md) — a 45-min timer writes an `env_file` the running process snapshotted at container creation; the unit is also skipped silently without a bootstrap file nothing creates | 2026-08-27 |
+ | **P1** | [Deploy drops the compose sync](2026-08-27-deploy-drops-compose-sync.md) — `deploy/compose.yml` is never shipped to the droplet, so every compose-level change is inert in production | 2026-08-27 |
++| **P1** | [Maintainer lane mutated user-universe workflows](2026-09-03-maintainer-lane-mutated-user-universe-workflows.md) — platform work must build user capability, not repair one user's stored workflows as an operator workaround | 2026-09-03 |
+ | **P2** | [Foreground provider authority gaps](2026-08-27-foreground-provider-authority-gaps.md) — 4 unfixed: `max_invocations` counts node definitions, mock bypass keyed on `__module__`, receipt published before claim, denials masked as "connect your provider" | 2026-08-27 |
+ | **P2** | [Global subscription-auth seed is a dead path](2026-08-27-deploy-drops-subscription-auth-sync.md) — no workflow delivers the two auth bundles, but Codex review found them vestigial: the fix is removing the entrypoint/runbook contract and the stale process-global gates, NOT restoring delivery | 2026-08-27 |
+ | **P2** | [Sibling sessions have no subtree budget](2026-08-27-sibling-sessions-have-no-subtree-budget.md) — async fan-out mints a fresh per-run receipt each time, so breadth is unbounded | 2026-08-27 |
