@@ -25,7 +25,12 @@ from tinyassets.api import interlocutor
 from tinyassets.api.helpers import _request_universe, _universe_dir
 from tinyassets.config import load_universe_config
 from tinyassets.persona import read_persona_voice, resolve_persona
-from tinyassets.providers.base import HOST_REACH_TOOLS, ModelConfig, UniverseContext
+from tinyassets.providers.base import (
+    ACCOUNT_REACH_TOOLS,
+    HOST_REACH_TOOLS,
+    ModelConfig,
+    UniverseContext,
+)
 from tinyassets.providers.call import call_provider
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.soul_edit import (
@@ -134,12 +139,17 @@ _ENGINE_DISALLOWED_TOOLS = (
     "Task", "Agent", "Workflow", "Skill", "ToolSearch", "SlashCommand",
     "TodoWrite", "EnterPlanMode", "ExitPlanMode",
     "EnterWorktree", "ExitWorktree",
-    # scheduling / messaging / remote side-effects
-    "ScheduleWakeup", "ReportFindings", "PushNotification", "RemoteTrigger",
-    "SendMessage", "CronCreate", "CronDelete", "CronList",
+    # session-local bookkeeping: the turn's own task list and its findings
+    # report, which reports INTO the turn rather than out of it.
+    "ReportFindings",
     "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
-    # remote integrations
-    "DesignSync", "DesignSyncTool",
+    # Effects that leave the platform or outlive the turn -- the host's claude.ai
+    # account, the outside world, or a clock. The ONE definition, shared with the
+    # workflow-node denylist so the two cannot drift; it carries the names that
+    # used to be literals here (SendMessage, ScheduleWakeup, PushNotification,
+    # RemoteTrigger, Cron*, DesignSync*). Neither the OS jail nor
+    # --strict-mcp-config bounds these.
+    *ACCOUNT_REACH_TOOLS,
     # MCP: all server tools (wildcard) + resource readers
     "mcp__*", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
     "ListMcpResourcesTool",
