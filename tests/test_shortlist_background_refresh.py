@@ -385,3 +385,45 @@ def test_freshness_constants_stay_inside_the_snapshot_window():
     assert 0 < REFRESH_AGE < USABLE_AGE
     assert USABLE_AGE <= timedelta(minutes=5).total_seconds() / 2
     assert replace is not None  # keep the import honest for future edits
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_a_warming_catalogue_leaves_the_default_PICKABLE(native, monkeypatch):  # noqa: F811
+    """The claim above, checked where the client actually decides.
+
+    `model_options_document` attaches source-level reasons to each row, and the
+    app treats ANY reason on a row as not-pickable
+    (`usable()` in app.html requires `!(row.reasons||[]).length`). So a pending
+    reason left on the provider-default row would make the one lane that never
+    needed enumeration unselectable while a refresh runs -- the exact opposite
+    of this change's purpose, and invisible to a test that only checks the
+    model list.
+    """
+    from tinyassets.providers.model_options import model_options_document
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+
+    async def discover():
+        return catalogue(["enumerated-model"])
+
+    install_discovery(native, monkeypatch, discover)
+    SHORTLIST_CACHE.forget(base=native.base, owner="owner-1",
+                           universe_id=native.universe.name)
+    monkeypatch.setattr(SHORTLIST_CACHE, "schedule", lambda **kwargs: False)
+
+    prepared = prepare_owned_model_plan(
+        base=native.base, universe=native.universe, owner="owner-1",
+        agent=native.agent, allow_empty=True,
+    )
+    document = model_options_document(prepared.catalog, prepared.plan, prepared.ineligible)
+    default = next(row for row in document["options"]
+                   if row["reference"]["model_id"] == "")
+
+    assert default["in_candidate_catalog"] is True
+    assert default["reasons"] == [], (
+        "a warming catalogue made the provider default unpickable: "
+        f"{default['reasons']}"
+    )
+    # ...while the source itself still reports the pending state honestly.
+    assert any(reason["reason"] == "catalogue_refresh_pending"
+               for entry in document["source_failures"]
+               for reason in entry["reasons"])
