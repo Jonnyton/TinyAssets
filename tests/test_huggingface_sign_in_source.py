@@ -131,10 +131,28 @@ class FakeHuggingFace:
         return 404, {"error": "not_found"}
 
 
+def enable_fake_source(monkeypatch):
+    """Protocol fixture only: the fake has no billable upstream.
+
+    The real installed source stays unavailable until its free-only boundary is
+    proved. Enabling this test copy does not assert real provider eligibility.
+    """
+    from copy import deepcopy
+
+    from tinyassets.providers import free_sources
+
+    sources = deepcopy(free_sources._SOURCES)
+    for row in sources:
+        if row["id"] == "huggingface":
+            row["available"] = True
+    monkeypatch.setattr(free_sources, "_SOURCES", sources)
+
+
 @pytest.fixture
 def hf(monkeypatch):
     from tinyassets.connection_oauth import discovery
 
+    enable_fake_source(monkeypatch)
     fake = FakeHuggingFace()
     _install_loopback_driver(monkeypatch, fake.port)
     monkeypatch.setattr(discovery, "DISCOVERY_ENABLED", True)
@@ -329,7 +347,7 @@ def test_the_document_never_follows_the_request_host(app):
     assert served.json()["redirect_uris"] == [REDIRECT]
 
 
-def test_the_connect_setup_offers_sign_in_sources_and_daily_caps(universes):
+def test_the_connect_setup_offers_sign_in_sources_and_daily_caps(hf, universes):
     from tinyassets.api.pending_requests import _connect_llm_request
 
     setup = _connect_llm_request(connected=True)["action"]["setup"]
@@ -352,3 +370,28 @@ def test_the_connect_setup_offers_sign_in_sources_and_daily_caps(universes):
     from tinyassets.providers.free_sources import billing_url_for_host
 
     assert billing_url_for_host("openrouter.ai") == cap["credit_url"]
+
+
+def test_installed_unsafe_source_is_not_offered():
+    from tinyassets.api.pending_requests import _connect_llm_request
+    from tinyassets.providers.free_sources import sign_in_cards, sign_in_preset, source_cards
+
+    assert sign_in_preset("huggingface") is None
+    assert all(row["id"] != "huggingface" for row in sign_in_cards() + source_cards())
+    assert _connect_llm_request()["action"]["setup"]["sign_in_sources"] == []
+
+
+def test_withheld_source_cannot_start_oauth_or_create_a_request(app, monkeypatch):
+    from tinyassets import onboarding
+    from tinyassets.api.pending_requests import list_requests
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("withheld source must refuse before home/bootstrap/discovery")
+
+    monkeypatch.setattr(onboarding, "_bootstrap_home", forbidden)
+    with _as(OWNER):
+        before = list_requests(universe_id=UID)
+        response = _post("source_sign_in", {"preset_id": "huggingface"})
+        after = list_requests(universe_id=UID)
+    assert response.status_code == 404
+    assert before == after

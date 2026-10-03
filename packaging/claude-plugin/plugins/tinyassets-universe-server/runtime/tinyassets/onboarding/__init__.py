@@ -784,7 +784,22 @@ async def _handle_openai_device_poll(request: Any) -> Any:
         # Re-pin the identity inside the worker thread (same pattern as the
         # browser deposit form) so connect_llm's actor resolution sees the user.
         with identity_context(identity):
-            return deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
+            result = deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
+            if (isinstance(result, dict) and not result.get("error")
+                    and (result.get("serving") or {}).get("status") == "held"):
+                from tinyassets.api.helpers import _base_path
+                from tinyassets.onboarding.source_connect import offer_subscription_source
+
+                try:
+                    offered = offer_subscription_source(
+                        base=_base_path(), uid=flow.universe_id, owner=identity.user_id,
+                        service=DEVICE_SIGN_IN_SERVICE,
+                    )
+                    if offered is not None:
+                        result = {**result, "confirmation": offered["request"]}
+                except Exception:  # noqa: BLE001 - deposit succeeded; expose no private detail
+                    result = {**result, "confirmation_error": "model_confirmation_requires_review"}
+            return result
 
     result = await run_in_threadpool(_deposit)
     if not isinstance(result, dict) or result.get("error"):
@@ -793,8 +808,16 @@ async def _handle_openai_device_poll(request: Any) -> Any:
             err = str(result["error"])
         status = 401 if err == "authentication_required" else 400
         return JSONResponse({"status": "failed", "error": err}, status_code=status)
+    serving = result.get("serving") or {}
+    response = {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE,
+                "serving": {"status": "serving" if serving.get("status") == "serving"
+                            else "held"}}
+    if "confirmation" in result:
+        response["confirmation"] = result["confirmation"]
+    if "confirmation_error" in result:
+        response["confirmation_error"] = result["confirmation_error"]
     return JSONResponse(
-        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
+        response,
         headers={"Cache-Control": "no-store"},
     )
 

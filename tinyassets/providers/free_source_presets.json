@@ -82,6 +82,8 @@
   },
   {
     "id": "huggingface",
+    "available": false,
+    "unavailable_reason": "free_only_boundary_unverified",
     "name": "Hugging Face",
     "base_url": "https://router.huggingface.co/v1",
     "help_url": "https://huggingface.co/settings/connected-applications",

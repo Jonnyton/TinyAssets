@@ -39,13 +39,17 @@ def test_every_preset_exposes_only_verified_daily_cap_numbers():
     presets = json.loads(Path(free_sources.__file__).with_name(
         "free_source_presets.json").read_text(encoding="utf-8"))
     cards = {row["id"]: row for row in source_cards() + free_sources.sign_in_cards()}
-    assert set(cards) == {row["id"] for row in presets}
+    available = [row for row in presets if row.get("available", True)]
+    assert set(cards) == {row["id"] for row in available}
     for preset in presets:
         cap = preset["daily_cap"]
         assert set(cap) == {"requests_per_day", "tokens_per_minute", "reset_timezone", "source_url"}
         assert urlsplit(cap["source_url"]).scheme == "https"
         assert urlsplit(cap["source_url"]).netloc
-        assert cards[preset["id"]]["daily_cap"] == cap
+        if preset.get("available", True):
+            assert cards[preset["id"]]["daily_cap"] == cap
+        else:
+            assert preset["id"] not in cards
         assert (cap["requests_per_day"], cap["tokens_per_minute"]) == (
             (1000, 8000) if preset["id"] == "groq" else (None, None))
         assert cap["reset_timezone"] == (
