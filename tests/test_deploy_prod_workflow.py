@@ -441,163 +441,172 @@ def test_rollback_step_present():
 
 
 def test_failed_candidate_diagnostics_are_preserved_before_rollback():
-    """Evidence outlives the rollback that destroys the container it came from.
+    """Evidence outlives the rollback, and never delays it.
 
-    Two of this test's landmarks are gone for different reasons, and the
-    difference matters:
+    Two landmarks this test used to key on are gone for different reasons, and
+    the difference is the finding:
 
     * ``Wait for daemon health`` was REPLACED, not dropped. #2442 moved the wait
       into ``deploy/deploy_fail_safe.sh``, which reaches 'healthy' within
-      ``HEALTH_TIMEOUT`` or rolls itself back (rc 2), and the workflow proves the
-      PUBLIC surfaces separately afterwards. Asserted here through the step that
-      now owns it.
+      ``HEALTH_TIMEOUT`` or rolls itself back (rc 2); the workflow proves the
+      PUBLIC surfaces separately afterwards. Asserted through the step that now
+      owns it.
     * ``Rollback on failure``, the task 2.1 cleanup and the ``terminal`` receipt
-      outputs belonged to the stop-writer fence that the same PR retired, so
-      their orderings are not re-asserted -- there is nothing left to order
-      against.
+      outputs belonged to the stop-writer fence the same PR retired, so their
+      orderings are not re-asserted.
 
-    What did NOT survive was the diagnostics path itself: #2442 took the capture
-    and upload with it and left ``scripts/sanitize_startup_diagnostics.py``
-    with no caller, so a failed prod deploy kept nothing. That is restored, and
-    this test is what holds it.
+    What did NOT survive was the diagnostics path: #2442 took the capture and
+    upload with it and left ``scripts/sanitize_startup_diagnostics.py`` with no
+    caller, so a failed prod deploy kept nothing.
+
+    The split into snapshot-then-rollback-then-sanitize is a Codex P1 finding on
+    the first version of this restore: collecting evidence over two SSH calls
+    before the rollback left the broken candidate serving while it ran. Only the
+    fast raw-bytes snapshot may precede the rollback.
     """
     wf = _load()
     steps = _steps(wf)
     deploy = _step_named(wf, "Run fail-safe deploy on the droplet")
-    capture = _step_named(wf, "Capture failed candidate startup diagnostics")
+    snapshot = _step_named(wf, "Snapshot failed candidate evidence (before rollback)")
+    sanitize = _step_named(wf, "Sanitize failed candidate diagnostics")
     upload = _step_named(wf, "Upload failed candidate startup diagnostics")
     rollback = _step_named(wf, "Roll back if the public canary is red")
     terminal = _step_named(wf, "Publish release-state receipt")
 
-    # Capture sits between the deploy and the rollback: after the candidate is
-    # running, before anything replaces it.
-    assert steps.index(deploy) < steps.index(capture) < steps.index(rollback)
-    assert steps.index(rollback) < steps.index(terminal) < steps.index(upload)
+    # The ONLY thing between the deploy and the rollback is the raw snapshot.
+    assert steps.index(deploy) < steps.index(snapshot) < steps.index(rollback)
+    # Everything that costs time happens after production is recovered.
+    assert steps.index(rollback) < steps.index(sanitize) < steps.index(terminal)
+    assert steps.index(terminal) < steps.index(upload)
     assert deploy.get("id") == "deploy"
-    assert capture.get("id") == "candidate_diagnostics"
+    assert snapshot.get("id") == "candidate_snapshot"
+    assert sanitize.get("id") == "candidate_diagnostics"
 
-    # The health wait is the fail-safe script's, bounded and rolling itself
-    # back, which is why no workflow step polls for it any more.
-    assert "HEALTH_TIMEOUT=180" in str(deploy.get("run", ""))
-    assert "deploy_fail_safe.sh" in str(deploy.get("run", ""))
-    assert "rc" in str(deploy.get("run", "")), "the script's verdict is an output"
+    # The health wait is the fail-safe script's, bounded and self-rolling-back,
+    # which is why no workflow step polls for it any more.
+    deploy_run = str(deploy.get("run", ""))
+    assert "HEALTH_TIMEOUT=180" in deploy_run
+    assert "deploy_fail_safe.sh" in deploy_run
+    assert "snapshot_candidate_evidence.sh" in deploy_run, (
+        "the snapshot script ships in the same scp as the deploy script"
+    )
 
-    capture_condition = str(capture.get("if", "")).strip()
-    assert capture_condition == (
+    # ---- the snapshot must be cheap and bounded -------------------------
+    snapshot_condition = str(snapshot.get("if", "")).strip()
+    assert snapshot_condition == (
         "${{ always() && steps.deploy.outputs.rc == '0' "
         "&& (failure() || cancelled()) }}"
     )
-    assert "always()" in capture_condition
-    assert "failure()" in capture_condition
-    assert "cancelled()" in capture_condition
-    # rc 0 means the swap succeeded, so a candidate container exists to read.
-    # An unhealthy candidate (rc 2) was already rolled back inside the script,
-    # which is why it is excluded rather than silently captured as the
-    # candidate: its logs need preserving in the script itself (see
-    # docs/concerns/2026-10-03-unhealthy-candidate-rollback-keeps-no-diagnostics.md).
-    assert "steps.deploy.outputs.rc == '0'" in capture_condition
-    assert "steps.canary.outcome" not in capture_condition, (
-        "a cancellation, or any later failure after a good swap, still needs "
-        "identity-bound diagnostics -- not only a red canary"
+    assert "steps.deploy.outputs.rc == '0'" in snapshot_condition, (
+        "rc 2 was already rolled back inside the script, so its container is "
+        "the PREVIOUS image; reading it would mislabel the evidence"
     )
+    assert "steps.canary.outcome" not in snapshot_condition, (
+        "a cancellation, or any later failure after a good swap, still needs "
+        "identity-bound evidence -- not only a red canary"
+    )
+    assert snapshot.get("continue-on-error") is True, (
+        "the rollback must run even if the snapshot fails"
+    )
+    assert 0 < int(snapshot["timeout-minutes"]) <= 2, (
+        "an unbounded snapshot step is an unbounded delay before rollback"
+    )
+    snapshot_run = str(snapshot.get("run", ""))
+    assert snapshot_run.count("ssh ") == 1, (
+        "ONE round trip: two sequential SSH calls is what delayed the rollback"
+    )
+    assert "timeout 25s ssh" in snapshot_run
+    assert "ConnectTimeout=10" in snapshot_run
+    assert "ServerAliveInterval=5" in snapshot_run
+    assert "ServerAliveCountMax=2" in snapshot_run
+    assert "exit 0" in snapshot_run
+    # No sanitizing, no artifact work, no local python on the critical path.
+    assert "sanitize_startup_diagnostics.py" not in snapshot_run
+    assert "scp" not in snapshot_run
 
+    # ---- the snapshot script binds both reads to one container id -------
+    script = Path("deploy/snapshot_candidate_evidence.sh").read_text(encoding="utf-8")
+    assert "--format '{{.Id}}'" in script, "the id is resolved first"
+    assert script.count('"${cid}"') >= 3, (
+        "inspect and logs must read the ID, not the mutable container NAME: "
+        "a replacement between two name reads can supply the rollback "
+        "container's logs under a matching manifest"
+    )
+    assert "docker logs --tail" in script
+    assert 'tail -c "${LOG_BYTES}"' in script
+    assert "LOG_BYTES=131072" in script
+    assert "STATE_BYTES=16385" in script
+    assert "rm -f" in script, "a stale file from an earlier deploy is not evidence"
+    assert script.count("timeout ") >= 3, "every docker call is bounded"
+    assert "exit 0" in script
+    assert "org.opencontainers.image.revision" in script
+    assert ".Config.Image" in script
+    assert ".Config.Env" not in script
+    assert "/etc/tinyassets/env" not in script
+    assert "docker compose" not in script
+    state_template_match = re.search(r"--format '(\{\{\.State\.Status\}\}[^']+)'", script)
+    assert state_template_match is not None, "the inspect template is quoted once"
+    state_template = state_template_match.group(1)
+    assert state_template.split("|")[:6] == [
+        "{{.State.Status}}",
+        "{{.State.Running}}",
+        "{{.State.Restarting}}",
+        "{{.State.ExitCode}}",
+        "{{.State.OOMKilled}}",
+        "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
+    ], state_template
+    assert state_template.endswith("{{json .State.Error}}")
+
+    # ---- sanitizing is after recovery, non-fatal, and fails closed -----
+    sanitize_condition = str(sanitize.get("if", "")).strip()
+    assert sanitize_condition == (
+        "${{ always() && steps.candidate_snapshot.outcome != 'skipped' }}"
+    )
+    assert sanitize.get("continue-on-error") is True
+    assert 0 < int(sanitize["timeout-minutes"]) <= 5
+    sanitize_run = str(sanitize.get("run", ""))
+    assert "scripts/sanitize_startup_diagnostics.py" in sanitize_run
+    assert '--target-revision "${TARGET_REVISION}"' in sanitize_run
+    assert '--target-image-ref "${TARGET_IMAGE_REF}"' in sanitize_run
+    assert "TARGET_REVISION" in (sanitize.get("env") or {})
+    assert "TARGET_IMAGE_REF" in (sanitize.get("env") or {})
+    assert '"capture":"unavailable"' in sanitize_run, (
+        "a vanished container produces unavailable evidence, not a manifest "
+        "that implies the logs were the candidate's"
+    )
+    assert '"candidate_identity_match":false' in sanitize_run, "the default is no match"
+    assert '"container_id"' in sanitize_run, "the manifest records which container"
+    assert 'rm -f "${raw_log}"' in sanitize_run, "raw bytes never reach the artifact"
+    assert "exit 0" in sanitize_run
+    assert "deploy_fail_safe.sh" not in sanitize_run, "it must not touch production"
+
+    # ---- the upload is non-fatal and bounded ---------------------------
+    upload_with = upload.get("with") or {}
     upload_condition = str(upload.get("if", "")).strip()
     assert upload_condition == (
         "${{ always() && steps.candidate_diagnostics.outcome == 'success' }}"
     )
-    assert "always()" in upload_condition
-    assert "steps.candidate_diagnostics.outcome == 'success'" in upload_condition, (
-        "gated on the CAPTURE, not on the deploy: if-no-files-found=error would "
-        "otherwise fail a green run that captured nothing"
+    assert upload.get("continue-on-error") is True, (
+        "an artifact-service error on the recovery path must not fail the job"
     )
-
-    capture_script = str(capture.get("run", ""))
-    assert "docker inspect --type container tinyassets-daemon" in capture_script
-    assert "docker logs --tail 200 tinyassets-daemon" in capture_script
-    assert "tail -c 131072" in capture_script
-    assert "scripts/sanitize_startup_diagnostics.py" in capture_script
-    assert "ConnectTimeout=10" in capture_script
-    assert "ServerAliveInterval=5" in capture_script
-    assert "ServerAliveCountMax=2" in capture_script
-    assert capture_script.count("timeout 25s ssh") >= 2
-    assert capture_script.count("timeout 15s sudo docker") >= 2
-    assert "head -c 16385" in capture_script
-    assert 'rm -f "${raw_log}"' in capture_script
-    assert "TARGET_REVISION" in (capture.get("env") or {})
-    assert "TARGET_IMAGE_REF" in (capture.get("env") or {})
-    assert "org.opencontainers.image.revision" in capture_script
-    assert ".Config.Image" in capture_script
-    assert r"\t" not in capture_script
-    state_template_match = re.search(r"--format '([^']+)'", capture_script)
-    assert state_template_match is not None
-    state_template = state_template_match.group(1)
-    expected_state_template = STATE_SEPARATOR.join(
-        (
-            "{{.State.Status}}",
-            "{{.State.Running}}",
-            "{{.State.Restarting}}",
-            "{{.State.ExitCode}}",
-            "{{.State.OOMKilled}}",
-            "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
-            r'{{index .Config.Labels \"org.opencontainers.image.revision\"}}',
-            "{{.Config.Image}}",
-            "{{json .State.Error}}",
-        )
+    assert 0 < int(upload["timeout-minutes"]) <= 5, (
+        "a slow upload holds the production-host-mutation group"
     )
-    assert state_template == expected_state_template
-    assert state_template.count(STATE_SEPARATOR) == 8
-    revision = "a" * 40
-    image_ref = f"ghcr.io/tinyassets/tinyassets-daemon@sha256:{'b' * 64}"
-    rendered_state = STATE_SEPARATOR.join(
-        (
-            "exited",
-            "false",
-            "false",
-            "1",
-            "false",
-            "unhealthy",
-            revision,
-            image_ref,
-            json.dumps(""),
-        )
-    ).encode()
-    assert (
-        sanitize_candidate_state(
-            rendered_state,
-            target_revision=revision,
-            target_image_ref=image_ref,
-        )["candidate_identity_match"]
-        is True
-    )
-    assert "candidate_identity_match" in capture_script
-    assert "--state" in capture_script
-    assert '--target-revision "${TARGET_REVISION}"' in capture_script
-    assert '--target-image-ref "${TARGET_IMAGE_REF}"' in capture_script
-    assert 'if [ "${candidate_identity_match}" = "true" ]' in capture_script
-    assert "GITHUB_SHA" not in capture_script
-    assert "docker compose" not in capture_script
-    assert "compose-ps" not in capture_script
-    assert "daemon.log" not in capture_script
-    assert "/etc/tinyassets/env" not in capture_script
-    assert ".Config.Env" not in capture_script
-    assert "{{json .State.Error}}" in capture_script
-
-    upload_with = upload.get("with") or {}
     assert (
         upload.get("uses")
         == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     )
     # The invariant is that every upload is pinned to the reviewed commit, not
     # how many uploads there are: the count was 3 when two of them belonged to
-    # the stop-writer artifacts #2442 retired. Asserted as "no unpinned use,
-    # and every pinned use is this sha" so it keeps holding as steps come and go.
+    # the stop-writer artifacts #2442 retired.
     assert "actions/upload-artifact@v4" not in _text()
     uploads = re.findall(r"actions/upload-artifact@(\S+)", _text())
     assert uploads, "the diagnostics upload is the one artifact this job writes"
     assert set(uploads) == {"ea165f8d65b6e75b540449e92b4886f43607fa02"}, uploads
-    assert upload_with.get("if-no-files-found") == "error"
+    assert upload_with.get("if-no-files-found") == "warn", (
+        "an empty evidence dir is legitimate when the container was gone"
+    )
     assert 0 < int(upload_with["retention-days"]) <= 7
-
 
 def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
     wf = _load()
@@ -1096,7 +1105,15 @@ def test_terminal_receipt_summary_python_is_executable(tmp_path):
 def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():
     text = _text()
     assert "github.event.workflow_run.head_sha || github.sha" not in text
-    assert "org.opencontainers.image.revision" in text
+    # The deploy identifies an image by its OCI revision label, never by the
+    # run's own sha. The label is read in the script the workflow ships to the
+    # host (deploy/snapshot_candidate_evidence.sh) rather than inline, so the
+    # assertion covers the deploy CHAIN -- grepping only the workflow text would
+    # pass or fail on where the string happens to live.
+    chain = text + Path("deploy/snapshot_candidate_evidence.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "org.opencontainers.image.revision" in chain
 
 
 def test_terminal_writer_outputs_are_visible_before_fallible_work():
