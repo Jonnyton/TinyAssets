@@ -3132,7 +3132,17 @@ def converse(
     try:
         # Registered under the VERIFIED caller and this universe, so the owner's
         # Stop from any of their surfaces reaches it and nobody else's can.
-        with interactive_turn(current_actor_id(), uid) as live_turn:
+        #
+        # Also under the ADDRESSED AGENT (harness §4.18). ``request_interrupt``
+        # already filters by ``live.agent_id`` and ``LiveTurn`` already carries
+        # it, but this caller left it at the ``main`` default, so every turn
+        # registered as main whoever it was addressed to: a Stop aimed at a
+        # custom agent matched nothing and did nothing, while a Stop aimed at
+        # main stopped that custom agent's turn. ``addressed_id`` is the
+        # resolution this turn already did from authenticated ingress -- not a
+        # parsed session, which is never authority (change
+        # addressed-agent-control-provenance §3).
+        with interactive_turn(current_actor_id(), uid, agent_id=addressed_id) as live_turn:
             live_id = live_turn.live_id
             _open_steering(memory_universe_dir, memory_session, uid, live_id,
                            current_actor_id())
