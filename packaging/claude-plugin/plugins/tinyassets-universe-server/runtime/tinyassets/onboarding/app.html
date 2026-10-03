@@ -4896,15 +4896,30 @@
       if(document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) return;
       if(typeof focusCommandCenter === "function") focusCommandCenter();
     },true);
+    // The window regains focus both when the owner returns to the app AND when
+    // they click from the command center frame into the chat cloud. In the
+    // second case the click's own focus step lands on the control a moment
+    // later, so decide after it: deciding first sent focus back to the frame
+    // and the frame then took it from the composer (live 2026-10-03: typing
+    // in the chat went nowhere).
+    let cloudPointerAt=0;
+    document.addEventListener("pointerdown",event=>{
+      if(event.target.closest && event.target.closest("#chat-cloud, #chat-cloud-bubble")) cloudPointerAt=Date.now();
+    },true);
     window.addEventListener("focus",()=>{
-      const active=document.activeElement;
-      if(document.querySelector("dialog[open]")) return;
-      if(typeof isTypingTarget === "function" && isTypingTarget(active)) return;
-      if(active.closest("dialog[open], #cloud-menu:not([hidden])")) return;
-      if(active===document.body || active===document.documentElement ||
-         active.closest("#chat-cloud")){
-        if(typeof focusCommandCenter === "function") focusCommandCenter();
-      }
+      setTimeout(()=>{
+        const active=document.activeElement;
+        if(document.querySelector("dialog[open]")) return;
+        if(typeof isTypingTarget === "function" && isTypingTarget(active)) return;
+        if(active.closest("dialog[open], #cloud-menu:not([hidden])")) return;
+        // A cloud control focused by the owner's own click stays focused; one
+        // left behind (e.g. a cancelled file picker) hands back to the frame.
+        const clicked=Date.now()-cloudPointerAt < 1000;
+        if(active===document.body || active===document.documentElement ||
+           (!clicked && active.closest("#chat-cloud"))){
+          if(typeof focusCommandCenter === "function") focusCommandCenter();
+        }
+      },0);
     });
     document.addEventListener("keydown",forwardCommandCenterKey);
     document.addEventListener("keyup",forwardCommandCenterKey);

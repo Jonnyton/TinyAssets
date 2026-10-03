@@ -412,3 +412,36 @@ def test_phone_play(app_url, browser, tmp_path):
     assert page.locator("#chat-cloud").is_visible()
     assert errors == []
     context.close()
+
+
+def test_clicking_the_composer_from_the_frame_keeps_typing_in_the_chat(app_url, browser):
+    # Live 2026-10-03 (founder's desktop app): with focus in the command center,
+    # clicking the chat input fired the window's focus handler BEFORE the click
+    # focused the input, so focus went back to the frame, the frame's own code
+    # took it, and typing went nowhere. The frame here grabs focus whenever it
+    # is told to, like a game command center does.
+    from playwright.sync_api import expect
+
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => AppUI.mount({ui_id:'play', name:'Play',
+      markup:'<div id="hero" tabindex="0"></div>',
+      style:'#hero{width:20px;height:20px;background:red}',
+      script:`window.addEventListener('message',e=>{
+        if(e.data && e.data.type==='focus') document.getElementById('hero').focus();
+      });`})""")
+    page.frame_locator("#ui-frame").locator("#hero").wait_for()
+    page.click("#chat-cloud-bubble")
+    page.evaluate("() => focusCommandCenter()")
+    # Leaving an iframe by mouse: the frame loses focus and the parent window's
+    # focus event fires during the press, BEFORE the press focuses the input.
+    page.evaluate("""() => document.addEventListener('pointerdown', () => {
+        document.activeElement.blur();
+        window.dispatchEvent(new Event('focus'));
+    }, {capture: true, once: true})""")
+    page.locator("#composer-input").click()
+    page.wait_for_timeout(300)
+    expect(page.locator("#composer-input")).to_be_focused()
+    page.keyboard.type("hello")
+    assert page.input_value("#composer-input") == "hello"
+    page.close()
