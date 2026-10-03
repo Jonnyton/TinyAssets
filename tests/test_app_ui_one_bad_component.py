@@ -80,7 +80,38 @@ assert.deepEqual(stillThere,before,'and is byte-identical: it was carried, not r
 assert.deepEqual(appUi.ui_library.map(e=>e.ui_id).sort(),
  ['furry-house','newcomer','office','village']);
 
+// ---- installing the SAME ui_id supersedes the broken twin --------------
+// The one case that is meant to drop: "this ui_id is now this component". Two
+// entries sharing an id would otherwise accumulate forever, and the person
+// asked for that id to be this. Pinned so it stays deliberate.
+appUi=stored([GOOD_A,BROKEN],null);
+u.adopt(clone(appUi));
+assert.equal(u.broken.length,1);
+const fixed=await u.install(bundleOf({ui_id:'furry-house',name:'Furry House'}));
+assert(fixed.ok,JSON.stringify(fixed));
+assert.deepEqual(appUi.ui_library.map(e=>e.ui_id),['office','furry-house'],
+ 'the broken twin is replaced, not kept beside its replacement');
+assert.equal(appUi.ui_library.find(e=>e.ui_id==='furry-house').version,1,
+ 'and what is stored is the good one');
+assert.equal(u.broken.length,0,'nothing is left flagged');
+
+// ---- two broken entries sharing an id BOTH survive an unrelated install -
+// Neither is the install's target, so neither may be dropped.
+const twinA={...bundleOf({ui_id:'twin',name:'Twin A'}),version:2};
+const twinB={...bundleOf({ui_id:'twin',name:'Twin B'}),version:3};
+appUi=stored([twinA,twinB],null);
+u.adopt(clone(appUi));
+assert.equal(u.library.length,0,'neither parses');
+assert.equal(u.broken.length,2);
+const beside=await u.install(bundleOf({ui_id:'unrelated',name:'Unrelated'}));
+assert(beside.ok,JSON.stringify(beside));
+assert.equal(appUi.ui_library.length,3,'both broken twins are still stored');
+assert.deepEqual(appUi.ui_library.filter(e=>e.ui_id==='twin').map(e=>e.version).sort(),
+ [2,3],'each kept as it was');
+
 // ---- switching to a good UI still works while one is broken ------------
+appUi=stored([GOOD_A,BROKEN,GOOD_B],{version:1,state:'active',ui_id:'office'});
+u.adopt(clone(appUi));
 await u.choose('village');
 assert(u.active&&u.active.ui_id==='village','a good UI is selectable: '+JSON.stringify(u.active));
 
