@@ -35,6 +35,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 _LOG = logging.getLogger("universe_server.shortlist_refresh")
@@ -70,14 +71,17 @@ class _Key:
 @dataclass(slots=True)
 class _Entry:
     snapshot: object | None = None
-    #: Monotonic stamp of the last COMPLETED attempt, successful or not. Used
-    #: for scheduling only; freshness for use comes from `observed`.
+    #: Monotonic stamp of the last COMPLETED attempt, used only to order
+    #: eviction. Usability is NEVER measured from it -- see `snapshot_age`.
     attempted: float = 0.0
-    #: Monotonic stamp of the snapshot currently held.
-    observed: float = 0.0
     inflight: bool = False
     #: Why the last attempt failed, as a fixed reason, or "" when it succeeded.
     reason: str = ""
+    #: Bumped whenever this key is dropped or re-created. A refresh carries the
+    #: generation it was claimed under and discards its result if it no longer
+    #: matches, so a worker that started before a reconnect cannot resurrect a
+    #: forgotten key or overwrite the entry that replaced it.
+    generation: int = 0
 
 
 class ShortlistCache:
@@ -88,6 +92,66 @@ class ShortlistCache:
         self._entries: dict[_Key, _Entry] = {}
         self._pool: ThreadPoolExecutor | None = None
         self._clock = time.monotonic
+        self._generation = 0
+        #: Injected so a test can move the wall clock the snapshots are
+        #: measured against without touching the real one.
+        self._now = lambda: datetime.now(timezone.utc)
+
+    # -- internals ------------------------------------------------------
+
+    def _admit(self, key: _Key) -> "_Entry | None":
+        """Create an entry, evicting the least recently attempted at the cap.
+
+        Called by EVERY insertion path, not just reads. An earlier version
+        checked the bound only in ``get``, so deposit warming and
+        ``refresh_now`` grew the dict without limit while a new picker source
+        was the one refused -- exactly backwards. Caller holds the lock.
+        """
+        if len(self._entries) >= MAX_TRACKED:
+            # Evict rather than refuse: a never-refreshed source cannot be
+            # served anyway, so keeping it in preference to a live request is
+            # the wrong trade. An in-flight entry is never evicted, because
+            # its worker still holds the key.
+            victim = min(
+                (k for k, e in self._entries.items() if not e.inflight),
+                key=lambda k: self._entries[k].attempted,
+                default=None,
+            )
+            if victim is None:
+                return None
+            self._drop(victim)
+        self._generation += 1
+        entry = _Entry(generation=self._generation)
+        self._entries[key] = entry
+        return entry
+
+    def _drop(self, key: _Key) -> None:
+        """Remove a key and retire its generation. Caller holds the lock."""
+        self._entries.pop(key, None)
+        self._generation += 1
+
+    def _snapshot_age(self, entry: "_Entry") -> float | None:
+        """Seconds since the SNAPSHOT itself was observed, or None if cold.
+
+        Measured from the snapshot's own ``observed_at``, which is the stamp
+        ``NativeDiscoverySnapshot.assert_fresh`` measures. An earlier version
+        used a monotonic stamp taken when the refresh COMPLETED, and that is
+        not the same clock or the same origin: ``observed_at`` is set before
+        the credential copy, which happens outside the enumeration timeout, so
+        the gap between them is unbounded. A refresh finishing at snapshot age
+        200s looked brand new to the cache and then expired under
+        ``assert_fresh`` 100s later -- dropping the source, and its default,
+        from a picker that had just been told the catalogue was fine.
+        """
+        snapshot = entry.snapshot
+        observed = getattr(snapshot, "observed_at", None)
+        if snapshot is None or observed is None:
+            return None
+        try:
+            return (self._now() - observed).total_seconds()
+        except TypeError:
+            # A snapshot whose stamp cannot be compared is not usable data.
+            return None
 
     # -- reads ----------------------------------------------------------
 
@@ -100,23 +164,22 @@ class ShortlistCache:
         yet -- rather than inventing availability or hanging the read.
         """
         key = _Key(str(base), owner, universe_id, provider)
-        now = self._clock()
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
-                if len(self._entries) >= MAX_TRACKED:
+                entry = self._admit(key)
+                if entry is None:
                     return None, "catalogue_refresh_unavailable"
-                entry = self._entries.setdefault(key, _Entry())
-            usable = (entry.snapshot is not None
-                      and now - entry.observed <= USABLE_AGE)
-            needs = (entry.snapshot is None
-                     or now - entry.observed >= REFRESH_AGE)
+            age = self._snapshot_age(entry)
+            usable = age is not None and age <= USABLE_AGE
+            needs = age is None or age >= REFRESH_AGE
             reason = entry.reason
+            snapshot = entry.snapshot
         if needs:
             self.schedule(base=base, owner=owner, universe_id=universe_id,
                           provider=provider)
         if usable:
-            return entry.snapshot, ""
+            return snapshot, ""
         # A failed attempt reports ITS reason; a cold one reports pending. The
         # two are different facts and a client should not have to guess which.
         return None, reason or "catalogue_refresh_pending"
@@ -127,22 +190,29 @@ class ShortlistCache:
         """Queue one background refresh, unless this source already has one."""
         key = _Key(str(base), owner, universe_id, provider)
         with self._lock:
-            entry = self._entries.setdefault(key, _Entry())
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = self._admit(key)
+                if entry is None:
+                    return False
             if entry.inflight:
                 return False
             entry.inflight = True
+            claimed = entry.generation
             if self._pool is None:
                 self._pool = ThreadPoolExecutor(
                     max_workers=_POOL_SIZE, thread_name_prefix="shortlist-refresh",
                 )
             pool = self._pool
         try:
-            pool.submit(self._run, key)
+            pool.submit(self._run, key, claimed)
         except RuntimeError:
             # Interpreter shutdown: release the claim so a later process can
             # retry, rather than leaving the source permanently "inflight".
             with self._lock:
-                self._entries[key].inflight = False
+                live = self._entries.get(key)
+                if live is not None and live.generation == claimed:
+                    live.inflight = False
             return False
         return True
 
@@ -151,19 +221,27 @@ class ShortlistCache:
 
         The on-connect warm uses this; a picker read never does.
         """
-        self._run(_Key(str(base), owner, universe_id, provider), claim=True)
         key = _Key(str(base), owner, universe_id, provider)
+        with self._lock:
+            entry = self._entries.get(key) or self._admit(key)
+            if entry is None:
+                return None
+            entry.inflight = True
+            claimed = entry.generation
+        self._run(key, claimed)
         with self._lock:
             entry = self._entries.get(key)
             return None if entry is None else entry.snapshot
 
-    def _run(self, key: _Key, *, claim: bool = False) -> None:
+    def _run(self, key: _Key, claimed: int) -> None:
+        """Refresh one source. ``claimed`` is the generation this run owns.
+
+        The caller has already marked the entry in flight, so this never
+        creates one: a key that has been forgotten must STAY forgotten.
+        """
         from tinyassets.exceptions import ProviderError
         from tinyassets.providers.native_discovery import discover_native_models_sync
 
-        if claim:
-            with self._lock:
-                self._entries.setdefault(key, _Entry()).inflight = True
         snapshot, reason = None, ""
         try:
             snapshot = discover_native_models_sync(
@@ -182,13 +260,19 @@ class ShortlistCache:
             reason = "catalogue_refresh_unavailable"
         now = self._clock()
         with self._lock:
-            entry = self._entries.setdefault(key, _Entry())
+            entry = self._entries.get(key)
+            # Forgotten, evicted or re-created while this ran. Dropping the
+            # result is the whole point: a worker that began before a
+            # reconnect would otherwise resurrect a catalogue read under the
+            # PREVIOUS credential, and clear the replacement's in-flight flag
+            # so its own refresh never ran. Codex found both.
+            if entry is None or entry.generation != claimed:
+                return
             entry.inflight = False
             entry.attempted = now
             entry.reason = reason
             if snapshot is not None:
                 entry.snapshot = snapshot
-                entry.observed = now
             elif reason:
                 # A failure does NOT discard a still-usable warm snapshot: a
                 # transient refresh error should not empty a picker that was
@@ -211,12 +295,13 @@ class ShortlistCache:
                 if k.base == base and k.owner == owner and k.universe == universe_id
                 and (provider is None or k.provider == provider)
             ]:
-                del self._entries[key]
+                self._drop(key)
 
     def shutdown(self, *, wait: bool = False) -> None:
         with self._lock:
             pool, self._pool = self._pool, None
-            self._entries.clear()
+            for key in list(self._entries):
+                self._drop(key)
         if pool is not None:
             pool.shutdown(wait=wait, cancel_futures=True)
 

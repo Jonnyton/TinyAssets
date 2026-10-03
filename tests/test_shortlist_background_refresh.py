@@ -186,11 +186,15 @@ def test_an_aged_out_entry_is_withheld_rather_than_offered(monkeypatch, cache):
     cache.refresh_now(**where)
     assert cache.get(**where)[0] is not None
 
-    moved = [time.monotonic() + USABLE_AGE + 1]
-    monkeypatch.setattr(cache, "_clock", lambda: moved[0])
+    # Age is measured from the SNAPSHOT's own observed_at on the wall clock --
+    # the stamp `assert_fresh` uses -- so this moves that clock, not a
+    # monotonic one. Codex found the earlier monotonic-at-completion measure
+    # could call a snapshot fresh that `assert_fresh` already considered dead.
+    later = datetime.now(timezone.utc) + timedelta(seconds=USABLE_AGE + 1)
+    monkeypatch.setattr(cache, "_now", lambda: later)
     snapshot, reason = cache.get(**where)
-    assert snapshot is None
-    assert reason in {"catalogue_refresh_pending", ""} or reason
+    assert snapshot is None, "an entry past USABLE_AGE was served"
+    assert reason, "an aged-out entry must still say something truthful"
     assert USABLE_AGE < 300, "a served entry must stay inside the 5-minute freshness"
     assert REFRESH_AGE < USABLE_AGE, "the warm window must be replaced before it expires"
 
@@ -265,16 +269,34 @@ def test_forget_drops_a_catalogue_read_under_old_custody(monkeypatch, cache):
     assert cache.get(**where)[0] is None, "a reconnect kept the previous catalogue"
 
 
-def test_the_tracked_key_space_is_bounded(monkeypatch, cache):
+def test_the_bound_evicts_the_coldest_rather_than_refusing_the_newest(monkeypatch, cache):
+    """At the cap, a live request wins over a never-refreshed entry.
+
+    Codex found the bound checked only in `get`, so warming and `refresh_now`
+    grew the dict unchecked while a NEW picker source was the one refused --
+    backwards, since an unrefreshed entry cannot be served anyway.
+    """
     from tinyassets.providers import shortlist_refresh as module
 
     monkeypatch.setattr(module, "MAX_TRACKED", 3)
     install(monkeypatch, cache, {"codex": catalogue(["m"])})
-    reasons = {
-        cache.get(base="/b", owner=f"o{n}", universe_id="u", provider="codex")[1]
-        for n in range(6)
-    }
-    assert "catalogue_refresh_unavailable" in reasons
+    where = {"base": "/b", "universe_id": "u", "provider": "codex"}
+    # Every insertion path is bounded, not just the read.
+    for n in range(6):
+        cache.refresh_now(owner=f"warm{n}", **where)
+    assert cache.stats()["tracked"] <= 3
+    for n in range(6):
+        assert cache.schedule(owner=f"sched{n}", **where) is not None
+    assert cache.stats()["tracked"] <= 3
+    # An IN-FLIGHT entry is never evicted -- its worker still owns the key --
+    # so while the cap is full of them a newcomer is honestly refused rather
+    # than served something that was taken out from under a running refresh.
+    assert drain(cache)
+    # Once they settle, a brand-new source is admitted rather than turned away.
+    _snapshot, reason = cache.get(owner="newcomer", **where)
+    assert reason == "catalogue_refresh_pending", (
+        "a new source was refused while evictable entries existed"
+    )
     assert cache.stats()["tracked"] <= 3
 
 
@@ -427,3 +449,88 @@ def test_a_warming_catalogue_leaves_the_default_PICKABLE(native, monkeypatch):  
     assert any(reason["reason"] == "catalogue_refresh_pending"
                for entry in document["source_failures"]
                for reason in entry["reasons"])
+
+
+def test_a_refresh_started_before_a_reconnect_cannot_resurrect_its_result(monkeypatch, cache):
+    """Codex finding 2, which `forget` alone did not close.
+
+    `_run` used to `setdefault` the key and write unconditionally. So a worker
+    that began BEFORE a reconnect could finish after it and (a) resurrect a
+    catalogue read under the previous credential, and (b) clear the
+    replacement entry's in-flight flag so its own refresh never landed.
+    Custody checks stop that stale reference reaching execution, but the
+    picker would drop the source -- and its default -- instead.
+    """
+    release, returned = threading.Event(), threading.Event()
+
+    def slow():
+        assert release.wait(5), "stale worker never released"
+        try:
+            return catalogue(["from-the-old-credential"])
+        finally:
+            returned.set()
+
+    install(monkeypatch, cache, {"codex": slow})
+    where = {"base": "/b", "owner": "o", "universe_id": "u", "provider": "codex"}
+
+    assert cache.schedule(**where)
+    # The reconnect lands while that refresh is still running.
+    cache.forget(base="/b", owner="o", universe_id="u")
+    release.set()
+    # NOT `drain`: it counts in-flight entries, and `forget` removed this
+    # one -- so draining would return instantly and the assertion below would
+    # pass merely because the worker had not finished yet. Wait for the
+    # worker itself, then give its write a moment to land if it is going to.
+    assert returned.wait(5), "stale worker never finished"
+    time.sleep(0.2)
+
+    snapshot, reason = cache.get(**where)
+    assert snapshot is None, "a forgotten key was resurrected by its old worker"
+    assert reason == "catalogue_refresh_pending"
+
+
+def test_a_stale_worker_does_not_clear_a_replacements_claim(monkeypatch, cache):
+    """The second half of the same finding: the in-flight flag is per generation."""
+    release = threading.Event()
+    finished = []
+
+    def slow():
+        assert release.wait(5)
+        finished.append(1)
+        return catalogue(["stale"])
+
+    install(monkeypatch, cache, {"codex": slow})
+    where = {"base": "/b", "owner": "o", "universe_id": "u", "provider": "codex"}
+    assert cache.schedule(**where)
+    cache.forget(base="/b", owner="o", universe_id="u")
+    # A NEW claim for the same source, belonging to the new generation.
+    assert cache.schedule(**where), "the replacement could not claim the source"
+    release.set()
+    deadline = time.time() + 5
+    while len(finished) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    assert len(finished) == 2, "both the stale and the replacement run must finish"
+    assert drain(cache)
+    # The replacement's own refresh ran and landed; the stale one did not.
+    snapshot, _reason = cache.get(**where)
+    assert snapshot is not None
+    assert [m.model_id for m in snapshot.catalogue.models] == ["stale"]
+
+
+def test_shutdown_also_retires_generations(monkeypatch):
+    """A worker surviving shutdown must not write into a cleared cache."""
+    instance = ShortlistCache()
+    release = threading.Event()
+
+    def slow():
+        assert release.wait(5)
+        return catalogue(["after-shutdown"])
+
+    install(monkeypatch, instance, {"codex": slow})
+    where = {"base": "/b", "owner": "o", "universe_id": "u", "provider": "codex"}
+    assert instance.schedule(**where)
+    instance.shutdown(wait=False)
+    release.set()
+    time.sleep(0.3)
+    assert instance.stats()["warm"] == 0, "a worker wrote into a shut-down cache"
+    instance.shutdown(wait=True)
