@@ -461,6 +461,21 @@ def test_the_owner_door_reads_and_edits_the_ADDRESSED_agents_rules(monkeypatch, 
     weaver = {r.action_class: r.behaviour for r in agent_rules.list_rules(universe, "a-weaver")}
     assert weaver["app.read"] == "ask_first"
 
+    # A NARROWED rule the owner then removes. delete_rule scopes by
+    # `id AND agent`, so a delete that forgets the agent finds no row and
+    # returns False: the owner simply cannot remove a custom agent's narrowed
+    # rule, and the panel reports success on a rule that is still there.
+    status, narrowed = call("POST", {"agent_id": "a-weaver", "action_class": "app.read",
+                                     "behaviour": "ask_first", "connection": "notion"})
+    assert status == 200
+    rule_id = narrowed["saved"]["id"]
+    assert any(r["id"] == rule_id for r in call("GET", query={"agent_id": "a-weaver"})[1]["rules"])
+    status, removed = call("POST", {"agent_id": "a-weaver", "delete": rule_id})
+    assert status == 200 and removed["deleted"] is True, (
+        "the owner could not delete their custom agent's narrowed rule")
+    assert not any(r["id"] == rule_id
+                   for r in call("GET", query={"agent_id": "a-weaver"})[1]["rules"])
+
 
 def test_an_agent_that_is_not_the_owners_is_refused_by_name_not_treated_as_main(
         monkeypatch, tmp_path):
