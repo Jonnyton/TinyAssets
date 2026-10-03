@@ -495,7 +495,7 @@ def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
     import shutil
 
     from tinyassets.providers.claude_provider import (
-        _CLAUDE_METADATA_ARGUMENTS,
+        _METADATA_ARGUMENTS,
         ClaudeProvider,
         _resolve_claude_cmd,
     )
@@ -505,7 +505,7 @@ def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
     base_cmd, use_shell = _resolve_claude_cmd()
     assert not use_shell, "metadata discovery requires a direct executable"
     catalogue = asyncio.run(read_native_catalogue(
-        [*base_cmd, *_CLAUDE_METADATA_ARGUMENTS],
+        [*base_cmd, *_METADATA_ARGUMENTS],
         protocol=ClaudeProvider.native_discovery_protocol,
         env=os.environ.copy(), cwd=str(tmp_path),
         spawn_kwargs=ClaudeProvider.native_process_options(), timeout=60,

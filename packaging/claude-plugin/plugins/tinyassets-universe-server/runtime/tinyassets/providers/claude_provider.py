@@ -622,7 +622,7 @@ def _sandbox_cli_args(
 #: Deliberately NOT ``--bare``: it documents that "Anthropic auth is strictly
 #: ANTHROPIC_API_KEY or apiKeyHelper (OAuth and keychain are never read)", which
 #: would make a subscription-backed catalogue read fail as unauthenticated.
-_CLAUDE_METADATA_ARGUMENTS = (
+_METADATA_ARGUMENTS = (
     "-p",
     "--input-format", "stream-json",
     "--output-format", "stream-json",
@@ -656,7 +656,7 @@ class ClaudeProvider(BaseProvider):
     native_credential_service = "claude"
     native_command_resolver = staticmethod(lambda: _resolve_claude_cmd())
     native_process_options = staticmethod(_no_window_kwargs)
-    native_metadata_arguments = _CLAUDE_METADATA_ARGUMENTS
+    native_metadata_arguments = _METADATA_ARGUMENTS
     from tinyassets.providers.native_jsonrpc_discovery import NativeControlProtocol
 
     #: The CLI's own selectable catalogue, which is what makes a newly released
@@ -703,7 +703,7 @@ class ClaudeProvider(BaseProvider):
         ``ProviderOverloadedError`` / ``ProviderProtocolError`` /
         ``ProviderUnavailableError`` / ``ProviderError``).
         """
-        base_cmd, use_shell = _resolve_claude_cmd()
+        base_cmd, use_shell = self.native_command_resolver()
         from tinyassets.providers.native_model_selection import native_model_arguments
 
         cmd = [
@@ -1212,7 +1212,7 @@ class ClaudeProvider(BaseProvider):
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
         """Call with ``--output-format json`` for structured output."""
-        base_cmd, use_shell = _resolve_claude_cmd()
+        base_cmd, use_shell = self.native_command_resolver()
         cmd = [*base_cmd, "-p", "--output-format", "json"]
         from tinyassets.providers.native_model_selection import native_model_arguments
 
