@@ -22,6 +22,13 @@ An activity SHALL execute as runs of one owner-authored agent-node branch per un
 - **WHEN** the owner edits the Activities branch's agent node instructions
 - **THEN** the next activity run uses the edited branch
 
+### Requirement: An activity runs only on an executor whose tool boundary the platform enforces
+An activity's owner-request yield, pause and stop SHALL take effect at the run's next tool boundary, so an activity run SHALL execute only where the platform enforces that boundary. Engine inference carries it: the run's captured activity, generation and run id are re-checked before every inference and every tool. A native executor runs its own tool loop inside one provider call and reaches tools outside the engine route, so the platform cannot enforce the boundary there; an activity run SHALL refuse a native round before any launch, for a first selection and for a mid-turn switch alike. The refusal SHALL NOT change native tool policy for runs that are not activities.
+
+#### Scenario: an activity's order reaches a native candidate
+- **WHEN** an activity run's selected model resolves to a native executor, on the first round or after an engine-inference round
+- **THEN** the round is refused before that executor launches, and the run ends held rather than acting with no enforceable yield boundary
+
 ### Requirement: Activities are dispatched durably with one live run each
 A dispatcher SHALL run on the automation pump's cadence and whenever an activity is created or answered, and SHALL select queued activities and in-progress activities whose run has ended without settling it or was interrupted; a live run, or one whose owner is alive or unknown, SHALL NOT be replaced. Claiming SHALL advance the runner generation by compare-and-set, reserve a run without executing it, bind that run to the record under the generation, and only then release it; a run SHALL execute only if, at its start, the record names it under a current generation. Every runner write SHALL carry its generation so a superseded run's writes change nothing. An activity over the seat count SHALL wait visibly and never be refused. Waiting on the owner SHALL be a yield: once the run's effects have settled, the agent's request SHALL be bound to the exact pending action, and the run SHALL end as completed (never as interrupted), releasing its seat; an owner answer SHALL re-queue the activity only if it answers the request the activity is waiting on.
 
