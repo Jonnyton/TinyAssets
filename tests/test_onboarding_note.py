@@ -91,6 +91,30 @@ def test_resident_tool_description_budget_still_passes():
     test_engine_tool_description_budget_does_not_grow()
 
 
+@pytest.mark.parametrize("has_skill", [False, True])
+def test_onboarding_and_current_folder_evidence_survive_together(tmp_path, has_skill):
+    """D4 and request economy must both survive the shared harness merge."""
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "current.md").write_text("current evidence", encoding="utf-8")
+    if has_skill:
+        skill = tmp_path / "skills" / "report"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: report\ndescription: Write reports\n---\n", encoding="utf-8",
+        )
+    prompt = harness_prompt(tmp_path)
+    assert prompt.count(onboarding_note(tmp_path)) == 1
+    assert "notes/current.md" in prompt
+    assert "## What is in my folder now" in prompt
+    assert ("Write reports" if has_skill else "(none yet)") in prompt
+    _onboard(tmp_path)
+    prompt = harness_prompt(tmp_path)
+    assert "## Onboarding" not in prompt
+    assert "notes/current.md" in prompt
+    assert ("Write reports" if has_skill else "(none yet)") in prompt
+
+
 def test_no_compute_returns_setup_notice_without_a_reply(tmp_path, monkeypatch):
     from tests.test_converse_handle import _founder_auth
     from tinyassets import universe_intelligence, universe_server
