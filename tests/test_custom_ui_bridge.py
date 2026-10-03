@@ -70,6 +70,13 @@ let statusUniverseOverride='';
 const fetchMe=async()=>me;
 const sessionExpired=()=>{throw Error('expired');};
 const sendTurn=async(message,display,opts)=>{sends.push({message,display,opts});};
+// The app's addressed agent (harness §4.18): which agent the chat talks to.
+let addressed='main', addressCalls=[], addressRefusal=null;
+function addressedAgentId(){ return addressed; }
+async function addressAgent(agent){
+ if(addressRefusal) throw new Error(addressRefusal);
+ addressCalls.push(agent); addressed=agent.agent_id;
+}
 // The owner door (reads). This harness has ONE fake server, `MCP` below, so
 // the owner door's reads are answered by it: a read the page makes is
 // recorded and stubbed exactly where the scenario already records it.
@@ -152,12 +159,27 @@ for(const [over,needle] of [
  [{name:'  '},/name must be a non-empty string/],
  [{markup:{}},/markup must be a string/],
  [{script:null},/script must be a string/],
- [{markup:'x'.repeat(u.MAX_MARKUP+1)},/markup must be a string/],
+ [{markup:'x'.repeat(u.MAX_TEXT_BYTES+1)},/bytes of text; the limit is/],
+ [{assets:[]},/assets must be an object/],
+ [{assets:{'../x.png':{sha256:'a'.repeat(64),size:1,media_type:'image/png'}}},/is not a bundle path/],
+ [{assets:{'x.png':{sha256:'nothex',size:1,media_type:'image/png'}}},/is not a stored blob/],
+ [{libraries:['jquery']},/library jquery is not one this app provides/],
+ [{libraries:['three','three']},/listed twice/],
+ [{script_type:'wasm'},/script_type must be classic or module/],
 ]){ const r=u.parseBundle(bundleOf(over)); assert(!r.ok,JSON.stringify(over)); assert(needle.test(r.reason),r.reason); }
 assert(!u.parseBundle({...bundleOf(),ui_id:undefined}).ok);
-// A field-legal bundle that still busts the whole-bundle budget.
-const fat=bundleOf({markup:'m'.repeat(u.MAX_MARKUP),style:'s'.repeat(u.MAX_STYLE),script:'j'.repeat(u.MAX_SCRIPT)});
-assert(!u.parseBundle(fat).ok);
+// Past the old 49,152-byte bound is fine now: a game's script is 200 KB.
+assert(u.parseBundle(bundleOf({script:'j'.repeat(200000)})).ok);
+// The optional fields pass through as stored, so an install that rebuilds the
+// library from parsed entries never strips another UI's assets.
+const rich=bundleOf({libraries:['three'],script_type:'module',
+ assets:{'img/a.png':{sha256:'a'.repeat(64),size:3,media_type:'image/png'}}});
+const richParsed=u.parseBundle(rich);
+assert(richParsed.ok,richParsed.reason);
+assert.deepEqual(richParsed.bundle.assets,rich.assets);
+assert.deepEqual(richParsed.bundle.libraries,['three']);
+assert.equal(richParsed.bundle.script_type,'module');
+assert(!u.publishPayload(rich,'').ok,'a UI with its own files is not published without them');
 
 assert.deepEqual(u.readLibrary(null).entries,[]);
 assert(!u.readLibrary({ui_library:{}}).ok);
@@ -185,7 +207,7 @@ assert.equal(u.revision,1);
 // ---- the frame is created with the isolation the boundary depends on ------
 const frame=u.frame;
 assert.equal(frame.tag,'iframe');
-assert.equal(frame.attrs.sandbox,'allow-scripts');          // no allow-same-origin, ever
+assert.equal(frame.attrs.sandbox,'allow-scripts allow-forms');   // no allow-same-origin, ever
 assert.equal(frame.attrs.src,'/app/ui-frame');
 assert.equal(frame.attrs.referrerpolicy,'no-referrer');
 assert.equal($('ui-frame-host').hidden,false);
@@ -227,9 +249,9 @@ for(const action of ['write_graph','connectHTTP','whoami ','WHOAMI','constructor
 
 // ---- the viewer's identity, and nothing else ------------------------------
 const who=(await ask('whoami',{universe_id:'u-bob'})).result;
-assert.deepEqual(Object.keys(who).sort(),['protocol','universe_id','universe_name']);
-assert.equal(who.universe_id,HOME);
-assert.equal(who.universe_name,'Alice universe');
+assert.deepEqual(Object.keys(who).sort(),['command_center_id','command_center_name','protocol']);
+assert.equal(who.command_center_id,HOME);
+assert.equal(who.command_center_name,'Alice universe');
 
 // ---- a bundle cannot name a universe: the argument is pinned -------------
 calls=[];
@@ -239,7 +261,8 @@ assert.equal(listed.length,1);
 assert.equal(listed[0].args.graph_id,HOME,'graph_id came from the viewer, not the bundle');
 assert(!('universe_id' in listed[0].args));
 assert.deepEqual(Object.keys(agents.agents[0]).sort(),['agent_id','name','selected']);
-assert.equal(agents.agents[0].name,'App experience');
+// The main agent first; a conversation-design installation is not an agent.
+assert.deepEqual(agents.agents,[{agent_id:'main',name:'Your agent',selected:true}]);
 
 // ---- private operational data does not cross into a bundle ---------------
 binding={...binding,configuration:{...binding.configuration,provider_secret_note:'never'}};
@@ -265,15 +288,64 @@ assert.equal(sends.length,1);
 assert.equal(sends[0].message,'open the lobby door');
 assert.equal(sends[0].opts.inputMethod,'app_action');
 
-// ---- naming an agent the server will not accept is refused, not redirected
+// ---- naming an agent that is not the viewer's is refused, not redirected --
 const wrong=await ask('send_message',{text:'hi',agent:'not-an-agent-of-mine'});
 assert.equal(wrong.ok,false);
 assert(/no agent of yours is named not-an-agent-of-mine/.test(wrong.error),wrong.error);
 assert.equal(sends.length,1,'a refused agent must not fall back to the default conversation');
-const unselected=await ask('send_message',{text:'hi',agent:'b1'});
-assert.equal(unselected.ok,false);
-assert(/selected conversation only/.test(unselected.error),unselected.error);
-assert.equal(sends.length,1);
+const design=await ask('send_message',{text:'hi',agent:'b1'});
+assert.equal(design.ok,false,'a conversation-design installation is not an agent');
+assert(/no agent of yours is named b1/.test(design.error),design.error);
+assert.equal(sends.length,1); assert.deepEqual(addressCalls,[]);
+
+// ---- talking to one of the viewer's agents: a villager clicked ------------
+const designRow=binding;
+const weaver={agent_binding_id:'w1',universe_id:HOME,agent_definition_id:'d2',status:'configured',
+ revision:1,created_by:PRINCIPAL,updated_by:PRINCIPAL,
+ configuration:{schema_version:1,name:'Evidence Weaver',notes:'private ops note'}};
+const planted={...weaver,agent_binding_id:'m1',created_by:'mallory',configuration:{schema_version:1,name:'Planted'}};
+const elsewhere={...weaver,agent_binding_id:'e1',universe_id:'u-bob',configuration:{schema_version:1,name:'Elsewhere'}};
+const rows=[designRow,weaver,planted,elsewhere];
+const realCallTool=MCP.callTool;
+MCP.callTool=async function(tool,args){
+ if(tool==='read_graph'&&args.target==='agent_bindings'){
+  calls.push({tool,args:clone(args)}); return {bindings:clone(rows)};
+ }
+ return realCallTool.call(this,tool,args);
+};
+const roster=(await ask('list_agents',{})).result.agents;
+assert.deepEqual(roster,[{agent_id:'main',name:'Your agent',selected:true},
+ {agent_id:'w1',name:'Evidence Weaver',selected:false}],'only the viewer\'s own agents in this home');
+assert.equal(JSON.stringify(roster).includes('private ops note'),false);
+for(const foreign of ['m1','Planted','e1','Elsewhere']){
+ const refused=await ask('open_chat',{agent:foreign});
+ assert.equal(refused.ok,false,foreign);
+ assert(/no agent of yours is named/.test(refused.error),refused.error);
+}
+assert.deepEqual(addressCalls,[],'a foreign agent never opens the chat');
+const opened=await ask('open_chat',{agent:'Evidence Weaver'});
+assert.equal(opened.ok,true,opened.error);
+assert.deepEqual(opened.result,{opened:true,agent_id:'w1',name:'Evidence Weaver'});
+assert.deepEqual(addressCalls,[{agent_id:'w1',name:'Evidence Weaver'}]);
+assert.equal((await ask('list_agents',{})).result.agents[1].selected,true);
+const toWeaver=await ask('send_message',{text:'critique my methods',agent:'w1'});
+assert.equal(toWeaver.ok,true,toWeaver.error);
+assert.equal(sends.length,2); assert.equal(sends[1].message,'critique my methods');
+assert.deepEqual(addressCalls[1],{agent_id:'w1',name:'Evidence Weaver'},'opened before it is sent');
+// The thread read is the addressed agent's unless a screen names another.
+calls=[];
+await ask('read_conversation',{limit:1});
+assert.equal(calls.find(c=>c.tool==='get_status').args.conversation_agent,'w1');
+calls=[];
+await ask('read_conversation',{limit:1,agent:'main'});
+assert.equal('conversation_agent' in calls.find(c=>c.tool==='get_status').args,false);
+// A switch the app refuses (a turn still running) is the bundle's error, and nothing is sent.
+addressRefusal='finish or stop the current message first, then switch agents';
+const busy=await ask('send_message',{text:'to main now',agent:'main'});
+assert.equal(busy.ok,false); assert(/finish or stop/.test(busy.error),busy.error);
+assert.equal(sends.length,2);
+addressRefusal=null; addressed='main'; addressCalls=[];
+MCP.callTool=realCallTool;
 
 // ---- switching persists through the ONE revision-guarded write ----------
 const startRevision=appUi.revision;
@@ -330,7 +402,7 @@ const remixWho=await (async()=>{const before=bobFrame.posts.length;
  emit({source:bobFrame,data:{ta_ui:1,type:'call',id:'w',action:'whoami',params:{}}});
  for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
  return bobFrame.posts[bobFrame.posts.length-1];})();
-assert.equal(remixWho.result.universe_id,HOME);
+assert.equal(remixWho.result.command_center_id,HOME);
 
 // ---- sharing produces a public component, and only that ----------------
 const published=u.publishPayload(bobs,'A tower');
@@ -443,9 +515,10 @@ assert(/cannot be read/.test($('ui-status').textContent),$('ui-status').textCont
 // ---- size is measured in UTF-8 bytes, not UTF-16 units (Codex P2) ------
 // Characters that cost three bytes each. A character-counting limit accepts
 // this; the server, which caps bytes, would not.
-const cjk=bundleOf({ui_id:'cjk',markup:'漢'.repeat(20000)});
-assert.equal(cjk.markup.length,20000);
-assert(u.bytes(cjk.markup)>3*19000,'the fixture really is multi-byte');
+const cjkChars=Math.ceil(u.MAX_TEXT_BYTES/3)+16;
+const cjk=bundleOf({ui_id:'cjk',markup:'漢'.repeat(cjkChars)});
+assert(cjk.markup.length<u.MAX_TEXT_BYTES,'under the bound in characters');
+assert(u.bytes(cjk.markup)>u.MAX_TEXT_BYTES,'the fixture really is over it in bytes');
 const cjkRead=u.parseBundle(cjk);
 assert(!cjkRead.ok,'a bundle over the BYTE limit is refused');
 assert(/bytes/.test(cjkRead.reason),cjkRead.reason);
@@ -462,7 +535,7 @@ assert.equal(appUi.ui_library.length,41);
 // MAX_LIBRARY_BYTES refusal ("remove one first") is gone: those bytes are the
 // universe's storage, which is one of an account's two limits, not a UI quota
 // (founder, 2026-09-30).
-const heavy=i=>bundleOf({ui_id:'heavy-'+i,markup:'x'.repeat(u.MAX_MARKUP)});
+const heavy=i=>bundleOf({ui_id:'heavy-'+i,markup:'x'.repeat(32768)});
 const nearFull=[];
 while(u.bytes(JSON.stringify(nearFull))<=4194304) nearFull.push(heavy(nearFull.length));
 assert(nearFull.length>=50,'past the old ceiling: '+nearFull.length+' max-size UIs');
@@ -542,7 +615,7 @@ const OFFICE={kind:'tinyassets.app-ui.v1',version:1,ui_id:'office-tower',
   "const mine=await tinyassets.listAgents();"+
   "const agent=mine.agents.find(a=>a.name.toLowerCase().includes(room));"+
   "await tinyassets.sendMessage('I walked into the '+room,agent&&agent.agent_id);"+
-  "document.title=who.universe_name;}"};
+  "document.title=who.command_center_name;}"};
 '''
 
 SAMPLE_CHECKS = r'''
@@ -608,3 +681,22 @@ def test_bundle_bridge_is_a_closed_allowlist_acting_as_the_viewer(tmp_path):
 def test_a_real_bundle_reaches_the_frame_exactly_as_its_author_wrote_it(tmp_path):
     out = _run(tmp_path, "custom_ui_sample.js", SAMPLE_CHECKS, extra=OFFICE_BUNDLE)
     assert "office sample checks passed" in out
+
+
+def test_send_message_refuses_a_switch_during_addressing_and_pins_agent(tmp_path):
+    _run(tmp_path, "address_race.js", r'''
+(async()=>{
+AppUI.agentNamed=async()=>({agent_id:'weaver',name:'Weaver'});
+let release;
+addressAgent=async agent=>{addressed=agent.agent_id;await new Promise(r=>release=r);};
+const sending=AppUI.sendMessage({text:'for Weaver',agent:'weaver'});
+await settle(); addressed='main'; release();
+await assert.rejects(sending,/the chat switched to another agent; nothing was sent/);
+assert.equal(sends.length,0);
+addressAgent=async agent=>{addressed=agent.agent_id;};
+await AppUI.sendMessage({text:'for Weaver',agent:'weaver'});
+assert.equal(sends[0].opts.agentId,'weaver');
+await AppUI.sendMessage({text:'still Weaver'});
+assert.equal(sends[1].opts.agentId,'weaver');
+})().catch(err=>{console.error(err);process.exit(1);});
+''')
