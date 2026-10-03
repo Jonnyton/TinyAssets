@@ -260,27 +260,6 @@ def _build_fallback_router() -> "Optional[ProviderRouter]":
     except Exception:
         logger.debug("OllamaProvider not available")
 
-    try:
-        from tinyassets.providers.gemini_provider import GeminiProvider
-        router.register(GeminiProvider())
-        logger.info("Registered GeminiProvider")
-    except Exception:
-        logger.debug("GeminiProvider not available")
-
-    try:
-        from tinyassets.providers.groq_provider import GroqProvider
-        router.register(GroqProvider())
-        logger.info("Registered GroqProvider")
-    except Exception:
-        logger.debug("GroqProvider not available")
-
-    try:
-        from tinyassets.providers.grok_provider import GrokProvider
-        router.register(GrokProvider())
-        logger.info("Registered GrokProvider")
-    except Exception:
-        logger.debug("GrokProvider not available")
-
     logger.info(
         "ProviderRouter ready with providers: %s",
         router.available_providers,

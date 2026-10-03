@@ -487,17 +487,6 @@ def api_key_providers_enabled() -> bool:
     return False
 
 
-def require_api_key_provider_opt_in(provider_name: str) -> None:
-    """Refuse a built-in provider whose only credential is the host's API key."""
-    from tinyassets.exceptions import ProviderUnavailableError
-
-    raise ProviderUnavailableError(
-        f"{provider_name} can only use an API key from the host's environment, "
-        "and the platform holds no model credential (Hard Rule 15). Connect "
-        "this source to your command center as your own provider instead."
-    )
-
-
 # Legacy denylist retained for regression assertions. Universe-scoped children
 # now start from an empty allowlisted environment instead of mutating this set.
 HOST_SUBSCRIPTION_ENV_VARS: tuple[str, ...] = (
