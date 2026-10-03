@@ -490,12 +490,16 @@ def send_patch_request(universe_id: str, principal_id: str, title: Any, details:
 
 #: Declared input names that mean "the one-line summary".
 _TITLE_NAMES = frozenset({"title", "summary", "subject", "reporttitle", "requesttitle"})
+#: Keep the shipped aliases separate: recognizing a new optional input can
+#: change an existing sender's output keys even when its contract already worked.
+_LEGACY_DETAIL_NAMES = frozenset({
+    "details", "description", "body", "reportdetails", "requestdetails",
+})
 #: Declared input names that mean "the body of the report". ``tried``/``missing``
 #: and ``broken`` are here because the intake this platform actually offers asks
 #: ``what_they_tried`` / ``what_was_missing_or_broken`` (docs/host-actions.md):
 #: both are asking for the body, in the owner's own wording.
-_DETAIL_NAMES = frozenset({
-    "details", "description", "body", "reportdetails", "requestdetails",
+_DETAIL_NAMES = _LEGACY_DETAIL_NAMES | frozenset({
     "whattheytried", "whattried", "tried",
     "whatwasmissingorbroken", "whatwasmissing", "missing", "broken",
 })
@@ -531,18 +535,18 @@ def _report_outputs(contract: list[dict], title: str, details: str) -> dict[str,
     if len(contract) == len(text_fields) == 1:
         return {text_fields[0]["name"]: whole}
 
-    def _named() -> dict[str, str]:
+    def _named(detail_names: frozenset[str]) -> dict[str, str]:
         found: dict[str, str] = {}
         for field in text_fields:
             name = re.sub(r"[^a-z0-9]", "", field["name"].lower())
             if name in _TITLE_NAMES:
                 found[field["name"]] = title
-            elif name in _DETAIL_NAMES:
+            elif name in detail_names:
                 found[field["name"]] = details
         return found
 
     # --- exactly what shipped, for every contract it could satisfy ---
-    outputs = _named()
+    outputs = _named(_LEGACY_DETAIL_NAMES)
     if title not in outputs.values() or details not in outputs.values():
         target = next((f for f in text_fields if f["required"]),
                       text_fields[0] if text_fields else None)
@@ -561,7 +565,7 @@ def _report_outputs(contract: list[dict], title: str, details: str) -> dict[str,
         )
     if not text_fields:
         raise ValueError("patch intake contract declares no text input to report into")
-    outputs = _named()
+    outputs = _named(_DETAIL_NAMES)
     for field in text_fields:
         if field["required"] and field["name"] not in outputs:
             outputs[field["name"]] = whole

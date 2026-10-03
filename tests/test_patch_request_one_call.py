@@ -262,3 +262,64 @@ def test_no_half_of_the_report_is_ever_dropped():
         outputs = _report_outputs(contract, "T", "D")
         sent = "\n".join(outputs.values())
         assert "T" in sent and "D" in sent, (outputs, "half the report was dropped")
+
+
+@pytest.mark.parametrize("optional", [
+    "what_they_tried", "what_tried", "tried", "what_was_missing_or_broken",
+    "what_was_missing", "missing", "broken",
+])
+@pytest.mark.parametrize("separate_details", [False, True])
+def test_optional_new_aliases_preserve_working_legacy_outputs(optional, separate_details):
+    contract = [{"name": "title", "type": "str", "required": True}]
+    if separate_details:
+        contract.append({"name": "details", "type": "str", "required": True})
+    contract.append({"name": optional, "type": "str", "required": False})
+    expected = {"title": "T", "details": "D"} if separate_details else {"title": "T\n\nD"}
+    assert patch_intake._report_outputs(contract, "T", "D") == expected
+
+
+@pytest.mark.parametrize("optional", ["what_they_tried", "what_was_missing_or_broken"])
+@pytest.mark.parametrize("separate_details", [False, True])
+def test_existing_sender_still_delivers_with_optional_new_alias(
+    world, monkeypatch, optional, separate_details,
+):
+    """Reuse the actual persisted sender and link made by the legacy mapping."""
+    base, auth, _ = world
+    auth("receiver")
+    required = ["title", "details"] if separate_details else ["title"]
+    inputs = required + [optional]
+    branch = BranchDefinition(
+        branch_def_id="optional-intake", name="Optional intake", author="receiver",
+        visibility="private", entry_point="entry",
+        node_defs=[NodeDefinition(
+            node_id="entry", display_name="Intake", input_keys=inputs,
+            output_keys=["result"], prompt_template="{title}",
+        )],
+        graph_nodes=[GraphNodeRef(id="entry", node_def_id="entry")],
+        edges=[EdgeDefinition("START", "entry"), EdgeDefinition("entry", "END")],
+        state_schema=[{"name": name, "type": "str"} for name in required]
+        + [{"name": optional, "type": "str", "default": ""}, {"name": "result", "type": "str"}],
+    )
+    save_branch_definition(base, branch_def=branch.to_dict())
+    receiver = receiver_links.save_receiver(
+        universe_id="u-receiver", branch_def_id="optional-intake", node_id="entry",
+        input_keys=inputs, allowed_senders=["sender"],
+    )
+    assert [f["name"] for f in receiver["contract"] if not f["required"]] == [optional]
+    monkeypatch.setenv(patch_intake.RECEIVER_ID_VAR, receiver["receiver_id"])
+    _grant(base, receiver)
+    expected = {"title": "T", "details": "D"} if separate_details else {"title": "T\n\nD"}
+    # Seed the persisted sender with the exact formerly successful mapping.
+    with monkeypatch.context() as legacy:
+        legacy.setattr(patch_intake, "_report_outputs", lambda *_: dict(expected))
+        first = _send(title="T", details="D")
+    assert first.get("sent") is True, first
+    before = list_branch_definitions(base, author="sender", viewer="sender")
+    second = _send(title="T", details="D")
+    assert second.get("sent") is True, second
+    assert second["delivery_id"] != first["delivery_id"]
+    assert list_branch_definitions(base, author="sender", viewer="sender") == before
+    rows = _rows(base, "graph_deliveries")
+    assert len(rows) == 2
+    assert all(json.loads(row["inputs_json"]) == expected for row in rows)
+    assert len(_rows(base, "graph_output_links")) == 1
