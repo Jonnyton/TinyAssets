@@ -43,6 +43,7 @@ on:
       - "tests/test_app_two_surfaces_browser.py"
       - "tests/test_custom_ui_real_browser.py"
       - "tests/test_connect_free_ai_real_browser.py"
+      - "tests/test_ui_preview.py"
   workflow_dispatch:
 
 permissions:
