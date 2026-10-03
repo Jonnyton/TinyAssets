@@ -52,6 +52,7 @@ from typing import Any, Iterator
 
 from tinyassets.api.interlocutor import FOUNDER_PRIVATE_GROUNDING as _FOUNDER_PRIVATE
 from tinyassets.automation_context import BRAIN_FILES as _GOVERNED_BRAIN
+from tinyassets.ingestion.canon_io import CANON_DIRNAME as _CANON_DIRNAME
 from tinyassets.universe_files import (
     MAX_UNIVERSE_FILE_BYTES,
     list_universe_dir,
@@ -168,7 +169,17 @@ _ROOT_FILES_F = frozenset(fold(n) for n in ROOT_FILES)
 #: A review of the root-only version found it there (2026-10-03), which is also
 #: why "the top folder is where platform state lives" was too strong: most of
 #: it is, but not all.
-NEVER_DIRS = frozenset({"workspaces", "soul_versions", _ARTIFACTS_DIRNAME})
+#: ``canon/`` holds the owner's UPLOADS. Private by default (host decision
+#: 2026-10-03): an upload can be anything personal, and Hard Rule 9 makes it
+#: authoritative content the platform never reshapes -- so it is not the
+#: platform's to publish on the owner's behalf. Note this is a name match, not
+#: a derivation: every writer spells the folder as a bare literal
+#: (``api/universe.py``, ``work_targets.py``), so ``canon_io.CANON_DIRNAME``
+#: names it once rather than deriving from them. A rename would have to change
+#: that constant too; the test below pins it.
+NEVER_DIRS = frozenset({
+    "workspaces", "soul_versions", _ARTIFACTS_DIRNAME, _CANON_DIRNAME,
+})
 _BRAIN_F = frozenset(fold(n) for n in _BRAIN_FILES)
 _RUNTIME_F = frozenset(fold(n) for n in _RUNTIME_FILES)
 #: Under ``wiki/`` only the curated ``pages/`` travel (okf_export's set).
@@ -291,6 +302,7 @@ R_CHECKOUT = "a managed repository checkout"
 R_DEEP = "deeper than a package may go"
 R_ROOT_UNLISTED = "not one of the files a package carries from the top folder"
 R_WORK_RECORDS = "your command center's own work records"
+R_UPLOADS = "the files you uploaded stay yours"
 
 #: One reason per never-folder, so the tab says which kind of state it is. The
 #: assertion is the guard: a name added to :data:`NEVER_DIRS` without a reason
@@ -299,6 +311,7 @@ _NEVER_DIR_REASON = {
     fold("workspaces"): R_CHECKOUT,
     fold("soul_versions"): R_BRAIN,
     fold(_ARTIFACTS_DIRNAME): R_WORK_RECORDS,
+    fold(_CANON_DIRNAME): R_UPLOADS,
 }
 assert set(_NEVER_DIR_REASON) == {fold(n) for n in NEVER_DIRS}
 

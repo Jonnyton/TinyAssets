@@ -1097,6 +1097,37 @@ def test_the_platform_folders_are_denied_from_their_writers_constants(tmp_path):
     assert ccp.dir_exclusion("data") is None
 
 
+def test_the_owners_uploads_stay_home(tmp_path):
+    """``canon/`` holds uploads. Private by default (host decision 2026-10-03):
+    an upload can be anything personal, and Hard Rule 9 makes it authoritative
+    content the platform never reshapes -- so it is not the platform's to
+    publish on the owner's behalf.
+
+    This also pins the one place the folder is named. Unlike ``artifacts/``,
+    this is a name MATCH not a derivation: every writer spells the folder as a
+    bare literal (``api/universe.py``, ``work_targets.py``), so
+    ``canon_io.CANON_DIRNAME`` holds it once. If someone renames the folder at
+    those call sites without changing the constant, this test is what notices.
+    """
+    from tinyassets.ingestion.canon_io import CANON_DIRNAME
+
+    assert CANON_DIRNAME == "canon", "the writers spell it this way as a literal"
+    assert ccp.fold(CANON_DIRNAME) in {ccp.fold(n) for n in ccp.NEVER_DIRS}
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    secret = "the acquisition term sheet, uploaded by Alice"
+    _write(universe, f"{CANON_DIRNAME}/sources/termsheet.md", secret + "\n")
+    _write(universe, f"{CANON_DIRNAME}/index.json", '{"sources": 1}')
+    _write(universe, "notes/keep.md", "a shareable note\n")
+
+    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "notes/keep.md" in files
+    assert not [p for p in files if p.startswith(CANON_DIRNAME)]
+    assert secret not in b"".join(files.values()).decode("utf-8", "replace")
+    assert any(row["reason"] == ccp.R_UPLOADS for row in excluded)
+
+
 def test_a_discarded_work_target_does_not_travel(tmp_path):
     """The P1 the review found, as a writer-to-package regression.
 
