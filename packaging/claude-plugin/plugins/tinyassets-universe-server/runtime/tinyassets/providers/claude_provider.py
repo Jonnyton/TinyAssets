@@ -572,6 +572,23 @@ def _sandbox_cli_args(
         # arbitrary code execution, fully bypassing the Bash deny. This strips all
         # ambient MCP + config from the founder-facing turn.
         flags += ["--setting-sources", "project"]
+        # Decide the permission mode; never inherit it (Codex ADAPT 2026-10-03,
+        # CLI 2.1.288 review). 2.1.285 starts `claude -p` in AUTO mode when no
+        # mode is configured on third-party providers or with telemetry off, so
+        # an unspecified mode is now an upstream-owned variable that could begin
+        # auto-approving tools this turn never pre-approved. `default` (accepted
+        # alongside its newer name `manual`) approves NOTHING implicitly: the
+        # only callable tools are the ones `--allowedTools` pre-approves --
+        # WebFetch plus, when engine MCP is on, the declared
+        # `mcp__tinyassets__*` handles. A headless turn cannot answer a prompt,
+        # so anything else is refused rather than waiting. This pins the
+        # behaviour this provider already had with first-party OAuth; it is
+        # stated so an upstream default change cannot move it.
+        #
+        # Deliberately confined-turn only (`sandbox_workspace`, which
+        # `_confine_workflow_node` also sets): host-trusted roles that leave the
+        # tool fields at their defaults keep whatever mode they run today.
+        flags += ["--permission-mode", "default"]
     allowed = config.allowed_tools
     disallowed = config.disallowed_tools
     # ``--allowedTools``/``--disallowedTools`` are variadic (<tools...>): each

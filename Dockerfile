@@ -29,9 +29,9 @@
 FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS builder
 
 ARG TARGETARCH
-ARG NODEJS_VERSION=20.20.2-1nodesource1
+ARG NODEJS_VERSION=22.23.3-1nodesource1
 ARG CODEX_CLI_VERSION=0.153.4
-ARG CLAUDE_CODE_CLI_VERSION=2.1.183
+ARG CLAUDE_CODE_CLI_VERSION=2.1.288
 ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
 ARG RUSTUP_VERSION=1.28.2
 ARG RUSTUP_SHA256_AMD64=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
@@ -40,9 +40,11 @@ ARG RUST_TOOLCHAIN=1.85.1
 
 # Native build-deps for lancedb (rust), clingo (cmake), spacy (cython),
 # and general C extensions. Removed from the final image.
-# Node.js 20 LTS via nodesource — Debian's default apt nodejs is too old
-# (Node 12/18) for @openai/codex which requires Node ≥ 18; nodesource 20
-# is the smallest LTS that's known-compatible and widely battle-tested.
+# Node.js 22 LTS via nodesource — Debian's default apt nodejs is too old
+# (Node 12/18) for either CLI. The floor is now @anthropic-ai/claude-code,
+# whose published metadata moved from engines.node >=18.0.0 at 2.1.183 to
+# >=22.0.0 at 2.1.288; @openai/codex asks only for >=16, so 22 serves both.
+# 22 is the current LTS line, and the smallest one that satisfies that floor.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -57,7 +59,7 @@ RUN apt-get update && \
         -o /tmp/nodesource-repo.gpg.key \
     && echo "${NODESOURCE_REPO_CHECKSUM}  /tmp/nodesource-repo.gpg.key" | sha256sum -c - \
     && gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource-repo.gpg.key \
-    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
         > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends nodejs="${NODEJS_VERSION}" \
@@ -184,7 +186,7 @@ RUN python -m venv /opt/venv && \
 FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
 
 ARG TARGETARCH
-ARG NODEJS_VERSION=20.20.2-1nodesource1
+ARG NODEJS_VERSION=22.23.3-1nodesource1
 ARG GH_VERSION=2.100.0
 ARG GH_DEB_SHA256_AMD64=698c8d88cc19cc92bfe96bad58d10b2a5b274c52433d6dc57799c81f6139d5fc
 ARG GH_DEB_SHA256_ARM64=33ccd2ad7ce639c927e1cb209e36555b0e1fbb89f7a38239c0568040ec758612
@@ -193,9 +195,9 @@ ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329
 # Runtime-only deps. No build-essential here.
 # libgomp1 is a common transitive native dep for numpy/scipy-backed
 # packages (spacy, lancedb); include it proactively.
-# Node.js 20 LTS via nodesource — same version as builder so the copied
-# codex binary's native addons are ABI-compatible. No npm needed at
-# runtime; the codex module tree is COPY'd from the builder.
+# Node.js 22 LTS via nodesource — same version as builder so the copied
+# codex and claude-code native addons are ABI-compatible. No npm needed at
+# runtime; both module trees are COPY'd from the builder.
 #
 # GitHub CLI (gh) — the github_pull_request effector shells out to
 # `gh pr create` (tinyassets/effectors/github_pr.py). Without gh on the
@@ -226,7 +228,7 @@ RUN set -e; \
         -o /tmp/nodesource-repo.gpg.key; \
     echo "${NODESOURCE_REPO_CHECKSUM}  /tmp/nodesource-repo.gpg.key" | sha256sum -c -; \
     gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource-repo.gpg.key; \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
         > /etc/apt/sources.list.d/nodesource.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends nodejs="${NODEJS_VERSION}"; \
