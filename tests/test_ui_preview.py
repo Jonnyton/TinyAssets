@@ -17,6 +17,12 @@ import pytest
 from tinyassets import custom_agents as ca
 from tinyassets import ui_preview
 
+# `api.app_ui` is imported HERE, before any test can patch what it binds: it
+# copies `_base_path` out of `api.helpers` at import time, so a first import
+# under such a patch would freeze the stand-in for every later test in the
+# process.
+from tinyassets.api import app_ui as _app_ui  # noqa: F401
+
 OWNER, HOME = "alice", "u-alice"
 
 
@@ -197,13 +203,15 @@ def test_a_previews_symlink_is_refused(tmp_path):
 def test_the_engine_handle_renders_writes_and_reports(tmp_path, monkeypatch):
     import json
 
-    import tinyassets.api.helpers as helpers
     from tests.engine_authority_helpers import mock_engine_admission, seed_engine_authority
     from tinyassets import engine_mcp_server as s
 
     root = tmp_path / "data"
     (root / "u-a").mkdir(parents=True)
-    monkeypatch.setattr(helpers, "_base_path", lambda: root)
+    # The data root moves by env var only. Patching `helpers._base_path` instead
+    # would be both redundant and a process-wide leak: `api.app_ui` binds that
+    # name at import (`from ...helpers import _base_path`), so whichever test
+    # imports it first under such a patch keeps the stand-in for the whole run.
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
     monkeypatch.setattr(s, "_ACTOR_ID", "actor-a")
     monkeypatch.setattr(s, "_GRAPH_ID", "u-a")
