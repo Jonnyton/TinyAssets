@@ -75,32 +75,49 @@ rest are a cleanup; this one is the reason.
 For each command center, in one locked pass:
 
 1. If the sidecar database exists and the in-folder one does not, nothing to do.
-2. If the in-folder one exists and the sidecar does not, **copy rows the daemon
-   can account for** into a freshly created sidecar database, then rename the
-   in-folder file aside to `.effector_consents.db.premigration`.
+2. If the in-folder one exists and the sidecar does not, create an **empty**
+   sidecar database and rename the in-folder file aside to
+   `.effector_consents.db.premigration`. No row is copied — see the decision
+   below. The old file is renamed rather than deleted so an operator can still
+   read what was there.
 3. If both exist, refuse the command center loudly and leave both in place.
    That state is either an interrupted run (resumable by hand) or something
    worse, and guessing is how a forged file gets blessed.
 
-**"Rows the daemon can account for" is the load-bearing phrase, and it is the
-one thing this design cannot fully deliver.** There is no provenance record for
-existing consent rows — that is what #4330 tried and failed to build. So the
-migration cannot prove an existing row was granted by the owner.
+**DECIDED 2026-10-03 (lead; the founder may override): carry nothing.** Step 2
+creates an **empty** sidecar database and renames the in-folder file aside. No
+existing row is copied.
 
-Two options, and this proposal asks for a decision rather than picking:
+The reasoning, recorded because it is the kind of decision that gets revisited:
+there is no provenance record for consent rows written before this change —
+that is exactly what #4330 tried and failed to build — so the migration cannot
+prove an existing row was granted by the owner. **A row carried forward is
+indistinguishable from the forgery this change exists to prevent.** Copying
+them would mean the first act of the fix is to bless the thing it is fixing.
+This is also the standing preference while the platform is early: a clean
+cutover rather than a compatibility shim.
 
-- **(a) Migrate nothing.** Create an empty sidecar database; every consent must
-  be granted again. Correct by construction, and it makes every owner re-approve
-  effects they already approved.
-- **(b) Migrate rows, and tell the owner.** Copy existing rows, and surface a
-  one-time notice listing what was carried forward so the owner can revoke
-  anything they do not recognise. Keeps the system usable; accepts that a forged
-  row planted before the migration survives until the owner looks.
+I had recommended the opposite (copy rows, disclose them to the owner, let them
+revoke) on the grounds that the exposure window was already the status quo. The
+decision went the other way, and it is the stronger reading: "already exposed"
+is not a reason to carry an exposure across a migration whose entire purpose is
+to end it.
 
-(b) with the notice is the recommendation: the exposure window for (b) is
-"before this migration", which is already the status quo, while (a) breaks every
-existing integration at once. If the founder would rather not carry the risk at
-all, (a) is one line different.
+**The cost is real and is paid down rather than accepted.** Every consent must
+be granted again, so the re-grant has to be cheap or it becomes an outage:
+
+- nothing is pre-asked and nothing is batched — the first use of each effect
+  raises the **normal** consent ask, which is already a one-click
+  Waiting-on-you item;
+- its wording says this is a one-time re-confirmation after a security move,
+  not a new or unexpected request, so an owner who sees it understands why and
+  does not read it as a malfunction;
+- the ask carries the same sink and destination it always did, so an owner who
+  does not recognise one has learnt something worth knowing.
+
+That turns "every integration breaks at once" into "each integration asks once,
+at the moment it is used, with a reason attached". It is the same mechanism the
+system already uses, which is why it is cheap.
 
 ### D4. The enumeration is a test, not a list in this document
 
@@ -139,8 +156,13 @@ is derived from the same enumeration as D4 rather than listed separately.
   partially migrated volume needs a human. Mitigated by running under the
   exclusive layout lock before any role starts, by the resumable shape, and by
   the marker refusing a pre-move image.
-- **D3 cannot prove a pre-existing row is genuine.** Stated plainly rather than
-  papered over; the choice between (a) and (b) is the founder's.
+- **Every consent must be granted again.** The accepted cost of D3, and the
+  largest user-visible effect of this change. Mitigated by the re-ask being the
+  normal one-click ask at first use with a reason attached, not a migration
+  wizard and not a batch. The failure mode to watch for is an owner who is not
+  present: an automation whose first post-migration run needs a consent nobody
+  is there to click waits, which is the correct behaviour but should be visible
+  rather than silent.
 - **A second place to look.** Per-command-center state is now in two places
   during the move and in one afterwards. The enumeration test is what stops it
   being two places forever.

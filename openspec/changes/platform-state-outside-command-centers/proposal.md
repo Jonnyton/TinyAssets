@@ -54,10 +54,13 @@ putting it there.
   `api/storage_observations.py:135`). The complete list is a task, not a claim
   in this proposal — and the enumeration itself gets a test, so a future store
   placed inside a command center fails rather than joining the problem.
-- **A forged file is refused, never adopted.** The migration copies the rows the
-  daemon created and does **not** bless a file whose provenance it cannot
-  establish. An existing database at the old path that the daemon cannot
-  account for is quarantined and reported, not migrated.
+- **No consent survives the move.** Decided 2026-10-03: the migration carries
+  **nothing** forward. There is no provenance record for rows written before
+  this change, so a carried row would be indistinguishable from the forgery
+  being fixed. The sidecar database is created empty and the prior file is
+  renamed aside, not read. The re-grant is the ordinary one-click consent ask
+  at the first use of each effect, worded as a one-time re-confirmation after a
+  security move -- no migration wizard, no batch.
 - **Deletion, accounting and backup follow the data.** Account deletion,
   `storage_accounting` and the backup set all currently reach these paths
   inside the command center; each must reach the new location, and the

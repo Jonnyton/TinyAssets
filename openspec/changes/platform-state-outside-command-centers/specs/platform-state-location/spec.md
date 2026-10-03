@@ -41,10 +41,21 @@ The migration SHALL run under the exclusive data-layout lock before any role ope
 - **WHEN** a command center has both an in-folder and a sidecar database
 - **THEN** the migration refuses that command center by name and leaves both files untouched
 
-### Requirement: Carrying existing rows forward is disclosed to the owner
+### Requirement: No consent survives the move, and the re-grant is one click at first use
 
-Because no provenance record exists for consent rows written before this change, the migration cannot prove an existing row was granted by the owner. Where rows are carried forward, the owner SHALL be shown once what was carried, so anything they do not recognise can be revoked. The alternative — carrying nothing and requiring every consent to be granted again — SHALL remain available as a one-line configuration of the same migration.
+The migration SHALL carry no existing consent row forward. Because no provenance record exists for rows written before this change, a carried row would be indistinguishable from the forgery this change exists to prevent, so the sidecar database SHALL be created empty and the prior file SHALL be renamed aside rather than read.
 
-#### Scenario: The owner is told what survived the move
-- **WHEN** the migration carries existing consent rows into the sidecar database
-- **THEN** the owner is shown a one-time list of the effects and destinations carried forward, and may revoke any of them
+The resulting re-grant SHALL NOT be a migration step, a batch, or a pre-emptive prompt. The **first use** of each effect SHALL raise the ordinary consent ask, as a single owner-confirmable item, carrying the same sink and destination it always did. Its wording SHALL say that this is a one-time re-confirmation following a security move, so that an owner reading it understands why it appeared and does not read it as a malfunction or a new request.
+
+#### Scenario: A consent granted before the move does not survive it
+- **GIVEN** a command center whose in-folder consent database granted an effect before the migration
+- **WHEN** the migration has run and that effect is dispatched
+- **THEN** no consent is found, the effect does not proceed unasked, and the prior file remains on disk renamed aside
+
+#### Scenario: The re-grant is the ordinary ask, with a reason
+- **WHEN** the first post-migration use of an effect finds no consent
+- **THEN** the owner receives the ordinary consent ask for that exact sink and destination, confirmable in one action, worded as a one-time re-confirmation after a security move
+
+#### Scenario: An unattended effect waits rather than proceeding
+- **WHEN** an automation's first post-migration run needs a consent and no owner is present to confirm it
+- **THEN** the effect waits on that ask and does not proceed, and the wait is visible rather than silent
