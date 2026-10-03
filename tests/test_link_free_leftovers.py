@@ -1,5 +1,9 @@
 """The paths the final gpt-6-astra round on #4254 left open.
 
+The priority-review case also exercises domains/fantasy_daemon code. A hosted
+candidate must include that source at the same revision as these tests; a patch
+restricted to tinyassets/ and tests/ does not reproduce this feature.
+
 * ``work_targets.json`` (and the notes / hard-priority mirrors): the daemon's
   registry mirror wrote the JSON with a plain ``write_text``, and the bootstrap
   imported it with a plain ``read_text``. A planted
