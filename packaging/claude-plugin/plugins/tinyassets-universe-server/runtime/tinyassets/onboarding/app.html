@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
   <title>TinyAssets</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%20width=%2264%22%20height=%2264%22%20role=%22img%22%20aria-label=%22TinyAssets:%20Mount%20Baker%20under%20a%20wolf%20moon%22%3E%3Cdefs%3E%3CclipPath%20id=%22ta-badge%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2213%22/%3E%3C/clipPath%3E%3C/defs%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2213%22%20fill=%22#1b1b24%22/%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M-3%2027%20C14%2019%2026%209%2043%206%22%20fill=%22none%22%20stroke=%22#c9b6ff%22%20stroke-width=%221.7%22%20stroke-linecap=%22round%22%20opacity=%220.72%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M13%2011.9%20L13.242%2012.758%20L14.1%2013%20L13.242%2013.242%20L13%2014.1%20L12.758%2013.242%20L11.9%2013%20L12.758%2012.758%20Z%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Ccircle%20cx=%2225%22%20cy=%229%22%20r=%220.65%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Ccircle%20cx=%2248%22%20cy=%2214.5%22%20r=%226%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Ccircle%20cx=%2248%22%20cy=%2214.5%22%20r=%225.1%22%20fill=%22#e0703f%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M-5%2064%20L-5%2045%20L3%2039%20L7%2042%20L11%2036%20L15%2041%20L19%2035%20L23%2038%20L31%2028%20L36%2022%20L40%2020.5%20L45%2020.8%20L49%2022.5%20L53%2027%20L57%2029%20L61%2034%20L69%2040%20L69%2064%20Z%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M30%2037%20L37%2024%20L41%2023%20L36%2038%20Z%22%20fill=%22#1b1b24%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M46%2039%20L51%2029%20L55%2032%20L51%2041%20Z%22%20fill=%22#1b1b24%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M-4%2064%20L-4%2056%20Q9%2052.5%2022%2054%20Q35%2056.2%2047%2053.6%20Q57%2051.4%2068%2050%20L68%2064%20Z%22%20fill=%22#1b1b24%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cg%20transform=%22translate%2821%2037.5%29%20scale%280.66%29%22%3E%3Cpath%20d=%22M27.42%200.20%20L19.38%205.10%20L20.39%206.02%20L16.77%209.36%20L6.82%2012.19%20L0%2021.91%20L3.80%2021.52%20L6.09%2018.38%20L4.44%2025.52%20L6.82%2025.97%20L6.12%2023.20%20L10.07%2019.16%20L8.82%2022.55%20L10.35%2025.69%20L12.51%2025.78%20L10.53%2022.81%20L12.90%2018.94%20L12.81%2016.89%20L17.77%2016.84%20L19.23%2025.50%20L21.61%2025.86%20L20.18%2023.37%20L20.94%2017.26%20L22.09%2025.36%20L24.56%2025.69%20L22.94%2023.73%20L23.67%2015.72%20L26.11%2012.64%20L27.17%205.88%20L28.82%202.52%20L27.33%203.22%20Z%22%20fill=%22#14140f%22/%3E%3C/g%3E%3C/g%3E%3C/svg%3E" />
   <style nonce="__TA_NONCE__">
@@ -16,7 +16,7 @@
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
       font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-    .app{height:100dvh;display:flex;flex-direction:column}
+    .app{height:var(--app-h,100dvh);display:flex;flex-direction:column}
     .view{flex:1;min-height:0;display:flex;flex-direction:column}
     [hidden]{display:none!important}
     /* sign-in */
@@ -238,6 +238,7 @@
     .rule-row{display:flex;justify-content:space-between;align-items:center;gap:.5rem;padding:.25rem 0}
     .rules-declare{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
     .rules-declare input{min-width:7rem;flex:1}
+    .msg-steered-note{display:block;margin-top:.35rem;font-size:.72rem;opacity:.75}
     /* connect */
     .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
     .provider-head{display:flex;align-items:baseline;gap:.5rem;margin-bottom:.35rem}
@@ -272,10 +273,89 @@
     /* A custom UI replaces the chat body rather than sitting beside it, and the
        frame itself carries no border: whatever is inside is somebody's own
        design, so the app does not frame it with its own chrome. */
-    #ui-frame-host{flex:1;display:flex;min-height:0}
+    #ui-frame-host{position:absolute;inset:0;display:flex;min-height:0}
     .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
-    .ui-custom-active>.chat-body{display:none!important}
+    /* The chat cloud: the conversation floats over the command center. */
+    .chat-stage{position:relative;flex:1;min-height:0;overflow:hidden}
+    .chat-cloud{position:absolute;display:flex;flex-direction:column;min-width:0;min-height:0;
+      background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
+      box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;z-index:5}
+    .chat-cloud[data-mode="bubble"]{display:none}
+    .chat-cloud-bar{display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem .3rem .9rem;
+      background:var(--surface);border-bottom:1px solid var(--line);cursor:grab;touch-action:none;
+      user-select:none;flex:0 0 auto}
+    .chat-cloud-bar:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+    .chat-cloud.is-dragging .chat-cloud-bar{cursor:grabbing}
+    .chat-cloud-title{flex:1;font-size:.82rem;color:var(--ink-dim);white-space:nowrap;overflow:hidden;
+      text-overflow:ellipsis}
+    .chat-cloud-btn{background:none;border:0;color:var(--ink);font-size:1.1rem;line-height:1;
+      padding:.25rem .55rem;border-radius:8px;cursor:pointer}
+    .chat-cloud-btn:hover,.chat-cloud-btn:focus-visible{background:var(--surface-2)}
+    .chat-cloud-body{flex:1;min-height:0;display:flex;flex-direction:column}
+    /* The rail stacks under the thread when the CLOUD is narrow, not only the window. */
+    .chat-cloud{container-type:inline-size}
+    @container (max-width:760px){
+      .chat-body{flex-direction:column}
+      .rail{width:auto;max-height:45%;border-left:0;border-top:1px solid var(--line)}
+      .rail--setup{width:auto;max-height:none;order:-1}
+    }
+    /* A narrow CLOUD gets the compact composer too, so Send/Stop never clip. */
+    @container (max-width:520px){
+      .composer{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto}
+      .composer .voice-output-select{grid-column:1/-1;grid-row:1;width:100%;max-width:none;min-width:0}
+      .composer .btn--attach{grid-column:1;grid-row:2}
+      .composer .btn--voice{grid-column:2;grid-row:2}
+      .composer .composer-input{grid-column:3;grid-row:2;min-width:0}
+      .composer .btn--send{grid-column:4;grid-row:2}
+      .composer .btn--stop{grid-column:4;grid-row:2}
+    }
+    .chat-cloud-resize{position:absolute;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;
+      touch-action:none;background:linear-gradient(135deg,transparent 50%,var(--line) 50%)}
+    .chat-cloud-bubble{position:absolute;width:56px;height:56px;border-radius:50%;border:1px solid var(--line);
+      background:var(--surface);color:var(--ink);font-size:1.5rem;cursor:pointer;touch-action:none;
+      box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:6;padding:0}
+    .chat-cloud-bubble:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .chat-cloud-badge{position:absolute;top:2px;right:2px;min-width:14px;height:14px;border-radius:7px;
+      background:var(--accent);border:2px solid var(--surface)}
+    .chat-cloud-bubble.is-thinking{animation:cloud-pulse 1.4s ease-in-out infinite}
+    @keyframes cloud-pulse{0%,100%{box-shadow:0 0 0 0 rgba(120,140,255,.55)}50%{box-shadow:0 0 0 8px rgba(120,140,255,0)}}
+    @media (prefers-reduced-motion:reduce){.chat-cloud-bubble.is-thinking{animation:none;outline:2px dashed var(--accent)}}
     #ui-mode{font-size:.8rem}
+    #btn-header-menu{display:none}
+    @media (max-width:600px){
+      #view-chat > .chat-header{position:relative;flex:0 0 auto;min-height:52px;box-sizing:border-box;
+        padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));
+        gap:8px;z-index:20}
+      #view-chat .chat-title{min-width:0;flex:1}
+      #universe-name{max-width:none;min-width:0}
+      #btn-header-menu{display:block;flex:none;padding:6px 10px}
+      #view-chat .chat-actions{display:none;position:absolute;top:100%;right:8px;flex-direction:column;
+        padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #0008}
+      #view-chat .header-menu--open .chat-actions{display:flex}
+      #chat-cloud{border-radius:0}
+      #chat-cloud-resize{display:none}
+      #chat-cloud-body > *{flex:0 0 auto}
+      #chat-cloud-body > .chat-body{flex:1;min-height:0;flex-direction:column}
+      #thread{flex:1;min-height:0;padding:12px}
+      #request-rail{flex:0 0 auto;width:auto;padding:0 8px;gap:0;max-height:45%;overflow-y:auto}
+      /* Collapsed, the chip and any load error stay; everything else (items,
+         "Add a key yourself") is one tap away. renderRail still decides when
+         the rail shows at all. */
+      #request-rail:not(.rail--open) > :not(#rail-head):not(#rail-error){display:none}
+      #rail-head{padding:8px 0;margin:0;white-space:nowrap;cursor:pointer;text-transform:none;letter-spacing:normal}
+      #model-bar{flex-wrap:nowrap;gap:8px;padding:4px 8px;white-space:nowrap}
+      #model-next{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+      #btn-models{flex:none;font-size:12px;padding:5px 8px;white-space:nowrap}
+      #composer{grid-template-columns:36px 36px minmax(0,1fr) auto;gap:4px;padding:4px 8px;
+        padding-bottom:max(4px,env(safe-area-inset-bottom))}
+      #composer #voice-output-select{display:none}
+      #composer #btn-attach{grid-column:1;grid-row:1;width:36px;height:36px;padding:0}
+      #composer #btn-voice{grid-column:2;grid-row:1;width:36px;height:36px;min-width:0;padding:0;font-size:0}
+      #btn-voice::after{content:"\1f3a4";font-size:18px}
+      #composer #composer-input{grid-column:1/4;grid-row:2;min-width:0}
+      #composer #btn-send,#composer #btn-stop{grid-column:4;grid-row:2;padding:8px 12px}
+      #status-line{padding-bottom:2px;min-height:0}
+    }
   </style>
 </head>
 <body>
@@ -306,6 +386,8 @@
           <span id="dot" class="dot" title="checking..."></span>
           <span id="universe-name" class="universe-name">Your command center</span>
         </div>
+        <button id="btn-header-menu" class="btn btn--ghost" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-label="Menu">&#9776;</button>
         <nav class="chat-actions">
           <span id="ui-mode" hidden></span>
           <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
@@ -320,6 +402,25 @@
         <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
         <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
       </div>
+      <!-- The stage is the command center: a custom UI fills it, and the chat with
+           your agent floats above it as a movable, resizable "chat cloud" that can
+           shrink to a bubble. Every element of the chat keeps its id. -->
+      <div id="chat-stage" class="chat-stage">
+      <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
+           sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
+           bundle markup, style or script is ever assigned into this document. -->
+      <div id="ui-frame-host" hidden></div>
+      <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
+               aria-label="Chat with your agent">
+      <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
+           aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
+           aria-describedby="chat-cloud-title">
+        <span id="chat-cloud-title" class="chat-cloud-title">Your agent</span>
+        <button id="btn-cloud-shrink" class="chat-cloud-btn" type="button"
+                aria-label="Shrink the chat to a bubble" aria-controls="chat-cloud-body"
+                aria-expanded="true" title="Shrink">&#8211;</button>
+      </div>
+      <div id="chat-cloud-body" class="chat-cloud-body">
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
@@ -484,12 +585,21 @@
       </form>
       <div id="status-line" class="status-line" role="status" aria-live="polite"
            aria-label="Conversation status"></div>
+      <div id="deploy-pending-line" class="status-line" role="status"
+           aria-live="polite" hidden></div>
+      <button id="btn-try-model" class="btn btn--link" type="button" hidden
+              title="Pick another model for your next message. Stop this turn if you want to switch now; it is still working.">Try another model</button>
       <div id="voice-status-line" class="status-line status-line--voice" role="status"
            aria-live="polite" aria-label="Voice status" hidden></div>
-      <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
-           sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
-           bundle markup, style or script is ever assigned into this document. -->
-      <div id="ui-frame-host" hidden></div>
+      </div>
+      <div id="chat-cloud-resize" class="chat-cloud-resize" aria-hidden="true"></div>
+      </section>
+      <button id="chat-cloud-bubble" class="chat-cloud-bubble" type="button" hidden
+              aria-label="Open the chat with your agent" aria-controls="chat-cloud">
+        <span class="chat-cloud-bubble-icon" aria-hidden="true">&#128172;</span>
+        <span id="chat-cloud-badge" class="chat-cloud-badge" hidden></span>
+      </button>
+      </div>
     </section>
 
     <dialog id="ui-dialog" class="ui-dialog" aria-labelledby="ui-title">
@@ -1558,10 +1668,12 @@
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
-    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null){
+    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null,agentId="main"){
       const args={message,input_method:turnInputMethod(inputMethod)};
       if(modelChoice!==null) args.model_choice=copyModelChoice(modelChoice);
       if(consumerRequest!==null) args.consumer_request=JSON.parse(JSON.stringify(consumerRequest));
+      // Which of the owner's agents this turn talks to; "main" is the default.
+      if(agentId && agentId!=="main") args.agent_id=String(agentId);
       return this.callTool("converse",args);
     },
     // Deposit a generic outbound HTTP connection (an API key + the endpoints it
@@ -1672,14 +1784,18 @@
     getConversation(before){
       const args={include_conversation:true};
       if(Number.isSafeInteger(before)) args.conversation_before=before;
+      const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+      if(agent!=="main") args.conversation_agent=agent;
       return this.status(args);
     },
     // The rest of a message the peek bounded. Keyed by the turn's own stored id
     // — never by its text or timestamp — and continued ONLY from the offset the
     // server returned: JS String#length counts UTF-16 code units, so a client
     // computing its own offset desynchronises on the first emoji.
-    readConversationChunk(id,offset,scope){
-      return this.read({target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset});
+    readConversationChunk(id,offset,scope,agent){
+      agent=agent||(typeof addressedAgentId==="function"?addressedAgentId():"main");
+      return this.read({target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset,
+        ...(agent!=="main"?{agent_binding_id:agent}:{})});
     },
     // The agent's pending asks: EVERY one. Same read from every surface, which
     // is what makes them answerable from the phone with no second mechanism.
@@ -1811,11 +1927,14 @@
   const STATUS_IDLE_MS=30000, STATUS_WORKING_MS=10000;
   let statusBeatMs=STATUS_IDLE_MS;
   let serverTurn=null;
+  let deployPending=false;
   // This command center's chat waiting for one of the account's seats (`seats` in the
   // status payload, owner-only). Its line carries the upgrade link inline.
   let seatWait=null;
   let seatLineShown=false;
   function readServerTurn(payload){
+    const deploy=payload&&payload.deploy_pending;
+    deployPending=!!deploy&&typeof deploy==="object"&&deploy.pending===true;
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
       ?payload.seats:null;
     const row=payload&&payload.active_turn;
@@ -1828,8 +1947,50 @@
     const age=(typeof row.age_s==="number"&&Number.isFinite(row.age_s)&&row.age_s>0)?row.age_s:0;
     // Anchored to THIS page's clock. The row's own stamp is the server's, and a
     // device with a skewed clock would otherwise report a nonsense elapsed time.
+    // Which step, on which model, since when -- present once the turn opened a
+    // round. A ten-minute wait on one model request read exactly like a hang
+    // (live 2026-10-02); saying where the turn is lets the owner decide.
+    const roundAge=(typeof row.round_age_s==="number"&&Number.isFinite(row.round_age_s)
+      &&row.round_age_s>=0)?row.round_age_s:null;
     serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
-      startedMs:Date.now()-age*1000,observedAt:Date.now()};
+      startedMs:Date.now()-age*1000,observedAt:Date.now(),
+      round:(Number.isInteger(row.round)&&row.round>0)?row.round:0,
+      model:(typeof row.model==="string")?row.model:"",
+      roundSinceMs:roundAge===null?0:Date.now()-roundAge*1000};
+  }
+  // A model id as a person says it: no vendor prefix or ":variant" tag, and a
+  // very long name cut at a hyphen ("nemotron-3-ultra-550b-a55b" ->
+  // "nemotron-3-ultra-550b"), never down to a family word that names nothing.
+  function shortModelName(id){
+    let tail=String(id||"").split("/").pop().replace(/:[^:]*$/,"");
+    while(tail.length>24&&tail.lastIndexOf("-")>0) tail=tail.slice(0,tail.lastIndexOf("-"));
+    return tail;
+  }
+  // Minutes this step has waited on its model, or 0 when the server did not say.
+  function waitMinutes(){
+    if(!serverTurnLive()||!serverTurn.roundSinceMs) return 0;
+    return Math.floor((Date.now()-serverTurn.roundSinceMs)/60000);
+  }
+  // "step 4 · waiting on qwen3.8 for 7 min" while the model is being asked;
+  // "" when the server has not said, or when the step is running tools (that
+  // line belongs to the live tool painter).
+  function waitDetail(){
+    if(!serverTurnLive()||!serverTurn.round||
+       (serverTurn.state!=="inference_started"&&serverTurn.state!=="native_started"))
+      return "";
+    const mins=waitMinutes();
+    return "step "+serverTurn.round+(serverTurn.model
+      ? " \u00b7 waiting on "+shortModelName(serverTurn.model) : "")+
+      (mins>=1?" for "+mins+" min":"");
+  }
+  // After this long on one request the owner is offered another model. Their
+  // choice, never ours: a slow reply that is still coming is not abandoned
+  // (founder, 2026-10-02), and switching does not stop the request in flight.
+  const TRY_MODEL_AFTER_MIN=3;
+  function renderTryModel(){
+    const button=$("btn-try-model");
+    if(!button) return;
+    button.hidden=!(waitDetail()&&waitMinutes()>=TRY_MODEL_AFTER_MIN);
   }
   function serverTurnLive(){
     return !!serverTurn && (Date.now()-serverTurn.observedAt)<3*STATUS_WORKING_MS;
@@ -1851,6 +2012,8 @@
   // sentence is; a queue count, an attachment notice or a failure line belongs to
   // whoever wrote it and is never touched here.
   let serverStatusLine=false;
+  // This page's own turn line carries the server's step detail.
+  let ownDetailLine=false;
   // ---- Stop (founder 2026-09-30: "just like it works in claude code") --------
   // While the agent is working, Send gives its place to Stop; Escape does the
   // same. The server stops the turn at its next safe point (a tool call already
@@ -1955,6 +2118,14 @@
   }
   function renderWorking(){
     renderStop();
+    renderTryModel();
+    const updateLine=$("deploy-pending-line");
+    if(updateLine){
+      const pending=serverTurnLive()&&deployPending;
+      const text=pending?"An update is waiting for this turn to finish; it installs right after.":"";
+      if(updateLine.textContent!==text) updateLine.textContent=text;
+      updateLine.hidden=!pending;
+    }
     if(seatWait){
       // The waiting line, with the Upgrade link INSIDE it -- never a banner, card
       // or modal (founder, 2026-09-30). No link on the top tier: the server sends
@@ -1992,7 +2163,24 @@
     // The flag is dropped on the way out: a local turn has taken the line, so our
     // sentence is no longer on screen and we must not later "clear" what that path
     // wrote (a queue count outlives the turn it was queued behind).
-    if(turnStartedAt){ serverStatusLine=false; return; }
+    if(turnStartedAt){
+      serverStatusLine=false;
+      // This page's own sentence, with WHERE the turn is when the server says.
+      // Never over a queue count, the seat line or a Stop in progress, which
+      // know more; and never rewritten unchanged, so a screen reader hears the
+      // minute change and nothing else.
+      const detail=waitDetail();
+      const mine=!sendQueue.length&&!seatLineShown&&!interruptRequested;
+      if(detail&&mine){
+        const text="Your agent is thinking... "+detail;
+        if($("status-line").textContent!==text) setStatusLine(text);
+        ownDetailLine=true;
+      }else if(ownDetailLine&&!detail&&mine){
+        setStatusLine("Your agent is thinking..."); ownDetailLine=false;
+      }
+      return;
+    }
+    ownDetailLine=false;
     if(!serverTurnLive()){
       // Ours to clear, or nobody's. A line another path wrote stays.
       if(serverStatusLine){ serverStatusLine=false; setStatusLine(""); }
@@ -2002,7 +2190,7 @@
     const elapsed=workingElapsed(workingSince());
     // Said because this page did NOT start it: without it the founder is looking
     // at a turn they have no other evidence of.
-    const detail=[elapsed,"started in another window, by a request you answered, "+
+    const detail=[elapsed,waitDetail(),"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
     setStatusLine("Your agent is thinking... " + detail);
   }
@@ -2826,6 +3014,7 @@
       : "";
     const error=new Error((live||(recorded?payload.failure_notice:payload.error))+caution);
     error.served=true;
+    error.steering=(payload&&payload.steering)||null;
     error.failureRecorded=recorded;
     error.historySaved=recorded&&payload.history_saved===true;
     error.failureCode=recorded?failure.code:"";
@@ -3445,6 +3634,7 @@
   function captureTurnOptions(opts){
     opts=opts||{};
     return Object.assign({},opts,{
+      agentId:typeof opts.agentId==="string"&&opts.agentId?opts.agentId:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
       inputMethod:turnInputMethod(opts.inputMethod),
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(opts,"modelChoice")
         ? opts.modelChoice : modelChoiceForNextTurn)});
@@ -3458,6 +3648,7 @@
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
+       agent:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
        owner:queueOwner,
        scope:queueScope,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()};
@@ -3484,7 +3675,7 @@
   async function sendConversationRequest(message,display,sentAt,opts){
     const epoch=MCP._loginEpoch;
     const checkLogin=()=>{if(epoch!==MCP._loginEpoch)throw new Error("Conversation account changed.");};
-    let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null);
+    let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null,opts.agentId);
     // From here on the server has ANSWERED a converse for this message, and a
     // chosen-conversation turn may be accepted and running. A later failure (a
     // poll whose handshake fails, a 401 whose renewal is down) is not sent for
@@ -3506,7 +3697,7 @@
       const saved=readInflight();
       if(!saved||JSON.stringify(saved.consumerRequest)!==JSON.stringify(opts.consumerRequest))
         throw new Error("Could not save safe conversation recovery. No workflow was started.");
-      payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+      payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId);
       checkLogin();
     }
     const started=Date.now();
@@ -3521,7 +3712,7 @@
       if(payload&&payload.consumer_turn&&payload.consumer_turn.state==="held"&&
          ["completed","failed","cancelled","interrupted"].includes(payload.consumer_turn.run_status)){
         // Exact replay repairs only the already-terminal pair after a crash gap.
-        payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+        payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId);
         checkLogin();
       }
     }
@@ -3572,6 +3763,88 @@
     if(queueScope && value && value!==queueScope && typeof AppUI!=="undefined") AppUI.homeChanged(value);
     queueScope=value;
   }
+  // ---- The agent the chat is talking to (harness §4.18) --------------------
+  // A command center can hold many agents: the main one and any the owner
+  // bound into it. Each has its own thread on the server and they share one
+  // brain. The chat talks to ONE at a time; switching shows that agent's thread
+  // and every send, steer and read names it. A switch waits for the current
+  // turn and its queue, so a reply can never land on another agent's thread.
+  let addressedAgent={agent_id:"main",name:"Your agent"};
+  function addressedAgentId(){ return addressedAgent.agent_id; }
+  // Collaborators below call these through `typeof`, as they do refreshChatCloud.
+  function resetAddressedAgent(){
+    addressedAgent={agent_id:"main",name:"Your agent"}; paintAddressedAgent();
+  }
+  async function addressAgent(agent){
+    const id=String((agent&&agent.agent_id)||"main");
+    const name=String((agent&&agent.name)||"Your agent");
+    if(id!==addressedAgent.agent_id){
+      if(activeTurn||sendQueue.length||interruptPending||pendingSteers)
+        throw new Error("finish or stop the current message first, then switch agents");
+      if(typeof Voice!=="undefined"&&typeof Voice.stop==="function")
+        Voice.stop(Boolean(Voice.browserDraftUtterance||Voice.browserPendingUtterance||Voice.browserRecognizing),
+          "The chat switched agents; unsent voice input was discarded.");
+      addressedAgent={agent_id:id,name};
+      historyLoaded=false; inflightRestored=false; queueRestored=false;
+      renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
+      clearThread(); historyFailed(null);
+      paintAddressedAgent(); openAddressedChat();
+      await loadHistory();
+      return;
+    }
+    addressedAgent={agent_id:id,name};
+    paintAddressedAgent(); openAddressedChat();
+  }
+  function paintAddressedAgent(){
+    const label=addressedAgent.agent_id==="main"?"Your agent":addressedAgent.name;
+    const cloud=$("chat-cloud"); if(cloud) cloud.dataset.agent=addressedAgent.agent_id;
+    if(typeof refreshChatCloud==="function") refreshChatCloud();
+    const title=$("chat-cloud-title"); if(title) title.textContent=label;
+    const input=$("composer-input");
+    if(input) input.setAttribute("aria-label","Message "+label);
+    const pick=$("agent-switcher"); if(pick) pick.value=addressedAgent.agent_id;
+  }
+  // A chat shrunk to a bubble opens when a screen asks to talk to an agent.
+  function openAddressedChat(){
+    if(typeof setChatCloudMode==="function"&&typeof cloudState!=="undefined"&&
+       cloudState&&cloudState.mode==="bubble") setChatCloudMode("open");
+  }
+  // Shown only when there is more than the main agent to talk to. The list is
+  // the bridge's own (the viewer's agents in their verified home), so it needs
+  // the custom-UI controller enabled; an unreadable list keeps what is shown.
+  async function refreshAgentSwitcher(){
+    if(typeof AppUI==="undefined"||!AppUI.enabled) return;
+    const gen=refreshAgentSwitcher.gen=(refreshAgentSwitcher.gen||0)+1;
+    let agents;
+    try{ agents=(await AppUI.listAgents()).agents; }catch(_e){ return; }
+    if(gen!==refreshAgentSwitcher.gen) return;
+    let pick=$("agent-switcher");
+    if(!pick){
+      const home=$("chat-cloud-bar")||document.querySelector("#view-chat .chat-actions");
+      if(!home) return;
+      pick=document.createElement("select");
+      pick.id="agent-switcher"; pick.className="agent-switcher";
+      pick.setAttribute("aria-label","Which agent you are talking to");
+      // A drag starting on the picker is not a drag of the chat window.
+      pick.addEventListener("pointerdown",ev=>ev.stopPropagation());
+      pick.addEventListener("change",async()=>{
+        const chosen=Array.from(pick.options).find(o=>o.value===pick.value);
+        try{ await addressAgent({agent_id:pick.value,name:chosen?chosen.textContent:""}); }
+        catch(err){ pick.value=addressedAgent.agent_id; setStatusLine((err&&err.message)||"could not switch agents"); }
+      });
+      home.insertBefore(pick, home.firstChild&&home.firstChild.nextSibling||null);
+    }
+    pick.replaceChildren(...agents.map(a=>{
+      const option=document.createElement("option");
+      option.value=a.agent_id; option.textContent=a.name; return option;
+    }));
+    pick.hidden=agents.length<2;
+    // The agent on screen may have been removed: back to the main agent.
+    if(addressedAgent.agent_id!=="main"&&agents.length&&!agents.some(a=>a.agent_id===addressedAgent.agent_id)){
+      try{ await addressAgent({agent_id:"main",name:"Your agent"}); }catch(_e){ /* busy: next refresh */ }
+    }
+    pick.value=addressedAgent.agent_id;
+  }
   // The ACCOUNT half of "may this page read what this browser saved". A home id
   // alone does not answer it: two accounts can sign in on one browser and the
   // second must not read the first's held lines. Learned from /app/me.
@@ -3603,7 +3876,8 @@
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(q,"modelChoice")
         ? q.modelChoice : q.opts&&q.opts.modelChoice),
       owner:(q.owner!==undefined)?q.owner:queueOwner,
-      scope:(q.scope!==undefined)?q.scope:queueScope};
+      scope:(q.scope!==undefined)?q.scope:queueScope,
+      agent:String(q.agent||(q.opts&&q.opts.agentId)||"main")};
   }
   function saveQueue(){
     try{
@@ -3686,6 +3960,13 @@
         null, now/1000);
       return;
     }
+    // A line queued to another of the owner's agents waits for that agent's
+    // own thread; it is never offered, or sent, to the agent on screen.
+    if(String(item.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")){
+      appendMessage("system","A line queued to another of your agents is waiting; "+
+        "open that agent to send or discard it.", null, now/1000);
+      return;
+    }
     const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
     let text = "Still waiting to be sent when the page reloaded: \u201c" +
       String(item.display||item.message).slice(0, 200) + "\u201d";
@@ -3752,6 +4033,9 @@
       .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
   }
   function flushSendQueue(batch){
+    // A steer request still on the wire may answer "already heard" for a line
+    // that also sits in this queue: nothing goes out until it does.
+    if(pendingSteers>0){ steerHeldBatch=steerHeldBatch||batch===true; return; }
     if(sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
     if(batch===true) return flushBatch();
     const next=sendQueue.shift();
@@ -3820,9 +4104,108 @@
     saveQueue();   // last: a failed save replaces the status line with why
   }
 
+  // ---- Steering a running turn (harness S2) ------------------------------
+  //
+  // A plain line typed while the universe works goes INTO the running turn: it
+  // reaches the agent with the result of its next tool call, the way Claude
+  // Code takes a message mid-task, instead of waiting for the whole turn to
+  // end. Anything that cannot share the turn (a relayed answer, an attachment,
+  // a chosen conversation, a Stop in progress, no running turn on this page)
+  // queues exactly as before. When the turn ends, any steered line the agent
+  // never received comes back from the server and is queued for the next turn,
+  // so nothing typed is lost.
+  let steeredLines=[];
+  // Steer requests on the wire; a batch held behind them; the newest turn's
+  // settlement by line id, so a late steer answer is reconciled exactly.
+  let pendingSteers=0, steerHeldBatch=false, lastSettlement=null;
+  function markSteered(el){
+    if(!el) return el;
+    const note=document.createElement("span");
+    note.className="msg-steered-note";
+    note.textContent="Sent to your agent while it works \u2014 it sees this at its next step.";
+    el.appendChild(note); el.steeredNote=note;
+    return el;
+  }
+  function unmarkSteered(el){
+    if(el&&el.steeredNote&&el.steeredNote.remove) el.steeredNote.remove();
+    if(el) el.steeredNote=null;
+  }
+  async function steerOrQueue(message, display, opts){
+    // Queued first, exactly as before, so the line is on screen and saved the
+    // moment it is sent; it then moves INTO the running turn if the server
+    // takes it.
+    const before=sendQueue.length;
+    queueTurn(message, display, opts);
+    const plain=!interruptPending && !!activeTurn && !opts.relay && !opts.echoed &&
+      !opts.consumerRequest && (!display || display===message);
+    const item=sendQueue.length>before ? sendQueue[sendQueue.length-1] : null;
+    // Folded into an identical queued line, or returned to the composer when
+    // the queue is full: nothing new to steer.
+    if(!plain || !item || item.message!==message) return;
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    let doc=null;
+    pendingSteers++;
+    try{
+      const r=await fetch("/app/turn/steer",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify(Object.assign({universe_id:scope,text:message},
+          item.opts&&item.opts.agentId&&item.opts.agentId!=="main"?{agent_id:item.opts.agentId}:{}))});
+      doc=r.ok?await r.json():null;
+    }catch(e){ doc=null; }
+    finally{ pendingSteers--; }
+    if(epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+       doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    // The turn may have ended while this request was out: what was held goes now.
+    if(pendingSteers===0 && !activeTurn){
+      const batch=steerHeldBatch; steerHeldBatch=false; flushSendQueue(batch);
+    }
+  }
+  // The server took a queued line into the running turn (id = its steer id).
+  function adoptSteered(item, id, owner, scope){
+    const settled=lastSettlement;
+    // That turn already ended without it: it stays queued for the next turn
+    // (the server keeps it as carryover and will not repeat it).
+    if(settled && settled.undelivered.has(id)) return;
+    const at=sendQueue.indexOf(item);
+    if(at<0) return;
+    sendQueue.splice(at,1);
+    unmarkQueued(item.bubble);
+    // Heard before this answer arrived: sent, nothing more to do.
+    if(!(settled && settled.delivered.has(id))){
+      markSteered(item.bubble);
+      steeredLines.push({id, message:item.message, bubble:item.bubble, owner, scope,
+        opts:item.opts});
+    }
+    setStatusLine(activeTurn
+      ? "Your agent is thinking..."+(sendQueue.length?" "+sendQueue.length+" waiting":"")
+      : "");
+    saveQueue();
+  }
+  // The turn ended. ``receipt`` is the server's settlement by id, or null when
+  // the answer never arrived: then every steered line is queued again (said
+  // twice beats lost; the server drops a repeat of its own carryover).
+  function settleSteered(receipt){
+    const lost=!receipt;
+    const delivered=new Set(receipt&&Array.isArray(receipt.delivered)?receipt.delivered:[]);
+    const undelivered=new Map((receipt&&Array.isArray(receipt.undelivered)?receipt.undelivered:[])
+      .map(u=>[u&&u.id,u&&u.text]));
+    lastSettlement={delivered, undelivered};
+    const lines=steeredLines; steeredLines=[];
+    lines.forEach(line=>{
+      unmarkSteered(line.bubble);
+      if(!lost && !undelivered.has(line.id)) return;
+      if(line.owner!==queueOwner||line.scope!==queueScope) return;
+      markQueued(line.bubble);
+      sendQueue.push({message:line.message, display:line.message, owner:line.owner,
+        scope:line.scope, bubble:line.bubble,
+        opts:Object.assign({}, line.opts, {echoed:true,sentAt:Date.now()}), ts:Date.now()});
+    });
+    if(lines.length) saveQueue();
+  }
+
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
-    if($("btn-send").disabled || interruptPending) return queueTurn(message, display, opts);
+    if($("btn-send").disabled || interruptPending) return steerOrQueue(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the command center (file content
     // embedded verbatim). They differ only when an attachment rode along.
@@ -3861,11 +4244,17 @@
       const answer=await sendConversationRequest(message,display,sentAt,opts);
       if(!stillHere()) return;
       renderConverse(answer);
+      settleSteered((answer&&answer.steering)||{delivered:[],undelivered:[]});
       delivered=true;setStatusLine("");
       if(typeof AppUI!=="undefined") AppUI.turnSettled();
+      if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(!stillHere()) return;
+      // A turn that ended without a reply hands back every steered line. When
+      // the answer never arrived at all, every steered line is queued again:
+      // said twice is better than lost.
+      settleSteered(err&&err.served ? (err.steering||{delivered:[],undelivered:[]}) : null);
       // Signing out clears the composer (it is account-scoped), so the text
       // cannot be "left in the box". What survives is the in-flight record on
       // disk, which the same account is offered again after signing in.
@@ -4146,11 +4535,13 @@
     // after a sign-out or an account switch belongs to the PREVIOUS account: it
     // paints nothing here and stops the load.
     const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const agent=typeof addressedAgentId==="function"?addressedAgentId():"main";
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+      agent===(typeof addressedAgentId==="function"?addressedAgentId():"main");
     let failed=null;
     more.addEventListener("click", ()=>{
       more.disabled=true; more.textContent="Loading the rest…";
-      loadFullMessage(id,stillOwner,scope).then(full=>{
+      loadFullMessage(id,stillOwner,scope,agent).then(full=>{
         if(!stillOwner()) return;
         if(typeof full!=="string"){
           // The preview stays exactly as it was and the control is re-armed:
@@ -4176,12 +4567,12 @@
   // Pages one message by the SERVER's offsets. Returns the whole text, or null
   // when it could not be recovered - it never returns a partial answer as if it
   // were the message.
-  async function loadFullMessage(id,stillOwner,scope){
+  async function loadFullMessage(id,stillOwner,scope,agent){
     const parts=[]; let offset=0, total=null;
     try{
       while(true){
         if(!stillOwner()) return null;
-        const r=await Owner.readConversationChunk(id,offset,scope);
+        const r=await Owner.readConversationChunk(id,offset,scope,agent);
         if(!stillOwner()) return null;            // previous account's response
         if(!r||r.available!==true||typeof r.chunk!=="string"||r.error||
            r.offset!==offset||r.offset_unit!=="unicode_code_points"||
@@ -4210,8 +4601,6 @@
       const host=s.active_host, alive=host&&host!=="none";
       dot.className="dot "+(alive?"dot--ok":"dot--warn");
       dot.title=alive?("host: "+host):"no active host";
-      const name=s.universe_name||s.universe||s.universe_id||"";
-      if(name) $("universe-name").textContent=name;
       if(ModelPicker.snapshot&&s.universe_id&&ModelPicker.snapshot.universe_id!==s.universe_id) ModelPicker.reset();
       setQueueScope(s.universe_id || s.universe);
       // The command center's own working state, whatever started the turn. This is the
@@ -4303,6 +4692,19 @@
   // lands in its normal chat with that request first in the rail, never on a
   // separate full-page screen.
   let engineConnected = null;   // null = unknown yet
+  // The header names the command center, never its id. The server sends a name
+  // only once one is learned; anything id-shaped is refused here as well, so no
+  // reader that falls back to an id can ever put one in front of the owner.
+  const COMMAND_CENTER_FALLBACK="Your command center";
+  function commandCenterName(value){
+    const name=typeof value==="string" ? value.trim() : "";
+    if(!name || /^(u|cc)-[0-9a-z]{8,}$/i.test(name)) return COMMAND_CENTER_FALLBACK;
+    return name;
+  }
+  function showCommandCenterName(value){
+    const node=$("universe-name");
+    if(node) node.textContent=commandCenterName(value);
+  }
   async function fetchMe(){
     try{
       await ensureFreshToken();
@@ -4333,6 +4735,207 @@
       });
     }catch(_e){ /* a clock we could not report is not a broken sign-in */ }
   }
+  // ---- Chat cloud -------------------------------------------------------------
+  // The chat with an agent floats over the command center as a "chat cloud" the
+  // owner can move, resize and shrink to a bubble (founder, 2026-10-02). It
+  // starts BIG for an owner with no command-center layout and SMALL when a
+  // layout is active; once the owner moves, resizes or shrinks it, their last
+  // state is restored instead. Remembered per owner, per agent and per viewport
+  // class, because a phone and a desktop want different windows. There is no
+  // server store for UI preferences, so this device remembers it.
+  const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
+        CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
+  let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
+  function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
+  function cloudStorageKey(owner, agentId, viewport){
+    return CLOUD_KEY_PREFIX+":"+(owner||"")+":"+(agentId||"main")+":"+viewport;
+  }
+  // Keeps the window and the bubble wholly on the stage, and the window no
+  // smaller than usable (or the stage, when the stage itself is smaller).
+  function cloudClamp(state, stage){
+    const fit=(v,lo,hi)=>Math.min(Math.max(v,lo),Math.max(lo,hi));
+    const w=fit(state.open.w, Math.min(CLOUD_MIN_W,stage.w), stage.w);
+    const h=fit(state.open.h, Math.min(CLOUD_MIN_H,stage.h), stage.h);
+    return {
+      mode:state.mode==="bubble" ? "bubble" : "open",
+      open:stage.w<CLOUD_PHONE_MAX && stage.w<=600 && state.mode==="open"
+        ? {x:0,y:0,w:stage.w,h:stage.h}
+        : {x:fit(state.open.x,0,stage.w-w), y:fit(state.open.y,0,stage.h-h), w:w, h:h},
+      bubble:{x:fit(state.bubble.x,0,stage.w-CLOUD_BUBBLE), y:fit(state.bubble.y,0,stage.h-CLOUD_BUBBLE)},
+      userSet:!!state.userSet,
+    };
+  }
+  function cloudDefaultState(hasLayout, stage){
+    const m=cloudViewportClass(stage.w)==="phone" ? 0 : CLOUD_MARGIN;
+    return cloudClamp({
+      mode:hasLayout ? "bubble" : "open",
+      open:{x:m, y:m, w:stage.w-2*m, h:stage.h-2*m},
+      bubble:{x:stage.w-CLOUD_BUBBLE-CLOUD_MARGIN, y:stage.h-CLOUD_BUBBLE-CLOUD_MARGIN},
+      userSet:false,
+    }, stage);
+  }
+  // A saved state exists only because the owner moved, resized or shrank the
+  // cloud, so a valid one always wins over the default.
+  function cloudParseSaved(raw){
+    let doc=null;
+    try{ doc=JSON.parse(raw); }catch(_error){ return null; }
+    const num=v=>typeof v==="number" && isFinite(v);
+    if(!doc || doc.v!==1 || !doc.open || !doc.bubble) return null;
+    if(doc.mode!=="open" && doc.mode!=="bubble") return null;
+    const o=doc.open, b=doc.bubble;
+    if(![o.x,o.y,o.w,o.h,b.x,b.y].every(num)) return null;
+    return {mode:doc.mode, open:{x:o.x,y:o.y,w:o.w,h:o.h}, bubble:{x:b.x,y:b.y}, userSet:true};
+  }
+  function cloudResolveState(saved, hasLayout, stage){
+    return saved ? cloudClamp(saved, stage) : cloudDefaultState(hasLayout, stage);
+  }
+  function cloudStageSize(){ const s=$("chat-stage"); return {w:s.clientWidth, h:s.clientHeight}; }
+  function cloudHasLayout(){ const v=$("view-chat"); return !!(v && v.classList.contains("ui-custom-active")); }
+  // Re-reads the right saved state (owner, agent and viewport class may all have
+  // changed) and lays the cloud out. Called on sign-in, on a stage resize and
+  // when a command-center layout comes or goes.
+  function refreshChatCloud(){
+    const stageEl=$("chat-stage"), cloud=$("chat-cloud");
+    if(!stageEl || !cloud) return;
+    if(!cloudWired) wireChatCloud();
+    const stage=cloudStageSize();
+    if(!stage.w || !stage.h) return;             // not laid out yet; the resize observer retries
+    const key=cloudStorageKey(queueOwner, cloud.dataset.agent, cloudViewportClass(stage.w));
+    if(key===cloudStoreKey && cloudState && cloudState.userSet){
+      // Same owner, agent and viewport class, and the owner has placed it: the
+      // live state is the truth (it may be mid-drag, or storage may be off).
+      cloudState=cloudClamp(cloudState, stage);
+    }else{
+      cloudStoreKey=key;
+      let saved=null;
+      try{ saved=cloudParseSaved(localStorage.getItem(key)); }catch(_error){ saved=null; }
+      cloudState=cloudResolveState(saved, cloudHasLayout(), stage);
+    }
+    applyChatCloud();
+  }
+  function applyChatCloud(){
+    const cloud=$("chat-cloud"), bubble=$("chat-cloud-bubble"), s=cloudState;
+    if(!cloud || !bubble || !s) return;
+    cloud.dataset.mode=s.mode;
+    cloud.style.left=s.open.x+"px"; cloud.style.top=s.open.y+"px";
+    cloud.style.width=s.open.w+"px"; cloud.style.height=s.open.h+"px";
+    bubble.style.left=s.bubble.x+"px"; bubble.style.top=s.bubble.y+"px";
+    const stage=cloudStageSize(), size=Math.min(CLOUD_BUBBLE, stage.w, stage.h);
+    bubble.style.width=size+"px"; bubble.style.height=size+"px";
+    // Shrinking on its own (a layout arrived) must not strand focus inside a
+    // hidden window: it moves to the bubble.
+    const strand=s.mode==="bubble" && bubble.hidden && document.activeElement && cloud.contains(document.activeElement);
+    bubble.hidden=s.mode!=="bubble";
+    if(strand) bubble.focus();
+    $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
+    if(s.mode==="open") setCloudUnread(false);
+  }
+  function saveChatCloud(){
+    if(!cloudState || !cloudStoreKey) return;
+    cloudState.userSet=true;
+    try{
+      localStorage.setItem(cloudStoreKey, JSON.stringify(
+        {v:1, mode:cloudState.mode, open:cloudState.open, bubble:cloudState.bubble}));
+    }catch(_error){ /* storage full or disabled: the cloud still works, unremembered */ }
+  }
+  function setChatCloudMode(mode){
+    if(!cloudState) return;
+    cloudState.mode=mode;
+    applyChatCloud(); saveChatCloud();
+    const target=mode==="open" ? $("composer-input") : $("chat-cloud-bubble");
+    if(target) target.focus();
+  }
+  // Moves (dx, dy) and resizes (dw, dh) from a starting state, clamped.
+  function cloudShifted(from, dx, dy, dw, dh){
+    const s={mode:from.mode, open:Object.assign({}, from.open), bubble:Object.assign({}, from.bubble),
+             userSet:from.userSet};
+    if(s.mode==="bubble"){ s.bubble.x+=dx; s.bubble.y+=dy; }
+    else{ s.open.x+=dx; s.open.y+=dy; s.open.w+=dw; s.open.h+=dh; }
+    return cloudClamp(s, cloudStageSize());
+  }
+  function setCloudUnread(on){
+    const badge=$("chat-cloud-badge"); if(badge) badge.hidden=!on;
+    paintCloudBubbleLabel();
+  }
+  function paintCloudBubbleLabel(){
+    const bubble=$("chat-cloud-bubble"), badge=$("chat-cloud-badge");
+    if(!bubble) return;
+    const parts=["Open the chat with your agent"];
+    if(bubble.classList.contains("is-thinking")) parts.push("your agent is working");
+    if(badge && !badge.hidden) parts.push("new message");
+    bubble.setAttribute("aria-label", parts.join(", "));
+  }
+  // One pointer gesture (mouse, pen or touch): drag the window, drag its resize
+  // corner, or drag the bubble. A bubble that moved is not also a click.
+  function wireCloudDrag(handle, kind){
+    handle.addEventListener("pointerdown", ev=>{
+      if(ev.button!==0 || !cloudState) return;
+      if(kind==="move" && ev.target.closest && ev.target.closest(".chat-cloud-btn")) return;
+      const start={x:ev.clientX, y:ev.clientY}, origin=cloudState;
+      let moved=false;
+      try{ handle.setPointerCapture(ev.pointerId); }catch(_error){ /* synthetic pointer */ }
+      const move=e=>{
+        const dx=e.clientX-start.x, dy=e.clientY-start.y;
+        if(!moved && Math.abs(dx)+Math.abs(dy)<4) return;
+        moved=true;
+        $("chat-cloud").classList.add("is-dragging");
+        cloudState=kind==="resize" ? cloudShifted(origin,0,0,dx,dy) : cloudShifted(origin,dx,dy,0,0);
+        applyChatCloud();
+        e.preventDefault();
+      };
+      const end=e=>{
+        handle.removeEventListener("pointermove",move);
+        handle.removeEventListener("pointerup",end);
+        handle.removeEventListener("pointercancel",end);
+        $("chat-cloud").classList.remove("is-dragging");
+        // Only a completed drag produces a click to swallow; a cancelled one does not.
+        if(moved){ saveChatCloud(); if(kind==="bubble" && e.type==="pointerup") cloudSuppressClick=true; }
+      };
+      handle.addEventListener("pointermove",move);
+      handle.addEventListener("pointerup",end);
+      handle.addEventListener("pointercancel",end);
+    });
+  }
+  // Arrow keys move the window or bubble; Shift and an arrow resize the window.
+  function cloudKeydown(ev){
+    const arrows={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]};
+    const dir=arrows[ev.key];
+    if(!dir || !cloudState) return;
+    ev.preventDefault();
+    const dx=dir[0]*CLOUD_STEP, dy=dir[1]*CLOUD_STEP;
+    cloudState=ev.shiftKey && cloudState.mode==="open"
+      ? cloudShifted(cloudState,0,0,dx,dy) : cloudShifted(cloudState,dx,dy,0,0);
+    applyChatCloud(); saveChatCloud();
+  }
+  function wireChatCloud(){
+    cloudWired=true;
+    wireCloudDrag($("chat-cloud-bar"),"move");
+    wireCloudDrag($("chat-cloud-resize"),"resize");
+    wireCloudDrag($("chat-cloud-bubble"),"bubble");
+    $("btn-cloud-shrink").addEventListener("click",()=>setChatCloudMode("bubble"));
+    $("chat-cloud-bubble").addEventListener("click",()=>{
+      if(cloudSuppressClick){ cloudSuppressClick=false; return; }
+      setChatCloudMode("open");
+    });
+    $("chat-cloud-bar").addEventListener("keydown",cloudKeydown);
+    $("chat-cloud-bubble").addEventListener("keydown",cloudKeydown);
+    if(typeof ResizeObserver==="function") new ResizeObserver(()=>refreshChatCloud()).observe($("chat-stage"));
+    window.addEventListener("resize",()=>refreshChatCloud());
+    // The bubble still says what the agent is doing: working while Stop is
+    // showing, and a badge for a reply that arrived while it was shrunk.
+    if(typeof MutationObserver==="function"){
+      const stop=$("btn-stop"), bubble=$("chat-cloud-bubble");
+      if(stop) new MutationObserver(()=>{
+        bubble.classList.toggle("is-thinking", !stop.hidden); paintCloudBubbleLabel();
+      }).observe(stop,{attributes:true,attributeFilter:["hidden"]});
+      new MutationObserver(records=>{
+        if(!cloudState || cloudState.mode!=="bubble") return;
+        for(const r of records) for(const node of r.addedNodes){
+          if(node.classList && node.classList.contains("msg--universe")){ setCloudUnread(true); return; }
+        }
+      }).observe($("thread"),{childList:true});
+    }
+  }
   async function enterSignedIn(){
     ModelPicker.reset();
     // The login this answer is FOR. A /app/me that lands after a sign-out
@@ -4347,6 +4950,7 @@
     // before anything this page may restore (held lines, the in-flight record,
     // saved attachments), which is readable only once owner and home are known.
     if(me&&me.universe_id) setQueueScope(me.universe_id);
+    if(typeof showCommandCenterName === "function") showCommandCenterName(me&&me.name);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
     // In this order: a reply left by a previous owner is discarded by the rebind
@@ -4369,9 +4973,11 @@
     if(typeof AppUI!=="undefined"){
       if(connected) AppUI.enable(me.universe_id,me.principal_id); else AppUI.reset();
     }
+    if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
     // Powered or not, this is the command center's own chat. The owner and home were
     // taken above, from the same verified `me`.
     showView("chat"); startHeartbeat(); warmSession();
+    if(typeof refreshChatCloud === "function") refreshChatCloud();
     // Build 3's App Review Notes and submitted product surface are voice-dark.
     // The hosted web app may expose Voice, but a Capacitor shell must not make it
     // reachable until a later store submission declares and verifies that surface.
@@ -4568,6 +5174,7 @@
   }
   function clearAccountScopedState(){
     queueScope=""; queueOwner="";
+    if(typeof resetAddressedAgent==="function") resetAddressedAgent();
     // The other writer of the home. A custom UI's bridge is account- AND
     // home-scoped, so an account-scoped clear must end it here too; leaving it to
     // the sign-out path only would miss every other caller of this.
@@ -5578,7 +6185,68 @@
       graph_id:graph_id, payload_json:JSON.stringify({file_id:file_id})});
   }
 
+  function fitToVisualViewport(){
+    // Height x scale: the on-screen keyboard shrinks the visual viewport, a
+    // pinch-zoom only rescales it, and only the keyboard should shrink the app.
+    // Phones only: desktop and the Electron app keep 100dvh exactly as before.
+    const vv=window.visualViewport, root=document.documentElement;
+    if(vv && window.matchMedia("(max-width:600px)").matches)
+      root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
+    else root.style.removeProperty("--app-h");
+  }
+  function setHeaderMenu(open){
+    const button=$("btn-header-menu");
+    button.setAttribute("aria-expanded",String(open));
+    button.closest("header").classList.toggle("header-menu--open",open);
+  }
+  function paintRailChip(){
+    const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
+    const count=$("rail-items").children.length;
+    rail.dataset.phoneEmpty=String(count===0);
+    if(phone){
+      // Only what is outstanding counts: an offered row ("Connect another LLM")
+      // is not waiting on anyone (the same rule as the desktop heading).
+      const waiting=typeof railCache!=="undefined"
+        ? railCache.filter(r=>!(typeof isOptionalRequest==="function" && isOptionalRequest(r))).length : count;
+      const label=waiting ? waiting+" waiting on you" : "Nothing waiting on you";
+      if(head.textContent!==label) head.textContent=label;
+      head.setAttribute("role","button"); head.tabIndex=0;
+      head.setAttribute("aria-expanded",String(rail.classList.contains("rail--open")));
+    }else if(head.hasAttribute("role")){
+      head.textContent=typeof railCache!=="undefined" && !railCache.some(r=>!isOptionalRequest(r))
+        ? "Nothing waiting on you" : "Waiting on you";
+      head.removeAttribute("role"); head.removeAttribute("tabindex"); head.removeAttribute("aria-expanded");
+    }
+  }
+  function toggleRailChip(event){
+    if(!window.matchMedia("(max-width:600px)").matches) return;
+    if(event.type==="keydown" && event.key!=="Enter" && event.key!==" ") return;
+    event.preventDefault(); $("request-rail").classList.toggle("rail--open"); paintRailChip();
+  }
+  function wirePhoneConversation(){
+    fitToVisualViewport();
+    if(window.visualViewport){
+      window.visualViewport.addEventListener("resize",fitToVisualViewport);
+      window.visualViewport.addEventListener("scroll",fitToVisualViewport);
+    }
+    const button=$("btn-header-menu"), header=button.closest("header");
+    button.addEventListener("click",()=>setHeaderMenu(button.getAttribute("aria-expanded")!=="true"));
+    header.querySelector("nav").addEventListener("click",event=>{if(event.target.closest("button,a")) setHeaderMenu(false);});
+    document.addEventListener("click",event=>{if(!header.contains(event.target)) setHeaderMenu(false);});
+    document.addEventListener("keydown",event=>{if(event.key==="Escape" && button.getAttribute("aria-expanded")==="true"){
+      setHeaderMenu(false); button.focus();
+    }});
+    $("rail-head").addEventListener("click",toggleRailChip);
+    $("rail-head").addEventListener("keydown",toggleRailChip);
+    new MutationObserver(paintRailChip).observe($("rail-items"),{childList:true,subtree:true});
+    new MutationObserver(()=>{
+      if(window.matchMedia("(max-width:600px)").matches) paintRailChip();
+    }).observe($("rail-head"),{childList:true});
+    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();setHeaderMenu(false);fitToVisualViewport();});
+    paintRailChip();
+  }
   function wire(){
+    if(typeof wirePhoneConversation === "function") wirePhoneConversation();
     // Default-hidden in HTML prevents a pre-script flash inside the native shell.
     // Reveal and initialise Voice only on the web surface; NATIVE covers both iOS
     // and Android Capacitor shells.
@@ -5658,6 +6326,8 @@
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
     $("btn-stop").addEventListener("click",()=>interruptTurn());
+    // Opens the model menu for the NEXT message; Stop stays the owner's call.
+    $("btn-try-model").addEventListener("click",()=>{ $("btn-models").click(); });
     // Escape stops the turn, as in Claude Code -- unless something else on the
     // page already used this Escape (a menu or dialog closing handles it first).
     document.addEventListener("keydown",(e)=>{
@@ -7619,8 +8289,10 @@
     // The account and home this peek is FOR. A response that lands after a
     // sign-out or an account change is the PREVIOUS account's conversation: it
     // paints nothing, renames no home, and does not mark this page loaded.
-    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const agentNow=()=>(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope, agent=agentNow();
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+      agent===agentNow();
     let turns = [];
     try{
       const r = await Owner.getConversation();
@@ -7769,6 +8441,14 @@
         "on this browser is waiting there; open that command center to see it.");
       restoreQueue(); return;   // preserved on disk for that command center's own page
     }
+    // Another agent's unconfirmed message waits for that agent's own thread,
+    // where its reply would land; it is never resent to the agent on screen.
+    if((pending.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")){
+      inflightRestored = true;
+      appendMessage("system","An unconfirmed message to another of your agents is waiting; "+
+        "open that agent to see it.");
+      restoreQueue(); return;
+    }
     if(!pending.scope||!pending.owner){
       // Written before this page recorded its command center, so it may belong to
       // another account signed in on this browser. CLICKING A BUTTON DOES NOT
@@ -7792,7 +8472,8 @@
     if(pending.consumerRequest){
       inflightRestored=true;
       const epoch=MCP._loginEpoch, scope=queueScope, owner=queueOwner;
-      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner;
+      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner&&
+        (pending.agent||"main")===(typeof addressedAgentId==="function"?addressedAgentId():"main");
       try{
         const observed=await Owner.read({target:"conversation_turn",
           request_key:pending.consumerRequest.request_key});
@@ -7817,14 +8498,14 @@
           // Keep this exact request available for a user-requested observation
           // or terminal projection repair, never a new workflow invocation.
           offerResend(pending.message,pending.display,new Error("Conversation is still pending."),
-            {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+            {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
              consumerRequest:pending.consumerRequest});
           restoreQueue();return;
         }
       }catch(_e){ /* Unknown status retains the exact durable local request. */ }
       if(!stillOwner())return;
       offerResend(pending.message,pending.display,new Error("Conversation status is unavailable."),
-        {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+        {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
          consumerRequest:pending.consumerRequest});
       restoreQueue();return;
     }
@@ -7845,13 +8526,14 @@
     const again = document.createElement("button");
     again.className = "btn btn--link"; again.textContent = pending.consumerRequest?"Check this conversation":"Send it again";
     again.addEventListener("click", ()=>{
-      if(!ownsSavedRow(pending)) return;
+      if(!ownsSavedRow(pending)||
+         (pending.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")) return;
       // The bubble is already drawn above, so do not echo it a second time.
       // Only THIS record is forgotten: a turn sent meanwhile owns the disk
       // slot now, and the resend queues behind it rather than erasing it.
       note.remove(); forgetInflightIf(pending);
       sendTurn(pending.message, pending.display,
-        {echoed:true,inputMethod:turnInputMethod(pending.inputMethod),
+        {echoed:true,agentId:pending.agent||"main",inputMethod:turnInputMethod(pending.inputMethod),
          consumerRequest:pending.consumerRequest||null,
          modelChoice:copyModelChoice(pending.modelChoice)});
     });
