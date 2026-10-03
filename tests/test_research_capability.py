@@ -86,7 +86,7 @@ def test_jail_refuses_before_runner(research, monkeypatch, tmp_path, op, args):
         pytest.fail("research must not enter the runner")
 
     monkeypatch.setattr(universe_tools, "RUNNER", forbidden)
-    assert json.loads(op(tmp_path, *args))["error"] == "research_is_read_only"
+    assert json.loads(op(tmp_path, *args, agent_id="main"))["error"] == "research_is_read_only"
 
 
 @pytest.mark.parametrize("paused,busy,compute,declined,calls", [
