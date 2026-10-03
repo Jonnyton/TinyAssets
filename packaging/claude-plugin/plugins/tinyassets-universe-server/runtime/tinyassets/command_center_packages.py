@@ -50,11 +50,13 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Iterator
 
+from tinyassets.api.interlocutor import FOUNDER_PRIVATE_GROUNDING as _FOUNDER_PRIVATE
 from tinyassets.universe_files import (
     MAX_UNIVERSE_FILE_BYTES,
     list_universe_dir,
     read_universe_file,
 )
+from tinyassets.work_targets import REQUESTS_FILENAME as _REQUESTS_FILENAME
 
 FORMAT_VERSION = 1
 PROFILE_PUBLISH = "publish"
@@ -99,12 +101,22 @@ _HARNESS_FILES_F = frozenset(fold(n) for n in HARNESS_ROOT_FILES)
 _HARNESS_DIRS_F = frozenset(fold(n) for n in HARNESS_ROOT_DIRS)
 _MEMORY_F = fold(MEMORY_FILE)
 
-_BRAIN_FILES = frozenset({"founder.md", "soul.md", "soul.edit.md", "log.md"})
-#: Platform-written runtime state at the folder root.
+#: Brain files that never travel. ``FOUNDER_PRIVATE_GROUNDING`` is unioned in
+#: rather than re-listed: those files are withheld from every non-founder
+#: interlocutor *regardless of the command center's visibility level*
+#: (``api/interlocutor.py``), so a published package must not carry them either.
+#: Spelling them out here once let ``orgchart.md`` through while the publish
+#: confirmation said brain files were left out -- deriving from the authority
+#: means the next file added there is excluded without touching this module.
+_BRAIN_FILES = frozenset({"founder.md", "soul.md", "soul.edit.md", "log.md"}) | _FOUNDER_PRIVATE
+#: Platform-written runtime state at the folder root. ``requests.json`` is named
+#: from ``work_targets.REQUESTS_FILENAME`` for the same reason: it holds the
+#: publisher's own pending request text, and the daemon turns pending rows into
+#: active work targets, so an installed copy would carry someone else's queue.
 _RUNTIME_FILES = frozenset({
     "activity.log", "status.json", "ledger.json", "work_targets.json", "notes.json",
     "timeline.json", "promises.json", "facts.json", "characters.json",
-    "dispatcher_config.yaml", "config.yaml",
+    "dispatcher_config.yaml", "config.yaml", _REQUESTS_FILENAME,
 })
 NEVER_DIRS = frozenset({"workspaces", "soul_versions"})
 _BRAIN_F = frozenset(fold(n) for n in _BRAIN_FILES)

@@ -898,6 +898,58 @@ def test_a_bare_opaque_run_is_listed_for_review_not_dropped():
     assert ccp.review_note(data) == ccp.N_OPAQUE
 
 
+def test_the_founders_private_grounding_never_travels(tmp_path):
+    """``orgchart.md`` shipped in a published package (post-merge review of #4315).
+
+    ``api/interlocutor.FOUNDER_PRIVATE_GROUNDING`` withholds these from every
+    non-founder interlocutor *whatever* the command center's visibility level,
+    and the publish confirmation says brain files were left out -- but the
+    package's own brain list spelled out four names and omitted this one, so a
+    published command center carried the founder's collaborators, delegations
+    and reporting lines.
+    """
+    from tinyassets.api.interlocutor import FOUNDER_PRIVATE_GROUNDING
+
+    # The ratchet: the package's exclusions are DERIVED from that set, so a file
+    # added there later cannot start travelling without this test failing.
+    assert {ccp.fold(n) for n in FOUNDER_PRIVATE_GROUNDING} <= ccp._BRAIN_F
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    (universe / "orgchart.md").write_text(
+        "Alice reports to Bob. Planned replacement: Carol.\n", encoding="utf-8")
+    (universe / "keep.md").write_text("a shareable note\n", encoding="utf-8")
+
+    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "keep.md" in files
+    assert "orgchart.md" not in files
+    assert any(row["path"] == "orgchart.md" for row in excluded)
+
+
+def test_the_publishers_own_request_queue_never_travels(tmp_path):
+    """``requests.json`` shipped too, and it is not inert on arrival.
+
+    It holds the publisher's pending request text, and the daemon turns pending
+    rows into active work targets (``work_targets``), so an installed copy
+    carried someone else's queue into the installer's command center.
+    """
+    from tinyassets.work_targets import REQUESTS_FILENAME
+
+    assert ccp.fold(REQUESTS_FILENAME) in ccp._RUNTIME_F
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    (universe / REQUESTS_FILENAME).write_text(
+        '[{"id":"demo","status":"pending","text":"Prepare the acquisition offer"}]',
+        encoding="utf-8")
+    (universe / "keep.md").write_text("a shareable note\n", encoding="utf-8")
+
+    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "keep.md" in files
+    assert REQUESTS_FILENAME not in files
+    assert any(row["path"] == REQUESTS_FILENAME for row in excluded)
+
+
 def test_a_one_class_value_is_neither_excluded_nor_flagged():
     # A one-class run the parser reads as opaque, even assigned to a secret
     # name: in the live village these were minified-code identifiers, not keys.
