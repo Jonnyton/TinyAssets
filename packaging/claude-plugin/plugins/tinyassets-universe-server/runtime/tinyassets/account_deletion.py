@@ -283,16 +283,41 @@ def _home_dir(root: Path, home: str) -> Path:
 
 def _stage_home(root: Path, home: str) -> Path | None:
     """Rename the home directory under ``.deleting/`` (atomic) and return the
-    staged path, or None when there is no directory to remove."""
+    staged path, or None when there is nothing to remove.
+
+    The daemon-owned sidecar folder (``.universe-sidecars/<home>``) is staged
+    INTO the same directory, so the one ``_rmtree`` of the staged path removes
+    both and there is one atomicity story rather than two. Platform state that
+    decides what a command center may do moved out of the command-center folder
+    on 2026-10-03 (``storage/platform_state_move.py``) precisely because the
+    command center could write it -- and a store that lives outside the home is
+    a store this sweep would otherwise walk straight past, leaving a deleted
+    account's consent records on disk.
+
+    A home that is already gone but still has a sidecar is therefore still
+    something to remove, which is why the early return now considers both.
+    """
+    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+
     target = _home_dir(root, home)
-    if not target.exists() and not target.is_symlink():
+    sidecar = root / UNIVERSE_SIDECARS_DIR / home
+    has_home = target.exists() or target.is_symlink()
+    has_sidecar = sidecar.exists() or sidecar.is_symlink()
+    if not has_home and not has_sidecar:
         return None
-    if target.is_symlink() or not target.is_dir():
+    if has_home and (target.is_symlink() or not target.is_dir()):
         raise AccountDeletionError("home path is not a plain directory")
+    if has_sidecar and (sidecar.is_symlink() or not sidecar.is_dir()):
+        raise AccountDeletionError("sidecar path is not a plain directory")
     staging = root / _STAGING_DIR
     staging.mkdir(exist_ok=True)
     staged = staging / f"{home}-{int(time.time())}-{secrets.token_hex(4)}"
-    target.rename(staged)
+    if has_home:
+        target.rename(staged)
+    else:
+        staged.mkdir()
+    if has_sidecar:
+        sidecar.rename(staged / UNIVERSE_SIDECARS_DIR)
     return staged
 
 
