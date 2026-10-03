@@ -171,7 +171,7 @@ def test_inventory_records_canonical_read_interfaces_without_new_truth() -> None
     )
 
 
-def test_inventory_closes_indirect_and_packaged_execution_boundaries() -> None:
+def test_inventory_closes_indirect_execution_boundaries() -> None:
     observed = set(EXPECTED_SENSITIVE_CALL_SITES)
     assert (
         CallSite(
@@ -185,10 +185,12 @@ def test_inventory_closes_indirect_and_packaged_execution_boundaries() -> None:
         )
         in observed
     )
+    # The packaged plugin runtime is built at release, not committed
+    # (2026-10-01), so there is no second tree to register: the canonical
+    # graph_compiler boundary is the only one.
     assert (
         CallSite(
-            "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-            "runtime/tinyassets/graph_compiler.py",
+            "tinyassets/graph_compiler.py",
             "_build_invoke_branch_node._node_fn",
             "execute_branch",
         )

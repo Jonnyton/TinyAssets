@@ -6,7 +6,7 @@ Not in this table = judgement, not a gate.
 |---|---|---|
 | Rulebook byte ratchet | `scripts/check_context_budget.py` + `tests/test_rulebook_ratchet.py` | CI |
 | Rule-file drift | `scripts/check_cross_provider_drift.py` | hook, CI |
-| Skills valid + mirrored | `scripts/validate_skills.py`, `check_mirror_parity.py` | hook, CI |
+| Skills valid + mirrored | `scripts/validate_skills.py` | hook, CI |
 | No mojibake | `scripts/invariants/mojibake.py` | hook, CI |
 | Behavioural tests | `scripts/ci_required_tests.py`, `known-failing-tests.txt` (one-way) | required |
 | Diff scope | `.github/workflows/pr-scope-guard.yml` | required |

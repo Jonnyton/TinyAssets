@@ -21,11 +21,21 @@ virtual environment under the plugin runtime and installs the dep set declared
 in `requirements.txt` (the MCP-control-plane subset of `tinyassets/`'s deps —
 see `docs/mcpb_packaging.md`).
 
-Re-stage the plugin runtime after touching `tinyassets/`:
+The runtime's `tinyassets/` is built, never committed (2026-10-01). Build it
+before validating or installing from a clone:
 
 ```powershell
 python packaging/claude-plugin/build_plugin.py
 ```
+
+CI proves the build and its import probe on every PR that touches
+`tinyassets/**` or `packaging/**` (`build-bundle.yml`). On a published GitHub
+release the `pack-plugin` job builds the plugin and force-pushes it to the
+orphan `plugin-dist` branch, with the marketplace manifest at its root, so
+`/plugin marketplace add TinyAssets/TinyAssets#plugin-dist` installs it. The
+plugin's version is the release tag, so Claude Code sees each release as an
+update. Only non-prerelease releases publish, and a tag that is not newer than
+the published version is refused, so the branch never moves backward.
 
 ## MCP Registry
 

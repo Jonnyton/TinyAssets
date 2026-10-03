@@ -11,7 +11,7 @@ name: invariants
 # The local hook stays as fast feedback; this is the authoritative gate.
 #
 # Scope: pre-commit-scoped invariants only (cross-provider-drift, skills-valid,
-# context-budget, mirror-parity, mojibake). Network- and browser-dependent ones
+# context-budget, mojibake). Network- and browser-dependent ones
 # (tab-single needs Chrome; deployed_sha needs the live surface) are excluded by
 # design — a gate that depends on an external service fails for reasons the PR
 # author cannot fix.
