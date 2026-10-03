@@ -100,15 +100,53 @@ test("pull-request build has one unprivileged static-export job", () => {
   });
 });
 
-test("preview trust-boundary contract is an unfiltered required-check candidate", () => {
+test("preview trust-boundary contract never narrows below the default PR events", () => {
   assert.deepEqual(Object.keys(securityWorkflow.on), ["pull_request", "push"]);
-  assert.equal(securityWorkflow.on.pull_request, null);
+  // This used to assert `on.pull_request === null` as a proxy for "unfiltered".
+  // #4352 added `types:` to skip drafts and did not update this test, so the
+  // two contradicted each other and the check went red on main.
+  //
+  // The proxy was the wrong thing to pin: a types list is not automatically a
+  // narrowing. What actually matters is that the job still fires on every
+  // ordinary PR event, so assert that directly -- the list must CONTAIN the
+  // three GitHub defaults. Adding `ready_for_review` is a superset and fine;
+  // removing `synchronize` would not be, and the old assertion would have
+  // caught that only by accident.
+  const DEFAULT_PR_TYPES = ["opened", "reopened", "synchronize"];
+  const triggered = securityWorkflow.on.pull_request;
+  if (triggered !== null) {
+    assert.deepEqual(Object.keys(triggered), ["types"]);
+    for (const type of DEFAULT_PR_TYPES) {
+      assert.ok(
+        triggered.types.includes(type),
+        `on.pull_request.types drops the default '${type}', so the job would ` +
+          `stop running on some ordinary PR events`,
+      );
+    }
+    // The draft skip below is only correct WITH this type: it is not a default,
+    // and without it a PR marked ready keeps the draft run's skip until its
+    // next push. So the two are one contract, and the test holds them together.
+    assert.ok(
+      triggered.types.includes("ready_for_review"),
+      "a draft-skipping job must also trigger on ready_for_review",
+    );
+  }
   assert.deepEqual(securityWorkflow.on.push, { branches: ["main"] });
   assert.deepEqual(securityWorkflow.permissions, { contents: "read" });
   assert.deepEqual(Object.keys(securityWorkflow.jobs), ["contract"]);
   const { contract } = securityWorkflow.jobs;
   assert.equal(contract.environment, undefined);
   assert.deepEqual(contract.permissions, undefined);
+  // A draft skip must lead with the event-name check, or merge_group, push,
+  // schedule and workflow_dispatch runs read `pull_request.draft` as undefined
+  // and get skipped too. The workflow's own comment says this; nothing held it.
+  if (typeof contract.if === "string") {
+    assert.match(
+      contract.if,
+      /^\s*github\.event_name\s*!=\s*'pull_request'\s*\|\|/,
+      "a conditional on this job must pass non-PR events through first",
+    );
+  }
   assert.doesNotMatch(
     securityWorkflowText,
     /\bsecrets\s*(?:\.|\[)|\b(?:issues|pull-requests|actions):\s*write\b|\bcache\b|\bwrangler\b/i,
