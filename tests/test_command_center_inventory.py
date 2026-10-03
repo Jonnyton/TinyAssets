@@ -464,13 +464,32 @@ def test_temp_root_inside_source_is_refused_before_creating_anything(tmp_path, m
 
 def test_replaced_file_descriptor_is_rechecked_before_read(tmp_path, monkeypatch):
     import stat
-    from types import SimpleNamespace
 
     source = tmp_path / "source"
     source.mkdir()
     (source / "status.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(inv.os, "fstat", lambda _: SimpleNamespace(st_mode=stat.S_IFIFO))
+    real_fstat = os.fstat
+    swapped = {"done": False}
+
+    def fstat_as_fifo(fd):
+        """A real stat_result with only its type bits changed.
+
+        The double has to stay a stat_result: `os.fstat` is not ours alone, and
+        shutil.rmtree calls it too (on Linux, where it compares st_ino to guard
+        the artifact cleanup). A stand-in with one attribute passed on Windows
+        and broke there.
+        """
+        st = real_fstat(fd)
+        if swapped["done"] or not stat.S_ISREG(st.st_mode):
+            return st
+        swapped["done"] = True
+        fields = list(st)
+        fields[0] = (st.st_mode & ~stat.S_IFMT(st.st_mode)) | stat.S_IFIFO
+        return os.stat_result(tuple(fields))
+
+    monkeypatch.setattr(inv.os, "fstat", fstat_as_fifo)
     report = inv.inventory(source)
+    assert swapped["done"], "the descriptor was never re-checked"
     assert {"path": "status.json", "category": "replaced-file"} in report["unscanned"]
     assert not report["acquisition"]["files"]
     assert not report["complete"]

@@ -87,9 +87,12 @@ class Limits:
 
 
 def _unsafe(st: os.stat_result) -> bool:
+    # `or 0`: on Windows the attribute EXISTS and can be None (a stat_result not
+    # built by a real stat call), and `None & flag` would abort the whole walk
+    # with a TypeError the acquisition loop does not catch.
+    attributes = getattr(st, "st_file_attributes", 0) or 0
     return stat.S_ISLNK(st.st_mode) or bool(
-        getattr(st, "st_file_attributes", 0)
-        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     )
 
 
