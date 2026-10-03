@@ -23,8 +23,11 @@ this runbook gets you to the single-host green state.
 - Cloudflare Zero Trust tunnel `tinyassets-daemon-prod` already created
   (or a new tunnel you'll create at step 3). Token in hand.
 - Supabase project provisioned (for Track A schema + auth).
-- GitHub OAuth app registered with callback
-  `https://tinyassets.io/authorize/github/callback`.
+- GitHub OAuth app: **not required.** No code serves that callback, so the env
+  slots were removed on 2026-10-03 (founder: "all unused secrets get removed").
+  Register the app, and re-add the names, together with the code that reads
+  them — `WebSite/03-shipping-plan.md` defers `/connect`'s GitHub sign-in to a
+  later phase.
 
 ## Step 1 — Provision the Droplet (~5 min)
 

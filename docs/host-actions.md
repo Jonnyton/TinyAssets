@@ -12,6 +12,29 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Delete the GitHub OAuth App (2026-10-03)
+
+**Why:** `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` are removed from the
+template, the deny-lists and the host env — nothing read them and no route serves the
+callback they described. Two things the code change cannot do:
+
+* **This repo is public, and `docs/ops/day-of-cutover.md` carried an example assignment
+  for the secret.** It looks like a placeholder and I did not establish otherwise (I did
+  not read the value). Deleting the line does not scrub git history, so if that string was
+  ever the real one it is already public.
+* An OAuth App that still exists can still be used by whoever holds its secret.
+
+Smallest ask: **GitHub → Settings → Developer settings → OAuth Apps → delete the
+TinyAssets app** (or regenerate its secret if you want to keep the registration for the
+deferred `/connect` sign-in). Deleting it makes any leaked value worthless and matches
+the decision that unused secrets are removed rather than guarded.
+
+Nothing is blocked on this: no code path uses the app, and the renderer withholds both
+names from the daemon even if a stale assignment survives on a host
+(`deploy/install-tinyassets-env.sh` `RETIRED_ENV`).
+
+---
+
 ## Rotate the DigitalOcean API token, then drop it from the box (2026-10-02)
 
 **Why:** an account-wide `DO_API_TOKEN` sat in `/etc/tinyassets/env` and so in the

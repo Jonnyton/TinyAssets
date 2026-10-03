@@ -654,9 +654,33 @@ closes_open_quote() {
     return 0
 }
 
+# Names RETIRED from the platform: no code reads them, the template no longer
+# declares them, and they must never reach the daemon even if a stale
+# assignment is still sitting in the shared env on some host.
+#
+# This is enforced HERE, at the renderer, not in deploy-prod.yml, because the
+# workflow is not the only way daemon.env gets written (Codex, 2026-10-03):
+# every `set` renders it when the target is the shared env, and
+# apply-daemon-env.yml, deploy/hetzner-bootstrap.sh and p0-outage-triage.yml
+# all reach the daemon through this helper without passing the deploy's
+# scrub-and-assert. Enforcing at the shared boundary covers all of them.
+#
+# Kept separate from DAEMON_FORBIDDEN_ENV on purpose: that list is the live
+# platform secrets the daemon must not hold, and tests hold it equal to the
+# Python copy in tinyassets/platform_secrets.py. A retired name has no Python
+# counterpart -- it is gone from the product, not guarded within it -- so
+# listing it there would both re-add a channel-specific mention to the user
+# substrate and misdescribe it as live.
+#
+# Delete an entry only once no host can still carry the key.
+RETIRED_ENV=(
+    GITHUB_OAUTH_CLIENT_ID
+    GITHUB_OAUTH_CLIENT_SECRET
+)
+
 is_daemon_forbidden() {
     local name
-    for name in "${DAEMON_FORBIDDEN_ENV[@]}"; do
+    for name in "${DAEMON_FORBIDDEN_ENV[@]}" "${RETIRED_ENV[@]}"; do
         [ "$1" = "${name}" ] && return 0
     done
     return 1
@@ -674,7 +698,7 @@ render_daemon_content() {
     local rest="$1" line out="" first=1 rc removed=() closing
     out+="# GENERATED from ${DAEMON_ENV_SOURCE} by install-tinyassets-env.sh"$'\n'
     out+="# render-daemon-env. Edit the source, never this file. Removed names:"$'\n'
-    out+="# ${DAEMON_FORBIDDEN_ENV[*]}"$'\n'
+    out+="# ${DAEMON_FORBIDDEN_ENV[*]} ${RETIRED_ENV[*]}"$'\n'
     QUOTE_OPEN=""
     while [ -n "${rest}" ]; do
         if [[ "${rest}" == *$'\n'* ]]; then

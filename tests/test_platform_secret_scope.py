@@ -62,6 +62,60 @@ def test_shell_and_python_forbid_the_same_names():
     assert _shell_forbidden() == set(DAEMON_FORBIDDEN_ENV)
 
 
+def _shell_retired() -> set[str]:
+    text = HELPER.read_text(encoding="utf-8")
+    match = re.search(r"^RETIRED_ENV=\(\n(.*?)^\)", text, re.S | re.M)
+    assert match, "RETIRED_ENV array not found in install-tinyassets-env.sh"
+    return {line.strip() for line in match.group(1).splitlines() if line.strip()}
+
+
+def test_a_retired_name_is_withheld_at_the_renderer_not_by_one_workflow():
+    """Retirement is enforced where daemon.env is WRITTEN, not where it is deployed.
+
+    deploy-prod.yml deletes a retired key from the shared env and asserts it
+    absent, but it is not the only writer: every ``set`` whose target is the
+    shared env renders daemon.env, and apply-daemon-env.yml,
+    deploy/hetzner-bootstrap.sh and p0-outage-triage.yml all reach the daemon
+    through this helper without that scrub (Codex, 2026-10-03). So the helper's
+    own forbidden predicate has to cover retired names, or a stale assignment
+    on any host still reaches the daemon -- which is worse than before the name
+    was de-listed, because nothing withholds it any more.
+    """
+    retired = _shell_retired()
+    assert retired, "the retirement list exists so a de-listed name is still withheld"
+    # The predicate the renderer uses must treat them as forbidden.
+    text = HELPER.read_text(encoding="utf-8")
+    predicate = re.search(r"is_daemon_forbidden\(\)\s*\{(.*?)\n\}", text, re.S)
+    assert predicate, "is_daemon_forbidden not found"
+    assert "RETIRED_ENV[@]" in predicate.group(1), (
+        "the renderer's forbidden check must include RETIRED_ENV, or a retired "
+        "name is only withheld on the deploy-prod path"
+    )
+    # And the generated header tells whoever reads daemon.env what was dropped.
+    assert "${RETIRED_ENV[*]}" in text
+
+
+def test_a_retired_name_is_gone_from_the_product_not_merely_guarded():
+    """A retired name is NOT a platform secret: it has no Python counterpart.
+
+    Listing it in DAEMON_FORBIDDEN_ENV would claim the daemon must be protected
+    from a live secret, and would put the channel-specific name back into the
+    user substrate that scripts/check_channel_agnostic.py ratchets.
+    """
+    retired = _shell_retired()
+    assert retired.isdisjoint(DAEMON_FORBIDDEN_ENV), (
+        "a name cannot be both retired and a live platform secret"
+    )
+    assert retired.isdisjoint(DAEMON_ONLY_ENV)
+    template = (REPO / "deploy/tinyassets-env.template").read_text(encoding="utf-8")
+    for name in retired:
+        assert not re.search(rf"(?m)^{name}=", template), (
+            f"{name} is retired but the template still declares it, so a host "
+            "would be told to set it again"
+        )
+        assert not _readers(name), f"{name} is retired but something reads it: {_readers(name)}"
+
+
 def _readers(name: str) -> set[str]:
     own = Path(platform_secrets.__file__).resolve()
     found = set()
