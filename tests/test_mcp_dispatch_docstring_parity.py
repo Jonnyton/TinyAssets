@@ -63,8 +63,8 @@ from tinyassets.api import wiki as wiki_mod
 #   docstring's `Action groups:` block during 2026-Q1. Tracked as a
 #   navigator-vetted backfill task: some of these (e.g. internal escrow,
 #   gate_event ops) may deserve permanent allowlist status as advanced
-#   internal verbs; others (e.g. messaging_*, project_memory_*,
-#   schedule_branch) belong in the user-facing docstring.
+#   internal verbs; others (e.g. messaging_*, project_memory_*) belong in
+#   the user-facing docstring.
 #
 # To shrink: when a docstring backfill lands, remove the corresponding
 # entries here. The over-broad-allowlist test (mode 4) will tell you if
@@ -90,9 +90,6 @@ KNOWN_DEBT: dict[str, frozenset[str]] = {
         "dry_inspect_node", "dry_inspect_patch",
         # Messaging surface — pre-launch, not yet chatbot-routed.
         "messaging_send", "messaging_receive", "messaging_ack",
-        # Scheduler pause/unpause — sub-actions of the documented
-        # scheduler family, not standalone surface.
-        "pause_schedule", "unpause_schedule",
     }),
 }
 
@@ -103,13 +100,18 @@ KNOWN_DEBT: dict[str, frozenset[str]] = {
 
 
 def _universe_dispatch_keys() -> set[str]:
-    """Mirror of the local `dispatch = {...}` literal inside `universe()`."""
+    """Hand-maintained mirror of the `universe` tool's dispatchable actions.
+
+    Add a key here when you add one to ``universe_mod.UNIVERSE_ACTIONS`` and
+    document it in the tool docstring — the mirror is what makes an undocumented
+    *or* an orphaned-doc addition fail rather than pass silently.
+    """
     return {
         "list", "inspect", "read_output", "query_world",
         "get_activity", "get_recent_events", "get_ledger",
         "submit_request", "give_direction",
-        "read_premise", "set_premise", "soul.edit",
-        "add_canon", "add_canon_from_path",
+        "read_premise", "set_premise", "set_visibility", "soul.edit",
+        "add_canon",
         "list_canon", "read_canon", "list_sources", "read_source",
         "control_daemon", "switch_universe", "create_universe",
         "queue_list", "queue_cancel",

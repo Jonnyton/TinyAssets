@@ -376,6 +376,19 @@ are unchanged.
 - **WHEN** a `ws.run` command outlives its budget
 - **THEN** the run fails as `workspace_command_timeout`, distinct from a node timeout, classified from a flag on the sandbox result rather than by matching a message
 
+The executor SHALL additionally classify a DELIVERED response that rejects the
+credential it presented as `credential_rejected`, actionable by the USER — a third
+effect class beside the existing `external_write_failed` / `external_write_refused`
+pair, not a refinement of either. What counts as such a response, and what the
+agent is told to do about it, belong to "A rejected credential is its own failure
+class" and "The action for a rejected credential is the replace card" rather than
+being restated here. All other clauses of this requirement are unchanged.
+
+#### Scenario: the taxonomy names the third effect class
+- **WHEN** a run's effect was delivered and the far side rejected the credential
+- **THEN** its failure class is `credential_rejected`, distinct from both
+  `external_write_failed` and `external_write_refused`
+
 ### Requirement: A node that went terminal on timeout SHALL NOT launch new work
 The shared worker pool SHALL refuse node work that reaches worker entry after its admitted deadline.
 
@@ -1133,9 +1146,9 @@ Branch definitions SHALL persist an optional branch-level default model policy a
 
 ### Requirement: Execution-choice validation matches the execution contract
 
-This composes with the as-built "Branch validation is the compile gate" (`openspec/specs/graph-execution-substrate/spec.md:51`) and does not replace it: the same `validate()` return path carries these non-topology field errors, so build, patch and compile inherit one check.
-
 An authored concurrency budget SHALL be accepted only as a positive integer, with booleans refused rather than coerced, matching the contract already enforced on the per-run override; values that the compiler would silently reinterpret or crash on MUST be refused at authoring time with an actionable message. Validation MUST NOT impose a structural ceiling on the budget. An authored default model policy SHALL be validated by the same policy-shape check used for node-level policies, preserving its forward-compatible treatment of unknown keys: an unknown key inside a policy is stored, not refused. Fields the check already knows to be invalid SHALL produce an explicit error rather than a stored value. Beyond that, the requirement is observability, not detection: a receipt that applies an execution choice MUST report the choices actually stored, so an author can read back what is in effect and see when a submitted field produced no stored value. It is NOT required to identify an unrecognized key inside a forward-compatible policy.
+
+This composes with the as-built "Branch validation is the compile gate" (`openspec/specs/graph-execution-substrate/spec.md:51`) and does not replace it: the same `validate()` return path carries these non-topology field errors, so build, patch and compile inherit one check.
 
 #### Scenario: A meaningless budget is refused at authoring time
 
@@ -1423,6 +1436,112 @@ IDs, outputs, credentials or raw logs to the sender.
 - **THEN** each authorized party sees a safe failure receipt rather than successful processing
 - **AND** sender responses and ledger entries identify the delivery, not a private receiver run
 
+### Requirement: An owner may open a receiver to any authenticated user
+A receiver SHALL carry two independent owner-declared exposure flags, both
+defaulting to closed: `open_to_all` (any authenticated principal may connect an
+output and deliver) and `discoverable` (other users may find it). Neither SHALL be
+expressible as a wildcard entry in the permitted-sender list, which SHALL continue
+to hold exact principal names only.
+
+An update SHALL PRESERVE any exposure field it does not name, and closing an
+exposure SHALL require an explicit false. A value that is neither a boolean nor
+absent SHALL be refused rather than coerced. Closing SHALL take effect for
+in-flight senders at acceptance, not only at connect time. A revoked receiver
+SHALL refuse delivery and SHALL NOT be discoverable or inspectable regardless of
+either flag.
+
+#### Scenario: A stranger delivers to an opened receiver
+- **WHEN** an authenticated user not named in the permitted-sender list connects an
+  output to a receiver its owner marked `open_to_all` and delivers
+- **THEN** the delivery is accepted and executes under the receiver owner's authority
+- **AND** the sender's principal and universe are recorded on the delivery
+
+#### Scenario: A receiver that was never opened refuses a stranger
+- **WHEN** the same user attempts to connect or deliver to a receiver with neither
+  flag set and no matching permitted-sender entry
+- **THEN** both are refused as not found, disclosing nothing about the receiver
+
+#### Scenario: An unrelated edit does not change exposure
+- **WHEN** an owner updates a receiver's contract or description without naming the
+  exposure fields
+- **THEN** the exposure flags and the per-sender limit are preserved
+- **AND** a tightened limit is never silently restored to the default
+
+#### Scenario: Opening does not disclose the owner's graph
+- **WHEN** a stranger permitted by `open_to_all` inspects the receiver
+- **THEN** the result carries only the advertised description, contract,
+  generation, exposure flags and per-sender limit
+- **AND** excludes the owner's branch id, node ids, snapshot, universe id, other
+  permitted senders and every other delivery
+
+### Requirement: A delivery carries its sender's identity to the receiving owner
+Every accepted delivery SHALL be attributed to the authenticated sending principal
+and the universe the send was made from. The receiving owner's side of the delivery
+receipt SHALL disclose both; the sending side SHALL NOT gain any receiver-private
+field by this.
+
+A receiver's own branch MAY declare reserved attribution state fields, which the
+platform SHALL fill from server-side link authority at acceptance so the owner's
+downstream nodes can act on the sender. Those names SHALL be refused in a
+receiver's advertised input contract, and SHALL additionally be refused at
+acceptance when present in an already-stored contract, so no sender can supply,
+map onto, or substitute a file reference into them. A declared attribution field
+SHALL count as platform-supplied for exposure preflight, so declaring one without
+a default does not make the receiver unexposable.
+
+#### Scenario: The owner's graph reads who sent the deliverable
+- **WHEN** a receiver's branch declares the reserved attribution fields and a
+  delivery is accepted
+- **THEN** the receiver's run inputs carry the sending principal id and universe id
+- **AND** those values come from the stored link, never from the request payload
+
+#### Scenario: A sender cannot claim another identity
+- **WHEN** a sender attempts to include or map an output onto a reserved
+  attribution field
+- **THEN** the attempt is refused because the field cannot enter the contract
+
+#### Scenario: A stored contract naming a reserved field cannot receive
+- **WHEN** a receiver whose stored contract advertises a reserved attribution name
+  is delivered to
+- **THEN** acceptance refuses and names the field for its owner to rename
+- **AND** no delivery, run or file copy is created
+
+#### Scenario: A retry is validated on sender content alone
+- **WHEN** a sender retries an accepted occurrence with identical content
+- **THEN** the original receipt is returned and no second run is created
+- **AND** platform-supplied attribution is carried forward from the stored record
+  rather than recomputed, so a delivery accepted before attribution existed still
+  replays
+
+### Requirement: Deliveries to one receiver are rate limited per sender
+Each receiver SHALL carry an owner-configurable maximum number of accepted
+deliveries per sending principal per rolling window, with a safe default and
+validated bounds, and SHALL NOT offer an unlimited setting. The limit SHALL be a
+usage bound only: it SHALL NOT cap the number of receivers, nodes, links or
+contract fields, and separate receivers SHALL carry separate budgets.
+
+The limit SHALL be keyed on the sending principal alone, so founding additional
+universes does not multiply an allowance. The check SHALL run inside the
+acceptance transaction and before receiver resource admission, and additionally
+before any cross-owner file copy, so a refused sender consumes neither the owner's
+run budget nor its storage. A retry of an already-accepted occurrence SHALL neither
+consume budget nor be refused. Refusal SHALL name itself and its numbers rather
+than dropping the delivery silently.
+
+#### Scenario: A sender exceeding the limit is refused by name
+- **WHEN** one sender's accepted deliveries to a receiver reach its limit within
+  the window and another new occurrence arrives
+- **THEN** the delivery is refused with a reason naming the sender rate limit
+- **AND** no run is reserved and no receiver admission ticket is spent
+
+#### Scenario: A refused sender copies no bytes
+- **WHEN** a sender past the limit sends a new occurrence carrying a file reference
+- **THEN** the refusal precedes the copy and the receiving owner gains no custody object
+
+#### Scenario: One sender's limit does not lock out another
+- **WHEN** one sender exhausts its allowance on a receiver
+- **THEN** a different sender's first delivery to that receiver is still accepted
+
 ### Requirement: Prompt-node provider budgets retain the node's streaming cap
 
 A prompt-template node without material worker-queue delay SHALL pass its effective timeout as the provider
@@ -1448,3 +1567,61 @@ provider never started or that its subprocess stopped at that exact instant.
 - **WHEN** the streaming reader continues receiving protocol progress beyond its supplied node-local absolute cap
 - **THEN** the reader ends the provider process through its existing deadline and cleanup path
 - **AND** progress does not extend that absolute cap or authorize another attempt
+
+### Requirement: A rejected credential is its own failure class
+
+A run whose effect was DELIVERED and answered with a status meaning the presented credential is no longer accepted SHALL carry failure class `credential_rejected`, with `actionable_by: "user"`.
+
+The trigger SHALL be a delivered HTTP 401 unconditionally, and a delivered HTTP
+403 only where the response body unambiguously says the credential itself is
+invalid, revoked or expired. A 403 that says the credential may not do something
+SHALL keep its existing class: replacing a working key is the wrong ask.
+
+The test applied to a 403 body SHALL use generic credential vocabulary only — no
+service or vendor name SHALL appear in it — and SHALL be bounded to the body of
+the row whose status it is reading, so a word in another row of the same summary
+cannot decide this row's class.
+
+The class SHALL be decided before the refusal-word heuristic, because a revoked
+token's own body contains a word that heuristic reads as an authority refusal.
+
+#### Scenario: a delivered 401
+- **WHEN** a node's effect is delivered and the far side answers 401
+- **THEN** the run's failure class is `credential_rejected` and `actionable_by`
+  is `user`
+
+#### Scenario: a delivered 403 saying the key is dead
+- **WHEN** a delivered 403's body names the credential as invalid, revoked or
+  expired
+- **THEN** the failure class is `credential_rejected`
+
+#### Scenario: a delivered 403 about what the key may do
+- **WHEN** a delivered 403's body describes a permission or scope rather than the
+  credential's validity
+- **THEN** the failure class is not `credential_rejected`
+
+#### Scenario: a refusal made before the wire
+- **WHEN** an effect is refused by the platform before any request is sent
+- **THEN** its existing class is unchanged, whatever its text says
+
+### Requirement: The action for a rejected credential is the replace card
+
+`credential_rejected`'s suggested action SHALL tell the agent to raise the
+replace-credential request for that destination in the same turn, and SHALL tell
+it not to retry, not to widen the grant, and not to answer the owner in prose
+instead of raising the card. Retrying sends the same dead secret and widening
+changes nothing.
+
+The error row recorded for a delivered effect failure SHALL name the
+connection's `destination`, so the card can be raised for the connection that
+actually failed rather than for a guess.
+
+#### Scenario: the agent is told what to raise
+- **WHEN** a run fails with `credential_rejected`
+- **THEN** its suggested action names the rotation action and the destination
+  field to read, and tells the agent not to retry
+
+#### Scenario: which connection failed
+- **WHEN** a delivered effect failure is recorded
+- **THEN** its `external_write_errors` row carries the destination of the
+  connection the call used

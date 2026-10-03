@@ -1,3 +1,10 @@
+---
+severity: note
+title: Failure-history clean-use watch
+filed: '2026-09-15'
+summary: deployed retention fix has rendered founder proof; independent customer clean use remains unobserved
+---
+
 # Failure-history post-fix independent clean-use watch
 
 Filed 2026-09-15 UTC. PR3856 deployed43479ccda600; descendant2c902151a47a

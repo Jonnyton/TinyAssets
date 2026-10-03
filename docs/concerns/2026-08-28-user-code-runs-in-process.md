@@ -1,3 +1,10 @@
+---
+severity: P1
+title: User code runs in the daemon process
+filed: '2026-08-28'
+summary: 'an approved source node reads the live Stripe key, every vault, every user''s refresh token, and writes the paid-tier DB. #2629 bounds WHO may approve; nothing bounds what the code does'
+---
+
 # User code runs in the daemon process, and that is the real multi-user boundary
 
 **Severity:** P1 · **Filed:** 2026-08-28 from a cross-family multi-user review
@@ -65,7 +72,8 @@ Until one exists, "safe for strangers" rests on the allowlist being right.
 
 ## Related
 
-`docs/concerns/2026-07-02-no-os-engine-sandbox.md` records the same boundary from the
-sandbox side ("in-process confinement only; the denylist fails open"). This file records
-what that costs specifically once a second user exists, and why the credential-hardening
-work does not substitute for it.
+The sandbox-side concern (`2026-07-02-no-os-engine-sandbox`, "in-process confinement only")
+was deleted on 2026-10-01: bwrap works in production, and every provider launch for a
+universe is OS-jailed and refuses to run when it cannot be (`tinyassets/providers/provider_jail.py`).
+This file records what in-process execution costs once a second user exists, and why the
+credential-hardening work does not substitute for it.

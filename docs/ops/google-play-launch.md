@@ -11,7 +11,7 @@ All content below is copy-paste ready.
 
 Package name (permanent once published): **`io.tinyassets.app`**
 (`mobile/capacitor.config.json`). App is the Capacitor shell over
-`https://tinyassets.io/mcp/app` — see `desktop-app/README.md` + `mobile/README.md`.
+`https://tinyassets.io/app` — see `desktop-app/README.md` + `mobile/README.md`.
 
 > **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
 > first.** This file is the procedure; that one is where both platforms actually
@@ -101,10 +101,72 @@ repeats annually.
 ## 1b. Version and release gates — generated defaults are not a release strategy
 
 `mobile/android-release.json` is the checked-in Android release source of truth. It
-records the next candidate: package `io.tinyassets.app`, version code `4`, version
-name `1.0.3`, min SDK 24, target/compile SDK 36. Play has already consumed code `3`,
-name `1.0.2`; the Alpha draft references that artifact and must be replaced with code
-4 before the immediate-notification fix can reach testers.
+records the next candidate: package `io.tinyassets.app`, version code `6`, version
+name `1.0.5`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
+(`1.0.2`), `4` (`1.0.3`) and `5` (`1.0.4`).
+
+Code `5` / `1.0.4` carried the `/app` URL move (`server.url` is compiled into the
+shell, so installed `1.0.3` WebViews opened a path that no longer served) plus the
+first push-notification native change. It is live on the closed **Alpha** track.
+
+### The closed-test update ladder (2026-10-02 → 2026-10-15)
+
+The 12-tester / 14-day closed test is a wall-clock window, and the tester-recruiting
+service's instructions require **2–3 app updates released during it**. The window's
+day 1 is 2026-10-02 (Play: "12 testers have currently been opted in for 1 day"), so
+production access can be applied for from **2026-10-15**. Each update is a real,
+small native improvement — the hosted web app ships instantly and needs no bundle,
+so a bundle exists only when the native shell changes.
+
+| Code | Name | Target date | Native change | State |
+|---|---|---|---|---|
+| 6 | `1.0.5` | 2026-10-04 (day 3) | the back gesture gets a policy: walk WebView history, then one confirmation before leaving, and leave without tearing down the signed-in WebView | checked in |
+| 7 | `1.0.6` | 2026-10-09 (day 8) | the bundled offline page becomes reachable — `server.errorPath` plus a Try again that returns to the live app | planned |
+| 8 | `1.0.7` | 2026-10-13 (day 12) | launch colour: the shell's window and splash background match what the app actually renders, so opening it has no colour flash | planned |
+
+Two candidates were dropped after reading the shipped dependency rather than
+assuming, and they are recorded here so nobody re-proposes them:
+
+- **Keyboard and safe-area insets are already handled natively.** Capacitor 8
+  registers `com.getcapacitor.plugin.SystemBars` from `Bridge` unconditionally.
+  It pads the WebView's parent by the IME inset while the keyboard is visible and
+  injects `--safe-area-inset-*` custom properties into the page. Anything left is
+  the page *using* those properties, which is a web change that ships instantly
+  and is not a bundle at all.
+- **Notification tap already opens the right request.** `MainActivity.notificationTarget`
+  has resolved `/app?request=<id>[&item=<id>]`, cold start included, since 1.0.4.
+
+`mobile/www/index.html` is the reason 1.0.6 exists: it is a finished offline and
+loading page that **nothing can currently display**, because Capacitor only falls
+back to the bundled `webDir` when `server.errorPath` is set, and it is not. An
+offline tester gets the WebView's own error page with the raw URL on it instead.
+
+Nothing in a window update may touch sign-in, `server.url`, or push. Bump the code
+and the name together, one update per bundle; a code Play has seen is refused even
+on a test track — and Play consumes a code on **upload**, not on rollout, so a
+bundle that is accepted and never published still burns its number.
+`CONSUMED_PLAY_VERSION_CODE` in `tests/test_app_url_is_apex_app.py` records the
+highest consumed code and is raised from the Console on upload, not on rollout.
+
+**The behaviour of each update is proved on a phone.** The release gate is a text
+gate over Java that ships verbatim: it can show the decision is present and
+cannot show it runs, and a disabled branch still carries every token it looks
+for. So one device check belongs to each bundle before the founder promotes it:
+
+| Code | Device check |
+|---|---|
+| 6 (`1.0.5`) | On the opening screen, press back: a toast appears and the app stays. Press back again inside ~2.5 s: the app leaves. Reopen from the launcher: the conversation is still there, not reloaded. Navigate into a second view first and back returns to the previous one instead. |
+| 7 (`1.0.6`) | Turn on airplane mode and cold-start: the TinyAssets offline page appears, not the WebView's error page, and Try again recovers once the network is back. |
+| 8 (`1.0.7`) | Cold-start and watch the first half second: no colour flash between splash and app. |
+
+**Build route: `Android release AAB` (`workflow_dispatch` on `main`), not the
+container.** The container recipe in `mobile/container/` builds without
+`ANDROID_GOOGLE_SERVICES_JSON_B64` unless the file is staged under
+`~/.tinyassets/android/`, and a bundle built that way logs `push DISABLED` and
+ships a shell whose notifications are dead — a regression against `1.0.4`. That
+secret exists in the repo (set 2026-10-01), so CI is the route that produces a
+faithful bundle. The workflow also refuses to sign any commit that is not already in
+`origin/main` history, so each update lands on `main` first and is built after.
 
 Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
 seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's
@@ -253,7 +315,7 @@ in-app and at `/account`, email fallback within 30 days).
 
 Play also requires an **account-deletion path in-app and on the web** for any app
 with sign-in. Both exist as of 2026-09-02: the app's **Account → Delete my
-account** view (`POST /mcp/app/account/delete` → `tinyassets.account_deletion`)
+account** view (`POST /app/account/delete` → `tinyassets.account_deletion`)
 and `https://tinyassets.io/account`, which documents the steps, what is removed,
 what is kept, and the email route. Confirm `https://tinyassets.io/legal#app-data`
 and `https://tinyassets.io/account` render before submitting.
@@ -283,6 +345,7 @@ Play's taxonomy, not ours. Answer exactly:
   | Personal info → **User IDs** | WorkOS user id | Required | App functionality, Account management |
   | Messages → **Other in-app messages** | what you say to your universe | **Required** — chatting *is* the app's primary functionality, and Play asks that data required for primary functionality be declared required, not that the user could decline to type | App functionality |
   | Files and docs → **Files and docs** | attachments you send it | Optional (attaching is a choice) | App functionality |
+  | Device or other IDs → **Device or other IDs** | the FCM registration token, **added in 1.0.4** (phone notifications). Sent to the platform only when the owner turns notifications on, and removed on sign-out or account deletion | Optional (notifications are a choice) | App functionality |
   | App activity → **Other user-generated content** | the AI-provider credential you deposit (Play has no "credentials" type; this is its category for user-entered content that fits nowhere else) | Optional (Connect can be skipped) | App functionality |
 
   **Voice is intentionally absent from this saved-data draft.** The Android
@@ -409,7 +472,11 @@ The live App content overview previously showed this as a separate unstarted
 declaration. For any candidate, answer **No** only after rebuilding the exact upload
 artifact and passing merged-manifest verification:
 
-- `mobile/package.json` contains no ads, analytics, Firebase, or Play advertising SDK.
+- `mobile/package.json` contains no ads, analytics, or Play advertising SDK. From 1.0.4
+  it does contain `@capacitor/push-notifications`, which pulls in `firebase-messaging`
+  (FCM delivery only -- no Firebase Analytics, no ads); the AD_ID answer below still
+  holds because the merged-manifest verifier rejects `AD_ID`, and the 1.0.4 bundle
+  passed it.
 - `mobile/scripts/verify_android_release.py` permits only Internet, foreground-service,
   microphone, and Capacitor's non-exported receiver permission. If a dependency merges
   `com.google.android.gms.permission.AD_ID`, the release fails on permission drift.
@@ -451,7 +518,7 @@ nothing was submitted for review or published.
 ## 10. Screenshot capture
 
 Screenshots come from the live app so they're honest:
-1. Open `https://tinyassets.io/mcp/app` (or the installed app) at phone width.
+1. Open `https://tinyassets.io/app` (or the installed app) at phone width.
 2. Capture a representative set without account, universe, credential, branch, run,
    debug, notification, or browser-chrome identifiers.
 3. Save to `docs/ops/play-assets/screenshots/`; run the release artwork verifier;
@@ -559,7 +626,7 @@ Open, with what each actually waits on:
 - [x] Foreground-service declaration (§8a): the privacy-redacted real-phone video is
       published and frame-reviewed (27.11 seconds, 1080×2340, SHA-256
       `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`) at
-      `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`.
+      `https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`.
       Saved 2026-09-08 as **Data sync → Network processing → Other** with that link;
       App content now reports no declarations needing attention. It was submitted
       with the 15-change review batch on 2026-09-08.

@@ -429,8 +429,16 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
     if actor is None:
         return json.dumps({"error": "Authenticated branch subject required."})
 
-    visibility_in = (kwargs.get("visibility") or "public").strip().lower()
-    visibility = "private" if visibility_in == "private" else "public"
+    # PRIVATE by default, and private for anything that is not an explicit
+    # "public" (founder 2026-09-26: nothing in a user's universe defaults to
+    # visible). Both halves mattered: the default decided an omitted value, and
+    # the fallback turned every unrecognized value into `public`, so a typo
+    # published a branch. This path is the deprecated `extensions` fat tool --
+    # the canonical `write_graph target=branch` already does
+    # `setdefault("visibility", "private")` -- and a deprecated path is still a
+    # path.
+    visibility_in = (kwargs.get("visibility") or "private").strip().lower()
+    visibility = "public" if visibility_in == "public" else "private"
     branch = BranchDefinition(
         name=name,
         description=kwargs.get("description", ""),
@@ -450,7 +458,7 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
     return json.dumps({
         "branch_def_id": saved["branch_def_id"],
         "name": saved["name"],
-        "visibility": saved.get("visibility", "public"),
+        "visibility": saved.get("visibility", "private"),
         "status": "created",
     })
 
@@ -530,10 +538,15 @@ def _resolve_readable_branch(
     except KeyError:
         branch = None
     if branch is not None:
-        visibility = branch.get("visibility", "public") or "public"
-        if visibility == "public" or (
-            actor is not None and branch.get("author", "") == actor
-        ):
+        # A row with NO visibility field is PRIVATE, not public. This is the
+        # read side of the same rule: a legacy branch definition written before
+        # the field existed must not be readable by everyone because the field is
+        # absent. Fail closed (founder 2026-09-26); its author still reads it via
+        # the author check below.
+        from tinyassets.branch_versions import branch_readable_by
+
+        if branch_readable_by(actor, author=branch.get("author"),
+                              visibility=branch.get("visibility")):
             return selector, branch
         return None
 
@@ -551,8 +564,15 @@ def _resolve_readable_version(
     version_id: str,
     base_path: str,
 ) -> tuple[str, dict[str, Any]] | None:
-    """Resolve a version only when its persisted parent branch is readable."""
-    from tinyassets.branch_versions import get_branch_version
+    """Resolve a version only when the caller may read THAT version.
+
+    Its author reads every version of their branch, history included. Anyone
+    else needs both a readable branch AND the version's publication mark:
+    patch_branch snapshots every edit, so a public branch's versions are mostly
+    private edit history, and publishing a branch must expose only the version
+    its owner confirmed (founder 2026-09-30, astra round 3 on #4107).
+    """
+    from tinyassets.branch_versions import get_branch_version, version_readable_by
 
     version_id = (version_id or "").strip()
     if not version_id:
@@ -560,7 +580,16 @@ def _resolve_readable_version(
     version = get_branch_version(base_path, version_id)
     if version is None:
         return None
-    if _resolve_readable_branch(version.branch_def_id, base_path) is None:
+    readable = _resolve_readable_branch(version.branch_def_id, base_path)
+    # Exact id only: the resolver's NAME fallback would let an orphaned
+    # version borrow the author and visibility of an unrelated branch that
+    # happens to be named like its missing parent id.
+    if readable is None or readable[0] != version.branch_def_id:
+        return None
+    if not version_readable_by(
+        _request_branch_actor(), author=readable[1].get("author"),
+        visibility=readable[1].get("visibility"), public=version.public,
+    ):
         return None
     return version_id, version.to_dict()
 
@@ -747,7 +776,13 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
         if scope == "published":
             from tinyassets.branch_versions import list_branch_versions
 
-            versions = list_branch_versions(_base_path(), r.get("branch_def_id", ""), limit=1)
+            # Published = a version its owner published, newest first; an
+            # unmarked edit snapshot is history, not a published shape.
+            versions = [
+                v for v in list_branch_versions(
+                    _base_path(), r.get("branch_def_id", ""), limit=50)
+                if v.public
+            ]
             if not versions:
                 continue
             published_version_id = versions[0].branch_version_id
@@ -776,7 +811,7 @@ def _ext_branch_list(kwargs: dict[str, Any]) -> str:
             "node_count": node_count,
             "skill_count": len(r.get("skills", []) or []),
             "published": True if scope == "published" else r.get("published", False),
-            "visibility": r.get("visibility", "public"),
+            "visibility": r.get("visibility") or "private",
             "has_sandbox_nodes": has_sandbox_nodes,
         }
         if published_version_id is not None:
@@ -867,7 +902,8 @@ def _branch_dependents(
                 for table in ("canonical_bindings", "goal_canonicals"):
                     if table in tables:
                         for row in conn.execute(
-                            f"SELECT goal_id FROM {table} WHERE branch_version_id IN ({placeholders})",
+                            f"SELECT goal_id FROM {table} "
+                            f"WHERE branch_version_id IN ({placeholders})",
                             params,
                         ):
                             goal_ids.add(str(row[0]))
@@ -878,7 +914,8 @@ def _branch_dependents(
                     columns = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
                     if "canonical_branch_version_id" in columns:
                         for row in conn.execute(
-                            f"SELECT goal_id FROM goals WHERE canonical_branch_version_id IN ({placeholders})",
+                            f"SELECT goal_id FROM goals "
+                            f"WHERE canonical_branch_version_id IN ({placeholders})",
                             params,
                         ):
                             goal_ids.add(str(row[0]))
@@ -909,8 +946,19 @@ def _branch_dependents(
     from tinyassets.universe_soul import read_universe_soul
 
     loops: list[str] = []
+    # Owned only. This names universe ids back to the caller, and an archived
+    # or restored directory still carries the `soul.md` it was archived with --
+    # so an unowned directory used to be reported as a live dependent, which is
+    # both a wrong refusal and an id it should never have seen (2026-09-02: a
+    # universe exists because an ownership row says so).
+    from tinyassets.api.universe import _is_listable_universe_dir
+    from tinyassets.daemon_server import owned_universe_ids
+
     try:
-        universe_dirs = [d for d in Path(base).iterdir() if d.is_dir()]
+        owned = owned_universe_ids(base)
+        universe_dirs = [
+            d for d in Path(base).iterdir() if _is_listable_universe_dir(d, owned)
+        ]
     except OSError:
         universe_dirs = []
     for udir in sorted(universe_dirs):
@@ -967,7 +1015,7 @@ def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
                 "automations, revoke the webhooks, unregister the schedules and "
                 "subscriptions, unset the goals' canonical binding, edit the "
                 "branches (and their published versions) that invoke it, or "
-                "declare a different loop branch in the universes that run it, "
+                "declare a different loop branch in the command centers that run it, "
                 "then delete."
             ),
         })
@@ -1538,7 +1586,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     from tinyassets.daemon_server import list_branch_definitions
 
     my_versions = list_branch_versions(_base_path(), bid, limit=500)
-    my_version_ids = {v.branch_version_id for v in my_versions}
+    my_version_ids = {v.branch_version_id for v in my_versions
+                      if _resolve_readable_version(v.branch_version_id, str(_base_path()))}
     fork_descendants: list[dict[str, Any]] = []
     for b in list_branch_definitions(
         _base_path(),
@@ -1550,7 +1599,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
                 "branch_def_id": b["branch_def_id"],
                 "author": b.get("author", ""),
                 "published_versions_count": len(
-                    list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                    [v for v in list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                     if v.public]
                 ),
             })
 
@@ -1693,26 +1743,115 @@ def _branch_authoring_batch_receipt(
 
 
 def _suggest_entry_point(branch: Any) -> str:
+    """The node nothing points at — the head of the graph — else the first one.
+
+    Also the DEFAULT applied when a spec omits ``entry_point`` entirely
+    (``_staged_branch_from_spec``), so a conditional edge's targets count as
+    incoming too: a router whose branches feed back would otherwise be picked
+    as the head over the node that actually starts the flow.
+    """
     if not branch.graph_nodes:
         return ""
     incoming: set[str] = set()
     for e in branch.edges:
+        # An edge FROM START does not make its target "pointed at" -- START is
+        # where the run begins, so its target is the head, not a successor.
+        # Codex refute, PR #4108: with node order [second, first] and an
+        # explicit START -> first edge, `first` counted as having an incoming
+        # edge, every node did, and the fallback picked graph_nodes[0] --
+        # `second`, which the runtime then ran twice.
+        if e.from_node == "START":
+            continue
         if e.to_node and e.to_node != "START":
             incoming.add(e.to_node)
+    for ce in getattr(branch, "conditional_edges", None) or ():
+        for target in (ce.conditions or {}).values():
+            if target and target != "START":
+                incoming.add(target)
     for gn in branch.graph_nodes:
         if gn.id not in incoming:
             return gn.id
     return branch.graph_nodes[0].id
 
 
+#: Prefix on a staging string that is ADVISORY: the spec was accepted and this
+#: says what was adjusted. Stripped before the author sees it. A sentinel rather
+#: than a second return value because `_apply_*_spec` is a family of functions
+#: all returning `str`, and a one-off tuple in the middle of them is how the
+#: next caller forgets to look at it.
+_STATE_COERCION_NOTICE = "\x00notice\x00"
+
+#: JSON Schema's type names, which are what a model writes when it has been
+#: asked for a schema. These are EXACT synonyms, not guesses, so accepting them
+#: is silent: live 2026-09-30 (turn f3617ca3 round 3) a spec sent
+#: ``{"focus_note": "string"}`` and the build was REFUSED for it, with the
+#: reason reported as a coercion of a type it had already resolved correctly.
+_STATE_TYPE_SYNONYMS = {
+    "string": "str", "text": "str",
+    "integer": "int", "number": "float", "double": "float",
+    "boolean": "bool",
+    "array": "list", "object": "dict",
+    "null": "any", "none": "any",
+}
+
+
 def _closest_state_type(raw: str) -> str:
     lower = (raw or "").lower()
     if lower in _VALID_STATE_TYPES:
         return lower
-    for valid in _VALID_STATE_TYPES:
+    if lower in _STATE_TYPE_SYNONYMS:
+        return _STATE_TYPE_SYNONYMS[lower]
+    for valid in sorted(_VALID_STATE_TYPES):
         if valid.startswith(lower) or lower.startswith(valid):
             return valid
     return "any"
+
+
+def _state_type_is_exact(raw: str) -> bool:
+    """Was this type name understood outright, rather than guessed at?
+
+    An exact name or a known synonym is not worth telling the author about; a
+    guess (``"strang"`` -> ``str``) is.
+    """
+    lower = (raw or "").lower()
+    return lower in _VALID_STATE_TYPES or lower in _STATE_TYPE_SYNONYMS
+
+
+def _spec_offered_nodes(spec: Any) -> bool:
+    """Did the caller supply at least one node entry, in any accepted container?"""
+    if not isinstance(spec, dict):
+        return False
+    graph = spec.get("graph")
+    containers = [spec.get("node_defs"), spec.get("nodes")]
+    if isinstance(graph, dict):
+        containers += [graph.get("node_defs"), graph.get("nodes")]
+    return any(isinstance(c, list) and c for c in containers)
+
+
+def _without_cascades(
+    spec: Any, staging_errors: list[str], validation_errors: list[str],
+) -> list[str]:
+    """Drop validation errors that are artefacts of a node that failed staging.
+
+    A node whose spec is invalid is never appended to the branch, so `validate()`
+    then sees an EMPTY branch and reports "Branch must have at least one node."
+    beside the real error. Live 2026-09-30 round 13: the spec supplied a node and
+    was told it had none, and the model concluded its `node_defs` key was
+    unrecognized — round 17 went looking for a different container shape. Two
+    errors for one defect is worse than one, because the second is false.
+
+    Only the "no nodes" family is dropped, and only when the caller actually
+    offered nodes AND staging rejected one. An empty `node_defs: []` still gets
+    the honest answer (round 11 got it, and it was right).
+    """
+    if not staging_errors or not _spec_offered_nodes(spec):
+        return validation_errors
+    if not any(err.startswith("node[") for err in staging_errors):
+        return validation_errors
+    return [
+        err for err in validation_errors
+        if "at least one node" not in err.lower()
+    ]
 
 
 def _errors_to_suggestions(
@@ -1772,10 +1911,17 @@ def _errors_to_suggestions(
                 ),
             })
         elif "at least one node" in low:
+            # Names ONLY the container staging reads. The previous wording
+            # ("Add at least one node_def + graph_node entry") advertised a
+            # `graph_nodes` key that `_staged_branch_from_spec` has no reader
+            # for — it synthesizes the graph node from each node_def itself —
+            # and live 2026-09-30 round 17 followed it into that shape.
             suggestions.append({
                 "issue": err,
                 "proposed_fix": (
-                    "Add at least one node_def + graph_node entry."
+                    'Add one entry to node_defs, e.g. {"node_id": "n1", '
+                    '"prompt_template": "..."}. The graph node is derived from '
+                    "it; you do not pass graph_nodes."
                 ),
             })
         elif "branch name is required" in low:
@@ -1789,11 +1935,55 @@ def _errors_to_suggestions(
                 "proposed_fix": "Rename the duplicate id to a unique value.",
             })
         else:
-            suggestions.append({
-                "issue": err,
-                "proposed_fix": "Review this error and reshape the spec.",
-            })
+            suggestions.append({"issue": err, "proposed_fix": _concrete_fix(err)})
     return suggestions
+
+
+#: Spec keys a validation error can name, longest first so a match on
+#: ``display_name`` is never also reported as ``name``.
+_SPEC_FIELD_VOCABULARY = tuple(sorted((
+    "node_id", "display_name", "prompt_template", "source_code", "input_keys",
+    "output_keys", "tools_allowed", "strict_input_isolation", "timeout_seconds",
+    "model_hint", "reasoning_effort", "llm_policy", "effects", "workspace",
+    "phase", "entry_point", "state_schema", "node_defs", "conditional_edges",
+    "edges", "io_manifest", "description", "skills", "visibility", "name",
+    "concurrency_budget", "default_llm_policy", "checkpoints", "intent",
+), key=len, reverse=True))
+
+#: The top-level keys a create spec accepts. The last-resort fix names them,
+#: because a caller who cannot tell which key is at fault can at least tell
+#: which keys exist.
+_SPEC_TOP_LEVEL_KEYS = (
+    "name, description, node_defs, edges, conditional_edges, entry_point, "
+    "state_schema, io_manifest, skills"
+)
+
+
+def _concrete_fix(err: str) -> str:
+    """A fix naming the spec keys the error itself names.
+
+    Replaces "Review this error and reshape the spec." — which told the caller
+    nothing it did not already know, and was the ONLY guidance the live
+    2026-09-30 loop got for its round-13 rejection (turn
+    ``c7d6279d4af74d798375d3f13780140e``). Every validator error already names
+    the field or id at fault; this says which key in the SUBMITTED spec that is,
+    so the caller edits one key instead of reshaping the whole spec.
+    """
+    fields: list[str] = []
+    for field in _SPEC_FIELD_VOCABULARY:
+        if field in err and not any(field in seen for seen in fields):
+            fields.append(field)
+    if not fields:
+        return (
+            "Apply the change this error names. A create spec's keys are: "
+            f"{_SPEC_TOP_LEVEL_KEYS}."
+        )
+    named = ", ".join(sorted(fields))
+    where = ""
+    match = re.search(r"node '([^']+)'", err)
+    if match:
+        where = f" on node_defs entry '{match.group(1)}'"
+    return f"Change {named}{where}, as the error states: {err}"
 
 
 def _resolve_node_spec(
@@ -1992,18 +2182,67 @@ def _lookup_node_body(
     return {}, f"node '{node_id}' not found on the referenced branch."
 
 
-def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
+#: JSON's own words for a Python type, so an error names what the CALLER sent
+#: rather than a Python class. "got str" is actionable where "AttributeError" is
+#: not (live 2026-09-30, turn f3617ca3 round 3).
+_JSON_TYPE_NAMES = {
+    dict: "an object", list: "an array", str: "a string", bool: "a boolean",
+    int: "a number", float: "a number", type(None): "null",
+}
+
+
+def _json_type_name(value: Any) -> str:
+    return _JSON_TYPE_NAMES.get(type(value), "an unsupported value")
+
+
+#: How much caller text an error may quote back. Long enough to recognise the
+#: value, short enough that a 50kB field name is not the error message.
+_ECHO_MAX = 80
+
+
+def _echo(value: Any) -> str:
+    """Quote caller text back SAFELY: escaped, bounded, one line.
+
+    An error names the value the caller sent, which means caller-controlled
+    bytes land in a served tool result. Escaped because a raw control character
+    is unreadable there and moves a terminal cursor (the same reason
+    ``_payload_json_error`` escapes its excerpt), and bounded because the field
+    name is as unbounded as the payload. Found while testing whether the notice
+    sentinel could be forged: it cannot, but the caller's ``\\x00`` was being
+    echoed verbatim.
+    """
+    text = value if isinstance(value, str) else str(value)
+    clipped = text[:_ECHO_MAX]
+    escaped = repr(clipped)[1:-1]
+    return escaped + ("..." if len(text) > _ECHO_MAX else "")
+
+
+def _apply_node_spec(branch: Any, raw: Any) -> str:
     from tinyassets.branches import GraphNodeRef, NodeDefinition
 
+    if not isinstance(raw, dict):
+        return (
+            'node spec must be an object, e.g. {"node_id": "n1", '
+            '"prompt_template": "..."} '
+            f"(got {_json_type_name(raw)})"
+        )
     resolved, err = _resolve_node_spec(raw)
     if err:
         return err
     raw = resolved  # resolved may be the same dict, or a merged copy
 
     nid = (raw.get("node_id") or "").strip()
-    display = (raw.get("display_name") or "").strip()
-    if not nid or not display:
-        return "node spec missing node_id or display_name"
+    # `display_name` is a LABEL, and a node that has an id already has a usable
+    # one. Live 2026-09-30: this pair was reported as one error, so a spec whose
+    # node_id was present read as "node_id missing" and the model kept resending
+    # the id it had already supplied. Defaulting removes the round entirely, and
+    # the remaining error names the ONE field that has no default.
+    display = (raw.get("display_name") or "").strip() or nid
+    if not nid:
+        return (
+            "node spec missing 'node_id' (a short id for this node, e.g. "
+            "\"n1\"). 'display_name' is optional and defaults to node_id"
+        )
 
     source_code = raw.get("source_code") or ""
     prompt_template = raw.get("prompt_template") or ""
@@ -2166,23 +2405,67 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
     return ""
 
 
-def _apply_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
+#: Every spelling accepted for an edge's origin, in lookup order. ``source`` /
+#: ``target`` are LangGraph's own vocabulary (``add_edge`` in its docs and in
+#: every serialized graph it emits), so a model that knows LangGraph writes them
+#: — live 2026-09-30, round 20 of turn c7d6279d: a spec with
+#: ``{"source": "n1", "target": "END"}`` was told the edge was "missing 'from'
+#: or 'to'", which reads as a missing VALUE rather than a different key name.
+_EDGE_FROM_KEYS = ("from", "from_node", "source")
+_EDGE_TO_KEYS = ("to", "to_node", "target")
+
+
+def _edge_endpoint(raw: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _edge_keys_phrase(keys: tuple[str, ...]) -> str:
+    return " / ".join(f"'{key}'" for key in keys)
+
+
+def _apply_edge_spec(branch: Any, raw: Any) -> str:
     from tinyassets.branches import EdgeDefinition
 
-    src = (raw.get("from") or raw.get("from_node") or "").strip()
-    dst = (raw.get("to") or raw.get("to_node") or "").strip()
+    if not isinstance(raw, dict):
+        return (
+            'edge spec must be an object, e.g. {"from": "n1", "to": "END"} '
+            f"(got {_json_type_name(raw)})"
+        )
+    src = _edge_endpoint(raw, _EDGE_FROM_KEYS)
+    dst = _edge_endpoint(raw, _EDGE_TO_KEYS)
     if not src or not dst:
-        return "edge spec missing 'from' or 'to'"
+        missing = []
+        if not src:
+            missing.append(f"an origin ({_edge_keys_phrase(_EDGE_FROM_KEYS)})")
+        if not dst:
+            missing.append(f"a destination ({_edge_keys_phrase(_EDGE_TO_KEYS)})")
+        return (
+            "edge spec needs " + " and ".join(missing)
+            + '; e.g. {"from": "n1", "to": "END"}'
+        )
     branch.edges.append(EdgeDefinition(from_node=src, to_node=dst))
     return ""
 
 
-def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
+def _apply_conditional_edge_spec(branch: Any, raw: Any) -> str:
     from tinyassets.branches import ConditionalEdge
 
-    src = (raw.get("from") or raw.get("from_node") or "").strip()
+    if not isinstance(raw, dict):
+        return (
+            'conditional edge spec must be an object, e.g. {"from": "route", '
+            '"conditions": {"yes": "n2", "no": "END"}} '
+            f"(got {_json_type_name(raw)})"
+        )
+    src = _edge_endpoint(raw, _EDGE_FROM_KEYS)
     if not src:
-        return "conditional edge spec missing 'from'"
+        return (
+            "conditional edge spec needs an origin "
+            f"({_edge_keys_phrase(_EDGE_FROM_KEYS)})"
+        )
     conditions_raw = raw.get("conditions")
     if not isinstance(conditions_raw, dict) or not conditions_raw:
         return (
@@ -2210,8 +2493,89 @@ def _apply_conditional_edge_spec(branch: Any, raw: dict[str, Any]) -> str:
     return ""
 
 
-def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
-    fname = (raw.get("name") or raw.get("field_name") or "").strip()
+def _normalized_state_schema(raw: Any) -> tuple[list[Any], str]:
+    """Every reasonable way to write a state schema -> the canonical field list.
+
+    Live 2026-09-30, turn ``f3617ca3a91d4acab30eea8dbbeb2663`` round 3: a spec
+    sent ``"state_schema": {"focus_note": "string"}`` -- a MAPPING of name to
+    type, which is the obvious way to write it and the shape a JSON-schema
+    habit produces. Staging iterated it, got the KEY string ``"focus_note"``,
+    called ``.get("name")`` on a ``str``, and the served handler's backstop
+    turned that into ``branch build rejected (AttributeError).`` -- an exception
+    class name, which the model cannot act on.
+
+    Four accepted input shapes, all unambiguous:
+
+    * ``[{"name": ..., "type": ...}, ...]`` -- canonical, returned as-is.
+    * ``{"fields": [...]}`` -- the response shape; already tolerated by
+      ``_sanitize_served_branch_spec``, so staging must agree or the sanitizer
+      is validating a shape the builder rejects.
+    * ``{"focus_note": "string"}`` -- name -> type. A dict VALUE may also be
+      the field object itself (``{"focus_note": {"type": "str"}}``), in which
+      case the key supplies the name.
+    * ``["focus_note", ...]`` -- bare names; a name with no type is still a
+      name, and ``type`` already defaults.
+
+    Returns ``(entries, error)``. A non-empty ``error`` names ``state_schema``
+    and says what it needs -- never a class name.
+    """
+    if raw is None or raw == "" or raw == [] or raw == {}:
+        return [], ""
+    if isinstance(raw, dict):
+        fields = raw.get("fields")
+        if isinstance(fields, list):
+            return fields, ""
+        if "fields" in raw:
+            return [], (
+                "state_schema 'fields' must be a JSON array of field objects, "
+                'e.g. {"fields": [{"name": "focus_note", "type": "str"}]}'
+            )
+        entries: list[Any] = []
+        for name, value in raw.items():
+            key = str(name).strip()
+            if not key:
+                return [], "state_schema has a field with an empty name"
+            if isinstance(value, dict):
+                entries.append({**value, "name": value.get("name") or key})
+            elif isinstance(value, str):
+                entries.append({"name": key, "type": value})
+            else:
+                return [], (
+                    f"state_schema field '{key}' must map to a type name "
+                    'like "str", or to an object like {"type": "str"}'
+                )
+        return entries, ""
+    if isinstance(raw, list):
+        entries = []
+        for item in raw:
+            entries.append({"name": item.strip()} if isinstance(item, str) else item)
+        return entries, ""
+    return [], (
+        "state_schema must be a JSON array of field objects, or an object "
+        'mapping each field name to its type, e.g. {"focus_note": "str"}'
+    )
+
+
+def _apply_state_field_spec(branch: Any, raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return (
+            "state field spec must be an object with a 'name', e.g. "
+            '{"name": "focus_note", "type": "str"}'
+        )
+    # Defence in depth: the served path normalizes and type-checks these before
+    # they arrive, but `build_branch` is reachable from the browser flow too, and
+    # a non-string here used to reach `.strip()` and raise AttributeError.
+    raw_name = raw.get("name") or raw.get("field_name") or ""
+    if not isinstance(raw_name, str):
+        return (
+            f"state field 'name' must be a string (got {_json_type_name(raw_name)})"
+        )
+    raw_type = raw.get("type", raw.get("field_type", "str"))
+    if raw_type is not None and not isinstance(raw_type, str):
+        return (
+            f"state field 'type' must be a string (got {_json_type_name(raw_type)})"
+        )
+    fname = raw_name.strip()
     if not fname:
         return "state field spec missing 'name'"
     if any(f.get("name") == fname for f in branch.state_schema):
@@ -2239,10 +2603,15 @@ def _apply_state_field_spec(branch: Any, raw: dict[str, Any]) -> str:
         entry["default_value"] = default
         entry["default"] = default
     branch.state_schema.append(entry)
-    if ftype_raw.lower() not in _VALID_STATE_TYPES:
+    if not _state_type_is_exact(ftype_raw):
+        # A NOTICE, not an error: the field is already stored and the branch is
+        # valid. Returning this as an error refused the whole build over a type
+        # name that had been resolved correctly -- live 2026-09-30, turn
+        # f3617ca3 round 3, on `"string"`. The author still needs telling, so
+        # the caller separates the two channels (`_STATE_COERCION_NOTICE`).
         return (
-            f"state field '{fname}' type '{ftype_raw}' unknown; "
-            f"coerced to '{ftype}'."
+            f"{_STATE_COERCION_NOTICE}state field '{_echo(fname)}' type "
+            f"'{_echo(ftype_raw)}' unknown; coerced to '{ftype}'."
         )
     return ""
 
@@ -2591,7 +2960,15 @@ def _staged_branch_from_spec(
     spec: dict[str, Any],
     *,
     fork_version: dict[str, Any] | None = None,
-) -> tuple[Any, list[str]]:
+) -> tuple[Any, list[str], list[str]]:
+    """Stage a BranchDefinition from a spec.
+
+    Returns ``(branch, errors, notices)``. ``errors`` refuse the build;
+    ``notices`` are adjustments the author should know about but which do NOT
+    refuse it -- a type name resolved by guess, for instance. Splitting them is
+    the fix for a build refused because a value had been accepted (live
+    2026-09-30, turn ``f3617ca3a91d4acab30eea8dbbeb2663`` round 3).
+    """
     from tinyassets.branches import (
         BranchDefinition,
         normalize_branch_io_manifest,
@@ -2599,7 +2976,10 @@ def _staged_branch_from_spec(
     )
 
     errors: list[str] = []
-    raw_visibility = spec.get("visibility", "public")
+    notices: list[str] = []
+    # Private unless the spec says "public" (founder 2026-09-26). An omitted
+    # visibility is not a request to publish.
+    raw_visibility = spec.get("visibility", "private")
     if not isinstance(raw_visibility, str) or raw_visibility.strip().lower() not in {
         "public",
         "private",
@@ -2752,33 +3132,97 @@ def _staged_branch_from_spec(
             if not _choice_present("concurrency_budget"):
                 branch.concurrency_budget = parent_copy.concurrency_budget
 
-    for idx, raw in enumerate(spec.get("node_defs") or spec.get("nodes") or []):
+    # Each container is checked to BE a list before it is iterated. Iterating a
+    # dict yields its keys, so a mapping where a list belonged used to reach the
+    # per-entry applier as a bare `str` and raise AttributeError inside it --
+    # which the served handler could only report as its class name (live
+    # 2026-09-30, turn f3617ca3 round 3). `label` is the key the caller actually
+    # typed, so the error points at their text and not at an internal name.
+    def _entries(value: Any, label: str) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        errors.append(
+            f"{label} must be a JSON array (got {_json_type_name(value)})"
+        )
+        return []
+
+    node_container = "node_defs" if spec.get("node_defs") is not None else "nodes"
+    for idx, raw in enumerate(
+        _entries(spec.get("node_defs") if spec.get("node_defs") is not None
+                 else spec.get("nodes"), node_container)
+    ):
         err = _apply_node_spec(branch, raw)
         if err:
             errors.append(f"node[{idx}]: {err}")
 
-    for idx, raw in enumerate(_spec_get("edges") or []):
+    for idx, raw in enumerate(_entries(_spec_get("edges"), "edges")):
         err = _apply_edge_spec(branch, raw)
         if err:
             errors.append(f"edge[{idx}]: {err}")
 
-    for idx, raw in enumerate(_spec_get("conditional_edges") or []):
+    for idx, raw in enumerate(
+        _entries(_spec_get("conditional_edges"), "conditional_edges")
+    ):
         err = _apply_conditional_edge_spec(branch, raw)
         if err:
             errors.append(f"conditional_edge[{idx}]: {err}")
 
-    for idx, raw in enumerate(spec.get("state_schema") or []):
+    state_entries, state_error = _normalized_state_schema(spec.get("state_schema"))
+    if state_error:
+        errors.append(state_error)
+    for idx, raw in enumerate(state_entries):
         err = _apply_state_field_spec(branch, raw)
-        if err:
+        if not err:
+            continue
+        if err.startswith(_STATE_COERCION_NOTICE):
+            # Advisory: say it, do not fail on it.
+            notices.append(
+                f"state_schema[{idx}]: {err[len(_STATE_COERCION_NOTICE):]}"
+            )
+        else:
             errors.append(f"state_schema[{idx}]: {err}")
 
     entry = (spec.get("entry_point") or "").strip()
     if not entry and graph_blob is not None:
         entry = (graph_blob.get("entry_point") or "").strip()
+    order = [gn.id for gn in branch.graph_nodes]
+    if (
+        len(order) > 1
+        and not branch.edges
+        and not branch.conditional_edges
+        and entry in ("", order[0])
+    ):
+        # A LIST of nodes with no wiring at all reads one way: in the order
+        # written. Refusing it ("node 'b' is not reachable from entry point
+        # 'a'") answered a question the spec had already answered, and cost a
+        # small model a round to restate it as edges (live 2026-09-30, free
+        # account). Only an ABSENCE is filled: any edge, conditional edge, or an
+        # entry point other than the first node means the author is wiring the
+        # graph themselves, and that is validated exactly as written.
+        for src, dst in zip(order, order[1:]):
+            _apply_edge_spec(branch, {"from": src, "to": dst})
+        notices.append(
+            "no edges were given, so the nodes run in the order listed: "
+            + " -> ".join(order)
+            + ". Pass edges to wire them any other way."
+        )
     if entry:
         branch.entry_point = entry
+    elif not branch.entry_point and branch.graph_nodes:
+        # DEFAULT, not a guess: the graph's head is derivable from the edges the
+        # caller already gave (the node nothing points at), and for a single node
+        # there is only one answer. Live 2026-09-30 round 18: a one-node spec was
+        # refused with "Entry point is required when branch has nodes" — a round
+        # spent restating a fact the spec fully determined.
+        #
+        # Only fills an ABSENCE. An explicit entry_point is honoured above even
+        # when it names no node, so a typo is still an error rather than being
+        # silently replaced by a working one.
+        branch.entry_point = _suggest_entry_point(branch)
 
-    return branch, errors
+    return branch, errors, notices
 
 
 def _build_branch_text(branch: Any, *, truncated: bool) -> str:
@@ -2896,7 +3340,7 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     if top_level_goal_id:
         spec = {**spec, "goal_id": top_level_goal_id}
 
-    branch, staging_errors = _staged_branch_from_spec(
+    branch, staging_errors, staging_notices = _staged_branch_from_spec(
         spec,
         fork_version=fork_version,
     )
@@ -2910,7 +3354,7 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             f"branch-create-v1\0{actor}\0{request_id}".encode("utf-8")
         ).hexdigest()[:12]
     validation_errors = branch.validate() + _branch_file_contract_errors(branch)
-    errors = staging_errors + validation_errors
+    errors = staging_errors + _without_cascades(spec, staging_errors, validation_errors)
 
     # Validate fork_from points to a real branch_version_id. This error
     # string is what the rejection path below joins verbatim into `text`,
@@ -2938,10 +3382,13 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
                 "Suggested fixes:",
                 *[f"- {s['proposed_fix']}" for s in suggestions],
             ]
+        if staging_notices:
+            text_lines += ["", "Also adjusted:", *[f"- {n}" for n in staging_notices]]
         return json.dumps({
             "text": "\n".join(text_lines),
             "status": "rejected",
             "errors": errors,
+            "notices": staging_notices,
             "suggestions": suggestions,
             "attempted_spec": spec,
         })
@@ -3018,6 +3465,10 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
         "skill_count": len(persisted.skills),
         "entry_point": persisted.entry_point,
         "validation_summary": "ok",
+        # What was adjusted on the way in. The build SUCCEEDED, so this is not a
+        # rejection -- but an author who wrote a type name we had to guess at
+        # should be told which one, and what it became.
+        "notices": staging_notices,
         "batch_receipt": _branch_authoring_batch_receipt(
             persisted,
             action="build_branch",
@@ -3026,6 +3477,11 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
         ),
     }
     payload["batch_receipt"]["idempotent_replay"] = idempotent_replay
+    if staging_notices:
+        payload["text"] = "\n".join([
+            text, "", "Adjusted on the way in:",
+            *[f"- {n}" for n in staging_notices],
+        ])
     if verbose:
         payload["branch"] = saved
     return json.dumps(payload, default=str)
@@ -3350,6 +3806,7 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     staging = BranchDefinition.from_dict(copy.deepcopy(source))
 
     per_op_errors: list[dict[str, Any]] = []
+    per_op_notices: list[dict[str, Any]] = []
     for idx, op in enumerate(changes):
         if not isinstance(op, dict):
             per_op_errors.append({
@@ -3358,6 +3815,18 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             })
             continue
         err = _apply_patch_op(staging, op)
+        # The SAME two channels as the build path. Codex refute, PR #4123: this
+        # caller was missed when `_apply_state_field_spec` gained the notice
+        # sentinel, so a patch that coerced a type both leaked the raw
+        # `\x00notice\x00` marker into the author's text AND was rejected for
+        # what the build path treats as advisory. One applicator, one contract:
+        # every caller of it has to read the prefix.
+        if err and err.startswith(_STATE_COERCION_NOTICE):
+            per_op_notices.append({
+                "op_index": idx, "op": op,
+                "notice": err[len(_STATE_COERCION_NOTICE):],
+            })
+            continue
         if err:
             if (
                 (op.get("op") or "").strip().lower() == "set_fork_from"
@@ -3399,10 +3868,15 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             text_lines += ["", "Suggested fixes:"]
             for s in suggestions:
                 text_lines.append(f"- {s['proposed_fix']}")
+        if per_op_notices:
+            text_lines += ["", "Also adjusted:"]
+            for pn in per_op_notices:
+                text_lines.append(f"- op[{pn['op_index']}]: {pn['notice']}")
         return json.dumps({
             "text": "\n".join(text_lines),
             "status": "rejected",
             "errors": per_op_errors,
+            "notices": per_op_notices,
             "validation_errors": validation_errors,
             "suggestions": suggestions,
         })
@@ -3501,6 +3975,8 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
         "name_updated": name_updated,
         "new_name": persisted.name,
         "post_patch": post_patch,
+        # Same channel as the build path: what was adjusted, without rejecting.
+        "notices": per_op_notices,
         "batch_receipt": _branch_authoring_batch_receipt(
             persisted,
             action="patch_branch",
@@ -3508,6 +3984,11 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             request_id=kwargs.get("request_id", ""),
         ),
     }
+    if per_op_notices:
+        patch_payload["text"] = "\n".join([
+            patch_payload["text"], "", "Adjusted on the way in:",
+            *[f"- op[{pn['op_index']}]: {pn['notice']}" for pn in per_op_notices],
+        ])
     if verbose:
         patch_payload["branch"] = saved
     return json.dumps(patch_payload, default=str)
@@ -3974,16 +4455,28 @@ def _ext_branch_patch_nodes(kwargs: dict[str, Any]) -> str:
 
 
 def _resolve_udir() -> Path:
-    """Return the active universe directory (best-effort; never raises)."""
+    """Return the active universe directory (best-effort; never raises).
+
+    Currently has no callers. Routed through ownership anyway: an unrouted
+    default resolver sitting in the tree is a trap for whoever wires it up next,
+    and "a directory that sorts first" is exactly the resolution that handed out
+    operational stores as universes (2026-09-02).
+    """
     try:
         uid = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
         if not uid:
+            from tinyassets.api.helpers import _owned_universe_dir_name
+
             base = _base_path()
             if base.is_dir():
-                # Skip dot-dirs: the data root also holds operational state such as
-                # account deletion's transient `.deleting/` staging dir.
+                # Dot-dirs and unowned directories are both skipped: the data
+                # root also holds operational state such as account deletion's
+                # transient `.deleting/` staging dir.
                 subdirs = sorted(
-                    d for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")
+                    d for d in base.iterdir()
+                    if d.is_dir()
+                    and not d.name.startswith(".")
+                    and _owned_universe_dir_name(base, d.name)
                 )
                 if subdirs:
                     uid = subdirs[0].name
@@ -4046,7 +4539,8 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
 
     # Find descendants: branches whose fork_from matches any version of this branch.
     versions = list_branch_versions(_base_path(), bid, limit=200)
-    version_ids = {v.branch_version_id for v in versions}
+    version_ids = {v.branch_version_id for v in versions
+                   if _resolve_readable_version(v.branch_version_id, str(_base_path()))}
     descendants: list[dict[str, Any]] = []
     all_branches = list_branch_definitions(
         _base_path(),
@@ -4061,7 +4555,8 @@ def _action_fork_tree(kwargs: dict[str, Any]) -> str:
                 "author": b.get("author", ""),
                 "fork_from_version": ff,
                 "published_versions_count": len(
-                    list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                    [v for v in list_branch_versions(_base_path(), b["branch_def_id"], limit=500)
+                     if v.public]
                 ),
             })
 
@@ -4162,7 +4657,8 @@ rejected by the server; in an existing branch patch, pass `node_ref` /
 ## New-workflow authoring
 
 Create a Branch through `write_graph target="branch" operation="create"
-payload_json=...` with the complete spec below in `payload_json`. To remix, use operation `remix` and
+payload_json=...` with the complete spec below in `payload_json`.
+To remix, use operation `remix` and
 include a published `fork_from` version in the same spec. After validation,
 freeze it through operation `publish`; cloud automation binds only immutable
 published versions. Standalone node registration remains unavailable.
@@ -4220,9 +4716,10 @@ whole file bytes. Only nodes declaring that incoming field in `input_keys` can
 use `read_run_file(file_id=..., offset=..., count=...)` for bounded exact reads;
 downstream nodes need explicit forwarded input data, not merely the same state.
 
-To edit the contract, use existing `write_graph target="branch" operation="patch"`
-with `changes_json=[{"op":"set_io_manifest","io_manifest":{...}}]`; served agents
-put that same ordered op list in `payload_json`. This replaces the complete
+To edit the contract, use existing
+`write_graph target="branch" operation="patch" branch_id=... changes_json=[...]`
+with the op `{"op":"set_io_manifest","io_manifest":{...}}`; served agents put
+that same ordered op list in `payload_json`. This replaces the complete
 manifest. Explicit null clears it; a missing member rejects. Matching state-field
 changes can be in the same atomic patch. Existing published versions/admitted
 runs keep their old contract; publish again to create a new immutable version.

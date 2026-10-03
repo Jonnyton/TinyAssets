@@ -81,6 +81,21 @@ def test_dockerfile_final_stage_has_nodejs_runtime():
     )
 
 
+def test_the_final_stage_ships_the_agents_own_toolchain():
+    """Harness W3: the universe agent's tool jail binds /usr read-only, so the
+    runtime image IS its computer's toolchain. git and ripgrep are named (git
+    was only transitive), and the build fails if any of the four is missing."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    froms = [i for i, line in enumerate(text.splitlines()) if line.startswith("FROM ")]
+    final_stage_text = "\n".join(text.splitlines()[froms[1]:])
+    install = final_stage_text[final_stage_text.index("apt-get install"):]
+    install = install[:install.index(";")]
+    for package in ("git", "ripgrep", "bubblewrap"):
+        assert re.search(rf"^\s+{package} \\$", install, re.M), package
+    assert ("git --version && rg --version && node --version && python3 --version"
+            in final_stage_text)
+
+
 def test_dockerfile_installs_immutable_github_cli_release_asset():
     """The gh pin must remain available after the apt repository advances."""
     text = DOCKERFILE.read_text(encoding="utf-8")
@@ -315,7 +330,7 @@ def test_compose_requires_explicit_workflow_image_without_latest_default():
         image = data["services"][service_name].get("image", "")
         assert "${TINYASSETS_IMAGE:?" in image, (
             f"{service_name} image must require TINYASSETS_IMAGE instead of "
-            "defaulting to ghcr.io/jonnyton/tinyassets-daemon:latest"
+            "defaulting to ghcr.io/tinyassets/tinyassets-daemon:latest"
         )
         assert ":latest" not in image
 

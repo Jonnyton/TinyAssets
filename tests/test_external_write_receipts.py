@@ -55,7 +55,7 @@ def test_record_then_lookup_roundtrip(tmp_path):
         universe,
         idempotency_hint="loop-2-cycle-001",
         sink="github_pull_request",
-        evidence={"pr_url": "https://github.com/Jonnyton/TinyAssets/pull/123",
+        evidence={"pr_url": "https://github.com/TinyAssets/TinyAssets/pull/123",
                   "pr_number": 123},
         run_id="run-abc",
         created_at=1234567890.0,

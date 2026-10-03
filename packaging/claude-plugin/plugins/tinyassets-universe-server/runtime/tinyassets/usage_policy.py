@@ -1,68 +1,112 @@
-"""Tier resolution and the effect-quota gate.
+"""What one account tier permits: THE table, and the only one.
 
-Sits between the raw ledger (`storage/usage_ledger`) and the effect call sites. The
-ledger knows how to reserve and settle; this module knows *how much* a given universe
-is allowed and turns a refusal into something a caller can act on.
+Founder directive 2026-09-30, verbatim: *"usage limits for accounts should really
+only be based on 2 things, total gibs thier universe takes up in the cloud. and how
+many agent calls thier universe can simoltaniously run ... free users have less cloud
+storage space and less simaltaniouse agent runs."* Both are per ACCOUNT: one
+allowance per person, shared across all of their universes.
 
-Two deliberate properties:
+* ``seats`` -- concurrent agent calls (`tinyassets.universe_seats`). Over the limit,
+  work QUEUES; it is never refused and never dropped.
+* ``storage_bytes`` -- the account's cloud footprint (change
+  `account-storage-quota`).
 
-* **Free is the absence of a subscription**, not a separate plan record. Fewer states,
-  less to drift out of sync.
-* **An unresolvable tier falls back to FREE, never to unlimited.** A lookup failure
-  must not silently hand out the paid tier.
-
-Sizing is deliberately generous. Cost work on 2026-08-28 measured marginal cost per
-user at roughly $0.12/month — the platform supplies no inference, and WorkOS is free
-to a million MAU — so cost is not what should constrain the free tier. What should
-constrain it is abuse reaching the outside world, which is why *effects* are the tight
-dimension and runs are not.
+Which tier an account is on is `universe_owner.account_type_of`; this module only says what
+each tier permits. An unresolvable tier is FREE, never unlimited. There are no rate
+meters of any kind.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import math
 import os
 from dataclasses import dataclass
+from enum import StrEnum
+from urllib.parse import quote
 
 _log = logging.getLogger(__name__)
 
 TIER_FREE = "free"
 TIER_PAID = "paid"
 
-#: Rolling window all quotas are measured over.
-_WINDOW_VAR = "TINYASSETS_USAGE_WINDOW_S"
-_DEFAULT_WINDOW_S = 86_400.0  # one day
 
-#: Effects. The billable dimension, and the only tight one.
-_FREE_EFFECTS_VAR = "TINYASSETS_FREE_EFFECTS_PER_WINDOW"
-_PAID_EFFECTS_VAR = "TINYASSETS_PAID_EFFECTS_PER_WINDOW"
-_DEFAULT_FREE_EFFECTS = 100
-_DEFAULT_PAID_EFFECTS = 5_000
+class AccountType(StrEnum):
+    """The ONLY per-account input allowed to change behaviour (PLAN.md, *Owner
+    surfaces are complete*; founder 2026-09-30: "there are only two account types,
+    free or subscription and we dont care what connections they have").
 
-#: Compute. A guard, not a product limit — sized so ordinary iterative debugging
-#: never reaches it. The 2026-08-28 outage was caused by a limit tight enough to
-#: catch honest work.
-_FREE_COMPUTE_VAR = "TINYASSETS_FREE_COMPUTE_MINUTES"
-_PAID_COMPUTE_VAR = "TINYASSETS_PAID_COMPUTE_MINUTES"
-_DEFAULT_FREE_COMPUTE_MIN = 600.0
-_DEFAULT_PAID_COMPUTE_MIN = 12_000.0
+    Resolved in exactly one place, per ACCOUNT: `universe_owner.account_type_of`
+    (and `account_type_for_universe`, which goes through the owner). Policy takes
+    this value and nothing else about an account -- not its connections, not how
+    much it has stored or asked, not whose it is. Two numbers depend on it
+    (`limits_for`); nothing a user SEES does, apart from those numbers and the
+    upgrade link. ``SUBSCRIPTION`` keeps the stored value ``"paid"`` because that is
+    what billing has already written.
 
-#: Storage. Capped, not charged — per-universe attribution is still wrong
-#: (docs/concerns/2026-08-28-per-universe-storage-is-515mb-of-duplication.md), and
-#: ~99% of the current footprint is our own duplicated provider runtime, which the
-#: user did not put there.
-_FREE_STORAGE_VAR = "TINYASSETS_FREE_STORAGE_MB"
-_PAID_STORAGE_VAR = "TINYASSETS_PAID_STORAGE_MB"
-_DEFAULT_FREE_STORAGE_MB = 2_000.0
-_DEFAULT_PAID_STORAGE_MB = 20_000.0
+    A ``StrEnum`` so a stored value and a constant compare equal (and format as
+    the stored word) without a conversion at every call site.
+    """
 
-#: Longest a single run may be charged for, so a wedged run cannot accrue forever.
-_MAX_RUN_VAR = "TINYASSETS_MAX_CHARGEABLE_RUN_S"
-_DEFAULT_MAX_RUN_S = 3_600.0
+    FREE = TIER_FREE
+    SUBSCRIPTION = TIER_PAID
 
+#: Weakest first. `upgrade_url` returns None for the last entry, so a future middle
+#: tier needs no change at the call sites -- "is there a tier above this one" is a
+#: question about the table, never a `tier != "free"` test at a message site.
+TIER_ORDER = (AccountType.FREE, AccountType.SUBSCRIPTION)
+
+#: Seats: concurrent agent calls per account.
+#:
+#: Free is 3 rather than the directive's "e.g. 2" (approved 2026-09-30). It is a
+#: PRODUCT choice -- two simultaneous background agents on free -- and not a
+#: necessity. The necessity argument was refuted: 2 seats with 1 reserved gives one
+#: running background agent and three waiting, which is a queue, and does
+#: demonstrate what the founder asked to see (astra round 1, finding 19). Keeping
+#: the honest version because an argument that does not hold is worse than none.
+#:
+#: What IS load-bearing is the reserve, not the total. The owner's chat must never
+#: wait on background work, and guaranteeing that needs a RESERVED seat rather than
+#: a priority ordering: a background run may legitimately last
+#: `automations.DEFAULT_RUN_TIMEOUT_SECONDS` (3 hours), so an ordering alone bounds
+#: the chat's wait by three hours.
+_FREE_SEATS_VAR = "TINYASSETS_FREE_SEATS"
+_PAID_SEATS_VAR = "TINYASSETS_PAID_SEATS"
+_DEFAULT_FREE_SEATS = 3
+_DEFAULT_PAID_SEATS = 8
+
+#: Seats background work may never take, so interactive work always has one.
+#: Clamped below the seat count in `limits_for`: a reserve at or above it would
+#: refuse every background run to protect a chat that is not asking.
+_RESERVE_VAR = "TINYASSETS_INTERACTIVE_SEAT_RESERVE"
+_DEFAULT_RESERVE = 1
+
+#: Storage: ONE pool per ACCOUNT, shared by all of its universes -- the directive's
+#: first number (founder, 2026-09-30: free 2 GiB, paid 20 GiB). This is the only
+#: storage quota; the flat 16 GiB workspace quota it replaces is deleted.
+#:
+#: Measured and enforced by `tinyassets.storage_accounting`, which excludes the
+#: platform's own bytes (provider runtime, checkout staging, live scratch) so the
+#: number is what the person actually stores. GiB because that is the unit the
+#: owner reads; the old `_MB` variables were set nowhere.
+_FREE_STORAGE_VAR = "TINYASSETS_FREE_STORAGE_GIB"
+_PAID_STORAGE_VAR = "TINYASSETS_PAID_STORAGE_GIB"
+_DEFAULT_FREE_STORAGE_GIB = 2.0
+_DEFAULT_PAID_STORAGE_GIB = 20.0
+
+#: Where an owner goes to buy more of either number.
+#:
+#: There is no GET upgrade route: the app's own control (`app.html` `btn-plan` ->
+#: `startSubscribe`) POSTs `/app/billing/checkout`, which is identity-gated. A
+#: link inside a message cannot POST, and inventing a route is forbidden -- so the
+#: link is the app's EXISTING route plus a query parameter wired to that same
+#: `startSubscribe()`. One builder, so there is exactly one string to test -- and
+#: that paid off: when the app's public URL moved (#4112) this was the one-line
+#: default change below.
+_UPGRADE_ORIGIN = "https://tinyassets.io"
+_APP_PATH_VAR = "TINYASSETS_APP_PATH"
+_DEFAULT_APP_PATH = "/app"
+_UPGRADE_QUERY = "upgrade=1"
 
 def _positive_number(var: str, default: float) -> float:
     """Read a positive finite number, announcing an unusable override rather than
@@ -83,231 +127,130 @@ def _positive_number(var: str, default: float) -> float:
     return value
 
 
+def _positive_int(var: str, default: int) -> int:
+    """Read a positive integer, announcing an unusable override rather than
+    swallowing it. Shares `_positive_number`'s contract so a misconfigured seat
+    count is as loud as a misconfigured quota."""
+    value = _positive_number(var, float(default))
+    return max(1, int(value))
+
+
 @dataclass(frozen=True)
 class TierLimits:
-    """What one tier permits over the rolling window."""
+    """What one tier permits: the directive's two numbers.
 
-    name: str
-    effects: int
-    compute_seconds: float
+    ``seats`` and ``storage_bytes`` are the directive's two dimensions.
+    ``background_seats`` is derived rather than stored, so the reserve can never
+    disagree with the seat count it is subtracted from.
+    """
+
+    name: AccountType
+    seats: int
+    interactive_reserve: int
     storage_bytes: float
-    window_seconds: float
-    max_chargeable_run_seconds: float
 
     @property
-    def is_paid(self) -> bool:
-        return self.name == TIER_PAID
+    def background_seats(self) -> int:
+        """Seats background work may occupy. At least 1: a reserve that consumed
+        every seat would refuse all automation to protect a chat nobody is having."""
+        return max(1, self.seats - self.interactive_reserve)
+
+    def seats_for(self, seat_class: str) -> int:
+        """The ceiling this class of work may reach. Interactive work may take
+        every seat; background work stops one short, which is the whole of the
+        fairness guarantee."""
+        from tinyassets.universe_seats import CLASS_INTERACTIVE
+
+        return self.seats if seat_class == CLASS_INTERACTIVE else self.background_seats
+
+    @property
+    def storage_gib(self) -> float:
+        return self.storage_bytes / float(1024**3)
 
 
-def window_seconds() -> float:
-    return _positive_number(_WINDOW_VAR, _DEFAULT_WINDOW_S)
+def app_path() -> str:
+    """The app's served path. One reader, which is why moving the app's public
+    URL (#4112) was a single default change here and nothing else."""
+    raw = (os.environ.get(_APP_PATH_VAR) or "").strip()
+    path = raw or _DEFAULT_APP_PATH
+    if not path.startswith("/"):
+        path = "/" + path
+    return path.rstrip("/") or _DEFAULT_APP_PATH
 
 
-def max_chargeable_run_seconds() -> float:
-    return _positive_number(_MAX_RUN_VAR, _DEFAULT_MAX_RUN_S)
+def upgrade_url(tier: AccountType | str) -> str | None:
+    """Where this tier's owner goes to buy more, or None on the top tier.
+
+    None rather than a link on the highest tier because there is nothing to sell
+    them, and derived from `TIER_ORDER` rather than compared against `"free"` so a
+    future middle tier needs no change at any message site.
+    """
+    normalized = account_type(tier)
+    if normalized == TIER_ORDER[-1]:
+        return None
+    return f"{_UPGRADE_ORIGIN}{quote(app_path())}?{_UPGRADE_QUERY}"
 
 
-def limits_for(tier: str) -> TierLimits:
-    """Resolve a tier's limits. An unknown tier resolves to FREE, never unlimited."""
+def upgrade_sentence(tier: AccountType | str, *, what: str = "seats") -> str:
+    """The upgrade half of a waiting or full message: one clickable link inline,
+    never a banner, button, card or modal (founder, 2026-09-30). Empty on the top
+    tier, so a caller concatenates unconditionally and the top tier simply gets the
+    fact."""
+    url = upgrade_url(tier)
+    if url is None:
+        return ""
+    return f"[Upgrade]({url}) for more {what}."
+
+
+def account_type(tier: AccountType | str) -> AccountType:
+    """Read a stored tier value as an `AccountType`. Anything unrecognized is the
+    WEAKEST type and says so, because the alternative to "unknown means free" is
+    "unknown means unlimited". This READS a value; it does not resolve whose
+    account it is -- that is `universe_owner.account_type_of`."""
+    if isinstance(tier, AccountType):
+        return tier
     normalized = (tier or "").strip().lower()
-    if normalized != TIER_PAID:
-        normalized = TIER_FREE
-    paid = normalized == TIER_PAID
-    effects = _positive_number(
-        _PAID_EFFECTS_VAR if paid else _FREE_EFFECTS_VAR,
-        float(_DEFAULT_PAID_EFFECTS if paid else _DEFAULT_FREE_EFFECTS),
+    for member in TIER_ORDER:
+        if normalized == member.value:
+            return member
+    if normalized:
+        _log.warning(
+            "unrecognized account tier %r; applying the %s tier's limits",
+            tier,
+            TIER_ORDER[0],
+        )
+    return TIER_ORDER[0]
+
+
+def limits_for(account: AccountType) -> TierLimits:
+    """What an account type permits. The account type is the whole input: there is
+    no other per-account argument, so no caller can make a limit depend on
+    anything else about the account. An unknown value resolves to FREE."""
+    normalized = account_type(account)
+    paid = normalized is AccountType.SUBSCRIPTION
+    seats = _positive_int(
+        _PAID_SEATS_VAR if paid else _FREE_SEATS_VAR,
+        _DEFAULT_PAID_SEATS if paid else _DEFAULT_FREE_SEATS,
     )
-    compute_min = _positive_number(
-        _PAID_COMPUTE_VAR if paid else _FREE_COMPUTE_VAR,
-        _DEFAULT_PAID_COMPUTE_MIN if paid else _DEFAULT_FREE_COMPUTE_MIN,
-    )
-    storage_mb = _positive_number(
+    # Clamped INSIDE the resolver, not at the call sites: a reserve at or above the
+    # seat count would refuse every background run, and a reserve read
+    # independently at two call sites is two chances to forget the clamp.
+    reserve = min(_positive_int(_RESERVE_VAR, _DEFAULT_RESERVE), max(0, seats - 1))
+    storage_gib = _positive_number(
         _PAID_STORAGE_VAR if paid else _FREE_STORAGE_VAR,
-        _DEFAULT_PAID_STORAGE_MB if paid else _DEFAULT_FREE_STORAGE_MB,
+        _DEFAULT_PAID_STORAGE_GIB if paid else _DEFAULT_FREE_STORAGE_GIB,
     )
     return TierLimits(
         name=normalized,
-        effects=int(effects),
-        compute_seconds=compute_min * 60.0,
-        storage_bytes=storage_mb * 1024.0 * 1024.0,
-        window_seconds=window_seconds(),
-        max_chargeable_run_seconds=max_chargeable_run_seconds(),
+        seats=seats,
+        interactive_reserve=reserve,
+        storage_bytes=storage_gib * 1024.0**3,
     )
 
 
-def settlement_key(*, sink: str, effect_key: str) -> str:
-    """The ledger key for one effect — the receipt's own identity.
+def limits_for_universe(universe_dir) -> TierLimits:
+    """The limits of the ACCOUNT that owns this universe (founder, 2026-09-30:
+    per account, not per universe)."""
+    from tinyassets.universe_owner import account_type_for_universe
 
-    Must match the receipt's `(idempotency_hint, sink)` primary key exactly, or a
-    retried effect would reserve a second slot instead of finding its first.
-
-    Hashed over a JSON-encoded PAIR rather than concatenated with a separator.
-    Concatenation is not injective when a field can itself contain the separator:
-    ``("a", "bc")`` and ``("ab", "c")`` produce the same string, and since
-    `reserve_effect` treats an existing row as "same effect, proceed", one tuple
-    could ride another's reservation and write with no budget of its own
-    (Codex REJECT 2026-08-28 B). JSON encoding is injective over the pair, so the
-    digest is too.
-    """
-    encoded = json.dumps([sink, effect_key], separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True)
-class QuotaRefusal:
-    """Why a request was refused, and when it can succeed — never just 'try later'."""
-
-    dimension: str
-    limit: int | float
-    tier: str
-    retry_after_seconds: float
-
-    def message(self) -> str:
-        when = (
-            f"{self.retry_after_seconds / 3600:.1f}h"
-            if self.retry_after_seconds >= 3600
-            else f"{max(1, round(self.retry_after_seconds / 60))}m"
-        )
-        return (
-            f"{self.dimension} limit reached for the {self.tier} tier "
-            f"(max {self.limit:g} per {self.window_label}); "
-            f"capacity returns in about {when}."
-        )
-
-    @property
-    def window_label(self) -> str:
-        hours = window_seconds() / 3600
-        return "24h" if abs(hours - 24) < 0.01 else f"{hours:g}h"
-
-
-def _ledger():
-    # Imported lazily so this module stays importable in contexts that never
-    # touch the ledger (config readers, docs tooling).
-    from tinyassets.storage import usage_ledger
-
-    return usage_ledger
-
-
-_ENFORCE_VAR = "TINYASSETS_USAGE_ENFORCEMENT"
-
-
-def enforcement_enabled() -> bool:
-    """Is usage ENFORCEMENT live? Default OFF — metering still records either way.
-
-    Landing dark. Cross-family review (Codex, 2026-08-28, two rounds) established
-    that settlement is not yet exactly-once: receipt finalization and the quota
-    write are separate commits, so a crash between them strands a reservation, and
-    `wiki_write_back` is a registered sink that writes unmetered. Those are real,
-    and closing them properly needs the outbox this change's own spec asks for.
-
-    Enforcing a quota whose accounting can drift means refusing a user's legitimate
-    action on a number we do not trust — strictly worse than not enforcing. So the
-    meter runs and records from day one (which is how we learn real usage), and the
-    gate stays off until the outbox lands and one universe has been proven on it.
-    """
-    return (os.environ.get(_ENFORCE_VAR, "").strip().lower()) in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
-def reserve_effect_quota(
-    universe_dir,
-    *,
-    sink: str,
-    effect_key: str,
-    tier: str = TIER_FREE,
-    now: float | None = None,
-) -> QuotaRefusal | None:
-    """Reserve effect budget before an outbound write.
-
-    Returns ``None`` when the effect may proceed, or a ``QuotaRefusal`` the caller
-    must surface *without* performing the write. This is a pre-flight control: an
-    outbound write is irreversible, so a budget checked afterwards is an accounting
-    record rather than a limit.
-    """
-    limits = limits_for(tier)
-    enforcing = enforcement_enabled()
-    try:
-        admitted = _ledger().reserve_effect(
-            universe_dir,
-            settlement_key=settlement_key(sink=sink, effect_key=effect_key),
-            limit=limits.effects,
-            window_seconds=limits.window_seconds,
-            now=now,
-        )
-    except Exception:
-        # While dark, metering must not be able to decide whether an effect
-        # happens. A locked or unwritable ledger would otherwise block a real
-        # outbound write — a failure mode created purely by merging this, which is
-        # exactly what landing dark is supposed to avoid (Codex round 3, 1 and 4).
-        if not enforcing:
-            return None
-        # Enforcing: a ledger we cannot read must fail closed, or the cap is
-        # trivially defeated by making the ledger unavailable.
-        return QuotaRefusal(
-            dimension="effect",
-            limit=limits.effects,
-            tier=limits.name,
-            retry_after_seconds=limits.window_seconds,
-        )
-    if admitted:
-        return None
-    if not enforcing:
-        # Dark: the decline is RECORDED but not acted on. Refusing on accounting we
-        # know can drift would be worse than letting the action through.
-        return None
-    return QuotaRefusal(
-        dimension="effect",
-        limit=limits.effects,
-        tier=limits.name,
-        retry_after_seconds=limits.window_seconds,
-    )
-
-
-def release_effect_quota(universe_dir, *, sink: str, effect_key: str) -> bool:
-    """Return budget after a write that did not reach the world.
-
-    Never raises. Both this and `settle_effect_quota` run AFTER the destination has
-    been contacted, so an exception here would turn a completed outbound write into a
-    crash -- strictly worse than any accounting error it could prevent, and a failure
-    mode created purely by merging metering at all.
-
-    Failing to refund leaves the effect charged, which is unfair but not dangerous.
-    """
-    try:
-        return _ledger().release_effect(
-            universe_dir,
-            settlement_key=settlement_key(sink=sink, effect_key=effect_key),
-        )
-    except Exception:
-        _log.warning("could not refund effect quota", exc_info=True)
-        return False
-
-
-def settle_effect_quota(
-    universe_dir, *, sink: str, effect_key: str, now: float | None = None
-) -> bool:
-    """Commit budget for an effect that reached the world.
-
-    Safe to call from every success path — ordinary finalization, reconciliation,
-    and confirmed-hold activation — because the underlying commit only fires on the
-    reserved->committed transition. A second call for the same effect settles
-    nothing and returns False, which is what stops a replayed finalization from
-    double-charging.
-    """
-    try:
-        return _ledger().commit_effect(
-            universe_dir,
-            settlement_key=settlement_key(sink=sink, effect_key=effect_key),
-            now=now,
-        )
-    except Exception:
-        # The write already happened. A meter that cannot record it is an accounting
-        # gap; raising here would be a crash after an irreversible action. The
-        # reservation stays reserved and still counts against the window, so this
-        # cannot under-charge.
-        _log.warning("could not settle effect quota", exc_info=True)
-        return False
+    return limits_for(account_type_for_universe(universe_dir))

@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from tinyassets.api import runs as runs_mod
 from tinyassets.api.runs import (
     _FAILURE_TAXONOMY,
@@ -28,6 +30,12 @@ from tinyassets.api.runs import (
 )
 
 # ── module surface ──────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _pin_data_dir(tmp_path, monkeypatch):
+    """The run handlers sweep in-flight runs in the data dir on first use:
+    never the developer's real one."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 
 def test_module_exposes_expected_public_names():
@@ -56,10 +64,6 @@ def test_module_exposes_expected_public_names():
 # ── _RUN_ACTIONS dispatch table ─────────────────────────────────────────────
 
 
-def test_run_actions_table_has_33_handlers():
-    assert len(_RUN_ACTIONS) == 33
-
-
 def test_run_actions_table_keys_are_expected_set():
     expected = {
         "run_branch", "run_branch_version", "get_run", "list_runs",
@@ -75,6 +79,9 @@ def test_run_actions_table_keys_are_expected_set():
         "create_receiver", "update_receiver", "revoke_receiver",
         "connect_output", "disconnect_output", "deliver_output",
         "inspect_receiver", "list_output_links", "get_delivery",
+        # discover_receivers: any authenticated user searching the receivers whose
+        # owners marked them discoverable. A read, so it stays out of the write set.
+        "discover_receivers",
     }
     assert set(_RUN_ACTIONS.keys()) == expected
 
@@ -184,10 +191,22 @@ def test_failure_payload_shape():
 # ── _ensure_runs_recovery idempotency ───────────────────────────────────────
 
 
-def test_ensure_runs_recovery_is_idempotent():
-    """Multiple calls don't re-run the recovery sweep."""
+def test_ensure_runs_recovery_is_idempotent(tmp_path, monkeypatch):
+    """Multiple calls don't re-run the recovery sweep. Pinned to tmp_path: the
+    sweep takes a lock and rewrites run rows in whatever data dir it is given."""
+    import os
+
+    from tinyassets.api import runs as api_runs
+
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_DONE", False)
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_LOCK", None)
+    monkeypatch.setattr(api_runs, "_base_path", lambda: tmp_path)
     _ensure_runs_recovery()
+    held = api_runs._RUNS_RECOVERY_LOCK
     _ensure_runs_recovery()  # second call must not raise
+    assert api_runs._RUNS_RECOVERY_LOCK is held
+    if held is not None and held.fd is not None:
+        os.close(held.fd)
 
 
 # ── handler error path (no-monkeypatch path) ────────────────────────────────
@@ -228,7 +247,11 @@ def test_action_run_branch_guidance_uses_advertised_handles(monkeypatch):
     )
     monkeypatch.setattr(
         "tinyassets.daemon_server.get_branch_definition",
-        lambda _base_path, *, branch_def_id: {"branch_def_id": branch_def_id},
+        # `visibility: public` stated: an absent field now reads as PRIVATE, and
+        # this double's subject is the guidance text, not the read gate.
+        lambda _base_path, *, branch_def_id: {
+            "branch_def_id": branch_def_id, "visibility": "public",
+        },
     )
     monkeypatch.setattr(
         "tinyassets.branches.BranchDefinition.from_dict",

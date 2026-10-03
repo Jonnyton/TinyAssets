@@ -1,3 +1,10 @@
+---
+severity: P2
+title: 'Long `converse` responses: the origin pings every 15s; delivery through the tunnel is unproven'
+filed: '2026-08-28'
+summary: the "silent stream" premise was false (`tests/test_mcp_sse_keepalive.py`); whether long turns are still cut end to end, and by what, is open until a >3-minute live `converse` is captured
+---
+
 # A long `converse` response: the origin pings every 15s; delivery through the tunnel is unproven
 
 **Filed:** 2026-08-28. **Premise corrected:** 2026-08-29.
@@ -43,7 +50,7 @@ cut a minutes-long turn. That premise is **false**:
    `https://tinyassets.io/mcp`. Until one exists, the 2026-08-28 "200 whose
    body ends mid-frame" symptom has no established cause: a deploy recreating
    the container under the open response is one candidate
-   (`docs/concerns/2026-08-29-a-deploy-kills-in-flight-turns-silently.md`),
+   (the resolved 2026-08-29 deploy-kills-turns concern (resolved 2026-10-02 by the deploy wait; uptime-and-alarms spec)),
    an intermediary is another; PR #2640 recorded three separate observations
    (a 503 mid-deploy, a cold-load failure, a cut stream) and said
    contemporaneous wire evidence was still required.
@@ -62,7 +69,7 @@ discriminator this file asked for.
 06:59:22Z–07:02:01Z and the daemon's `StartedAt` is **07:01:37Z**. The turn in
 flight died with it; the client said *"That didn't get through — the reply was
 cut off in transit."* This is
-`2026-08-29-a-deploy-kills-in-flight-turns-silently.md`, third recorded
+the resolved 2026-08-29 deploy-kills-turns concern, third recorded
 occurrence, now with a container timestamp attached.
 
 **Cut 2, ~07:04Z — NOT a deploy.** The next message was sent after the daemon
@@ -97,6 +104,41 @@ teaches the user to distrust the surface. Whatever the transport cause, the
 client's reconciliation on reconnect should prefer the stored turn over its own
 optimistic verdict — see [[webapp-send-is-not-proof-of-delivery]] for the
 mirror-image failure.
+
+## 2026-09-30: the client's own silence bound EXCLUDES itself, by error class
+
+Found while diagnosing a different turn
+(`c7d6279d4af74d798375d3f13780140e`, PR #4108, after a Codex refute round).
+
+The client does bound a long stream, which this file had not recorded: the body
+reader is `await this._bound(reader.read(), ...silence())`
+(`tinyassets/onboarding/app.html:1120`), a bound on the gap BETWEEN chunks
+rather than on total duration, set to `SILENCE_MS: 120000`
+(`app.html:1003`) — 120s against an origin that pings every 15s.
+
+**But it is not what the recorded incidents saw, and the error class proves it.**
+The silence bound raises `stream_silent` with the words *"your universe stopped
+sending anything back; it may still be working on this"* (`app.html:1101-1102`).
+Every cut recorded above reported `stream_truncated` — *"the reply was cut off
+in transit"* — which is raised only where the body ENDED, or arrived corrupt,
+without this request's answer (`app.html:1080-1085`, and the stream-died path at
+`app.html:1319-1321`).
+
+So this is a discriminator the earlier entries lacked:
+
+* `stream_silent` → nothing arrived for 120s. Pings stopped or were stripped.
+* `stream_truncated` → bytes STOPPED, mid-stream, before the answer. A closed
+  connection, not a quiet one.
+
+Every incident in this file is the second kind. That **rules the ping question
+out as their cause** — a stream still pinging and then cut is cut by something
+closing it, which keeps the deploy candidate and an intermediary in play and
+removes "the origin went quiet" from the list. The origin-side ping proof
+(`tests/test_mcp_sse_keepalive.py`) was therefore never the missing evidence for
+these cuts.
+
+Resolving evidence should now record WHICH of the two classes the client
+reported, since they point at different causes.
 
 ## How to resolve this file
 

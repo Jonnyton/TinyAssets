@@ -75,7 +75,7 @@ def _previous_run_id(base: Path, automation: Any) -> str:
         return automation.last_run_id
     if not getattr(automation, "last_due_at", ""):
         return ""
-    if getattr(automation, "last_reason", "") not in {"run_rate_limited", "context_unavailable"}:
+    if getattr(automation, "last_reason", "") not in {"context_unavailable"}:
         raise ValueError("automation_context_previous_run_missing")
     path = base / ".automations.db"
     if not path.is_file():
@@ -91,7 +91,7 @@ def _previous_run_id(base: Path, automation: Any) -> str:
             seen = True
             if run_id:
                 return str(run_id)
-            if status != "refused" or reason not in {"run_rate_limited", "context_unavailable"}:
+            if status != "refused" or reason not in {"context_unavailable"}:
                 raise ValueError("automation_context_previous_run_missing")
     if not seen:
         raise ValueError("automation_context_previous_run_missing")

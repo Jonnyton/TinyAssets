@@ -368,11 +368,89 @@ def _get_shared_router() -> Any:
     return _SHARED_ROUTER
 
 
+def _seat_scope(universe_context, seat_scope) -> tuple[Path, str] | None:
+    """(data root, universe id) whose account this agent call is charged to.
+
+    The RUN's own universe first -- ``BranchExecutionContext.universe_id``, built
+    from the authenticated run row -- because that is what a real run carries: a
+    run compiles its nodes WITHOUT a ``universe_context`` (it rides inside the
+    bound provider call), so a seat keyed only on ``universe_context`` was never
+    taken by any run at all. A directly-built node with a universe context (the
+    local and test paths) falls back to that.
+    """
+    if seat_scope is not None and seat_scope[1]:
+        return Path(seat_scope[0]), str(seat_scope[1])
+    udir = getattr(universe_context, "universe_dir", None)
+    if udir is not None:
+        return Path(udir).parent, Path(udir).name
+    return None
+
+
+def _run_agent_with_timeout(fn, *, timeout_s, node_id, universe_context, event_sink,
+                            seat_scope=None, on_seated=None):
+    """Run one agent call holding a seat of the universe's ACCOUNT.
+
+    This is the executor, never the enqueuer: the seat is taken here, where the
+    model call is about to happen, and waited for with no deadline -- work over
+    the seat count queues, it is never refused (founder, 2026-09-30). The wait is
+    published as a ``waiting`` event carrying the owner's waiting line, and a run
+    cancelled while it waits stops waiting.
+
+    A node inside a run that already holds a seat (an automation, a blocking
+    parent) re-enters it; a parallel sibling pays for its own. Once the call is
+    submitted, its future owns the release -- a timed-out call that is still
+    running keeps its seat until it actually ends.
+
+    ``on_seated`` runs once the seat is held, before the call is submitted: the
+    node's provider budget starts THEN, never during the wait.
+    """
+    from tinyassets import universe_seats as seats
+
+    scope = _seat_scope(universe_context, seat_scope)
+    if scope is None:
+        # No universe at all: the local single-tenant daemon, which has no account.
+        return _run_with_timeout(fn, timeout_s=timeout_s, node_id=node_id)
+    root, universe_id = scope
+    account = seats.account_key(universe_id, root=root)
+    tier = seats.tier_of_key(account, root=root)
+
+    def waiting(state):
+        if event_sink is None:
+            return
+        try:
+            event_sink(
+                node_id=node_id, phase="waiting", kind="waiting_for_seat",
+                running=state.running, waiting=state.waiting,
+                detail=seats.waiting_message(running=state.running, tier=tier),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if _is_cancel_exception(exc):
+                raise
+            logger.exception("event_sink raised in %s (waiting)", node_id)
+
+    held = seats.acquire_blocking(
+        account, kind=seats.KIND_AGENT_NODE, universe_id=universe_id,
+        parent=seats.current_seat(), wait_s=None, on_waiting=waiting,
+        db=seats.ledger_path(root),
+    )
+    if on_seated is not None:
+        on_seated()
+    # The call runs carrying its seat (the worker hop copies this context), so a
+    # blocking agent call nested inside it re-enters the seat instead of waiting
+    # for one its own blocked parent holds.
+    with seats.carrying(held):
+        return _run_with_timeout(
+            fn, timeout_s=timeout_s, node_id=node_id,
+            on_done=lambda: seats.release(held.seat_id, db=held.db),
+        )
+
+
 def _run_with_timeout(
     fn: Callable[[], Any],
     *,
     timeout_s: float,
     node_id: str,
+    on_done=None,
 ) -> Any:
     """Call ``fn()`` on a worker thread, raise NodeTimeoutError on overrun.
 
@@ -403,7 +481,16 @@ def _run_with_timeout(
     Neither touches work that has already begun: the check is before the
     first line of ``fn``, so a call past it settles untouched.
     """
-    executor = _get_timeout_executor()
+    from tinyassets.provider_admission import blocking_parent_slot
+
+    # A fixed worker pool can itself fill with blocked ancestors. A blocking
+    # provider child needs a worker independent of that pool, just as it needs
+    # its ancestor's slot rather than one behind that ancestor in the queue.
+    nested_executor = (
+        concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        if blocking_parent_slot() is not None else None
+    )
+    executor = nested_executor or _get_timeout_executor()
     deadline = time.monotonic() + timeout_s
 
     def _guarded() -> Any:
@@ -416,7 +503,22 @@ def _run_with_timeout(
             )
         return fn()
 
-    future = executor.submit(_guarded)
+    import contextvars
+
+    # Preserve the explicit blocking-invoke loan across the node worker hop.
+    try:
+        future = executor.submit(contextvars.copy_context().run, _guarded)
+    except BaseException:
+        if on_done is not None:
+            on_done()
+        raise
+    finally:
+        if nested_executor is not None:
+            nested_executor.shutdown(wait=False)
+    if on_done is not None:
+        # The future owns the release: a call still running past its timeout
+        # keeps what it holds until it actually ends.
+        future.add_done_callback(lambda _future: on_done())
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError as exc:
@@ -1249,6 +1351,8 @@ def _build_prompt_template_node(
     llm_policy: dict[str, Any] | None = None,
     concurrency_tracker: ConcurrencyTracker | None = None,
     universe_context: "UniverseContext | None" = None,
+    branch_def_id: str = "",
+    seat_scope: tuple[Path, str] | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that fills the prompt template and calls an
     LLM. Output is stored under the node's first ``output_keys`` entry
@@ -1266,6 +1370,33 @@ def _build_prompt_template_node(
     role = (node.model_hint or "writer").strip().lower() or "writer"
     template = node.prompt_template or ""
     timeout_s = float(node.timeout_seconds or 300.0)
+    from tinyassets.served_tools import AGENT_NODE_MARKERS
+
+    agent_node_id = (
+        node.node_id if AGENT_NODE_MARKERS.intersection(node.tools_allowed or []) else ""
+    )
+    agent_node_key = ""
+    if agent_node_id:
+        from tinyassets.served_tools import node_tool_grant
+        from tinyassets.shared_self import agent_node_key as _agent_node_key
+
+        agent_node_key = _agent_node_key(branch_def_id, node)
+
+        try:
+            node_tool_grant(node.tools_allowed)
+        except ValueError as exc:
+            raise CompilerError(f"Node '{node.node_id}': {exc}") from exc
+        # An agent node is the converse turn, which runs until it finishes: its
+        # seat is that turn's bound, not a node timeout. The executor wants a
+        # number, so an unset universe cap becomes an unreachable one rather than
+        # a made-up hour (founder, 2026-09-30: a turn runs until it is finished).
+        from tinyassets.universe_intelligence import (
+            UNBOUNDED_TURN_SECONDS,
+            served_absolute_cap_s,
+        )
+
+        own_cap = served_absolute_cap_s(getattr(universe_context, "config", None))
+        timeout_s = UNBOUNDED_TURN_SECONDS if own_cap is None else own_cap
     strict_isolation = bool(getattr(node, "strict_input_isolation", True))
     declared_inputs = list(node.input_keys)
     # BUG-085 (Codex checker finding 1): state_schema fields carrying a
@@ -1295,6 +1426,8 @@ def _build_prompt_template_node(
             # Streaming providers use this cap, not the legacy timeout scalar.
             absolute_cap_s=timeout_s,
             reasoning_effort=_node_reasoning_effort,
+            agent_node_id=agent_node_id,
+            agent_node_key=agent_node_key,
         )
     except Exception:  # pragma: no cover - defensive; provider import is optional
         _node_cfg = None
@@ -1500,7 +1633,13 @@ def _build_prompt_template_node(
             # budget as its provider cap — it would outlive the node's own
             # deadline by exactly the queue wait. Measured on the worker (these
             # closures run there), so it reflects real wait, not submit time.
-            _submitted_at = time.monotonic()
+            # Restamped when the call gets its account seat (`_seated`): a wait
+            # for a seat is not the provider's time, and charging it would hand a
+            # served call an already-spent budget (gpt-6-astra round 2, P1).
+            _submitted = [time.monotonic()]
+
+            def _seated() -> None:
+                _submitted[0] = time.monotonic()
 
             def _deadline_cfg() -> Any:
                 """The node's REMAINING budget as a provider cap.
@@ -1511,7 +1650,7 @@ def _build_prompt_template_node(
                 """
                 if _node_cfg is None:
                     return None
-                waited = time.monotonic() - _submitted_at
+                waited = time.monotonic() - _submitted[0]
                 if waited < _QUEUE_WAIT_SUBTRACT_THRESHOLD_S:
                     # Scheduling jitter, not queue wait. Hand over the node's
                     # own config unchanged so an unqueued call is unaffected.
@@ -1563,21 +1702,25 @@ def _build_prompt_template_node(
                                 universe_context=universe_context,
                                 response_observer=_observe_response,
                             )
-                        text_and_name = _run_with_timeout(
+                        text_and_name = _run_agent_with_timeout(
                             _policy_call,
                             timeout_s=timeout_s,
                             node_id=node.node_id,
+                            universe_context=universe_context, event_sink=event_sink,
+                            seat_scope=seat_scope, on_seated=_seated,
                         )
                         response, provider_served, provider_meta = text_and_name
                     else:
                         # Router unavailable or empty — fall through to the
                         # run_branch-injected provider bridge.
-                        response = _run_with_timeout(
+                        response = _run_agent_with_timeout(
                             lambda: _bridge(
                                 prompt, "", _observe_response, _deadline_cfg(),
                             ),
                             timeout_s=timeout_s,
                             node_id=node.node_id,
+                            universe_context=universe_context, event_sink=event_sink,
+                            seat_scope=seat_scope, on_seated=_seated,
                         )
                 except NodeTimeoutError:
                     raise
@@ -1589,12 +1732,14 @@ def _build_prompt_template_node(
                     raise _wrap_provider_failure(node.node_id, exc) from exc
             else:
                 try:
-                    response = _run_with_timeout(
+                    response = _run_agent_with_timeout(
                         lambda: _bridge(
                                 prompt, "", _observe_response, _deadline_cfg(),
                             ),
                         timeout_s=timeout_s,
                         node_id=node.node_id,
+                        universe_context=universe_context, event_sink=event_sink,
+                        seat_scope=seat_scope, on_seated=_seated,
                     )
                 except NodeTimeoutError:
                     raise
@@ -1785,79 +1930,14 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
 }
 
 
-def _node_enqueue_enabled() -> bool:
-    """Fail-closed capability gate for the live in-node enqueue verb.
-
-    The first side-effecting in-node verb. Production enables it explicitly
-    after the hardening review; every other environment remains off by
-    default.
-    """
-    return os.environ.get(
-        "TINYASSETS_NODE_ENQUEUE_ENABLED", ""
-    ).strip().lower() in {"on", "1", "true", "yes"}
-
-
-def _node_enqueue_max_depth() -> int:
-    """Spawn-depth cap for queue enqueues — bounds chain LENGTH.
-
-    Default 2 (a driver at depth 0 enqueues leaf runs at depth 1; one extra
-    level of headroom), tighter than the in-graph invoke-branch cap because
-    each queue level is a full independent run. Host-tunable.
-    """
-    raw = os.environ.get("TINYASSETS_NODE_ENQUEUE_MAX_DEPTH", "").strip()
-    try:
-        val = int(raw) if raw else 2
-    except ValueError:
-        val = 2
-    return val if val >= 1 else 2
-
-
-def _node_enqueue_budget() -> int:
-    """Per-run enqueue budget — bounds branching FACTOR (default 50)."""
-    raw = os.environ.get("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", "").strip()
-    try:
-        val = int(raw) if raw else 50
-    except ValueError:
-        val = 50
-    return val if val > 0 else 50
-
-
-def _node_enqueue_max_queue() -> int:
-    """Global active-queue cap — bounds TOTAL queue growth (default 500).
-
-    Depth + per-run budget bound a single run's shape, but not the total pile
-    across a whole spawn tree (worst case depth*budget). This is the absolute
-    ceiling on pending+running tasks one enqueue may grow the queue to.
-    """
-    raw = os.environ.get("TINYASSETS_NODE_ENQUEUE_MAX_QUEUE", "").strip()
-    try:
-        val = int(raw) if raw else 500
-    except ValueError:
-        val = 500
-    return val if val > 0 else 500
-
-
-def _node_enqueue_max_lineage() -> int:
-    """Per-origin spawn-lineage cap — bounds one origin run's total descendants
-    across all depths (default 200). Stops a single driver chain from consuming
-    the whole global queue and starving other work.
-    """
-    raw = os.environ.get("TINYASSETS_NODE_ENQUEUE_MAX_LINEAGE", "").strip()
-    try:
-        val = int(raw) if raw else 200
-    except ValueError:
-        val = 200
-    return val if val > 0 else 200
-
-
 @dataclass(frozen=True)
 class NodeEnqueueContext:
     """Trusted, server-set execution context for the in-node enqueue verb.
 
-    Carries the *current run's* universe and spawn lineage from the dispatcher
-    down to the enqueue helper. None of it is branch-authored. ``actor`` is
-    retained for context compatibility but is not request-scoped authority;
-    epoch-1 enqueue therefore accepts public target branches only.
+    Carries the *current run's* universe from the dispatcher down to the
+    enqueue helper; none of it is branch-authored. ``actor`` and the lineage
+    fields are retained for context compatibility but are not authority: the
+    wake's owner is the principal bound for the run (``owner_run_identity``).
     """
 
     universe_id: str = ""
@@ -1866,66 +1946,37 @@ class NodeEnqueueContext:
     origin_branch_task_id: str = ""
 
 
-class NodeEnqueueBudget:
-    """One atomic successful-enqueue budget shared by a compiled run."""
-
-    def __init__(self) -> None:
-        self._count = 0
-        self._lock = threading.Lock()
-
-    def reserve(self, limit: int) -> tuple[bool, int]:
-        """Reserve one slot, returning ``(reserved, prior_count)``."""
-        with self._lock:
-            prior = self._count
-            if prior >= limit:
-                return False, prior
-            self._count += 1
-            return True, prior
-
-    def release(self) -> None:
-        """Return a reservation after the queue append fails."""
-        with self._lock:
-            self._count -= 1
-
-
 def _node_enqueue_branch_run(
     node: "NodeDefinition",
-    invocation_depth: int,
-    enqueue_budget: "NodeEnqueueBudget",
     kwargs: dict[str, Any],
     *,
     base_path: str | Path | None = None,
     context: "NodeEnqueueContext | None" = None,
 ) -> str:
-    """Append ONE paced run-request to this run's universe dispatcher queue.
+    """Wake one of the owner's branches in this universe, now or not before a time.
 
-    Not a synchronous spawn — the daemon's concurrency cap + cooldown pace
-    execution. Containment (Codex enqueue review, 2026-05-30):
-      * fail-closed capability flag (explicitly enabled by production deploy);
-      * spawn-depth cap (chain length) + per-run budget (branching factor);
-      * trusted current-universe targeting — never a branch-named universe
-        (Fix 1);
-      * global active-queue cap + per-origin spawn-lineage cap (Fix 2);
-      * target branch must exist and be public; private authority waits for a
-        request-scoped epoch-2 receipt.
+    Stores a one-shot automation (``tinyassets.automations``, kind ``once``)
+    that the automation pump fires once ``not_before`` has passed -- durable
+    across deploys, retried if its process dies before the run starts, and
+    re-checked for the owner's authority when it fires. Any wake behaviour a
+    graph wants (a loop, a backoff, a reminder) is this plus the graph's own
+    logic (founder, 2026-09-27: "really any wake behavior").
+
+    Limited by usage, not shape: each wake is charged to the universe's
+    engine admissions when it is stored, and to its run admission when it
+    fires. There is no spawn-depth, fan-out, lineage or pending-count cap.
+
+    The cross-user floor:
+      * the universe is the run's trusted one, never a branch-named one;
+      * the owner is the principal bound for this run -- the request actor, or
+        the owner ``owner_run_identity`` binds for a background run -- and
+        ``register_automation`` requires them to be an admin whose home this is;
+      * the branch must be one that owner authored.
     Returns a JSON string so the caller's standard parse step applies.
     """
-    ctx = context or NodeEnqueueContext()
-    if not _node_enqueue_enabled():
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: the in-node enqueue verb "
-            f"is disabled. Set TINYASSETS_NODE_ENQUEUE_ENABLED to enable."
-        )
+    from datetime import datetime, timezone
 
-    # Guard 1 — spawn-depth cap bounds chain length (self-enqueue can't recurse
-    # forever). A task at depth D enqueues children at D+1.
-    cap = _node_enqueue_max_depth()
-    next_depth = int(invocation_depth) + 1
-    if next_depth > cap:
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: spawn depth {next_depth} "
-            f"exceeds cap {cap} (TINYASSETS_NODE_ENQUEUE_MAX_DEPTH)."
-        )
+    ctx = context or NodeEnqueueContext()
 
     target = str(kwargs.get("branch_def_id", "")).strip()
     if not target:
@@ -1939,122 +1990,164 @@ def _node_enqueue_branch_run(
             f"{type(run_inputs).__name__}."
         )
 
-    # Fix 1 — universe targeting. A queue write is side-effecting, so it goes
-    # ONLY to the run's own trusted universe (set server-side from the claimed
-    # task), never a branch-named one. A caller-supplied universe_id may only
-    # echo the trusted one; anything else is refused. Absent trusted context
-    # we fail closed — in-node enqueue is for dispatched runs.
+    # Universe targeting: ONLY the run's own trusted universe (set server-side),
+    # never a branch-named one. A caller-supplied universe_id may only echo it.
     trusted_uid = str(ctx.universe_id or "").strip()
     if not trusted_uid:
         raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: no trusted universe "
-            f"context. In-node enqueue is available only for dispatched runs."
+            f"Node '{node.node_id}' enqueue refused: no trusted command center "
+            f"context. In-node enqueue is available only for command center runs."
         )
     requested_uid = str(kwargs.get("universe_id", "")).strip()
     if requested_uid and requested_uid != trusted_uid:
         raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: cannot target universe "
+            f"Node '{node.node_id}' enqueue refused: cannot target command center "
             f"'{requested_uid}'; this run executes in '{trusted_uid}'."
         )
-    uid = trusted_uid
-
-    from tinyassets.api.helpers import _universe_dir
-    from tinyassets.branch_tasks import (
-        BranchTask,
-        QueueCapExceeded,
-        append_task_capped,
-        new_task_id,
-    )
-
-    # Target branch authority. Epoch-1 queue rows carry no request-scoped
-    # authenticated actor receipt, so process identity cannot safely authorize
-    # private targets. Public branches only until epoch-2 carries authority.
-    # Existence is validated BEFORE append so unknown IDs cannot land.
     if base_path is None:
         raise CompilerError(
             f"Node '{node.node_id}' enqueue refused: no run context available "
-            f"to validate the target branch."
+            f"to register the wake."
         )
-    from tinyassets.daemon_server import get_branch_definition
 
+    now = datetime.now(timezone.utc)
+    not_before = _enqueue_not_before(node, kwargs, now)
+
+    from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.automations import AutomationUnavailable, register_automation
+
+    owner = current_request_actor_id()
+    if not owner:
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue refused: no owner is bound to this "
+            f"run, so there is no one to run the wake as."
+        )
     try:
-        target_meta = get_branch_definition(base_path, branch_def_id=target)
-    except KeyError:
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: target branch '{target}' "
-            f"does not exist."
-        ) from None
-    visibility = str(target_meta.get("visibility", "public") or "public").strip().lower()
-    if visibility != "public":
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: target branch '{target}' "
-            f"is private; epoch-1 enqueue has no request-scoped actor "
-            f"authority and may target public branches only."
+        wake = register_automation(
+            base_path,
+            universe_id=trusted_uid,
+            owner_principal_id=owner,
+            name=f"wake:{target}"[:120],
+            branch_def_id=target,
+            not_before=not_before,
+            inputs=dict(run_inputs),
+            now=now,
         )
-
-    # Fix 2 — lineage. parent = the current run's task; origin = the root of
-    # the spawn chain (propagated, or this task when it starts a new chain).
-    # Sourced from trusted context, never inputs.
-    new_id = new_task_id()
-    parent = str(ctx.parent_branch_task_id or "").strip()
-    origin = (
-        str(ctx.origin_branch_task_id or "").strip()
-        or parent
-        or new_id
-    )
-    task = BranchTask(
-        branch_task_id=new_id,
-        branch_def_id=target,
-        universe_id=uid,
-        inputs=dict(run_inputs),
-        trigger_source="owner_queued",
-        # request_type is FORCED to "branch_run" — never from kwargs. It is not
-        # mere metadata: the dispatcher filters claims on it and the daemon
-        # treats classes like "bug_investigation" as direct-execution with
-        # special input shaping + post-run side effects. Letting a source node
-        # name it would let an enqueue_branch_run verb steer scheduler class /
-        # privileged downstream behavior (Codex round-2 review, 2026-06-03).
-        request_type="branch_run",
-        depth=next_depth,
-        parent_branch_task_id=parent,
-        origin_branch_task_id=origin,
-    )
-    # Guard 2 — one atomic successful-enqueue budget is shared across every
-    # source node in this compiled run. Reserve immediately before append and
-    # release on failure so refused writes do not consume budget.
-    budget = _node_enqueue_budget()
-    reserved, prior_count = enqueue_budget.reserve(budget)
-    if not reserved:
+    except AutomationUnavailable as exc:
         raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: this run already enqueued "
-            f"{prior_count} task(s) (budget {budget})."
-        )
-
-    # Fix 2 — global active-queue cap + per-origin lineage cap, enforced
-    # atomically under one lock (no read-then-append race).
-    try:
-        append_task_capped(
-            _universe_dir(uid),
-            task,
-            max_active=_node_enqueue_max_queue(),
-            max_lineage=_node_enqueue_max_lineage(),
-        )
-    except QueueCapExceeded as exc:
-        enqueue_budget.release()
-        raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: {exc}."
+            f"Node '{node.node_id}' enqueue refused: {exc.reason}."
         ) from exc
-    except BaseException:
-        enqueue_budget.release()
-        raise
     return json.dumps({
         "status": "enqueued",
-        "branch_task_id": new_id,
-        "branch_def_id": target,
-        "universe_id": uid,
-        "depth": next_depth,
-        "origin_branch_task_id": origin,
+        "automation_id": wake.automation_id,
+        "branch_def_id": wake.branch_def_id,
+        "universe_id": wake.universe_id,
+        "not_before": wake.not_before,
     })
+
+
+def _node_served_tool_call(
+    node: NodeDefinition,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    allowed: set[str],
+    execution_context: "BranchExecutionContext | None",
+    should_cancel: Callable[[], bool] | None,
+) -> dict[str, Any]:
+    """One served tool, called as the run's owner and pinned to its universe.
+
+    The grant is the node's ``tools_allowed``: naming no served tool grants all
+    of them (what the owner's chat has), naming some grants exactly those. Owner
+    and universe come from the run's immutable execution context, never from the
+    node. Foreign code is refused before its sandbox starts; this rechecks it.
+    """
+    import asyncio
+
+    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+
+    granted = allowed & set(SERVED_ENGINE_MCP_TOOLS)
+    if granted and name not in granted:
+        raise CompilerError(
+            f"Node '{node.node_id}' is not granted the served tool '{name}'; "
+            f"its grant is {sorted(granted)}."
+        )
+    ctx = execution_context
+    owner = (getattr(ctx, "owner_user_id", "") or "").strip()
+    universe = (getattr(ctx, "universe_id", "") or "").strip()
+    if (not owner or not universe
+            or getattr(ctx, "caller_provenance", "") != "own"
+            or (getattr(ctx, "definition_author", "") or "").strip() != owner):
+        raise CompilerError(
+            f"Node '{node.node_id}' may call served tools only in its owner's own "
+            "run of a branch that owner authored."
+        )
+    # Current serving-owner authority is checked by the route read itself.
+    if should_cancel is not None and should_cancel():
+        raise CompilerError(f"Node '{node.node_id}': run cancelled before '{name}'")
+
+    async def _call():
+        from tinyassets.engine_tool_client import open_engine_tools
+
+        async with open_engine_tools(actor_id=owner, graph_id=universe,
+                                     enabled_tools=(name,)) as tools:
+            return await tools.call(name, arguments)
+
+    try:
+        result = asyncio.run(_call())
+    except Exception as exc:
+        if _is_cancel_exception(exc):
+            raise
+        raise CompilerError(
+            f"Node '{node.node_id}' served tool '{name}' failed: {exc}"
+        ) from exc
+    text = "".join(
+        getattr(part, "text", "") for part in (getattr(result, "content", None) or ())
+    )
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        data = None
+    return {"is_error": bool(getattr(result, "isError", False)), "text": text, "data": data}
+
+
+def _enqueue_not_before(
+    node: "NodeDefinition", kwargs: dict[str, Any], now: Any,
+) -> str:
+    """``not_before`` (ISO) or ``delay_seconds`` (a number), at most one."""
+    from datetime import timedelta
+
+    raw_at = kwargs.get("not_before")
+    raw_delay = kwargs.get("delay_seconds")
+    if raw_at not in (None, "") and raw_delay not in (None, ""):
+        raise CompilerError(
+            f"Node '{node.node_id}' enqueue takes not_before OR delay_seconds, "
+            f"not both."
+        )
+    if raw_delay not in (None, ""):
+        if isinstance(raw_delay, bool):
+            raise CompilerError(
+                f"Node '{node.node_id}' enqueue delay_seconds must be a number."
+            )
+        try:
+            delay = float(raw_delay)
+        except (TypeError, ValueError):
+            raise CompilerError(
+                f"Node '{node.node_id}' enqueue delay_seconds must be a number."
+            ) from None
+        if delay != delay or delay < 0:  # NaN or negative
+            raise CompilerError(
+                f"Node '{node.node_id}' enqueue delay_seconds must be >= 0."
+            )
+        try:
+            return (now + timedelta(seconds=delay)).isoformat()
+        except OverflowError:
+            raise CompilerError(
+                f"Node '{node.node_id}' enqueue delay_seconds is too large."
+            ) from None
+    if raw_at not in (None, ""):
+        return str(raw_at)
+    return now.isoformat()
 
 
 def _build_node_mcp_invoker(
@@ -2064,20 +2157,26 @@ def _build_node_mcp_invoker(
     invocation_depth: int = 0,
     base_path: str | Path | None = None,
     enqueue_context: "NodeEnqueueContext | None" = None,
-    enqueue_budget: "NodeEnqueueBudget | None" = None,
     delivery_source: Any = None,
     file_source: Any = None,
     file_inputs: dict[str, Any] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[..., dict[str, Any]]:
     allowed = set(node.tools_allowed or [])
-    shared_enqueue_budget = enqueue_budget or NodeEnqueueBudget()
 
     def _invoke_mcp_action(action_name: str, **kwargs: Any) -> dict[str, Any]:
         requested = str(action_name or "").strip()
         if not requested:
             raise CompilerError(
                 f"Node '{node.node_id}' invoke_mcp_action requires action_name."
+            )
+        from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+
+        if requested in SERVED_ENGINE_MCP_TOOLS:
+            return _node_served_tool_call(
+                node, requested, kwargs, allowed=allowed,
+                execution_context=execution_context, should_cancel=should_cancel,
             )
         resolved = _NODE_MCP_ACTION_ALIASES.get(requested)
         if resolved is None:
@@ -2153,7 +2252,7 @@ def _build_node_mcp_invoker(
             raw = wiki(action=action, **kwargs)
         elif tool_name == "dispatch":
             raw = _node_enqueue_branch_run(
-                node, invocation_depth, shared_enqueue_budget, kwargs,
+                node, kwargs,
                 base_path=base_path, context=enqueue_context,
             )
         else:  # pragma: no cover - mapping owns the dispatch domains.
@@ -2201,7 +2300,6 @@ def _build_source_code_node(
     invocation_depth: int = 0,
     base_path: str | Path | None = None,
     enqueue_context: "NodeEnqueueContext | None" = None,
-    enqueue_budget: "NodeEnqueueBudget | None" = None,
     effect_chain: Any = None,
     state_schema: list[dict[str, Any]] | None = None,
     ancestors: set[str] | None = None,
@@ -2233,8 +2331,8 @@ def _build_source_code_node(
         # touch; it does not decide whose code may run - authorship does.
         raise ForeignCodeError(
             f"Node '{node.node_id}' carries source_code this run did not author "
-            f"(caller provenance: {provenance}). Code runs only in the universe "
-            f"that authored it: remix the branch into your universe with "
+            f"(caller provenance: {provenance}). Code runs only in the command center "
+            f"that authored it: remix the branch into your command center with "
             f"write_graph (fork_from) so the code is yours, then run your copy.",
             node_id=node.node_id,
         )
@@ -2268,7 +2366,7 @@ def _build_source_code_node(
                 f"Node '{node.node_id}' declares workspace: "
                 f"'{workspace_node}' with timeout_seconds={declared}, outside "
                 f"the bound 0 < t <= {MAX_WORKSPACE_TIMEOUT_SECONDS:.0f}. A "
-                "workspace node holds the universe's job lock and the "
+                "workspace node holds the command center's job lock and the "
                 "host-wide slot for its whole run.",
                 node_id=node.node_id,
             )
@@ -2308,9 +2406,9 @@ def _build_source_code_node(
             invoke_mcp_action = _build_node_mcp_invoker(
                 node, event_sink=event_sink, invocation_depth=invocation_depth,
                 base_path=base_path, enqueue_context=enqueue_context,
-                enqueue_budget=enqueue_budget, delivery_source=delivery_source,
+                delivery_source=delivery_source,
                 file_source=file_source, file_inputs=file_inputs,
-                should_cancel=should_cancel,
+                should_cancel=should_cancel, execution_context=execution_context,
             )
             # The sandbox answers RPCs from a drain THREAD, which carries no
             # ContextVars: without this, an RPC resolved the daemon's env
@@ -2630,37 +2728,30 @@ def _wrap_with_checkpoints(
     return _fn
 
 
-# Phase A item 5 / Task #76b — threadlocal global cap on child-run retries
-# within a single parent run. Each parent run executes on its own thread
-# from the executor pool; threadlocal naturally scopes per-run. Children
-# spawn into their own threads with independent counters; only the
-# parent's invoke nodes consume from this counter.
+# Child-run retries are the AUTHOR'S policy: `retry_budget` on the invoke spec,
+# and nothing overrides it. `TINYASSETS_MAX_CHILD_RETRIES_TOTAL` (default 5) used
+# to cap the total across a parent run, so a branch whose author asked for three
+# retries on each of four children silently got five in total and then behaved as
+# `propagate` -- the author's declared policy quietly replaced by a host env var
+# (founder, 2026-09-30: honour the author's retry policy).
+#
+# What bounds a retry storm instead: every child run charges the universe's
+# admission and holds a seat like any other run, and the parent waits on each
+# child in turn, so retries are serial work inside one seat rather than fan-out.
+#
+# `_retry_state` is kept for the per-run counter that the receipt reports; it
+# counts, and refuses nothing.
 _retry_state = threading.local()
 
 
-def _retry_budget_max() -> int:
-    """Read ``TINYASSETS_MAX_CHILD_RETRIES_TOTAL`` env (default 5)."""
-    raw = os.environ.get("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "").strip()
-    try:
-        return max(0, int(raw)) if raw else 5
-    except ValueError:
-        return 5
-
-
-def _retry_budget_remaining() -> bool:
-    """True iff the threadlocal retry counter has budget left."""
-    used = getattr(_retry_state, "used", 0)
-    return used < _retry_budget_max()
-
-
 def _retry_budget_consume() -> None:
-    """Increment the threadlocal retry counter by 1."""
+    """Increment the threadlocal retry counter by 1. Counts; never refuses."""
     _retry_state.used = getattr(_retry_state, "used", 0) + 1
 
 
 def _retry_budget_reset() -> None:
     """Reset the threadlocal counter — called by ``_invoke_graph`` at run
-    start so each parent run gets a fresh budget."""
+    start so each parent run's count starts at zero."""
     _retry_state.used = 0
 
 
@@ -2855,7 +2946,8 @@ _CHILD_UNAVAILABLE = "invoke_branch child is not available"
 
 
 def _authorize_child_ref(
-    base: "Path", child_def_id: str, ctx: "BranchExecutionContext", *, parent_run_id: str = ""
+    base: "Path", child_def_id: str, ctx: "BranchExecutionContext", *, parent_run_id: str = "",
+    require_authorship: bool = False,
 ) -> "Any":
     """Authorize an AUTHOR-chosen child branch ref under DELEGATED authority.
 
@@ -2887,7 +2979,7 @@ def _authorize_child_ref(
     # error. Missing/blank/malformed visibility is NOT public -> fail closed (#6).
     visibility = str(raw.get("visibility") or "").strip().lower()
     author = str(raw.get("author") or "").strip()
-    is_public = visibility == "public"
+    is_public = visibility == "public" and not require_authorship
     if ctx.caller_provenance == "own":
         authorized = is_public or (bool(author) and author == ctx.actor)
         if (not authorized and author and author == ctx.owner_user_id
@@ -2973,11 +3065,7 @@ def _build_invoke_branch_node(
     The callable spawns a child branch run (blocking or async) and writes
     declared output_mapping fields back into the parent state.
     """
-    from tinyassets.runs import (
-        _runtime_max_invocation_depth,
-        execute_branch,
-        execute_branch_async,
-    )
+    from tinyassets.runs import execute_branch, execute_branch_async
 
     spec = node.invoke_branch_spec or {}
     child_branch_def_id: str = spec.get("branch_def_id", "")
@@ -2999,11 +3087,21 @@ def _build_invoke_branch_node(
             f"Node '{node.node_id}': invoke_branch_spec wait_mode must be "
             f"'blocking' or 'async', got '{wait_mode}'."
         )
-    _depth_cap = _runtime_max_invocation_depth()
-    if depth >= _depth_cap:
+    # No depth cap on a BLOCKING invoke (plan item 6): its child runs in this
+    # thread, holds no shared pool slot, and is charged to the universe's
+    # usage meter below. An ASYNC child runs on the child pool every universe
+    # shares, and a parent that awaits it holds a pool thread while it waits,
+    # so async nesting is bounded by that pool's size (Codex refute
+    # 2026-09-28, P1: seven async+await levels starved every user's children).
+    from tinyassets.runs import _max_child_workers
+
+    pool_threads = _max_child_workers()
+    if wait_mode == "async" and depth + 1 > pool_threads:
         raise CompilerError(
-            f"Node '{node.node_id}': invoke_branch recursion depth cap "
-            f"({_depth_cap}) reached. Circular sub-branch chain?"
+            f"Node '{node.node_id}': an async invoke_branch runs on the shared "
+            f"sub-branch pool ({pool_threads} threads), so it cannot nest "
+            f"{depth + 1} deep; use wait_mode blocking, which runs in this "
+            f"thread, or enqueue_branch_run."
         )
 
     _base = Path(base_path)
@@ -3050,16 +3148,30 @@ def _build_invoke_branch_node(
             attempt = 0
             while True:
                 attempt += 1
-                outcome = execute_branch(
-                    _base, branch=child_branch, inputs=child_inputs,
-                    actor=actor_arg,
-                    owner_user_id=_ctx.owner_user_id or None,
-                    _workspace_parent=_workspace_invocation_parent(_ctx),
-                    _enqueue_universe_id=_ctx.universe_id,
-                    provider_call=provider_call,
-                    on_node_status=on_node_status,
-                    _invocation_depth=depth + 1,
-                )
+                if _stack_nearly_exhausted():
+                    raise CompilerError(f"Node '{node.node_id}': {_STACK_EXHAUSTED}.")
+                ticket = _charge_child_run(node, _ctx)
+                try:
+                    from tinyassets.provider_admission import blocking_provider_child
+
+                    # Blocking invoke transfers ownership just like a parent seat;
+                    # the async branch below must acquire its own provider slot.
+                    with blocking_provider_child():
+                        outcome = execute_branch(
+                            _base, branch=child_branch, inputs=child_inputs,
+                            actor=actor_arg,
+                            owner_user_id=_ctx.owner_user_id or None,
+                            _workspace_parent=_workspace_invocation_parent(_ctx),
+                            _enqueue_universe_id=_ctx.universe_id,
+                            provider_call=provider_call,
+                            on_node_status=on_node_status,
+                            _invocation_depth=depth + 1,
+                        )
+                except RecursionError:
+                    raise CompilerError(
+                        f"Node '{node.node_id}': {_STACK_EXHAUSTED}."
+                    ) from None
+                _bind_child_ticket(ticket, str(outcome.run_id or ""))
                 if outcome.status == "completed":
                     try:
                         _emit_invoke_design_used(
@@ -3081,9 +3193,8 @@ def _build_invoke_branch_node(
                     retry_budget - (attempt - 1)
                     if on_child_fail == "retry" else 0
                 )
-                if on_child_fail == "retry" and retries_left > 0 and (
-                    _retry_budget_remaining()
-                ):
+                # The author's `retry_budget` is the whole decision.
+                if on_child_fail == "retry" and retries_left > 0:
                     _retry_budget_consume()
                     continue
                 updates, _failure = _dispatch_invoke_outcome(
@@ -3102,6 +3213,7 @@ def _build_invoke_branch_node(
                 # for retry-exhausted); only "default" path returns here.
                 return updates
         else:
+            ticket = _charge_child_run(node, _ctx)
             outcome = execute_branch_async(
                 _base, branch=child_branch, inputs=child_inputs,
                 actor=actor_arg,
@@ -3112,6 +3224,7 @@ def _build_invoke_branch_node(
                 on_node_status=on_node_status,
                 _invocation_depth=depth + 1,
             )
+            _bind_child_ticket(ticket, str(outcome.run_id or ""))
             # async: write the child run_id into the first output_mapping target.
             # design_used emit deferred to await_branch_run on success
             # (#56 §8 Q6 — async failures surface at the await site).
@@ -3122,6 +3235,61 @@ def _build_invoke_branch_node(
             return updates
 
     return _node_fn
+
+
+def _charge_child_run(node: NodeDefinition, ctx: "BranchExecutionContext") -> Any:
+    """Record a sub-branch run for effect settlement; return the ticket.
+
+    Never a refusal: a child run's agent calls wait for the account's seats
+    (``tinyassets.universe_seats``), which is what bounds a chain that invokes
+    itself. A run with no universe (the local single-tenant daemon) records
+    nothing.
+    """
+    from tinyassets import engine_admissions as ea
+
+    universe_id = (getattr(ctx, "universe_id", "") or "").strip()
+    if not universe_id:
+        return None
+    return ea.admit(universe_id)
+
+
+def _bind_child_ticket(ticket: Any, run_id: str) -> None:
+    """Bind a child's admission to its run, so a read-only child settles off
+    the write budget like any other run."""
+    if ticket is None or not run_id:
+        return
+    from tinyassets.engine_admissions import attach_run
+
+    try:
+        attach_run(ticket, run_id)
+    except Exception:  # noqa: BLE001 - the admission is already counted
+        logger.warning("child admission bind failed run=%s", run_id, exc_info=True)
+
+
+#: Why a blocking invoke of a live definition can still fail on depth: it runs
+#: in its parent's thread, so an unbounded self-invoking chain eventually
+#: exhausts the interpreter's stack. That is a physical limit, reported by name.
+_STACK_EXHAUSTED = (
+    "the sub-branch chain is so deeply nested that it exhausted the "
+    "interpreter's stack; use wait_mode async or enqueue_branch_run to go deeper"
+)
+
+#: Refuse the next blocking child while this share of the interpreter's
+#: recursion limit is still free. A RecursionError raised deeper down is caught
+#: by whichever layer it lands in and reported as that layer's failure, so the
+#: chain must stop BEFORE the stack runs out to say why it stopped.
+_STACK_HEADROOM = 0.25
+
+
+def _stack_nearly_exhausted() -> bool:
+    import sys
+
+    depth = 0
+    frame = sys._getframe()
+    while frame is not None:
+        depth += 1
+        frame = frame.f_back
+    return depth > sys.getrecursionlimit() * (1 - _STACK_HEADROOM)
 
 
 def _build_invoke_branch_version_node(
@@ -3149,7 +3317,7 @@ def _build_invoke_branch_version_node(
     failures surface as ``None`` values in the mapping (matches existing
     invoke_branch behavior; structured propagation lands in 76b).
     """
-    from tinyassets.runs import _runtime_max_invocation_depth
+    from tinyassets.runs import _max_child_workers
 
     spec = node.invoke_branch_version_spec or {}
     child_branch_version_id: str = spec.get("branch_version_id", "")
@@ -3171,11 +3339,20 @@ def _build_invoke_branch_version_node(
             f"Node '{node.node_id}': invoke_branch_version_spec wait_mode "
             f"must be 'blocking' or 'async', got '{wait_mode}'."
         )
-    _depth_cap = _runtime_max_invocation_depth()
-    if depth >= _depth_cap:
+    # Not a shape cap: a version invoke runs its child on the child pool every
+    # universe shares, and a blocking one (or an await of an async one) waits
+    # on it while holding a thread of that pool itself. Nested deeper than the
+    # pool has threads, the chain starves every user's sub-branch runs until
+    # its timeouts cascade. That pool size -- not a policy number -- is the
+    # bound (plan item 6). Only a blocking invoke by definition, which runs in
+    # its parent's thread, has none.
+    pool_threads = _max_child_workers()
+    if depth + 1 > pool_threads:
         raise CompilerError(
-            f"Node '{node.node_id}': invoke_branch recursion depth cap "
-            f"({_depth_cap}) reached. Circular sub-branch chain?"
+            f"Node '{node.node_id}': an invoke_branch_version runs on the shared "
+            f"sub-branch pool ({pool_threads} threads), so it cannot nest "
+            f"{depth + 1} deep; invoke the branch by definition with wait_mode "
+            f"blocking, which runs in this thread."
         )
 
     _base = Path(base_path)
@@ -3217,6 +3394,15 @@ def _build_invoke_branch_version_node(
         child_def_id = (getattr(child, "branch_def_id", "") or "").strip()
         if not child_def_id or child_def_id != ver_def_id:
             raise CompilerError(_CHILD_UNAVAILABLE)
+        from tinyassets.branch_versions import branch_version_is_public
+
+        if not branch_version_is_public(_base, child_branch_version_id):
+            # An unmarked snapshot is private even when its live branch is public.
+            # Reuse the delegated-author gate, including owner-bound run checks.
+            _authorize_child_ref(
+                _base, ver_def_id, _ctx, parent_run_id=parent_run_id,
+                require_authorship=True,
+            )
 
     def _node_fn(state: dict[str, Any]) -> dict[str, Any]:
         # Lazy module-attribute lookups so unittest.mock.patch on
@@ -3254,20 +3440,38 @@ def _build_invoke_branch_version_node(
                 attempt += 1
                 # Async helper handles the snapshot-load + reconstruction +
                 # SnapshotSchemaDrift + KeyError contract per Task #65b.
-                outcome = execute_branch_version_async(
-                    _base,
-                    branch_version_id=child_branch_version_id,
-                    inputs=child_inputs,
-                    actor=actor_arg,
-                    owner_user_id=_ctx.owner_user_id or None,
-                    _workspace_parent=_workspace_invocation_parent(_ctx),
-                    _enqueue_universe_id=_ctx.universe_id,
-                    provider_call=provider_call,
-                    on_node_status=on_node_status,
-                    _invocation_depth=depth + 1,
+                ticket = _charge_child_run(node, _ctx)
+                from tinyassets.provider_admission import (
+                    blocking_parent_slot,
+                    blocking_provider_child,
                 )
-                # Block until the child terminates; harvest its output dict.
-                record = poll_child_run_status(_base, outcome.run_id)
+
+                with blocking_provider_child():
+                    outcome = execute_branch_version_async(
+                        _base,
+                        branch_version_id=child_branch_version_id,
+                        inputs=child_inputs,
+                        actor=actor_arg,
+                        owner_user_id=_ctx.owner_user_id or None,
+                        _workspace_parent=_workspace_invocation_parent(_ctx),
+                        _enqueue_universe_id=_ctx.universe_id,
+                        provider_call=provider_call,
+                        on_node_status=on_node_status,
+                        _invocation_depth=depth + 1,
+                        _provider_parent=blocking_parent_slot(),
+                        # This node blocks until the child ends, so the child
+                        # may borrow the seat it is carrying, if any.
+                        _lend_seat=True,
+                    )
+                    _bind_child_ticket(ticket, str(outcome.run_id or ""))
+                    # Block until the child terminates; harvest its output dict.
+                    # No deadline, as the blocking definition invoke has none: the
+                    # child may first wait for its account's seat, and a wait is
+                    # never a failure (gpt-6-astra round 3). A dead child still
+                    # ends -- its run is terminalized on its owner's proven death.
+                    record = poll_child_run_status(
+                        _base, outcome.run_id, timeout_seconds=None,
+                    )
                 child_status = record.get("status", "")
                 child_output = record.get("output") or {}
 
@@ -3294,9 +3498,8 @@ def _build_invoke_branch_version_node(
                     retry_budget - (attempt - 1)
                     if on_child_fail == "retry" else 0
                 )
-                if on_child_fail == "retry" and retries_left > 0 and (
-                    _retry_budget_remaining()
-                ):
+                # The author's `retry_budget` is the whole decision.
+                if on_child_fail == "retry" and retries_left > 0:
                     _retry_budget_consume()
                     continue
                 updates, _failure = _dispatch_invoke_outcome(
@@ -3315,6 +3518,7 @@ def _build_invoke_branch_version_node(
         else:
             # Async: spawn and write child run_id; failure handling deferred
             # to the await_branch_run node per #56 §8 Q6.
+            ticket = _charge_child_run(node, _ctx)
             outcome = execute_branch_version_async(
                 _base,
                 branch_version_id=child_branch_version_id,
@@ -3327,6 +3531,7 @@ def _build_invoke_branch_version_node(
                 on_node_status=on_node_status,
                 _invocation_depth=depth + 1,
             )
+            _bind_child_ticket(ticket, str(outcome.run_id or ""))
             # design_used emit deferred to await on success (mirrors
             # invoke_branch async path).
             updates = {}
@@ -3594,9 +3799,9 @@ def _build_node(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
-    enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
+    branch_def_id: str = "",
     on_node_status: Callable[[str, str], None] | None = None,
     effect_chain: Any = None,
     ancestors: set[str] | None = None,
@@ -3635,9 +3840,9 @@ def _build_node(
         parent_run_id=parent_run_id,
         invocation_depth=invocation_depth,
         enqueue_context=enqueue_context,
-        enqueue_budget=enqueue_budget,
         universe_context=universe_context,
         execution_context=execution_context,
+        branch_def_id=branch_def_id,
         delivery_source=delivery_source,
         file_source=file_source,
         on_node_status=on_node_status,
@@ -3687,9 +3892,9 @@ def _build_node_inner(
     parent_run_id: str = "",
     invocation_depth: int = 0,
     enqueue_context: "NodeEnqueueContext | None" = None,
-    enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
+    branch_def_id: str = "",
     delivery_source: Any = None,
     file_source: Any = None,
     on_node_status: Callable[[str, str], None] | None = None,
@@ -3724,7 +3929,6 @@ def _build_node_inner(
             node, event_sink=event_sink, concurrency_tracker=concurrency_tracker,
             invocation_depth=invocation_depth,
             base_path=base_path, enqueue_context=enqueue_context,
-            enqueue_budget=enqueue_budget,
             effect_chain=effect_chain, state_schema=state_schema,
             ancestors=ancestors, execution_context=execution_context,
             delivery_source=delivery_source,
@@ -3737,7 +3941,14 @@ def _build_node_inner(
             node, provider_call=provider_call, event_sink=event_sink,
             state_schema=state_schema, llm_policy=llm_policy,
             concurrency_tracker=concurrency_tracker,
-            universe_context=universe_context,
+            universe_context=universe_context, branch_def_id=branch_def_id,
+            # The run's authenticated universe, so the agent call holds a seat
+            # of that universe's ACCOUNT (`universe_seats`).
+            seat_scope=(
+                (Path(base_path), execution_context.universe_id)
+                if base_path is not None and execution_context is not None
+                and execution_context.universe_id else None
+            ),
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if domain_id:
@@ -3993,10 +4204,6 @@ def compile_branch(
     concurrency_tracker: ConcurrencyTracker | None = (
         ConcurrencyTracker(effective_budget) if effective_budget is not None else None
     )
-    # Production compiles once per run. Every source-node invoker built below
-    # shares this lock-protected successful-enqueue budget.
-    enqueue_budget = NodeEnqueueBudget()
-
     node_by_id: dict[str, NodeDefinition] = {
         n.node_id: n for n in branch.node_defs
     }
@@ -4059,9 +4266,9 @@ def compile_branch(
             parent_run_id=parent_run_id,
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
-            enqueue_budget=enqueue_budget,
             universe_context=universe_context,
             execution_context=execution_context,
+            branch_def_id=branch.branch_def_id,
             on_node_status=on_node_status,
             effect_chain=effect_chain,
             ancestors=ancestors_by_gid.get(gn.id, set()) if effect_chain is not None else None,

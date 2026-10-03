@@ -1,7 +1,7 @@
 # TinyAssets — Desktop app (Electron)
 
 A native desktop app that wraps the live TinyAssets web app. It is a thin,
-maintainable **Electron** shell whose window loads `https://tinyassets.io/mcp/app`
+maintainable **Electron** shell whose window loads `https://tinyassets.io/app`
 (configured in `config.js` → `APP_URL`) — the **same SPA the Android app wraps**
 (`mobile/`). Because that page, the `/mcp` API, and the WorkOS AuthKit sign-in all
 live on the same origin (`tinyassets.io`), the OAuth round-trip stays inside the
@@ -46,25 +46,31 @@ npm install
 npm start
 ```
 
-The window opens on the loading splash, then loads `https://tinyassets.io/mcp/app`.
+The window opens on the loading splash, then loads `https://tinyassets.io/app`.
 Verify the full loop: **sign in (WorkOS)** → **connect your AI subscription** →
 **chat with your universe**. To point at a local daemon instead of production:
 
 ```bash
-TINYASSETS_APP_URL=http://127.0.0.1:8001/mcp/app npm start
+TINYASSETS_APP_URL=http://127.0.0.1:8001/app npm start
 ```
 
-(The daemon must have `TINYASSETS_ONBOARDING_APP` truthy for `/mcp/app` to serve.)
+(The daemon must have `TINYASSETS_ONBOARDING_APP` truthy for `/app` to serve.)
 
 ## Session persistence
 
 Electron's default session partition is *persistent*, so the WorkOS refresh-token
-cookie (`ta_rt`, HttpOnly, scoped to `/mcp/app/token`, 7-day max-age) survives
+cookie (`ta_rt`, HttpOnly, scoped to `/app/token`, 7-day max-age) survives
 app restarts. On relaunch the SPA silently renews via `grant_type=refresh_token`,
 so the user stays signed in — the same "survives app restarts and token renewals"
 behavior the phone and web get.
 
-## Build installers (later — packaging/signing is a follow-up)
+## Build installers
+
+CI builds Windows on every main push that touches `desktop-app/**`
+(`.github/workflows/desktop-chat-app.yml`, artifact `desktop-chat-windows-x86_64`:
+`TinyAssetsChatSetup-<v>-x64.exe` + `TinyAssetsChat-<v>-x64-win.zip`). The
+server tray's installer is the separate `TinyAssetsServerSetup-*` from
+`desktop-release.yml`. Locally:
 
 ```bash
 npm run dist   # electron-builder → dist/ (NSIS on Windows, dmg on macOS, AppImage on Linux)
@@ -90,7 +96,7 @@ identities (host-owned, like the Android keystore):
    `LocalCallbackService`. On desktop, run a short-lived Node `http` listener in
    the Electron main process, open the system browser to OpenAI's authorize URL,
    catch the `?code=`, and hand it back to the SPA (via a `contextBridge` method
-   in `preload.js`) which POSTs it to `/mcp/app/openai/exchange`. Simpler than
+   in `preload.js`) which POSTs it to `/app/openai/exchange`. Simpler than
    Android — no background-freeze problem. **WorkOS sign-in + the Claude/Codex
    browser deposit form already cover the MVP loop, so this is deferred.**
 2. **App icon / splash** — add `resources/icon.png` and wire `electron-builder`

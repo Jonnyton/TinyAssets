@@ -1,3 +1,10 @@
+---
+severity: note
+title: Instruction-response test uses an invalid page selector
+filed: '2026-09-09'
+summary: pre-existing quarantined fixture failure on Windows and Linux; independent review identifies the exact path correction, without a runtime change
+---
+
 # Runtime instruction-response test misses its seeded page
 
 **Filed:** 2026-09-09. **Verified:** 2026-09-09, Windows and Linux CI baseline.

@@ -84,19 +84,19 @@ def test_auto_ship_health_summarizes_recent_open_and_regressed_attempts(tmp_path
         if idx == 8:
             kwargs = {
                 "ship_status": "opened",
-                "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/308",
+                "pr_url": "https://github.com/TinyAssets/TinyAssets/pull/308",
             }
         elif idx == 9:
             kwargs = {
                 "ship_status": "opened",
-                "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/309",
+                "pr_url": "https://github.com/TinyAssets/TinyAssets/pull/309",
                 "observation_status": "regressed",
                 "rollback_handle": "revert:commit-09",
             }
         elif idx == 10:
             kwargs = {
                 "ship_status": "merged",
-                "pr_url": "https://github.com/Jonnyton/TinyAssets/pull/310",
+                "pr_url": "https://github.com/TinyAssets/TinyAssets/pull/310",
                 "observation_status": "regressed",
                 "rollback_handle": "revert:commit-10",
             }
@@ -137,6 +137,9 @@ def test_get_status_response_includes_auto_ship_health(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     universe = tmp_path / "test-universe"
     universe.mkdir(parents=True, exist_ok=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(universe.parent, universe.name)
     record_attempt(universe, _attempt(1, ship_status="opened"))
 
     response = json.loads(get_status("test-universe"))

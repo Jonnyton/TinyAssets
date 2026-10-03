@@ -64,16 +64,8 @@ _AUTH_PATTERNS = ("401", "unauthorized", "reconnecting", "auth", "login")
 # list2cmdline quoting does NOT protect these, so reject them loudly instead.
 _CMD_METACHARS = frozenset('&|%<>^"')
 
-# Set in the CHILD's environment only. The Stop hook
-# (.claude/hooks/keep_working_while_waiting.py) reads the shared dispatch
-# ledger for EVERY session, and inside a dispatched peer it refused to let the
-# peer finish until it "acted on" dispatches it does not own -- including the
-# still-running row of its own parent wrapper. That contradicts the peer-agents
-# rule that a dispatched peer must not dispatch (2026-08-27: four recursive
-# children, 34 minutes, zero bytes of verdict). The marker is workflow
-# coordination context, never authority: nothing reads it for permissions,
-# credentials, sandboxing, or review gates, and the hook keeps every other
-# behaviour for unmarked (root) sessions.
+# Set in the CHILD's environment only: marks a dispatched peer so a future hook
+# can tell it from a root session. Coordination context, never authority.
 PEER_TASK_ENV = "TINYASSETS_PEER_TASK"
 
 
@@ -266,6 +258,15 @@ def resolve_git_common_dir(
     return str(path.resolve())
 
 
+#: The model every codex peer runs on unless --model / WORKFLOW_CODEX_MODEL says
+#: otherwise. Never the CLI's own default: on a ChatGPT account `codex exec`
+#: defaults to a model the account rejects in seconds (gpt-6.1-sol, 2026-10-02),
+#: and ~/.codex/config.toml is whatever it last said, named nowhere in a result.
+DEFAULT_CODEX_MODEL = "gpt-6-astra"
+#: Reasoning effort when --effort / WORKFLOW_CODEX_EFFORT is not given.
+DEFAULT_CODEX_EFFORT = "medium"
+
+
 def build_codex_cmd(
     args: argparse.Namespace,
     out_path: str,
@@ -284,6 +285,13 @@ def build_codex_cmd(
         "-o",
         out_path,
     ]
+    model = (
+        args.model or os.environ.get("WORKFLOW_CODEX_MODEL", "").strip() or DEFAULT_CODEX_MODEL
+    )
+    effort = (
+        args.effort or os.environ.get("WORKFLOW_CODEX_EFFORT", "").strip() or DEFAULT_CODEX_EFFORT
+    )
+    cmd.extend(["-m", model, "-c", f"model_reasoning_effort={effort}"])
     if args.write:
         # Codex protects Git metadata under workspace-write even when a linked
         # worktree's common directory is supplied via --add-dir. A write peer
@@ -293,14 +301,6 @@ def build_codex_cmd(
             cmd.extend(["--add-dir", git_common_dir])
     else:
         cmd.extend(["-s", "read-only"])
-    # No -m by default: codex then uses the model from ~/.codex/config.toml,
-    # which the host keeps at the subscription frontier (e.g. gpt-5.6-sol).
-    # Pin only when explicitly asked via --model or WORKFLOW_CODEX_MODEL.
-    model = args.model or os.environ.get("WORKFLOW_CODEX_MODEL", "").strip()
-    if model:
-        cmd.extend(["-m", model])
-    if args.effort:
-        cmd.extend(["-c", f"model_reasoning_effort={args.effort}"])
     return cmd
 
 
@@ -483,9 +483,12 @@ def _main() -> int:
         stderr = stderr_b.decode("utf-8", errors="replace")
 
         if proc.returncode != 0:
+            # The WHOLE stderr: a CLI prints its banner and config first and the
+            # reason it died last, so a head slice reads like a run that did
+            # something (a rejected model, 2026-10-02).
             return fail(
                 f"{args.provider} exited {proc.returncode} after {elapsed:.0f}s\n"
-                f"stderr: {stderr[:1500].strip() or '(empty)'}",
+                f"stderr:\n{stderr.strip() or '(empty)'}",
                 2,
             )
 
@@ -530,106 +533,8 @@ def _main() -> int:
             Path(owned_temp).unlink(missing_ok=True)
 
 
-# --- dispatch ledger --------------------------------------------------------
-# A Stop hook cannot see a subprocess it did not start, and it certainly cannot
-# see one that already exited. Without a record, "is a dispatch outstanding?"
-# is unanswerable, and a session ends its turn believing a review is running
-# when it finished — or died — minutes earlier. Both happened on 2026-08-27.
-#
-# The file lives beside the SHARED git common dir, not in the worktree: peers
-# are dispatched from lane worktrees while the hook runs in the session's own
-# checkout, and a ledger only one of them can see is no ledger at all.
-
-
-def _git_common_dir(start: Path) -> "Path | None":
-    """The shared `.git` for this checkout, found WITHOUT running git.
-
-    Deliberately filesystem-only. `peer_agent`'s own tests monkeypatch
-    `subprocess` wholesale, so a `git rev-parse` here was intercepted by their
-    fake process and broke eight of them -- a ledger has no business being
-    reachable from the code under test.
-
-    A linked worktree's `.git` is a FILE containing `gitdir: <path>/.git/
-    worktrees/<name>`; the common dir is the part before `worktrees`. In a
-    normal checkout `.git` is the directory itself.
-    """
-    for d in [start, *start.parents]:
-        dot = d / ".git"
-        if dot.is_dir():
-            return dot
-        if dot.is_file():
-            try:
-                text = dot.read_text(encoding="utf-8").strip()
-            except OSError:
-                return None
-            if not text.startswith("gitdir:"):
-                return None
-            git_dir = Path(text.split(":", 1)[1].strip())
-            if not git_dir.is_absolute():
-                git_dir = (d / git_dir).resolve()
-            parts = git_dir.parts
-            if "worktrees" in parts:
-                return Path(*parts[: parts.index("worktrees")])
-            return git_dir
-    return None
-
-
-def _ledger_path() -> "Path | None":
-    common = _git_common_dir(Path(__file__).resolve().parent)
-    return None if common is None else common / "tinyassets-dispatch-ledger.jsonl"
-
-
-def _ledger_note(event: str, out: str | None, code: int | None = None) -> None:
-    """Append one line. Never raises: a ledger failure must not fail a dispatch.
-
-    Silent under pytest. The suite drives `main()` directly, so without this
-    every run of tests/test_peer_agent.py files real rows in the shared ledger
-    and the Stop hook reports a fistful of `verdict.txt` files under a
-    `--basetemp` directory as outstanding reviews. Observed 2026-08-27: 18 rows,
-    all of them tests, surfaced as nine dispatches to act on.
-
-    A ledger whose job is "what is genuinely outstanding" must not be writable
-    by the thing that exercises it.
-    """
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return
-    path = _ledger_path()
-    if path is None:
-        return
-    row = {"event": event, "out": out, "pid": os.getpid(), "at": time.time()}
-    if code is not None:
-        row["code"] = code
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row) + "\n")
-    except (OSError, TypeError, ValueError):
-        pass
-
-
-def _out_from_argv() -> str | None:
-    """--out as written, read before argparse so a parse error still records."""
-    argv = sys.argv
-    for flag in ("--out", "-o"):
-        if flag in argv:
-            try:
-                return argv[argv.index(flag) + 1]
-            except IndexError:
-                return None
-    return None
-
-
 def main() -> int:
-    out = _out_from_argv()
-    _ledger_note("started", out)
-    code = 1
-    try:
-        code = _main()
-        return code
-    finally:
-        # `finally`, so a crash or a kill-by-signal still closes the row. An
-        # unclosed row is exactly what "this dispatch vanished" looks like.
-        _ledger_note("finished", out, code=code)
+    return _main()
 
 
 if __name__ == "__main__":

@@ -27,12 +27,14 @@ def store(tmp_path):
     return tmp_path
 
 
-def install(base, *, selected=True, source=None):
+def install(base, *, selected=True, source=None, role="app_experience"):
     definition = publish_definition(base, author_id="public-creator", payload={
         "schema_version": 1, "name": "Unit test definition", "description": "Test only",
         "tags": [], "components": {"turn": source or component()},
     })
-    config = {"schema_version": 1, "name": "Receiver selection", "role": "app_experience"}
+    config = {"schema_version": 1, "name": "Receiver selection"}
+    if role is not None:
+        config["role"] = role
     if selected:
         config["turn_consumer"] = {
             "version": 1, "state": "active", "component_key": "turn",
@@ -43,6 +45,29 @@ def install(base, *, selected=True, source=None):
         created_by=OWNER, payload=config,
     )
     return binding, definition
+
+
+def legacy_duplicate(base, binding):
+    """A second active installation, as clients could create before the server
+    refused one. Written straight to storage: ``create_binding`` no longer can,
+    but rows like it may already exist, and admission must still refuse them."""
+    with sqlite3.connect(db_path(base)) as conn:
+        conn.execute(
+            "INSERT INTO agent_bindings (agent_binding_id, universe_id, agent_definition_id, "
+            "configuration_json, revision, status, created_by, updated_by, created_at, updated_at) "
+            "SELECT agent_binding_id || '-legacy', universe_id, agent_definition_id, "
+            "configuration_json, revision, status, created_by, updated_by, created_at, updated_at "
+            "FROM agent_bindings WHERE agent_binding_id = ?",
+            (binding["agent_binding_id"],),
+        )
+
+
+def test_create_refuses_a_second_installation(store):
+    from tinyassets.custom_agents import AgentConflictError
+
+    install(store)
+    with pytest.raises(AgentConflictError, match="app_experience"):
+        install(store)
 
 
 def selected(base):
@@ -58,7 +83,7 @@ def test_no_install_keeps_legacy_default(store):
     assert selected(store) is None
 
 
-def test_public_definition_and_layout_install_do_not_activate_handler(store):
+def test_public_definition_and_unselected_install_do_not_activate_handler(store):
     install(store, selected=False)
     assert selected(store) is None
 
@@ -89,8 +114,8 @@ def test_current_owner_and_nonserving_boundaries_hold(store, sql):
 
 
 def test_ambiguous_active_installations_do_not_pick_one(store):
-    install(store)
-    install(store)
+    binding, _ = install(store)
+    legacy_duplicate(store, binding)
     with pytest.raises(PermissionError, match="ambiguous"):
         selected(store)
 
@@ -139,4 +164,40 @@ def test_fingerprint_drift_is_held_not_silently_repaired(store):
     with sqlite3.connect(db_path(store)) as conn:
         conn.execute("UPDATE agent_definitions SET content_fingerprint=?", ("b" * 64,))
     with pytest.raises(PermissionError, match="fingerprint"):
+        selected(store)
+
+
+def test_a_hundred_unrelated_bindings_do_not_block_selection(store):
+    """The 100-row cutoff is gone: selection resolves at any list size.
+
+    ``resolve_selection_in_transaction`` used to fetch 101 rows and refuse with
+    ``consumer installation list is ambiguous`` at 100 -- BEFORE filtering to the
+    ``app_experience`` rows that actually select a consumer. So a hundred
+    unrelated bindings stopped the owner's conversation from resolving at all.
+    That is a functional cliff, not a limit (founder, 2026-09-30: no structural
+    caps on what users build).
+    """
+    import inspect
+
+    from tinyassets import consumer_selection
+
+    src = inspect.getsource(consumer_selection.resolve_selection_in_transaction)
+    assert "LIMIT 101" not in src
+    assert "list is ambiguous" not in src
+
+    binding, _definition = install(store)
+    # 150 further bindings with no consumer role at all, well past the old cutoff.
+    for _ in range(150):
+        install(store, selected=False, role=None)
+
+    chosen = selected(store)
+    assert chosen is not None, "the owner's one selection is still found"
+    assert chosen["binding_id"] == binding["agent_binding_id"]
+
+
+def test_two_active_selections_are_still_ambiguous(store):
+    """Mutation-check: removing the row cutoff must not remove the real check."""
+    binding, _ = install(store)
+    legacy_duplicate(store, binding)
+    with pytest.raises(PermissionError, match="ambiguous"):
         selected(store)

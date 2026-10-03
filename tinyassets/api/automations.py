@@ -35,21 +35,26 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe
 from tinyassets.automations import (
+    EVENT_WOKE_PREFIX,
     REFUSAL_KEY_PREFIX,
     STATE_ACTIVE,
     STATE_PAUSED,
+    TRIGGER_EVENT,
+    TRIGGER_ONCE,
     Automation,
     AutomationStore,
     AutomationUnavailable,
     next_due_at,
     register_automation,
 )
+from tinyassets.consumer_reason_actions import RETIRED_FLEET_CONTROL_REASON
 
 logger = logging.getLogger("universe_server.automations")
 
@@ -68,25 +73,25 @@ _UNAVAILABLE_DETAIL = {
     ),
     "authentication_required": (
         "Sign in before creating an automation: an automation is owned by a "
-        "person, never by the universe."
+        "person, never by the command center."
     ),
     "owner_not_admin": (
-        "You need an admin grant on this universe to create an automation in "
+        "You need an admin grant on this command center to create an automation in "
         "it. A write grant lets you edit its work, not schedule it."
     ),
     "not_owner_home": (
-        "Automations run in your own home universe. Create this one there, or "
-        "make this universe your home first."
+        "Automations run in your own home command center. Create this one there, or "
+        "make this command center your home first."
     ),
-    # Two causes, one token: no ready assignment at all, or a ready one on an
-    # OPEN api_key_http provider, which foreground admission refuses outright.
-    # A sentence naming only the first would read as false to an owner who HAS
-    # connected an api-key compute provider and set it serving.
+    "timezone_invalid": (
+        "That timezone is not one I recognize. Pass an IANA name such as "
+        "'America/Los_Angeles', 'Europe/Berlin' or 'UTC' -- or leave it out "
+        "and I will use the zone your app reported."
+    ),
     "no_serving_assignment": (
-        "This universe is not serving on a subscription provider, so a run "
-        "would have nothing to run on. Connect your own Claude or Codex "
-        "subscription and set it serving -- an open API-key compute provider "
-        "cannot run an automation."
+        "This command center has no model serving it yet, so a run would have "
+        "nothing to run on. Connect a model -- a subscription or your own "
+        "API-key source -- and set it serving first."
     ),
     "branch_not_readable": (
         "That workflow is not readable from here. Check the branch_def_id "
@@ -97,17 +102,28 @@ _UNAVAILABLE_DETAIL = {
         "your own branch first, then automate the remix."
     ),
     "trigger_invalid": (
-        "Give exactly one trigger: interval_seconds of at least 300, or a "
-        "cron_expr that never fires more often than every 300 seconds -- not "
-        "both, and not neither."
+        "Give exactly one trigger: a positive interval_seconds, a valid "
+        "cron_expr, a not_before (or delay_seconds) for one wake, or an "
+        "event_type -- not two, and not none."
     ),
-    "too_many_automations": (
-        "This universe is already at its automation limit. Delete one before "
-        "creating another."
+    "event_type_unknown": (
+        "That event is not one the engine emits, so the automation would never "
+        "fire. Subscribe to run_completed, pending_request_answered, app_event "
+        "or owner_message."
+    ),
+    "event_filter_invalid": (
+        "event_filter must be an object of non-empty strings over the event's "
+        "own fields: run_completed takes branch_def_id (required), outcome and "
+        "run_id; pending_request_answered takes request_id, kind and status; "
+        "app_event takes name (required); owner_message takes none."
+    ),
+    "overlap_invalid": (
+        "overlap must be queue (wait for the running one, the default), skip "
+        "(drop this run) or cancel_previous (stop the running one first)."
     ),
     "not_owner_or_admin": (
         "This automation belongs to someone else. Only its owner or an admin "
-        "on this universe can change it."
+        "on this command center can change it."
     ),
     "already_retired": (
         "This automation is deleted. Create a new one rather than reviving it."
@@ -177,6 +193,40 @@ def _next_due_at(automation: Automation) -> str:
         return ""
 
 
+def _cron_timezone(automation: Automation) -> str:
+    """The zone a cron row runs in; '' for a trigger with no wall-clock slot."""
+    from tinyassets.automations import TRIGGER_CRON, cron_zone_name
+
+    if automation.trigger_kind != TRIGGER_CRON:
+        return ""
+    return cron_zone_name(automation)
+
+
+def _schedule_local(automation: Automation) -> str:
+    """``7:00 AM America/Los_Angeles``, or '' when there is no single slot.
+
+    One place builds this string, so no surface can reintroduce a bare time --
+    which is the whole defect: the universe said "7am server time" because
+    nothing gave it the zone to say instead. A multi-slot expression (``0,30 *``)
+    has no single wall time to name and returns '', leaving ``cron_expr`` as the
+    honest answer rather than picking one of its slots to display.
+    """
+    from tinyassets.automations import TRIGGER_CRON, cron_zone_name
+    from tinyassets.schedule_timezone import describe_slot
+    from tinyassets.scheduler import CronParseError, CronSchedule
+
+    if automation.trigger_kind != TRIGGER_CRON:
+        return ""
+    try:
+        schedule = CronSchedule.parse(automation.cron_expr)
+    except CronParseError:
+        return ""
+    if len(schedule.hours) != 1 or len(schedule.minutes) != 1:
+        return ""
+    slot = dt_time(next(iter(schedule.hours)), next(iter(schedule.minutes)))
+    return describe_slot(slot, cron_zone_name(automation))
+
+
 def _projection(
     automation: Automation,
     *,
@@ -198,8 +248,24 @@ def _projection(
             "kind": automation.trigger_kind,
             "interval_seconds": automation.interval_seconds,
             "cron_expr": automation.cron_expr,
+            # WHICH CLOCK the cron expression is written in. A schedule was
+            # returned without one until 2026-09-30, so the only true thing a
+            # universe could tell its owner was "7am server time" -- which is
+            # midnight for a Pacific user. '' for a non-cron trigger, which has
+            # no wall-clock slot.
+            "timezone": _cron_timezone(automation),
+            # The same fact as prose, so a surface cannot render the time
+            # without the zone: "7:00 AM America/Los_Angeles".
+            "schedule_local": _schedule_local(automation),
+            # A one-shot wake's instant (kind "once"); '' for a cadence.
+            "not_before": automation.not_before,
+            # A subscription's event and filter (kind "event").
+            "event_type": automation.event_type,
+            "event_filter": dict(automation.event_filter or {}),
         },
         "inputs": dict(automation.inputs),
+        # What a due run does while this agent (its branch) is still running.
+        "overlap": automation.overlap,
         "desired_state": automation.desired_state,
         "pause_reason": automation.pause_reason,
         "revision": automation.revision,
@@ -246,7 +312,7 @@ def _recent_reasons(base: Path, universe_id: str) -> dict[str, str]:
         )
     except Exception:  # noqa: BLE001 - visibility must not break the list
         logger.warning(
-            "automation recent-reason lookup failed for universe %r",
+            "automation recent-reason lookup failed for command center %r",
             universe_id,
             exc_info=True,
         )
@@ -275,7 +341,7 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
         )
     except Exception:  # noqa: BLE001 - a dead layer must not break a live read
         logger.warning(
-            "legacy automation control listing failed for universe %r",
+            "legacy automation control listing failed for command center %r",
             universe_id,
             exc_info=True,
         )
@@ -285,6 +351,9 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
             "automation_id": control.automation_id,
             "legacy": True,
             "status": "retired_fleet_era",
+            # The consumer stopped it with this reason (plan C1). Carried on
+            # the row so it outlives the refusal ledger's freshness window.
+            "detail": RETIRED_FLEET_CONTROL_REASON,
             "desired_state": getattr(
                 control.desired_state, "value", control.desired_state
             ),
@@ -312,6 +381,12 @@ def _create(
     inputs = document.get("inputs", {})
     cron_expr = document.get("cron_expr", "")
     raw_interval = document.get("interval_seconds", 0)
+    event_type = document.get("event_type", "")
+    event_filter = document.get("event_filter", {})
+    overlap = document.get("overlap", "")
+    timezone_name = document.get("timezone", "")
+    not_before = document.get("not_before", "")
+    raw_delay = document.get("delay_seconds")
 
     if not isinstance(name, str) or not name.strip():
         return _payload_invalid("name must be a non-empty string")
@@ -321,6 +396,14 @@ def _create(
         return _payload_invalid("inputs must be a JSON object")
     if not isinstance(cron_expr, str):
         return _payload_invalid("cron_expr must be a string")
+    if not isinstance(event_type, str):
+        return _payload_invalid("event_type must be a string")
+    if not isinstance(event_filter, dict):
+        return _payload_invalid("event_filter must be a JSON object")
+    if not isinstance(overlap, str):
+        return _payload_invalid("overlap must be a string")
+    if not isinstance(timezone_name, str):
+        return _payload_invalid("timezone must be an IANA name string")
     # A bool is an int in Python; interval_seconds=true is a malformed payload,
     # not a zero-second interval.
     if isinstance(raw_interval, bool) or not isinstance(raw_interval, (int, str)):
@@ -329,6 +412,22 @@ def _create(
         interval_seconds = int(raw_interval or 0)
     except (TypeError, ValueError):
         return _payload_invalid("interval_seconds must be an integer")
+    # A one-shot wake the agent sets for itself: "run this branch once, not
+    # before then". The same row an agent node's enqueue_branch_run stores.
+    if not isinstance(not_before, str):
+        return _payload_invalid("not_before must be an ISO-8601 timestamp string")
+    if raw_delay is not None:
+        if not_before.strip():
+            return _payload_invalid("give not_before or delay_seconds, not both")
+        if (isinstance(raw_delay, bool) or not isinstance(raw_delay, (int, float))
+                or raw_delay != raw_delay or raw_delay < 0):
+            return _payload_invalid("delay_seconds must be a number >= 0")
+        try:
+            not_before = (
+                datetime.now(timezone.utc) + timedelta(seconds=float(raw_delay))
+            ).isoformat()
+        except OverflowError:
+            return _payload_invalid("delay_seconds is too large")
 
     try:
         created = register_automation(
@@ -339,6 +438,11 @@ def _create(
             branch_def_id=branch_def_id.strip(),
             interval_seconds=interval_seconds,
             cron_expr=cron_expr.strip(),
+            not_before=not_before.strip(),
+            event_type=event_type.strip(),
+            event_filter=event_filter,
+            overlap=overlap.strip(),
+            timezone_name=timezone_name.strip(),
             inputs=inputs,
         )
     except AutomationUnavailable as exc:
@@ -355,7 +459,7 @@ def _list(
     universe_id: str,
     actor: str,
     payload: Any,
-    limit: int,
+    limit: int | None,
 ) -> dict[str, Any]:
     document = _document(payload)
     if document is None:
@@ -367,22 +471,70 @@ def _list(
         include_retired=include_retired,
     )
     reasons = _recent_reasons(base, universe_id)
-    bound = max(1, int(limit or 30))
+    # ``limit=None`` is every row: a model door pages the whole list to fit its
+    # ceiling itself, and a page it did not choose would hide the 31st row.
+    bound = len(rows) if limit is None else max(1, int(limit or 30))
     records = [
-        _projection(
+        _with_last_wake(base, row, _projection(
             row,
             actor=actor,
             recent_reason=reasons.get(f"{REFUSAL_KEY_PREFIX}{row.automation_id}", ""),
-        )
+        ))
         for row in rows[:bound]
     ]
-    records.extend(_legacy_rows(base, universe_id))
+    legacy = _legacy_rows(base, universe_id)
+    records.extend(legacy)
     return {
         "universe_id": universe_id,
         "automations": records,
         "count": len(records),
+        # How many automations exist, so a page smaller than that says so.
+        "total": len(rows) + len(legacy),
         "include_retired": include_retired,
     }
+
+
+def _with_last_wake(
+    base: Path, automation: Automation, projected: dict[str, Any],
+) -> dict[str, Any]:
+    """An event subscription's latest wake and what its run did.
+
+    The subscription row records only that it fired (``woke:<id>``); the run
+    lives on the wake. Read here, never copied, and only a wake this
+    subscription stored: the id comes from the runtime, but the lookup checks.
+    """
+    if automation.trigger_kind != TRIGGER_EVENT:
+        return projected
+    wake_id = automation.last_reason.removeprefix(EVENT_WOKE_PREFIX)
+    if wake_id == automation.last_reason or not wake_id:
+        return projected
+    try:
+        wake = AutomationStore(base).get(wake_id)
+    except Exception:  # noqa: BLE001 - enrichment, never a precondition
+        logger.warning("last wake lookup failed for %r", wake_id, exc_info=True)
+        return projected
+    # Provenance, not only scope: a one-shot wake of the same owner that this
+    # subscription itself stored (refute concern, 2026-09-30).
+    event = (wake.inputs or {}).get("event") if wake is not None else None
+    if (
+        wake is None
+        or wake.universe_id != automation.universe_id
+        or wake.owner_principal_id != automation.owner_principal_id
+        or wake.trigger_kind != TRIGGER_ONCE
+        or not isinstance(event, dict)
+        or event.get("subscription_id") != automation.automation_id
+    ):
+        return projected
+    projected["last_wake"] = {
+        "automation_id": wake.automation_id,
+        "not_before": wake.not_before,
+        "last_run_id": wake.last_run_id,
+        "last_reason": wake.last_reason,
+        "last_finished_at": wake.last_finished_at,
+        "pause_reason": wake.pause_reason,
+        "retired_at": wake.retired_at,
+    }
+    return projected
 
 
 def _controllable(
@@ -413,7 +565,7 @@ def _controllable(
         )
     except Exception:  # noqa: BLE001 - fail closed on an unreadable ACL
         logger.warning(
-            "automation control ACL read failed for universe %r",
+            "automation control ACL read failed for command center %r",
             automation.universe_id,
             exc_info=True,
         )
@@ -490,7 +642,7 @@ def automations(
     automation_id: str = "",
     expected_revision: int = 0,
     payload: Any = None,
-    limit: int = 30,
+    limit: int | None = 30,
 ) -> dict[str, Any]:
     """Create, inspect and control the caller's universe automations."""
     normalized = (action or "").strip().lower()
@@ -543,13 +695,13 @@ def automations(
             return _not_found()
         reasons = _recent_reasons(base, uid)
         return {
-            "automation": _projection(
+            "automation": _with_last_wake(base, automation, _projection(
                 automation,
                 actor=actor,
                 recent_reason=reasons.get(
                     f"{REFUSAL_KEY_PREFIX}{automation.automation_id}", ""
                 ),
-            )
+            ))
         }
     return _control(
         base,

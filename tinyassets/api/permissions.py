@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -274,6 +275,52 @@ def is_local_single_tenant() -> bool:
     return is_local_operator_process()
 
 
+@contextmanager
+def owner_run_identity(base: Any, universe_id: str, principal_id: str) -> Iterator[bool]:
+    """Read as the universe's OWNER for a run the owner's own universe set up.
+
+    A universe's own agents, automations and background wakes are the owner
+    acting (founder, 2026-09-27: "pretty much the same as itself"), but they run
+    on threads no request bound, and every by-id reader resolves the REQUEST
+    actor. While universes defaulted public that was invisible; private-by-default
+    (2026-09-26) turned it into a refusal of the owner's own content.
+
+    Binds ``principal_id`` only when it is a named principal holding the
+    ``admin`` grant on ``universe_id`` -- the same ownership signal the
+    interlocutor tier uses. Anyone else leaves the context exactly as it was, so
+    this can never widen what another user or a visitor reads. When the owner is
+    ALREADY the bound actor (their live request), that identity is kept rather
+    than narrowed. Yields whether the owner is the actor inside.
+
+    This is the owner, not a read-only view of them: ACL gates check the stored
+    grant, not ``capabilities``, so the run may write its own universe too. That
+    is intended (founder 2026-09-27, "same as itself"); the capabilities bound
+    only scoped dispatch (``require_action_scope``) to read/list.
+    """
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.daemon_server import universe_access_permission
+    from tinyassets.principals import has_named_principal
+
+    uid = (universe_id or "").strip()
+    pid = (principal_id or "").strip()
+    try:
+        owner = bool(uid and has_named_principal(pid)) and universe_access_permission(
+            base, universe_id=uid, actor_id=pid,
+        ) == "admin"
+    except Exception:  # noqa: BLE001 -- an unreadable ACL confers nothing
+        logger.warning("owner_run_identity: ACL read failed for %r", uid, exc_info=True)
+        owner = False
+    if not owner:
+        yield False
+        return
+    if current_request_actor_id() == pid:
+        yield True
+        return
+    with identity_context(Identity(user_id=pid, username=pid, capabilities=["read", "list"])):
+        yield True
+
+
 def universe_public_read_allowed(universe_id: str) -> bool:
     """Return the explicit public-read rule for a universe.
 
@@ -300,12 +347,32 @@ def universe_public_read_allowed(universe_id: str) -> bool:
         # A real error reading the visibility rule — never fall open.
         logger.warning(
             "universe_public_read_allowed: failing closed on rules-read error "
-            "for universe %r",
+            "for command center %r",
             uid,
             exc_info=True,
         )
         return False
     return bool(rules.get("public_read", True))
+
+
+def _universe_is_owned(base: Any, universe_id: str) -> bool:
+    """Whether an ownership row names this universe. Fails CLOSED.
+
+    An unreadable ownership store means nothing is known to be owned, and the
+    question this answers is "may the caller reach it" -- so the safe answer is
+    no. The by-id readers in `tinyassets.api.universe` raise instead, so they can
+    tell a caller the store is down rather than that their universe does not
+    exist; a boolean gate has no room for that distinction and must deny.
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    try:
+        return bool(owned_universe_id(base, universe_id))
+    except Exception:  # noqa: BLE001 - fail closed
+        logger.warning(
+            "command center ownership lookup failed closed for %r", universe_id, exc_info=True,
+        )
+        return False
 
 
 def universe_access_allows(universe_id: str, *, write: bool = False) -> bool:
@@ -322,6 +389,24 @@ def universe_access_allows(universe_id: str, *, write: bool = False) -> bool:
     from tinyassets.daemon_server import universe_access_permission
 
     base = _base_path()
+
+    # A UNIVERSE NOBODY OWNS GRANTS NOTHING (2026-09-02; enforced here after the
+    # Codex review of 2026-09-26). This is THE shared gate -- `visibility_permits`
+    # composes it as its ceiling, and the wiki, runs, automations, status and
+    # auto-ship readers call it directly -- so the ownership requirement belongs
+    # here rather than at sixteen call sites.
+    #
+    # Reads were the hole. A write already needed a write/admin grant on the exact
+    # id, which an unowned directory can never have. But a READ short-circuits on
+    # `universe_public_read_allowed`, and that is True both for a `public` row and
+    # for NO row at all ("missing means public by design") -- so an archive the old
+    # boot backfill declared public, and a bare directory with no row whatsoever,
+    # were both readable by explicit id. Filtering discovery did not retract
+    # either, which is how `read_page` and explicit-id `get_status` kept answering
+    # for the graveyard after it stopped being listed.
+    if not _universe_is_owned(base, uid):
+        return False
+
     if not write and universe_public_read_allowed(uid):
         return True
 

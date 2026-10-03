@@ -13,7 +13,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tinyassets import engine_admissions as ea
 from tinyassets import workspace_pool as wp
 from tinyassets.api import storage_observations
 
@@ -45,46 +44,10 @@ def _readonly(db: Path):
         conn.close()
 
 
-def _activity(root: Path, uid: str, now: float) -> dict:
-    result = {
-        "availability": "unavailable",
-        "scope": "engine_and_automation_admissions",
-        "unit": "run_admissions_and_engine_mutations",
-        "window_seconds": ea.RUN_WINDOW_SECONDS,
-        "limits": {
-            "total": ea.RUN_TOTAL_LIMIT,
-            "write_runs": ea.RUN_WRITE_LIMIT,
-        },
-    }
-    try:
-        with _readonly(root / ea.LEDGER_NAME) as conn:
-            rows = conn.execute(
-                "SELECT kind,COUNT(*) FROM admissions WHERE universe_id=? AND ts>=? "
-                "AND ts<=? GROUP BY kind", (uid, now - ea.RUN_WINDOW_SECONDS, now),
-            ).fetchall()
-            oldest = conn.execute(
-                "SELECT MIN(ts) FROM admissions WHERE universe_id=? AND ts>=? AND ts<=?",
-                (uid, now - ea.RUN_WINDOW_SECONDS, now),
-            ).fetchone()[0]
-        counts = {str(kind): int(count) for kind, count in rows}
-        if set(counts) - {ea.KIND_READ, ea.KIND_WRITE, ea.KIND_ENGINE}:
-            return result
-        result.update(
-            availability="observed", total=sum(counts.values()),
-            read_runs=counts.get(ea.KIND_READ, 0), write_runs=counts.get(ea.KIND_WRITE, 0),
-            engine_mutations=counts.get(ea.KIND_ENGINE, 0),
-            next_charge_expires_at=_utc(None if oldest is None else oldest + ea.RUN_WINDOW_SECONDS),
-        )
-    except (OSError, sqlite3.Error, ValueError, TypeError, OverflowError):
-        pass
-    return result
-
-
 def _workspace(udir: Path, uid: str, now: float) -> dict:
     result = {
-        "availability": "unavailable", "window_seconds": wp.WINDOW_S,
+        "availability": "unavailable",
         "job_count_is_a_limit": False,
-        "transfer_limit_bytes": wp.DEFAULT_BYTES_PER_HOUR,
         "allocation_scope": "universe_local_workspace_ledger",
     }
     try:
@@ -161,7 +124,6 @@ def for_authorized_status(root: Path, uid: str, *, now: float | None = None) -> 
     stamp = time.time() if now is None else now
     return {
         "schema_version": 1, "observed_at": _utc(stamp), "read_only": True,
-        "activity": _activity(root, uid, stamp),
         "workspace": _workspace(udir, uid, stamp),
         "retained_storage": {
             "availability": "unavailable", "reason": "total_storage_not_measured",

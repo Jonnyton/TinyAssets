@@ -53,7 +53,17 @@ REAL_COMPOSE = REPO / "deploy" / "compose.yml"
 
 RUNTIME = "/opt/tinyassets"
 ENV_FILE = "/etc/tinyassets/env"
-IMAGE = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64
+IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64
+
+
+def _script_int(name: str) -> int:
+    """One `NAME=<int>` assignment read out of the deploy script."""
+    match = re.search(rf"^{name}=(\d+)$", SCRIPT.read_text(encoding="utf-8"), re.M)
+    assert match, f"{name} is no longer a plain integer assignment in {SCRIPT.name}"
+    return int(match.group(1))
+
+
+MAX_STOP_GRACE_S = _script_int("MAX_DAEMON_STOP_GRACE_S")
 
 
 def _validator_source() -> str:
@@ -93,7 +103,14 @@ def _render() -> dict:
                 },
                 "image": IMAGE,
                 "labels": {"org.tinyassets.component": "daemon"},
-                "logging": {"driver": "fluentd"},
+                "logging": {
+                    "driver": "fluentd",
+                    "options": {
+                        "fluentd-address": "127.0.0.1:24224",
+                        "fluentd-async": "true",
+                        "tag": "{{.Name}}",
+                    },
+                },
                 "mem_limit": "4294967296",
                 "memswap_limit": "4294967296",
                 "networks": {"default": None},
@@ -113,11 +130,26 @@ def _render() -> dict:
                 "container_name": "tinyassets-tunnel",
                 "image": "cloudflare/cloudflared:2026.3.0@sha256:" + "6" * 64,
                 "restart": "unless-stopped",
+                "logging": {
+                    "driver": "fluentd",
+                    "options": {
+                        "fluentd-address": "127.0.0.1:24224",
+                        "fluentd-async": "true",
+                        "tag": "{{.Name}}",
+                    },
+                },
             },
             "logs": {
                 "container_name": "tinyassets-logs",
                 "image": "timberio/vector:0.40.0-alpine@sha256:" + "7" * 64,
                 "restart": "unless-stopped",
+                # Measured 2026-09-26 against Compose v5.1.4 rather than on the
+                # droplet: this change INTRODUCES the directive, so production
+                # cannot yet have rendered it. Reproduce with
+                #   docker compose -f deploy/compose.yml config --format json
+                # and read services.logs.logging. The rest of this capture
+                # remains the 2026-08-30 droplet measurement.
+                "logging": {"driver": "journald", "options": {"tag": "tinyassets-logs"}},
                 "volumes": [
                     {
                         "type": "bind",
@@ -189,6 +221,11 @@ def _validate(
             "RUNTIME_DIR": RUNTIME,
             "EXPECT_IMAGE": IMAGE,
             "ENV_FILE": ENV_FILE,
+            # Read from the script, never a literal here: the validator reads it
+            # with `os.environ[...]` on purpose, so a shell that forgets to export
+            # it fails loudly, and a test that hard-coded the number would keep
+            # passing after the deploy script changed it.
+            "MAX_DAEMON_STOP_GRACE_S": str(MAX_STOP_GRACE_S),
             "SYSTEMROOT": "C:/Windows",  # cpython needs this on Windows
             "PATH": "",
         },
@@ -356,10 +393,217 @@ def test_a_literal_daemon_image_is_refused_from_the_source(tmp_path: Path):
     """The source scan still bites against the real rendering."""
     source = _source().replace(
         "image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable "
-        "ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}",
+        "ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}",
         f"image: {IMAGE}",
         1,
     )
     result = _validate(tmp_path, _render(), source)
     assert result.returncode == 1
     assert "interpolate" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# where the logs come to rest (2026-09-26)
+# ---------------------------------------------------------------------------
+
+
+def test_a_logs_service_without_the_journald_driver_is_refused(tmp_path: Path):
+    """json-file is Docker's DEFAULT, so this is what drift looks like: not a
+    wrong value, an absent one. The sidecar's stdout is the only host-side copy
+    of every container's output, and a container-scoped driver is deleted when
+    this script force-recreates the service."""
+    config = _render()
+    del config["services"]["logs"]["logging"]
+    result = _validate(tmp_path, config, _source())
+    assert result.returncode == 1
+    assert "logs.logging.driver is None" in result.stderr
+
+
+def test_a_logs_service_on_json_file_is_refused(tmp_path: Path):
+    config = _render()
+    config["services"]["logs"]["logging"] = {
+        "driver": "json-file",
+        "options": {"max-size": "10m", "max-file": "3"},
+    }
+    result = _validate(tmp_path, config, _source())
+    assert result.returncode == 1
+    assert "expected 'journald'" in result.stderr
+
+
+def test_a_logs_service_without_a_journal_tag_is_refused(tmp_path: Path):
+    """Without the tag journald records a truncated container id that changes on
+    every recreate, so the query meant to read ACROSS recreates cannot be
+    written -- the driver alone does not buy the property."""
+    config = _render()
+    config["services"]["logs"]["logging"] = {"driver": "journald"}
+    result = _validate(tmp_path, config, _source())
+    assert result.returncode == 1
+    assert "logs.logging.options.tag" in result.stderr
+
+
+def test_a_forwarding_service_that_stops_forwarding_is_refused(tmp_path: Path):
+    """Nothing else here constrains the daemon's own driver, so losing it would
+    mean the sidecar receives nothing and the journal holds nothing -- with every
+    other check still green."""
+    for service in ("daemon", "cloudflared"):
+        config = _render()
+        config["services"][service]["logging"] = {"driver": "local"}
+        result = _validate(tmp_path, config, _source())
+        assert result.returncode == 1, service
+        assert f"{service}.logging.driver is 'local'" in result.stderr
+
+
+def test_the_logs_sidecar_may_not_forward_to_its_own_listener(tmp_path: Path):
+    """A `logs` container on the fluent anchor would ship its own stdout into the
+    listener that produced it."""
+    config = _render()
+    config["services"]["logs"]["logging"] = {
+        "driver": "fluentd",
+        "options": {"fluentd-address": "127.0.0.1:24224", "tag": "tinyassets-logs"},
+    }
+    result = _validate(tmp_path, config, _source())
+    assert result.returncode == 1
+    assert "expected 'journald'" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# the drain bound (2026-09-26, inverted 2026-10-01)
+#
+# `stop_grace_period` is how long a stopping daemon drains with its listener
+# already closed, so it is public 502 time. On 2026-10-01 a 180s value held
+# production down for 3m16s behind one long turn. It is a CEILING now. The key
+# is still required, so the bound stays written down rather than silently left
+# to docker's 10s default. Read from the SOURCE, not either render: compose
+# normalizes durations and this check must not depend on which form this
+# version emits.
+# ---------------------------------------------------------------------------
+
+
+def _without_grace(source: str) -> str:
+    stripped = re.sub(r"^\s*stop_grace_period:.*\n", "", source, count=1, flags=re.M)
+    assert stripped != source, "the shipped compose.yml no longer declares it here"
+    return stripped
+
+
+def test_losing_the_stop_grace_period_is_refused(tmp_path: Path):
+    result = _validate(tmp_path, _render(), _without_grace(_source()))
+    assert result.returncode == 1
+    assert "stop_grace_period" in result.stderr
+    assert "10s default" in result.stderr, (
+        "the refusal must say what absence MEANS, not just that a key is missing")
+
+
+@pytest.mark.parametrize("value", ["21s", "180s", "3m", "20001ms", "0m21s", "1h"])
+def test_a_grace_above_the_ceiling_is_refused(tmp_path: Path, value: str):
+    """Every form has to stay under the ceiling, not just the one the file uses."""
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "must be at most" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "value", ["20s", "0m20s", "20.0s", "20000ms", "10s", "1s", "500ms"],
+)
+def test_every_equivalent_duration_compose_accepts_is_accepted(tmp_path: Path, value: str):
+    """Go duration syntax, because that is what compose documents.
+
+    The first version took `(\\d+)(s|m)?` and refused `3m0s`, `180.0s` and
+    `180000ms` -- all the same bound as the then-shipped `180s`, all valid
+    compose (Codex on #4039, P2). A gate that blocks deploys, INCLUDING a rollback, must
+    not refuse the next maintainer for writing an equivalent value.
+
+    The oracle for WHICH forms compose accepts is
+    `docs/audits/2026-09-26-pr4039-compose-repro.py` -- it runs `docker compose
+    config` over each one. Re-run it before widening or narrowing this list; the
+    first version of this test asserted from a guess about compose and was wrong
+    about a bare integer (see the test below).
+    """
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("value", ["later", "-180s", "180 s", "3minutes"])
+def test_a_duration_this_check_cannot_read_is_refused_not_assumed(
+    tmp_path: Path, value: str,
+):
+    """Refuse rather than guess: a bound this check cannot READ is one it cannot
+    enforce, and silently accepting it is how the key came to mean 10 seconds.
+    """
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "not a duration this check can read" in result.stderr
+
+
+def test_a_bare_integer_is_refused_here_and_by_compose_itself(tmp_path: Path):
+    """`stop_grace_period: 180` is NOT valid compose -- it wants a duration.
+
+    The first version of this suite listed a bare integer as an accepted form,
+    which was simply wrong about compose (Codex checked v5.1.4). The real deploy
+    never reaches this arm: `docker compose config` fails first and
+    `validate_bundle` returns before the python runs. Asserted anyway, because a
+    check that would have ACCEPTED an invalid file is a check that is not reading
+    what it thinks it is.
+    """
+    source = re.sub(
+        r"^(\s*)stop_grace_period:.*$", r"\g<1>stop_grace_period: 180",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "not a duration this check can read" in result.stderr
+
+
+def test_a_grace_buried_under_another_mapping_does_not_count(tmp_path: Path):
+    """Codex reproduced exit 0 for this, which is the whole finding.
+
+    `daemon_block_lines` returns every DESCENDANT of the daemon service, so a
+    text-only match was satisfied by a key nested under `environment:` while
+    docker had no service stop grace at all. A service property has to be a
+    direct child to mean anything.
+    """
+    source = _without_grace(_source()).replace(
+        "    environment:",
+        "    environment:\n      stop_grace_period: 180s",
+        1,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1, (
+        "a stop_grace_period under `environment:` is an env var, not a stop grace")
+    assert "direct `stop_grace_period:`" in result.stderr
+
+
+def test_a_second_grace_declaration_is_refused(tmp_path: Path):
+    """Two keys in one mapping: YAML keeps the last, so a check reading the first
+    would enforce a bound the daemon does not have."""
+    source = re.sub(
+        r"^(\s*)(stop_grace_period:.*)$", r"\g<1>\g<2>\n\g<1>stop_grace_period: 10s",
+        _source(), count=1, flags=re.M,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "exactly one" in result.stderr
+
+
+def test_another_services_grace_does_not_satisfy_the_daemons(tmp_path: Path):
+    """The block walker is anchored on services.daemon; a sidecar's key must not
+    stand in for it."""
+    source = _without_grace(_source()).replace(
+        "    container_name: tinyassets-tunnel",
+        "    container_name: tinyassets-tunnel\n    stop_grace_period: 300s",
+        1,
+    )
+    result = _validate(tmp_path, _render(), source)
+    assert result.returncode == 1
+    assert "stop_grace_period" in result.stderr

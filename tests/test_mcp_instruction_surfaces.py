@@ -69,11 +69,17 @@ def _advertised_tools():
     }
 
 
+#: Tool names that existed and were retired (2026-09-30). Not registered any
+#: more, but still heads a stale instruction might name, so the claim detector
+#: must keep recognising them.
+RETIRED_TOOL_NAMES = frozenset({"universe", "extensions", "goals", "gates", "wiki"})
+
+
 def _registered_tool_names() -> set[str]:
     return {
         tool.name
         for tool in _run(universe_server.mcp.list_tools(run_middleware=False))
-    }
+    } | RETIRED_TOOL_NAMES
 
 
 def _instruction_surfaces() -> dict[str, str]:
@@ -406,7 +412,7 @@ def test_runtime_response_payloads_claim_only_live_advertised_handles(
         universe_id=universe_id,
         universe_path=universe_dir,
     )
-    set_universe_visibility(universe_id, "public")
+    set_universe_visibility(universe_id, "public", source="owner")
 
     exhaustion = AllProvidersExhaustedError(
         "all providers exhausted",
@@ -434,8 +440,10 @@ def test_runtime_response_payloads_claim_only_live_advertised_handles(
         lambda _base_path, _branch_version_id: selector_version,
     )
 
+    # An exact wiki path: a slashed page name must name the .md file under
+    # pages/ or drafts/ (`_resolve_page`, since #2121).
     truncated_page_response = universe_server.read_page(
-        page="notes/long-response-probe",
+        page="pages/notes/long-response-probe.md",
     )
     assert json.loads(truncated_page_response)["truncated"] is True
 
@@ -445,7 +453,7 @@ def test_runtime_response_payloads_claim_only_live_advertised_handles(
         ),
         "read_page truncated-page response": truncated_page_response,
         "get_status missing-universe response": universe_server.get_status(
-            universe_id="u-missing-response-invariant",
+            command_center_id="u-missing-response-invariant",
         ),
         "read_graph graph response": universe_server.read_graph(
             target="graph",
@@ -594,14 +602,14 @@ def test_instruction_routing_examples_use_valid_handle_parameters() -> None:
             )
 
 
-def test_meet_universe_description_is_relay_first() -> None:
+def test_meet_command_center_description_is_relay_first() -> None:
     prompts = {
         prompt.name: prompt
         for prompt in _run(
             universe_server.mcp.list_prompts(run_middleware=False)
         )
     }
-    description = prompts["meet_universe"].description or ""
+    description = prompts["meet_command_center"].description or ""
     assert "converse" in description
     assert "relay" in description.lower()
     assert "get_status" not in description

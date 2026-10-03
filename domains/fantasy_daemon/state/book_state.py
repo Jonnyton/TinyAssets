@@ -1,4 +1,9 @@
-"""Book-level state -- manages chapter loop, arc closure, stuck recovery."""
+"""Book-level state -- manages chapter loop, arc closure, stuck recovery.
+
+Any field that ACCUMULATES across nodes needs an explicit reducer --
+``Annotated[list, operator.add]`` -- or concurrent node returns overwrite each
+other instead of merging. A bare ``list`` field is last-writer-wins.
+"""
 
 from __future__ import annotations
 

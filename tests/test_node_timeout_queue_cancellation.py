@@ -109,14 +109,60 @@ def test_queued_work_never_starts_once_its_node_is_terminal(single_worker_pool):
     )
 
 
-def test_work_already_running_is_left_to_settle(single_worker_pool):
+class _SubmitReturnsOnceRunningPool(concurrent.futures.ThreadPoolExecutor):
+    """A one-worker pool whose ``submit()`` returns only once the work is RUNNING.
+
+    "Already running when the deadline fires" is the premise of the settle test,
+    and it used to rest on the worker picking the item up inside a 0.1s
+    deadline. On a loaded CI runner it sometimes did not: ``cancel()`` then
+    won, the work never ran, and the test failed with ``[] == [1]``. Blocking
+    ``submit()`` until the work has signalled ``running`` means the caller's
+    ``future.result(timeout=...)`` only starts counting once the work is past
+    the worker-entry check, so the deadline can only ever fire on running work.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(max_workers=1, thread_name_prefix="test-node-running")
+        self.running = threading.Event()
+
+    def submit(self, fn, /, *args, **kwargs):
+        future = super().submit(fn, *args, **kwargs)
+        assert self.running.wait(timeout=10.0), "submitted work never started"
+        return future
+
+
+class _FrozenMonotonic:
+    """``graph_compiler``'s ``time`` with a clock that does not advance.
+
+    The worker-entry check compares ``time.monotonic()`` with a deadline taken
+    before ``submit()``, so a slow thread start could still refuse the work
+    before it runs. Freezing that clock keeps the check out of this test, which
+    is about work that got PAST it; the check has its own tests below. The
+    timeout itself is ``future.result``'s real wall-clock wait and still fires.
+    """
+
+    def __init__(self) -> None:
+        self._now = time.monotonic()
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+def test_work_already_running_is_left_to_settle(monkeypatch):
     """Started work must run to completion — no interruption, no replay."""
+    pool = _SubmitReturnsOnceRunningPool()
+    monkeypatch.setattr(graph_compiler, "_TIMEOUT_EXECUTOR", pool)
+    monkeypatch.setattr(graph_compiler, "time", _FrozenMonotonic())
     release_worker = threading.Event()
     call_count: list[int] = []
     finished = threading.Event()
 
     def _slow() -> str:
         call_count.append(1)
+        pool.running.set()
         release_worker.wait(timeout=10.0)
         finished.set()
         return "settled"
@@ -128,6 +174,7 @@ def test_work_already_running_is_left_to_settle(single_worker_pool):
         # It was already executing when the deadline fired: the timeout must
         # not have torn it down, and it must not have been re-dispatched.
         assert call_count == [1]
+        assert not finished.is_set(), "the deadline fired after the work ended"
         release_worker.set()
         assert finished.wait(timeout=10.0), (
             "in-flight work was disturbed by the deadline; settlement and "
@@ -136,6 +183,7 @@ def test_work_already_running_is_left_to_settle(single_worker_pool):
         assert call_count == [1], "timed-out work must never be replayed"
     finally:
         release_worker.set()
+        pool.shutdown(wait=False)
 
 
 # ─── the residual: queue wait must come out of the provider's own cap ─────
@@ -314,7 +362,9 @@ class _WorkerWinsTheCancelRace:
         self.did_submit = threading.Event()
 
     def submit(self, fn, /, *args, **kwargs):
-        self.submitted = fn
+        # Keep the arguments, as a real executor does: the caller may submit
+        # ``contextvars.copy_context().run`` with the work as its argument.
+        self.submitted = lambda: fn(*args, **kwargs)
 
         class _Uncancellable(concurrent.futures.Future):
             def cancel(self) -> bool:

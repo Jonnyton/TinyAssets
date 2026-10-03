@@ -27,7 +27,7 @@ A user's chatbot hits a capability gap, files it as a patch request, and the sys
 
 The entry path should reach functions, not just docs. Representative core:
 
-- **The MCP surface** every chatbot connects to — [`tinyassets/universe_server.py`](tinyassets/universe_server.py) (the `universe` / `extensions` / `goals` / `gates` / `wiki` / `get_status` tools).
+- **The MCP surface** every chatbot connects to — [`tinyassets/universe_server.py`](tinyassets/universe_server.py) (`read_graph` / `write_graph` / `run_graph` / `read_page` / `write_page` / `converse` / `get_status`).
 - **The daemon run loop** — [`fantasy_daemon/__main__.py`](fantasy_daemon/__main__.py), the current default runtime (LangGraph universe graph, SQLite checkpointer, pause/resume). The branch-execution *substrate* is goal-agnostic — branch specs compile to graphs via [`tinyassets/graph_compiler.py`](tinyassets/graph_compiler.py) — though this domain is still the hardcoded default; extracting the runtime into each universe's soul-declared loop is tracked in the [de-fantasy audit](docs/audits/2026-06-24-fantasy-architecture-residue-audit.md).
 - **Branch spec → executable graph** — [`tinyassets/graph_compiler.py`](tinyassets/graph_compiler.py) (compiles a declarative branch into a runnable `StateGraph`; approval-gated node execution).
 - **The evaluation/gate primitive** — [`tinyassets/node_eval.py`](tinyassets/node_eval.py).
@@ -41,7 +41,7 @@ A coherent, dependency-verified stack (LangGraph / FastMCP / LanceDB / igraph / 
 Clone-to-green-tests in ~5 minutes on a clean machine:
 
 ```bash
-git clone https://github.com/Jonnyton/TinyAssets.git
+git clone https://github.com/TinyAssets/TinyAssets.git
 cd TinyAssets
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .[dev]

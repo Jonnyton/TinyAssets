@@ -19,7 +19,10 @@ from tinyassets.provider_assignment import provider_assignment_admission
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.model_policy import ModelRef
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
-from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+from tinyassets.providers.served_model_plan import (
+    _CANDIDATE_ONLY_BASES,
+    prepare_owned_model_plan,
+)
 from tinyassets.storage.provider_work_authority import db_path
 
 native = authority_tests.native
@@ -130,12 +133,18 @@ def test_picker_refresh_adds_new_model_without_static_release_table(native, monk
             base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
             allow_empty=True,
         )
+    def granted(plan):
+        # Reviewed-list and owner-verified rows are offers to grant, appended after
+        # discovery; this test is about what discovery itself contributes.
+        return [m for m in plan.catalog.connections[0].models
+                if m.availability_basis not in _CANDIDATE_ONLY_BASES]
+
     before = options()
     ids.append("brand-new-account-release")
     after = options()
-    assert [m.model_id for m in before.catalog.connections[0].models] == ["", "initial-model"]
-    assert [m.model_id for m in after.catalog.connections[0].models] == ["", *ids]
-    assert after.catalog.connections[0].models[-1].availability_basis == "executor_enumerated"
+    assert [m.model_id for m in granted(before)] == ["", "initial-model"]
+    assert [m.model_id for m in granted(after)] == ["", *ids]
+    assert granted(after)[-1].availability_basis == "executor_enumerated"
     assert after.catalog.connections[0].default_model_id == ""
 
 
@@ -192,43 +201,6 @@ def test_workflow_discovered_model_has_sealed_versioned_evidence(
     assert evidence["kind"] == "native" and evidence["version"] == 2
     assert evidence["basis"] == "executor_enumerated" and evidence["source_digest"]
     assert snapshots and all(not path.exists() for path in snapshots)
-
-
-def test_background_discovered_model_keeps_workflow_authority_and_settles_once(
-    tmp_path, monkeypatch,
-):
-    from tests.test_background_budget_finalization_e2e import (
-        _CountingProvider as BackgroundProvider,
-    )
-    from tests.test_background_budget_finalization_e2e import _run_consumer_once
-    from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
-    from tinyassets.daemon_server import set_founder_home
-    from tinyassets.runs import get_run_by_branch_task_id
-
-    seen = []
-
-    async def enumerate_models(self, *, universe_dir, credential_snapshot_dir):
-        seen.append(credential_snapshot_dir)
-        return catalogue(["background-new-model"])
-    monkeypatch.setattr(BackgroundProvider, "native_credential_service", "codex")
-    monkeypatch.setattr(BackgroundProvider, "enumerate_models", enumerate_models)
-    set_founder_home(tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
-                     platform_generated=True)
-    task_id, _, _, _, _ = _run_consumer_once(
-        tmp_path, monkeypatch, model_access={"codex": ModelAccess("discovered")},
-        policy={"preferred": {"provider": "codex", "model_id": "background-new-model"}},
-    )
-    task = Epoch2BranchTaskAdapter(tmp_path).get(task_id)
-    run = get_run_by_branch_task_id(tmp_path, branch_task_id=task_id)
-    assert task.status == "succeeded", None if run is None else run.get("error")
-    with sqlite3.connect(db_path(tmp_path)) as conn:
-        records = [json.loads(row[0]) for row in conn.execute(
-            "SELECT record_json FROM provider_invocation_reservations",
-        )]
-    assert len(records) == 1 and records[0]["state"] == "succeeded"
-    assert records[0]["selection"]["model_id"] == "background-new-model"
-    assert records[0]["selection"]["model_evidence"]["version"] == 2
-    assert seen and all(not path.exists() for path in seen)
 
 
 @pytest.mark.parametrize("correction", [

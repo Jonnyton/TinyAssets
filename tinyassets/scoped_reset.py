@@ -92,6 +92,34 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     # Scoped reset's content-free coordination state.
     "scoped_reset_leases": "preserve",
     "scoped_reset_operations": "preserve",
+    # One owner's own verified model ids. PRESERVED by a scoped reset and removed by
+    # ACCOUNT DELETION through its owner_user_id column (already a detected principal
+    # key, so it needs no entry in that map). Classified explicitly because the table
+    # is created lazily on a first verified turn, so the unclassified-table gate would
+    # otherwise fire in production rather than in CI.
+    "learned_model_evidence": "preserve",
+    # Retired fleet-era cloud-automation and background-branch stores (plan C1,
+    # 2026-09-28). Nothing creates or reads these rows any more, but production
+    # still holds them until a host-action drops the tables, and an unclassified
+    # table blocks every scoped reset. Preserved: they are inert history.
+    "cloud_automation_controls": "preserve",
+    "cloud_automation_slice_triggers": "preserve",
+    "cloud_automation_terminal_receipts": "preserve",
+    "cloud_automation_continuations": "preserve",
+    "cloud_execution_continuations": "preserve",
+    "background_branch_bindings": "preserve",
+    "background_branch_attempts": "preserve",
+    "background_branch_authority_owners": "preserve",
+    # Created alongside the background-branch store. Still read by the agent
+    # runtime until that retires (plan B2/B3); preserved like the fleet history,
+    # since a scoped reset never needed to rewrite it.
+    "automation_activations": "preserve",
+    # Which account a universe's storage and seats are charged to
+    # (account-storage-quota). PRESERVED: a scoped reset keeps the login, and the
+    # fresh home it later births gets its own owner row at creation. The reset
+    # home's row names a universe id whose directory is gone, which measures as
+    # zero bytes; it is never re-used, because universe ids are never re-issued.
+    "universe_owner": "preserve",
 })
 
 FAULT_POINTS = (
@@ -212,6 +240,9 @@ _KNOWN_ROOT_DATABASES = frozenset({
 _KNOWN_ROOT_NON_DATABASE_FILES = frozenset({
     ".active_universe",
     ".node_registry.json",
+    # The live server's in-flight run recovery lock and its pid sidecar.
+    ".run_recovery.lock",
+    ".run_recovery.lock.pid",
     ".scoped-reset.barrier",
     "ledger.json",
 })
@@ -221,6 +252,8 @@ _KNOWN_ROOT_RUN_TABLES = frozenset({
     "branch_schedules",
     "branch_subscriptions",
     "branch_versions",
+    # One-time data-migration markers (name, time, counts): no subject data.
+    "branch_versions_migrations",
     "conformance_pack",
     "contribution_events",
     "conversation_run_admissions",
@@ -240,6 +273,7 @@ _KNOWN_ROOT_RUN_TABLES = frozenset({
     "run_judgments",
     "run_lineage",
     "run_receipts",
+    "run_terminal_outbox",
     "runs",
     "scheduler_delivered_events",
     "teammate_messages",
@@ -908,6 +942,9 @@ def _assert_home_filesystem_identity(
         )
 
 
+_AGENT_WORKSPACE_DIR = ".agent-workspace"
+
+
 def _walk_home_without_following(home: Path) -> tuple[str, ...]:
     blockers: list[str] = []
     pending = [home]
@@ -942,6 +979,12 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                     f"home-local audit or receipt store requires archival: "
                     f"{path.relative_to(home)}"
                 )
+                continue
+            if (current == home and entry.name == _AGENT_WORKSPACE_DIR
+                    and entry.is_dir(follow_symlinks=False)):
+                # The agent's own workspace (harness W2) is owner content of any
+                # shape; it goes with the home (stage_then_remove_home, which
+                # never follows a link), so it is not classified file by file.
                 continue
             if entry.is_dir(follow_symlinks=False):
                 if normalized_name in _HOME_OPERATIONAL_DIRECTORIES:
@@ -1341,11 +1384,11 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
             if expected.parent != root:
                 blockers.append("founder-home path escapes the data root")
             if registered is None:
-                blockers.append("founder-home binding has no universe row")
+                blockers.append("founder-home binding has no command center row")
             else:
                 registered_path = Path(str(registered[0])).resolve(strict=False)
                 if registered_path != expected:
-                    blockers.append("founder-home path disagrees with universe index")
+                    blockers.append("founder-home path disagrees with command center index")
             if not home_path.is_dir():
                 blockers.append("founder-home directory is missing")
             elif _is_link_or_reparse(home_path):
@@ -1362,7 +1405,7 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
     marker = root / ".active_universe"
     if home_id is not None and marker.is_file():
         if marker.read_text(encoding="utf-8").strip() == home_id:
-            blockers.append("active universe marker targets exact home")
+            blockers.append("active command center marker targets exact home")
     offer = root / "founder_offers" / f"{subject}.json"
     if offer.exists():
         blockers.append("enabled founder market offer must be disabled normally")
@@ -1662,7 +1705,7 @@ def plan_test_identity_reset(
         "filesystem_actions": filesystem_actions,
         "root_history_actions": root_history_actions,
         "preserved": [
-            "all other founder homes and universe content",
+            "all other founder homes and command center content",
             "commons, wiki, root run history, audit, market, and billing state",
             "global daemon identities and all credentials",
         ],

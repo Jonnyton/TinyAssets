@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from tinyassets import __version__ as _tinyassets_version
 from tinyassets.storage.workspace_authority import (
     is_git_scope,
     normalize_git_host,
@@ -70,11 +71,27 @@ class OutboundEndpoint:
     redirect_mode: str = "none"
 
     def as_dict(self) -> dict[str, object]:
+        # The reserved capability-URL pattern is DERIVED from the template, so it
+        # is never written out: the template is the one definition of that fact,
+        # and round-tripping the derived copy through the validator (which
+        # refuses a declared `secret` pattern) would make a stored endpoint
+        # unreadable the moment it was read back.
+        patterns = {
+            name: pat
+            for name, pat in self.param_patterns
+            if not (
+                name == _URL_SECRET_PLACEHOLDER_NAME
+                and (
+                    _URL_SECRET_TOKEN in self.path_template.split("/")
+                    or _URL_SECRET_REST_TOKEN in self.path_template.split("/")
+                )
+            )
+        }
         document = {
             "host": self.host,
             "path_template": self.path_template,
             "methods": list(self.methods),
-            "param_patterns": {name: pat for name, pat in self.param_patterns},
+            "param_patterns": patterns,
             "allowed_query": list(self.allowed_query),
             "query_patterns": {name: pat for name, pat in self.query_patterns},
             "required_query": list(self.required_query),
@@ -414,6 +431,16 @@ class SsrfValidationError(ProxyRequestError):
     """
 
 
+class OutboundDeadlineExceeded(SsrfValidationError):
+    """The destination did not finish answering inside the request's time budget.
+
+    Crosses the process boundary TYPED, with a fixed message, so the caller can
+    say "the model took too long" instead of "we could not identify why" (live
+    2026-09-29, turn b804819f: a free model writing an app ran past the old 30s
+    total and the owner was told the cause was unknown).
+    """
+
+
 class ConnectionAuthorizationError(ProxyRequestError):
     """The connection's authorization could not be made current.
 
@@ -450,15 +477,21 @@ def _adapter_safe_proxy_error(exc: BaseException) -> str:
         return "outbound connection grant unavailable"
     if isinstance(exc, PermissionError):
         return "outbound request not permitted"
+    if isinstance(exc, OutboundDeadlineExceeded):
+        return "outbound request exceeded its time budget"
     return "outbound request failed"
 
 
 def _send_message(channel: Any, value: object) -> None:
     try:
+        # UTF-8 as UTF-8: ``\uXXXX`` escaping made non-ASCII text up to six
+        # times larger, so a reply under its body cap could still overflow the
+        # frame (Codex, 2026-10-02). Quote and backslash escaping still double.
         payload = json.dumps(
             value,
             sort_keys=True,
             separators=(",", ":"),
+            ensure_ascii=False,
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ProxyRequestError(
@@ -535,13 +568,48 @@ _MAX_PROXY_STARTUP_TIMEOUT_S = 120.0
 #: other value is refused at creation AND fails closed at dispatch (FIX 1).
 _KNOWN_CONNECTION_TYPES = frozenset({"", "http"})
 
+#: The capability-URL scheme: the credential is a PATH SEGMENT, not a header.
+#: A Slack/Discord/Zapier incoming webhook and this platform's own
+#: ``/mcp/hooks/<token>`` all carry their secret in the URL, which is the most
+#: common way an agent posts a message anywhere -- and the one place every other
+#: scheme had nothing to say. Live 2026-09-30 a universe handed a webhook link
+#: asked for a bearer token that does not exist, then hardcoded the secret into
+#: ``path_template`` (stored in the clear, projected to the owner's grant) and
+#: sent the pasted value as a useless ``Authorization`` header.
+_URL_SECRET_SCHEME = "url_secret"
+
 #: Auth schemes an ``http`` connection may declare. ``oauth1a`` (Twitter) signs
 #: with the four OAuth secrets carried in the bundle; the rest use one token.
 #: ``oauth2`` sends a Bearer access token the broker keeps current from the
 #: connection's refreshable token bundle (``connection_oauth.tokens``).
+#: ``url_secret`` sends NO auth header at all -- see ``_substitute_url_secret``.
 _SUPPORTED_HTTP_AUTH_SCHEMES = frozenset(
-    {"none", "bearer", "basic", "header", "oauth1a", "oauth2"}
+    {"none", "bearer", "basic", "header", "oauth1a", "oauth2", _URL_SECRET_SCHEME}
 )
+
+#: The reserved path placeholder a capability URL's secret fills. ``{secret}`` is
+#: exactly one segment (``/mcp/hooks/{secret}``, Discord's token); ``{secret+}``
+#: is the final tail of one or more (Slack's secret is ``T…/B…/token``, three
+#: segments). RESERVED: the name may not be used as an ordinary ``{param}``, and
+#: its value pattern is the platform's, never the caller's (see
+#: ``_validate_param_patterns``).
+_URL_SECRET_PLACEHOLDER_NAME = "secret"
+_URL_SECRET_TOKEN = "{secret}"
+_URL_SECRET_REST_TOKEN = "{secret+}"
+
+#: The grammar a stored capability secret must satisfy. This is
+#: ``_SSRF_ENDPOINT_LITERAL_RE``'s character set MINUS ``%`` (a capability
+#: secret is never percent-encoded -- encoding one would trip the existing
+#: double-encoding refusal) and minus the empty match. So ``/``, ``?``, ``#``,
+#: ``\``, control bytes and dot-segments are unrepresentable, which is what
+#: makes byte-verbatim substitution into the path safe. Minimum 8 because a
+#: capability secret shorter than that is not one; 512 is
+#: ``_SSRF_MAX_MATCH_SEGMENT``.
+_URL_SECRET_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@-]{8,512}$")
+#: The multi-segment form: up to 8 segments, each individually safe, and the
+#: joined tail bounded the way ``_path_matches_template`` bounds a rest tail.
+_URL_SECRET_MAX_TAIL_SEGMENTS = 8
+_URL_SECRET_MAX_TAIL_CHARS = 1024
 
 #: The ONLY credential_ref scheme an ``http`` connection may reference. Binding
 #: the credential's scheme to the connection type is what stops a confused-deputy
@@ -573,6 +641,153 @@ def _validate_connection_credential_scheme(
     if ctype != "http" and is_http_ref:
         raise SsrfValidationError(
             "a non-http connection must not use a vault://http/ credential_ref"
+        )
+
+
+def url_secret_token(endpoint: Any) -> str:
+    """``{secret}`` / ``{secret+}`` if this endpoint carries the reserved
+    placeholder, else ``""``.
+
+    The reserved name is recognized in BOTH spellings from the one place, so the
+    validator, the binding check and the substituter can never disagree about
+    what a capability endpoint looks like.
+    """
+    template = str(getattr(endpoint, "path_template", "") or "")
+    if _URL_SECRET_REST_TOKEN in template.split("/"):
+        return _URL_SECRET_REST_TOKEN
+    if _URL_SECRET_TOKEN in template.split("/"):
+        return _URL_SECRET_TOKEN
+    return ""
+
+
+def validate_url_secret_value(value: str, token: str) -> str:
+    """Return the stored capability secret, or raise. NEVER echoes the value.
+
+    The grammar (``_URL_SECRET_SEGMENT_RE``) is what makes byte-verbatim
+    substitution into a path safe: a value that satisfies it cannot carry a
+    separator, a dot-segment, a percent-encoding or a control byte, so it can
+    only ever occupy the segment(s) the template reserved for it. Checked at the
+    deposit door AND again in the broker child immediately before substitution —
+    a mutated or corrupted vault record must fail closed, not reach a socket.
+    """
+    text = value if isinstance(value, str) else ""
+    if token == _URL_SECRET_REST_TOKEN:
+        segments = text.split("/")
+        if not 1 <= len(segments) <= _URL_SECRET_MAX_TAIL_SEGMENTS:
+            raise SsrfValidationError(
+                "a capability url secret may span 1-"
+                f"{_URL_SECRET_MAX_TAIL_SEGMENTS} path segments"
+            )
+        if len(text) > _URL_SECRET_MAX_TAIL_CHARS:
+            raise SsrfValidationError("capability url secret is too long")
+    else:
+        segments = [text]
+    for segment in segments:
+        if not _URL_SECRET_SEGMENT_RE.match(segment):
+            raise SsrfValidationError(
+                "a capability url secret is 8-512 characters of an opaque path "
+                "segment (letters, digits and ._~-!$&'()*+,;=:@) — it may not "
+                "contain a slash, a percent-encoding or whitespace"
+            )
+    return text
+
+
+def validate_url_secret_binding(
+    auth_scheme: str,
+    endpoints: tuple[OutboundEndpoint, ...],
+    *,
+    access_mode: str | None = None,
+) -> None:
+    """Enforce ``url_secret`` <-> the reserved placeholder, BOTH directions.
+
+    Both directions leak. A ``url_secret`` connection with no ``{secret}``
+    anywhere has nowhere to put the vault segment, so it would put a
+    credential-free request on the wire under a name that says otherwise. A
+    ``{secret}`` template on a HEADER scheme is worse: the literal ``{secret}``
+    token goes out in the path *and* the real credential goes out in an
+    ``Authorization`` header the receiver never asked for.
+
+    EVERY endpoint must carry exactly one reserved placeholder, not "at least
+    one": a mixed connection has endpoints reachable without the secret, and the
+    owner's grant sentence could not say which.
+
+    Called at the deposit door (a user-facing refusal), at ``create_connection``
+    (the storage boundary every issuer passes), and at dispatch against the row
+    as RE-READ, which is what refuses a row mutated after a proxy opened.
+
+    ``access_mode`` is optional ONLY so a caller with no mode in hand can still
+    check the placeholder half; every call site in this repo passes it, and one
+    that cannot must not be inventing ``exact`` on the row's behalf.
+    """
+    scheme = (auth_scheme or "").strip().lower()
+    carriers = [endpoint for endpoint in endpoints if url_secret_token(endpoint)]
+    if scheme == _URL_SECRET_SCHEME:
+        if access_mode is not None and normalize_access_mode(access_mode) != ACCESS_EXACT:
+            # `full` admits on the HOST alone, so no template is consulted and
+            # there is no reserved position: the credential would go into every
+            # path on the host. Creation and `set_access_mode` refuse the
+            # combination; passing the mode here refuses a row that reached it
+            # some other way, at DISPATCH, against the row as re-read (astra
+            # round 1, FINDING 4).
+            raise SsrfValidationError(
+                f"a {_URL_SECRET_SCHEME} connection cannot be granted full access"
+            )
+        if not endpoints or len(carriers) != len(endpoints):
+            raise SsrfValidationError(
+                f"every endpoint of a {_URL_SECRET_SCHEME} connection must carry "
+                f"the reserved {_URL_SECRET_TOKEN} (or {_URL_SECRET_REST_TOKEN}) "
+                "path placeholder — that is where the vault secret goes"
+            )
+        # The reserved placeholder must be the ONLY placeholder on the endpoint.
+        #
+        # Every real capability URL is a FIXED path plus a secret -- Slack's
+        # `/services/{secret+}`, Discord's `/api/webhooks/{secret+}`, Zapier's
+        # `/hooks/catch/{secret+}`, this platform's `/mcp/hooks/{secret}`. So
+        # this costs nothing real, and it buys two things:
+        #
+        # 1. It removes the shape astra's round-1 FINDING 3 attacked. There can
+        #    be no `{tail+}` beside the secret for a reserved token to ride in,
+        #    so the positioned substituter and the stray-token invariant are
+        #    now defence in depth rather than the only line.
+        # 2. It makes the pasted-link parser CORRECT rather than approximately
+        #    correct. `extract_url_secret` splits the template on the reserved
+        #    token and matches the pasted path's prefix as a literal string --
+        #    which silently failed on `/hooks/{room}/{secret}`: the ask
+        #    validated, the owner pasted the RIGHT link, and the deposit refused
+        #    it. Telling an owner their correct answer is wrong is the failure
+        #    this whole change exists to stop.
+        stray = [
+            name
+            for endpoint in endpoints
+            for name in (
+                _placeholder_names(endpoint.path_template)
+                + [_rest_placeholder_name(endpoint.path_template) or ""]
+            )
+            if name and name != _URL_SECRET_PLACEHOLDER_NAME
+        ]
+        if stray:
+            raise SsrfValidationError(
+                f"a {_URL_SECRET_SCHEME} endpoint is a fixed path plus the "
+                f"secret, so {_URL_SECRET_TOKEN} must be its only placeholder "
+                "(got " + ", ".join(sorted(set(stray))) + "); use "
+                f"{_URL_SECRET_REST_TOKEN} if the secret itself spans several "
+                "segments, or deposit one connection per fixed path"
+            )
+        if any(endpoint.redirect_mode != "none" for endpoint in endpoints):
+            # Refused LOUDLY rather than left to fail silently. The redirect
+            # chain re-matches the allowlist, which cannot match a substituted
+            # path, so a redirect endpoint here would quietly behave as
+            # no-follow. It should also not be wanted: a 3xx off a capability
+            # URL hands the secret path to the next origin via Location/Referer.
+            raise SsrfValidationError(
+                f"a {_URL_SECRET_SCHEME} endpoint may not follow redirects"
+            )
+        return
+    if carriers:
+        raise SsrfValidationError(
+            f"the reserved {_URL_SECRET_TOKEN} path placeholder needs "
+            f'"auth_scheme": "{_URL_SECRET_SCHEME}"; a header scheme would send '
+            "the placeholder literally and the credential in a header"
         )
 
 
@@ -805,6 +1020,8 @@ class _ProxyChannel:
             raise GrantResolutionError(message)
         if error_type == "AmbiguousProxyOutcome":
             raise AmbiguousProxyOutcome(message)
+        if error_type == "OutboundDeadlineExceeded":
+            raise OutboundDeadlineExceeded(message)
         if error_type == "ConnectionAuthorizationError":
             failure = response.get("failure")
             detail = failure.get("provider_detail", "") if isinstance(failure, dict) else ""
@@ -920,6 +1137,17 @@ class CredentialBlindBroker:
         if not credential:
             self._record_error(resource, grant_id, verb, "credential unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
+        # The request may ASK for a longer budget; whether it gets one is read
+        # from the connection's own capabilities, never from the request.
+        requested_budget = requested_idle = None
+        if isinstance(request, dict) and (
+            _REPLY_BUDGET_FIELD in request or _REPLY_IDLE_FIELD in request
+        ):
+            request = dict(request)
+            requested_budget = request.pop(_REPLY_BUDGET_FIELD, None)
+            requested_idle = request.pop(_REPLY_IDLE_FIELD, None)
+        reply_budget_s = self._inference_budget_s(resource, verb, requested_budget)
+        reply_stream = self._inference_stream(reply_budget_s, requested_budget, requested_idle)
         if resource.connection_type == "http":
             try:
                 headers = self._ledger.get_connection_capability(
@@ -938,15 +1166,24 @@ class CredentialBlindBroker:
             and (resource.auth_scheme or "").strip().lower() == "oauth2"
         )
         # Every value to keep out of a response. For oauth2 that is the access
-        # AND refresh token, never the JSON bundle string as a whole.
+        # AND refresh token, never the JSON bundle string as a whole. For a
+        # capability URL it is the joined credential AND each of its path
+        # segments: the check matches substrings, so a destination echoing one
+        # segment of a multi-segment secret would otherwise pass (astra round 1,
+        # FINDING 2).
         secrets_held: tuple[str, ...] = (credential,)
+        if (
+            resource.connection_type == "http"
+            and (resource.auth_scheme or "").strip().lower() == _URL_SECRET_SCHEME
+        ):
+            secrets_held = url_secret_sensitive_values(credential)
         wire_credential = credential
         if oauth:
             bundle = self._oauth_bundle(resource, grant_id, verb, credential)
             wire_credential = bundle.access_token
             secrets_held = bundle.secret_values()
         response = self._send(resource, grant_id, verb, request, wire_credential,
-                              revalidate_authority)
+                              revalidate_authority, reply_budget_s, reply_stream)
         if oauth and isinstance(response, dict) and response.get("status") == 401:
             # The service rejected the token before doing anything: refresh
             # once (unless another holder already did) and send once more.
@@ -956,8 +1193,12 @@ class CredentialBlindBroker:
                 wire_credential = bundle.access_token
                 secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
                 response = self._send(resource, grant_id, verb, request, wire_credential,
-                                      revalidate_authority)
-        if any(_contains_secret(response, secret) for secret in secrets_held if secret):
+                                      revalidate_authority, reply_budget_s, reply_stream)
+        joined = _streamed_text(response)
+        if any(
+            _contains_secret(response, secret) or (joined and secret in joined)
+            for secret in secrets_held if secret
+        ):
             self._record_error(
                 resource,
                 grant_id,
@@ -983,9 +1224,66 @@ class CredentialBlindBroker:
             self._record_error(resource, grant_id, verb, "connection authorization failed")
             raise
 
+    def _inference_budget_s(
+        self, resource: ConnectionResource, verb: str, requested: object,
+    ) -> float | None:
+        """The longer reply budget, when THIS connection is a model source.
+
+        ``None`` keeps the driver's ordinary 30s. Eligible only for a POST on an
+        ``http`` connection that carries a model capability the owner declared;
+        the request's number is only an upper bound within
+        ``INFERENCE_MAX_SECONDS``, and a non-number, a bool or anything not above
+        the ordinary budget changes nothing.
+        """
+        if (
+            type(requested) not in (int, float)
+            # An int is finite by construction; math.isfinite would overflow on
+            # one too large for a float (Codex, 2026-09-29).
+            or (type(requested) is float and not math.isfinite(requested))
+            or requested <= _SSRF_MAX_TOTAL_SECONDS
+            or resource.connection_type != "http"
+            or str(verb).upper() != "POST"
+        ):
+            return None
+        try:
+            eligible = any(
+                self._ledger.get_connection_capability(resource.connection_id, kind)
+                is not None
+                for kind in _INFERENCE_CAPABILITIES
+            )
+        except Exception:
+            # An unreadable capability is not evidence of one: ordinary budget.
+            return None
+        # Clamp before converting: float() of an enormous int overflows.
+        return float(min(requested, INFERENCE_MAX_SECONDS)) if eligible else None
+
+    @staticmethod
+    def _inference_stream(
+        reply_budget_s: float | None, requested_budget: object, requested_idle: object,
+    ) -> tuple[float, float] | None:
+        """``(idle seconds, total seconds)`` for a streamed reply, or None.
+
+        Only where the longer budget was already granted (a model source, a
+        POST), so the request can never buy more than that connection allows.
+        The total is the caller's own remaining turn, clamped to
+        ``INFERENCE_STREAM_MAX_SECONDS``; the idle window is clamped to
+        ``[INFERENCE_IDLE_MIN_SECONDS, INFERENCE_MAX_SECONDS]``.
+        """
+        if (
+            reply_budget_s is None
+            or type(requested_idle) not in (int, float)
+            or (type(requested_idle) is float and not math.isfinite(requested_idle))
+            or requested_idle <= 0
+        ):
+            return None
+        idle = float(min(max(requested_idle, INFERENCE_IDLE_MIN_SECONDS), INFERENCE_MAX_SECONDS))
+        total = float(min(requested_budget, INFERENCE_STREAM_MAX_SECONDS))
+        return idle, max(total, reply_budget_s)
+
     def _send(
         self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
-        credential: str, revalidate_authority: Any,
+        credential: str, revalidate_authority: Any, reply_budget_s: float | None = None,
+        reply_stream: tuple[float, float] | None = None,
     ) -> Any:
         try:
             return self._network_request(
@@ -999,6 +1297,8 @@ class CredentialBlindBroker:
                 verb=verb,
                 request=request,
                 **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
+                **({"reply_budget_s": reply_budget_s} if reply_budget_s is not None else {}),
+                **({"reply_stream": reply_stream} if reply_stream is not None else {}),
             )
         except AmbiguousProxyOutcome:
             self._record_error(
@@ -1008,6 +1308,13 @@ class CredentialBlindBroker:
                 "destination outcome ambiguous",
             )
             raise AmbiguousProxyOutcome("destination outcome ambiguous") from None
+        except OutboundDeadlineExceeded:
+            # Typed and fixed-text, so the caller can tell a slow answer from a
+            # failed one; nothing of the destination's crosses with it.
+            self._record_error(resource, grant_id, verb, "destination exceeded time budget")
+            raise OutboundDeadlineExceeded(
+                "outbound request exceeded its time budget"
+            ) from None
         except Exception:
             self._record_error(
                 resource,
@@ -1270,6 +1577,42 @@ _SSRF_TIMEOUT_SECONDS = 30.0
 #: Codex-found). The body is read in bounded chunks, checking the deadline each
 #: iteration and tightening the socket timeout to the remaining budget.
 _SSRF_MAX_TOTAL_SECONDS = 30.0
+#: The ONE longer budget: the most a model-inference request may wait for its
+#: answer. A non-streaming model sends nothing until it has finished, so a turn
+#: that writes a whole app needs minutes, and the 30s above ended one mid-write
+#: (live 2026-09-29). Granted only to a POST on a connection that itself carries
+#: a model capability (``_inference_budget_s``), never because a request asks,
+#: and it replaces BOTH the per-operation and the total timeout for that one
+#: request. Every other bound -- pinning, allowlist, redirects, body and header
+#: caps, the slow-drip deadline itself -- is unchanged. Host-wide concurrency of
+#: such requests is bounded by provider admission
+#: (``TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS``). Equal to the served turn's own
+#: absolute cap (``providers.base.DEFAULT_ABSOLUTE_CAP_S``).
+INFERENCE_MAX_SECONDS = 600.0
+#: Capabilities that make a connection a model source, and so eligible.
+_INFERENCE_CAPABILITIES = ("model_use", "model_discovery")
+#: The request field an inference caller uses to ask for that budget. Removed
+#: by the broker before the request reaches the network driver.
+_REPLY_BUDGET_FIELD = "reply_budget_s"
+#: A STREAMED model reply is judged by whether it is still arriving, not by how
+#: long it takes (founder, 2026-10-02: "if the model response is just slow
+#: your skipping it and then that call is used up for the user" -- on a capped
+#: free tier every abandoned reply costs one of the day's requests). The caller
+#: asks with this field; once the response headers are in, each read may wait
+#: this long for the next bytes, and a reply that keeps arriving runs on. The
+#: header phase keeps ``INFERENCE_MAX_SECONDS``, so a source that ignores
+#: ``stream`` and answers all at once behaves exactly as before.
+_REPLY_IDLE_FIELD = "reply_idle_s"
+#: Bounds on that inactivity window: never shorter than a source's usual
+#: keep-alive gap, never longer than the old whole-reply ceiling.
+INFERENCE_IDLE_MIN_SECONDS = 30.0
+#: The outer bound on a streamed reply that keeps arriving: a slow drip must
+#: still end some day (the deadline socket's reason to exist). Six hours, the
+#: same horizon after which a working turn's row reads as stale.
+INFERENCE_STREAM_MAX_SECONDS = 6 * 3600.0
+#: Body cap for a streamed reply: event framing multiplies a reply's size, and
+#: this still fits ``_MAX_PROXY_FRAME_BYTES`` when JSON escaping doubles it.
+INFERENCE_STREAM_MAX_BODY_BYTES = 7 * 1024 * 1024
 _SSRF_READ_CHUNK = 65536
 # RESIDUALS owed before this driver is ACTIVATED (it is dark; activation is
 # gated behind the endpoint-allowlist slice):
@@ -1305,6 +1648,32 @@ _SSRF_READ_CHUNK = 65536
 # followed; a 3xx is returned as-is. If a connection ever opts into redirects,
 # the full scheme/host/DNS/peer check must re-run per hop with no cross-origin
 # credential forwarding — deliberately not implemented while it is off.
+#: The client string every outbound call carries when nothing declared one.
+#:
+#: HONEST on purpose: it names this platform and links to it, and it
+#: impersonates no browser. A CDN in front of a destination is entitled to know
+#: who is calling.
+#:
+#: Sending one at all is the fix for an UNIDENTIFIED client, not for one
+#: specific block. On 2026-09-30 a UA-less POST to this platform's own
+#: `/mcp/hooks` was answered `error code: 1010` (403) by Cloudflare while the
+#: same request carrying a User-Agent reached the application -- but that A/B
+#: did NOT reproduce hours later, from either the dev host or the production
+#: egress IP, with or without the header. So an edge block here is a bot score,
+#: not a function of this header. Identifying ourselves removes one of its
+#: inputs and is what a well-behaved client does; it is not a guarantee.
+#:
+#: The version is read from the package rather than repeated here, so a release
+#: cannot ship a client string that lies about which build is calling.
+#: ``tinyassets/__init__.py`` is deliberately side-effect free (its public API
+#: is lazy), so importing it here costs nothing and cannot cycle.
+OUTBOUND_USER_AGENT = f"TinyAssets/{_tinyassets_version} (+https://tinyassets.io)"
+
+#: The one header a NODE may not set per call, over and above the security
+#: denylist below: see `OUTBOUND_USER_AGENT` and the effector's
+#: `_declared_user_agent_error`. An owner declares it on the connection.
+OUTBOUND_USER_AGENT_HEADER = "user-agent"
+
 #: Headers a caller may never set: auth is applied inside the child from the
 #: typed bundle (D5); Host/proxy routing is owned by the transport, not the
 #: packet. Any ``proxy-*`` header is also refused (prefix check below).
@@ -1530,6 +1899,12 @@ def _ssrf_auth_headers(
     scheme = (auth_scheme or "none").strip().lower()
     if scheme == "none":
         result: dict[str, str] = {}
+    elif scheme == _URL_SECRET_SCHEME:
+        # A capability URL authenticates by the path segment the driver
+        # substitutes; there is NO header. Sending one anyway is what the live
+        # 2026-09-30 failure did (a bearer header of a value the receiver never
+        # asked for), and it hands the credential to a second reader for nothing.
+        result = {}
     elif scheme == "bearer":
         result = {"Authorization": f"Bearer {bundle.get('token')}"}
     elif scheme == "basic":
@@ -1567,6 +1942,195 @@ class _CanonicalOutboundUrl:
     port: int
     path_qs: str
     is_ip_literal: bool
+
+
+#: A path segment at least this long is scanned for in a response ON ITS OWN,
+#: not only as part of the joined credential. The same threshold
+#: ``api/pending_requests._ENTROPY_RUN_RE`` uses for "an unbroken run this long
+#: is a credential, not prose", and it is a threshold rather than the grammar
+#: floor (8) for a reason given in ``url_secret_sensitive_values``.
+_URL_SECRET_SCANNED_SEGMENT_CHARS = 16
+
+
+def url_secret_sensitive_values(credential: str) -> tuple[str, ...]:
+    """Every string a response must be scanned for: the whole credential, and
+    each segment long enough to be a credential on its own.
+
+    A ``{secret+}`` credential is several path segments joined by ``/``. The
+    response scanners (``_declassify_response``, and the broker's echo check)
+    match SUBSTRINGS, so scanning only the joined form let a destination echo
+    ONE segment back — a body carrying just the token of a ``T…/B…/token``
+    secret — and that segment reached the caller, ``bounded_evidence``, and the
+    run's ``external_write_errors`` preview (gpt-6-astra refute round 1,
+    FINDING 2).
+
+    But scanning EVERY segment trades a leak for a denial of service. The
+    leading segments of a real multi-segment capability URL are typically PUBLIC
+    ids (a workspace id, a channel id, a webhook id), they are short, and a
+    legitimate response can contain one — an 8-character numeric id in a JSON
+    body would then read as an echo and fail a working connection. So the
+    joined credential is always scanned, and a segment is scanned individually
+    only when it is long enough to be the secret rather than the address:
+    a 24-character webhook token is, a 9-character workspace id is not.
+    """
+    text = credential if isinstance(credential, str) else ""
+    if not text:
+        return ()
+    values = [
+        text,
+        *(
+            part
+            for part in text.split("/")
+            if len(part) >= _URL_SECRET_SCANNED_SEGMENT_CHARS
+        ),
+    ]
+    return tuple(dict.fromkeys(values))
+
+
+def _reject_stray_reserved_tokens(text: str, *, what: str) -> None:
+    """Refuse a reserved capability-url token ANYWHERE in ``text``.
+
+    Whole-segment equality was not enough (gpt-6-astra refute round 2,
+    FINDING 2). Three spellings survived it: a token in the QUERY string
+    (``?q={secret}``, which the substituter appended unchanged), a
+    percent-encoded token in a permissive ``{tail+}`` (``%7Bsecret%7D`` — legal
+    bytes, so the canonical parse admits it), and one embedded in a larger
+    segment (``prefix{secret}``).
+
+    None of them substitutes a credential into the wrong slot — the positioned
+    substituter settled that — but the reserved token is a PLATFORM marker, and
+    a request carrying one outside its declared slot is malformed. Sending it
+    tells the receiver what shape this connection is, and it leaves an invariant
+    the design states ("nothing reserved survives") not actually holding. So:
+    substring, on the raw text and on its percent-decoded form.
+    """
+    candidates = (text, urllib.parse.unquote(text))
+    for candidate in candidates:
+        if _URL_SECRET_TOKEN in candidate or _URL_SECRET_REST_TOKEN in candidate:
+            raise SsrfValidationError(
+                "the reserved capability-url placeholder may appear only where "
+                f"the endpoint declares it (found in the {what})"
+            )
+
+
+def _positioned_url_secret_path(
+    path: str, endpoint: OutboundEndpoint, secret: str, token: str
+) -> str:
+    """The path with the vault segment in the position the TEMPLATE reserved.
+
+    Derived from the matched endpoint, never by searching the path (astra
+    FINDING 3). ``/hooks/{secret}/{tail+}`` with ``tail: ".*"`` admits the
+    concrete path ``/hooks/{secret}/echo/{secret+}``: a search would find
+    ``{secret+}`` in the caller-controlled tail and put the credential there,
+    at a path the owner granted for arbitrary content. Positioning by the
+    template puts it only where the template says, and the closing invariant
+    below — evaluated on the path with the reserved slot BLANKED — refuses any
+    reserved token left anywhere else, in any spelling.
+    """
+    template_segments = endpoint.path_template.split("/")
+    concrete = path.split("/")
+    if token == _URL_SECRET_REST_TOKEN:
+        # A rest placeholder is the FINAL template segment (enforced at
+        # authoring), and the allowlist full-matched the joined tail against the
+        # literal token — so the tail is exactly that one segment.
+        prefix = len(template_segments) - 1
+        if concrete[prefix:] != [token]:
+            raise SsrfValidationError(
+                "the capability-url placeholder is not where the endpoint declares it"
+            )
+        rebuilt = [*concrete[:prefix], secret]
+        remainder = [*concrete[:prefix], ""]
+    else:
+        try:
+            index = template_segments.index(token)
+        except ValueError:
+            raise SsrfValidationError(
+                "the matched endpoint declares no capability-url placeholder"
+            ) from None
+        if index >= len(concrete) or concrete[index] != token:
+            raise SsrfValidationError(
+                "the capability-url placeholder is not where the endpoint declares it"
+            )
+        rebuilt = [*concrete[:index], secret, *concrete[index + 1:]]
+        remainder = [*concrete[:index], "", *concrete[index + 1:]]
+    # The closing invariant: nothing reserved may survive substitution.
+    # Evaluated on the path WITH THE RESERVED SLOT BLANKED, so the one
+    # legitimate occurrence is excluded and every other spelling — encoded,
+    # embedded, or in a later segment — is caught (astra round 2, FINDING 2).
+    # Checked before the secret is joined in, so no refusal can carry it.
+    _reject_stray_reserved_tokens("/".join(remainder), what="request path")
+    return "/".join(rebuilt)
+
+
+def _substitute_url_secret(
+    canonical: _CanonicalOutboundUrl,
+    *,
+    auth_scheme: str,
+    bundle: ConnectionSecretBundle,
+    endpoint: OutboundEndpoint | None = None,
+    access_mode: str = ACCESS_EXACT,
+) -> _CanonicalOutboundUrl:
+    """Put the vault segment where the reserved placeholder is. AFTER the allowlist.
+
+    The ORDER is the design (design.md D2). The canonical parse and
+    ``_enforce_endpoint_allowlist`` have already run against the URL as the
+    CALLER supplied it, carrying the literal ``{secret}`` token — so the egress
+    boundary was decided with no secret material present, and no
+    ``SsrfValidationError`` raised by either of them can carry one. Only then is
+    the segment spliced in, and only into the path: the host is untouched, so the
+    DNS resolution and globally-routable-address check that run next are
+    unaffected.
+
+    Substitution is byte-verbatim, which is safe only because
+    ``validate_url_secret_value`` has already refused anything that could carry a
+    separator, a percent-encoding, a dot-segment or whitespace. It is re-checked
+    HERE and not merely trusted from the deposit: a mutated or corrupted vault
+    record must fail closed rather than reach a socket.
+
+    A placeholder-bearing URL under any OTHER scheme is refused rather than sent
+    literally — that request has no substituter, so it would put ``{secret}`` on
+    the wire while a header carried the real credential.
+    """
+    scheme = (auth_scheme or "none").strip().lower()
+    # The PATH only. A placeholder in the query string is never substituted: the
+    # secret of a capability URL lives in the path, the allowlist validated the
+    # query against `query_patterns`, and splicing a credential into a query
+    # would put it somewhere the owner's grant never described.
+    path, sep, query = canonical.path_qs.partition("?")
+    if scheme != _URL_SECRET_SCHEME:
+        # No slot exists on this scheme, so no occurrence anywhere is legitimate.
+        _reject_stray_reserved_tokens(canonical.path_qs, what="request")
+        return canonical
+    if normalize_access_mode(access_mode) != ACCESS_EXACT:
+        # A `full` connection is admitted on the HOST alone, so no template was
+        # consulted and there is no reserved position to substitute into: every
+        # path on the host would take the credential. Creation and
+        # `set_access_mode` both refuse the combination; this refuses a row that
+        # reached it another way, at the last moment before the wire
+        # (gpt-6-astra refute round 1, FINDING 4).
+        raise SsrfValidationError(
+            f"a {_URL_SECRET_SCHEME} connection cannot be granted full access"
+        )
+    if endpoint is None:
+        raise SsrfValidationError(
+            f"a {_URL_SECRET_SCHEME} request must be admitted by a declared endpoint"
+        )
+    token = url_secret_token(endpoint)
+    if not token:
+        raise SsrfValidationError(
+            "the matched endpoint declares no capability-url placeholder"
+        )
+    # The QUERY has no reserved slot: the secret of a capability URL is in the
+    # path. So no occurrence in it is legitimate, and it is refused rather than
+    # appended unchanged — which is what it was (astra round 2, FINDING 2).
+    _reject_stray_reserved_tokens(query, what="query string")
+    secret = validate_url_secret_value(bundle.get("token"), token)
+    return _CanonicalOutboundUrl(
+        hostname=canonical.hostname,
+        port=canonical.port,
+        path_qs=_positioned_url_secret_path(path, endpoint, secret, token) + sep + query,
+        is_ip_literal=canonical.is_ip_literal,
+    )
 
 
 def _canonical_request_url(canonical: _CanonicalOutboundUrl) -> str:
@@ -1741,26 +2305,56 @@ def _compile_declared_pattern(pattern: Any) -> str:
 def _validate_param_patterns(
     path_template: str, raw: Any
 ) -> tuple[tuple[str, str], ...]:
-    """Every ``{param}`` / ``{param+}`` MUST declare a value pattern; no strays (FIX 3)."""
+    """Every ``{param}`` / ``{param+}`` MUST declare a value pattern; no strays (FIX 3).
+
+    ``{secret}`` / ``{secret+}`` is the ONE exception, and the exception is the
+    whole security argument for capability URLs. Its pattern is the platform's:
+    the anchored LITERAL token. So a stored ``/mcp/hooks/{secret}`` endpoint
+    matches the concrete path ``/mcp/hooks/{secret}`` and nothing else — the
+    egress allowlist is evaluated with zero secret material in the URL, and a
+    node that puts its own value (or a real secret) in the secret's position is
+    refused by the allowlist rather than quietly sent. A caller-declared pattern
+    for the reserved name is REFUSED: a permissive one would re-admit exactly the
+    node-supplied segment this exists to exclude.
+    """
     placeholders = _placeholder_names(path_template)
     rest_name = _rest_placeholder_name(path_template)
     all_names = placeholders + ([rest_name] if rest_name else [])
     if len(set(all_names)) != len(all_names):
         raise SsrfValidationError("endpoint path_template has duplicate placeholders")
     placeholder_set = set(all_names)
+    reserved = placeholder_set & {_URL_SECRET_PLACEHOLDER_NAME}
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
         raise SsrfValidationError("endpoint param_patterns must be an object")
     declared = {str(name) for name in raw}
-    if declared != placeholder_set:
+    if declared & reserved:
+        raise SsrfValidationError(
+            f"the reserved {_URL_SECRET_TOKEN} placeholder takes no "
+            "param_patterns entry: its value comes from the vault, never from a "
+            "declared pattern"
+        )
+    if declared != placeholder_set - reserved:
         raise SsrfValidationError(
             "endpoint param_patterns must declare exactly the path placeholders"
         )
-    return tuple(
+    patterns = [
         (name, _compile_declared_pattern(raw[name]))
-        for name in sorted(placeholder_set)
-    )
+        for name in sorted(placeholder_set - reserved)
+    ]
+    if reserved:
+        # The literal token, escaped and anchored by `re.fullmatch` at match
+        # time. `{secret+}` is a rest placeholder, so the joined tail must equal
+        # the one literal segment `{secret+}` — a multi-segment tail is refused
+        # here and only appears after substitution.
+        token = (
+            _URL_SECRET_REST_TOKEN
+            if rest_name == _URL_SECRET_PLACEHOLDER_NAME
+            else _URL_SECRET_TOKEN
+        )
+        patterns.append((_URL_SECRET_PLACEHOLDER_NAME, re.escape(token)))
+    return tuple(sorted(patterns))
 
 
 def _validate_query_rules(
@@ -1962,8 +2556,16 @@ def _enforce_endpoint_allowlist(
     method: str,
     endpoints: tuple[OutboundEndpoint, ...],
     access_mode: str = ACCESS_EXACT,
-) -> None:
+) -> OutboundEndpoint | None:
     """Refuse any host/method/path/query not on the connection allowlist (design.md D3).
+
+    Returns the endpoint that ADMITTED the request (``None`` on a ``full``
+    connection, where the host match is the whole decision and no template was
+    consulted). The identity of the matching endpoint is what a capability-URL
+    substitution is positioned by: searching the path for the placeholder
+    instead let a caller-controlled ``{tail+}`` segment carry a reserved token
+    and receive the secret in a position the allowlist never reserved for it
+    (gpt-6-astra refute round 1, FINDING 3).
 
     This is the real egress boundary: an EMPTY allowlist permits nothing, and a
     URL whose host, method, path, OR query does not match a declared endpoint is
@@ -1985,7 +2587,7 @@ def _enforce_endpoint_allowlist(
     verb = (method or "").strip().upper()
     if normalize_access_mode(access_mode) == ACCESS_FULL:
         if any(endpoint.host == host for endpoint in endpoints):
-            return
+            return None
         raise SsrfValidationError("outbound host is not on the connection allowlist")
     raw_path, _, raw_query = canonical.path_qs.partition("?")
     if len(raw_query) > _SSRF_MAX_QUERY_LEN:
@@ -2015,7 +2617,7 @@ def _enforce_endpoint_allowlist(
             continue
         if not _query_permitted(query_items, endpoint):
             continue
-        return
+        return endpoint
     raise SsrfValidationError("outbound endpoint is not on the connection allowlist")
 
 
@@ -2444,6 +3046,20 @@ class _TotalDeadlineExceeded(Exception):
     """The request exceeded its monotonic wall-clock budget."""
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    """A per-read timeout anywhere on the exception chain (not the total)."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, _TotalDeadlineExceeded):
+            return False
+        if isinstance(cur, TimeoutError) or isinstance(getattr(cur, "reason", None), TimeoutError):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _looks_like_deadline_breach(exc: BaseException, deadline: float) -> bool:
     """True if a request failure is really a total-deadline breach.
 
@@ -2464,6 +3080,11 @@ def _looks_like_deadline_breach(exc: BaseException, deadline: float) -> bool:
         reason = getattr(cur, "reason", None)
         if isinstance(reason, _TotalDeadlineExceeded):
             return True
+        # The per-operation timeout firing is the same answer -- the destination
+        # did not answer in time -- and it races the total when both are equal:
+        # a silent model at 30s/30s surfaced as a generic destination failure.
+        if isinstance(cur, TimeoutError) or isinstance(reason, TimeoutError):
+            return True
         cur = cur.__cause__ or cur.__context__
     return time.monotonic() >= deadline
 
@@ -2482,12 +3103,23 @@ class _DeadlineSocket:
     deadline inside the stdlib parser too, not only in the body loop.
     """
 
-    __slots__ = ("_deadline", "_per_op_timeout", "_sock")
+    __slots__ = ("_deadline", "_per_op_timeout", "_sock", "bound_by_total")
 
     def __init__(self, sock: Any, *, deadline: float, per_op_timeout: float | None) -> None:
         self._sock = sock
         self._deadline = deadline
         self._per_op_timeout = per_op_timeout
+        #: Whether the LAST armed read was limited by the total deadline rather
+        #: than the per-read window: a timeout then is the deadline, not a stall.
+        self.bound_by_total = True
+
+    def set_per_op_timeout(self, seconds: float) -> None:
+        """Change the per-read window from here on (the total is unchanged)."""
+        self._per_op_timeout = seconds
+
+    def set_deadline(self, deadline: float) -> None:
+        """Move the absolute deadline (a streamed reply, once its headers are in)."""
+        self._deadline = deadline
 
     def _arm(self) -> None:
         remaining = self._deadline - time.monotonic()
@@ -2496,6 +3128,7 @@ class _DeadlineSocket:
         budget = remaining
         if self._per_op_timeout is not None and self._per_op_timeout > 0:
             budget = min(self._per_op_timeout, remaining)
+        self.bound_by_total = budget >= remaining
         try:
             self._sock.settimeout(max(0.001, budget))
         except OSError:
@@ -2562,12 +3195,14 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         pinned_address: str,
         open_socket: Callable[..., socket.socket],
         deadline: float,
+        sockets: list | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(host, **kwargs)
         self._pinned_address = pinned_address
         self._open_socket = open_socket
         self._deadline = deadline
+        self._sockets = sockets
 
     def connect(self) -> None:  # noqa: D102 - overrides http.client
         # Bound the TCP connect by the remaining TOTAL budget, not just the per-op
@@ -2612,6 +3247,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             deadline=self._deadline,
             per_op_timeout=self.timeout,
         )
+        if self._sockets is not None:
+            self._sockets.append(self.sock)
 
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
@@ -2624,11 +3261,13 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         pinned_address: str,
         open_socket: Callable[..., socket.socket],
         deadline: float,
+        sockets: list | None = None,
     ) -> None:
         super().__init__(context=context)
         self._pinned_address = pinned_address
         self._open_socket = open_socket
         self._deadline = deadline
+        self._sockets = sockets
 
     def https_open(self, req: Any) -> Any:
         return self.do_open(self._make_connection, req)
@@ -2647,19 +3286,24 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
             pinned_address=self._pinned_address,
             open_socket=self._open_socket,
             deadline=self._deadline,
+            sockets=self._sockets,
         )
 
 
-def _read_capped_body(response: Any, max_body_bytes: int) -> bytes | None:
+def _read_capped_body(
+    response: Any, max_body_bytes: int, chunks: list[bytes] | None = None,
+) -> bytes | None:
     """Read the body in bounded chunks, enforcing only the size cap.
 
     The wall-clock deadline is enforced at the socket layer (``_DeadlineSocket``),
     which raises ``_TotalDeadlineExceeded`` from inside ``read1``'s recv if the
     budget is spent — so this loop only needs the size cap. ``read1`` returns
     after at most one underlying recv, so a huge body is cut at the cap without
-    being fully read. Returns the bytes, or None on a size-bound violation.
+    being fully read. Returns the bytes, or None on a size-bound violation. ``chunks``, when
+    given, receives each piece as it arrives, so a caller can keep a body that
+    stopped arriving part-way.
     """
-    chunks: list[bytes] = []
+    chunks = [] if chunks is None else chunks
     total = 0
     while True:
         piece = response.read1(min(_SSRF_READ_CHUNK, max_body_bytes + 1 - total))
@@ -2683,7 +3327,7 @@ class _HttpHopMetadata:
 def _remaining_redirect_seconds(deadline: float) -> float:
     remaining = deadline - time.monotonic()
     if not math.isfinite(remaining) or remaining <= 0:
-        raise SsrfValidationError("outbound request exceeded the total deadline")
+        raise OutboundDeadlineExceeded("outbound request exceeded the total deadline")
     return remaining
 
 
@@ -2773,8 +3417,16 @@ def _execute_pinned_https_request(
     max_header_bytes: int,
     absolute_deadline: float | None = None,
     hop_metadata: _HttpHopMetadata | None = None,
+    body_idle_timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Fire ONE request: no ambient proxies, no redirects, bounded response."""
+    """Fire ONE request: no ambient proxies, no redirects, bounded response.
+
+    With ``body_idle_timeout``, a response whose headers arrived is read with
+    that per-read window instead of ``timeout``, and a body that STOPS arriving
+    is returned as far as it got with ``"stalled": True`` -- the partial reply
+    is the owner's work and is not thrown away. The total deadline still ends a
+    drip, and still raises.
+    """
     deadline = (
         time.monotonic() + max_total_seconds
         if absolute_deadline is None else absolute_deadline
@@ -2782,6 +3434,14 @@ def _execute_pinned_https_request(
     remaining = (
         max_total_seconds if absolute_deadline is None else _remaining_redirect_seconds(deadline)
     )
+    # A streamed reply's long total starts only once its headers are in: until
+    # then the ordinary inference budget is the deadline, so a header drip
+    # cannot hold the worker for the stream's hours (Codex, 2026-10-02).
+    stream_deadline = None
+    if body_idle_timeout is not None and absolute_deadline is None:
+        stream_deadline = deadline
+        deadline = min(deadline, time.monotonic() + timeout)
+        remaining = max(deadline - time.monotonic(), 0.001)
     url = _canonical_request_url(canonical)
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
 
@@ -2791,12 +3451,14 @@ def _execute_pinned_https_request(
     opener.add_handler(urllib.request.ProxyHandler({}))
     # No HTTPRedirectHandler and no HTTPErrorProcessor are added, so a 3xx is
     # returned as-is (never auto-followed) and non-2xx does not raise (D3.4).
+    sockets: list[_DeadlineSocket] = []
     opener.add_handler(
         _PinnedHTTPSHandler(
             context=ssl_context,
             pinned_address=pinned_address,
             open_socket=open_socket,
             deadline=deadline,
+            sockets=sockets,
         )
     )
 
@@ -2823,7 +3485,7 @@ def _execute_pinned_https_request(
     if deadline_exceeded:
         # Raised OUTSIDE the except block: a fixed, secret-free message with a
         # clean __context__.
-        raise SsrfValidationError("outbound request exceeded the total deadline")
+        raise OutboundDeadlineExceeded("outbound request exceeded the total deadline")
     if response is None:
         # Raised OUTSIDE the except block on purpose: `raise ... from None` still
         # leaves ``__context__`` populated (readable via ``exc.__context__`` — the
@@ -2837,6 +3499,13 @@ def _execute_pinned_https_request(
     sanitized: dict[str, Any] | None = None
     bound_violation: str | None = None
     read_deadline_exceeded = False
+    if body_idle_timeout is not None:
+        if stream_deadline is not None:
+            deadline = stream_deadline
+        for wrapped in sockets:
+            wrapped.set_deadline(deadline)
+            wrapped.set_per_op_timeout(body_idle_timeout)
+    received: list[bytes] = []
     try:
         status = int(response.status)
         reason = str(getattr(response, "reason", "") or "")
@@ -2856,7 +3525,7 @@ def _execute_pinned_https_request(
             if not declared_ok:
                 bound_violation = "outbound response exceeds the size bound"
             else:
-                body_bytes = _read_capped_body(response, max_body_bytes)
+                body_bytes = _read_capped_body(response, max_body_bytes, received)
                 if body_bytes is None:
                     bound_violation = "outbound response exceeds the size bound"
                 else:
@@ -2885,7 +3554,24 @@ def _execute_pinned_https_request(
         # as a TimeoutError from the tightened socket timeout — label it as the
         # deadline (fail-closed) rather than a generic destination failure, exactly
         # as the header-phase handler does.
-        if _looks_like_deadline_breach(exc, deadline):
+        if (
+            # The socket knows which bound armed the read that timed out; a
+            # clock comparison here raced the deadline it was meant to exclude.
+            body_idle_timeout is not None and _is_timeout(exc) and bound_violation is None
+            and sockets and not any(wrapped.bound_by_total for wrapped in sockets)
+        ):
+            # Inactivity, not the total: the stream stopped arriving. What did
+            # arrive is returned, marked, for the caller to keep.
+            sanitized = {
+                "status": int(response.status),
+                "reason": str(getattr(response, "reason", "") or ""),
+                "headers": {
+                    str(name).lower(): str(value) for name, value in response.getheaders()
+                },
+                "body": b"".join(received).decode("utf-8", errors="replace"),
+                "stalled": True,
+            }
+        elif _looks_like_deadline_breach(exc, deadline):
             read_deadline_exceeded = True
         else:
             sanitized = None
@@ -2897,7 +3583,7 @@ def _execute_pinned_https_request(
             pass
 
     if read_deadline_exceeded:
-        raise SsrfValidationError("outbound request exceeded the total deadline")
+        raise OutboundDeadlineExceeded("outbound request exceeded the total deadline")
     if bound_violation is not None:
         raise SsrfValidationError(bound_violation)
     if sanitized is None:
@@ -3063,6 +3749,8 @@ class _SsrfHardenedHttpDriver:
         allowed_endpoints: tuple[OutboundEndpoint, ...] | None = None,
         access_mode: str = ACCESS_EXACT,
         revalidate_authority: Callable[[float], None] | None = None,
+        reply_budget_s: float | None = None,
+        reply_stream: tuple[float, float] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(bundle, ConnectionSecretBundle):
             raise SsrfValidationError("a typed connection secret bundle is required")
@@ -3076,10 +3764,24 @@ class _SsrfHardenedHttpDriver:
         # caller is exercising the raw transport (the driver's own adversarial
         # tests); every production call through _TrustedNetworkDriver passes a
         # non-empty allowlist, and an empty one refuses.
+        matched_endpoint: OutboundEndpoint | None = None
         if allowed_endpoints is not None:
-            _enforce_endpoint_allowlist(
+            matched_endpoint = _enforce_endpoint_allowlist(
                 canonical, verb, allowed_endpoints, access_mode
             )
+        # A capability URL's secret enters the path HERE and not one line
+        # earlier: everything above decided egress against the placeholder form
+        # (design.md D2), and everything below — DNS, the routable-address
+        # check, the socket — needs the real path. The host is unchanged, so the
+        # pin is unaffected. The POSITION comes from the endpoint that admitted
+        # the request, never from searching the path (astra round 1, FINDING 3).
+        canonical = _substitute_url_secret(
+            canonical,
+            auth_scheme=auth_scheme,
+            bundle=bundle,
+            endpoint=matched_endpoint,
+            access_mode=access_mode,
+        )
         request_headers = _validated_request_headers(headers)
         # oauth1a signs over the method + the exact request URL, so pass the
         # reconstructed URL (identical to the one _execute_pinned_https_request
@@ -3100,6 +3802,21 @@ class _SsrfHardenedHttpDriver:
             if name.lower() not in auth_names
         }
         request_headers.update(auth_headers)
+        # Say who we are, honestly, on every outbound call. The destinations
+        # users build channels to are CDN-fronted, and an unidentified client
+        # is at the mercy of a bot score it gives no input to -- one of which
+        # bit once here (see OUTBOUND_USER_AGENT for what did and did not
+        # reproduce). This is HTTP citizenship, not a guaranteed unblock.
+        #
+        # A DEFAULT, not an override: the connection's declared constant
+        # headers are merged before this (`merge_constant_headers`) and win, so
+        # an owner whose service wants a particular client string says so once,
+        # on the connection, where it is visible in the grant. A per-CALL
+        # User-Agent is refused at the effector instead of silently accepted,
+        # because impersonating another client is not the platform's to do on a
+        # node's say-so.
+        if not any(name.lower() == "user-agent" for name in request_headers):
+            request_headers["User-Agent"] = OUTBOUND_USER_AGENT
         # Everything to scrub from the response: raw bundle members AND the exact
         # auth values placed on the wire (e.g. the base64 blob of a Basic
         # credential, which matches no raw member).
@@ -3148,9 +3865,22 @@ class _SsrfHardenedHttpDriver:
             body=encoded_body,
             ssl_context=self._ssl_context,
             open_socket=self._open_socket,
-            timeout=self._timeout,
-            max_total_seconds=self._max_total_seconds,
-            max_body_bytes=self._max_body_bytes,
+            # The broker decided ``reply_budget_s`` (and only for inference);
+            # the redirect chain above never takes it. A streamed reply keeps
+            # that budget for its headers, then waits per read, not in total.
+            timeout=self._timeout if reply_budget_s is None else reply_budget_s,
+            max_total_seconds=(
+                self._max_total_seconds if reply_budget_s is None
+                else reply_budget_s if reply_stream is None else reply_stream[1]
+            ),
+            body_idle_timeout=None if reply_stream is None else reply_stream[0],
+            # Event framing costs ~150-250 bytes per token, so a long streamed
+            # reply outgrows the ordinary cap; the larger one still fits one
+            # proxy frame once JSON-escaped.
+            max_body_bytes=(
+                self._max_body_bytes if reply_stream is None
+                else max(self._max_body_bytes, INFERENCE_STREAM_MAX_BODY_BYTES)
+            ),
             max_header_count=self._max_header_count,
             max_header_bytes=self._max_header_bytes,
         )
@@ -3304,6 +4034,29 @@ def _build_http_secret_bundle(auth_scheme: str, credential: str) -> ConnectionSe
         raise SsrfValidationError(
             "credential encoding does not match the connection's auth scheme"
         )
+    if scheme == _URL_SECRET_SCHEME:
+        # An opaque path segment (or a `/`-joined run of them), carried under
+        # `token` like every other single-value scheme so `_substitute_url_secret`
+        # reads it the same way. Validated HERE as well as at the deposit door:
+        # this builder is the one choke point every dispatch passes through, so a
+        # corrupted or mutated record fails closed. The multi-segment grammar is
+        # used because the builder does not know which endpoint the call will
+        # address; `_substitute_url_secret` re-checks against that endpoint's
+        # actual token, which is the stricter one.
+        #
+        # EACH SEGMENT is a bundle member too, not only the joined form: the
+        # response scanners match substrings, so a destination echoing one
+        # segment of a Slack-shaped `T…/B…/token` back would otherwise pass both
+        # checks and land in the run record (astra round 1, FINDING 2).
+        whole = validate_url_secret_value(credential, _URL_SECRET_REST_TOKEN)
+        values = url_secret_sensitive_values(whole)
+        return ConnectionSecretBundle(
+            token=whole,
+            **{
+                f"url_secret_segment_{index}": part
+                for index, part in enumerate(values[1:])
+            },
+        )
     if scheme in ("bearer", "header", "oauth2"):
         return ConnectionSecretBundle(token=credential)
     if scheme == "basic":
@@ -3361,6 +4114,8 @@ class _TrustedNetworkDriver:
         allowed_endpoints = kwargs.pop("allowed_endpoints", ()) or ()
         access_mode = kwargs.pop("access_mode", ACCESS_EXACT)
         revalidate_authority = kwargs.pop("revalidate_authority", None)
+        reply_budget_s = kwargs.pop("reply_budget_s", None)
+        reply_stream = kwargs.pop("reply_stream", None)
         if connection_type == "http":
             return self._dispatch_http(
                 auth_scheme=auth_scheme,
@@ -3370,6 +4125,8 @@ class _TrustedNetworkDriver:
                 verb=str(kwargs.get("verb", "")),
                 request=kwargs.get("request"),
                 revalidate_authority=revalidate_authority,
+                reply_budget_s=reply_budget_s,
+                reply_stream=reply_stream,
             )
         if connection_type == "":
             # Legacy untyped connections route ONLY to the gated test fixture —
@@ -3391,6 +4148,8 @@ class _TrustedNetworkDriver:
         request: object,
         access_mode: str = ACCESS_EXACT,
         revalidate_authority: Callable[[float], None] | None = None,
+        reply_budget_s: float | None = None,
+        reply_stream: tuple[float, float] | None = None,
     ) -> Any:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
@@ -3400,6 +4159,17 @@ class _TrustedNetworkDriver:
             raise SsrfValidationError("connection has no permitted endpoints")
         if not isinstance(request, dict):
             raise SsrfValidationError("outbound http request shape is not permitted")
+        # The capability-URL binding, re-checked against the row as the broker
+        # RE-READ it (`dispatch` reads the resource fresh on every call), not the
+        # one frozen when the proxy opened. That is the TOCTOU closure: a row
+        # mutated from `url_secret` to `bearer` would otherwise send the
+        # placeholder literally in the path AND the secret segment in an
+        # Authorization header. Refused before a bundle exists. The access mode
+        # rides along: a row mutated to `full` admits every path on the host,
+        # which is no place for a path-borne credential.
+        validate_url_secret_binding(
+            auth_scheme, allowed_endpoints, access_mode=access_mode
+        )
         bundle = _build_http_secret_bundle(auth_scheme, credential)
         return self._http(
             bundle=bundle,
@@ -3412,6 +4182,8 @@ class _TrustedNetworkDriver:
             allowed_endpoints=allowed_endpoints,
             access_mode=access_mode,
             **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
+            **({"reply_budget_s": reply_budget_s} if reply_budget_s is not None else {}),
+            **({"reply_stream": reply_stream} if reply_stream is not None else {}),
         )
 
 
@@ -3449,6 +4221,42 @@ def _build_credential_broker_dispatch(
 _TRUSTED_DISPATCH_FACTORIES = {
     "credential_broker_v1": _build_credential_broker_dispatch,
 }
+
+
+def _streamed_text(response: object) -> str:
+    """Every string a streamed reply's deltas carry, joined in arrival order.
+
+    An event stream hands a reply over in pieces, and the caller rejoins them;
+    a credential split across two deltas passes a substring scan of the raw
+    body and reappears whole once rejoined (Codex, 2026-10-02). Scanning the
+    rejoined text closes that. Best effort, like the scan it extends.
+    """
+    body = response.get("body") if isinstance(response, dict) else None
+    if not isinstance(body, str) or "data:" not in body:
+        return ""
+    pieces: list[str] = []
+
+    def collect(value: object) -> None:
+        if isinstance(value, str):
+            pieces.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    for line in body.splitlines():
+        if not line.startswith("data:"):
+            continue
+        try:
+            chunk = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        for choice in (chunk.get("choices") or []) if isinstance(chunk, dict) else ():
+            if isinstance(choice, dict):
+                collect(choice.get("delta"))
+    return "".join(pieces)
 
 
 def _contains_secret(value: object, secret: str) -> bool:
@@ -3731,6 +4539,13 @@ class ConnectionLedger:
                 )
             if normalized_scheme not in _SUPPORTED_HTTP_AUTH_SCHEMES:
                 raise SsrfValidationError("auth scheme is not supported")
+            # The capability-URL binding at the STORAGE boundary, for the same
+            # reason `validate_git_scopes` lives here: every issuer assembles
+            # its own payload, and a rule that lives in one of them is a rule
+            # the next one forgets.
+            validate_url_secret_binding(
+                normalized_scheme, endpoints, access_mode=normalized_access
+            )
         # A git scope binds one repository on one host, so it may only ride on a
         # connection that names exactly one git host. Checked HERE, at the storage
         # boundary: every issuer assembles its own scope tuple, and a rule that
@@ -3856,11 +4671,19 @@ class ConnectionLedger:
         validate_git_scopes(
             new_scopes, hosts=[endpoint.host for endpoint in parsed], git_host=git_host
         )
-        sql = """
+        # The capability-URL binding as a PREDICATE, so an extension can never
+        # produce a row whose scheme and endpoints disagree: a set where EVERY
+        # endpoint carries the reserved placeholder may only land on a
+        # `url_secret` connection, and a set where any endpoint does not may
+        # only land on a connection that is not one. A prior read would be a
+        # TOCTOU against a concurrent remove-and-redeposit.
+        scheme_test = "=" if all(url_secret_token(ep) for ep in parsed) else "!="
+        sql = f"""
                 UPDATE outbound_connections
                 SET allowed_endpoints_json = ?, scopes_json = ?
                 WHERE connection_id = ? AND allowed_endpoints_json = ?
                   AND scopes_json = ? AND git_host = ?
+                  AND auth_scheme {scheme_test} ?
         """
         # The git host the scopes were validated against is part of the CAS:
         # a remove-and-reconnect under a different git_host with identical
@@ -3868,7 +4691,7 @@ class ConnectionLedger:
         params: list[Any] = [
             json.dumps([ep.as_dict() for ep in parsed]), json.dumps(list(new_scopes)),
             connection_id, expected_endpoints_json, expected_scopes_json,
-            normalize_git_host(git_host),
+            normalize_git_host(git_host), _URL_SECRET_SCHEME,
         ]
         if expected_access_mode is not None or expected_incarnation is not None:
             if not expected_access_mode or not expected_incarnation:
@@ -3936,6 +4759,13 @@ class ConnectionLedger:
             expected_endpoints_json,
             expected_scopes_json,
         ]
+        if wanted == ACCESS_FULL:
+            # A capability URL cannot be a full channel: `full` admits any path
+            # once the host matches, so the reserved placeholder would never be
+            # enforced. In the predicate rather than a prior read, so no
+            # concurrent deposit can slip between the check and the write.
+            sql += "           AND auth_scheme != ?\n"
+            params.append(_URL_SECRET_SCHEME)
         if expected_incarnation is not None:
             sql += "           AND incarnation = ?\n"
             params.append(expected_incarnation)

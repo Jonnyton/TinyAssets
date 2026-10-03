@@ -290,12 +290,18 @@ $('rail-items'); const rail=$('request-rail'); rail.appendChild($('connect-panel
 const host=$('rail-items');
 Object.defineProperty(host,'textContent',{get(){return '';},set(v){this.replaceChildren();}});
 let railOpen=null, railCache=[], NATIVE=false, connectWasBlocking=null;
+// renderRail now REUSES a card node whose row and open state are unchanged, so
+// a 15-second poll cannot delete what the user typed into it.
+let railNodes=new Map();
 // The module-level flags the sliced functions close over. `connectOtherOpen` joined
 // them on 2026-09-26: "Other ways to connect" is now CLOSED unless the user tapped
 // it, and the renderer derives the element's state from this rather than reading it
 // back off a node that survives every refresh.
 let connectOtherOpen=false;
 const CONNECT_REQUEST_ID="sys_connect_llm";
+// `isSetupRequest` closes over this too, since a reconnect card is answered by the
+// same connect panel: the sliced function needs every module-level name it reads.
+const RECONNECT_REQUEST_PREFIX="reconnect-source:";
 const answered=[];
 const HostedModelConnect={setup:'empty',busy:false,request:null,primary:null,
  configure(p){this.primary=p;}, adopt(r){this.adopt_seen=r;}, paint(){}};

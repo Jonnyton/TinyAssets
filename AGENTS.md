@@ -1,302 +1,57 @@
 # TinyAssets
 
-A goal-agnostic daemon engine. Bind it to a domain and let it run. The platform
-supports any multi-step AI workflow — research papers, screenplays, recipe
-trackers, novels, news summaries, any substantive long-running work.
+Principles and architecture: `PLAN.md` (§ *Operating Principles*). Here: the loop,
+and facts a model would get wrong. Every other rule lives at its point of use.
 
----
-
-## Forever Rule: 24/7 uptime, zero hosts online
-
-One unified priority, not a ranked list. **Every surface works with no host
-online** -- chatbot users through the live connector, daemon hosts installing
-the tray in under 5 minutes, contributors cloning and running cleanly, plus
-discovery, remix, converge, the paid-market inbox, and moderation.
-
-**Work ordering:** take the task unblocking the largest currently-broken uptime
-surface, and treat every outage as equal severity -- tiering is what starves the
-quiet surfaces. Break ties by shared dependency impact, then shortest path to
-verified recovery. Everything else continues but never blocks uptime.
-
-Architecture: `docs/design-notes/2026-04-18-full-platform-architecture.md`.
-
-**Personal-desktop prohibition (founder, 2026-09-21 PDT).** Never enroll,
-activate, route platform traffic/work to, or use `DESKTOP-KCPMGP3` as a platform
-dependency, including temporary/emergency fallbacks. It is the founder's home
-PC, not infrastructure. Platform service dependencies must be cloud-only; test
-and enforce the architectural boundary in PLAN.md. Local development and browser
-testing confer no production serving/execution authority. An existing local
-registration, tunnel, provider login or heartbeat is not permission to use it.
-
----
-
-## Two Living Files
-
-**AGENTS.md** (here) is how to work: behaviour, norms, hard rules.
-**PLAN.md** is how the system works and why: architecture, principles, design.
-Architecture never goes here; norms never go there. Both update immediately when
-durable state changes.
-
-**Live state has no living file.** It has homes by kind:
+## Live state
 
 | Kind | Home |
 |---|---|
-| Queued / in-flight work | `openspec/changes/` -- `python scripts/openspec_flow.py audit` |
-| Unresolved findings | `docs/concerns/` -- one file each, deleted when resolved |
+| Queued work | `openspec/changes/` |
+| Unresolved findings | `docs/concerns/` — one file each, delete to resolve |
 | Founder-only work | `docs/host-actions.md` |
-| Who is working on what | git branches and open PRs |
-| Narrative / landings | `.agents/activity.log` / the git log |
+| Who has what | branches and open PRs |
+| Narrative | `.agents/activity.log` |
 
-> **Do not recreate `STATUS.md`** (retired 2026-08-25: 5.2x over its own declared
-> ceiling, touched by 46% of its last 90 days of commits). One always-loaded file
-> absorbing every kind of live state is the failure mode, not the format.
+Orient: `python scripts/docview.py headings PLAN.md`, one section, then
+`python scripts/openspec_flow.py audit`. Write durable state before replying.
 
----
+## The loop
 
-## How to Work
+1. One intent, one worktree, disjoint files, one PR; new scope is a new lane.
+2. A one-sentence diff gets no plan; hard-to-reverse surfaces get a spec first.
+3. Run the tests your diff touches plus affected heavy files, and `ruff`; CI does
+   the rest. Mutation tables only for data-loss or cross-user guards.
+4. Review only floor-class changes and gate files: one cross-family round
+   (`peer-agents`), floor and correctness findings only, `AGREE`/`DISAGREE_EVIDENCE`.
+5. No lane cap: fold colliding or superseded lanes into one; serialize merges.
+6. Done = sha asserted deployed, one real-user app pass, spec synced.
+7. Same error three times, or the same finding twice: hand off, do not patch.
+8. A new rule deletes an old one; a rule a script can enforce gets no line.
 
-### Orient
+## Facts (numbers are cited repo-wide)
 
-1. `PLAN.md` is the design reference. Full load for feature planning or design
-   decisions; `python scripts/docview.py headings PLAN.md` then one section for
-   scoped work; skip for routine test/doc edits.
-2. `python scripts/openspec_flow.py audit` is the work queue. Skim
-   `docs/concerns/README.md` when the area has known-unresolved findings.
-3. An approach conflicting with a `PLAN.md` principle does not get implemented --
-   file it in `docs/concerns/`. PLAN.md changes need user approval.
-4. Before a design note proposing a new MCP action, citing an unfixed `BUG-NNN`,
-   or pinning a sha: `python scripts/check_primitive_exists.py` (exit 2 =
-   collision).
+1. `SqliteSaver`, never `AsyncSqliteSaver`.
+2. Reuse the LanceDB connection object; never recreate it.
+3. Vendor-neutral compute only — `PLAN.md`.
+4. Gates default autonomously — `PLAN.md`.
+5. Accumulating state needs `Annotated[list, operator.add]` —
+   `domains/fantasy_daemon/state/book_state.py`.
+6. `FactWithContext` carries truth-value typing — `tinyassets/knowledge/models.py`.
+7. Python 3.11+ — `pyproject.toml`.
+8. Fail loudly; a mock fallback that looks real is worse than a crash.
+9. Uploads are verbatim — `PLAN.md`.
+10. Ship-time attribution — `tinyassets/attribution/`.
+11. `https://tinyassets.io/mcp` is the only public endpoint; `mcp.tinyassets.io`
+    is internal and never documented. After DNS/tunnel/connector edits:
+    `python scripts/mcp_public_canary.py --assert-handles`.
+13. Prove a path is on a remote or in history before destroying it; never switch
+    a dirty worktree to `main`.
+14. `python scripts/deployed_sha.py --assert-contains <sha>` before "shipped".
+15. The platform has no LLM — `PLAN.md`.
 
-### Keeping state current
-
-If the user closed the window after your next message, durable state must
-already reflect anything they said. Decisions, priority changes, and new
-findings get written to their home (above) before you respond; design-relevant
-ones also update `PLAN.md`. Ideas that will not be executed now go to
-`ideas/INBOX.md`. Greetings and questions change nothing — do not write.
-
-**Deletion matters as much as addition.** Resolve a concern by deleting its
-file; archive a landed change rather than annotating it. The commit is the record.
-
-### Where new conventions live
-
-A convention any provider would need goes in `AGENTS.md`. Provider-specific
-files (`CLAUDE.md`, `CODEX.md`) hold only harness quirks. In doubt, `AGENTS.md` —
-broader visibility is the safer error. Enforced by `cross-provider-drift`.
-
-### Truth And Freshness
-
-- Truth is typed: `AGENTS.md` owns process, `PLAN.md` design, `openspec/specs/`
-  behaviour. Audits are diagnostic, never a source.
-- Verification claims carry date, environment, and the command that produced them.
-- **Re-verify a premise before acting on it, and correct the citation in place.**
-  Paths and line numbers rot faster than findings do. A stale pointer misleads
-  worse than no pointer.
-- Contradicted claim → fix it or file `docs/concerns/` before responding.
-
-### Client Conversations Are Bug Reports
-
-A pasted chat from any client is a bug report. Extract the issues and fix them.
-
-### Large Docs And Artifacts
-
-Use `python scripts/docview.py` (`stat`, `headings`, `section`, `lines`,
-`search`, `json`) instead of whole-file reads for anything large -- `PLAN.md`,
-`output/*/notes.json`, big review artifacts. Narrow the query rather than
-falling back to a raw read.
-
-### Project Skills
-
-Canonical in `.agents/skills/`, mirrored to `.claude/skills/`
-(`powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1` after
-editing). Seven skills named for their task -- read the matching one; there is no
-router. Each carries project knowledge you cannot infer from the repo. The 24
-deleted on 2026-08-25 encoded generic practice a current model already has;
-before adding one back, answer the question that removed them: **which model
-weakness does this encode, and does a current model still have it?**
-
-Research-derived concepts need opposite-provider review before implementation
-(Codex finding -> Claude reviews, and vice versa), leaving a durable artifact
-that gates build/push/rollout.
-
-### Spec-driven development -- OpenSpec is the standard
-
-Host directive 2026-07-19.
-
-- `openspec/specs/<capability>/spec.md` is as-built requirement truth;
-  `openspec/changes/<name>/` holds in-flight proposals. Lifecycle: explore ->
-  propose -> apply -> sync -> archive (`openspec` skill).
-- **Spec what is hard to reverse, build the rest.** A change directory is
-  required for the things a wrong guess makes expensive: **public MCP/API
-  surface, storage shape, authority/permissions, migrations, money**. Those get
-  proposal + design before code.
-- **Everything else: build it, prove it live, then write the spec from what
-  shipped.** Bug fixes, internal refactors, UI, docs, tests, and single-surface
-  behaviour changes do not wait on a proposal. Writing the spec after the fact
-  is not a shortcut -- it is more accurate, because it describes what actually
-  works rather than what was predicted.
-- **Rationale (measured 2026-08-26).** 67 active changes, median 23 days idle,
-  50 of 67 untouched in a fortnight. A mandatory pre-build proposal is the step
-  a fresh project folder does not have, and it is where idea-to-deployed stalls.
-  The founder's comparison was explicit: an empty folder iterated dramatically
-  faster than this repo.
-- **Sync and archive on land, same lane.** A landed change with unsynced deltas
-  is spec drift -- treat it as a failing gate.
-- Truth split: `PLAN.md` owns *why*; `openspec/specs/` owns *what*.
-
-#### Delivery flow
-
-**A WIP limit you cannot satisfy is a wall, not a limit.** With 67 changes open
-and three quarters idle, "finish before starting" blocked new work without
-draining old. Prefer: finish or **archive**. A change idle 14 days is not
-in flight -- archive it and re-propose when it is real. Archiving is free and
-reversible; git holds it.
-
-
-Full procedure: **[`docs/reference/delivery-flow.md`](docs/reference/delivery-flow.md)**.
-Headline: one intent, one owner, one branch, one PR, ≤12 task checkboxes;
-**finish before starting** (`python scripts/openspec_flow.py audit` prefers
-complete-but-unarchived, then smallest unblocked in-flight); the change
-inventory is a WIP queue, not an archive of ambitions.
-
-### Site preview / ship loop
-
-The site lives in `WebSite/site-react/`. For any non-trivial site edit read
-`.agents/skills/website-editing/SKILL.md` first — it owns the preview loop,
-capture conventions, and the build/ship pipeline.
-
----
-
-## Working Norms
-
-Two providers work this repo -- Claude Code and Codex CLI -- calling each other
-as peers via `peer-agents`. Neither runs a standing team.
-
-- **Verification is cross-family**, on the peer's own budget: not a same-family
-  teammate reviewing its own family's work.
-- **Stuck 3+ iterations on the same error -> stop.** Say what failed, what
-  specific change would fix it, and whether you are repeating yourself; then
-  hand it to the other family. `scripts/supervisor.py` watches for this.
-- **Record what the next session needs** in the home that fits. A learning left
-  only in chat is lost work.
-
-### Quality Gates
-
-Procedure: **[`docs/reference/quality-gates.md`](docs/reference/quality-gates.md)**.
-Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/executable-gates.md)**.
-
-- **Ship to learn; risk tier sets review depth** (founder, 2026-09-24; full
-  policy and evidence in `docs/reference/quality-gates.md`). Tier 0 (docs,
-  tests, UI, dark or one-revert changes): no review. Tier 1 (new behaviour or
-  primitive): one non-blocking review. Tier 2 (the floor: cross-user access,
-  credential exposure, data loss, money, irreversible acts, connector down,
-  gate files): one blocking review, other model family when available,
-  otherwise owed. **Hard stop: two rounds, one day**; round 2 only verifies
-  floor fixes. Findings must cite the PR head. **Recurring findings mean a
-  missing primitive**: redesign, do not patch. Small live slices; a failure
-  seen live becomes a regression test; the proof is a rendered conversation.
-  A dispatched review gates landing, not progress.
-- **Carry each item to verified completion, and work in parallel** (founder,
-  2026-09-24; corrects a misreading of 2026-09-15 as "one patch at a time").
-  A capability is finished when it is deployed, succeeds through the real app,
-  passes its relevant regressions and has its spec synced. Then cross it off;
-  never leave a done item endlessly open or call a milestone done. Parallel
-  work across independent items is recommended, not restricted: architect the
-  shared dependencies, keep bounded builders busy in isolated worktrees, and
-  serialize merges and production/live-account operations. Parallelism never
-  relaxes review, tests or acceptance.
-- **If you know the next step, take it** (founder, 2026-09-17/24). Do not
-  wait on the founder for a step you can already identify and perform. That
-  includes approvals inside the agreed work, such as authorizing a zero-cost
-  test-account key or granting a scope the agreed task needs. Ask only for
-  real decisions: new spending, irreversible or outward-facing acts outside
-  the agreed work, and PLAN.md changes. Keep an externally blocked item open
-  with its exact dependency and move to the next one.
-- **Test through the app agent as a user would** (founder, 2026-09-24). You
-  may send the app agent any message. "Retest your workflow checklist" returns
-  its whole known-issues list. Otherwise, write the way a casual, naive user
-  would ask, or ask it to run a specific test. Never feed it an answer it is
-  supposed to know or work out. That produces a false "works" signal that
-  real users, who get no such help, would be blocked behind. Never build or
-  edit users' workflows yourself; enable the agent to do it.
-- **Scope is the basic capability set, not the current user's needs**
-  (founder, 2026-09-24). Anticipate the minimal setup that lets a user do
-  anything a user should be able to do. A basic capability goes on the list
-  and stays there until cleared, even if no current user or app agent is
-  blocked by it. "Fine for what I'm building now" from the app agent is
-  evidence about priority, never a reason to drop the item.
-
-## Hard Rules
-
-1. **SqliteSaver only** -- not AsyncSqliteSaver (not production-safe).
-2. **LanceDB singleton** -- reuse connection objects, never recreate.
-3. **No vendor-specific compute or connection code** (founder, 2026-09-24). Any LLM or platform connects through vendor-neutral connectors the user's agent configures; a new vendor never needs a patch. Existing vendor paths are migration debt (`PLAN.md` Providers). Dev tooling is exempt.
-4. **Executable gates need autonomous defaults** -- never block a workflow gate on human input when a safe default exists. True host-only authority only as a concrete `host-decision`/`host-action` row with the smallest ask; it must not block unrelated autonomous work.
-5. **TypedDict + Annotated reducers** -- `Annotated[list, operator.add]` for accumulating fields.
-6. **FactWithContext with truth-value typing** -- every extracted fact needs source_type, reliability, temporal_bounds, language_type.
-7. **Python 3.11+** required.
-8. **Fail loudly, never silently.** Mock fallbacks that look like real output are worse than crashes.
-9. **User uploads are authoritative.** Preserved verbatim — never summarize, truncate, or reformat.
-10. **Contributor attribution uses `CONTRIBUTORS.md`.** When `attribution_credit` rows exist on ship, map each `actor_id` to a GitHub handle and emit `Co-Authored-By:` lines; unknown actor_id → skip silently, never block a commit.
-11. **Public-surface changes verify post-change.** After any edit to DNS, Cloudflare tunnel, or any surface affecting `tinyassets.io`: `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp` must go green (export `TINYASSETS_WIKI_CANARY_TOKEN` first — the daemon serves no anonymous read, so every probe is the `canary` principal and exits 2 without it); MCP tool-surface changes additionally need `--assert-handles` (canonical set: `read_graph`/`write_graph`/`run_graph`/`read_page`/`write_page`/`converse` + optional `get_status`; as-built truth `openspec/specs/live-mcp-connector-surface/spec.md`). The canary is required evidence, not final chatbot-surface proof (see Quality Gates). Canonical public endpoint is `https://tinyassets.io/mcp` only; `mcp.tinyassets.io` is an Access-gated internal origin — never document it user-facing. Rationale: the 2026-04-19 P0 outage had no commit touching the broken surface (`docs/audits/2026-04-20-public-mcp-outage-postmortem.md`); probe catalog: `docs/ops/acceptance-probe-catalog.md`.
-12. ~~Portfolio graph~~ — **CUT 2026-08-27.** It required consulting `PROJECT_GRAPH.yml`, which has never existed in this repo; 328 public-surface commits since June, 4 touched `docs/portfolio/`. Number kept so "Hard Rule 13/14" citations elsewhere stay correct.
-
-13. **Inventory before you destroy; approval is not diligence.** No `git reset --hard`, `git checkout --`, `git restore`, `git clean`, force-push, or stash/drop as cleanup unless the host explicitly asks — and even then, **first prove what is unique.** For every path in scope: is it on a remote, or reachable in history? If neither, preserve it before acting. Approval settles *whether* to discard, never *what*. On 2026-08-26 a dirty checkout that looked like stale cruft held 4,711 lines of research existing nowhere else, two reference docs `AGENTS.md` had been citing for months, and — because this repo is PUBLIC — an unignored data room. A plain "yes, clean it" would have destroyed all three. Never switch a dirty worktree to `main`.
-14. **Merged is not deployed.** Actions-app merges via `GITHUB_TOKEN` do not trigger workflows (five PRs landed 2026-07-21, zero deployed). Before claiming shipped, export the canary service-principal credential and run the gate: `python scripts/deployed_sha.py --assert-contains <sha>` — it reads `git_sha` from bearer-protected `GET /mcp/pulse` and exits 1 if production does not contain your commit, 2 if the credential is absent or it cannot tell. No anonymous platform read exists. `release-reconcile.yml` self-heals drift every 15 min; the claim still needs the sha.
-15. **The platform has no LLM** (founder, 2026-09-24). Only a powered universe calls an LLM, with its owner's own connected credentials, for that universe alone. The platform never makes, needs or brokers LLM calls to run: no platform model, no shared/host/maintainer credential, no fallback. The founder's subscription is the founder universe's only.
-
----
-
-## Testing
-
-- `pytest` for the suite, `ruff check` before committing. Every module has
-  tests; nodes never crash.
-- **Never point a temp root inside the repo.** `tests/conftest.py` refuses to
-  start if `--basetemp`/`TMPDIR`/`TEMP`/`TMP` resolves under it. Sandbox agents
-  create those dirs under a restricted token, and the resulting Windows ACL
-  locks you out entirely -- you cannot delete, list, or even read it, and a
-  reboot does not help. Cleanup needs an elevated
-  `scripts/clear_sandbox_temp_dirs.ps1 -Apply`.
-- After canonical `tinyassets/*` edits affecting the plugin runtime:
-  `python packaging/claude-plugin/build_plugin.py` (`mirror-parity` gates it).
-- `actionlint` on workflow edits; CI is authoritative.
-- **Hot-path rewrites use differential testing:** keep the original in the suite
-  as executable spec and differential-test the rewrite
-  (`tests/test_match_scale.py`).
-- **A local Windows run is not an oracle on its own.** Pin the tree and
-  set-compare against the same suite at base before calling anything a
-  regression. **Run the Linux oracle before pushing anything that touches the
-  sandbox, the filesystem helpers, process limits or the workspace:**
-  `python scripts/linux_oracle.py -- -q tests/<file>.py` runs the WORKING TREE
-  (uncommitted changes included) in a container with CI's Python 3.11, git 2.47
-  and bubblewrap — the two things this host cannot supply at all being a real
-  jail and POSIX descriptor semantics. It is not a CI replacement; CI stays
-  authoritative. It exists because six CI rounds on `workspace-node` were spent
-  on failures of one shape: the behaviour changed, Windows went green, and a
-  test encoding the OLD contract survived because its assertion only runs on
-  POSIX. A green Windows suite that skipped 40 tests is not a green suite —
-  `python scripts/skip_census.py` says what a run did not cover.
-
-## Configuration -- environment variables
-
-All configuration is env vars. Catalog:
-**[`docs/reference/environment-variables.md`](docs/reference/environment-variables.md)**.
-Load-bearing invariants:
-
-- **CWD-independent resolvers only** -- `tinyassets.storage.data_dir()`,
-  `wiki_path()`. Never `Path.cwd()` logic or a re-implemented precedence.
-- **Containers:** `TINYASSETS_DATA_DIR=/data` + bind-mount (`deploy/README.md`).
-- **No platform model credential (Hard Rule 15):** the daemon env carries no
-  model login, API key or opt-in switch; the entrypoint strips any that appear
-  (`tests/test_no_platform_llm_credentials.py`).
-- **Secrets are vault-first:** `set -a; source scripts/load_secrets.sh; set +a`.
-  Never a committed plaintext file.
-
-## Project Files
-
-`README.md` orients. `AGENTS.md` (here) is how to work; `PLAN.md` is how the
-system works; live state lives in the typed homes above. Canonical skills in
-`.agents/skills/`, per-agent memory in `.claude/agent-memory/<name>/` (owner
-writes, everyone reads). **Delete or rename a tracked file -> update every
-reference to it in the same change.**
+Required CI excludes `.github/heavy-test-files.txt`; `heavy-tests` skips PRs.
+Sandbox, filesystem or process-limit work needs `python scripts/linux_oracle.py`;
+a skip is not a pass. No temp root inside the repo. Secrets:
+`set -a; source scripts/load_secrets.sh; set +a`. Gates:
+`docs/reference/executable-gates.md`.

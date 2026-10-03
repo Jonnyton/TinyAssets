@@ -443,7 +443,7 @@ def test_an_idempotent_read_still_rides_through_a_deploy_blip(tmp_path):
             + [{"status": status, "body": "<html>origin down</html>"}]
             + _handshake()
             + [_ok({"active_host": "codex"}, _SID2)],
-            "MCP.getStatus()",
+            "MCP.callTool(`get_status`,{},{idempotent:true})",
         )
         assert out["ok"] is True, (status, out.get("error"))
 
@@ -456,7 +456,7 @@ def test_an_idempotent_read_does_retry_a_cut_stream(tmp_path):
         + [{"status": 200, "body": "event: message\n"}]
         + _handshake()
         + [_ok({"active_host": "codex"}, _SID2)],
-        "MCP.getStatus()",
+        "MCP.callTool(`get_status`,{},{idempotent:true})",
     )
     assert out["ok"] is True, out.get("error")
     assert out["result"] == {"active_host": "codex"}
@@ -552,7 +552,7 @@ def test_an_error_response_cannot_re_arm_the_failed_session(tmp_path):
     out = _drive(
         tmp_path,
         _handshake() + [{"status": 500, "body": "boom", "headers": _SID2}],
-        "MCP.getStatus()",
+        "MCP.callTool(`get_status`,{},{idempotent:true})",
     )
     assert out["ok"] is False
     assert out["sessionIdAfter"] is None
@@ -571,7 +571,7 @@ def test_a_gateway_retry_does_not_spend_the_session_retry(tmp_path):
         + [_session_gone()]                              # session budget
         + _handshake()
         + [_ok({"active_host": "codex"}, _SID2)],
-        "MCP.getStatus()",
+        "MCP.callTool(`get_status`,{},{idempotent:true})",
     )
     assert out["ok"] is True, out.get("error")
     assert out["result"] == {"active_host": "codex"}
@@ -667,7 +667,7 @@ def test_a_late_reply_cannot_drag_the_client_back_to_an_older_session(tmp_path):
         + _handshake_with(_SID2)
         + [_ok({"active_host": "codex"}, _SID2)],
         '(async()=>{ const turn=MCP.converse("hello");'
-        '  const poll=MCP.getStatus();'
+        '  const poll=MCP.callTool(`get_status`,{},{idempotent:true});'
         '  return {turn: await turn, poll: await poll}; })()',
     )
     assert out["ok"] is True, out.get("error")
@@ -695,7 +695,8 @@ def test_concurrent_rejections_rebuild_the_session_once_not_once_each(tmp_path):
         + [_ok({"active_host": "a"}, _SID2),
            _ok({"active_host": "b"}, _SID2),
            _ok({"active_host": "c"}, _SID2)],
-        '(async()=>{ const a=MCP.getStatus(), b=MCP.getStatus(), c=MCP.getStatus();'
+        '(async()=>{ const read=()=>MCP.callTool(`get_status`,{},{idempotent:true});'
+        ' const a=read(), b=read(), c=read();'
         '  return [await a, await b, await c]; })()',
     )
     assert out["ok"] is True, out.get("error")
@@ -745,7 +746,7 @@ def test_a_bearer_refresh_also_bumps_the_session_generation(tmp_path):
         + _handshake_with(_SID2)
         + [_ok({"active_host": "codex"}, _SID2)],
         '(async()=>{ const turn=MCP.converse("hello");'
-        '  const poll=MCP.getStatus();'
+        '  const poll=MCP.callTool(`get_status`,{},{idempotent:true});'
         '  return {turn: await turn, poll: await poll}; })()',
     )
     assert out["ok"] is True, out.get("error")
@@ -912,7 +913,7 @@ def test_gateway_pause_cannot_resume_under_another_login(tmp_path):
     out = _drive(
         tmp_path, _handshake() + [{"status": 503, "body": "unavailable"}],
         '(async()=>{ MCP._pause=async()=>{MCP.endLogin(); bearer="different-login";};'
-        ' return await MCP.getStatus(); })()',
+        ' return await MCP.callTool(`get_status`,{},{idempotent:true}); })()',
     )
     assert out["ok"] is False
     assert out["error"]["transport"] == "login_changed"

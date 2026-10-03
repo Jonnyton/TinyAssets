@@ -59,7 +59,7 @@ Run the bootstrap script. Two paths:
 **Path A (recommended — single command):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/deploy/hetzner-bootstrap.sh \
+curl -fsSL https://raw.githubusercontent.com/TinyAssets/TinyAssets/main/deploy/hetzner-bootstrap.sh \
     -o /tmp/bootstrap.sh
 sudo bash /tmp/bootstrap.sh
 ```
@@ -67,7 +67,7 @@ sudo bash /tmp/bootstrap.sh
 **Path B (local clone — if you want to review first):**
 
 ```bash
-git clone https://github.com/Jonnyton/TinyAssets.git /tmp/tinyassets-src
+git clone https://github.com/TinyAssets/TinyAssets.git /tmp/tinyassets-src
 sudo bash /tmp/tinyassets-src/deploy/hetzner-bootstrap.sh
 ```
 
@@ -101,47 +101,54 @@ documents each):
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase dashboard → Project Settings → API → service_role key (keep secret; never ship to clients). |
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub → Settings → Developer settings → OAuth Apps → TinyAssets → Client ID. |
 | `GITHUB_OAUTH_CLIENT_SECRET` | Same page → "Generate a new client secret" → copy once. |
-| `TINYASSETS_IMAGE` | Required immutable GHCR digest ref. `deploy-prod.yml` resolves the short-SHA tag from `.github/workflows/build-image.yml` to `ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>` before writing `/etc/tinyassets/env`. |
+| `TINYASSETS_IMAGE` | Required immutable GHCR digest ref. `deploy-prod.yml` resolves the short-SHA tag from `.github/workflows/build-image.yml` to `ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest>` before writing `/etc/tinyassets/env`. |
 | `BACKUP_DEST` | Optional until offsite backup is provisioned; a root-configured rclone destination such as `storagebox:tinyassets-backups`. |
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
-Generate the daemon-only request-admission key without printing it. The
-dedicated file is exposed only to the daemon, not to workers, Cloudflare, or
-logging sidecars, and the atomic installer preserves its ownership and mode:
+Both daemon HMAC keys live in GitHub Actions repository secrets, and
+`deploy-prod.yml` installs them on every deploy. **GitHub is the source of
+truth**: do not generate a different value on the host.
+
+**Request-admission key** (`TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`): this is
+the daemon-only request-admission key, kept in its own
+`/etc/tinyassets/request-idempotency.env`. That file is mounted only by the
+daemon, not by Cloudflare or the logging sidecar, and the atomic installer keeps
+it `root:tinyassets 640`. On every deploy the workflow does the following:
+
+1. Validates the secret on the runner before touching the host: canonical
+   base64, at least 32 bytes, and different from the agent interchange key.
+2. Installs it with `set-once`. An absent key is written. An identical key is a
+   no-op. A **different** host key fails the deploy closed before any swap,
+   because persisted idempotency hashes and admission witnesses depend on the
+   current key.
+3. Validates the installed pair on the host.
+4. Asserts the shared `/etc/tinyassets/env` carries no copy of the key.
+
+To seed a new host before its first deploy, generate the key once, store that
+same value as the repository secret, and let the deploy install it:
 
 ```bash
-openssl rand -base64 48 | tr -d "\n" | sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /opt/tinyassets/deploy/install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
+openssl rand -base64 48 | tr -d "\n"   # paste into the GitHub secret; do not keep a copy
 ```
 
-For automated production deploys, store a separately generated value under the
-GitHub Actions repository secret `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`.
-The deploy validates it before touching the host and installs it before
-recreating the daemon/workers. Ordinary deploys use `set-once` and fail closed
-if GitHub and the host differ because persisted idempotency hashes and admission
-witnesses depend on the current key. If the key crosses an execution boundary,
-first ship the reviewed daemon-only boundary correction, replace the repository
-secret, then manually dispatch that same correction image with
-`rotate_request_idempotency_hmac=true`. Incident rotation intentionally
-invalidates witnesses signed by the exposed key. The rotation workflow requires
-the resolved target to match the exact immutable image already running on the
-daemon and four workers, proves the worker identities lack minting authority in
-host-controlled Docker configuration metadata before the stop-writer fence,
-then reads state by those immutable IDs and repeats the name-to-ID check before
-it transmits the replacement. Verify the restarted worker environments and
-canonical MCP health before resuming activation.
+To rotate it (the key was exposed, or crossed an execution boundary):
 
-Generate a unique daemon-only agent interchange key without printing it to the
-terminal. This writes canonical single-line base64 for 48 random bytes:
+1. Replace the repository secret.
+2. Manually dispatch `deploy-prod.yml` with `rotate_request_idempotency_hmac=true`.
+   The run proves the shared env holds no copy, replaces the key with `set`, and
+   the fail-safe deploy recreates the daemon (its only consumer) on the new key.
+   Rotation is refused on any automatic run.
+3. Verify canonical MCP health afterwards.
 
-```bash
-sudo sh -c 'umask 027; key=$(openssl rand -base64 48 | tr -d "\n"); printf "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=%s\n" "$key" > /etc/tinyassets/agent-interchange.env; chown root:tinyassets /etc/tinyassets/agent-interchange.env; chmod 640 /etc/tinyassets/agent-interchange.env'
-```
+Rotation intentionally invalidates witnesses signed by the exposed key.
 
-The separate file is injected only into the daemon container. Replace the key
-and restart to rotate it. Deleting a repository secret merely blocks automated
-deploys; normal revocation rotates and deploys, while emergency revocation
-stops the daemon before removing this protected file.
+**Agent interchange key** (`TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY`): kept in
+`/etc/tinyassets/agent-interchange.env`, which is likewise injected only into
+the daemon container. Every deploy installs the repository secret with `set`, so
+to rotate it, replace the secret and deploy. Deleting a repository secret only
+blocks automated deploys. Normal revocation is rotate-and-deploy. Emergency
+revocation stops the daemon before removing the protected file.
 
 Permissions check:
 
@@ -292,7 +299,7 @@ cutover for the post-cutover playbook.
 
 - **`CLOUDFLARE_TUNNEL_TOKEN` not set or wrong.** `docker logs tinyassets-tunnel` shows `Unauthorized` or hangs at "Tried to connect to tunnel". Fix: re-copy the token from the Cloudflare dashboard; tokens don't expire but do get regenerated on tunnel rotation.
 - **Healthcheck never passes.** `docker inspect tinyassets-daemon | jq '.[].State.Health'` shows consecutive failures. The healthcheck runs `mcp_public_canary.py` against `http://127.0.0.1:8001/mcp`; if daemon didn't bind, check `docker logs tinyassets-daemon`.
-- **Short-SHA image pin not pullable.** Image tag doesn't exist in GHCR. Pick a known-good short-SHA tag from GHCR, resolve it to a digest ref, write `TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest>` in `/etc/tinyassets/env`, then `systemctl restart tinyassets-daemon`.
+- **Short-SHA image pin not pullable.** Image tag doesn't exist in GHCR. Pick a known-good short-SHA tag from GHCR, resolve it to a digest ref, write `TINYASSETS_IMAGE=ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest>` in `/etc/tinyassets/env`, then `systemctl restart tinyassets-daemon`.
 - **`/etc/tinyassets/env` permissions wrong.** Compose reads env file via docker; mode must allow the `tinyassets` user to read. `chown root:tinyassets /etc/tinyassets/env && chmod 640 /etc/tinyassets/env`.
 - **Docker pull fails (GHCR auth).** If the image is private, the box needs a pull credential. This runbook assumes the GHCR image is public; if not, add `docker login ghcr.io` to the bootstrap + supply a PAT with `read:packages`.
 
@@ -628,9 +635,19 @@ receives `daemon`, `cloudflared`, and worker stdout through Docker's
 asynchronous Fluent logging driver on host-loopback port 24224 and forwards
 events. Vector receives no Docker socket or container-control capability. Two paths:
 
-- **Default (no config):** Vector writes to its own stdout, which
-  `docker compose` + journald capture. Equivalent to not running the
-  sidecar, but the wiring exists for one-env-flip enable.
+- **Default (no config):** Vector writes to its own stdout, and the `logs`
+  container's `journald` logging driver puts that in the host journal. This is
+  the durable copy of every forwarded line — query it with
+  `journalctl CONTAINER_NAME=tinyassets-logs`, which reads across past
+  container recreates. Retention is `deploy/journald-tinyassets.conf`, a
+  drop-in the host-uptime installer owns (1G / 14 days, persistent).
+
+  Corrected 2026-09-26: this used to say "`docker compose` + journald capture".
+  It did not. `docker compose up -d` detaches, so a container's stdout goes to
+  its logging driver, not to the systemd unit that ran compose — and the driver
+  was Docker's json-file default, which lives in the container's own directory
+  and is deleted when the container is recreated. Every deploy recreates one.
+  Found 2026-09-26; see `docs/ops/log-aggregation-runbook.md`.
 - **With Better Stack:** set `BETTERSTACK_SOURCE_TOKEN` in
   `/etc/tinyassets/env`, `sudo systemctl restart tinyassets-daemon`.
   Vector starts shipping to `https://in.logs.betterstack.com` with
@@ -645,8 +662,9 @@ events. Vector receives no Docker socket or container-control capability. Two pa
 5. Verify in Better Stack dashboard — events should appear within ~30s.
 
 If the box dies, Better Stack retains the most recent logs for
-debugging the death itself. Without this, `journalctl` is box-local +
-lost on destroy.
+debugging the death itself. Without it the journal is box-local and lost on
+destroy — bounded but real: this change makes the evidence survive a container
+recreate, not the loss of the box.
 
 ## What this deploy does NOT include (future rows)
 

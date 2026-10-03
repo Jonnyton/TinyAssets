@@ -64,28 +64,33 @@ class TestProjectMemorySet:
         assert result["status"] == "ok"
         assert result["version"] == 2
 
-    def test_set_size_cap_rejection(self, tmp_path: Path) -> None:
-        from tinyassets.memory.project import project_memory_set
+    def test_there_is_no_per_project_size_cap(self, tmp_path: Path) -> None:
+        """Past the old 1 MB ceiling, and the write still succeeds.
 
-        big_value = "x" * 500
-        result = project_memory_set(
-            tmp_path, project_id="proj1", key="k1", value=big_value, size_cap_bytes=100
-        )
-        assert result.get("error") == "size_cap_exceeded"
-        assert "cap_bytes" in result
-        assert "value_bytes" in result
+        Founder, 2026-09-30: an account has exactly two limits, cloud storage and
+        concurrent agent seats. Storage is measured ONCE, over the universe, by
+        the tier storage gate -- a separate per-project megabyte was a second
+        number for the same thing, and it refused with ``size_cap_exceeded``.
+        """
+        import inspect
 
-    def test_set_size_cap_accounts_for_replaced_key(self, tmp_path: Path) -> None:
-        from tinyassets.memory.project import project_memory_set
+        from tinyassets.memory import project as mod
+        from tinyassets.memory.project import project_memory_get, project_memory_set
 
-        project_memory_set(
-            tmp_path, project_id="proj1", key="k1", value="x" * 900, size_cap_bytes=1000
-        )
-        # Replacing k1 with a smaller value should succeed even though total was near-cap
-        result = project_memory_set(
-            tmp_path, project_id="proj1", key="k1", value="small", size_cap_bytes=1000
-        )
-        assert result["status"] == "ok"
+        assert not hasattr(mod, "_DEFAULT_SIZE_CAP_BYTES")
+        assert "size_cap_bytes" not in inspect.signature(project_memory_set).parameters
+
+        big = "x" * (2 * 1024 * 1024)  # 2 MiB, twice the old cap
+        result = project_memory_set(tmp_path, project_id="proj1", key="k1", value=big)
+        assert result["status"] == "ok", result
+        assert "error" not in result
+        stored = project_memory_get(tmp_path, project_id="proj1", key="k1")
+        assert stored is not None and stored["value"] == big
+
+        # And a second key on the same project, also over the old cap.
+        assert project_memory_set(
+            tmp_path, project_id="proj1", key="k2", value=big
+        )["status"] == "ok"
 
     def test_set_actor_stored(self, tmp_path: Path) -> None:
         from tinyassets.memory.project import project_memory_get, project_memory_set
@@ -178,17 +183,24 @@ class TestCrossProjectIsolation:
         result = project_memory_list(tmp_path, project_id="proj2")
         assert result == []
 
-    def test_size_cap_is_per_project(self, tmp_path: Path) -> None:
-        from tinyassets.memory.project import project_memory_set
+    def test_projects_stay_isolated_without_a_cap_to_separate_them(
+        self, tmp_path: Path
+    ) -> None:
+        """The cap used to be the only per-project accounting; isolation is not.
 
-        project_memory_set(
-            tmp_path, project_id="proj1", key="k", value="x" * 900, size_cap_bytes=1000
-        )
-        # proj2 has its own cap bucket — should succeed
-        result = project_memory_set(
-            tmp_path, project_id="proj2", key="k", value="x" * 900, size_cap_bytes=1000
-        )
-        assert result["status"] == "ok"
+        Reads are still scoped by project_id, which is the invariant that mattered.
+        """
+        from tinyassets.memory.project import project_memory_list, project_memory_set
+
+        assert project_memory_set(
+            tmp_path, project_id="proj1", key="k", value="x" * 900
+        )["status"] == "ok"
+        assert project_memory_set(
+            tmp_path, project_id="proj2", key="k", value="y" * 900
+        )["status"] == "ok"
+        assert [row["value"] for row in project_memory_list(tmp_path, project_id="proj1")] == [
+            "x" * 900
+        ]
 
 
 class TestHistoryTable:

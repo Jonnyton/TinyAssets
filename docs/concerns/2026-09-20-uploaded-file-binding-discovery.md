@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Uploaded attachment cannot be processed through ordinary agent use
+filed: '2026-09-20'
+summary: guidance deployed213454c4; fresh ordinary upload still lacks live byte-read proof, so the concern remains open
+---
+
 # Uploaded attachment cannot be processed through ordinary agent use
 
 **Filed:** 2026-09-20 | **Severity:** P1 | **Status:** description fix implemented locally, not deployed

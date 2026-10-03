@@ -74,13 +74,39 @@ _SCHEMA = (
     "ON graph_deliveries(sender_id, sender_universe_id)",
     "CREATE INDEX IF NOT EXISTS graph_deliveries_receiver "
     "ON graph_deliveries(receiver_owner_id, receiver_universe_id)",
+    # Backs the per-sender rate window count, which runs on every first acceptance.
+    "CREATE INDEX IF NOT EXISTS graph_deliveries_sender_window "
+    "ON graph_deliveries(receiver_id, sender_id, accepted_at)",
     "CREATE INDEX IF NOT EXISTS graph_delivery_attempts_state ON graph_delivery_attempts(state)",
 )
+
+
+#: Rolling window an OWNER's optional per-sender policy is measured over. There
+#: is no platform default and no ceiling; see ``receiver_links`` for why.
+SENDER_RATE_WINDOW_SECONDS = 3600.0
 
 
 class OccurrenceConflict(ValueError):
     def __init__(self):
         super().__init__("occurrence_conflict")
+
+
+def sender_window_count(conn, *, receiver_id, sender_id, window_seconds):
+    """Accepted deliveries from ONE principal to ONE receiver inside the window.
+
+    Keyed on ``sender_id`` alone, not ``(sender_id, sender_universe_id)``: a limit
+    scoped per universe would let a sender multiply their budget by founding more
+    of them. Counted inside the caller's acceptance transaction, so two concurrent
+    senders cannot both read an under-limit count and both insert.
+    """
+    _require_transaction(conn)
+    links._name(receiver_id)
+    links._name(sender_id)
+    return conn.execute(
+        "SELECT count(*) FROM graph_deliveries WHERE receiver_id=? AND sender_id=? "
+        "AND accepted_at >= ?",
+        (receiver_id, sender_id, time.time() - window_seconds),
+    ).fetchone()[0]
 
 
 def _exact_json(value):
@@ -149,6 +175,12 @@ def _receipt(conn, row, *, receiver_view=False):
     }
     if receiver_view:
         result["run_id"] = attempt["run_id"]
+        # Who sent this. The record always carried it; until now nothing returned
+        # it, so a receiving owner could not see who delivered to them -- which an
+        # open receiver makes load-bearing. Receiver side only: a sender learns
+        # nothing new about the receiver from its own receipt.
+        result["sender_id"] = row["sender_id"]
+        result["sender_universe_id"] = row["sender_universe_id"]
     return result
 
 

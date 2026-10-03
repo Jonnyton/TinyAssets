@@ -28,7 +28,7 @@ def test_step_rechecks_current_authority_without_new_reservation(
     # between-step fence are in scope. No engine tool is ever executed here.
     monkeypatch.setattr(
         "tinyassets.shared_self.prepare_shared_self_turn",
-        lambda base, uid, owner, prompt, config: (prompt, "", ModelConfig()),
+        lambda base, uid, owner, prompt, config, node=None: (prompt, "", ModelConfig()),
     )
     original = _ForegroundRunProviderSession._authorize_attempt
     observations = []

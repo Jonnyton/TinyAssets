@@ -23,7 +23,7 @@ Both premises were confirmed empirically, not by reading:
 
 - `policy` reported **success** on PR #1502, which carries no writer/checker
   labels at all.
-- `gh api repos/Jonnyton/TinyAssets/branches/main/protection` returns exactly
+- `gh api repos/TinyAssets/TinyAssets/branches/main/protection` returns exactly
   `["policy", "Diff scope declared"]`, with `required_pull_request_reviews: null`
   — so no human review is required either.
 
@@ -206,7 +206,7 @@ The command that was run — note it preserves both existing contexts and
 
 ```bash
 gh api --method PATCH \
-  repos/Jonnyton/TinyAssets/branches/main/protection/required_status_checks \
+  repos/TinyAssets/TinyAssets/branches/main/protection/required_status_checks \
   -F strict=true \
   -f 'contexts[]=policy' \
   -f 'contexts[]=Diff scope declared' \
@@ -216,7 +216,7 @@ gh api --method PATCH \
 Verify it took effect:
 
 ```bash
-gh api repos/Jonnyton/TinyAssets/branches/main/protection \
+gh api repos/TinyAssets/TinyAssets/branches/main/protection \
   --jq '.required_status_checks.contexts'
 # expect: ["policy","Diff scope declared","required-tests"]
 ```
@@ -245,7 +245,7 @@ artifact. If the content did change, it needs a real re-review.
 
 ```bash
 gh api --method DELETE \
-  repos/Jonnyton/TinyAssets/branches/main/protection/required_status_checks/contexts \
+  repos/TinyAssets/TinyAssets/branches/main/protection/required_status_checks/contexts \
   -f 'contexts[]=required-tests'
 ```
 
@@ -341,5 +341,17 @@ xdist note above and these 81 failures are the same class.
   `required-tests` and the excluded heavy files stay a non-required
   post-merge/scheduled tripwire (`heavy-tests`, split out 2026-08-27) — change it via the documented context-rename
   procedure, never by weakening this gate in place.
+- **Sharded 2026-09-27.** The serial job had regrown to ~21,900 tests and
+  19-22 minutes idle (40+ under runner contention). `required-tests` is now
+  an aggregate over six parallel `required-tests shard I/6` jobs; each test
+  file is owned by exactly one shard via a stable path hash
+  (`ci_required_tests.shard_of`), enforced in `pytest_ignore_collect` so a
+  shard never imports another's files. The context name is unchanged, so no
+  protection update was needed. The aggregate runs under `if: always()` (a
+  skipped required check reads as passing) and fails closed on a missing,
+  duplicated, truncated or differently-split shard before applying the same
+  quarantine comparison and `--min-ran` floor to the union. Parallelism is
+  across runners, not pytest-xdist, so the in-process nondeterminism above
+  does not apply.
 - The `known-failing-tests.txt` count is a standing cleanup backlog; each entry
   removed is a real regression the gate can newly catch.

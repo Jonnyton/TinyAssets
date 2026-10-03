@@ -63,7 +63,9 @@ def agent(served, monkeypatch):
         before_reply=None,
         unknown_inference=False,
         capacity_failures={},
+        failure_bodies={},
         on_capacity=None,
+        tool_call=("read_graph", ' {"target": "status"} '),
         config=ModelConfig(
             engine_mcp_enabled=True,
             engine_mcp_actor_id="owner",
@@ -114,7 +116,9 @@ def agent(served, monkeypatch):
                 return {
                     "status": state.capacity_failures[len(state.wires)],
                     "headers": {"retry-after": "60"},
-                    "body": '{"error":{"message":"synthetic refusal"}}',
+                    "body": state.failure_bodies.get(
+                        len(state.wires), '{"error":{"message":"synthetic refusal"}}',
+                    ),
                 }
             if state.before_reply is not None:
                 state.before_reply()
@@ -126,8 +130,8 @@ def agent(served, monkeypatch):
                         "id": "same-wire-id",
                         "type": "function",
                         "function": {
-                            "name": "read_graph",
-                            "arguments": ' {"target": "status"} ',
+                            "name": state.tool_call[0],
+                            "arguments": state.tool_call[1],
                         },
                     }
                 ]

@@ -120,28 +120,6 @@ def _build_provider_router() -> ProviderRouter:
     except Exception:
         logger.warning("Ollama not available; local fallback disabled")
 
-    # Optional SDK providers (soft-fail if deps missing).
-    try:
-        from fantasy_daemon.providers.gemini_provider import GeminiProvider
-
-        router.register(GeminiProvider())
-    except Exception:
-        logger.debug("Gemini provider not available")
-
-    try:
-        from fantasy_daemon.providers.groq_provider import GroqProvider
-
-        router.register(GroqProvider())
-    except Exception:
-        logger.debug("Groq provider not available")
-
-    try:
-        from fantasy_daemon.providers.grok_provider import GrokProvider
-
-        router.register(GrokProvider())
-    except Exception:
-        logger.debug("Grok provider not available")
-
     logger.info("Registered providers: %s", router.available_providers)
     return router
 
@@ -946,50 +924,6 @@ def _settle_claimed_direct_branch_task(
     return success, error
 
 
-def _record_cloud_automation_terminal_after_settlement(
-    claimed: Any,
-    *,
-    success: bool,
-    error: str,
-    metadata: dict[str, Any],
-) -> bool:
-    """Bridge a terminal epoch-2 task into its persisted Trigger owner."""
-
-    if not _is_epoch2_branch_task(claimed):
-        return True
-    automation_id = str(getattr(claimed, "automation_id", "") or "").strip()
-    if not automation_id:
-        return True
-    from tinyassets.cloud_automation_runtime import (
-        record_cloud_automation_terminal,
-    )
-    from tinyassets.storage import data_dir
-
-    handles = tuple(
-        value
-        for key, value in metadata.items()
-        if isinstance(value, str)
-        and value.strip()
-        and (key.endswith("_url") or key.endswith("_handle"))
-    )
-    result = record_cloud_automation_terminal(
-        data_dir(),
-        branch_task_id=str(claimed.branch_task_id),
-        success=success,
-        error=error,
-        run_id=str(metadata.get("run_id") or ""),
-        evidence_handles=handles,
-    )
-    if result is not None:
-        logger.info(
-            "dispatcher_pick: cloud terminal trigger=%s receipt=%s next=%s",
-            result.completed_trigger.trigger_id,
-            result.receipt.receipt_id,
-            (result.next_trigger.trigger_id if result.next_trigger is not None else "none"),
-        )
-    return True
-
-
 def _node_bid_lookup_factory(repo_root: Path):
     """Build a ``(node_def_id) -> NodeDefinition | None`` lookup.
 
@@ -1507,38 +1441,17 @@ def _try_execute_claimed_branch_task(
             provider_call = None
         automation_id = str(getattr(claimed_task, "automation_id", "") or "").strip()
         if is_epoch2 and automation_id:
-            if provider_call is None:
-                return (
-                    False,
-                    "cloud_provider_bridge_unavailable",
-                    {
-                        "automation_id": automation_id,
-                        "branch_task_id": str(claimed_task.branch_task_id),
-                    },
-                )
-            try:
-                from tinyassets.cloud_automation_continuation import (
-                    prepare_claimed_cloud_provider_call,
-                )
-
-                governed_provider_call = prepare_claimed_cloud_provider_call(
-                    base_path,
-                    claimed_task=claimed_task,
-                    daemon_id=daemon_id,
-                    provider_call=provider_call,
-                )
-            except (OSError, PermissionError, ValueError) as exc:
-                return (
-                    False,
-                    "cloud_provider_authority_unavailable",
-                    {
-                        "automation_id": automation_id,
-                        "branch_task_id": str(claimed_task.branch_task_id),
-                        "authority_error": str(exc),
-                    },
-                )
-            if governed_provider_call is not None:
-                provider_call = governed_provider_call
+            # A slice of a fleet-era cloud automation. That layer is retired
+            # (plan C1/C2): its controls are stopped and nothing produces new
+            # slices, so a leftover one fails with the reason, not a run.
+            return (
+                False,
+                "cloud_automation_retired",
+                {
+                    "automation_id": automation_id,
+                    "branch_task_id": str(claimed_task.branch_task_id),
+                },
+            )
 
         if is_epoch2:
             from tinyassets.runtime.claimed_branch_execution import (
@@ -2456,20 +2369,6 @@ class DaemonController:
                     success=branch_success,
                     error=branch_error,
                 )
-                try:
-                    _record_cloud_automation_terminal_after_settlement(
-                        claimed_task,
-                        success=branch_success,
-                        error=branch_error,
-                        metadata=branch_metadata,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception(
-                        "dispatcher_pick: cloud terminal receipt failed task=%s",
-                        claimed_task.branch_task_id,
-                    )
-                    branch_success = False
-                    branch_error = f"cloud_terminal_receipt_failed:{type(exc).__name__}"
                 _record_loop_daemon_signal(
                     loop_daemon_context,
                     universe_path=output_dir,
@@ -3577,8 +3476,8 @@ def _main_unfenced() -> None:
         default="",
         help=(
             "Pin the writer role to a single provider (no fallback). "
-            "Known: claude-code, codex, gemini-free, groq-free, grok-free, "
-            "ollama-local. Omit for the default fallback chain."
+            "Known: claude-code, codex, ollama-local. Omit for the default "
+            "fallback chain."
         ),
     )
 

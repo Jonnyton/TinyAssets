@@ -2,13 +2,13 @@
   "name": "tinyassets-mobile",
   "version": "0.1.0",
   "private": true,
-  "description": "TinyAssets mobile app \u00e2\u20ac\u201d a Capacitor native shell (Android + iOS) over the live TinyAssets web app (https://tinyassets.io/mcp/app).",
+  "description": "TinyAssets mobile app: a Capacitor native shell (Android + iOS) over the live TinyAssets web app (https://tinyassets.io/app).",
   "scripts": {
     "add:android": "cap add android",
     "sync": "cap sync android",
     "open:android": "cap open android",
-    "build:debug": "cap sync android && cd android && gradlew.bat assembleDebug",
-    "build:release": "cap sync android && cd android && gradlew.bat bundleRelease",
+    "build:debug": "cap sync android && python scripts/configure_android_release.py && cd android && gradlew.bat assembleDebug",
+    "build:release": "cap sync android && python scripts/configure_android_release.py && cd android && gradlew.bat bundleRelease",
     "add:ios": "cap add ios",
     "sync:ios": "cap sync ios",
     "open:ios": "cap open ios"
@@ -19,6 +19,7 @@
     "@capacitor/browser": "^8.0.4",
     "@capacitor/core": "^8.5.1",
     "@capacitor/ios": "^8.5.1",
+    "@capacitor/push-notifications": "^8.1.2",
     "@capacitor/splash-screen": "^8.0.2",
     "@capacitor/status-bar": "^8.0.3"
   },

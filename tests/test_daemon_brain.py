@@ -29,7 +29,8 @@ def _create_daemon(base: Path, name: str) -> dict:
         created_by="pytest",
         soul_mode="soul",
         soul_text=f"{name} is a careful test daemon.",
-        metadata={"daemon_wiki": {"cap_policy": "custom", "cap_bytes": 20000}},
+        # No daemon_wiki cap metadata: the per-wiki byte cap and its compactor are
+        # gone (founder 2026-09-30 -- storage is one universe-level number).
     )
 
 

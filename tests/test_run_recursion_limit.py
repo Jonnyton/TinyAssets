@@ -1,7 +1,10 @@
-"""recursion_limit_override exposure (Tier-1 Step 6).
+"""recursion_limit_override exposure, and the absence of a ceiling.
 
-Guards that the default LangGraph recursion limit is raised from 25 to
-100 AND that callers can override via ``recursion_limit_override``.
+LangGraph needs a recursion number, so there is one; it is not a limit.
+100 refused a branch whose author wrote a longer loop, with "Branch loop may be
+too deep" -- a structural cap on what someone may build (founder, 2026-09-30:
+an account has exactly two limits, cloud bytes and concurrent agent seats).
+What bounds an endless loop is the run's SEAT.
 """
 from __future__ import annotations
 
@@ -10,12 +13,19 @@ import inspect
 from tinyassets import runs
 
 
-class TestDefaultBumped:
-    def test_default_recursion_limit_is_100(self):
-        assert runs.DEFAULT_RECURSION_LIMIT == 100
+class TestThereIsNoCeiling:
+    def test_the_default_is_effectively_unbounded(self):
+        assert runs.DEFAULT_RECURSION_LIMIT >= 1_000_000, (
+            "the default must be past any graph a person writes"
+        )
 
-    def test_default_is_above_langgraph_stock_25(self):
-        assert runs.DEFAULT_RECURSION_LIMIT > 25
+    def test_no_validated_range_survives_in_the_api(self):
+        """Mutation guard: re-adding the 10-1000 range is the regression."""
+        from tinyassets.api import runs as runs_api
+
+        src = inspect.getsource(runs_api)
+        assert "Valid range: 10-1000" not in src
+        assert "10 <= _rl_val <= 1000" not in src
 
 
 class TestExecuteBranchSignature:
@@ -226,7 +236,11 @@ class TestMcpRecursionLimitOverride:
     def _stub_valid_branch(self, monkeypatch):
         from unittest.mock import MagicMock
 
-        dummy_src = {"branch_def_id": "b1", "name": "test", "node_defs": [], "edges": []}
+        # `visibility: public` stated rather than omitted: an absent field now reads
+        # as PRIVATE (founder 2026-09-26), and this double's subject is the
+        # recursion limit, not the read gate.
+        dummy_src = {"branch_def_id": "b1", "name": "test", "node_defs": [],
+                     "edges": [], "visibility": "public"}
         stub_branch = MagicMock()
         stub_branch.validate.return_value = []  # no errors
         stub_branch.to_dict.return_value = dummy_src  # real scalar contract, no file manifest
@@ -240,33 +254,79 @@ class TestMcpRecursionLimitOverride:
         )
         return stub_branch
 
-    def test_override_below_min_rejected(self, tmp_path, monkeypatch):
+    def test_a_small_override_is_the_authors_own_guard(self, tmp_path, monkeypatch):
+        """5 was refused for being under 10. It is the author's number now."""
         import json
 
         from tinyassets.api.runs import _action_run_branch
+        from tinyassets.runs import RUN_STATUS_QUEUED, RunOutcome
 
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._stub_valid_branch(monkeypatch)
+        monkeypatch.setattr(
+            "tinyassets.api.branches._resolve_branch_id",
+            lambda branch_def_id, _base_path: branch_def_id,
+        )
+        captured: dict[str, object] = {}
+
+        def _fake_execute_branch_async(*args, **kwargs):
+            captured.update(kwargs)
+            return RunOutcome(run_id="run-small", status=RUN_STATUS_QUEUED, output={})
+
+        monkeypatch.setattr(
+            "tinyassets.runs.execute_branch_async", _fake_execute_branch_async,
+        )
         result = json.loads(_action_run_branch({
             "branch_def_id": "b1",
             "recursion_limit_override": "5",
         }))
-        assert "error" in result
-        assert "out of range" in result["error"] or "10" in result["error"]
+        assert not result.get("error"), result
+        assert captured["recursion_limit_override"] == 5
 
-    def test_override_above_max_rejected(self, tmp_path, monkeypatch):
+    def test_a_large_override_has_no_ceiling(self, tmp_path, monkeypatch):
+        """2000 was refused for being over 1000. There is no upper bound now."""
+        import json
+
+        from tinyassets.api.runs import _action_run_branch
+        from tinyassets.runs import RUN_STATUS_QUEUED, RunOutcome
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        self._stub_valid_branch(monkeypatch)
+        monkeypatch.setattr(
+            "tinyassets.api.branches._resolve_branch_id",
+            lambda branch_def_id, _base_path: branch_def_id,
+        )
+        captured: dict[str, object] = {}
+
+        def _fake_execute_branch_async(*args, **kwargs):
+            captured.update(kwargs)
+            return RunOutcome(run_id="run-big", status=RUN_STATUS_QUEUED, output={})
+
+        monkeypatch.setattr(
+            "tinyassets.runs.execute_branch_async", _fake_execute_branch_async,
+        )
+        result = json.loads(_action_run_branch({
+            "branch_def_id": "b1",
+            "recursion_limit_override": "250000",
+        }))
+        assert not result.get("error"), result
+        assert captured["recursion_limit_override"] == 250000
+
+    def test_zero_and_negative_are_still_refused(self, tmp_path, monkeypatch):
+        """Not a smaller ceiling -- a graph that cannot take a step."""
         import json
 
         from tinyassets.api.runs import _action_run_branch
 
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         self._stub_valid_branch(monkeypatch)
-        result = json.loads(_action_run_branch({
-            "branch_def_id": "b1",
-            "recursion_limit_override": "2000",
-        }))
-        assert "error" in result
-        assert "out of range" in result["error"] or "1000" in result["error"]
+        for bad in ("0", "-5"):
+            result = json.loads(_action_run_branch({
+                "branch_def_id": "b1",
+                "recursion_limit_override": bad,
+            }))
+            assert "error" in result, bad
+            assert "positive integer" in result["error"]
 
     def test_override_not_integer_rejected(self, tmp_path, monkeypatch):
         import json

@@ -96,7 +96,8 @@ def _seed_published_branch(us, base, name="canonical-target"):
     )
     branch_dict = branch.to_dict()
     save_branch_definition(base, branch_def=branch_dict)
-    version = publish_branch_version(base, branch_dict, publisher="alice")
+    # The author's explicit publish: only a marked version is selectable by others.
+    version = publish_branch_version(base, branch_dict, publisher="alice", public=True)
     return version.branch_version_id
 
 
@@ -168,10 +169,6 @@ class TestRunBranchVersionWiring:
     def test_run_branch_version_action_wired(self):
         from tinyassets.api.runs import _RUN_ACTIONS
         assert "run_branch_version" in _RUN_ACTIONS
-
-    def test_run_branch_version_in_run_write_actions(self):
-        from tinyassets.api.runs import _RUN_WRITE_ACTIONS
-        assert "run_branch_version" in _RUN_WRITE_ACTIONS
 
     def test_set_canonical_and_run_version_actions_compose(self):
         """End-to-end wiring: a set_canonical -> run_branch_version pipeline

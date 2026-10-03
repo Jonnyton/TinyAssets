@@ -5,13 +5,10 @@
 # TODAY, so the number can only go down. Regenerate with:
 #     python scripts/check_channel_agnostic.py --update
 #
-# Total: 621 across 52 files.
+# Total: 596 across 47 files.
 
 tinyassets/account_deletion.py:stripe:3
 tinyassets/action_result_delivery.py:github:1
-tinyassets/api/automations.py:claude:1
-tinyassets/api/cloud_automations.py:claude:2
-tinyassets/api/cloud_automations.py:codex:1
 tinyassets/api/compute_connection.py:claude:1
 tinyassets/api/compute_connection.py:codex:2
 tinyassets/api/llm_deposit.py:claude:4
@@ -35,18 +32,12 @@ tinyassets/api/universe.py:codex:1
 tinyassets/api/universe.py:openai:1
 tinyassets/api/webhook_ops.py:github:1
 tinyassets/api/wiki.py:claude:1
-tinyassets/auth/host_proof.py:claude:1
-tinyassets/auth/host_proof.py:codex:1
-tinyassets/auth/host_proof.py:gemini:1
 tinyassets/auth/provider.py:github:4
 tinyassets/automations.py:codex:1
 tinyassets/branches.py:codex:1
 tinyassets/config.py:anthropic:1
 tinyassets/config.py:claude:3
 tinyassets/config.py:codex:1
-tinyassets/connect_deposit.py:anthropic:1
-tinyassets/connect_deposit.py:claude:4
-tinyassets/connect_deposit.py:codex:1
 tinyassets/credential_vault.py:anthropic:6
 tinyassets/credential_vault.py:claude:41
 tinyassets/credential_vault.py:codex:36
@@ -59,7 +50,7 @@ tinyassets/credential_vault.py:twitter:1
 tinyassets/evaluation/patch_notes.py:github:2
 tinyassets/ingestion/image_extractor.py:ollama:10
 tinyassets/node_sandbox.py:codex:2
-tinyassets/onboarding/__init__.py:codex:5
+tinyassets/onboarding/__init__.py:codex:4
 tinyassets/onboarding/__init__.py:openai:22
 tinyassets/onboarding/__init__.py:stripe:3
 tinyassets/onboarding/openai_device.py:chatgpt:5
@@ -78,8 +69,6 @@ tinyassets/provider_assignment.py:codex:2
 tinyassets/provider_assignment.py:slack:1
 tinyassets/provider_serving_binding.py:claude:7
 tinyassets/provider_serving_binding.py:codex:2
-tinyassets/provider_work_enrollment.py:claude:1
-tinyassets/provider_work_enrollment.py:codex:1
 tinyassets/providers/base.py:anthropic:3
 tinyassets/providers/base.py:claude:26
 tinyassets/providers/base.py:codex:53
@@ -94,14 +83,10 @@ tinyassets/providers/call.py:groq:3
 tinyassets/providers/call.py:ollama:3
 tinyassets/providers/claude_provider.py:anthropic:1
 tinyassets/providers/claude_provider.py:claude:28
-tinyassets/providers/codex_provider.py:codex:75
+tinyassets/providers/codex_provider.py:codex:72
 tinyassets/providers/codex_provider.py:openai:1
 tinyassets/providers/definition.py:claude:1
 tinyassets/providers/definition.py:codex:1
-tinyassets/providers/gemini_provider.py:gemini:7
-tinyassets/providers/grok_provider.py:grok:4
-tinyassets/providers/grok_provider.py:openai:3
-tinyassets/providers/groq_provider.py:groq:8
 tinyassets/providers/ollama_provider.py:ollama:10
 tinyassets/providers/protocol_encoders.py:anthropic:8
 tinyassets/providers/protocol_encoders.py:openai:7
@@ -117,8 +102,6 @@ tinyassets/providers/router.py:gemini:3
 tinyassets/providers/router.py:grok:2
 tinyassets/providers/router.py:groq:3
 tinyassets/providers/router.py:ollama:4
-tinyassets/runtime/assigned_queue_consumer.py:claude:5
-tinyassets/runtime/assigned_queue_consumer.py:codex:4
 tinyassets/storage/outbound_connections.py:codex:1
 tinyassets/storage/webhook_hooks.py:codex:1
 tinyassets/universe_bundle.py:github:2

@@ -116,6 +116,10 @@ def test_two_owners_can_expose_inspect_connect_without_private_graph_leak(env):
     assert receiver["generation"] == 1
     auth("sender")
     advertised = api.inspect_receiver(receiver_id=receiver["receiver_id"])
+    # Kept EXACT, and widened deliberately: the three exposure fields are the
+    # sender's own terms of use, and this set is the no-leak guard. Note what is
+    # still absent -- the owner's universe_id, branch_def_id, node_id, snapshot
+    # digests and allowed_senders all stay private view only.
     assert set(advertised) == {
         "receiver_id",
         "owner_id",
@@ -123,7 +127,13 @@ def test_two_owners_can_expose_inspect_connect_without_private_graph_leak(env):
         "description",
         "contract",
         "revoked",
+        "open_to_all",
+        "discoverable",
+        "sender_rate_limit",
     }
+    assert advertised["open_to_all"] is False
+    assert advertised["discoverable"] is False
+    assert advertised["sender_rate_limit"] == store.NO_SENDER_RATE_LIMIT
     assert advertised["contract"] == [
         {"name": "topic", "type": "str", "required": True, "description": "Incoming topic"},
     ]

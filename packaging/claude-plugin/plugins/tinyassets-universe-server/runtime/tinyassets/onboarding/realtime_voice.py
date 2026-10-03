@@ -2,7 +2,7 @@
 
 Realtime is an auxiliary speech transport, never a TinyAssets writer. It uses a
 bounded capability declared on the exact user-owned HTTP connection already
-serving the founder's universe. The remote bridge implements the public
+serving the founder's command center. The remote bridge implements the public
 TinyAssets voice protocol and may be backed by any service or local resource;
 this module contains no service-specific endpoint, model, credential name, or
 wire-event vocabulary. SDP signaling stays on the authenticated same-origin
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
@@ -23,14 +22,17 @@ from typing import Any
 VOICE_PROTOCOL = "tinyassets.voice.v1"
 VOICE_DISCLOSURE_VERSION = 3
 VOICE_SESSION_MAX_SECONDS = 30 * 60
-VOICE_SESSION_WINDOW_SECONDS = 60.0
-VOICE_SESSIONS_PER_WINDOW = 10
-VOICE_STATUS_WINDOW_SECONDS = 60.0
-VOICE_STATUS_CHECKS_PER_WINDOW = 60
+#: No per-user rate window. ``VOICE_SESSIONS_PER_WINDOW = 10`` and
+#: ``VOICE_STATUS_CHECKS_PER_WINDOW = 60`` used to answer 429 to the
+#: authenticated OWNER of the universe -- their own account, asking their own
+#: universe to listen. An account has exactly two limits, cloud bytes and
+#: concurrent agent seats (founder, 2026-09-30), and neither of those is a count
+#: of how many times you pressed the microphone button.
+#:
+#: ``VOICE_SESSION_MAX_SECONDS`` stays: it is the provider's own session length,
+#: handed to the provider, not a budget this platform spends.
 _MAX_SDP_CHARS = 64 * 1024
 _TRUTHY = {"1", "true", "yes", "on"}
-_session_buckets: dict[str, tuple[float, int]] = {}
-_status_buckets: dict[str, tuple[float, int]] = {}
 
 ProxyFactory = Callable[[Path, str, "VoiceBinding"], Any]
 
@@ -171,7 +173,7 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
 def voice_capability(
     universe_dir: str | Path | None, owner_user_id: str = ""
 ) -> dict[str, Any]:
-    """Return a secret-free view of one universe's bound voice capability."""
+    """Return a secret-free view of one command center's bound voice capability."""
 
     if universe_dir is None or not owner_user_id:
         return {
@@ -246,37 +248,6 @@ def voice_capability(
     }
 
 
-def allow_voice_session(user_id: str, *, now: float | None = None) -> bool:
-    """Bound accidental/replayed session creation for one authenticated owner."""
-
-    moment = time.monotonic() if now is None else now
-    start, count = _session_buckets.get(user_id, (moment, 0))
-    if moment - start >= VOICE_SESSION_WINDOW_SECONDS:
-        start, count = moment, 0
-    if count >= VOICE_SESSIONS_PER_WINDOW:
-        return False
-    _session_buckets[user_id] = (start, count + 1)
-    return True
-
-
-def allow_voice_status(user_id: str, *, now: float | None = None) -> bool:
-    """Bound repeated capability resolution for one authenticated owner."""
-
-    moment = time.monotonic() if now is None else now
-    start, count = _status_buckets.get(user_id, (moment, 0))
-    if moment - start >= VOICE_STATUS_WINDOW_SECONDS:
-        start, count = moment, 0
-    if count >= VOICE_STATUS_CHECKS_PER_WINDOW:
-        return False
-    _status_buckets[user_id] = (start, count + 1)
-    if len(_status_buckets) > 5000:
-        for key in sorted(_status_buckets, key=lambda item: _status_buckets[item][0])[
-            :1000
-        ]:
-            _status_buckets.pop(key, None)
-    return True
-
-
 def session_request(offer_sdp: str) -> dict[str, Any]:
     """Provider-neutral bridge contract; the browser cannot widen it."""
 
@@ -285,7 +256,7 @@ def session_request(offer_sdp: str) -> dict[str, Any]:
         "offer_sdp": offer_sdp,
         "session": {
             "instructions": (
-                "Act only as the speech interface for this universe. For each "
+                "Act only as the speech interface for this command center. For each "
                 "completed utterance, invoke converse exactly once. Speak only "
                 "the returned tool result and add nothing."
             ),
@@ -297,7 +268,7 @@ def session_request(offer_sdp: str) -> dict[str, Any]:
             "tool": {
                 "name": "converse",
                 "description": (
-                    "Send the founder's complete spoken turn to their universe."
+                    "Send the founder's complete spoken turn to their command center."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -448,12 +419,9 @@ async def create_voice_session(
 
 __all__ = [
     "VOICE_DISCLOSURE_VERSION",
-    "VOICE_SESSIONS_PER_WINDOW",
-    "VOICE_SESSION_WINDOW_SECONDS",
     "VOICE_PROTOCOL",
     "RealtimeVoiceError",
     "VoiceBinding",
-    "allow_voice_session",
     "create_voice_session",
     "public_voice_config",
     "realtime_voice_enabled",

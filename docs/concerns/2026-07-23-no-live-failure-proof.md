@@ -1,3 +1,10 @@
+---
+severity: P1
+title: No live failure proof
+filed: '2026-07-23'
+summary: escalation and caps are CI-only
+---
+
 # P1 - No live failure proof for repair escalation and reconcile caps
 
 **Filed:** 2026-07-23 | **Verified:** 2026-07-26 | **Severity:** P1

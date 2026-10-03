@@ -114,12 +114,29 @@ def _authenticate(user_id: str) -> None:
     auth_middleware("ok")
 
 
+def _own(base: Path, *names: str) -> None:
+    """Give each directory an OWNER, which is what makes it a universe.
+
+    Since 2026-09-02 a universe exists because an ownership row names it, not
+    because a folder is on disk (``tests/test_a_universe_needs_an_owner.py``), so
+    a directory this module means as a real universe has to have one. A
+    ``founder_home`` binding is used rather than an ACL grant because a universe
+    with zero ACL rows is PUBLIC, and flipping these fixtures to private would
+    change what every gate below is asserting.
+    """
+    from tinyassets.daemon_server import set_founder_home
+
+    for name in names:
+        set_founder_home(base, founder_sub=f"test-owner::{name}", universe_id=name)
+
+
 def _make_universe(base: Path, uid: str, *, level: str | None = None) -> Path:
     udir = base / uid
     udir.mkdir(parents=True, exist_ok=True)
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    _own(base, uid)
     if level is not None:
-        vis.set_universe_visibility(uid, level)
+        vis.set_universe_visibility(uid, level, source="owner")
     return udir
 
 
@@ -180,6 +197,7 @@ class TestResolutionFailClosed:
 
     def test_no_rules_row_is_undeclared_and_closed(self, base):
         (base / "u").mkdir()  # dir exists, no rules row at all
+        _own(base, "u")
         assert vis.universe_visibility("u") is vis.CLOSED
 
     def test_rules_row_without_explicit_level_is_closed(self, base):
@@ -352,7 +370,7 @@ class TestEnumerationGate:
         out = json.loads(us._action_list_universes())
         assert out["count"] == 0
         note = out.get("note", "")
-        assert note == "No universes are visible to you."
+        assert note == "No command centers are visible to you."
         assert "2" not in note and str(base) not in note
 
     def test_granted_reader_sees_own_private_in_list(self, base):
@@ -530,13 +548,21 @@ class TestSiblingReadLeaks:
 class TestForgeProbes:
     def test_forge_unlisted_excluded_from_enumeration(self, base):
         _make_universe(base, "forged")
+        # An OWNED universe, so the only thing that can withhold it here is the
+        # visibility gate. Since 2026-09-02 a directory is a universe because an
+        # ownership row names it, so an ungranted directory would be withheld by
+        # the ownership predicate and this probe would prove nothing.
+        grant_universe_access(
+            base, universe_id="forged", actor_id="workos|forge-owner",
+            permission="admin", granted_by="tests",
+        )
         _forge_metadata_raw(base, "forged", json.dumps({"visibility_level": "unlisted"}))
         _anonymous()
         out = json.loads(us._action_list_universes())
         assert "forged" not in {u["id"] for u in out["universes"]}
         # RED without the gate: the on-disk dir IS a listable universe; only the
         # visibility gate withholds it.
-        assert us._is_listable_universe_dir(base / "forged") is True
+        assert us._is_listable_universe_dir(base / "forged", {"forged"}) is True
         assert vis.universe_visibility("forged") is vis.UNLISTED
 
     def test_forge_metadata_only_withholds_content(self, base):
@@ -568,7 +594,22 @@ class TestForgeProbes:
 # 11. Backfill migration
 # --------------------------------------------------------------------------- #
 class TestBackfill:
-    def test_backfill_declares_from_public_read_bit(self, base):
+    """The backfill declares `private`, and NARROWED on 2026-09-26.
+
+    It used to declare a level derived from the legacy `public_read` bit, and
+    `test_backfill_declares_from_public_read_bit` asserted exactly that, reasoning
+    "no universe changes visibility — it only becomes declared". The reasoning was
+    right about preserving behaviour and wrong about what the behaviour was:
+    `public_read`'s own column default is 1, so the derivation declared every
+    legacy directory and every maintenance bucket `public`
+    (observed live 2026-09-02; see openspec/changes/archive/2026-09-30-private-by-default-universes/).
+    Per the founder, 2026-09-26, the platform declares nothing open on an owner's
+    behalf. The original test's narrow true case — a universe whose `public_read`
+    is already False is declared private — is kept below as
+    `test_a_universe_the_legacy_bit_already_closed_stays_private`.
+    """
+
+    def test_backfill_declares_private_for_every_undeclared_universe(self, base):
         _make_universe(base, "pub")  # public_read default True, no explicit level
         u_priv = _make_universe(base, "priv")
         _forge_public_read_raw(base, "priv", 0)
@@ -576,19 +617,90 @@ class TestBackfill:
         assert u_priv.is_dir()
 
         written = vis.backfill_universe_visibility()
-        assert written == {"pub": "public", "priv": "private"}
-        assert vis.universe_visibility("pub") is vis.PUBLIC
+        assert written == {"pub": "private", "priv": "private"}
+        # The open legacy bit is NOT read as an owner's choice.
+        assert vis.universe_visibility("pub") is vis.PRIVATE
         assert vis.universe_visibility("priv") is vis.PRIVATE
+
+    def test_a_universe_the_legacy_bit_already_closed_stays_private(self, base):
+        """The original test's narrow true case, kept: nothing regresses."""
+        _make_universe(base, "priv")
+        _forge_public_read_raw(base, "priv", 0)
+        assert vis.backfill_universe_visibility() == {"priv": "private"}
+        assert vis.universe_visibility("priv") is vis.PRIVATE
+
+    def test_backfill_records_itself_as_the_source_not_the_owner(self, base):
+        """The whole point of the provenance key: a backfilled level is not a
+        decision, so a later migration/audit can still tell them apart."""
+        _make_universe(base, "pub")
+        vis.backfill_universe_visibility()
+        assert vis.declared_level_source("pub") == "backfill"
+        assert not vis.level_was_chosen_by_owner("pub")
+
+    def test_backfill_does_not_wipe_an_owners_display_name_or_metadata(self, base):
+        """The boot backfill ran `ensure_universe_registered` unconditionally for
+        every discovered universe, and that helper's UPSERT resets `display_name`
+        to the raw id and `metadata_json` to `{}` when those are not passed. So a
+        universe its owner had named lost that name at the next restart, silently,
+        with the gate reporting success. Found by the Codex cross-family review of
+        PR #4019 (round 3) in the sibling migration script; the same shape was here.
+        """
+        from tinyassets.daemon_server import (
+            ensure_universe_registered,
+            get_universe,
+        )
+
+        (base / "named").mkdir()
+        _own(base, "named")  # discovery is owned-only since #4012
+        ensure_universe_registered(
+            base,
+            universe_id="named",
+            universe_path=base / "named",
+            display_name="My learned name",
+            metadata={"keep": "valuable"},
+        )
+        assert vis.backfill_universe_visibility() == {"named": "private"}
+
+        row = get_universe(base, universe_id="named")
+        assert row["display_name"] == "My learned name", row
+        assert row["metadata"] == {"keep": "valuable"}, row
+        assert vis.universe_visibility("named") is vis.PRIVATE  # not a no-op
+
+    def test_the_startup_gate_does_not_wipe_it_either(self, base):
+        """The gate is what actually runs on every boot, so it gets its own test."""
+        from tinyassets.daemon_server import (
+            ensure_universe_registered,
+            get_universe,
+        )
+
+        (base / "named").mkdir()
+        _own(base, "named")  # discovery is owned-only since #4012
+        ensure_universe_registered(
+            base, universe_id="named", universe_path=base / "named",
+            display_name="Kept", metadata={"k": 1},
+        )
+        vis.run_visibility_startup_gate()
+        vis.run_visibility_startup_gate()  # a second boot must not wipe it either
+        row = get_universe(base, universe_id="named")
+        assert row["display_name"] == "Kept"
+        assert row["metadata"] == {"k": 1}
 
     def test_backfill_is_idempotent(self, base):
         _make_universe(base, "pub")
-        assert vis.backfill_universe_visibility() == {"pub": "public"}
+        assert vis.backfill_universe_visibility() == {"pub": "private"}
         assert vis.backfill_universe_visibility() == {}
 
     def test_backfill_leaves_explicit_levels_untouched(self, base):
         _make_universe(base, "u", level="unlisted")
         assert "u" not in vis.backfill_universe_visibility()
         assert vis.universe_visibility("u") is vis.UNLISTED
+
+    def test_backfill_does_not_reopen_a_universe_its_owner_made_public(self, base):
+        """An owner's explicit `public` survives the backfill, level and source."""
+        _make_universe(base, "chosen", level="public")
+        assert "chosen" not in vis.backfill_universe_visibility()
+        assert vis.universe_visibility("chosen") is vis.PUBLIC
+        assert vis.level_was_chosen_by_owner("chosen")
 
 
 # --------------------------------------------------------------------------- #
@@ -598,16 +710,21 @@ class TestStartupGate:
     def test_gate_declares_undeclared_universes(self, base):
         _make_universe(base, "reg")   # registered rules row, no explicit level
         (base / "bare").mkdir()       # bare dir, no rules row at all
+        _own(base, "bare")            # ...but an owner, or it is not a universe
         assert not vis.is_declared("reg") and not vis.is_declared("bare")
 
         summary = vis.run_visibility_startup_gate()
 
         assert vis.is_declared("reg") and vis.is_declared("bare")
-        assert vis.universe_visibility("reg") is vis.PUBLIC
+        # Boot declares, and declares PRIVATE — it no longer opens anything
+        # (founder 2026-09-26). A bare directory reaching the gate used to leave
+        # boot serving it publicly readable by id.
+        assert vis.universe_visibility("reg") is vis.PRIVATE
+        assert vis.universe_visibility("bare") is vis.PRIVATE
         assert set(summary["declared_now"]) >= {"reg", "bare"}
         assert summary["undeclared_remaining"] == []
 
-    def test_gate_derives_private_from_public_read(self, base):
+    def test_gate_declares_private_when_the_legacy_bit_is_closed(self, base):
         _make_universe(base, "priv")
         _forge_public_read_raw(base, "priv", 0)  # public_read False, undeclared
         vis.run_visibility_startup_gate()
@@ -650,6 +767,30 @@ class TestCreationDeclaration:
         assert vis.is_declared("u1")
         assert vis.universe_visibility("u1") is vis.LEVELS[vis.DEFAULT_CREATE_VISIBILITY]
 
+    def test_the_default_level_is_private(self, base):
+        """Asserted by VALUE, not against the constant.
+
+        `test_create_declares_default_level` compares the result to
+        `DEFAULT_CREATE_VISIBILITY`, so it stays green whatever that constant
+        says — it asserts the mechanism (a universe is born declared), never the
+        policy. The founder's 2026-09-26 rule is a policy about the value, so it
+        needs an assertion that goes red when the value changes.
+        """
+        assert vis.DEFAULT_CREATE_VISIBILITY == "private"
+        _authenticate("user_01OWNER")
+        out = json.loads(us._action_create_universe(universe_id="u-born", text="hi"))
+        assert out["visibility"] == "private"
+        assert vis.universe_visibility("u-born") is vis.PRIVATE
+
+    def test_a_defaulted_level_is_not_recorded_as_the_owners_choice(self, base):
+        """Born private by default is NOT "the owner chose privacy" — the
+        migration reads that distinction, and mislabelling it would make a
+        universe look decided when nobody decided."""
+        _authenticate("user_01OWNER")
+        us._action_create_universe(universe_id="u-defaulted", text="hi")
+        assert vis.declared_level_source("u-defaulted") == "default"
+        assert not vis.level_was_chosen_by_owner("u-defaulted")
+
     def test_create_honors_explicit_visibility(self, base):
         _authenticate("user_01OWNER")
         out = json.loads(
@@ -658,6 +799,18 @@ class TestCreationDeclaration:
         assert out["visibility"] == "private"
         assert vis.is_declared("u2")
         assert vis.universe_visibility("u2") is vis.PRIVATE
+        # Stated by the creator -> the owner's choice, even when it matches the
+        # default.
+        assert vis.level_was_chosen_by_owner("u2")
+
+    def test_a_creator_may_still_be_born_public(self, base):
+        _authenticate("user_01OWNER")
+        out = json.loads(
+            us._action_create_universe(universe_id="u-open", text="hi", visibility="public")
+        )
+        assert out["visibility"] == "public"
+        assert vis.universe_visibility("u-open") is vis.PUBLIC
+        assert vis.declared_level_source("u-open") == "owner"
 
     def test_create_rejects_invalid_visibility_without_partial_dir(self, base):
         _anonymous()

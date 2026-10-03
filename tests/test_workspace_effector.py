@@ -3003,3 +3003,104 @@ def test_cancellation_after_install_before_publication_still_owes_wipe(
     assert result["provision_reason"] == "cancelled"
     assert chain.workspace_mount_or_none("n1") is None
     assert _outbox_rows(wse._pool_db(universe))
+
+
+# --------------------------------------------------------------------------- #
+# Staging is removed on EVERY exit (production held 334 leaked credentialed
+# staging trees until the 2026-09-30 boot sweep removed them).
+# --------------------------------------------------------------------------- #
+
+
+def _staging_files(universe_dir: Path) -> list[Path]:
+    from tinyassets import process_liveness, workspace_staging
+
+    root = workspace_staging.staging_root(universe_dir)
+    if not root.exists():
+        return []
+    return [
+        p for p in root.rglob("*")
+        if p.is_file() and process_liveness.LIVENESS_DIR not in p.parts
+    ]
+
+
+def test_a_refused_checkout_leaves_no_staging(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    _root, universe_dir = _setup(tmp_path)
+    worker = FakeWorker({"ok": False, "error": "auth: nope", "stderr_class": "auth"})
+
+    def _worker_writes_then_fails(request):
+        (Path(request["staging_dir"]) / "clone-with-credential").write_text("tok")
+        return worker(request)
+
+    result = _run(
+        tmp_path, _packet(), universe_dir=universe_dir, chain=chain,
+        worker=_worker_writes_then_fails,
+    )
+    assert result["error_kind"] == "workspace_checkout_failed"
+    assert _staging_files(universe_dir) == []
+
+
+def test_a_checkout_whose_worker_raises_leaves_no_staging(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    _root, universe_dir = _setup(tmp_path)
+
+    def _crashing_worker(request):
+        (Path(request["staging_dir"]) / "partial.bundle").write_bytes(b"PA")
+        raise RuntimeError("worker crashed")
+
+    try:
+        _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain,
+             worker=_crashing_worker)
+    except RuntimeError:
+        pass  # raised or reported: either way, nothing may be left behind
+    assert _staging_files(universe_dir) == []
+
+
+def test_a_checkout_that_fails_to_populate_leaves_no_staging(
+    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact production leak: the worker succeeded, a later step refused,
+    and the success-path rmtree was never reached."""
+    import tinyassets.workspace_git as wg
+
+    _root, universe_dir = _setup(tmp_path)
+    monkeypatch.setattr(wse, "_git_path", lambda: "/usr/bin")
+
+    def _populate_fails(*_a, **_k):
+        raise RuntimeError("populate failed")
+
+    monkeypatch.setattr(wg, "populate_workspace_from_bundle", _populate_fails)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "workspace_checkout_failed", result
+    assert _staging_files(universe_dir) == []
+
+
+def test_a_successful_checkout_leaves_no_staging(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+    assert _staging_files(universe_dir) == []
+
+
+@pytest.mark.parametrize("answer", [
+    {"ok": True, "bytes": 11, "resolved_sha": SHA},
+    {"ok": False, "error": "rejected", "stderr_class": "rejected"},
+])
+def test_a_push_leaves_no_staging_either_way(
+    tmp_path: Path, chain: EffectChain, fs_spy, answer: dict[str, Any]
+) -> None:
+    """Push staging held the bundle copy and was never removed on any path."""
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=FakeWorker(answer),
+    )
+    assert _staging_files(universe_dir) == []

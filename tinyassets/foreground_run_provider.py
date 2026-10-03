@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import threading
 from contextlib import contextmanager
@@ -35,13 +36,48 @@ from tinyassets.provider_work_authority import (
     ProviderWorkReceiptState,
     provider_work_receipt_id,
 )
+from tinyassets.providers.base import ModelConfig
+from tinyassets.providers.model_capacity import TRANSIENT_CAPACITY as _TRANSIENT_CAPACITY
+from tinyassets.providers.owner_binding import (
+    AUTHORITY_HELD_DETAIL as _AUTHORITY_HELD_DETAIL,
+)
+from tinyassets.providers.owner_binding import (
+    CONNECT_PROVIDER_MESSAGE as _CONNECT_PROVIDER_MESSAGE,
+)
+
+logger = logging.getLogger(__name__)
 
 RUN_GRAPH_OPERATION = "run_graph"
 _SUPPORTED_ROLES = frozenset({"writer", "judge"})
-_HELD = (
-    "Connect your provider before running this universe. TinyAssets will not "
-    "borrow platform credentials or start a metered trial."
-)
+#: Imported, not re-declared: `providers.owner_binding` owns both sentences.
+_HELD = _CONNECT_PROVIDER_MESSAGE
+_HELD_DETAIL = _AUTHORITY_HELD_DETAIL
+
+
+def _held_authority_error(cause: BaseException | None = None):
+    """The held class, saying what is actually missing.
+
+    Three `except Exception` handlers on this lane raised `_HELD` for every
+    refusal they caught, so "Connect your provider" was the only thing a held
+    run ever said -- including to owners who had. See `_HELD_DETAIL` for the
+    live case. A cause with words of its own keeps them, scrubbed and clipped
+    through the router's existing `redacted_failure_detail`: a wrapped cause can
+    be an OS or HTTP error, so its text is never assumed credential-free.
+
+    `NoServingProvider` is the one cause that maps back to `_HELD`: it IS "no
+    provider is connected", and its own words would read as a second, weaker
+    version of the same instruction.
+    """
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.provider_serving_binding import NoServingProvider
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+
+    if cause is None or isinstance(cause, NoServingProvider):
+        return ProviderAuthorityHeldError(_HELD)
+    detail = redacted_failure_detail(str(cause).strip())
+    if not detail:
+        return ProviderAuthorityHeldError(_HELD)
+    return ProviderAuthorityHeldError(_HELD_DETAIL + detail)
 
 
 def _content_digest(payload: object) -> str:
@@ -224,6 +260,14 @@ class _ForegroundRunProviderSession:
         # Retained so a SIBLING run inherits the SAME captured policy version
         # rather than re-reading the store mid-run. See `constructor_inputs`.
         self._model_preference_data = model_preference_data
+        # Once per session. A sibling (async sub-branch) session refreshes for
+        # itself: it may run before its parent has made any call, and a flag
+        # copied from the parent launched the child on a stale sign-in (Codex
+        # round 2 on #4082). A later session's refresh is a no-op while the
+        # document is fresh; a renewal that does land between sessions is the
+        # cross-run case in docs/concerns/2026-09-28-a-renewal-voids-other-
+        # running-receipts.md.
+        self._sign_ins_refreshed = False
 
     def _capture_choices(self) -> None:
         """Build this run's advisory order at ADMISSION, not construction.
@@ -255,7 +299,7 @@ class _ForegroundRunProviderSession:
             or not self._universe_id
             or get_founder_home(self._base_path, self._principal_id) != self._universe_id
         ):
-            raise PermissionError("foreground run is not the principal's own universe")
+            raise PermissionError("foreground run is not the principal's own command center")
 
     def _run_record(self) -> dict[str, Any]:
         from tinyassets.runs import get_run
@@ -319,7 +363,9 @@ class _ForegroundRunProviderSession:
         from tinyassets.exceptions import ProviderAuthorityHeldError
 
         if self._run_id:
-            raise ProviderAuthorityHeldError(_HELD)
+            raise _held_authority_error(
+                PermissionError("this provider session is already bound to a run")
+            )
         try:
             snapshot = branch.to_dict()
             branch_def_id = str(snapshot.get("branch_def_id") or "").strip()
@@ -334,7 +380,7 @@ class _ForegroundRunProviderSession:
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
-            raise ProviderAuthorityHeldError(_HELD) from exc
+            raise _held_authority_error(exc) from exc
 
     def _admit(self) -> None:
         from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -351,7 +397,9 @@ class _ForegroundRunProviderSession:
         )
 
         if not self._run_id or self._branch_snapshot is None:
-            raise ProviderAuthorityHeldError(_HELD)
+            raise _held_authority_error(
+                PermissionError("this provider session is not bound to a run yet")
+            )
         # Enforcement site (C), foreground half (design.md § Enforcement sites).
         # This lane never calls `claim_assigned`, so the claim CAS cannot cover
         # it; admission has to happen here, and it has to happen *here* rather
@@ -374,7 +422,6 @@ class _ForegroundRunProviderSession:
             )
         try:
             self._validate_founder_home()
-            self._capture_choices()
             snapshot = self._branch_snapshot
             branch_author = str(snapshot.get("author") or "").strip()
             if branch_author != self._principal_id:
@@ -393,6 +440,16 @@ class _ForegroundRunProviderSession:
             if not nodes:
                 raise PermissionError("foreground provider attempt has no prompt node")
             self._validate_run(allowed_statuses={"running"})
+            # AFTER every refusal this lane can decide from stored state, and
+            # before `_admit_manifest` fits the order. Capturing the order is
+            # credential-bearing outbound IO (a catalogue read on the owner's own
+            # grant), so it must not happen for a run `_admit` was going to
+            # refuse anyway. It sat above the author check, and running another
+            # user's PUBLIC Branch therefore made one discovery request on the
+            # requester's source before the refusal -- the same shape as the
+            # sign-in refresh Codex found on #4082 and the same fix (Codex
+            # refutation of this change, C2, 2026-09-29).
+            self._capture_choices()
 
             agent = resolve_serving_agent_binding(
                 self._base_path,
@@ -562,7 +619,7 @@ class _ForegroundRunProviderSession:
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:
-            raise ProviderAuthorityHeldError(_HELD) from exc
+            raise _held_authority_error(exc) from exc
 
     def _admit_manifest(self, conn, store, agent, assignment, nodes, roles):
         """One aggregate receipt for all nodes, not one full allowance per source."""
@@ -664,7 +721,40 @@ class _ForegroundRunProviderSession:
             return
         with self._lock:
             if self._receipt is None:
+                self._refresh_sign_ins()
                 self._admit()
+
+    def _refresh_sign_ins(self) -> None:
+        """Bring the owner's stored sign-ins current before the receipt pins them.
+
+        The receipt `_admit` mints pins the assignment generation and credential
+        digest for the whole run, and a refresh renews the accepted source,
+        which moves both. So this runs once, before that mint, and never after
+        it. Only for a run `_admit` would accept on these grounds -- the
+        principal's own home, a Branch they authored, a run still running;
+        anything else is refused by `_admit` with its own words and refreshes
+        nothing on the way (Codex refute-review on #4082: another user's public
+        Branch refreshed the requester's sign-in and then failed).
+        """
+        if self._sign_ins_refreshed:
+            return
+        self._sign_ins_refreshed = True
+        try:
+            self._validate_founder_home()
+            author = str((self._branch_snapshot or {}).get("author") or "").strip()
+            if author != self._principal_id:
+                return
+            self._validate_run(allowed_statuses={"running"})
+        except PermissionError:
+            return
+        from tinyassets.subscription_refresh import refresh_deposited_subscriptions
+
+        refresh_deposited_subscriptions(
+            base_path=self._base_path,
+            universe_dir=self._universe_dir,
+            owner_user_id=self._principal_id,
+            universe_id=self._universe_id,
+        )
 
     def _validate_receipt_parent(self, parent_binding: Any, assignment: Any) -> None:
         receipt = self._receipt
@@ -852,6 +942,17 @@ class _ForegroundRunProviderSession:
             ):
                 raise PermissionError("foreground immutable Branch subject changed")
             self._validate_run(allowed_statuses={"running"})
+            # NO pre-launch credential refresh here, deliberately. This lane's
+            # receipt is already minted by the time `_authorize_attempt` runs, and
+            # it PINS `assignment_generation` + `credential_reference_digest`
+            # (:683 and :689 below). A refresh renews the accepted source, which
+            # advances the assignment generation -- so refreshing here failed the
+            # receipt check it was meant to help, and the resulting PermissionError
+            # was swallowed into ProviderAuthorityHeldError at :985, which cannot
+            # fall back either. Codex refute-review P1 #3 reproduced both halves.
+            #
+            # The refresh belongs where nothing is pinned yet: for this lane that
+            # is `_refresh_sign_ins`, run once before the receipt mint.
             with self._lock:
                 self._call_index += 1
                 invocation_index = self._call_index
@@ -966,7 +1067,7 @@ class _ForegroundRunProviderSession:
         except Exception as exc:
             if carrier is not None:
                 raise
-            raise ProviderAuthorityHeldError(_HELD) from exc
+            raise _held_authority_error(exc) from exc
         finally:
             cleanup_llm_credential_snapshot(snapshot)
 
@@ -986,7 +1087,7 @@ class _ForegroundRunProviderSession:
         if supplied_context is not None and (
             Path(supplied_context.universe_dir) != self._universe_dir
         ):
-            raise PermissionError("foreground provider universe cannot be substituted")
+            raise PermissionError("foreground provider command center cannot be substituted")
         if supplied_context is not None and any(
             getattr(supplied_context, field, None) is not None
             for field in ("provider_request", "provider_invocation", "served_provider",
@@ -994,9 +1095,9 @@ class _ForegroundRunProviderSession:
         ):
             raise PermissionError("foreground provider authority cannot be substituted")
         if self._closed:
-            from tinyassets.exceptions import ProviderAuthorityHeldError
-
-            raise ProviderAuthorityHeldError(_HELD)
+            raise _held_authority_error(
+                PermissionError("this run's provider session is already closed")
+            )
 
         # Enforcement site (C), foreground half, at the call boundary — the
         # mirror of the served lane's gate in `background_served_provider._call`.
@@ -1051,11 +1152,15 @@ class _ForegroundRunProviderSession:
                 return response, "mock"
 
         self._ensure_admitted()
-        from tinyassets.shared_self import prepare_shared_self_turn, shared_self_requested
+        from tinyassets.shared_self import agent_node, prepare_shared_self_turn
 
-        if shared_self_requested(self._branch_snapshot):
+        node = agent_node(
+            self._branch_snapshot, getattr(config, "agent_node_id", ""), self._principal_id,
+            node_key=getattr(config, "agent_node_key", ""),
+        )
+        if node is not None:
             prompt, system, config = prepare_shared_self_turn(
-                self._base_path, self._universe_id, self._principal_id, prompt, config,
+                self._base_path, self._universe_id, self._principal_id, prompt, config, node,
             )
             if config.engine_mcp_enabled:
                 from tinyassets.workflow_agent import call_foreground_work_agent
@@ -1078,6 +1183,84 @@ class _ForegroundRunProviderSession:
             )
         return self._call_once(role, prompt, system, config, policy, kwargs)
 
+    def _narrowed_exhaustion(self, boundary, kind, narrowings, config):
+        """Exclude only the failed MODEL when excluding the source is a guess.
+
+        `capacity_boundary` collapses an unreported window to the whole account
+        on purpose -- it never invents independence -- and exposes
+        `observed_scope` so the CALLER can decide. A conversation turn already
+        does (`AgentTurnCoordinator._narrowed`); a workflow node did not, and
+        took the conservative reading as final. On a free account whose ONE
+        source holds every model, that rejected every sibling, so a single
+        model's 429 ended the run after one attempt while the owner's chat turn
+        stepped to the next free model on the identical refusal (live
+        2026-09-30, run `c22c1cb12db74d6a`).
+
+        The decision is the platform's single capacity policy, not a second one:
+        `free_sibling_retry` answers whether an unknown window buys a sibling,
+        the same call and the same bound the conversation path uses. Engine
+        inference only -- a native executor runs on ONE subscription, so a limit
+        there is a fact about that account rather than a model within it.
+
+        Returns the exhaustion to record and whether it rests on a guess.
+        """
+        from dataclasses import replace as _replace
+
+        from tinyassets.providers.model_capacity import (
+            MAX_FREE_SIBLING_RETRIES,
+            free_sibling_retry,
+        )
+
+        if kind != "engine_inference" or narrowings >= MAX_FREE_SIBLING_RETRIES:
+            return boundary.exhaustion, False
+        if not free_sibling_retry(
+            scope=boundary.observed_scope,
+            failure_class=boundary.failure_class,
+            retry_after_s=boundary.retry_after_s,
+            # The NODE's own deadline is this work's budget, so a source naming a
+            # window longer than the node may live rules the sibling out here for
+            # the same reason it does on a turn.
+            turn_budget_s=getattr(config, "absolute_cap_s", None),
+        ):
+            return boundary.exhaustion, False
+        return _replace(boundary.exhaustion, scope="model"), True
+
+    def _cool_abandoned_sources(self, boundaries, *, keeping=None):
+        """Cool every source this node leaves hot, however the node ended.
+
+        The withheld cooldown bought exactly one thing: another model on the
+        same grant. Once the node is done with a source that purchase is over,
+        and a source at a DAILY cap -- which refuses every model -- would
+        otherwise have every later run pay the full order again, forever. The
+        conversation path settles the same debt in
+        `AgentTurnCoordinator._cool_abandoned_source`.
+
+        ``keeping`` is the connection the node actually got its answer from, and
+        it is NOT cooled: a source that just served this node is evidently
+        working, and cooling it would penalise the very fallback that succeeded.
+        That mirrors `_leave_hot_source`, which cools a hot source only once the
+        turn moves off it. On a single-source account this is the ordinary
+        outcome -- 429 on one model, answered on the next -- so cooling there
+        would undo the fix.
+
+        Never raises: a failing node must not be replaced by a cooling error.
+        """
+        from tinyassets.providers.call import get_provider_router
+
+        router = get_provider_router()
+        if router is None:
+            return
+        for boundary in boundaries:
+            try:
+                connection = boundary.exhaustion.ref.connection_id
+                if connection == keeping:
+                    continue
+                if boundary.failure_class not in _TRANSIENT_CAPACITY:
+                    continue
+                router.cool_source(connection, retry_after_s=boundary.retry_after_s)
+            except Exception:  # noqa: BLE001 - hygiene, never the failure
+                logger.warning("could not cool a spent work source")
+
     def _call_captured_prompt(self, role, prompt, system, config, policy, kwargs,
                               metadata_observer):
         from tinyassets.exceptions import AllProvidersExhaustedError
@@ -1086,54 +1269,81 @@ class _ForegroundRunProviderSession:
 
         attempts = 0
         boundaries = ()
+        narrowings = 0
         last_capacity = None
-        while True:
-            selected = self._work_candidates.next_candidate(policy)
-            # Exhaustion, NOT an unbound provider: the owner's own order ran out.
-            # Typed so `api/runs` can say so without matching this message. The
-            # boundaries this loop validated are the evidence and the last
-            # capacity failure stays the cause. Auth/unknown failures never get
-            # here: they raise the held class below on the attempt that saw them.
-            if selected is None:
-                raise self._work_candidates.exhausted_error(boundaries) from last_capacity
-            effective = {**(policy or {}), "preferred": {
-                "provider": selected.connection_id, "model_id": selected.model_id,
-            }}
-            observed = []
-            outer = kwargs.get("response_observer")
+        served = None
+        # This loop holds the owner's order, so it is entitled to the router's
+        # withheld cooldown -- and responsible for settling it, on EVERY exit.
+        config = (replace(config, owns_capacity_siblings=True)
+                  if isinstance(config, ModelConfig) else config)
+        try:
+            while True:
+                selected = self._work_candidates.next_candidate(policy)
+                # Exhaustion, NOT an unbound provider: the owner's own order ran
+                # out. Typed so `api/runs` can say so without matching this
+                # message. The boundaries this loop validated are the evidence
+                # and the last capacity failure stays the cause. Auth/unknown
+                # failures never get here: they raise the held class below on
+                # the attempt that saw them.
+                if selected is None:
+                    raise self._work_candidates.exhausted_error(boundaries) from last_capacity
+                effective = {**(policy or {}), "preferred": {
+                    "provider": selected.connection_id, "model_id": selected.model_id,
+                }}
+                observed = []
+                outer = kwargs.get("response_observer")
 
-            def observe(response):
-                observed.append(response)
-                if outer is not None:
-                    outer(response)
+                def observe(response):
+                    observed.append(response)
+                    if outer is not None:
+                        outer(response)
 
-            try:
-                attempts += 1
-                result = self._call_once(role, prompt, system, config, effective,
-                                         {**kwargs, "response_observer": observe})
-            except AllProvidersExhaustedError as exc:
-                router = get_provider_router()
-                kind = router.selected_agent_execution_kind(selected) if router else None
-                boundary = capacity_boundary(
-                    selected, exc.attempts, execution_kind=kind,
-                    native_evidence=(getattr(exc, "native_evidence", ())
-                                     if kind == "native_agent" else ()),
-                )
-                if boundary is None:
-                    raise _held_attempt_error(role, selected, exc) from exc
-                boundaries += (boundary,)
-                last_capacity = exc
-                self._work_candidates.next_candidate(policy, (boundary.exhaustion,))
-                continue
-            if metadata_observer is not None:
-                metadata = {"attempts": attempts, "model": selected.model_id}
-                if len(observed) == 1:
-                    from tinyassets.providers.router import ProviderRouter
+                try:
+                    attempts += 1
+                    result = self._call_once(role, prompt, system, config, effective,
+                                             {**kwargs, "response_observer": observe})
+                except AllProvidersExhaustedError as exc:
+                    router = get_provider_router()
+                    kind = router.selected_agent_execution_kind(selected) if router else None
+                    boundary = capacity_boundary(
+                        selected, exc.attempts, execution_kind=kind,
+                        native_evidence=(getattr(exc, "native_evidence", ())
+                                         if kind == "native_agent" else ()),
+                    )
+                    if boundary is None:
+                        raise _held_attempt_error(role, selected, exc) from exc
+                    exhaustion, narrowed = self._narrowed_exhaustion(
+                        boundary, kind, narrowings, config,
+                    )
+                    narrowings += int(narrowed)
+                    # The boundary is retained carrying the exhaustion actually
+                    # RECORDED, not the one it proposed: `exhausted_error` matches
+                    # evidence to exhaustion by value, so keeping the unnarrowed
+                    # copy silently dropped the classified failure class and
+                    # retry-after from the run's own error the moment a narrowing
+                    # happened.
+                    boundaries += (replace(boundary, exhaustion=exhaustion),)
+                    last_capacity = exc
+                    self._work_candidates.next_candidate(policy, (exhaustion,))
+                    continue
+                served = selected.connection_id
+                if metadata_observer is not None:
+                    metadata = {"attempts": attempts, "model": selected.model_id}
+                    if len(observed) == 1:
+                        from tinyassets.providers.router import ProviderRouter
 
-                    metadata.update(ProviderRouter._call_meta(observed[0], attempts))
-                    metadata["model"] = selected.model_id
-                metadata_observer(metadata)
-            return result
+                        metadata.update(ProviderRouter._call_meta(observed[0], attempts))
+                        metadata["model"] = selected.model_id
+                    metadata_observer(metadata)
+                return result
+        finally:
+            # In a `finally`, because the debt does not depend on HOW the loop
+            # ends. Settling it only on exhaustion left the window unapplied
+            # whenever the node raised instead -- a cancellation or an authority
+            # change between attempts -- and whenever a later model SUCCEEDED,
+            # which is the ordinary outcome of the fix (Codex refutation R4,
+            # 2026-09-30, reproduced).
+            self._cool_abandoned_sources(boundaries, keeping=served)
 
     def _call_once(self, role, prompt, system, config, policy, kwargs):
         with self._authorize_attempt(
@@ -1223,7 +1433,7 @@ class _ForegroundRunProviderSession:
 def captured_work_preference(
     base_path: str | Path, *, universe_id: str, principal_id: str,
 ) -> dict[str, Any] | None:
-    """The owner's SAVED model preference, captured once, or None for legacy.
+    """This run's captured model-choice document -- saved preference or not.
 
     `openspec/specs/agent-model-selection/spec.md` already promises that a work
     choice needs neither a change to the universe's main serving provider nor a
@@ -1235,15 +1445,31 @@ def captured_work_preference(
     new authority: a preference grants nothing, and `_admit` /
     `_authorize_attempt` still decide every invocation on current authority.
 
+    **A document is returned even with NOTHING saved** (`saved: None`), which is
+    the automatic mode a chat turn uses when its owner has chosen no model.
+    Returning None there left the run on the legacy pin, and the legacy pin
+    resolves an unspecified node model as
+    `snapshot.default_model_id or definition.model` -- the source's DECLARED
+    default. Live 2026-09-30, universe `u-01ky3zh1arr8qth8jee7zx63pq`
+    (runs 61184d8f21724915 / 4828ae18e2414e77): an `api_key_http` OpenRouter
+    source whose declared `inclusionai/ling-3.0-flash-vl:free` had left the
+    account's 632-model catalogue. The owner's chat turn ordered the fresh
+    catalogue and ran; every run, automation and agent node of that universe
+    pinned the vanished id and failed `authority_held`. One resolver
+    (`prepare_owned_model_plan`) now answers "which model" for both surfaces, so
+    they cannot disagree again.
+
     `current` is always None. A tab-local override belongs to an interactive
     turn; a run has no tab, so only the durable saved default and its ordered
     fallbacks apply.
 
-    Returns None -- exactly the pre-existing behaviour -- when there is no
-    saved preference, when the scope is not nameable, or when this universe is
+    Returns None only when the scope is not nameable, or when this universe is
     no longer the principal's home. A moved home is NOT swallowed: the session's
     own `_validate_founder_home` refuses the run a step later with the failure
-    class it already had, so reading a preference cannot invent a new one.
+    class it already had, so reading a preference cannot invent a new one. A
+    universe on a LEGACY (no-manifest) assignment also keeps its existing path:
+    `prepare_owned_model_plan` returns no plan for one, and
+    `prepare_captured_choices` passes that through as no captured choices.
     """
     from tinyassets.storage.model_preferences import (
         ModelPreferenceStore,
@@ -1259,11 +1485,9 @@ def captured_work_preference(
         )
     except (PreferenceHomeChanged, ValueError):
         return None
-    if snapshot.policy is None:
-        return None
     return {
         "version": 1,
-        "saved": snapshot.policy.document(),
+        "saved": None if snapshot.policy is None else snapshot.policy.document(),
         "observed_generation": snapshot.generation,
         "current": None,
     }
@@ -1343,7 +1567,7 @@ def _rebind(provider_call: Any, session: _ForegroundRunProviderSession) -> Any:
         raise PermissionError(
             "cannot rebind a foreground provider call of type "
             f"{type(provider_call).__name__}: only an exact "
-            "UniverseBoundProviderCall carries the universe binding this "
+            "UniverseBoundProviderCall carries the command center binding this "
             "rebind is required to preserve"
         )
     try:

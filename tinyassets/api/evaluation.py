@@ -264,6 +264,16 @@ def _action_compare_runs(kwargs: dict[str, Any]) -> str:
     }, default=str)
 
 
+def _branch_readable(bid: str) -> bool:
+    """Whether the caller may read this branch -- its nodes, its node history
+    and its versions. Everything here that returns branch content asks first,
+    and an unreadable branch answers exactly as an absent one does (astra
+    refute 2026-09-30: these readers checked nothing)."""
+    from tinyassets.api.branches import resolve_branch_id_for_read
+
+    return resolve_branch_id_for_read(bid, str(_base_path())) == bid
+
+
 def _action_suggest_node_edit(kwargs: dict[str, Any]) -> str:
     """Bundle everything Claude.ai needs to propose an edit, in one call.
 
@@ -292,6 +302,8 @@ def _action_suggest_node_edit(kwargs: dict[str, Any]) -> str:
         })
 
     _ensure_workflow_db()
+    if not _branch_readable(bid):
+        return json.dumps({"error": f"Branch '{bid}' not found."})
     try:
         source = get_branch_definition(_base_path(), branch_def_id=bid)
     except KeyError:
@@ -303,10 +315,15 @@ def _action_suggest_node_edit(kwargs: dict[str, Any]) -> str:
             "error": f"Node '{nid}' not found on branch '{bid}'.",
         })
 
-    # Recent runs on this branch.
+    from tinyassets.api.runs import _run_read_allowed
+    from tinyassets.runs import get_run
+
+    # A public shape does not publish its users' private run data.
     recent_runs = _list_runs(_base_path(), branch_def_id=bid, limit=5)
     recent_outputs: list[dict[str, Any]] = []
     for r in recent_runs:
+        if not _run_read_allowed(r):
+            continue
         snap = node_output_from_run(
             _base_path(), run_id=r["run_id"], node_id=nid,
         )
@@ -332,6 +349,8 @@ def _action_suggest_node_edit(kwargs: dict[str, Any]) -> str:
     judgments = _list_judgments(
         _base_path(), branch_def_id=bid, node_id=nid, limit=30,
     )
+    judgments = [j for j in judgments
+                 if (run := get_run(_base_path(), j["run_id"])) and _run_read_allowed(run)]
 
     body_kind = (
         "prompt_template" if node.prompt_template else (
@@ -494,6 +513,8 @@ def _action_list_node_versions(kwargs: dict[str, Any]) -> str:
         })
 
     _ensure_workflow_db()
+    if not _branch_readable(bid):
+        return json.dumps({"error": f"Branch '{bid}' not found."})
     try:
         source = get_branch_definition(_base_path(), branch_def_id=bid)
     except KeyError:
@@ -507,9 +528,14 @@ def _action_list_node_versions(kwargs: dict[str, Any]) -> str:
             "error": f"Node '{nid}' not found on branch '{bid}'.",
         })
 
+    # Edit audits have no publication mark: only the author may read them.
+    # A public branch exposes its current node, not previous private bodies.
+    from tinyassets.api.branches import _request_branch_actor
+
+    actor = _request_branch_actor()
     audits = list_node_edit_audits(
         _base_path(), branch_def_id=bid, node_id=nid, limit=200,
-    )
+    ) if actor and actor == source.get("author") else []
 
     current_version = int(branch.version or 1)
     versions: list[dict[str, Any]] = []
@@ -871,6 +897,8 @@ def _action_publish_version(kwargs: dict[str, Any]) -> str:
             publisher=publisher,
             notes=notes,
             parent_version_id=parent_version_id,
+            # The owner's explicit publish: this version, and only this one.
+            public=True,
         )
     except (KeyError, ValueError) as exc:
         return json.dumps({"error": str(exc)})
@@ -891,7 +919,15 @@ def _action_get_branch_version(kwargs: dict[str, Any]) -> str:
     if not version_id:
         return json.dumps({"error": "branch_version_id is required."})
 
+    from tinyassets.api.branches import _resolve_readable_version
+
     base_path = _base_path()
+    # A version is as readable as its branch, and no more. patch_branch mints a
+    # snapshot before and after every edit of a PRIVATE branch, so an ungated
+    # read handed any signed-in caller another user's prompts and edit history
+    # (astra refute 2026-09-30). Unreadable reads exactly like absent.
+    if _resolve_readable_version(version_id, str(base_path)) is None:
+        return json.dumps({"error": f"Version '{version_id}' not found."})
     version = get_branch_version(base_path, version_id)
     if version is None:
         return json.dumps({"error": f"Version '{version_id}' not found."})
@@ -907,7 +943,20 @@ def _action_list_branch_versions(kwargs: dict[str, Any]) -> str:
     limit = int(kwargs.get("limit", 50) or 50)
 
     base_path = _base_path()
+    # Same rule as a single version: the history of a branch the caller may not
+    # read does not exist for them.
+    if not _branch_readable(bid):
+        return json.dumps({"error": f"Branch '{bid}' not found."})
     versions = list_branch_versions(base_path, bid, limit=limit)
+    from tinyassets.api.branches import _request_branch_actor
+    from tinyassets.daemon_server import get_branch_definition
+
+    actor = _request_branch_actor()
+    if actor is None or (get_branch_definition(base_path, branch_def_id=bid).get("author")
+                         or "") != actor:
+        # Anyone but the author sees only versions its owner published; the
+        # rest is edit history.
+        versions = [v for v in versions if v.public]
     return json.dumps({
         "branch_def_id": bid,
         "versions": [v.to_dict() for v in versions],

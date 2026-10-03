@@ -1,4 +1,4 @@
-"""Universe MCP tool surface — extracted from
+"""Command center MCP tool surface — extracted from
 ``tinyassets/universe_server.py`` (Task #7 — decomp Step 9).
 
 The largest single submodule extracted from the monolith: 27 universe-tool
@@ -8,7 +8,7 @@ dispatch table + 14 ``_extract_*`` extractor closures, the ledger dispatcher
 trio (``_ledger_target_dir`` / ``_scope_universe_response`` /
 ``_dispatch_with_ledger``), the daemon telemetry block (``_last_activity_at``
 -- newest of the retired fleet loop's heartbeat files and started runs in the
-runs ledger, scoped to this universe -- ``_staleness_bucket``, ``_phase_human``,
+runs ledger, scoped to this command center -- ``_staleness_bucket``, ``_phase_human``,
 ``_compute_accept_rate_from_db``, ``_compute_word_count_from_files``,
 ``_daemon_liveness``, ``_parse_activity_line``), and the Pattern A2 body of
 the ``universe()`` MCP tool exposed as ``_universe_impl(action, **kwargs)``.
@@ -38,7 +38,7 @@ Public surface (back-compat re-exported via ``tinyassets.universe_server``):
                                           handler-scoped helpers
 
 Cross-module note: ``_current_actor``, ``_truncate``, ``_append_ledger``,
-``_upload_whitelist_prefixes`` (and ``_storage_backend``,
+``_storage_backend``, (and
 ``_format_dirty_file_conflict``, ``_format_commit_failed`` if needed by future
 edits) live in ``tinyassets.universe_server`` (preamble engine helpers
 territory) and are lazy-imported inside the functions that use them. This
@@ -72,6 +72,7 @@ from tinyassets.api.helpers import (
 from tinyassets.catalog import list_unreconciled_writes
 from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
+from tinyassets.storage_accounting import StorageRefused
 from tinyassets.universe_bundle import seed_okf_bundle
 from tinyassets.universe_soul import (
     NO_LOOP_DECLARED,
@@ -130,12 +131,12 @@ _DAEMON_SCOPED_ACTIONS: frozenset[str] = frozenset({
 
 
 def _universe_acl_error(action: str, *, universe_id: str = "") -> str | None:
-    """Gate a universe action against the single ACL path in
+    """Gate a command center action against the single ACL path in
     ``tinyassets.api.permissions``.
 
     ``list`` and ``create_universe`` are exempt: ``list`` filters visibility
     per-universe inside ``_action_list_universes``; ``create_universe`` has no
-    pre-existing universe to authorize against (it is scope-gated + founder-
+    pre-existing command center to authorize against (it is scope-gated + founder-
     granted on create instead). Daemon-scoped actions
     (``_DAEMON_SCOPED_ACTIONS``) are exempt because they are not universe-brain
     operations — see that set's comment.
@@ -220,6 +221,27 @@ def _extract_set_premise(
     )
 
 
+def _extract_set_visibility(
+    kwargs: dict[str, Any], result: dict[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """Ledger row for an owner's exposure decision.
+
+    Exposing a command center to other users is an authority change, so it is ledgered
+    like every other command center write — the ledger is how "the owner chose this"
+    stays auditable after the fact, independent of the provenance key.
+    """
+    requested = str(kwargs.get("visibility", "") or "")
+    return (
+        "visibility",
+        f"visibility -> {result.get('visibility', '') or requested}",
+        {
+            "visibility": result.get("visibility", ""),
+            "previous_visibility": result.get("previous_visibility", ""),
+            "requested": requested,
+        },
+    )
+
+
 def _extract_add_canon(
     kwargs: dict[str, Any], result: dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
@@ -233,26 +255,6 @@ def _extract_add_canon(
             "filename": name,
             "provenance": provenance,
             "bytes": len(kwargs.get("text", "").encode("utf-8")),
-        },
-    )
-
-
-def _extract_add_canon_from_path(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    name = result.get("filename", "") or Path(kwargs.get("path", "")).name
-    provenance = kwargs.get("provenance_tag", "") or "user_upload"
-    bytes_written = result.get("bytes_written", 0)
-    return (
-        f"canon/sources/{name}",
-        _truncate(f"{name} ({provenance}, {bytes_written} bytes)"),
-        {
-            "filename": name,
-            "provenance": provenance,
-            "source_path": kwargs.get("path", ""),
-            "bytes": bytes_written,
-            "synthesis_signal": result.get("synthesis_signal_emitted", False),
         },
     )
 
@@ -298,8 +300,8 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
         {
             "id": "premise",
             "label": (
-                "Save a purpose with write_graph target=\"universe\" text= "
-                "when creating the universe."
+                "Save a purpose with write_graph target=\"command_center\" text= "
+                "when creating the command center."
             ),
             "complete": has_premise,
         },
@@ -353,7 +355,7 @@ def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
                 "branch_def_id": "",
                 "error": "universe_loop_not_declared",
                 "note": (
-                    "This universe has no soul.md and no legacy PROGRAM.md; "
+                    "This command center has no soul.md and no legacy PROGRAM.md; "
                     "declare a Loop branch in soul.md before queuing work."
                 ),
             }
@@ -362,10 +364,10 @@ def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
             "has_soul": False,
             "branch_def_id": LEGACY_FANTASY_LOOP_BRANCH_DEF_ID,
             "caveat": (
-                "Legacy universe has PROGRAM.md but no soul.md; keeping the "
+                "Legacy command center has PROGRAM.md but no soul.md; keeping the "
                 "fantasy loop as an explicit compatibility path only until "
-                "the universe is migrated to a soul-declared loop. Scheduled "
-                "for removal once PROGRAM.md-only universes are migrated; "
+                "the command center is migrated to a soul-declared loop. Scheduled "
+                "for removal once PROGRAM.md-only command centers are migrated; "
                 "tracked under the de-fantasy audit "
                 "docs/audits/2026-06-24-fantasy-architecture-residue-audit.md."
             ),
@@ -378,8 +380,8 @@ def _universe_loop_dispatch(udir: Path) -> tuple[str, dict[str, Any]]:
             "branch_def_id": "",
             "error": "universe_loop_not_declared",
             "note": (
-                "This universe has a soul.md but no Loop branch declaration; "
-                "new souled universes do not silently attach the fantasy loop."
+                "This command center has a soul.md but no Loop branch declaration; "
+                "new souled command centers do not silently attach the fantasy loop."
             ),
         }
     return branch_def_id, {
@@ -689,12 +691,12 @@ WRITE_ACTIONS: dict[str, Any] = {
     "submit_request": (_extract_submit_request, None),
     "give_direction": (_extract_give_direction, None),
     "set_premise": (_extract_set_premise, None),
+    "set_visibility": (_extract_set_visibility, None),
     "soul.edit": (_extract_soul_edit, None),
     "declare_universe_loop": (_extract_declare_universe_loop, None),
     "set_engine": (_extract_set_engine, None),
     "offer_engine": (_extract_offer_engine, None),
     "add_canon": (_extract_add_canon, None),
-    "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
     "switch_universe": (_extract_switch_universe, None),
     "create_universe": (_extract_create_universe, None),
@@ -720,12 +722,12 @@ WRITE_ACTIONS: dict[str, Any] = {
 def _ledger_target_dir(
     action: str, kwargs: dict[str, Any], result: dict[str, Any] | None = None,
 ) -> Path:
-    """Resolve which universe directory owns the ledger entry for this action.
+    """Resolve which command center directory owns the ledger entry for this action.
 
-    create_universe writes to the newly-created universe's ledger. For a
+    create_universe writes to the newly-created command center's ledger. For a
     server-generated id the kwargs carry no ``universe_id``, so prefer the id in
     the handler result — otherwise the entry would wrongly land in the default
-    universe's ledger. All others write to the universe whose state they affect.
+    command center's ledger. All others write to the command center whose state they affect.
     """
     if action == "create_universe":
         created = str((result or {}).get("universe_id") or "") or kwargs.get("universe_id", "")
@@ -741,13 +743,13 @@ def _scope_universe_response(result_str: str) -> str:
     header and puts `universe_id` as the first key.
 
     #15 contract: downstream reasoning must be able to ground a response to
-    its universe without re-reading the full JSON. On phones the bot often
+    its command center without re-reading the full JSON. On phones the bot often
     summarizes; a phone-legible `text` lead-in survives summarization even
     when deep JSON fields don't.
 
     Responses that aren't a dict, aren't JSON, or have no `universe_id`
-    field are returned unchanged — errors without universe context must
-    not claim a universe, and multi-universe responses (e.g. list) stay
+    field are returned unchanged — errors without command center context must
+    not claim a command center, and multi-universe responses (e.g. list) stay
     as-is.
     """
     try:
@@ -760,7 +762,7 @@ def _scope_universe_response(result_str: str) -> str:
     if not isinstance(uid, str) or not uid:
         return result_str
 
-    header = f"Universe: {uid}"
+    header = f"Command center: {uid}"
     scoped: dict[str, Any] = {"universe_id": uid}
     existing_text = data.get("text")
     if isinstance(existing_text, str) and existing_text.strip():
@@ -977,13 +979,13 @@ def _latest_run_activity_at(universe_id: str) -> datetime | None:
     """Newest actually-started run for ``universe_id`` in the runs ledger.
 
     Automation and schedule runs are recorded by `tinyassets.runs` with
-    ``queue_universe_id`` set to the universe they ran under -- the
+    ``queue_universe_id`` set to the command center they ran under -- the
     authoritative execution scope every universe-run entry point populates
     (the automation attempt runner, the schedule tick's
     `enqueue_universe_branch_run`, and the interactive `run_branch` MCP
     action all pass `_enqueue_universe_id` through to it) -- but never touch
     the retired fleet daemon loop's heartbeat files, so without this a
-    universe that is actively completing runs would still read as dormant.
+    command center that is actively completing runs would still read as dormant.
 
     Delegates the actually-started / non-queued filtering and the
     read-only, short-timeout, scope-correct query to
@@ -1017,7 +1019,7 @@ def _last_activity_at(udir: Path, status: dict[str, Any] | None) -> str | None:
     / `status.json` directly, so those files went stale the moment
     `user-owned-automations` retired that loop. This now returns the newest
     across two source families: (1) `_file_based_last_activity` -- the
-    original on-disk heartbeat files, kept for universes/tests that still
+    original on-disk heartbeat files, kept for command centers/tests that still
     only have those; and (2) the runs ledger (`_latest_run_activity_at`) --
     automation and schedule runs recorded via `tinyassets.runs`, scoped by
     `queue_universe_id` and filtered to runs that actually started. Does NOT
@@ -1153,10 +1155,10 @@ def _compute_word_count_from_files(
     Returns (total_words, sample). `status.json::word_count` is a cached
     value maintained by `DashboardMetrics` in the daemon process — it's
     only flushed during runs, never corrected when output files are
-    added/removed/moved, and can drift wildly across universe switches.
+    added/removed/moved, and can drift wildly across command center switches.
     Reading the files is slower but always truthful.
 
-    The walk covers `output/**/*.md` under the universe directory, which
+    The walk covers `output/**/*.md` under the command center directory, which
     matches where commit writes prose (`output/book-{N}/chapter-{NN}/
     scene-{NN}.md`). Non-scene markdown (canon/, INDEX.md, progress.md)
     lives outside `output/` so it won't be double-counted.
@@ -1598,7 +1600,7 @@ def _unavailable_epoch2_summary(error: str) -> dict[str, Any]:
 
 
 def _may_view_unscoped_epoch2_integrity(udir: Path) -> bool:
-    """Restrict exact unscoped corruption counts to universe admins."""
+    """Restrict exact unscoped corruption counts to command center admins."""
     actor_id = permissions.current_actor_id()
     from tinyassets.principals import has_named_principal
 
@@ -1733,19 +1735,28 @@ def _epoch2_operational_snapshot(udir: Path) -> dict[str, Any]:
     return _epoch2_operational_read(udir).summary
 
 
-_TOP_LEVEL_OPERATIONAL_DATA_DIRS = frozenset({
-    "lance",
-    "output",
-    "runs",
-    "wiki",
-})
+def _is_listable_universe_dir(path: Path, owned: set[str]) -> bool:
+    """A command center is a directory somebody OWNS (founder, 2026-09-02).
 
+    This used to be a four-name denylist (``lance``/``output``/``runs``/``wiki``)
+    standing in for a definition, so the platform's own backups and every past
+    prune's archive were command centers, and each new operational directory needed
+    another name in the frozenset -- ``lancedb``, daemon memory, retained inputs,
+    the workspace pool and stored offers were already missing from it. Ownership
+    is the definition; operational directories need no list because they were
+    never command centers.
 
-def _is_listable_universe_dir(path: Path) -> bool:
+    ``owned`` comes from ``daemon_server.owned_universe_ids``. Passing it in
+    rather than reading it here keeps one ownership query per enumeration
+    instead of one per directory.
+    """
     return (
         path.is_dir()
         and not path.name.startswith(".")
-        and path.name not in _TOP_LEVEL_OPERATIONAL_DATA_DIRS
+        # EXACT, not case-folded. A universe id is both a path component and an
+        # authority key, and resolving those to different spellings breaks one of
+        # them -- see `daemon_server.owned_universe_id` for the two ways it broke.
+        and path.name in owned
     )
 
 
@@ -1758,6 +1769,22 @@ def _action_list_universes(**_kwargs: Any) -> str:
             "note": f"Base directory does not exist: {base}",
         })
 
+    from tinyassets.api import visibility
+    from tinyassets.daemon_server import owned_universe_ids
+
+    # Ownership first: reading it initializes its store in this directory, so
+    # entries listed before it described a directory the call then changed --
+    # the first list on a fresh data dir said "empty" and the second did not.
+    try:
+        owned = owned_universe_ids(base)
+    except Exception as exc:  # noqa: BLE001 - fail closed, and say why
+        logger.exception("ownership lookup failed while listing command centers")
+        return json.dumps({
+            "universes": [],
+            "count": 0,
+            "note": f"Ownership store unavailable: {exc}",
+        })
+
     try:
         all_entries = list(base.iterdir())
     except OSError as exc:
@@ -1767,12 +1794,10 @@ def _action_list_universes(**_kwargs: Any) -> str:
             "note": f"Base directory unreadable ({base}): {exc}",
         })
 
-    from tinyassets.api import visibility
-
     universes = []
     hidden_by_visibility = 0
     for child in sorted(all_entries):
-        if not _is_listable_universe_dir(child):
+        if not _is_listable_universe_dir(child, owned):
             continue
         # Existence is a privileged, separately-granted capability: a universe
         # whose declared level withholds discovery (e.g. `unlisted`) is not
@@ -1802,29 +1827,93 @@ def _action_list_universes(**_kwargs: Any) -> str:
             # Some universes exist but none are visible to this caller. Do NOT
             # leak the hidden count or the base path — that is aggregate
             # disclosure about withheld universes (existence is privileged).
-            result["note"] = "No universes are visible to you."
+            result["note"] = "No command centers are visible to you."
         elif not all_entries:
             result["note"] = f"Base directory is empty: {base}"
         else:
             result["note"] = (
                 f"Base directory has {len(all_entries)} entries but none "
-                f"are valid universes (all hidden or non-directories or "
+                f"are valid command centers (all hidden or non-directories or "
                 f"reserved operational data directories): {base}"
             )
     return json.dumps(result)
+
+
+class _OwnershipUnavailable(RuntimeError):
+    """The ownership store could not be read. NOT the same as unowned."""
+
+
+def _owned_universe_id(uid: str) -> str:
+    """The owned id ``uid`` names, or ``""`` when nobody owns it.
+
+    Raises :class:`_OwnershipUnavailable` when the store cannot be read.
+    Returning ``""`` there would refuse the request as "Command center not found",
+    which tells the caller an existing command center does not exist -- a lie, from a
+    transient SQLite lock. Fail closed AND loudly: the request is still refused,
+    but for the reason that is true.
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    base = _base_path()
+    if not base.is_dir():
+        # No data root is not a broken store: there is nothing here, so nobody
+        # owns anything. Raising here would turn every read on a fresh install
+        # into "Ownership store unavailable".
+        return ""
+    try:
+        return owned_universe_id(base, uid)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ownership lookup failed for %s", uid)
+        raise _OwnershipUnavailable(str(exc)) from exc
+
+
+def _available_universe_ids() -> list[str]:
+    """What to offer when an id is not found: the command centers SOMEBODY OWNS.
+
+    This used to list every directory under the data root, so a "not found"
+    answer published the whole graveyard -- the archives, the migration backup
+    and the operational stores -- to any caller who guessed a wrong id.
+    """
+    from tinyassets.daemon_server import owned_universe_ids
+
+    base = _base_path()
+    if not base.is_dir():
+        return []
+    try:
+        owned = owned_universe_ids(base)
+    except Exception:  # noqa: BLE001 - fail closed
+        logger.exception("ownership lookup failed while listing available ids")
+        return []
+    from tinyassets.api import visibility
+
+    return sorted(
+        d.name for d in base.iterdir()
+        if _is_listable_universe_dir(d, owned)
+        # Existence is separately granted. Without this, asking for an id that
+        # does not exist answers with every owned universe, private and unlisted
+        # ones included -- the enumeration gate the listing applies, skipped by
+        # taking the error path.
+        and visibility.visibility_permits(d.name, "discover_existence")
+    )
 
 
 def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
-    if not udir.is_dir():
+    # A DIRECTORY IS NOT A UNIVERSE. Filtering the enumeration was half the fix:
+    # reading one BY ID still answered with a full universe payload for
+    # `cloud-automation-inputs` and for the migration backup, reproduced against
+    # production on 2026-09-02. The graveyard was still browsable, which is what
+    # the founder reported.
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
-            "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "error": f"Command center '{uid}' not found.",
+            "available": _available_universe_ids(),
         })
 
     # Metadata gate: inspect returns describe-surface metadata (premise, daemon
@@ -2322,7 +2411,7 @@ def _action_submit_request(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     loop_branch_def_id, loop_dispatch = _universe_loop_dispatch(udir)
     if not loop_branch_def_id:
@@ -2342,7 +2431,7 @@ def _action_submit_request(
                 f"Request text exceeds {_SUBMIT_REQUEST_MAX_BYTES} bytes "
                 f"({text_bytes} submitted). Summarize or split into "
                 "multiple requests. For private long-form material, relay it "
-                "to the universe through converse instead."
+                "to the command center through converse instead."
             ),
         })
 
@@ -2556,7 +2645,7 @@ def _action_queue_list(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     v1_error = ""
     try:
@@ -3173,6 +3262,8 @@ def _action_daemon_memory_capture(
             ),
             metadata=metadata,
         )
+    except StorageRefused as refused:
+        return json.dumps({"universe_id": uid, **_visible_refusal(refused)})
     except (KeyError, ValueError, TypeError) as exc:
         return json.dumps({"universe_id": uid, "error": str(exc)})
     return json.dumps({"universe_id": uid, "daemon_id": daemon_id, "entry": entry}, default=str)
@@ -3319,6 +3410,8 @@ def _action_daemon_memory_promote(
             target_rel_path=target_rel_path,
             metadata=metadata,
         )
+    except StorageRefused as refused:
+        return json.dumps({"universe_id": uid, **_visible_refusal(refused)})
     except (KeyError, ValueError, TypeError) as exc:
         return json.dumps({"universe_id": uid, "error": str(exc)})
     result["universe_id"] = uid
@@ -3529,7 +3622,7 @@ def _action_daemon_overview(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     limit_key = (
         "full" if isinstance(limit, str)
@@ -3799,7 +3892,7 @@ def _action_set_tier_config(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     tier_name = (tier or "").strip().lower()
     if tier_name not in _VALID_TIER_KEYS:
@@ -3877,7 +3970,7 @@ def _action_queue_cancel(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
     if not branch_task_id:
         return json.dumps({"error": "branch_task_id required."})
 
@@ -3978,7 +4071,7 @@ def _action_subscribe_goal(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
     if not goal_id:
         return json.dumps({"error": "goal_id required."})
     try:
@@ -4006,7 +4099,7 @@ def _action_unsubscribe_goal(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
     if not goal_id:
         return json.dumps({"error": "goal_id required."})
     try:
@@ -4045,7 +4138,7 @@ def _action_list_subscriptions(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     try:
         goals = _public_subscription_refs(_list(udir))
@@ -4106,7 +4199,7 @@ def _action_post_to_goal_pool(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
     if not goal_id:
         return json.dumps({"error": "goal_id required."})
     if not branch_def_id:
@@ -4218,7 +4311,7 @@ def _action_submit_node_bid(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
     if not node_def_id:
         return json.dumps({"error": "node_def_id required."})
 
@@ -4312,7 +4405,7 @@ def _action_give_direction(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     valid_categories = {"direction", "protect", "concern", "observation", "error"}
     if category not in valid_categories:
@@ -4362,7 +4455,7 @@ def _action_query_world(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     if query_type == "characters":
         data = _read_json(udir / "characters.json")
@@ -4559,7 +4652,7 @@ def _action_read_premise(universe_id: str = "", **_kwargs: Any) -> str:
             "has_soul": soul is not None,
             "soul": soul.summary() if soul is not None else None,
             "note": (
-                "No premise set. Tell the universe its premise through "
+                "No premise set. Tell the command center its premise through "
                 "converse."
             ),
         })
@@ -4622,6 +4715,120 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         return json.dumps({"error": f"Failed to write premise: {exc}"})
 
 
+#: The levels this owner-facing verb OFFERS — deliberately narrower than
+#: ``visibility.LEVELS``. A level is a promise, and a promise no reader enforces
+#: is decoration: six universe read actions that return raw content
+#: (``get_activity``, ``read_premise``, ``read_canon``, ``read_source``,
+#: ``read_output``, ``query_world``) are gated only by the legacy ``public_read``
+#: bit through ``_universe_acl_error``, and ``set_universe_visibility`` sets that
+#: bit for ANY level granting a visitor a capability. So `metadata_only` (which
+#: promises to withhold content) and `unlisted` (which promises to withhold
+#: metadata) would both be mis-served. Offering only the two the platform enforces
+#: end to end keeps this surface honest; the gap is
+#: `docs/concerns/2026-09-26-content-readers-gate-on-the-legacy-bit.md`, and when
+#: it closes the other two levels belong here.
+#:
+#: This is also exactly the binary the founder described on 2026-09-26 — private
+#: unless the owner makes it accessible — rather than a refinement nobody asked for.
+_OFFERED_VISIBILITY_LEVELS = frozenset({"private", "public"})
+
+
+def _action_set_universe_visibility(
+    universe_id: str = "", visibility: str = "", **_kwargs: Any
+) -> str:
+    """Change a command center's declared visibility — the owner's exposure decision.
+
+    A command center is born `private` (founder, 2026-09-26: nothing in a user's
+    command center is visible, accessible or interactable to another user unless its
+    owner exposed it). This is the only way it stops being private, and it is the
+    reason private-by-default is a boundary rather than a wall: before this
+    action existed, `set_universe_visibility` had no production caller outside
+    the creation path and the boot backfill, so an owner could not publish at
+    all.
+
+    Authority: OWNER-only, which is strictly narrower than write. Registration in
+    ``WRITE_ACTIONS`` makes ``_universe_acl_error`` demand write access and makes
+    the dispatcher ledger the decision — necessary, and not sufficient. That gate
+    accepts ``write`` OR ``admin`` (``permissions._WRITE_PERMISSIONS``), so relying
+    on it alone let a delegated *writer* publish someone else's command center and have
+    it recorded as the owner's choice (Codex cross-family review of PR #4019,
+    reproduced end-to-end: `status=updated`, `chosen_by=owner`, and the migration
+    then classified that command center as owner-chosen and left it public).
+
+    Exposing a command center to other users is not an editing operation, so it takes
+    the canonical per-universe ownership predicate — ``universe_owner_actor``,
+    the explicit ``admin`` ACL row, the same signal ``connect_llm``,
+    ``source_channel`` and the pending-request rail use. This is a narrowing on
+    top of the central gate, not a second copy of it: the ACL check still runs
+    first and this only ever refuses more.
+    """
+    from tinyassets.api import visibility as _visibility
+    from tinyassets.api.source_channel import universe_owner_actor
+    from tinyassets.principals import named_principal
+
+    offered = _OFFERED_VISIBILITY_LEVELS
+    uid = _request_universe(universe_id)
+    if not _universe_dir(uid).is_dir():
+        return json.dumps({"error": f"Command center '{uid}' not found."})
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor or not universe_owner_actor(_base_path(), uid, actor):
+        # The SAME envelope the central ACL gate returns for a non-writer, so a
+        # delegated writer learns exactly what a reader learns.
+        return json.dumps(permissions.universe_access_error(
+            universe_id=uid, write=True, action="set_visibility",
+            surface="universe",
+        ))
+
+    requested = (visibility or "").strip()
+    if not requested:
+        return json.dumps({
+            "error": f"visibility is required; expected one of {sorted(offered)}.",
+        })
+    if requested not in offered:
+        known = _visibility.parse_level(requested) is not None
+        return json.dumps({
+            "error": (
+                f"visibility {requested!r} is not offered; expected one of "
+                f"{sorted(offered)}."
+            ),
+            "reason": "level_not_enforced" if known else "unknown_level",
+            "detail": (
+                f"{requested!r} is a real level, but the platform does not yet "
+                "enforce its content boundary on every reader, so this surface "
+                "does not offer it (docs/concerns/"
+                "2026-09-26-content-readers-gate-on-the-legacy-bit.md)."
+            ) if known else "",
+        })
+    previous = _visibility.declared_level_name(uid)
+    try:
+        resolved = _visibility.set_universe_visibility(
+            uid, requested, source=_visibility.LEVEL_SOURCE_OWNER
+        )
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({
+        "universe_id": uid,
+        "status": "updated",
+        "visibility": resolved.name,
+        "previous_visibility": previous,
+        "chosen_by": "owner",
+        "capabilities": {
+            cap: resolved.permits(cap) for cap in _visibility.CAPABILITIES
+        },
+        "note": (
+            f"'{uid}' is now {resolved.name}. "
+            + (
+                "Other users can see it to the extent that level allows; you "
+                "and anyone you granted access keep full access either way."
+                if resolved is not _visibility.PRIVATE
+                else "No other user can discover, inspect or read it. People "
+                "you granted access to keep full access."
+            )
+        ),
+    })
+
+
 _CANON_SAME_FILENAME_BEHAVIOR = (
     "A later ingest of the same canon-source filename replaces the stored "
     "source bytes and manifest entry when the content hash changes; identical "
@@ -4661,9 +4868,7 @@ def _action_add_canon(
     provenance_tag: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Add inline canon text. Small uploads only; large files should use
-    ``add_canon_from_path`` so the LLM never has to copy content verbatim
-    into the tool-call arg.
+    """Add inline canon text.
 
     Memory-scope Stage 2b landed the ``synthesize_source`` signal as the
     trigger for premise/canon/entity synthesis. This path now routes
@@ -4734,171 +4939,11 @@ def _action_add_canon(
         return json.dumps({"error": f"Failed to write canon file: {exc}"})
 
 
-def _action_add_canon_from_path(
-    universe_id: str = "",
-    path: str = "",
-    filename: str = "",
-    provenance_tag: str = "",
-    **_kwargs: Any,
-) -> str:
-    """Ingest a file from the server's filesystem into a universe's canon.
-
-    Solves the "copy-through-tool-arg" defect of ``add_canon``: for
-    large uploads (>20K tokens) the LLM cannot reliably reproduce the
-    file content verbatim in a tool-call arg — summarization drift,
-    max-output cutoff, and JSON-escaping errors silently corrupt the
-    upload. This path reads the file server-side instead, preserving
-    the "user uploads are authoritative" hard rule.
-
-    Trust-model mitigations (task #15):
-
-    - ``TINYASSETS_UPLOAD_WHITELIST`` (env var, optional): colon/
-      semicolon-separated absolute-path prefixes. When set, a path
-      not under any prefix is rejected with a clear error. When
-      unset, any absolute path is accepted and a WARNING is logged
-      at startup. The whitelist is opt-in enforcement — the demo
-      UX is open-by-default.
-    - Response includes ``preview_first_200_bytes``: the first ~200
-      UTF-8 characters of the ingested file so the host can see in
-      the MCP response what was actually stored (silent substitution
-      becomes detectable without an out-of-band read).
-
-    Parameters
-    ----------
-    universe_id : str
-        Target universe. Defaults to the active universe.
-    path : str
-        **Absolute** path on the server's filesystem. The MCP client's
-        LLM never reads the file content through this param — it just
-        references a path the host has already placed.
-    filename : str, optional
-        Filename to store the file under in ``canon/sources/``. Defaults
-        to the basename of ``path``.
-    provenance_tag : str, optional
-        Source tag (e.g. "published novel", "rough notes"). Defaults
-        to "user_upload".
-    """
-    from tinyassets.api.engine_helpers import _current_actor, _upload_whitelist_prefixes
-    if not path:
-        return json.dumps({"error": "path is required."})
-
-    src = Path(path)
-    if not src.is_absolute():
-        return json.dumps({
-            "error": (
-                "path must be absolute — this action reads from the "
-                "server's filesystem, not the MCP client's context."
-            ),
-        })
-
-    # Whitelist enforcement (opt-in via TINYASSETS_UPLOAD_WHITELIST).
-    # Resolve src to handle symlinks + ``..`` traversals before the
-    # prefix check; otherwise ``/allowed/../secret`` would slip past.
-    whitelist = _upload_whitelist_prefixes()
-    if whitelist is not None:
-        try:
-            resolved = src.resolve(strict=False)
-        except OSError as exc:
-            return json.dumps({"error": f"Failed to resolve path: {exc}"})
-        if not any(
-            resolved.is_relative_to(prefix) for prefix in whitelist
-        ):
-            return json.dumps({
-                "error": (
-                    f"Path is not under any TINYASSETS_UPLOAD_WHITELIST "
-                    f"prefix. Resolved={resolved!s}, "
-                    f"allowed_prefixes={[str(p) for p in whitelist]}."
-                ),
-            })
-
-    if not src.exists():
-        return json.dumps({"error": f"File not found: {path}"})
-    if not src.is_file():
-        return json.dumps({"error": f"Not a regular file: {path}"})
-
-    try:
-        data = src.read_bytes()
-    except OSError as exc:
-        return json.dumps({"error": f"Failed to read file: {exc}"})
-
-    # Reject non-UTF-8 early with a clear error. The daemon's canon
-    # pipeline assumes UTF-8; binary or latin-1 files would silently
-    # corrupt synthesis.
-    try:
-        decoded = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        return json.dumps({
-            "error": (
-                f"File is not valid UTF-8 ({exc.reason} at byte "
-                f"{exc.start}). Convert to UTF-8 before ingesting."
-            ),
-        })
-
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    canon_dir = udir / "canon"
-    safe_name = Path(filename).name if filename else src.name
-    if not safe_name:
-        return json.dumps({"error": "Invalid filename."})
-
-    from tinyassets.ingestion.core import ingest_file
-
-    try:
-        canon_dir.mkdir(parents=True, exist_ok=True)
-        source_operation = _canon_source_operation(canon_dir, safe_name, data)
-        result = ingest_file(
-            canon_dir=canon_dir,
-            filename=safe_name,
-            data=data,
-            universe_path=udir,
-            user_upload=True,
-        )
-
-        tag = provenance_tag or "user_upload"
-        # Resolve + contain the sidecar meta path before write so a crafted
-        # ``safe_name`` cannot clobber a file outside canon_dir.
-        meta_path = safe_canon_path(
-            canon_dir, f".{safe_name}.meta.json", kind="meta sidecar"
-        )
-        meta = {
-            "provenance": tag,
-            "source_path": str(src),
-            "added": datetime.now(timezone.utc).isoformat(),
-            "source": _current_actor(),
-        }
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
-
-        return json.dumps({
-            "universe_id": uid,
-            "filename": safe_name,
-            "canonical_path": str(canon_dir / "sources" / safe_name),
-            "bytes_written": result.byte_count,
-            "synthesis_signal_emitted": result.signal_emitted,
-            "routed_to": result.routed_to,
-            "provenance": tag,
-            "source_operation": source_operation,
-            "version_semantics": _canon_version_semantics(
-                safe_name, result.routed_to,
-            ),
-            # Task #15: echo the first 200 decoded chars so the host
-            # can confirm in the MCP response what was ingested —
-            # silent file-swap becomes detectable without an
-            # out-of-band read.
-            "preview_first_200_bytes": decoded[:200],
-            "note": (
-                "File ingested from server path. The daemon will pick "
-                "up the synthesize_source signal on its next cycle."
-            ),
-        })
-    except OSError as exc:
-        return json.dumps({"error": f"Failed to ingest file: {exc}"})
-
-
 def _action_list_canon(
     universe_id: str = "",
     **_kwargs: Any,
 ) -> str:
-    """List all canon documents in a universe with metadata."""
+    """List all canon documents in a command center with metadata."""
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     canon_dir = udir / "canon"
@@ -5205,7 +5250,7 @@ def _action_control_daemon(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     pause_path = udir / ".pause"
 
@@ -5323,7 +5368,7 @@ _ACTIVITY_LINE_RE = re.compile(
 _DISPATCH_GUARD_ABSENCE_CAVEAT = (
     "Empty dispatch_guard list does not prove no overshoots — the daemon "
     "may not have dispatched any scenes in this window (endpoint unbound, "
-    "daemon paused, or universe idle). Verify daemon ran before inferring "
+    "daemon paused, or command center idle). Verify daemon ran before inferring "
     "'guard never needed to fire'."
 )
 
@@ -5355,7 +5400,7 @@ def _action_get_recent_events(
 ) -> str:
     """Tag-filterable view of activity.log for chatbot observability.
 
-    Reads the universe's ``activity.log`` tail and returns entries as
+    Reads the command center's ``activity.log`` tail and returns entries as
     structured dicts (``ts`` / ``tag`` / ``message`` / ``raw``). When
     ``tag`` is non-empty, only entries whose tag starts with ``tag``
     are returned — tag prefix-match so a caller can filter ``"dispatch"``
@@ -5369,7 +5414,7 @@ def _action_get_recent_events(
         (e.g. "log file missing", "tag filter matched 0 of N entries").
 
     Args:
-        universe_id: Target universe (falls back to default).
+        universe_id: Target command center (falls back to default).
         tag: Optional tag prefix filter (empty = all entries).
         limit: Max entries to return (1..500, clamped).
     """
@@ -5384,7 +5429,7 @@ def _action_get_recent_events(
     if not content:
         missing_caveats = [
             "No activity.log found. The daemon may not have run yet "
-            "in this universe, or the log was cleared.",
+            "in this command center, or the log was cleared.",
         ]
         if tag == "dispatch_guard":
             missing_caveats.append(_DISPATCH_GUARD_ABSENCE_CAVEAT)
@@ -5484,13 +5529,16 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
 
     uid = universe_id
     udir = _universe_dir(uid)
-    if not udir.is_dir():
+    # The same question the listing and `inspect` ask: selecting a directory
+    # nobody owns is selecting something that is not a universe.
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
-            "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "error": f"Command center '{uid}' not found.",
+            "available": _available_universe_ids(),
         })
 
     # Explicit universe selection is not global (universe-creation spec:
@@ -5507,7 +5555,7 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
                 f"Selected '{uid}' for this session. Pass the explicit target "
                 "on each advertised handle (graph_id for graph operations; "
                 "universe_id for converse, page, and status operations); this "
-                "does not change the daemon's global active universe."
+                "does not change the daemon's global active command center."
             ),
         })
 
@@ -5517,7 +5565,7 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
     try:
         marker.write_text(uid, encoding="utf-8")
     except OSError as exc:
-        return json.dumps({"error": f"Failed to write active universe marker: {exc}"})
+        return json.dumps({"error": f"Failed to write active command center marker: {exc}"})
 
     return json.dumps({
         "universe_id": uid,
@@ -5536,17 +5584,33 @@ def _action_create_universe(
     base = _base_path()
     # Creation-time visibility declaration: a new universe must be born with an
     # explicit level so undeclared rows stop being produced (undeclared fails
-    # closed). The creator may choose a level; default is the host-knob
-    # `DEFAULT_CREATE_VISIBILITY`. Validate up front so a bad value fails the
-    # create loudly rather than silently leaving the universe undeclared.
+    # closed). The creator may choose a level; otherwise the universe is born
+    # `private` (`DEFAULT_CREATE_VISIBILITY`, founder 2026-09-26). Validate up
+    # front so a bad value fails the create loudly rather than silently leaving
+    # the universe undeclared.
+    #
+    # The provenance matters as much as the level: a level this caller asked for
+    # is the OWNER's choice, the fallback is the platform's. The migration that
+    # closes the defaulted-public records reads exactly that distinction, so a
+    # universe born private-by-default must not claim its owner chose privacy.
     from tinyassets.api import visibility as _visibility
 
-    create_level = (visibility or "").strip() or _visibility.DEFAULT_CREATE_VISIBILITY
-    if _visibility.parse_level(create_level) is None:
+    chosen_level = (visibility or "").strip()
+    create_level = chosen_level or _visibility.DEFAULT_CREATE_VISIBILITY
+    create_level_source = (
+        _visibility.LEVEL_SOURCE_OWNER if chosen_level else "default"
+    )
+    # Birth offers the same levels the post-birth verb offers, and for the same
+    # reason (`_OFFERED_VISIBILITY_LEVELS`): a level whose content boundary no
+    # reader enforces must not be selectable. This became reachable when the
+    # dispatcher started forwarding `visibility`, which it needs to do for
+    # `set_visibility` — so the two writers are held to one list rather than
+    # birth quietly accepting more than the verb.
+    if create_level not in _OFFERED_VISIBILITY_LEVELS:
         return json.dumps({
             "error": (
                 f"Invalid visibility {create_level!r}; expected one of "
-                f"{sorted(_visibility.LEVELS)}."
+                f"{sorted(_OFFERED_VISIBILITY_LEVELS)}."
             ),
         })
     # universe-creation D2: universe_id is optional. When absent, generate one
@@ -5566,9 +5630,43 @@ def _action_create_universe(
     if "/" in uid or "\\" in uid or uid.startswith("."):
         return json.dumps({"error": "Invalid universe_id."})
     if udir.exists():
-        return json.dumps({"error": f"Universe '{uid}' already exists."})
+        return json.dumps({"error": f"Command center '{uid}' already exists."})
 
+    founder = ""
     try:
+        # THE OWNER IS CLAIMED BEFORE THE DIRECTORY EXISTS. Creation used to
+        # mkdir and seed here and grant ownership ~90 lines below, which left a
+        # window where the directory was on disk and owned by nobody. That was
+        # merely untidy while an unowned directory was still readable; now that
+        # a universe nobody owns grants no capability (`visibility_permits`), the
+        # window is a functional hole -- the creator's own reads inside it would
+        # be refused, and `first_contact`'s seeding reads through the same gate.
+        # `first_contact` already claims the home before materializing; explicit
+        # creation now does the same (Codex review 2026-09-26).
+        founder = permissions.current_actor_id()
+        # NO UNOWNED UNIVERSE, EVER (founder rule 2026-08-28). This used to fall
+        # through to `founder_id: ""` -- it created the universe, granted nobody,
+        # bound nobody, and returned success. The question "whose is this?" then
+        # had no answer, and that question is what every multi-tenant guarantee
+        # is built on. The public MCP surface already refuses at the door
+        # (`_universe_birth_refusal`) and `ensure_founder_home` needs
+        # `create_universe` scope, so no production path reaches here
+        # unauthenticated today -- and "no caller does that today" is precisely
+        # the reasoning that has been wrong twice already in this repo.
+        #
+        # Refusing BEFORE the mkdir means a refusal leaves nothing behind at all,
+        # rather than relying on rollback to remove a bare directory.
+        if not permissions.is_authenticated_request() or not (founder or "").strip():
+            raise PermissionError(
+                "a command center must belong to someone: refusing to create one with no "
+                "authenticated owner"
+            )
+        from tinyassets.daemon_server import grant_universe_ownership
+
+        # The admin grant and the storage/seat owner in ONE transaction: a
+        # universe is never granted but unowned (account-storage-quota D2).
+        grant_universe_ownership(base, universe_id=uid, owner_id=founder)
+
         udir.mkdir(parents=True, exist_ok=True)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
@@ -5611,11 +5709,11 @@ def _action_create_universe(
             marker = base / ".active_universe"
             marker.write_text(uid, encoding="utf-8")
             result["note"] = (
-                f"Universe '{uid}' created. "
+                f"Command center '{uid}' created. "
                 "Daemon will switch to it within ~10 seconds."
             )
         else:
-            result["note"] = f"Universe '{uid}' created."
+            result["note"] = f"Command center '{uid}' created."
 
         # D0a founder-grant-on-create: the authenticated founder OWNS the
         # universe they create (admin grant) — the mechanism that makes the
@@ -5636,46 +5734,22 @@ def _action_create_universe(
         # through here), so no universe is ever produced undeclared. This is on
         # the critical path: a failure rolls the partial create back via the
         # outer except, keeping create atomic.
-        _visibility.set_universe_visibility(uid, create_level)
+        _visibility.set_universe_visibility(
+            uid, create_level, source=create_level_source
+        )
         result["visibility"] = create_level
 
-        founder = permissions.current_actor_id()
-        # NO UNOWNED UNIVERSE, EVER (founder rule 2026-08-28; enforced here
-        # 2026-08-29). This used to fall through to `founder_id: ""` — it created
-        # the universe, granted nobody, bound nobody, and returned success. The
-        # question "whose is this?" then had no answer, and that question is what
-        # every multi-tenant guarantee is built on.
-        #
-        # The public MCP surface already refuses at the door (`_universe_birth_refusal`),
-        # and `ensure_founder_home` needs `create_universe` scope, so no production
-        # path reaches here unauthenticated today. That made this a LATENT hole rather
-        # than a live one — and "no caller does that today" is precisely the reasoning
-        # that has been wrong twice already in this repo. An invariant the founder
-        # states should be structurally true, not true by luck.
-        #
-        # Raising rolls back the partial create through the outer handler, so a
-        # refusal never leaves a bare directory behind.
-        if not permissions.is_authenticated_request() or not (founder or "").strip():
-            raise PermissionError(
-                "a universe must belong to someone: refusing to create one with no "
-                "authenticated owner"
-            )
-        from tinyassets.daemon_server import grant_universe_access, set_founder_home
-
-        grant_universe_access(
-            base,
-            universe_id=uid,
-            actor_id=founder,
-            permission="admin",
-            granted_by=founder,
-        )
+        # The admin grant was written BEFORE the directory existed (top of this
+        # try), because a universe nobody owns now grants no capability. What is
+        # left here is the HOME binding, which needs the completed directory to
+        # decide whether an existing home is living.
         # Bind this as the founder's home when they don't already have a
         # LIVING one — no binding, or a binding to a removed/incomplete dir.
         # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
         # so a broken home rebinds to this fresh one (Codex 2026-07-15).
         # Explicit later creates by a founder with a living home do NOT
         # reassign home.
-        from tinyassets.daemon_server import get_founder_home
+        from tinyassets.daemon_server import get_founder_home, set_founder_home
 
         _home = get_founder_home(base, founder)
         if not _home or not (base / _home / "soul.md").is_file():
@@ -5703,8 +5777,28 @@ def _action_create_universe(
                 shutil.rmtree(udir)
         except OSError:
             pass
+        # ...and the grant written before it, so a failed create leaves neither a
+        # bare directory nor an ownership row for a universe that never existed.
+        # An owner left holding an admin grant on a nonexistent universe has to be
+        # TOLD, whatever the create failed with: it is the one piece of state this
+        # rollback cannot clean up, and it silently blocks the id.
+        revoke_failed = ""
+        try:
+            from tinyassets.daemon_server import revoke_universe_ownership
+
+            if founder:
+                revoke_universe_ownership(base, universe_id=uid, owner_id=founder)
+        except Exception as revoke_exc:  # noqa: BLE001 - the create already failed
+            logger.exception("rollback: could not revoke the create grant for %s", uid)
+            revoke_failed = str(revoke_exc)
+        if revoke_failed:
+            return json.dumps({"error": (
+                f"Failed to create command center: {exc}. The ownership grant could NOT "
+                f"be taken back ({revoke_failed}); '{uid}' is claimed but not "
+                "created."
+            )})
         if isinstance(exc, OSError):
-            return json.dumps({"error": f"Failed to create universe: {exc}"})
+            return json.dumps({"error": f"Failed to create command center: {exc}"})
         raise
 
 
@@ -5740,7 +5834,7 @@ _DEFAULT_ENGINE_SOURCE = "byo_api_key"
 
 
 def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
-    """Return True when this universe has an engine of its own by any route.
+    """Return True when this command center has an engine of its own by any route.
 
     Two routes count. A vault LLM credential is the fully-wired BYO path. An
     explicit non-default ``engine_source`` is the other: ``self_hosted_endpoint``
@@ -5773,7 +5867,7 @@ def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
     config_file = Path(universe_dir) / "config.yaml"
     if config_file.exists() and not _config_yaml_is_parseable(config_file):
         logger.warning(
-            "universe config unreadable for %s; not treating as engine-less",
+            "command center config unreadable for %s; not treating as engine-less",
             universe_dir,
         )
         return True
@@ -5784,7 +5878,7 @@ def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
         engine_source = load_universe_config(Path(universe_dir)).engine_source
     except Exception:  # noqa: BLE001 - unreadable config is not proof of absence
         logger.warning(
-            "universe config unreadable for %s; not treating as engine-less",
+            "command center config unreadable for %s; not treating as engine-less",
             universe_dir,
         )
         return True
@@ -5823,13 +5917,13 @@ def engine_setup_required_payload(
 ) -> dict[str, Any] | None:
     """Return the held/setup-required envelope, or None to surface *exc*.
 
-    Returns a payload ONLY when the turn failed because the universe has no
-    engine of its own. Every other failure — a transient outage on a universe
+    Returns a payload ONLY when the turn failed because the command center has no
+    engine of its own. Every other failure — a transient outage on a command center
     that HAS an engine, a policy block, anything not provider exhaustion —
     returns None so the caller reports it honestly.
 
     The envelope deliberately carries no ``reply`` key. ``reply`` is what the
-    connector renders verbatim as the universe's own first-person voice; this
+    connector renders verbatim as the command center's own first-person voice; this
     text is platform-authored, so it travels as ``note`` like the other
     deterministic relay payloads (`write_page`, brain-write relays).
     """
@@ -5855,7 +5949,7 @@ def engine_setup_required_payload(
         "universe_id": universe_id,
         "missing": ["compute", "model_access"],
         "note": (
-            "Your universe is born and listening, but it has no engine yet — "
+            "Your command center is born and listening, but it has no engine yet — "
             "no provider of its own to think with, so it can't answer you. It "
             "will never run on anyone else's account, which is why this is the "
             "one thing it needs from you first. Give it one and it starts "
@@ -5870,7 +5964,7 @@ def engine_setup_required_payload(
                 "api_key": "<your key>",
             },
             "note": (
-                "Your own API key would be stored in this universe's private "
+                "Your own API key would be stored in this command center's private "
                 "vault and never echoed back. Ask the host to use the internal "
                 "engine-assignment surface."
             ),
@@ -5883,12 +5977,12 @@ def _action_set_engine(
     inputs_json: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Founder-only: assign the universe's engine (`universe action=set_engine`).
+    """Founder-only: assign the command center's engine (`universe action=set_engine`).
 
-    Deposits a BYO LLM API key into the universe's credential vault and sets the
-    preferred writer, so the universe's own intelligence runs on the founder's
+    Deposits a BYO LLM API key into the command center's credential vault and sets the
+    preferred writer, so the command center's own intelligence runs on the founder's
     engine (BYO API key → CLI-subprocess provider). Founder-only: gated by the
-    ``universe:admin`` scope + the universe write ACL. The key is stored in the
+    ``universe:admin`` scope + the command center write ACL. The key is stored in the
     per-universe vault and injected into the CLI subprocess env at call time; it
     is never echoed back or written to the ledger.
 
@@ -5899,7 +5993,7 @@ def _action_set_engine(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     raw = (inputs_json or "").strip()
     if not raw:
@@ -5945,13 +6039,13 @@ def _action_set_engine(
 
 
 def _set_engine_open_provider(uid, udir, data, preferred_writer) -> str:
-    """Open compute provider (compute-agnostic) → set the universe's writer to a
+    """Open compute provider (compute-agnostic) → set the command center's writer to a
     registered ProviderDefinition.
 
     The correct-shape replacement for the fixed-service ``byo_api_key`` path: the
     provider was registered out of band via ``connect_compute`` (an open descriptor
     referencing a granted connection / CLI subscription), so this sets NO credential —
-    it only points the universe's ``preferred_writer`` at the definition's resolved
+    it only points the command center's ``preferred_writer`` at the definition's resolved
     executor name (``api_key_http:<def-id>`` / ``codex`` / ``claude-code``). The
     per-call registration bridge then makes that name routable. No ``allowed_providers``
     restriction is written, so other roles keep their chains."""
@@ -5970,7 +6064,7 @@ def _set_engine_open_provider(uid, udir, data, preferred_writer) -> str:
     if definition is None:
         return json.dumps({
             "error": f"provider definition {definition_id!r} is not registered in "
-                     "this universe.",
+                     "this command center.",
             "hint": "register it with connect_compute first.",
         })
     try:
@@ -6099,7 +6193,7 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
         "status": "engine_set", "universe_id": uid,
         "engine_source": "market_rented", "market_model": market_model,
         "market_rate": market_rate, "spending_cap": spending_cap,
-        "note": "Your universe will run on a market-rented daemon within the "
+        "note": "Your command center will run on a market-rented daemon within the "
                 "spending cap. Market matching runs when a market host is live "
                 "(post-M1 runtime).",
     })
@@ -6108,7 +6202,7 @@ def _set_engine_market_rented(uid, udir, data, preferred_writer) -> str:
 def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
     """Host-your-own daemon → persist the choice + preferred provider.
 
-    The founder hosts a daemon bound to this universe. Recording the choice is
+    The founder hosts a daemon bound to this command center. Recording the choice is
     the onboard step; the actual runtime instance is bound via the existing
     ``universe action=daemon_summon`` (create + summon) — post-M1 wires a live
     worker to consume it.
@@ -6178,7 +6272,7 @@ def _action_offer_engine(
     """Founder-only: offer an engine to the market (`universe action=offer_engine`).
 
     Supply side (the inverse of set_engine): records / lists / toggles engines the
-    founder offers to the market for OTHER universes to rent when the founder is
+    founder offers to the market for OTHER command centers to rent when the founder is
     not running their own. Founder-scoped (keyed on the authenticated founder),
     togglable. No credential is stored here — only offer terms (service, model,
     rate, cap). Founder-only via the universe:admin scope + write ACL.
@@ -6252,19 +6346,19 @@ def _action_declare_universe_loop(
     branch_def_id: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Declare (or change) the Loop branch of an EXISTING universe.
+    """Declare (or change) the Loop branch of an EXISTING command center.
 
-    A universe is the owner's account and storage, not a workflow: it hosts many
+    A command center is the owner's account and storage, not a workflow: it hosts many
     automations, and an owner must be able to declare a loop after birth. Until
     this action existed, ``loop_branch_def_id`` could only be set by
     ``_action_create_universe``, and the public ``write_graph target="universe"``
-    never forwarded it — so no publicly created universe could declare a loop,
+    never forwarded it — so no publicly created command center could declare a loop,
     then or ever. Every downstream consequence followed silently: no loop ->
     ``select_project_loop_daemon`` returns None -> the cloud worker skips runtime
     registration -> nothing converges an automation's activation -> scheduled
     execution never runs.
 
-    Scoped to the caller's own universe via ``_request_universe``; the branch
+    Scoped to the caller's own command center via ``_request_universe``; the branch
     must exist. Passing an empty ``branch_def_id`` clears the declaration.
     """
     from tinyassets.api.branches import _resolve_readable_branch
@@ -6274,7 +6368,7 @@ def _action_declare_universe_loop(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     declared = str(branch_def_id or "").strip()
     if declared:
@@ -6357,7 +6451,7 @@ def _action_declare_universe_loop(
                 # not call this "serving" and invite a false all-clear.
                 "registered": True,
                 "note": (
-                    "a project-loop daemon is registered for this universe; "
+                    "a project-loop daemon is registered for this command center; "
                     "this does not prove a worker has a live runtime for it"
                 ),
             }
@@ -6368,7 +6462,7 @@ def _action_declare_universe_loop(
                 "blocker": "no_project_loop_daemon",
                 "note": (
                     "loop declared, but no project-loop daemon is registered for "
-                    "this universe, so no worker will register a runtime for it "
+                    "this command center, so no worker will register a runtime for it "
                     "and queued work will not be claimed"
                 ),
             }
@@ -6383,11 +6477,11 @@ def _action_soul_edit(
     inputs_json: str = "",
     **_kwargs: Any,
 ) -> str:
-    """The universe's learn/write path (`universe action=soul.edit`).
+    """The command center's learn/write path (`universe action=soul.edit`).
 
-    Applies a governed learning event per the universe's own soul.edit.md
+    Applies a governed learning event per the command center's own soul.edit.md
     policy — see ``tinyassets.soul_edit.apply_soul_edit``. This is how a
-    founder's universe REMEMBERS what it is taught: learned files feed the
+    founder's command center REMEMBERS what it is taught: learned files feed the
     self-model, and the persona voices them from the next turn on.
     """
     from tinyassets.soul_edit import SoulEditError, apply_soul_edit
@@ -6396,7 +6490,7 @@ def _action_soul_edit(
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
-        return json.dumps({"error": f"Universe '{uid}' not found."})
+        return json.dumps({"error": f"Command center '{uid}' not found."})
 
     raw = (inputs_json or "").strip()
     if not raw:
@@ -6428,6 +6522,7 @@ def _action_soul_edit(
     try:
         result = apply_soul_edit(
             udir,
+            agent_id="main",
             changes=changes,
             source=str(data.get("source", "")),
             context=str(data.get("context", "")),
@@ -6482,11 +6577,11 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "give_direction": _action_give_direction,
     "read_premise": _action_read_premise,
     "set_premise": _action_set_premise,
+    "set_visibility": _action_set_universe_visibility,
     "soul.edit": _action_soul_edit,
     "set_engine": _action_set_engine,
     "offer_engine": _action_offer_engine,
     "add_canon": _action_add_canon,
-    "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,
     "read_canon": _action_read_canon,
     "list_sources": _action_list_sources,
@@ -6587,6 +6682,7 @@ def _universe_impl(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    visibility: str = "",
     *,
     allow_named_universe_id: bool = False,
 ) -> str:
@@ -6596,7 +6692,7 @@ def _universe_impl(
 
     ``allow_named_universe_id`` is a keyword-only, internal-trust flag. The
     public MCP surface (``universe`` and ``write_graph`` tools) never sets it,
-    so a public caller cannot choose a universe's id — see the public-birth
+    so a public caller cannot choose a command center's id — see the public-birth
     boundary below.
     """
     dispatch = UNIVERSE_ACTIONS
@@ -6621,7 +6717,7 @@ def _universe_impl(
     ):
         return json.dumps({
             "error": (
-                "Universe birth assigns its own opaque serial id; a "
+                "Command center birth assigns its own opaque serial id; a "
                 "caller-selected universe_id is not accepted."
             ),
             "reason": "caller_selected_id_rejected",
@@ -6662,9 +6758,17 @@ def _universe_impl(
         "tier": tier,
         "enabled": enabled,
         "tag": tag,
+        "visibility": visibility,
         "anchor_json": anchor_json,
     }
 
     # All WRITE actions are funneled through the ledger wrapper. READ actions
     # pass through untouched. See WRITE_ACTIONS for the authoritative set.
     return _dispatch_with_ledger(action, handler, kwargs)
+
+def _visible_refusal(refused):
+    """The refusal the CALLER may see: the charged account's full record only
+    if the caller is that account (storage_accounting.visible_record)."""
+    from tinyassets.storage_accounting import visible_record
+
+    return visible_record(refused)

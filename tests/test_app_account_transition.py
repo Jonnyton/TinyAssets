@@ -26,8 +26,19 @@ _NODE = shutil.which("node")
 # boundary fix is lifted when present so the test is RED (assertions, not an
 # import error) against a tree that does not have it yet.
 _LIFT = ("setQueueScope", "setQueueOwner", "ownsSavedRow", "savedItem",
-         "flushSendQueue", "enterSignedOut", "loadHistory")
-_OPTIONAL = ("clearAccountScopedState", "clearThread", "clearComposerState")
+         "flushSendQueue", "enterSignedOut", "loadHistory", "drawHistoryTurns",
+         "offerEarlier", "loadEarlier", "historyFailed")
+_OPTIONAL = ("clearAccountScopedState", "clearThread", "clearComposerState",
+             # Added 2026-09-26 with the sign-out credential fix: this harness
+             # runs the page's REAL `enterSignedOut`, so a collaborator it gained
+             # has to be lifted here too. Optional, like its siblings, so this
+             # file stays green against a tree without the fix.
+             "clearCredentialFields",
+             # Added 2026-09-30: rail card nodes are now KEPT across a refresh
+             # so a 15-second poll cannot delete what the user typed into a
+             # card, which makes clearing them an account-change step rather
+             # than a side effect of the next rebuild.
+             "clearRailCards", "clearTypedValues")
 
 
 def _run_node(script: str):
@@ -105,8 +116,16 @@ _HARNESS = r"""
 // ---- the page's own module-scope state, declared exactly as the page does ----
 let queueScope="", queueOwner="", uploadsRestored=false, queueRestored=false;
 let historyLoaded=false, inflightRestored=false, hasMessages=false;
-let retainedItems=[], modelChoiceForNextTurn=null, statusTimer=null;
+let retainedItems=[], modelChoiceForNextTurn=null, statusTimer=null, workingTimer=null;
 let queuePersisted=true;
+// The working indicator's own state, declared as the page declares it. Its
+// rendering is a collaborator here (see tests/test_app_working_indicator.py for
+// the harness that runs the page's own version); what matters at THIS boundary is
+// that the account switch drops it.
+let serverTurn=null;
+// Steering a running turn (harness S2): flushSendQueue holds while a steer
+// request is on the wire.
+let steeredLines=[], pendingSteers=0, steerHeldBatch=false, lastSettlement=null;
 const sendQueue=[];
 const renderedConsumerTurns=new Set();
 const renderedConsumerFounders=new Set();
@@ -131,10 +150,15 @@ function $(id){
   if(id==="thread-empty")return DOM.thread.children.indexOf(DOM.empty)>=0?DOM.empty:null;
   if(id==="btn-send")return DOM.send;
   if(id==="composer-input")return DOM.composer;
-  if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}};
+  // `children` because every element has some: the page now walks a node to
+  // clear the controls under it (clearRailCards), and an element without the
+  // property is not a DOM element at all.
+  if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}, children:[]};
   return DOM.other[id];
 }
 let activeTurn=null, turnStartedAt=0, liveInflight=null;
+let interruptRequested=false, flushAfterInterrupt=false;
+let interruptPending=null, batchAfterStop=false;
 function appendMessage(role,text){
   if(!hasMessages){ const e=$("thread-empty"); if(e)e.remove(); hasMessages=true; }
   const m=el("msg"); m.className="msg msg--"+role; m.text=String(text||"");
@@ -143,6 +167,9 @@ function appendMessage(role,text){
 function appendFailureNotice(text){ return appendMessage("platform",text); }
 function answerExecutionDetail(){ return null; }
 function setStatusLine(s){ LOG.push(["status",s]); }
+function readServerTurn(){}
+function renderWorking(){ LOG.push(["working",serverTurn?"on":"off"]); }
+function unmarkQueued(){}
 function autoGrow(){}
 function copyModelChoice(v){ return v===undefined?null:v; }
 function turnInputMethod(v){ return v||"typed"; }
@@ -193,7 +220,26 @@ const Uploads={ aborted:0, abort(){ this.aborted++; } };
 const Voice={ stop(){}, conversationSettled(){} };
 const ModelPicker={ reset(){} };
 const HostedModelConnect={ reset(){}, setup:"connected" };
-const AppLayout={ reset(){ LOG.push(["layoutReset"]); } };
+const AppUI={ reset(){ LOG.push(["uiReset"]); }, homeChanged(){} };
+// The credential fields the sign-out clears. Modelled so the account
+// boundary test runs the page's real `enterSignedOut` end to end; what those
+// fields hold afterwards is asserted in
+// tests/test_app_signout_clears_typed_credentials.py.
+const CREDENTIAL_FIELDS=[{id:"hosted-key-input",value:""},{id:"endpoint-key",value:""}];
+const document={ querySelectorAll(selector){
+  return selector==='input[type="password"]' ? CREDENTIAL_FIELDS : [];
+} };
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; }, invalidateSession(){},
   _conv:null, getConversation(){ return this._conv; } };
 function threadText(){
@@ -351,7 +397,7 @@ def test_sign_out_takes_the_composer_with_the_rest_of_the_account(html):
       DOM.composer.value="my unsent private draft: severance terms";
       DOM.composer.style.height="96px";
       DOM.send.disabled=true; turnStartedAt=1000; activeTurn={};
-      setStatusLine("Your universe is thinking...");
+      setStatusLine("Your agent is thinking...");
       STORE.local[UPLOAD_KEY_A]=JSON.stringify(
         {version:1,owner:"principal-a",home:"universe-a",saved:[{file_id:"f1"}]});
       sendQueue.push({message:"A queued line",display:"A queued line",
@@ -414,7 +460,7 @@ def test_the_previous_turns_cleanup_cannot_touch_the_next_account(html):
       // Exactly what sendTurn holds across its await.
       const myTurn={}; activeTurn=myTurn;
       DOM.send.disabled=true; turnStartedAt=1000;
-      setStatusLine("Your universe is thinking...");
+      setStatusLine("Your agent is thinking...");
 
       enterSignedOut();                            // the boundary
       STORE.session[TOKEN_KEY]="t2";
@@ -472,11 +518,22 @@ const NATIVE=false;
 const DOM={};
 function $(id){ if(!DOM[id]) DOM[id]={id, textContent:"", value:"",
   style:{}, focus(){ LOG.push(["focus",id]); }}; return DOM[id]; }
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; } };
 const Uploads={ aborted:0, abort(){ this.aborted++; } };
 const Voice={ refreshCapability(){} };
 const ModelPicker={ reset(){} };
-const AppLayout={ reset(){ LOG.push(["layoutReset"]); }, enable(u,p){ LOG.push(["layout",u,p]); } };
+const AppUI={ reset(){ LOG.push(["uiReset"]); }, enable(u,p){ LOG.push(["ui",u,p]); } };
 const HostedModelConnect={ setup:"empty", busy:false, request:null,
   async begin(){ LOG.push(["begin"]); }, paint(){}, status(t){ LOG.push(["status",t]); } };
 function token(){ return "t1"; }
@@ -488,6 +545,11 @@ function warmSession(){}
 function loadPlan(){ LOG.push(["loadPlan"]); }
 function loadHistory(){ LOG.push(["loadHistory",queueOwner,queueScope]); }
 function sessionExpired(){ LOG.push(["expired"]); }
+// Sign-in reports the browser's IANA zone so a cron automation can run in the
+// owner's clock rather than the container's (`automation-schedule-timezone`).
+// Stubbed like every other collaborator here; the real one POSTs and is
+// deliberately not awaited.
+function reportTimezone(){ LOG.push(["timezone"]); }
 """
 
 
@@ -500,7 +562,7 @@ def _gate_script(html: str, body: str) -> str:
 
 def test_an_unpowered_first_session_lands_in_chat_with_the_request_first(html):
     """The first session's normal path is its own chat, with the account and
-    home learned from the verified /mcp/app/me before anything is restored,
+    home learned from the verified /app/me before anything is restored,
     and the connect request opened - never a separate full-page screen."""
     out = _run_node(_gate_script(html, r"""
     (async()=>{
@@ -517,8 +579,11 @@ def test_an_unpowered_first_session_lands_in_chat_with_the_request_first(html):
     assert ["loadHistory", "principal-a", "universe-a"] in log, \
         "the first session reached chat without asking for its own history"
     assert out["engineConnected"] is False
-    assert not any(entry[0] == "layout" for entry in log), \
-        "an unpowered universe enabled the powered layout"
+    assert not any(entry[0] == "ui" for entry in log), \
+        "an unpowered universe enabled the custom-UI switcher"
+    assert ["timezone"] in log, \
+        "sign-in did not report the browser's zone, so a schedule would run on " \
+        "the container's clock"
 
 
 def test_a_powered_session_lands_in_chat_without_opening_setup(html):
@@ -531,12 +596,12 @@ def test_a_powered_session_lands_in_chat_without_opening_setup(html):
     })();
     """))
     assert ["view", "chat"] in out["log"] and ["connect"] not in out["log"]
-    assert ["layout", "universe-a", "principal-a"] in out["log"]
+    assert ["ui", "universe-a", "principal-a"] in out["log"]
     assert out["engineConnected"] is True
 
 
 def test_a_me_that_lands_after_the_login_changed_stamps_no_identity(html):
-    """A /mcp/app/me still in flight when the account changes describes
+    """A /app/me still in flight when the account changes describes
     somebody else. It must not write that identity onto the page."""
     out = _run_node(_gate_script(html, r"""
     (async()=>{
@@ -555,7 +620,7 @@ def test_a_me_that_lands_after_the_login_changed_stamps_no_identity(html):
     })();
     """))
     assert out["queueOwner"] == "principal-b", \
-        "a stale /mcp/app/me renamed the account now on screen"
+        "a stale /app/me renamed the account now on screen"
     assert out["queueScope"] == "universe-b", \
-        "a stale /mcp/app/me renamed the home now on screen"
-    assert out["painted"] == [], "a stale /mcp/app/me painted a view"
+        "a stale /app/me renamed the home now on screen"
+    assert out["painted"] == [], "a stale /app/me painted a view"

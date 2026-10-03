@@ -5,8 +5,8 @@ universe owner has registered. It is the ``provider definition -> candidate`` st
 in the ownership model
 (``openspec/changes/compute-agnostic-provider-set/design.md`` §1): registration
 creates ONLY a candidate. It does NOT enroll, authorize, select, or make the
-provider routable — downstream owners (``provider_work_enrollment``,
-``user-assigned-llm-policy`` selection, ``constrain-set-engine-provider-authority``'s
+provider routable — downstream owners (``user-assigned-llm-policy``
+selection, ``constrain-set-engine-provider-authority``'s
 ``allowed_providers`` ceiling) act on the candidate. **This module writes no
 authority and no credential.**
 
@@ -304,7 +304,7 @@ def _verified_definition(
         )
     if expect_universe is not None and definition.universe_id != expect_universe:
         raise ProviderDefinitionError(
-            "provider definition universe mismatch (row in the wrong bucket)"
+            "provider definition command center mismatch (row in the wrong bucket)"
         )
     return definition
 

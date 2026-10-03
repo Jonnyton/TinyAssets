@@ -2,6 +2,7 @@
 
 import json
 import threading
+from dataclasses import replace
 
 from tinyassets.exceptions import WorkModelExhaustedError
 from tinyassets.providers.model_policy import ModelPolicy, ModelRef, order_models
@@ -86,6 +87,12 @@ class WorkCandidateData:
     """
 
     def __init__(self, plan):
+        # A workflow's explicit order is "complete and ordered or the graph
+        # refuses", checked position by position below and against each node's
+        # pinned primary. Demoting a recently refused model would reorder it and
+        # refuse the run outright, so the run keeps the owner's order and its
+        # coordinator steps past a refusal within the run as it meets one.
+        plan = replace(plan, refused_models=())
         self.owner, self.universe = plan.catalog.owner_id, plan.catalog.universe_id
         self.catalog, self.interaction = plan.catalog, plan.interaction
         self.source_policies = plan.source_policies
@@ -104,17 +111,55 @@ class WorkCandidateData:
             ):
                 raise PermissionError("explicit work model order is not fully eligible")
         if not self.order:
-            raise PermissionError("no eligible work model remains")
+            # TYPED, not a bare PermissionError: `_admit`'s handler converts any
+            # other exception into held authority, and "your accepted sources
+            # produced no runnable model" is a different owner action from
+            # "connect a provider". The run taxonomy keys on this MESSAGE, which
+            # is why it is the class constant rather than a local literal.
+            raise WorkModelExhaustedError(WorkModelExhaustedError.MESSAGE)
         self._fitted = None
         self._exhaustion = ()
         self._lock = threading.RLock()
+
+    def _admitted_refs(self, pin):
+        """Every admitted model of this owner matching ``pin``, catalogue order.
+
+        `self.order` is the ADVISORY order, and for a subscription/local source
+        that is only its advertised default -- `order_models` deliberately keeps
+        a subscription's other ids "visible in the catalogue for explicit
+        selection" rather than ranking them. So a node naming an accepted native
+        id is never in the order, and treating the order as the whole world
+        refused that node outright once every run started capturing one.
+
+        The catalogue read here is the plan's ADMITTED catalogue: this owner's
+        accepted sources with the candidate-only (learned, not-yet-granted) rows
+        already removed, so a pin still cannot reach a model the owner's own
+        `ModelAccess` does not admit -- and `_authorize_attempt` and
+        `_validate_work_selection` revalidate the exact id afterwards regardless.
+        """
+        return tuple(
+            ref
+            for connection in self.catalog.connections
+            for ref in (
+                ModelRef(connection.connection_id, model.model_id)
+                for model in connection.models
+            )
+            if _matches(ref, pin)
+        )
 
     def _constrained(self, policy):
         if not policy:
             return self.order
         if policy.get("difficulty_override"):
             raise PermissionError("dynamic graph model overrides conflict with captured selection")
-        matching = tuple(ref for ref in self.order if _matches(ref, policy.get("preferred", {})))
+        pin = policy.get("preferred", {})
+        matching = tuple(ref for ref in self.order if _matches(ref, pin))
+        if not matching and self.automatic:
+            # The owner chose nothing, so the captured order ranks, it does not
+            # decide. A graph pin IS an explicit choice and `order_models`
+            # already serves one from the catalogue; honour it rather than
+            # refusing the node for not appearing in an advisory ranking.
+            matching = self._admitted_refs(pin)
         if not matching or (not self.automatic and matching[0] != self.order[0]):
             raise PermissionError("graph model constraint conflicts with captured primary")
         primary = matching[0]
@@ -163,6 +208,9 @@ class WorkCandidateData:
                 if boundary.exhaustion == item:
                     if boundary.failure_class:
                         detail.append(boundary.failure_class)
+                    if boundary.daily_detail:
+                        detail.append(boundary.daily_detail)
+                        detail.append("Connect another free source, or add credit at that provider")
                     if boundary.retry_after_s is not None:
                         detail.append(f"retry after {boundary.retry_after_s:g}s")
                     break
@@ -173,7 +221,15 @@ class WorkCandidateData:
             message += ": " + "; ".join(parts)
         return WorkModelExhaustedError(message)
 
-    def next_candidate(self, policy, exhaustion=()):
+    def next_candidate(self, policy, exhaustion=(), *, min_context=None):
+        """The next admitted ref, or None.
+
+        ``min_context`` is ONE agent turn's measured need (its own pre-send
+        overflow), applied to this call only: other nodes of the same run keep
+        the models whose windows fit THEIR context. It raises the minimum on the
+        plan's interaction and on every per-source policy, because a per-source
+        interaction replaces the plan's for that source's models.
+        """
         with self._lock:
             if self._fitted is None or policy_key(policy) not in self._fitted:
                 raise PermissionError("work model order was not admitted")
@@ -181,11 +237,25 @@ class WorkCandidateData:
                 if item not in self._exhaustion:
                     self._exhaustion += (item,)
             refs = self._fitted[policy_key(policy)]
+            interaction, source_policies = self.interaction, self.source_policies
+            if min_context is not None:
+                interaction = _at_least(interaction, min_context)
+                source_policies = tuple(
+                    replace(item, interaction=_at_least(item.interaction, min_context))
+                    for item in source_policies
+                )
             # This is a DATA filter over retained capacity identity, not discovery
             # or fresh authority. It cannot throw for a now-absent old source.
             ordered = order_models(
                 self.catalog, ModelPolicy(0, "explicit", refs[1:], saved_default=refs[0]),
-                self.interaction, owner_id=self.owner, universe_id=self.universe,
-                exhaustion=self._exhaustion, source_policies=self.source_policies,
+                interaction, owner_id=self.owner, universe_id=self.universe,
+                exhaustion=self._exhaustion, source_policies=source_policies,
             )
             return ordered.candidates[0].ref if ordered.candidates else None
+
+
+def _at_least(interaction, tokens):
+    """The interaction with its minimum context raised to ``tokens``, never lowered."""
+    if interaction.min_context is not None and interaction.min_context >= tokens:
+        return interaction
+    return replace(interaction, min_context=tokens)

@@ -398,11 +398,18 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
                     _retire(uid)
                     changed = True
                 # Respawn crashed servers for still-desired universes.
+                respawned = False
                 for uid, srv in servers.items():
                     if not srv.alive():
                         logger.warning("engine http: respawning dead server %s", uid)
                         srv.start()
-                        changed = True
+                        changed = respawned = True
+                if respawned:
+                    # The dead child's runs: its liveness lock is gone, so this
+                    # is proof, not a guess. Recover them now, not next tick.
+                    from tinyassets.api.runs import recover_dead_owner_runs_now
+
+                    recover_dead_owner_runs_now()
                 # Stand up servers for newly-serving (or re-owned) universes.
                 for uid, owner in current.items():
                     if uid not in servers:

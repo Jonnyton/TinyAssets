@@ -56,7 +56,7 @@ export default function LegalPage() {
           <ul>
             <li>
               <strong>Platform code</strong> (engine, MCP gateway, tray, connectors):{" "}
-              <a href="https://github.com/Jonnyton/TinyAssets/blob/main/LICENSE" target="_blank" rel="noreferrer">
+              <a href="https://github.com/TinyAssets/TinyAssets/blob/main/LICENSE" target="_blank" rel="noreferrer">
                 MIT
               </a>
               . Fork it, run it, sell services on it. Attribution required.
@@ -75,20 +75,20 @@ export default function LegalPage() {
 
           <h2 id="privacy">Privacy</h2>
           <p id="app-data">
-            <strong>What the apps collect (web, iOS, Android, desktop).</strong> All four apps are the same client of the hosted service and handle data the same way. We collect: (1) a <strong>sign-in identity</strong> — your email address and a user id, issued by WorkOS AuthKit — to authenticate you and bind your universe to you; (2) the <strong>AI provider credential</strong> you choose to deposit (a subscription token or API key), so your universe can run on the compute you gave it; (3) the <strong>messages and files</strong> you send your universe, to provide the service; (4) if you buy a paid plan, the <strong>billing records</strong> our payment processor (Stripe) creates — we never see your card number. Nothing is sold, used for ads, or used to train models, and the apps run no analytics or advertising trackers.
+            <strong>What the apps collect (web, iOS, Android, desktop).</strong> All four apps are the same client of the hosted service and handle data the same way. We collect: (1) a <strong>sign-in identity</strong> — your email address and a user id, issued by WorkOS AuthKit — to authenticate you and bind your command center to you; (2) the <strong>AI provider credential</strong> you choose to deposit (a subscription token or API key), so your command center can run on the compute you gave it; (3) the <strong>messages and files</strong> you send your command center, to provide the service; (4) if you buy a paid plan, the <strong>billing records</strong> our payment processor (Stripe) creates — we never see your card number. Nothing is sold, used for ads, or used to train models, and the apps run no analytics or advertising trackers.
           </p>
           <p id="app-data-recipients">
-            <strong>Who receives it.</strong> WorkOS processes sign-in. The AI provider you connect (Anthropic, OpenAI, OpenRouter, or the API you added yourself) receives the messages your universe sends it — that is what running on your own compute means, and that provider&apos;s terms govern that traffic. Stripe processes payments. Our hosting provider stores the service&apos;s data in its data centre. No one else.
+            <strong>Who receives it.</strong> WorkOS processes sign-in. The AI provider you connect (Anthropic, OpenAI, OpenRouter, or the API you added yourself) receives the messages your command center sends it — that is what running on your own compute means, and that provider&apos;s terms govern that traffic. Stripe processes payments. Our hosting provider stores the service&apos;s data in its data centre. No one else.
           </p>
           <p id="app-data-protection">
-            <strong>How it is protected — honestly.</strong> Everything is encrypted in transit (TLS). A credential you deposit through the app&apos;s form or its one-tap OpenAI link goes straight to your universe&apos;s vault and never through a chat model. If you instead deposit one through a third-party chatbot connector (Claude, ChatGPT), it necessarily passes through that chatbot&apos;s context on the way — the app path avoids that. At rest, the vault is a file readable only by the service, which must present the credential to your provider on your behalf; it is not yet encrypted under a separate key. Server backups, where configured, are taken nightly and age out on the configured retention schedule; pruning is best effort, so we do not promise a hard maximum age.
+            <strong>How it is protected — honestly.</strong> Everything is encrypted in transit (TLS). A credential you deposit through the app&apos;s form or its one-tap OpenAI link goes straight to your command center&apos;s vault and never through a chat model. If you instead deposit one through a third-party chatbot connector (Claude, ChatGPT), it necessarily passes through that chatbot&apos;s context on the way — the app path avoids that. At rest, the vault is a file readable only by the service, which must present the credential to your provider on your behalf; it is not yet encrypted under a separate key. Server backups, where configured, are taken nightly and age out on the configured retention schedule; pruning is best effort, so we do not promise a hard maximum age.
           </p>
           <p id="app-data-retention">
-            <strong>Retention and deletion.</strong> We keep your data for as long as your account exists, and deletion is immediate — there is no grace window. Delete your account yourself inside any app (<strong>Account → Delete my account</strong>) or follow <a href="/account">tinyassets.io/account</a>: your universe (memory, history, deposited credentials, connections), every record keyed to it and your sign-in identity are removed at once, and a paid plan is cancelled immediately. What we keep is listed in full on <a href="/account">/account</a>: audit records with the actor replaced by an opaque id and their content emptied, published commons and settlement rows, the invoices Stripe holds, and server backups until they age out on our retention schedule. If a step cannot complete — the payment processor is unreachable, say — the app tells you so and we finish it by hand rather than reporting a deletion that did not happen. Deletion or export by email — CCPA / GDPR Articles 17 and 20 — is handled within 30 days:{" "}
+            <strong>Retention and deletion.</strong> We keep your data for as long as your account exists, and deletion is immediate — there is no grace window. Delete your account yourself inside any app (<strong>Account → Delete my account</strong>) or follow <a href="/account">tinyassets.io/account</a>: your command center (memory, history, deposited credentials, connections), every record keyed to it and your sign-in identity are removed at once, and a paid plan is cancelled immediately. What we keep is listed in full on <a href="/account">/account</a>: audit records with the actor replaced by an opaque id and their content emptied, published commons and settlement rows, the invoices Stripe holds, and server backups until they age out on our retention schedule. If a step cannot complete — the payment processor is unreachable, say — the app tells you so and we finish it by hand rather than reporting a deletion that did not happen. Deletion or export by email — CCPA / GDPR Articles 17 and 20 — is handled within 30 days:{" "}
             <a href={`mailto:${legal.contact.legal}`}>{legal.contact.legal}</a>.
           </p>
           <p>
-            <strong>Concept-layer public; instance-layer private; never training data.</strong> The <em>shape</em> of your workflow (which nodes, what edges, what state schema) is public — that&apos;s the commons. The <em>contents</em> you process (your documents, your prompts, your fills) stay on your machine or in owner-only storage. <strong>We</strong> do not train models on your data and never will. What the AI provider you connect does with the messages your universe sends it is governed by <em>your</em> agreement with that provider, not by us — check their terms, since it is your account they run on.
+            <strong>Concept-layer public; instance-layer private; never training data.</strong> The <em>shape</em> of your workflow (which nodes, what edges, what state schema) is public — that&apos;s the commons. The <em>contents</em> you process (your documents, your prompts, your fills) stay on your machine or in owner-only storage. <strong>We</strong> do not train models on your data and never will. What the AI provider you connect does with the messages your command center sends it is governed by <em>your</em> agreement with that provider, not by us — check their terms, since it is your account they run on.
           </p>
           <p>Per-piece visibility is judged by your chatbot per request, not by us. <strong>The chatbot proposes; you confirm. No cached consent.</strong></p>
           <p>You may export or delete your data at any time — the in-app path and the email path are described under <a href="#app-data-retention">Retention and deletion</a> above and on <a href="/account">/account</a>.</p>
@@ -152,7 +152,7 @@ export default function LegalPage() {
               </article>
             ))}
           </div>
-          <p className="chain__foot">Canonical surfaces only: the site is <code>tinyassets.io</code>, the MCP URL is <code>tinyassets.io/mcp</code>, the repo is <code>github.com/Jonnyton/TinyAssets</code>. Anything else is not us.</p>
+          <p className="chain__foot">Canonical surfaces only: the site is <code>tinyassets.io</code>, the MCP URL is <code>tinyassets.io/mcp</code>, the repo is <code>github.com/TinyAssets/TinyAssets</code>. Anything else is not us.</p>
           <h3>What tiny is not</h3>
           <ul>
             <li>Not a security, not an investment contract, not equity, not a debt instrument.</li>
@@ -176,7 +176,7 @@ export default function LegalPage() {
             <li><strong>Network risk.</strong> Base Sepolia, BASE, PulseChain, BSC, and any future chain may experience outages, reorgs, or fee spikes that affect test or real-token transactions.</li>
             <li><strong>Protocol-evolution risk.</strong> Phase 6 (outcome ranking), Phase 7 (settlement contracts), Phase 8 (DAO governance) are forward-looking. Plans may change. Voting outcomes may produce protocol changes that affect token utility.</li>
             <li><strong>Counterparty risk.</strong> When you place a paid bid, you are entrusting work to a daemon-host whose only commitment is the protocol. Refunds and disputes are mediated by the protocol&apos;s gate-window mechanism, not by us.</li>
-            <li><strong>Phishing / impersonation.</strong> The canonical site is <code>tinyassets.io</code>, the canonical MCP URL is <code>tinyassets.io/mcp</code>, the canonical repo is <code>github.com/Jonnyton/TinyAssets</code>. Anything else is not us.</li>
+            <li><strong>Phishing / impersonation.</strong> The canonical site is <code>tinyassets.io</code>, the canonical MCP URL is <code>tinyassets.io/mcp</code>, the canonical repo is <code>github.com/TinyAssets/TinyAssets</code>. Anything else is not us.</li>
           </ul>
 
           <h2 id="dmca">DMCA</h2>
@@ -199,7 +199,7 @@ export default function LegalPage() {
             Legal: <a href={`mailto:${legal.contact.legal}`}>{legal.contact.legal}</a><br />
             DMCA agent: <a href={`mailto:${legal.contact.dmca_agent}`}>{legal.contact.dmca_agent}</a>
           </p>
-          <p>Response SLA per <a href="https://github.com/Jonnyton/TinyAssets/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">CONTRIBUTING.md</a> — 48h first response, 5 calendar days for full review.</p>
+          <p>Response SLA per <a href="https://github.com/TinyAssets/TinyAssets/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">CONTRIBUTING.md</a> — 48h first response, 5 calendar days for full review.</p>
 
           <hr />
           <p className="footer-note">

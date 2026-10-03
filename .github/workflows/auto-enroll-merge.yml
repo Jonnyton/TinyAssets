@@ -52,6 +52,28 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
+          # Full history of commits and trees, no file contents: enough for the
+          # merge base and `git diff --raw` that the PR's diff key reads, while
+          # still never checking out or executing PR code.
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Require the merge-attribution token
+        # Fail loudly (hard rule 8), never fall back to GITHUB_TOKEN. With the
+        # merge queue on, an auto-merge armed by GITHUB_TOKEN never enqueues:
+        # on 2026-09-27 #4059 and #4062 sat CLEAN, green and armed by
+        # github-actions, with an empty queue and no merge_group run, because
+        # the secret had been stored empty and the old `|| github.token`
+        # fallback hid it. Before the queue the same fallback produced merges
+        # that never deployed (ADR-004).
+        env:
+          TOKEN_PRESENT: ${{ secrets.MERGE_ATTRIBUTION_TOKEN != '' }}
+        shell: bash
+        run: |
+          if [ "$TOKEN_PRESENT" != "true" ]; then
+            echo "::error::MERGE_ATTRIBUTION_TOKEN is empty or unset. Enrollment needs a user-owned token (fine-grained PAT, resource owner TinyAssets, Contents + Pull requests read/write); GITHUB_TOKEN-armed auto-merge never enters the merge queue. Set it in Settings > Secrets > Actions."
+            exit 1
+          fi
 
       - name: Enable auto-merge
         env:
@@ -64,29 +86,58 @@ jobs:
           # unattended, one hour apart, same workflow. See
           # docs/decisions/ADR-004-merge-attribution-and-the-deploy-gap.md.
           #
-          # `||` falls back when the secret is absent: an unset secret is the
-          # empty string, which is falsy, so this is a NO-OP until the
-          # credential exists and enrollment keeps behaving exactly as it
-          # does today. Pinned by tests/test_auto_enroll_merge_workflow.py.
-          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN || github.token }}
+          # No fallback: the step above refuses an empty secret, and after
+          # enrolling the step checks that a USER armed or queued the PR.
+          # Pinned by tests/test_auto_enroll_merge_workflow.py.
+          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
 
+          # Who armed, queued or merged this PR, as `<__typename>:<login>`.
+          # With the queue on, autoMergeRequest reads null once GitHub has
+          # queued the PR, so the queue entry's enqueuer is checked too.
+          who_enrolled() {
+            # The $owner/$name/$number GraphQL variables are for GitHub to
+            # bind, not the shell to expand, so the query stays single-quoted.
+            # shellcheck disable=SC2016
+            gh api graphql \
+              -F owner="${REPO%/*}" -F name="${REPO#*/}" -F number="$PR" \
+              -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state mergedBy{__typename login} autoMergeRequest{enabledBy{__typename login}} mergeQueueEntry{enqueuer{__typename login}}}}}' \
+              --jq '.data.repository.pullRequest | (.autoMergeRequest.enabledBy // .mergeQueueEntry.enqueuer // (if .state == "MERGED" then .mergedBy else null end)) | if . == null then "none" else "\(.__typename):\(.login)" end'
+          }
+
           PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-            --json autoMergeRequest,body,headRefName,headRefOid)"
+            --json autoMergeRequest,body,headRefOid,baseRefOid)"
           STATE="$(jq -r \
             'if .autoMergeRequest == null then "no" else "yes" end' \
             <<<"$PR_JSON")"
-          HEAD_REF="$(jq -r '.headRefName' <<<"$PR_JSON")"
           HEAD_OID="$(jq -r '.headRefOid' <<<"$PR_JSON")"
+          # Base and head from the SAME read, never the event's base with the
+          # current head: a rebase between the two would key the wrong diff.
+          BASE_OID="$(jq -r '.baseRefOid' <<<"$PR_JSON")"
           jq -r '.body // ""' <<<"$PR_JSON" > "$RUNNER_TEMP/pr-body.md"
 
+          # Same diff key as pr-scope-guard.yml; empty on any failure, which
+          # leaves head receipts as the only match.
+          DIFF_KEY=""
+          if git fetch --no-tags --filter=blob:none origin \
+                "+refs/pull/${PR}/head:refs/remotes/pr/head" \
+                "+refs/heads/main:refs/remotes/origin/main" \
+              && git cat-file -e "${HEAD_OID}^{commit}" \
+              && git cat-file -e "${BASE_OID}^{commit}"; then
+            DIFF_KEY="$(python scripts/drain_review_gate.py --print-diff-key \
+              "$BASE_OID" "$HEAD_OID")" || DIFF_KEY=""
+          fi
+
+          # Every PR needs a receipt for its head (2026-10-02): on 2026-10-01
+          # this step armed #4247 -- a superseded head with a known data-loss
+          # bug and no review receipt -- and the queue accepted it.
           if python scripts/drain_review_gate.py \
-              --branch "$HEAD_REF" \
               --head "$HEAD_OID" \
+              --diff-key "$DIFF_KEY" \
               --body-file "$RUNNER_TEMP/pr-body.md"; then
             REVIEW_GATE="allow"
           else
@@ -95,15 +146,26 @@ jobs:
 
           if [ "$REVIEW_GATE" = "deny" ]; then
             if [ "$STATE" = "yes" ]; then
+              # Fetch/diff evaluation can outlive a new head or receipt. A
+              # stale denial must not disarm that newer enrollment. Compare
+              # the same fields, including the body and enrollment identity.
+              # This is not an atomic compare-and-disable; the final
+              # read-to-mutation gap remains.
+              CURRENT_PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
+                --json autoMergeRequest,body,headRefOid,baseRefOid)"
+              if [ "$CURRENT_PR_JSON" != "$PR_JSON" ]; then
+                echo "PR state changed since receipt evaluation; leaving current enrollment alone."
+                exit 0
+              fi
               gh pr merge "$PR" --repo "$REPO" --disable-auto
-              echo "Disabled stale or unreviewed drain auto-merge."
+              echo "Disabled auto-merge: no current review receipt for this head."
             else
-              echo "Drain PR remains unenrolled pending exact-head review."
+              echo "PR remains unenrolled pending a review receipt for this head."
             fi
             {
               echo "### Auto-merge"
               echo ""
-              echo "Not enrolled: drain PR needs exactly one current review receipt:"
+              echo "Not enrolled: every PR needs exactly one current review receipt:"
               echo "\`Drain-Review-Verdict: APPROVE\`"
               echo "\`Drain-Review-Head: <40-character lowercase head SHA>\`"
               echo "\`Drain-Review-Artifact: <docs path or GitHub URL>\`"
@@ -111,11 +173,38 @@ jobs:
             exit 0
           fi
 
-          # Idempotent: re-running on a later event is a no-op if already enrolled.
-          if [ "$STATE" = "yes" ]; then
-            echo "PR #${PR} is already enrolled for auto-merge."
-            echo "already enrolled" >> "$GITHUB_STEP_SUMMARY"
+          # Queue-attempt cap: a head handed off by queue-handoff.yml (record
+          # for this exact head + the queue-handoff label) is not re-armed.
+          # Exit 3 means capped. Any other failure of the check enrolls anyway, with a
+          # warning: the cap stops a retry loop, it must never block a merge.
+          CAP_RC=0
+          python scripts/queue_attempts.py check --repo "$REPO" --pr "$PR" || CAP_RC=$?
+          if [ "$CAP_RC" -eq 3 ]; then
+            if [ "$STATE" = "yes" ]; then
+              gh pr merge "$PR" --repo "$REPO" --disable-auto || true
+            fi
+            {
+              echo "### Auto-merge"
+              echo ""
+              echo "Not enrolled: this head failed the merge queue twice (see the queue-handoff record). Push a fix, or remove the queue-handoff label to retry."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
+          elif [ "$CAP_RC" -ne 0 ]; then
+            echo "::warning::queue-attempt cap check failed (exit ${CAP_RC}); enrolling without it."
+          fi
+
+          # Idempotent: re-running on a later event is a no-op if a USER
+          # already enrolled it. An enrollment by a bot (the old GITHUB_TOKEN
+          # fallback) never enqueues, so it is replaced, not kept.
+          if [ "$STATE" = "yes" ]; then
+            ENROLLER="$(who_enrolled)"
+            if [[ "$ENROLLER" == User:* ]]; then
+              echo "PR #${PR} is already enrolled for auto-merge by ${ENROLLER#User:}."
+              echo "already enrolled" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "PR #${PR} was enrolled by ${ENROLLER}; re-enrolling with the attribution token."
+            gh pr merge "$PR" --repo "$REPO" --disable-auto
           fi
 
           # `|| true`: enrolment can legitimately fail — e.g. the PR is already
@@ -124,6 +213,14 @@ jobs:
           if gh pr merge "$PR" --repo "$REPO" --auto --squash \
               --match-head-commit "$HEAD_OID" 2>err.txt; then
             echo "PR #${PR} enrolled for auto-merge (squash)."
+            # The token that ran this is the one GitHub attributes. A bot here
+            # means the PR will never enqueue, so say so where it is seen.
+            ENROLLER="$(who_enrolled)"
+            echo "enrolled by: ${ENROLLER}"
+            if [[ "$ENROLLER" != User:* ]]; then
+              echo "::error::PR #${PR} was enrolled by ${ENROLLER}, not a user. A merge queue does not enqueue a bot-armed auto-merge, and a bot-attributed merge raises no push. Check MERGE_ATTRIBUTION_TOKEN."
+              exit 1
+            fi
             {
               echo "### Auto-merge"
               echo ""

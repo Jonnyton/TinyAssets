@@ -30,6 +30,13 @@ from tinyassets.runs import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _pin_data_dir(tmp_path, monkeypatch):
+    """The run handlers sweep in-flight runs in the data dir on first use:
+    never the developer's real one."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+
 def _seed_branch(base_path, branch_id: str = "b1"):
     from tinyassets.branches import (
         BranchDefinition,
@@ -299,14 +306,15 @@ class TestActionRunBranchVersionWiring:
         assert "error" in result
         assert "integer" in result["error"]
 
-    def test_recursion_limit_out_of_range(self):
+    @pytest.mark.parametrize("limit", ["0", "-1"])
+    def test_recursion_limit_must_be_positive(self, limit):
         from tinyassets.api.runs import _action_run_branch_version
         result = json.loads(_action_run_branch_version({
             "branch_version_id": "x@y",
-            "recursion_limit_override": "1",  # below 10
+            "recursion_limit_override": limit,
         }))
         assert "error" in result
-        assert "out of range" in result["error"]
+        assert "not a number of steps" in result["error"]
 
     def test_unknown_branch_version_id_returns_error(self, tmp_path, monkeypatch):
         """Live invocation against an unknown bvid surfaces KeyError as JSON error."""
@@ -333,6 +341,7 @@ class TestActionHandlesSnapshotDrift:
     ):
         """Plant a drifted snapshot, invoke the handler, confirm the JSON
         response carries failure_class + suggested_action from the class."""
+        from tinyassets.api import branches as api_branches
         from tinyassets.api import engine_helpers as eh
         from tinyassets.api import runs as runs_mod
         from tinyassets.branch_versions import _connect as bv_connect
@@ -340,6 +349,11 @@ class TestActionHandlesSnapshotDrift:
 
         monkeypatch.setattr(eh, "_current_actor", lambda: "alice")
         monkeypatch.setattr(runs_mod, "_base_path", lambda: tmp_path)
+        # This planted version has no branch row; the test is about the drift
+        # response shape, not about who may read it (that gate has its own
+        # tests in test_branch_version_read_authority.py).
+        monkeypatch.setattr(api_branches, "_resolve_readable_version",
+                            lambda version_id, _base: (version_id, {}))
         initialize_runs_db(tmp_path)
 
         initialize_branch_versions_db(tmp_path)

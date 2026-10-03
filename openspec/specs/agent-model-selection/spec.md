@@ -210,14 +210,48 @@ Restart or eviction MAY lose advisory health; it SHALL NOT change authority.
 - **THEN** the picker displays a non-blocking reconnect warning
 - **AND** it does not disable manual selection, claim successful sign-in or expose raw provider errors
 
+### Requirement: A sign-in refused before launch falls back inside the same turn
+
+When a served turn's chosen source is refused for AUTHENTICATION before anything is launched, the turn SHALL continue to the next model already in the owner's accepted order, in that same turn, and SHALL NOT stop. The refusal SHALL be reported as a sign-in failure rather than a provider outage, so the source is marked for reconnect instead of placed on a provider cooldown.
+
+This is distinct from the Automatic-planning requirement above, which orders a LATER
+turn's plan: this one is the turn that is already running. It is also narrower than a
+general auth fallback. It applies where nothing was launched, because credential
+authorization did not complete, so "no side effect" is a fact about the attempt rather
+than an attestation about a run. A refusal reported by a source that DID start a run
+keeps its existing held outcome, because an incomplete run is not evidence that nothing
+happened.
+
+Fallback SHALL reach only sources already in the owner's accepted order, SHALL exclude
+the refused source for the remainder of the turn, and SHALL NOT retry it. Where the
+refused source is the owner's only source, the turn SHALL fail honestly rather than
+substitute a source the owner has not accepted; the reconnect card is the recovery.
+
+#### Scenario: the founder's spent sign-in is answered by the next model
+- **WHEN** the chosen source's stored sign-in is refused before launch
+- **AND** the owner has another accepted model
+- **THEN** that model answers in the same turn and the turn completes
+- **AND** the turn is neither abandoned nor left held
+
+#### Scenario: the refusal is not a provider outage
+- **WHEN** the same refusal is classified
+- **THEN** it carries the authentication failure class and no provider cooldown is
+  applied, so the owner's next turn is not additionally blocked by a cooldown for a
+  source whose credential is the problem
+
+#### Scenario: fallback stays inside what the owner accepted
+- **WHEN** the turn advances after such a refusal
+- **THEN** the source it advances to is one already in the owner's accepted order, the
+  refused source is excluded for the rest of that turn, and no saved preference changes
+
+#### Scenario: the only source is refused
+- **WHEN** the refused source is the owner's only accepted source
+- **THEN** the turn fails with the authentication failure rather than using an
+  unaccepted source
+
 ### Requirement: An unproven capacity refusal is narrowed to the model that failed, for every account
 
-A source contract reports a capacity refusal's scope as `model`, `account` or
-`unknown`, and that reported scope SHALL remain the evidence unchanged. When the
-scope is `unknown` and the failure class is a transient window
-(`provider_rate_limited`, `provider_overloaded`), a served agent turn SHALL narrow
-the resulting exhaustion to the MODEL that failed rather than the whole account,
-and the router SHALL NOT apply a source-wide cooldown to that attempt.
+A source contract reports a capacity refusal's scope as `model`, `account` or `unknown`, and that reported scope SHALL remain the evidence unchanged. When the scope is `unknown` and the failure class is a transient window (`provider_rate_limited`, `provider_overloaded`), a served agent turn SHALL narrow the resulting exhaustion to the MODEL that failed rather than the whole account, and the router SHALL NOT apply a source-wide cooldown to that attempt.
 
 This decision SHALL read only what the SOURCE reported. It SHALL NOT read the
 owner's accepted cost ceilings, their plan or any other account attribute: the
@@ -342,6 +376,19 @@ The app SHALL allow switching the interactive agent, saving a default and orderi
 #### Scenario: No accepted fallback
 - **WHEN** the owner saves a model with an empty fallback sequence
 - **THEN** exhaustion leaves that selection unchanged and does not substitute another source
+
+#### Scenario: A fallback edit is saved when it is made
+- **WHEN** the owner adds, moves or removes a fallback in the model dialog
+- **THEN** that edit is saved through the same preference write the quick-pick uses,
+  with the expected generation, and the dialog stays open and editable on the
+  generation and policy the write returned
+- **AND** a conflicting or unconfirmed save clears the order on screen and says it is
+  not saved, so an order the server does not hold is never left displayed
+
+#### Scenario: A displayed fallback the server does not hold is a broken fallback
+- **WHEN** the dialog shows a fallback model that was never written
+- **THEN** a sign-in failure on the chosen model has nothing to fall back to, which is
+  why the displayed order and the stored order must not diverge
 
 ### Requirement: Actual execution is visible and actionable
 The typed-chat interface SHALL show a clickable active provider/model control, distinguish preference from actual execution, and remain usable without a working LLM.

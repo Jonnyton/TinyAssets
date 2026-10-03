@@ -253,19 +253,19 @@ def _user(sub="user_123"):
 
 def test_routes_404_when_app_dark(monkeypatch):
     assert (
-        _drive("/mcp/app/openai/device/start", {}, enabled=False, monkeypatch=monkeypatch)[0] == 404
+        _drive("/app/openai/device/start", {}, enabled=False, monkeypatch=monkeypatch)[0] == 404
     )
     assert (
-        _drive("/mcp/app/openai/device/poll", {}, enabled=False, monkeypatch=monkeypatch)[0] == 404
+        _drive("/app/openai/device/poll", {}, enabled=False, monkeypatch=monkeypatch)[0] == 404
     )
 
 
 def test_routes_401_without_identity(monkeypatch):
     # Anonymous callers cannot start or poll a link — there is nobody to deposit for.
-    assert _drive("/mcp/app/openai/device/start", {}, monkeypatch=monkeypatch)[0] == 401
+    assert _drive("/app/openai/device/start", {}, monkeypatch=monkeypatch)[0] == 401
     assert (
         _drive(
-            "/mcp/app/openai/device/poll",
+            "/app/openai/device/poll",
             {"flow": "x"},
             monkeypatch=monkeypatch,
         )[0]
@@ -289,7 +289,7 @@ def test_start_route_returns_code_and_opaque_handle_only(monkeypatch):
     monkeypatch.setattr(od, "start_device_auth", fake_start)
     _home(monkeypatch)
     status, doc = _drive(
-        "/mcp/app/openai/device/start", {}, identity=_user(), monkeypatch=monkeypatch
+        "/app/openai/device/start", {}, identity=_user(), monkeypatch=monkeypatch
     )
     assert status == 200 and doc["user_code"] == "AB-CD"
     assert set(doc) == {"flow", "user_code", "verification_url", "interval"}
@@ -310,7 +310,7 @@ def _started(monkeypatch, *, user, device_auth_id="dev-1", user_code="AB-CD"):
 
     monkeypatch.setattr(od, "start_device_auth", fake_start)
     _home(monkeypatch)
-    status, doc = _drive("/mcp/app/openai/device/start", {}, identity=user, monkeypatch=monkeypatch)
+    status, doc = _drive("/app/openai/device/start", {}, identity=user, monkeypatch=monkeypatch)
     assert status == 200
     return doc["flow"]
 
@@ -337,7 +337,7 @@ def test_poll_rejects_foreign_unknown_and_replayed_handles(monkeypatch):
     # Another authenticated user presenting the victim's handle: refused, and
     # OpenAI is never polled on their behalf.
     status, doc = _drive(
-        "/mcp/app/openai/device/poll",
+        "/app/openai/device/poll",
         {"flow": handle},
         identity=_user("attacker"),
         monkeypatch=monkeypatch,
@@ -346,7 +346,7 @@ def test_poll_rejects_foreign_unknown_and_replayed_handles(monkeypatch):
     assert polled == []
     # An unknown handle: same answer.
     status, doc = _drive(
-        "/mcp/app/openai/device/poll",
+        "/app/openai/device/poll",
         {"flow": "nope"},
         identity=_user("victim"),
         monkeypatch=monkeypatch,
@@ -354,16 +354,18 @@ def test_poll_rejects_foreign_unknown_and_replayed_handles(monkeypatch):
     assert (status, doc) == (404, {"error": "unknown_flow"})
     # The owner completes it — the daemon polled with the bound tuple…
     status, doc = _drive(
-        "/mcp/app/openai/device/poll",
+        "/app/openai/device/poll",
         {"flow": handle},
         identity=_user("victim"),
         monkeypatch=monkeypatch,
     )
-    assert (status, doc) == (200, {"status": "connected", "service": "codex"})
+    assert status == 200
+    assert doc["status"] == "connected" and doc["service"] == "codex"
+    assert doc["serving"] == {"status": "held"}
     assert polled == [{"device_auth_id": "dev-1", "user_code": "AB-CD"}]
     # …and the handle is consumed: a replay cannot deposit again.
     status, doc = _drive(
-        "/mcp/app/openai/device/poll",
+        "/app/openai/device/poll",
         {"flow": handle},
         identity=_user("victim"),
         monkeypatch=monkeypatch,
@@ -440,7 +442,7 @@ def test_poll_route_pending_passthrough(monkeypatch):
     monkeypatch.setattr(od, "poll_device_auth", fake_poll)
     for _ in range(2):  # pending keeps the flow alive for the next poll
         status, doc = _drive(
-            "/mcp/app/openai/device/poll",
+            "/app/openai/device/poll",
             {"flow": handle},
             identity=_user(),
             monkeypatch=monkeypatch,
@@ -479,12 +481,14 @@ def test_poll_route_deposits_as_user_and_never_echoes_credential(monkeypatch):
 
     monkeypatch.setattr(ld, "connect_llm", fake_connect_llm)
     status, doc = _drive(
-        "/mcp/app/openai/device/poll",
+        "/app/openai/device/poll",
         {"flow": handle},
         identity=_user("user_777"),
         monkeypatch=monkeypatch,
     )
-    assert (status, doc) == (200, {"status": "connected", "service": "codex"})
+    assert status == 200
+    assert doc["status"] == "connected" and doc["service"] == "codex"
+    assert doc["serving"] == {"status": "held"}
     assert captured["actor"] == "user_777" and captured["service"] == "codex"
     assert json.loads(captured["material"])["tokens"]["refresh_token"] == secret
     assert secret not in json.dumps(doc)
@@ -506,7 +510,7 @@ def test_poll_route_surfaces_connect_llm_refusal(monkeypatch):
         ld, "connect_llm", lambda **kw: {"error": "not_found", "resource": "connection"}
     )
     status, doc = _drive(
-        "/mcp/app/openai/device/poll",
+        "/app/openai/device/poll",
         {"flow": handle},
         identity=_user(),
         monkeypatch=monkeypatch,
@@ -523,7 +527,7 @@ def test_poll_route_maps_device_errors(monkeypatch):
 
     monkeypatch.setattr(od, "poll_device_auth", fake_poll)
     status, doc = _drive(
-        "/mcp/app/openai/device/poll",
+        "/app/openai/device/poll",
         {"flow": handle},
         identity=_user(),
         monkeypatch=monkeypatch,
@@ -584,7 +588,7 @@ def test_poll_route_releases_lease_on_unexpected_exception(monkeypatch):
     monkeypatch.setattr(od, "poll_device_auth", boom)
     with pytest.raises(RuntimeError):
         _drive(
-            "/mcp/app/openai/device/poll",
+            "/app/openai/device/poll",
             {"flow": handle},
             identity=_user(),
             monkeypatch=monkeypatch,
@@ -675,9 +679,9 @@ def test_begin_binds_user_home_challenge_and_redirect(monkeypatch):
     _home(monkeypatch, "u-mine")
     verifier, challenge = _pkce()
     body = {"code_challenge": challenge, "redirect_uri": "http://localhost:1455/auth/callback"}
-    assert _drive("/mcp/app/openai/begin", body, monkeypatch=monkeypatch)[0] == 401
+    assert _drive("/app/openai/begin", body, monkeypatch=monkeypatch)[0] == 401
     status, doc = _drive(
-        "/mcp/app/openai/begin", body, identity=_user("u1"), monkeypatch=monkeypatch
+        "/app/openai/begin", body, identity=_user("u1"), monkeypatch=monkeypatch
     )
     assert status == 200 and set(doc) == {"flow"}
     flow = od.lookup_flow(doc["flow"], user_id="u1")
@@ -690,17 +694,17 @@ def test_begin_binds_user_home_challenge_and_redirect(monkeypatch):
     # bad inputs / no home
     bad = dict(body, redirect_uri="https://evil/auth/callback")
     assert (
-        _drive("/mcp/app/openai/begin", bad, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        _drive("/app/openai/begin", bad, identity=_user("u1"), monkeypatch=monkeypatch)[0]
         == 400
     )
     bad = dict(body, code_challenge="short")
     assert (
-        _drive("/mcp/app/openai/begin", bad, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        _drive("/app/openai/begin", bad, identity=_user("u1"), monkeypatch=monkeypatch)[0]
         == 400
     )
     _home(monkeypatch, "")
     assert (
-        _drive("/mcp/app/openai/begin", body, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        _drive("/app/openai/begin", body, identity=_user("u1"), monkeypatch=monkeypatch)[0]
         == 409
     )
 
@@ -713,7 +717,7 @@ def test_exchange_route_requires_bound_flow_and_matching_verifier(monkeypatch):
     _home(monkeypatch, "u-mine")
     verifier, challenge = _pkce()
     status, doc = _drive(
-        "/mcp/app/openai/begin",
+        "/app/openai/begin",
         {"code_challenge": challenge, "redirect_uri": "http://localhost:2000/auth/callback"},
         identity=_user("u1"),
         monkeypatch=monkeypatch,
@@ -743,21 +747,21 @@ def test_exchange_route_requires_bound_flow_and_matching_verifier(monkeypatch):
     # foreign identity: unknown flow, nothing exchanged
     body = {"flow": handle, "code": "c", "code_verifier": verifier}
     assert _drive(
-        "/mcp/app/openai/exchange", body, identity=_user("attacker"), monkeypatch=monkeypatch
+        "/app/openai/exchange", body, identity=_user("attacker"), monkeypatch=monkeypatch
     ) == (404, {"error": "unknown_flow"})
     assert seen == {}
     # wrong verifier: refused AND the flow is consumed (one attempt)
     wrong = dict(body, code_verifier="w" * 43)
     assert _drive(
-        "/mcp/app/openai/exchange", wrong, identity=_user("u1"), monkeypatch=monkeypatch
+        "/app/openai/exchange", wrong, identity=_user("u1"), monkeypatch=monkeypatch
     ) == (400, {"error": "verifier_mismatch"})
     assert (
-        _drive("/mcp/app/openai/exchange", body, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        _drive("/app/openai/exchange", body, identity=_user("u1"), monkeypatch=monkeypatch)[0]
         == 404
     )
     # fresh flow, right verifier: exchanged with the FLOW's redirect, deposited into the FLOW's home
     status, doc = _drive(
-        "/mcp/app/openai/begin",
+        "/app/openai/begin",
         {"code_challenge": challenge, "redirect_uri": "http://localhost:2000/auth/callback"},
         identity=_user("u1"),
         monkeypatch=monkeypatch,
@@ -765,14 +769,14 @@ def test_exchange_route_requires_bound_flow_and_matching_verifier(monkeypatch):
     body["flow"] = doc["flow"]
     _home(monkeypatch, "u-OTHER")  # a later home change must not redirect the deposit
     status, doc = _drive(
-        "/mcp/app/openai/exchange", body, identity=_user("u1"), monkeypatch=monkeypatch
+        "/app/openai/exchange", body, identity=_user("u1"), monkeypatch=monkeypatch
     )
     assert (status, doc) == (200, {"status": "connected", "service": "codex"})
     assert seen["redirect_uri"] == "http://localhost:2000/auth/callback"
     assert (captured["actor"], captured["universe"]) == ("u1", "u-mine")
     # consumed
     assert (
-        _drive("/mcp/app/openai/exchange", body, identity=_user("u1"), monkeypatch=monkeypatch)[0]
+        _drive("/app/openai/exchange", body, identity=_user("u1"), monkeypatch=monkeypatch)[0]
         == 404
     )
 
@@ -792,7 +796,7 @@ def test_upstream_error_mapping():
     assert ei.value.status == 400
 
 
-# ------------------------------------------------------------ /mcp/app/me ----
+# ------------------------------------------------------------ /app/me ----
 
 
 def _drive_get(path, *, identity=None, monkeypatch):
@@ -826,7 +830,7 @@ def _drive_get(path, *, identity=None, monkeypatch):
 
 
 def test_me_requires_identity_and_reports_engine(monkeypatch, tmp_path):
-    assert _drive_get("/mcp/app/me", monkeypatch=monkeypatch)[0] == 401
+    assert _drive_get("/app/me", monkeypatch=monkeypatch)[0] == 401
 
     import tinyassets.api.helpers as helpers
     import tinyassets.onboarding.model_setup as setup
@@ -837,12 +841,12 @@ def test_me_requires_identity_and_reports_engine(monkeypatch, tmp_path):
     # universe must NOT read as "you're connected".
     _home(monkeypatch, "")
     monkeypatch.setattr(setup, "model_setup_state", lambda *args, **kwargs: "connected")
-    status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
+    status, doc = _drive_get("/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
     assert (status, doc["home_bound"], doc["engine_connected"]) == (200, False, False)
     # Home (bootstrapped) without an engine -> connect gate.
     _home(monkeypatch, "u-home")
     monkeypatch.setattr(setup, "model_setup_state", lambda *args, **kwargs: "empty")
-    status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
+    status, doc = _drive_get("/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
     assert (doc["home_bound"], doc["engine_connected"], doc["universe_id"]) == (
         True,
         False,
@@ -851,7 +855,7 @@ def test_me_requires_identity_and_reports_engine(monkeypatch, tmp_path):
     # Home with an engine -> straight to chat.
     monkeypatch.setattr(setup, "model_setup_state", lambda *args, **kwargs: "connected")
     assert (
-        _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)[1][
+        _drive_get("/app/me", identity=_user("f1"), monkeypatch=monkeypatch)[1][
             "engine_connected"
         ]
         is True
@@ -895,13 +899,13 @@ def test_me_is_read_only_and_bootstrap_happens_on_begin(monkeypatch):
     monkeypatch.setattr(
         onboarding, "_bootstrap_home", lambda identity: calls.append("boot") or "u-new"
     )
-    status, doc = _drive_get("/mcp/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
+    status, doc = _drive_get("/app/me", identity=_user("f1"), monkeypatch=monkeypatch)
     assert (status, doc["home_bound"], calls) == (200, False, [])
     od._reset_pending_for_tests()
     _verifier, challenge = _pkce()
     body = {"code_challenge": challenge, "redirect_uri": "http://localhost:1455/auth/callback"}
     status, doc = _drive(
-        "/mcp/app/openai/begin", body, identity=_user("f1"), monkeypatch=monkeypatch
+        "/app/openai/begin", body, identity=_user("f1"), monkeypatch=monkeypatch
     )
     assert status == 200 and calls == ["boot"]
     assert od.lookup_flow(doc["flow"], user_id="f1").universe_id == "u-new"
@@ -914,7 +918,7 @@ def test_exchange_rejects_malformed_verifier_before_leasing(monkeypatch):
     _home(monkeypatch, "u-mine")
     _verifier, challenge = _pkce()
     status, doc = _drive(
-        "/mcp/app/openai/begin",
+        "/app/openai/begin",
         {"code_challenge": challenge, "redirect_uri": "http://localhost:1455/auth/callback"},
         identity=_user("u1"),
         monkeypatch=monkeypatch,
@@ -922,7 +926,7 @@ def test_exchange_rejects_malformed_verifier_before_leasing(monkeypatch):
     handle = doc["flow"]
     for bad in ("short", "v" * 43 + "\u00e9", "v" * 200):
         status, doc = _drive(
-            "/mcp/app/openai/exchange",
+            "/app/openai/exchange",
             {"flow": handle, "code": "c", "code_verifier": bad},
             identity=_user("u1"),
             monkeypatch=monkeypatch,
@@ -940,10 +944,10 @@ def test_trace_route_is_identity_scoped_allowlisted_and_rate_limited(monkeypatch
     import tinyassets.onboarding as onboarding
 
     onboarding._trace_buckets.clear()
-    assert _drive("/mcp/app/trace", {"step": "openai.finish"}, monkeypatch=monkeypatch)[0] == 401
+    assert _drive("/app/trace", {"step": "openai.finish"}, monkeypatch=monkeypatch)[0] == 401
     with caplog.at_level(logging.WARNING, logger="tinyassets.onboarding"):
         status, doc = _drive(
-            "/mcp/app/trace",
+            "/app/trace",
             {"step": "openai.callback", "detail": "code\nerror\x00 " + "d" * 500},
             identity=_user("f1"),
             monkeypatch=monkeypatch,
@@ -955,21 +959,21 @@ def test_trace_route_is_identity_scoped_allowlisted_and_rate_limited(monkeypatch
     # only known steps
     assert (
         _drive(
-            "/mcp/app/trace", {"step": "x<script>"}, identity=_user("f1"), monkeypatch=monkeypatch
+            "/app/trace", {"step": "x<script>"}, identity=_user("f1"), monkeypatch=monkeypatch
         )[0]
         == 400
     )
     # per-identity window
     for _ in range(onboarding._TRACE_BUCKET_MAX):
         _drive(
-            "/mcp/app/trace",
+            "/app/trace",
             {"step": "openai.finish"},
             identity=_user("f2"),
             monkeypatch=monkeypatch,
         )
     assert (
         _drive(
-            "/mcp/app/trace",
+            "/app/trace",
             {"step": "openai.finish"},
             identity=_user("f2"),
             monkeypatch=monkeypatch,
@@ -978,10 +982,151 @@ def test_trace_route_is_identity_scoped_allowlisted_and_rate_limited(monkeypatch
     )
     assert (
         _drive(
-            "/mcp/app/trace",
+            "/app/trace",
             {"step": "openai.finish"},
             identity=_user("f3"),
             monkeypatch=monkeypatch,
         )[0]
         == 200
     )
+
+
+# --------------------------------------------------------------------------- #
+# The reconnect card's target: the card names it, the caller's ACL decides.
+# --------------------------------------------------------------------------- #
+
+
+def _grant_admin(base, universe_id, actor):
+    from tinyassets import daemon_server
+
+    (base / universe_id).mkdir(parents=True, exist_ok=True)
+    daemon_server.grant_universe_access(
+        base, universe_id=universe_id, actor_id=actor,
+        permission="admin", granted_by=actor,
+    )
+
+
+def test_a_sign_in_lands_in_the_universe_the_card_names(tmp_path, monkeypatch):
+    """The card exists to repair ONE named connection, so it names its universe.
+
+    Before, the route always chose the caller's home, so a card for a second universe
+    could not repair it (Codex refute-review round 1, P1 #5).
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.onboarding import openai_device
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    base = _base_path()
+    identity = _user("owner-a")
+    _grant_admin(base, "u-second", "owner-a")
+
+    async def fake_start():
+        return {"device_auth_id": "dev-secret", "user_code": "AB-CD",
+                "verification_url": "https://sign-in.example.net/device", "interval": 5}
+
+    monkeypatch.setattr(openai_device, "start_device_auth", fake_start)
+    status, body = _drive(
+        "/app/openai/device/start",
+        {"service": "codex", "universe_id": "u-second"},
+        identity=identity, monkeypatch=monkeypatch,
+    )
+    assert status == 200, body
+    # The flow is bound to the universe the CARD named, not to the caller's home.
+    flow = openai_device.lookup_flow(body["flow"], user_id="owner-a")
+    assert flow.universe_id == "u-second"
+    openai_device.release_flow(body["flow"])
+
+
+def test_another_users_universe_is_refused_not_redirected(tmp_path, monkeypatch):
+    """The cross-user negative. A universe the caller does not administer must FAIL,
+    never be quietly replaced with their own -- a silent substitution would deposit a
+    credential somewhere the owner never asked for."""
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.onboarding import openai_device
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    base = _base_path()
+    _grant_admin(base, "u-theirs", "owner-b")
+
+    monkeypatch.setattr(openai_device, "start_device_auth", lambda: pytest.fail(
+        "no flow may be started for a universe the caller does not administer"))
+    status, body = _drive(
+        "/app/openai/device/start",
+        {"service": "codex", "universe_id": "u-theirs"},
+        identity=_user("owner-a"), monkeypatch=monkeypatch,
+    )
+    assert status == 403, body
+    assert body.get("error") == "sign_in_universe_not_yours"
+
+
+def test_a_service_this_daemon_cannot_sign_into_is_refused(tmp_path, monkeypatch):
+    """A claude-service card. Anthropic's terms forbid a third-party subscription
+    OAuth, so there is no brokered sign-in for it -- the card offers the ordinary
+    shapes, and a request reaching this route for it must be refused rather than
+    completing the one service this route does know."""
+    from tinyassets.onboarding import openai_device
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(openai_device, "start_device_auth", lambda: pytest.fail(
+        "a sign-in was started for a service this route cannot deposit"))
+    status, body = _drive(
+        "/app/openai/device/start", {"service": "claude"},
+        identity=_user("owner-a"), monkeypatch=monkeypatch,
+    )
+    assert status == 400, body
+    assert body.get("error") == "sign_in_unsupported_for_service"
+
+
+def test_no_named_universe_still_uses_the_callers_own_home(tmp_path, monkeypatch):
+    """The setup card names no universe, and that path must keep working."""
+    from tinyassets.onboarding import openai_device
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+    async def fake_start():
+        return {"device_auth_id": "dev-secret", "user_code": "AB-CD",
+                "verification_url": "https://sign-in.example.net/device", "interval": 5}
+
+    monkeypatch.setattr(openai_device, "start_device_auth", fake_start)
+    status, body = _drive(
+        "/app/openai/device/start", {"service": "codex"},
+        identity=_user("owner-a"), monkeypatch=monkeypatch,
+    )
+    assert status == 200, body
+    flow = openai_device.lookup_flow(body["flow"], user_id="owner-a")
+    assert flow.universe_id, "the caller's own home should have been resolved"
+    openai_device.release_flow(body["flow"])
+
+
+@pytest.mark.parametrize("offer_error", [False, True])
+def test_poll_preserves_deposit_and_exposes_pending_model_consent(monkeypatch, offer_error):
+    from tinyassets.onboarding import source_connect
+
+    od._reset_pending_for_tests()
+    handle = _started(monkeypatch, user=_user())
+
+    async def fake_poll(**kwargs):
+        return {"auth_json": "private-credential"}
+
+    def offer(**kwargs):
+        assert kwargs["owner"] == _user().user_id
+        assert kwargs["service"] == "codex"
+        if offer_error:
+            raise RuntimeError("private-exception")
+        return {"request": {"request_id": "consent-1", "title": "Use subscription",
+                            "action": {"type": "bind_model_access"}}}
+
+    monkeypatch.setattr(od, "poll_device_auth", fake_poll)
+    monkeypatch.setattr(od, "deposit_codex_auth_json", lambda *a, **kw: {
+        "ok": True, "serving": {"status": "held", "detail": "private-detail"}})
+    monkeypatch.setattr(source_connect, "offer_subscription_source", offer)
+    status, doc = _drive("/app/openai/device/poll", {"flow": handle},
+                         identity=_user(), monkeypatch=monkeypatch)
+    assert status == 200 and doc["status"] == "connected"
+    assert doc["serving"] == {"status": "held"}
+    assert "private" not in json.dumps(doc)
+    if offer_error:
+        assert doc["confirmation_error"] == "model_confirmation_requires_review"
+        assert "confirmation" not in doc
+    else:
+        assert doc["confirmation"]["action"]["type"] == "bind_model_access"

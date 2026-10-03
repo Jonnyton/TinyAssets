@@ -26,6 +26,12 @@ scripts/git-hooks/* text eol=lf
 # are copied to /etc/systemd/system/ on the droplet as-is.
 *.service text eol=lf
 *.timer   text eol=lf
+# Same rule, same reason: a drop-in under /etc/systemd/*.conf.d/ is shipped
+# as-is too (deploy/journald-tinyassets.conf → /etc/systemd/journald.conf.d/).
+# It was missing here, so `git archive` handed the droplet a CRLF drop-in —
+# tolerated only because systemd's parser happens to strip \r as whitespace,
+# which is not a property to depend on.
+*.conf    text eol=lf
 
 # Binary / generated — never munge.
 *.png  binary
@@ -40,3 +46,7 @@ scripts/git-hooks/* text eol=lf
 *.mcpb binary
 *.db   binary
 *.sqlite binary
+
+# Vendored custom-UI libraries are pinned by SHA-384 (ui_libraries.json); a
+# line-ending conversion on checkout would make every pin fail. Byte-exact.
+tinyassets/onboarding/ui_libraries/** -text

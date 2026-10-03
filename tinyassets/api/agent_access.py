@@ -61,11 +61,7 @@ def _spend_allowances(uid: str, actor: str) -> dict[str, Any]:
 
 
 def _waiting(udir) -> list[dict[str, Any]]:
-    from tinyassets.storage.pending_requests import (
-        MAX_PENDING,
-        ORIGIN_AGENT,
-        list_pending,
-    )
+    from tinyassets.storage.pending_requests import ORIGIN_AGENT, list_pending
 
     return [
         {
@@ -77,7 +73,7 @@ def _waiting(udir) -> list[dict[str, Any]]:
             "origin": row["origin"],
             "withdrawable": row["origin"] == ORIGIN_AGENT,
         }
-        for row in list_pending(udir, limit=MAX_PENDING)
+        for row in list_pending(udir)
     ]
 
 

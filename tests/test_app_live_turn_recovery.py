@@ -50,19 +50,38 @@ _DECLS = (
     # Introduced by the fix. Optional so the test is RED on assertions, not on
     # a missing declaration, against a tree that does not have it yet.
     r"let liveInflight=[^\n]*;",
+    # The Stop control's state (a turn's cleanup reads it).
+    r"let interruptRequested=[^\n]*;",
+    # Lines steered into a running turn (harness S2).
+    r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;",
 )
 _FUNCS = (
     "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
     "copyModelChoice", "captureTurnOptions", "sendConversationRequest",
     "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
-    "offerResend", "sendTurn", "sendVoiceTurn", "loadHistory", "restoreInflight",
+    "offerResend", "sendTurn", "sendVoiceTurn", "loadHistory",
+    "drawHistoryTurns", "offerEarlier", "loadEarlier", "historyFailed", "restoreInflight",
     "pollStatus", "setQueueScope", "setQueueOwner", "ownsSavedRow",
     "flushSendQueue", "queueTurn", "saveQueue", "readSavedQueue", "stillSaved",
     "forgetSavedItem", "savedItem", "sameSavedLine", "restoreQueue", "claimedElsewhere",
     "offerSavedLine", "clearComposerState", "clearAccountScopedState", "clearThread",
 )
 _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
-                   "offerSavedConversationCheck")
+                   "offerSavedConversationCheck",
+                   # Collaborators `clearAccountScopedState` gained on
+                   # 2026-09-30: rail card nodes are now kept across a refresh
+                   # so a 15-second poll cannot delete what the user typed into
+                   # a card, which makes clearing them an account-change step.
+                   # Optional like their siblings, so these harnesses stay green
+                   # against a tree without the change.
+                   "clearRailCards", "clearTypedValues",
+                   # The Stop control: a turn's cleanup asks whether the queue
+                   # goes out as one batch.
+                   "takeInterruptFlush", "flushAfterTurn", "drainAfterStop",
+                   "takeBatch", "flushBatch",
+                   # Harness S2: steering a running turn, and settling it.
+                   "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
+                   "adoptSteered")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.
@@ -72,7 +91,7 @@ let healed=[]; async function healServing(s){ healed.push(s); }
 let uploadRestores=0; function restoreUploadRecords(){ uploadRestores++; }
 ModelPicker.reset=()=>{}; ModelPicker.snapshot=null;
 let statusPolls=0;
-MCP.getStatus=async()=>{ statusPolls++;
+Owner.getStatus=async()=>{ statusPolls++;
   if(SCENARIO.statusError){ const e=new Error("status down"); e.transport=true; throw e; }
   return {active_host:"h", universe_id:SCENARIO.universe||"u-1", universe_name:"Home"}; };
 MCP.invalidateSession=()=>{};
@@ -170,7 +189,7 @@ def test_a_status_poll_does_not_restore_the_turn_the_live_page_owns(tmp_path, ht
     out = _run(tmp_path, html, _LIVE_TURN)
     thinking, polled, done = out["whileThinking"], out["afterPolls"], out["done"]
     assert thinking["founderBubbles"] == 1 and thinking["sendDisabled"] is True
-    assert thinking["status"] == "Your universe is thinking..."
+    assert thinking["status"] == "Your agent is thinking..."
     assert thinking["inflight"]["message"] == "Retest your workflow checklist", \
         "the live turn's durable recovery must be on disk while it is in flight"
     # The polls ran (the heartbeat is not disabled) ...
@@ -179,7 +198,8 @@ def test_a_status_poll_does_not_restore_the_turn_the_live_page_owns(tmp_path, ht
     assert polled["founderBubbles"] == 1, "the live message was drawn a second time"
     assert polled["unconfirmedNotes"] == 0, "a live turn was reported as never confirmed"
     assert polled["resendButtons"] == 0, "a resend was offered for a request still in flight"
-    assert polled["sendDisabled"] is True and polled["status"] == "Your universe is thinking..."
+    assert polled["sendDisabled"] is True
+    assert polled["status"] == "Your agent is thinking..."
     assert polled["inflight"]["message"] == "Retest your workflow checklist", \
         "a poll erased the live turn's recovery record"
     assert polled["converseCalls"] == ["Retest your workflow checklist"]
@@ -217,10 +237,10 @@ def test_a_late_history_peek_does_not_restore_a_turn_started_meanwhile(tmp_path,
     """The peek was still in flight when the founder sent; its result must not
     read the record that send wrote as a previous page's abandoned message."""
     out = _run(tmp_path, html, r"""
-    // Both halves come from /mcp/app/me before the composer is usable
+    // Both halves come from /app/me before the composer is usable
     // (enterSignedIn); the peek is what is still in flight, not the pair.
     setQueueOwner("p-1"); setQueueScope("u-1");
-    let release; MCP.getConversation=()=>new Promise(r=>{release=r;});
+    let release; Owner.getConversation=()=>new Promise(r=>{release=r;});
     const peek=loadHistory();                  // awaiting the connector
     await settle();
     const turn=sendTurn("first line of the day");
@@ -322,7 +342,7 @@ def test_a_reload_after_a_failed_peek_is_offered_by_the_heartbeat_once(tmp_path,
     from the heartbeat, and THAT pass offers the held message - once."""
     out = _run(tmp_path, html, _prior_page_record("hello") + r"""
     setQueueOwner("p-1");
-    MCP.getConversation=async()=>{ throw new Error("peek failed"); };
+    Owner.getConversation=async()=>{ throw new Error("peek failed"); };
     await loadHistory();
     const beforeStatus=snapshot();
     await pollStatus(); await pollStatus(); await settle();
@@ -337,7 +357,7 @@ def test_a_reload_after_a_failed_peek_is_offered_by_the_heartbeat_once(tmp_path,
 def test_a_delivered_message_found_in_history_clears_the_stale_record(tmp_path, html):
     out = _run(tmp_path, html, _prior_page_record("continue") + r"""
     setQueueOwner("p-1");
-    MCP.getConversation=async()=>({universe_id:"u-1", recent_conversation:{turns:[
+    Owner.getConversation=async()=>({universe_id:"u-1", recent_conversation:{turns:[
       {speaker:"founder",text:"continue",ts:1700000100},
       {speaker:"universe",text:"Continuing.",ts:1700000101}]}});
     await loadHistory(); await pollStatus(); await settle();
@@ -363,8 +383,8 @@ def test_an_account_change_retires_the_live_turn_and_fences_its_record(tmp_path,
     // is reset here to read what the NEXT account's screen shows.
     clearAccountScopedState(); MCP._loginEpoch++; messages.length=0;
     setQueueOwner("p-2"); setQueueScope("u-2");
-    MCP.getStatus=async()=>({active_host:"h",universe_id:"u-2"});
-    MCP.getConversation=async()=>({universe_id:"u-2", recent_conversation:{turns:[]}});
+    Owner.getStatus=async()=>({active_host:"h",universe_id:"u-2"});
+    Owner.getConversation=async()=>({universe_id:"u-2", recent_conversation:{turns:[]}});
     await loadHistory(); await pollStatus(); await pollStatus(); await settle();
     const asB=snapshot();
     // The old turn's reply lands after the switch: it paints nothing.
@@ -374,16 +394,16 @@ def test_an_account_change_retires_the_live_turn_and_fences_its_record(tmp_path,
     // message is unconfirmed and is offered - once.
     clearAccountScopedState(); MCP._loginEpoch++; messages.length=0;
     setQueueOwner("p-1"); setQueueScope("u-1");
-    MCP.getStatus=async()=>({active_host:"h",universe_id:"u-1"});
-    MCP.getConversation=async()=>({universe_id:"u-1", recent_conversation:{turns:[]}});
+    Owner.getStatus=async()=>({active_host:"h",universe_id:"u-1"});
+    Owner.getConversation=async()=>({universe_id:"u-1", recent_conversation:{turns:[]}});
     await loadHistory(); await pollStatus(); await pollStatus(); await settle();
     console.log(JSON.stringify({asB, afterLateReply, backAsA:snapshot()}));
     """)
     as_b = out["asB"]
     assert as_b["founderBubbles"] == 0 and as_b["resendButtons"] == 0
     assert [n["text"] for n in as_b["notes"]] == [
-        "An unconfirmed message from another universe's session on this browser "
-        "is waiting there; open that universe to see it."]
+        "An unconfirmed message from another command center's session on this browser "
+        "is waiting there; open that command center to see it."]
     assert as_b["inflight"]["owner"] == "p-1", "the retired turn's record was erased"
     assert as_b["sendDisabled"] is False
     late = out["afterLateReply"]
@@ -440,7 +460,7 @@ _UNCONFIRMED_QUEUE = r"""
 let savedTurns = [{speaker:"founder", text:"an older line", ts: 1000},
                   {speaker:"universe", text:"an older reply", ts: 1001}];
 let peeks = 0;
-MCP.getConversation = async () => { peeks++;
+Owner.getConversation = async () => { peeks++;
   return {universe_id:"u-1", recent_conversation:{turns: savedTurns}}; };
 setQueueOwner("p-1");
 await loadHistory();
@@ -454,7 +474,7 @@ await settle();
 // separate, deliberate behaviour and happens above).
 $("composer-input").value = "a draft I was typing";
 const queuedBefore = sendQueue.length;
-const silent = new Error("your universe stopped sending anything back");
+const silent = new Error("your agent stopped sending anything back");
 silent.transport = "stream_silent"; silent.replayable = false;
 gates[0].reject(silent);
 await turn; await settle(); await settle();

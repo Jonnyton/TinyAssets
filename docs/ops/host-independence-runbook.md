@@ -321,7 +321,7 @@ journalctl -u tinyassets-watchdog -f
 tail -f /opt/tinyassets/.agents/uptime_alarms.log | grep WATCHDOG_RESTART
 
 # GitHub issues opened by the watchdog
-gh issue list --label watchdog --repo Jonnyton/TinyAssets
+gh issue list --label watchdog --repo TinyAssets/TinyAssets
 ```
 
 ### Suppressing restarts during maintenance
@@ -455,7 +455,7 @@ Each class is detected by a single regex against the diag bundle. First-match-wi
 | `tunnel_token` | `UnauthorizedError` / `authentication failed` / `Invalid tunnel secret` in cloudflared logs | **None** — detection opens `tunnel-token-rotation` issue, pages priority=2 | **Yes** |
 | `oom` | Kernel `Out of memory:` / `oom-killer` / container `OOMKilled` | `docker compose restart daemon` (memory cap **not** auto-bumped) | No |
 | `disk_full` | `df -h` shows ≥90% on `/`, `/data`, or `/var/lib/docker` | `docker system prune -af` + `journalctl --vacuum-time=3d` | No |
-| `image_pull_failure` | `manifest not found` / `pull access denied` / `ImagePullBackOff` | Fall back to `TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon:latest` (loses SHA pin until next deploy) | No |
+| `image_pull_failure` | `manifest not found` / `pull access denied` / `ImagePullBackOff` | Fall back to `TINYASSETS_IMAGE=ghcr.io/tinyassets/tinyassets-daemon:latest` (loses SHA pin until next deploy) | No |
 | `watchdog_hotloop` | systemd `start-limit-hit` / `Start request repeated too quickly` | `systemctl stop → sleep 60 → reset-failed → start` | No |
 | `unknown` | Fall-through when no class matches | Generic compose restart (legacy behavior) | No |
 
@@ -478,7 +478,7 @@ Don't ratchet faster — each OOM is signal about a real memory leak worth prese
 When auto-triage falls the daemon off the SHA pin to `:latest`, the next `deploy-prod.yml` run re-pins to a new short-SHA. If you want to pin manually in the interim:
 
 ```bash
-ssh ... "sudo sed -i 's|^TINYASSETS_IMAGE=.*|TINYASSETS_IMAGE=ghcr.io/jonnyton/tinyassets-daemon:<sha>|' /etc/tinyassets/env && \
+ssh ... "sudo sed -i 's|^TINYASSETS_IMAGE=.*|TINYASSETS_IMAGE=ghcr.io/tinyassets/tinyassets-daemon:<sha>|' /etc/tinyassets/env && \
          sudo chown root:workflow /etc/tinyassets/env && sudo chmod 640 /etc/tinyassets/env && \
          sudo systemctl restart tinyassets-daemon"
 ```

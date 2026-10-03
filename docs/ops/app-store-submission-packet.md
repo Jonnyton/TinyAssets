@@ -79,7 +79,7 @@ declared data types before submission.
 > Get started in seconds — sign in and say hello to your universe.
 
 The factual App Review Notes are saved: this is a Capacitor shell pinned to
-`https://tinyassets.io/mcp/app`, not a general-purpose web browser; the native
+`https://tinyassets.io/app`, not a general-purpose web browser; the native
 shell has no purchase, subscription, upgrade, advertising, unrestricted-browsing,
 or voice UI; and sign-in, provider connection, conversation, text-file
 attachment, Account/Privacy navigation, and account deletion are the critical
@@ -150,7 +150,7 @@ identity, used only for the named purpose, and not used for tracking.
 
 - **The iOS shell uses the same hosted client and data path.**
   `mobile/capacitor.config.json` fixes the bundle to
-  `https://tinyassets.io/mcp/app`; it does not add a separate native data plane.
+  `https://tinyassets.io/app`; it does not add a separate native data plane.
 - **Email address and user ID are identity data used for app functionality.**
   `tinyassets/auth/workos_provider.py` validates the WorkOS AuthKit token and binds
   its stable `sub` user ID to the TinyAssets identity. The deployed legal disclosure
@@ -164,9 +164,11 @@ identity, used only for the named purpose, and not used for tracking.
   document formats, rejects binary/oversized files, reads selected content client-side,
   and embeds it verbatim in the user's message.
 - **Provider connection material is deposited intentionally and retained in a vault.**
-  `tinyassets/connect_deposit.py` presents a password input and states the credential
-  is written to the private vault, never logged or echoed. `tinyassets/credential_vault.py`
-  validates and atomically persists those records.
+  `tinyassets/onboarding/app.html` collects a provider credential only in the labelled
+  secret field of a connect card the owner chooses to answer, or through the OpenAI device
+  sign-in (`tinyassets/onboarding/openai_device.py`). `tinyassets/api/pending_requests.py`
+  deposits it to the private vault and never records a secret field's value in the clear;
+  `tinyassets/credential_vault.py` validates and atomically persists those records.
 - **No native analytics, advertising, or purchase SDK is present.**
   `mobile/package.json` contains only Capacitor core/platform/app/browser/splash/status
   dependencies. The native shell has no analytics, advertising, StoreKit, payment, or
@@ -279,7 +281,7 @@ Run this against the exact signed artifact before any App Review submission:
     iPhone; confirm every microphone track is released and then re-approve App Privacy.
 
 Any critical-flow failure holds the build. A web regression rolls back by
-reverting the compatible `/mcp/app` deployment. A native-shell failure requires
+reverting the compatible `/app` deployment. A native-shell failure requires
 a higher build/version; the old binary cannot be restored over an installed new
 one, so the server must remain compatible with the last released shell.
 

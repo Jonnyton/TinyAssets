@@ -15,7 +15,9 @@ WRITE_ACTIONS = frozenset({
     "create_receiver", "update_receiver", "revoke_receiver", "connect_output",
     "disconnect_output", "deliver_output",
 })
-READ_ACTIONS = frozenset({"inspect_receiver", "list_output_links", "get_delivery"})
+READ_ACTIONS = frozenset({
+    "inspect_receiver", "discover_receivers", "list_output_links", "get_delivery",
+})
 
 
 @dataclass(frozen=True)
@@ -157,7 +159,87 @@ def _reject_undeclared_references(values, file_fields):
     )
 
 
+def _refuse_reserved_contract_fields(receiver):
+    """A reserved attribution name may never be an ADVERTISED field, at any age.
+
+    The save-time guard in ``api/receiver_links.py`` only covers receivers created
+    after it shipped, which left the "a sender can never land a value here"
+    invariant contingent on validation rather than structural. A receiver predating
+    it could advertise a reserved name as a FILE input; injection would then write
+    the authenticated principal and ``storage/deliveries.py`` ``_run_inputs`` would
+    replace it with the sender's own file reference (cross-family review,
+    2026-09-26). Checked against the ADMITTED contract on every acceptance, so a
+    receiver in that state cannot receive until its owner renames the field --
+    loudly refused, never silently accepted with forged provenance.
+    """
+    advertised = {field["name"] for field in json.loads(receiver["contract_json"])}
+    collide = sorted(advertised & set(receiver_links.SENDER_ATTRIBUTION_FIELDS))
+    if collide:
+        raise ValueError(
+            "receiver advertises platform-supplied sender attribution as an input; "
+            "its owner must rename: " + ", ".join(collide)
+        )
+
+
+def _replayed_inputs(prior, link, outputs):
+    """Validate a retry against the STORED acceptance and carry it forward verbatim.
+
+    The comparison covers SENDER content only. Platform-supplied attribution is not
+    something the sender sent, so recomputing it in order to compare -- this
+    change's first shape -- both added fragility and broke retries of occurrences
+    accepted before attribution existed, since their stored inputs have no such key.
+    Returning the stored dict unchanged is what keeps the replay digest identical for
+    a pre-upgrade row and a post-upgrade one alike.
+
+    A changed payload still conflicts: here on the mapped comparison, and again in
+    ``accept_in_transaction``, whose digest also covers the raw request payload.
+    """
+    stored = json.loads(prior["inputs_json"])
+    sent = {target: outputs[source] for source, target
+            in json.loads(link["mapping_json"]).items() if source in outputs}
+    reserved = set(receiver_links.SENDER_ATTRIBUTION_FIELDS)
+    if sent != {name: value for name, value in stored.items() if name not in reserved}:
+        raise deliveries.OccurrenceConflict()
+    return stored
+
+
+def _sender_attribution(snapshot_json, link, values):
+    """Fill the reserved attribution fields the RECEIVER's own snapshot declares.
+
+    Source is the stored link row -- ``owner_id`` is the sending principal and
+    ``universe_id`` the universe the send is made from -- never the request
+    payload, so a sender cannot name itself. Only declared fields are filled:
+    ``tinyassets/runs.py`` feeds a run row's stored inputs back into
+    ``_invoke_prepared_branch`` on the waiting-run resume path, so an undeclared
+    key here would reach a graph whose state schema has no channel for it.
+
+    A receiver that declares neither field is unchanged. Attribution is still
+    unconditional where it is authoritative: ``graph_deliveries`` records the
+    sender on every acceptance, and the receiver's side of the receipt shows it.
+
+    ``snapshot_json`` is passed rather than read off a receiver row because WHICH
+    snapshot governs differs by path: a first acceptance uses the receiver's
+    current pinned snapshot, and a replay must use the ADMITTED one. Both are
+    reproducible from stored state, which is what keeps a retry byte-identical --
+    these values land in ``inputs_json`` and therefore in the replay digest.
+    """
+    branch = BranchDefinition.from_dict(json.loads(snapshot_json))
+    declared = {
+        field["name"]
+        for field in branch.state_schema
+        if isinstance(field, dict) and isinstance(field.get("name"), str)
+    }
+    attribution = dict(zip(
+        receiver_links.SENDER_ATTRIBUTION_FIELDS, (link["owner_id"], link["universe_id"]),
+    ))
+    return {
+        **values,
+        **{name: value for name, value in attribution.items() if name in declared},
+    }
+
+
 def _structured_inputs(receiver, link, outputs, *, allow_files=False):
+    _refuse_reserved_contract_fields(receiver)
     if not isinstance(outputs, dict):
         raise ValueError("outputs must be an object")
     delivery_runtime.validate_output_envelopes(outputs, allow_file_references=allow_files)
@@ -189,6 +271,9 @@ def _structured_inputs(receiver, link, outputs, *, allow_files=False):
             raise ValueError("receiver input type mismatch")
     if file_fields:
         _declared_file_limits(branch, values, file_fields)
+    # Before preflight, so a receiver may declare an attribution field REQUIRED and
+    # have it satisfied by the platform rather than refused as a missing input.
+    values = _sender_attribution(receiver["snapshot_json"], link, values)
     runs.preflight_required_inputs(branch, values)
     return values
 
@@ -247,6 +332,12 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
         deliveries.transaction(base) as conn,
     ):
         link = dict(receiver_links._owned_link(conn, link_id, principal, universe_id))
+        # Same rule as in `_accept_output`, enforced on this path too because the
+        # byte copy runs ABOVE every acceptance fence: checking only there would
+        # copy a refused sender's files into the intake owner's custody first.
+        # One definition (`patch_intake.require_send_consent`), two paths -- the
+        # shape `_enforce_sender_rate_limit` already uses for the same reason.
+        _require_patch_intake_consent(universe_id, link["receiver_id"])
         _check_source(conn, source, link)
         receiver = dict(conn.execute(
             "SELECT * FROM graph_receivers WHERE receiver_id=?", (link["receiver_id"],),
@@ -260,15 +351,20 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
         if prior is not None:
             # Mirrors the authoritative replay branch structure so a changed replay
             # is refused before any reservation, allocation or byte is moved.
-            mapped = {target: outputs[field] for field, target in mapping.items()
-                      if field in outputs}
-            if mapped != json.loads(prior["inputs_json"]):
-                raise deliveries.OccurrenceConflict()
+            _replayed_inputs(prior, link, outputs)
             return _accepted_transfer(conn, prior["delivery_id"])
         _, resolved = receiver_links.resolve_link_in_transaction(
             conn, link_id=link_id, owner_id=principal, universe_id=universe_id,
         )
         receiver = dict(resolved)
+        _refuse_reserved_contract_fields(receiver)
+        # The per-sender bound BEFORE any byte is copied. This runs under the same
+        # two writers acceptance holds, so a sequential sender past its limit copies
+        # nothing at all; concurrent senders are bounded by requests already in
+        # flight rather than by the window, because the copy itself happens after
+        # this transaction closes. A capacity reservation spanning the copy would
+        # close that remainder and is not attempted here.
+        _enforce_sender_rate_limit(conn, receiver, sender_id=principal)
         values = {target: outputs[field] for field, target in mapping.items()}
         branch = BranchDefinition.from_dict(json.loads(receiver["snapshot_json"]))
         file_fields = _file_fields(receiver, values, branch)
@@ -309,6 +405,37 @@ def _transfer_files(base, *, principal, universe_id, link_id, occurrence_id, out
     ]}
 
 
+def _enforce_sender_rate_limit(conn, receiver, *, sender_id):
+    """Apply the OWNER's own per-sender policy, if they set one.
+
+    Off unless the owner chose a number: the platform imposes no default and no
+    ceiling on traffic through someone else's receiver (founder, 2026-09-30 --
+    account limits are cloud storage and concurrent agent seats). The old
+    justification was that a stranger could spend the owner's run admission
+    budget; there is no such budget now, and a delivered run queues for a seat.
+
+    When the owner HAS set one, it runs on first acceptance only, inside the
+    acceptance transaction, and BEFORE any further admission, so a refused sender
+    does no work on the receiving side. A retry of an already-accepted occurrence
+    never reaches here, so replay is neither charged nor refused. One code path
+    for every account -- an enumerated sender gets the same rule as a stranger.
+    """
+    limit = receiver["sender_rate_limit"]
+    if not limit:  # NO_SENDER_RATE_LIMIT: the owner set no policy
+        return
+    accepted = deliveries.sender_window_count(
+        conn, receiver_id=receiver["receiver_id"], sender_id=sender_id,
+        window_seconds=deliveries.SENDER_RATE_WINDOW_SECONDS,
+    )
+    if accepted >= limit:
+        raise ValueError(
+            "receiver_sender_rate_limit_exceeded: this receiver's owner accepts "
+            f"{limit} deliveries per sender per "
+            f"{int(deliveries.SENDER_RATE_WINDOW_SECONDS)}s and you have sent "
+            f"{accepted}; the limit is theirs to set or remove"
+        )
+
+
 def _revalidate_source_bindings(conn, source, transfer):
     """Acceptance re-resolves the sender bindings before the delivery exists.
 
@@ -325,6 +452,22 @@ def _revalidate_source_bindings(conn, source, transfer):
     for row, record in zip(rows, transfer["records"]):
         if (row["sha256"], row["size_bytes"]) != (record["sha256"], record["size_bytes"]):
             raise run_file_crossowner.store.FileCustodyRefused("file_source_changed")
+
+
+def _require_patch_intake_consent(universe_id, receiver_id):
+    """Fence the platform-offered patch intake behind the owner's grant.
+
+    A thin adapter so the delivery path names one call and the rule itself has
+    one home (``tinyassets/patch_intake.py``). ``PatchIntakeConsentMissing`` is a
+    ``ValueError``, so the served action boundary already reports it as an
+    invalid delivery request with the reason, rather than as an outage.
+    """
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.patch_intake import require_send_consent
+
+    require_send_consent(
+        universe_dir=_universe_dir(universe_id), receiver_id=receiver_id
+    )
 
 
 def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outputs,
@@ -346,6 +489,14 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
         deliveries.transaction(base) as conn,
     ):
         link = dict(receiver_links._owned_link(conn, link_id, principal, universe_id))
+        # The ONE receiver the platform itself put in front of this universe needs
+        # the owner's recorded yes before their words reach another user. Checked
+        # here rather than at connect time because this is where content actually
+        # crosses, so a grant taken back stops the next send even on a link that
+        # already exists. Every other receiver is one this universe found itself,
+        # where the receiving owner's exposure is the whole authority. Uniform for
+        # a replay too: a withdrawn consent must not be re-honoured by retrying.
+        _require_patch_intake_consent(universe_id, link["receiver_id"])
         if source is not None:
             _check_source(conn, source, link)
         branch = management._owned_branch(base, universe_id, link["branch_def_id"], principal)
@@ -373,11 +524,7 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
         else:
             # Replay uses the admitted contract/snapshot, not a later revision.
             receiver["snapshot_json"] = prior["snapshot_json"]
-            original = json.loads(prior["inputs_json"])
-            mapped = {target: outputs[source] for source, target
-                      in json.loads(link["mapping_json"]).items() if source in outputs}
-            if mapped != original:
-                raise deliveries.OccurrenceConflict()
+            mapped = _replayed_inputs(prior, link, outputs)
         values = (_structured_inputs(receiver, link, outputs, allow_files=source is not None)
                   if prior is None else mapped)
         if prior is None and transfer is not None and not transfer["replay"]:
@@ -386,14 +533,8 @@ def _accept_output(base, *, principal, universe_id, link_id, occurrence_id, outp
             raise ValueError("delivery_source_cancelled")
         ticket = None
         if prior is None:
-            admission = engine_admissions.admit_detail(
-                receiver["universe_id"], write_max=engine_admissions.RUN_WRITE_LIMIT,
-                total_max=engine_admissions.RUN_TOTAL_LIMIT,
-                window_s=engine_admissions.RUN_WINDOW_SECONDS, fail_closed=True,
-            )
-            if admission.ticket is None:
-                raise ValueError("receiver_resource_admission_refused")
-            ticket = admission.ticket
+            _enforce_sender_rate_limit(conn, receiver, sender_id=principal)
+            ticket = engine_admissions.admit(receiver["universe_id"])
         receipt = deliveries.accept_in_transaction(
             conn, sender_id=principal, sender_universe_id=universe_id,
             link_id=link_id, occurrence_id=occurrence_id, request_payload=outputs,
@@ -441,6 +582,8 @@ def action(action_name, kwargs):
             result = functions[action_name](universe_id=uid, **payload)
         elif action_name == "inspect_receiver":
             result = management.inspect_receiver(**payload)
+        elif action_name == "discover_receivers":
+            result = management.discover_receivers(universe_id=uid, **payload)
         else:
             principal = management._principal(write=False)
             base = management._base()

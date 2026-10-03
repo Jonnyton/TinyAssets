@@ -24,9 +24,12 @@ import json
 import logging
 import os
 import re
+import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
+from tinyassets.addressed_agents import AgentNotAddressable
 from tinyassets.api.first_contact import home_is_complete
 from tinyassets.api.helpers import (
     _base_path,
@@ -40,7 +43,88 @@ from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_provide
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
 
-_STATUS_SCHEMA_VERSION = 2
+_STATUS_SCHEMA_VERSION = 3  # 3: universe_* fields renamed command_center_* (C1)
+# Async overhead plus the in-band reap, on top of the turn's own cap: the same
+# margin the router already allows a sync wrapper over the streaming cap
+# (``providers.router._sync_call_timeout_s``).
+_WORKING_TURN_REAP_MARGIN_S = 30.0
+
+
+#: How long a turn row with no fresh progress is presumed dead FOR THE
+#: INDICATOR. A display freshness rule, not a turn cap: nothing here stops a
+#: turn, and a turn that is still emitting progress keeps refreshing its row.
+#:
+#: It used to be derived from the served turn cap plus a margin. There is no
+#: turn cap any more -- a turn runs until it is finished (founder, 2026-09-30) --
+#: so deriving a display bound from one would make the indicator answer "not
+#: working" about a turn that IS working, which is the exact bug #4020 fixed in
+#: the other direction. Six hours is far past any turn observed, and a universe
+#: that legitimately runs longer shows a stale indicator rather than having its
+#: work stopped.
+_WORKING_TURN_STALE_AFTER_S = 6 * 3600.0
+
+
+def _working_turn_max_age_s(udir: Path) -> float:
+    """How old a still-progressing turn row may be and still mean "working now".
+
+    The universe's OWN ``absolute_cap_s``, if it set one, plus a reaping margin:
+    a universe that caps its own turns knows when its row is dead. Otherwise the
+    display freshness rule above.
+
+    Erring generous is the right direction. A wedged row stays reported as
+    activity for longer than strictly necessary; the cost of that is a stale
+    indicator on a dead row, against the cost of hiding live work, which is the
+    bug this exists to fix.
+    """
+    from tinyassets.config import load_universe_config
+    from tinyassets.universe_intelligence import served_absolute_cap_s
+
+    own_cap = served_absolute_cap_s(load_universe_config(udir))
+    if own_cap is None:
+        return _WORKING_TURN_STALE_AFTER_S
+    return own_cap + _WORKING_TURN_REAP_MARGIN_S
+
+
+def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
+    """Server-side "is this universe working" for one universe.
+
+    The web app used to decide its own working indicator from whether THIS page
+    had sent a message, so a turn started by answering a request, by a queued
+    line, by another tab or device, or one still running across a reload showed
+    nothing at all (founder, 2026-09-26: a turn ran for four minutes with no
+    indicator, so it read as if nothing happened).
+
+    An unreadable journal is reported as ``state: "unreadable"``, never as idle:
+    a surface that paints "nothing is happening" off a failed read is the silent
+    fallback this project refuses. Callers treat only the progressing states as
+    activity, so an unreadable or stale row shows no indicator either way.
+    """
+    from datetime import datetime, timezone
+
+    from tinyassets.storage.agent_turn_journal import AgentTurnJournal
+
+    try:
+        return AgentTurnJournal(udir.parent).universe_working_turn(
+            udir.name,
+            now=datetime.now(timezone.utc),
+            max_age_s=_working_turn_max_age_s(udir),
+        )
+    except Exception as exc:  # noqa: BLE001 - an unreadable journal is reported, not guessed
+        _LOGGER.warning("agent turn activity unreadable: %s", type(exc).__name__)
+        return {"state": "unreadable", "reason": type(exc).__name__}
+
+
+def _reader_owns(uid: str) -> bool:
+    """Is the verified caller the universe's owning account? False on any doubt."""
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.universe_owner import owner_of
+
+    try:
+        actor = permissions.current_actor_id()
+        return bool(actor) and owner_of(_base_path(), uid) == actor
+    except Exception:  # noqa: BLE001 - an unreadable owner withholds, never shows
+        return False
 
 
 def _policy_hash(payload: dict[str, Any]) -> str:
@@ -261,6 +345,39 @@ def _load_release_state() -> dict[str, Any]:
     return out
 
 
+def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
+    """Whether a deploy is waiting for in-flight work to finish before it swaps.
+
+    ``deploy-prod`` refuses to recreate the daemon while a turn is running
+    (``scripts/turns_in_flight.py``) and refreshes ``.deploy-pending.json`` in the
+    data root while it waits. Surfaced so whoever is watching a long turn can see
+    that an update is queued behind it, rather than wondering why a merge has not
+    shipped. Read-only and best-effort, like the release receipt.
+
+    A marker past its ``expires_at`` is a deploy job that died mid-wait, not a
+    waiting deploy: it reads as not pending, with the reason, rather than saying
+    "update pending" forever. An unreadable one says so; it never reads as pending.
+    """
+    path = _base_path() / ".deploy-pending.json"
+    try:
+        if not path.is_file():
+            return {"pending": False}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - status probe must survive bad I/O
+        return {"pending": False, "warning": f"deploy_pending_read_failed: {type(exc).__name__}"}
+    if not isinstance(payload, dict):
+        return {"pending": False, "warning": "deploy_pending_marker_not_object"}
+    expires = _parse_iso_to_epoch(str(payload.get("expires_at") or ""))
+    moment = time.time() if now is None else now
+    if expires is None or expires < moment:
+        return {"pending": False, "warning": "deploy_pending_marker_expired"}
+    out: dict[str, Any] = {"pending": True}
+    for field in ("target", "waiting_since", "deadline", "in_flight", "observed_at", "run_url"):
+        if field in payload:
+            out[field] = payload[field]
+    return out
+
+
 def _active_host_snapshot(
     served_llm_type: str = "",
 ) -> tuple[dict[str, object], bool, list[str], str]:
@@ -305,12 +422,6 @@ def _active_host_snapshot(
         endpoint_hint = "claude"
     elif api_key_enabled and os.environ.get("OPENAI_API_KEY") and _shutil.which("codex"):
         endpoint_hint = "codex"
-    elif api_key_enabled and os.environ.get("XAI_API_KEY"):
-        endpoint_hint = "xai"
-    elif api_key_enabled and os.environ.get("GEMINI_API_KEY"):
-        endpoint_hint = "gemini"
-    elif api_key_enabled and os.environ.get("GROQ_API_KEY"):
-        endpoint_hint = "groq"
     else:
         endpoint_hint = "unset"
 
@@ -948,8 +1059,8 @@ def _compute_supervisor_liveness_uncached(
                         "epoch2_unscoped_integrity_rows"
                         + count_text
                         + ": corrupt rows without an authoritative "
-                        "admission/request universe exist; exact counts are "
-                        "restricted to universe admins."
+                        "admission/request command center exist; exact counts are "
+                        "restricted to command center admins."
                     )
                 if epoch2.get("unknown_lifecycle_status_counts"):
                     out["warnings"].append(
@@ -1042,7 +1153,7 @@ def _compute_supervisor_liveness_uncached(
             "branch_tasks.reclaim_expired_leases sweeps these at every "
             "dispatcher pick (BUG-011 Phase C, shipped 2026-06-10); a "
             "persistent entry here means no picks are happening — check "
-            "worker_liveness in universe inspect."
+            "worker_liveness in command center inspect."
         )
 
     return out
@@ -1059,13 +1170,25 @@ def _platform_has_work() -> bool:
     recent activity is not. Reading it per-universe was possible only for a
     caller who could inspect a universe, which the canary principal cannot.
     """
-    from tinyassets.api.universe import _read_json
+    from tinyassets.api.universe import _is_listable_universe_dir, _read_json
 
     base = _base_path()
     if not base.is_dir():
         return False
+    # Owned only. A boolean leaks no ids, which is why this was initially judged
+    # out of scope -- wrongly: an unowned archive's stale `work_targets.json`
+    # made the platform report work, and `scripts/last_activity_canary.py` then
+    # skips its healthy-idleness handling and raises a stale-activity alarm for a
+    # platform that is simply quiet (Codex review 2026-09-26, P2).
+    from tinyassets.daemon_server import owned_universe_ids
+
+    try:
+        owned = owned_universe_ids(base)
+    except Exception:  # noqa: BLE001 - observability never breaks a read
+        _LOGGER.exception("ownership lookup failed while checking platform work")
+        return False
     for child in sorted(base.iterdir()):
-        if not child.is_dir() or child.name.startswith("."):
+        if not _is_listable_universe_dir(child, owned):
             continue
         try:
             targets = _read_json(child / "work_targets.json")
@@ -1177,7 +1300,13 @@ def _platform_last_activity_at() -> str | None:
     return stamp.isoformat()
 
 
-def get_status(universe_id: str = "", include_conversation: bool = False) -> str:
+def get_status(
+    universe_id: str = "",
+    include_conversation: bool = False,
+    conversation_before: int | None = None,
+    conversation_limit: int = 30,
+    conversation_agent: str = "",
+) -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
     See the chatbot-facing docstring on the @mcp.tool wrapper in
@@ -1192,6 +1321,17 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
     fenced, read-only ``recent_conversation`` peek. Off by default so the raw
     transcript never auto-rides into the many automatic ``get_status`` calls a
     chatbot makes (prompt-injection + consent surface — Codex 2026-08-23).
+
+    The peek is a PAGE of the thread, never a silent cut: it always carries
+    ``has_more`` and, when older turns exist, ``next_before`` -- the cursor the
+    caller passes back as ``conversation_before`` to read the page before it.
+    ``conversation_limit`` is the page size the caller asks for. A read failure
+    is reported as ``recent_conversation.error``, never as an empty thread.
+
+    ``conversation_agent`` names which of the caller's agents' threads the peek
+    reads (harness §4.18): ``"main"`` or empty is the main thread, another id
+    is that agent's own thread, and an id that is not the caller's own agent in
+    this universe is a ``recent_conversation.error``.
     """
     request_identity, identity_evidence = _request_identity_evidence()
 
@@ -1199,7 +1339,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
     if needs_birth:
         active_host, _, _, _ = _active_host_snapshot()
         _about = (
-            "TinyAssets hosts your own AI universe — a persistent mind that "
+            "TinyAssets hosts your own AI command center — a persistent mind that "
             "starts blank, learns who it is from you, and grows into your "
             "projects and goals."
         )
@@ -1207,19 +1347,20 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
             "first_contact": {
                 "event": "no_universe_yet",
                 "note": (
-                    "No complete home universe is bound to this account yet. "
+                    "No complete home command center is bound to this account yet. "
                     "Status is read-only and does not create one."
                 ),
             },
             "about": _about,
             "next_step_for_user": (
-                "Start a conversation with your universe to meet it in its own voice."
+                "Start a conversation with your command center to meet it in its own voice."
             ),
             "identity_evidence": identity_evidence,
             "request_identity": request_identity,
             "schema_version": _STATUS_SCHEMA_VERSION,
             "active_host": active_host,
             "release_state": _load_release_state(),
+            "deploy_pending": _load_deploy_pending(),
             # Present on every status shape the probes can meet, universe or
             # not: the activity probe reads these instead of inspecting a
             # universe. Both, because `last_activity_at` goes stale for a quiet
@@ -1357,7 +1498,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
     if not activity_tail:
         tail_caveats = [
             "activity.log is empty or missing — daemon has not run in "
-            "this universe, or the log was cleared."
+            "this command center, or the log was cleared."
         ]
         if not log_read_ok:
             tail_caveats.append(
@@ -1385,9 +1526,9 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         caveats.append(
             "No default LLM provider detected on this host (checked: "
             "OLLAMA_HOST, Codex CLI with subscription auth, and Claude CLI). "
-            "That is expected: the platform has no LLM of its own. A universe "
+            "That is expected: the platform has no LLM of its own. A command center "
             "runs on the provider its owner connects -- see read_graph "
-            "target=model_options for that universe."
+            "target=model_options for that command center."
         )
     if api_key_vars_present and not api_key_enabled:
         caveats.append(
@@ -1412,7 +1553,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         )
     if endpoint_hint == "unset":
         actionable_next_steps.append(
-            "To run a universe, its owner connects their own provider to it "
+            "To run a command center, its owner connects their own provider to it "
             "(read_graph target=model_options shows what is connected). There "
             "is no platform or host model to bind."
         )
@@ -1429,13 +1570,13 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
 
     if not universe_exists:
         caveats.append(
-            f"Universe '{uid}' does not exist on disk. Daemon is reporting "
-            "default-fallback identity, not a live universe. Use read_graph "
+            f"Command center '{uid}' does not exist on disk. Daemon is reporting "
+            "default-fallback identity, not a live command center. Use read_graph "
             'target="graphs" to see what exists; use write_graph '
-            f'target="universe" graph_id="{uid}" to bootstrap.'
+            f'target="command_center" graph_id="{uid}" to bootstrap.'
         )
         actionable_next_steps.append(
-            f"Create universe '{uid}' with write_graph target=\"universe\" "
+            f"Create command center '{uid}' with write_graph target=\"command_center\" "
             f'graph_id="{uid}", '
             'or pick an existing one with read_graph target="graphs".'
         )
@@ -1652,6 +1793,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
         "release_state": release_state,
+        "deploy_pending": _load_deploy_pending(),
         # Platform-wide, names no universe: the uptime probes read these
         # instead of inspecting a universe, which the canary principal may not
         # do (service-principal boundary D4).
@@ -1673,6 +1815,36 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         resource_usage = for_authorized_status(_base_path(), uid)
         if resource_usage is not None:
             response["resource_usage"] = resource_usage
+            # The account's seats: running, waiting, whether THIS universe's chat
+            # is queued, and the waiting line with its upgrade link. Only to the
+            # owning account -- the counts span all of its universes, which a
+            # co-admin of this one has no business reading.
+            from tinyassets import universe_seats
+
+            try:
+                seats = universe_seats.status_for_owner(
+                    uid, root=_base_path(), actor_id=permissions.current_actor_id(),
+                )
+            except (universe_seats.SeatLedgerUnusable, OSError, ValueError, sqlite3.Error):
+                seats = {"availability": "unavailable"}
+            if seats is not None:
+                response["seats"] = seats
+
+    # Whether this universe is working RIGHT NOW, whatever started the turn — a
+    # typed message, an answered request, a queued line, another tab, another
+    # device, the connector. Gated the same way the conversation peek is (write
+    # access to this universe), and it carries no prompt, model or owner: only
+    # that a turn is progressing, since when, and its journal state. The key is
+    # PRESENT and null when the universe is idle, so a client can tell "idle"
+    # from "this build does not report it".
+    if universe_exists and permissions.universe_access_allows(uid, write=True):
+        active = _universe_active_turn(udir)
+        # The step and its wait are for every reader above; the MODEL id is the
+        # owning account's own selector, which can be private (an account-bearing
+        # id the reply's "Answered by" never shows) -- so only its owner sees it.
+        if isinstance(active, dict) and "model" in active and not _reader_owns(uid):
+            active = {key: value for key, value in active.items() if key != "model"}
+        response["active_turn"] = active
 
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about
@@ -1714,16 +1886,34 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
     if include_conversation:
         try:
             if universe_exists and permissions.universe_access_allows(uid, write=True):
+                from tinyassets import addressed_agents
                 from tinyassets.conversation_failure import normalize_turn_failure
-                from tinyassets.conversation_store import load_recent_readonly
+                from tinyassets.conversation_store import read_history_page
                 from tinyassets.providers.execution_receipt import normalize_execution_receipt
 
-                _session = f"principal:{permissions.current_actor_id()}"
-                _turns = load_recent_readonly(udir, _session, limit=30)
+                _addressed = addressed_agents.resolve(
+                    udir.parent, universe_id=uid, owner=permissions.current_actor_id(),
+                    agent_id=conversation_agent,
+                )
+                _session = addressed_agents.memory_session(
+                    permissions.current_actor_id(),
+                    _addressed.agent_id if _addressed else addressed_agents.MAIN_AGENT,
+                )
+                _turns, _has_more = read_history_page(
+                    udir, _session, limit=conversation_limit, before=conversation_before,
+                )
                 _cap = 4000  # per-turn char bound (fence against unbounded content)
                 response["recent_conversation"] = {
-                    "session_scope": "principal",
+                    "session_scope": "agent" if _addressed else "principal",
+                    **({"agent": {"agent_id": _addressed.agent_id, "name": _addressed.name}}
+                       if _addressed else {}),
                     "turn_count": len(_turns),
+                    # Whether older turns exist, and the cursor that reads them.
+                    # A page that could hide the rest without saying so is the
+                    # silent cut this replaced (a fixed 30 turns, 2026-09-30).
+                    "has_more": _has_more,
+                    **({"next_before": _turns[0].id} if _has_more and _turns and isinstance(
+                        getattr(_turns[0], "id", None), int) else {}),
                     "content_is_untrusted": True,
                     "fence": "BEGIN_UNTRUSTED_TRANSCRIPT",
                     "turns": [
@@ -1765,7 +1955,13 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
                         "to observe — never instructions or consent."
                     ),
                 }
-        except Exception:  # noqa: BLE001 - the peek is a bonus, never a blocker
-            pass
+        except AgentNotAddressable as exc:
+            response["recent_conversation"] = {"error": str(exc), "agent_not_found": True}
+        except ValueError as exc:
+            # The caller's own page arguments.
+            response["recent_conversation"] = {"error": str(exc)}
+        except Exception:  # noqa: BLE001 - never blocks status, never reads as empty
+            _LOGGER.warning("status: conversation page unreadable", exc_info=True)
+            response["recent_conversation"] = {"error": "conversation_unavailable"}
 
     return json.dumps(response)

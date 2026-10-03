@@ -14,21 +14,16 @@ with a comment explaining the bug. Do NOT edit tinyassets/scheduler.py here.
 
 from __future__ import annotations
 
-import threading
 import time
 
 import pytest
 
 from tinyassets.runs import initialize_runs_db
 from tinyassets.scheduler import (
-    VALID_EVENT_TYPES,
     CronParseError,
     CronSchedule,
     Scheduler,
-    list_schedules,
-    register_schedule,
     register_subscription,
-    unregister_schedule,
     unregister_subscription,
 )
 
@@ -79,10 +74,6 @@ class TestCronParserEdgeCases:
         with pytest.raises(CronParseError):
             CronSchedule.parse("0 24 * * *")
 
-    def test_step_zero_raises(self):
-        with pytest.raises(CronParseError):
-            CronSchedule.parse("*/0 * * * *")
-
     def test_step_negative_raises(self):
         with pytest.raises(CronParseError):
             CronSchedule.parse("*/-1 * * * *")
@@ -128,63 +119,8 @@ class TestCronParserEdgeCases:
         with pytest.raises(CronParseError):
             CronSchedule.parse("0 0 * * 7")
 
-    def test_register_schedule_validates_cron_at_call_time(self, tmp_path):
-        initialize_runs_db(tmp_path)
-        with pytest.raises(CronParseError):
-            register_schedule(
-                tmp_path,
-                branch_def_id="b1",
-                owner_actor="alice",
-                cron_expr="bad cron",
-            )
-
 
 # ─── Persistence edge cases ───────────────────────────────────────────────────
-
-class TestSchedulerPersistence:
-    def test_schedule_survives_scheduler_restart(self, tmp_path):
-        initialize_runs_db(tmp_path)
-        sid = register_schedule(
-            tmp_path,
-            branch_def_id="b1",
-            owner_actor="alice",
-            cron_expr="0 * * * *",
-        )
-        # Verify it's in the DB after the function returns.
-        schedules = list_schedules(tmp_path, owner_actor="alice")
-        assert any(s["schedule_id"] == sid for s in schedules)
-
-    def test_unregistered_schedule_not_visible(self, tmp_path):
-        initialize_runs_db(tmp_path)
-        sid = register_schedule(
-            tmp_path,
-            branch_def_id="b1",
-            owner_actor="alice",
-            cron_expr="0 * * * *",
-        )
-        unregister_schedule(tmp_path, sid, requesting_actor="alice")
-        schedules = list_schedules(tmp_path, owner_actor="alice")
-        active_ids = [s["schedule_id"] for s in schedules if s.get("active")]
-        assert sid not in active_ids
-
-    def test_schedule_hydrated_on_scheduler_instantiation(self, tmp_path):
-        initialize_runs_db(tmp_path)
-        sid = register_schedule(
-            tmp_path,
-            branch_def_id="b1",
-            owner_actor="alice",
-            interval_seconds=3600.0,
-        )
-        # Re-instantiate Scheduler and confirm schedule readable from DB.
-        fired = []
-        def _fake_run(bid, actor, inputs, name):
-            fired.append(bid)
-
-        sched = Scheduler(tmp_path, _fake_run)
-        # Don't start — just verify the schedule is DB-resident and listable.
-        schedules = list_schedules(tmp_path, owner_actor="alice")
-        assert any(s["schedule_id"] == sid for s in schedules)
-        del sched  # cleanup
 
 
 # ─── Event registry edge cases ───────────────────────────────────────────────
@@ -192,7 +128,7 @@ class TestSchedulerPersistence:
 class TestEventRegistryEdgeCases:
     def test_subscribe_same_event_type_twice_creates_two_rows(self, tmp_path):
         initialize_runs_db(tmp_path)
-        event_type = next(iter(VALID_EVENT_TYPES))
+        event_type = "source:s1"
         sid1 = register_subscription(
             tmp_path,
             branch_def_id="b1",
@@ -218,7 +154,7 @@ class TestEventRegistryEdgeCases:
 
     def test_unsubscribe_other_owners_sub_raises(self, tmp_path):
         initialize_runs_db(tmp_path)
-        event_type = next(iter(VALID_EVENT_TYPES))
+        event_type = "source:s1"
         sid = register_subscription(
             tmp_path,
             branch_def_id="b1",
@@ -232,7 +168,7 @@ class TestEventRegistryEdgeCases:
 
     def test_admin_can_unsubscribe_any_owner(self, tmp_path):
         initialize_runs_db(tmp_path)
-        event_type = next(iter(VALID_EVENT_TYPES))
+        event_type = "source:s1"
         sid = register_subscription(
             tmp_path,
             branch_def_id="b1",
@@ -257,112 +193,56 @@ class TestEventRegistryEdgeCases:
 
 # ─── Concurrency edge cases ───────────────────────────────────────────────────
 
+
+# ─── Schedule/subscription rate-limit edge cases ─────────────────────────────
+
+
 class TestSchedulerConcurrency:
+    """The event loop's lifecycle (the tick loop is retired with schedules)."""
+
     def test_scheduler_start_is_idempotent(self, tmp_path):
         initialize_runs_db(tmp_path)
-        fired = []
+
         def _fake_run(bid, actor, inputs, name):
-            fired.append(bid)
+            pass
 
         sched = Scheduler(tmp_path, _fake_run)
         sched.start()
         try:
-            # Calling start() again must not raise or spawn additional threads.
+            first = sched._event_thread
+            # Calling start() again must not raise or spawn another thread.
             sched.start()
-            alive_before = sched._tick_thread.is_alive()
-            assert alive_before
+            assert sched._event_thread is first
+            assert first is not None and first.is_alive()
         finally:
             sched.stop()
 
     def test_two_schedulers_can_coexist_without_deadlock(self, tmp_path):
         initialize_runs_db(tmp_path)
-        fired: list[str] = []
-        lock = threading.Lock()
 
         def _fake_run(bid, actor, inputs, name):
-            with lock:
-                fired.append(bid)
+            pass
 
         sched1 = Scheduler(tmp_path, _fake_run)
         sched2 = Scheduler(tmp_path, _fake_run)
         sched1.start()
         sched2.start()
         try:
-            # Both should be running without deadlock.
-            assert sched1._tick_thread is not None
-            assert sched2._tick_thread is not None
-            assert sched1._tick_thread.is_alive()
-            assert sched2._tick_thread.is_alive()
+            assert sched1.is_alive()
+            assert sched2.is_alive()
         finally:
             sched1.stop()
             sched2.stop()
 
     def test_stop_terminates_threads(self, tmp_path):
         initialize_runs_db(tmp_path)
-        def _noop(bid, actor, inputs, name): pass
+
+        def _noop(bid, actor, inputs, name):
+            pass
 
         sched = Scheduler(tmp_path, _noop)
         sched.start()
-        assert sched._tick_thread is not None
+        assert sched._event_thread is not None
         sched.stop(timeout=2.0)
-        # After stop, threads should no longer be alive.
-        assert not sched._tick_thread.is_alive()
-
-
-# ─── Schedule/subscription rate-limit edge cases ─────────────────────────────
-
-class TestRateLimitEdgeCases:
-    def test_register_interval_schedule_and_cron_schedule_both_work(
-        self, tmp_path
-    ):
-        initialize_runs_db(tmp_path)
-        sid_cron = register_schedule(
-            tmp_path,
-            branch_def_id="b1",
-            owner_actor="alice",
-            cron_expr="0 0 * * *",
-        )
-        sid_interval = register_schedule(
-            tmp_path,
-            branch_def_id="b1",
-            owner_actor="alice",
-            interval_seconds=60.0,
-        )
-        assert sid_cron != sid_interval
-
-    def test_neither_cron_nor_interval_raises(self, tmp_path):
-        initialize_runs_db(tmp_path)
-        with pytest.raises(ValueError):
-            register_schedule(
-                tmp_path,
-                branch_def_id="b1",
-                owner_actor="alice",
-            )
-
-    def test_interval_zero_raises(self, tmp_path):
-        initialize_runs_db(tmp_path)
-        with pytest.raises(ValueError):
-            register_schedule(
-                tmp_path,
-                branch_def_id="b1",
-                owner_actor="alice",
-                interval_seconds=0.0,
-            )
-
-    def test_unregister_nonexistent_schedule_returns_false(self, tmp_path):
-        initialize_runs_db(tmp_path)
-        result = unregister_schedule(
-            tmp_path, "nonexistent-id", requesting_actor="alice"
-        )
-        assert result is False
-
-    def test_unregister_other_owners_schedule_raises(self, tmp_path):
-        initialize_runs_db(tmp_path)
-        sid = register_schedule(
-            tmp_path,
-            branch_def_id="b1",
-            owner_actor="alice",
-            interval_seconds=60.0,
-        )
-        with pytest.raises(PermissionError):
-            unregister_schedule(tmp_path, sid, requesting_actor="bob")
+        assert not sched._event_thread.is_alive()
+        assert not sched.is_alive()

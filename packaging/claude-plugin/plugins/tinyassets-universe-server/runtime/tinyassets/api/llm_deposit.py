@@ -15,9 +15,9 @@ Security honesty (MVP, chatbot transport): the base64 ``auth_material_b64`` the
 caller submits unavoidably enters the MCP request and the model/connector context
 on the chatbot path, and the decoded Claude token is stored in the per-universe
 vault, which is 0600 JSON and **not** encrypted at rest (credential-vault task
-1.8). The secure browser transport (``byo-llm-deposit-browser-form``) removes the
-chat-context exposure and is a prerequisite before any multi-tenant (second-user)
-use. Beyond that inherent transport exposure, this handler never returns, logs, or
+1.8). The app's own connect flows (the OpenAI device sign-in calls this handler
+directly) keep the material out of any chat. Beyond that inherent transport
+exposure, this handler never returns, logs, or
 echoes the material, and its exceptions carry no secret.
 """
 
@@ -60,7 +60,9 @@ def _serving_hint(base: Path, *, universe_id: str, actor: str) -> tuple[str | No
     try:
         from tinyassets.custom_agents import list_bindings
 
-        bindings = list_bindings(base, universe_id=universe_id, limit=30)
+        # Every binding: the owner's own is looked for AMONG them, so a page
+        # of 30 newer ones by other creators used to hide it.
+        bindings = list_bindings(base, universe_id=universe_id, limit=None)
     except Exception:  # noqa: BLE001 - hint is advisory; never fail the deposit
         return None, None
     owned = [b for b in bindings if b.get("created_by") == actor]
@@ -121,11 +123,16 @@ def _build_record(service: str, material: str) -> dict[str, Any]:
         }
     # codex: the base64 string is the at-rest field; strip transport whitespace.
     normalized = material.translate(str.maketrans("", "", " \t\r\n"))
-    return {
-        "credential_type": "llm_subscription",
-        "service": "codex",
-        "auth_json_b64": normalized,
-    }
+    # Through the shared builder, so the deposit is STAMPED. Both newest-wins
+    # comparators fall back to the record's stamp when the stored document carries
+    # none, and an unstamped deposit gave them nothing to read -- so a
+    # yesterday-stamped document already on disk could be restored over a
+    # credential deposited moments ago (Codex refute-review, P1 #4).
+    from tinyassets.credential_vault import llm_subscription_credential_record
+
+    return llm_subscription_credential_record(
+        service="codex", auth_json_b64=normalized,
+    )
 
 
 def connect_llm(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
@@ -227,7 +234,14 @@ def connect_llm(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             "detail": "the deposit could not be completed",
         }
 
-    # 6. Non-secret projection + the serving re-point hint. Never the token,
+    # 6. The owner just replaced the secret, so the "sign in again" card must go.
+    #    Cleared AFTER the write and before the projection: a card still standing
+    #    over a working connection is how a fixed setup keeps reading as broken.
+    from tinyassets.credential_vault import clear_refresh_rejected
+
+    clear_refresh_rejected(base, universe_id=uid, service=service)
+
+    # 7. Non-secret projection + the serving re-point hint. Never the token,
     #    decoded bytes, or any digest. Deposit is write-only; serving stays held.
     agent_binding_id, expected_revision = _serving_hint(base, universe_id=uid, actor=actor)
     return {

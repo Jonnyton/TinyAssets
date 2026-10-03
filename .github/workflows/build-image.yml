@@ -40,7 +40,17 @@ on:
       - 'domains/**'
       - 'fantasy_daemon/**'
       - 'data/world_rules.lp'
+      # A list-only PR is a real behaviour change for every user on that source
+      # kind, so it has to build and deploy like any other. Without this a merged
+      # model addition sat in the repo and never reached anyone.
+      - 'models/**'
       - 'scripts/mcp_public_canary.py'
+      # The app is the second public surface, and deploy-prod.yml runs this as a
+      # post-deploy gate with the same rollback authority as the MCP canary —
+      # which makes it a runtime input. A change here the pre-filter never sees
+      # is a change that never builds and never deploys, so the probe would go
+      # on asserting the old contract while looking green.
+      - 'scripts/probe_app_surface.py'
       - 'deploy/**'
       # Other Dockerfile COPY sources.
       - 'scripts/_canary_common.py'
@@ -62,7 +72,13 @@ on:
       # Python the deploy-chain workflows run, and what it imports
       # (scripts/runtime_paths.py python_import_closure).
       - 'scripts/cloud_only_preflight.py'
+      - 'scripts/validate_agent_interchange_hmac.py'
+      - 'scripts/validate_request_idempotency_hmac.py'
+      - 'scripts/validate_host_runtime_hmac_pair.py'
       - 'scripts/deployed_sha.py'
+      # Run inside the live container before every swap (deploy-prod.yml
+      # "Wait for in-flight turns").
+      - 'scripts/turns_in_flight.py'
       - 'scripts/runtime_paths.py'
       - 'scripts/pushover_page.py'
       - 'scripts/triage_classify.py'

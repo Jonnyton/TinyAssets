@@ -38,7 +38,7 @@ def _call(us, tool: str, action: str, **kwargs):
     return json.loads(fn(action=action, **kwargs))
 
 
-def _build_as_alice(us) -> str:
+def _build_as_alice(us, visibility: str = "public") -> str:
     spec = {
         "name": "alice-branch",
         "tags": ["initial"],
@@ -53,6 +53,11 @@ def _build_as_alice(us) -> str:
             {"from": "capture", "to": "END"},
         ],
         "state_schema": [{"name": "x", "type": "str"}],
+        # PUBLIC, stated. The spec default is now `private` (founder 2026-09-26),
+        # and a private branch refuses a non-author with "not found" BEFORE the
+        # author gate — which would make these tests pass on the wrong refusal.
+        # The subject here is the author gate, so the branch has to be reachable.
+        "visibility": visibility,
     }
     result = _call(us, "extensions", "build_branch", spec_json=json.dumps(spec))
     assert result["status"] == "built", result
@@ -85,6 +90,29 @@ class TestPatchBranchAuthGate:
         authenticate("bob")
         result = _patch_tags(us, branch_def_id)
         assert result == {"error": "Authenticated branch author required."}
+
+    def test_a_PRIVATE_branch_refuses_a_non_author_without_admitting_it_exists(
+        self, ext_env,
+    ):
+        """The stronger boundary the private default introduced.
+
+        `_build_as_alice` declares `public` so the two tests above can reach the
+        author gate at all. A branch left at the new DEFAULT is refused earlier and
+        more tightly: `_resolve_readable_branch` returns None, so bob gets
+        "not found" rather than "author required" and never learns the branch is
+        there. Both refusals matter, so both are pinned.
+        """
+        us, _base, authenticate = ext_env
+        branch_def_id = _build_as_alice(us, visibility="private")
+
+        authenticate("bob")
+        result = _patch_tags(us, branch_def_id)
+        assert result == {"error": f"Branch '{branch_def_id}' not found."}
+        assert "author" not in result["error"].lower()
+
+        # ... and alice still patches her own private branch.
+        authenticate("alice")
+        assert "error" not in _patch_tags(us, branch_def_id)
 
     def test_non_author_cannot_force_through(self, ext_env):
         us, _base, authenticate = ext_env

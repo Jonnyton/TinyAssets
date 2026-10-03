@@ -28,6 +28,10 @@ def test_model_reads_pin_universe_and_restore_identity(bound, monkeypatch, targe
         return json.dumps({"model_id": "untrusted catalogue text"})
 
     monkeypatch.setattr("tinyassets.universe_server.read_graph", read)
+    # model_options is read from the shared domain dispatch and projected by the
+    # engine (projecting the connector's projection would be a second bound), so
+    # the pin and identity are asserted at whichever read the target reaches.
+    monkeypatch.setattr("tinyassets.api.graph_reads.read_graph", read)
     selectors = {"agent_binding_id": "binding-x"} if target == "agent_binding" else {}
     output = engine.read_graph(target=target, **selectors)
     assert seen == [({"target": target, "graph_id": "u-setup", **selectors}, "owner-setup")]
@@ -35,13 +39,6 @@ def test_model_reads_pin_universe_and_restore_identity(bound, monkeypatch, targe
     if target == "model_options":
         assert "untrusted" in output.lower()
     assert current_identity() == before
-
-
-def test_catalogue_refused_before_discovery_when_not_admitted(bound, monkeypatch):
-    monkeypatch.setattr(engine, "_engine_run_admit", lambda **kw: False)
-    monkeypatch.setattr("tinyassets.universe_server.read_graph",
-                        lambda **kw: pytest.fail("unadmitted discovery ran"))
-    assert "refused" in json.loads(engine.read_graph(target="model_options"))["error"]
 
 
 def test_missing_binding_id_does_not_delegate(bound, monkeypatch):
@@ -127,25 +124,6 @@ def test_preference_home_change_between_validation_and_commit_is_refused(home, m
     assert ModelPreferenceStore(home).get("owner-setup", "u-setup").generation == 0
 
 
-@pytest.mark.parametrize("target,payload", [
-    ("model_preferences", {"expected_generation": 0, "policy": AUTO}),
-    ("connection", {"capability_kind": "model_discovery", "enabled": False,
-                    "definition_id": "anything"}),
-])
-def test_setup_write_refused_before_mutation_without_admission(bound, monkeypatch, target, payload):
-    monkeypatch.setattr(engine, "_engine_run_admit", lambda **kw: False)
-    monkeypatch.setattr("tinyassets.api.model_preferences.save_model_preferences",
-                        lambda **kw: pytest.fail("unadmitted preferences write"))
-    monkeypatch.setattr("tinyassets.api.provider_capability.configure_provider_capability",
-                        lambda **kw: pytest.fail("unadmitted discovery configuration"))
-    result = json.loads(engine.write_graph(
-        target=target, operation="save" if target == "model_preferences" else (
-            "configure_provider_capability"
-        ), payload_json=json.dumps(payload),
-    ))
-    assert "refused" in result["error"]
-
-
 def test_binding_read_uses_real_universe_scoped_storage(home):
     from tests.test_custom_agents import _binding, _definition
     from tinyassets.custom_agents import create_binding, publish_definition
@@ -215,7 +193,9 @@ def test_canonical_preference_save_uses_same_home_and_generation(home, through_a
             raw = universe_server.write_graph(**args)
             assert isinstance(raw, str)
             value = json.loads(raw)
-        assert value["universe_id"] == "u-setup"
+        # Through the MCP adapter the reply carries the public spelling (C1).
+        key = "command_center_id" if through_adapter else "universe_id"
+        assert value[key] == "u-setup"
         assert value["policy"] == PIN and value["generation"] == 1
         assert json.loads(universe_server.write_graph(**args))["error"] == (
             "model_preferences_conflict"

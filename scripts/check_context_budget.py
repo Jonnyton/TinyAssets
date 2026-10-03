@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Guard the always-loaded agent-context budget.
+"""Guard the rulebook's size: the always-loaded set, and the shrink-only ratchet.
+
+**The rulebook only shrinks: a new rule must displace an old one; the ratchet
+enforces it** (`AGENTS.md` § *The rulebook only shrinks*). Every rulebook file is
+pinned at the byte size it had after the 2026-09-26 cut. Lowering a pin is always
+allowed — that is the ratchet turning. Raising one is not: it is the edit that
+must not happen quietly, so it happens here, in a reviewed diff, or not at all.
 
 Best-practice basis (2026-06-24 SDLC/vibe-coding + Claude-large-codebases audit,
 `docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md`):
@@ -7,7 +13,7 @@ instruction files that load on *every* turn are static context the model pays
 for unconditionally. The "lean and layered" rule only holds if something
 measures it — a 2026-04-28 cross-check put AGENTS.md at ~17.6 KB, and by
 2026-06-24 it had tripled to ~54 KB with no guardrail noticing. This script is
-that guardrail: it measures the always-loaded set and flags drift.
+that guardrail: it measures the rulebook and flags growth.
 
 These numbers are OURS, not a vendor limit. Anthropic publishes no line or
 token ceiling for CLAUDE.md; its stated test is behavioral -- "for each line,
@@ -48,30 +54,84 @@ class Budget:
     path: str
     kind: str  # "hard" | "soft"
     max_bytes: int
-    max_lines: int
+    max_lines: int  # 0 = unchecked; bytes are the ratchet
     note: str
+    always_loaded: bool = True
 
-# Always-loaded set: CLAUDE.md imports @AGENTS.md, so both load every session.
-# PLAN.md is intentionally NOT imported (pointer-loaded), so it is not budgeted.
-# STATUS.md was retired 2026-08-25 and left this set entirely.
+
+# The rulebook. Two scopes, one authority per file:
 #
-# These are HARD, and set just above what the 2026-08-25 harness reset actually
-# achieved (AGENTS 18,487 B / 312 lines; CLAUDE 6,429 B / 115 lines; combined
-# 24,916 B). That is the point: a ceiling set at the achieved value is a
-# ratchet; one set at a comfortable round number is a wish. This set grew from
-# ~17.6 KB (2026-04-28) to 62,082 B under SOFT budgets that only warned, with
-# the invariant registered and VIOLATED the whole time. Loosening a number here
-# is now a deliberate, reviewable edit -- that mechanism was what was missing,
-# not the measurement.
+#   always_loaded=True  -- CLAUDE.md imports @AGENTS.md, so both load every
+#                          session. They also count toward COMBINED_HARD_BYTES.
+#   always_loaded=False -- pointer-loaded procedure under docs/reference/. Not
+#                          part of the per-turn payload, but part of the rulebook,
+#                          so it is ratcheted the same way.
+#
+# PLAN.md is design truth, not a rule file, and is not budgeted. STATUS.md was
+# retired 2026-08-25 and left the set entirely.
+#
+# Pins are EXACT post-recut sizes (2026-09-26), not round numbers: a ceiling set at
+# the achieved value is a ratchet, one set at a comfortable round number is a
+# wish. This set grew from ~17.6 KB (2026-04-28) to 62,082 B under SOFT budgets
+# that only warned, with the invariant registered and VIOLATED the whole time.
+#
+# Line caps are unchecked (0). Bytes dominate context cost, and two measures of
+# one fact means a reflow that removes words can still fail — a second authority
+# for the same thing, which is what the 2026-09-26 cut was removing.
 CONFIG: tuple[Budget, ...] = (
-    Budget("AGENTS.md", "hard", 20000, 340,
-           "Cross-provider canonical. Move procedure to docs/reference/, not into here."),
-    Budget("CLAUDE.md", "hard", 8000, 140,
-           "Claude Code router; harness quirks only, a thin layer over AGENTS.md."),
+    Budget("AGENTS.md", "hard", 2829, 0,
+           "The loop and the un-inferable facts. Principles live in PLAN.md."),
+    Budget("CLAUDE.md", "hard", 420, 0,
+           "Two harness quirks. Nothing else belongs here."),
+    Budget("docs/reference/executable-gates.md", "hard", 1154, 0,
+           "Index of gates -> scripts. Add a row only by deleting one.",
+           always_loaded=False),
 )
 
-# HARD ceiling for the combined always-loaded payload (~7K tokens).
-COMBINED_HARD_BYTES = 28000
+# Deleted 2026-09-26 because a procedure doc is where a rule goes to hide: both
+# restated what the loop in AGENTS.md says, and quality-gates.md additionally
+# contradicted `pr-scope-guard.yml`. Recreating either is how the rulebook grows
+# back, so their absence is pinned like a size.
+FORBIDDEN: tuple[str, ...] = (
+    "docs/reference/quality-gates.md",
+    "docs/reference/delivery-flow.md",
+)
+
+# HARD ceiling for the combined always-loaded payload (AGENTS.md + CLAUDE.md +
+# anything they @import), pinned at the achieved post-recut total.
+COMBINED_HARD_BYTES = 3249
+
+
+@dataclass
+class Aggregate:
+    """A whole directory of rule files under one pin.
+
+    Per-file pins alone leave an offload hole: the next rule gets written into a
+    file nobody pinned, and the rulebook grows while every pin stays green. An
+    aggregate closes it -- new prose in the set has to be paid for out of the set.
+    """
+
+    label: str
+    pattern: str
+    max_bytes: int
+    exclude: tuple[str, ...] = ()
+    note: str = ""
+
+
+# `environment-variables.md` and `workos-authkit-integration.md` are excluded
+# deliberately: they catalog SYSTEM facts (every env var; one integration's
+# endpoints and claims) and grow when the product does, which is not rulebook
+# growth. Every other docs/reference file is procedure, and procedure is capped.
+AGGREGATES: tuple[Aggregate, ...] = (
+    Aggregate("docs/reference/*.md", "docs/reference/*.md", 6741,
+              exclude=("environment-variables.md", "workos-authkit-integration.md"),
+              note="Procedure docs. A new gate here displaces an old one."),
+    Aggregate(".agents/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", 51730,
+              note="Skills are rulebook too -- a rule moved into a skill is still a rule."),
+    Aggregate("docs/reviews/*", "docs/reviews/*", 538389,
+              note="Only reviews an open concern or spec CITES -- a transcript "
+                   "nobody reaches for does not live in the repo."),
+)
 
 
 @dataclass
@@ -86,6 +146,7 @@ class Result:
     over_bytes: bool
     over_lines: bool
     note: str
+    always_loaded: bool = True
 
     @property
     def over(self) -> bool:
@@ -104,14 +165,19 @@ def measure(budget: Budget, root: Path) -> Result:
     fp = root / budget.path
     if not fp.is_file():
         return Result(budget.path, budget.kind, False, 0, 0,
-                      budget.max_bytes, budget.max_lines, False, False, budget.note)
+                      budget.max_bytes, budget.max_lines, False, False, budget.note,
+                      budget.always_loaded)
     data = fp.read_bytes()
     nbytes = len(data)
     nlines = data.count(b"\n") + (0 if data.endswith(b"\n") or not data else 1)
+    # `max_lines == 0` means unchecked: bytes are the ratchet. A file that shrinks
+    # in bytes while gaining a wrapped line must not read as a violation.
     return Result(
         budget.path, budget.kind, True, nbytes, nlines,
         budget.max_bytes, budget.max_lines,
-        nbytes > budget.max_bytes, nlines > budget.max_lines, budget.note,
+        nbytes > budget.max_bytes,
+        budget.max_lines > 0 and nlines > budget.max_lines,
+        budget.note, budget.always_loaded,
     )
 
 
@@ -190,12 +256,33 @@ def imported_files(root: Path, seeds: list[str]) -> list[str]:
     return order
 
 
+def measure_aggregate(agg: Aggregate, root: Path) -> Result:
+    """Total the matched set. An empty match is a violation, not a pass.
+
+    A glob that stops matching -- a rename, a moved directory -- would otherwise
+    read as "0 bytes, well under the pin", which is how a ratchet quietly stops
+    ratcheting.
+    """
+    paths = sorted(
+        p for p in root.glob(agg.pattern)
+        if p.is_file() and p.name not in agg.exclude
+    )
+    total = sum(len(p.read_bytes()) for p in paths)
+    lines = len(paths)  # the "lines" column carries the file count for a set
+    return Result(
+        agg.label, "hard", bool(paths), total, lines,
+        agg.max_bytes, 0, total > agg.max_bytes, False, agg.note,
+        always_loaded=False,
+    )
+
+
 def run(root: Path) -> tuple[list[Result], int, bool]:
     results = [measure(b, root) for b in CONFIG]
+    results += [measure_aggregate(a, root) for a in AGGREGATES]
 
     # Anything reachable by @import is always-loaded too, so it counts toward
     # the combined ceiling even though it has no budget line of its own.
-    seeds = [b.path for b in CONFIG]
+    seeds = [b.path for b in CONFIG if b.always_loaded]
     extra_bytes = 0
     extra: list[str] = []
     for rel in imported_files(root, seeds):
@@ -206,12 +293,17 @@ def run(root: Path) -> tuple[list[Result], int, bool]:
         except OSError:
             continue
 
-    combined = sum(r.bytes for r in results if r.exists) + extra_bytes
+    combined = sum(r.bytes for r in results if r.exists and r.always_loaded) + extra_bytes
 
     # A configured always-loaded file that has VANISHED is a violation, not a
     # quiet pass. Deleting AGENTS.md must never be the cheapest way to satisfy
     # its own budget.
     missing = [r.path for r in results if not r.exists]
+
+    # ...and the mirror case: a file deleted ON PURPOSE must not come back, or the
+    # cut is undone one well-meaning recreation at a time.
+    returned = [rel for rel in FORBIDDEN if (root / rel).is_file()]
+    missing.extend(f"{rel} (deleted on purpose; do not recreate)" for rel in returned)
 
     hard_busted = (
         any(r.kind == "hard" and r.over for r in results)
@@ -222,24 +314,30 @@ def run(root: Path) -> tuple[list[Result], int, bool]:
 
 
 def _fmt_table(results: list[Result], combined: int) -> str:
+    width = max([len(r.path) for r in results] + [len("COMBINED")])
     rows = [
-        f"{'file':<12} {'kind':<5} {'lines':>6}/{'max':<5} {'bytes':>7}/{'max':<6} status",
-        "-" * 62,
+        f"{'file':<{width}} {'scope':<8} {'lines':>6} {'bytes':>7}/{'pin':<6} status",
+        "-" * (width + 38),
     ]
     for r in results:
+        scope = "always" if r.always_loaded else "pointer"
         rows.append(
-            f"{r.path:<12} {r.kind:<5} {r.lines:>6}/{r.max_lines:<5} "
+            f"{r.path:<{width}} {scope:<8} {r.lines:>6} "
             f"{r.bytes:>7}/{r.max_bytes:<6} {r.status}"
         )
-    rows.append("-" * 62)
+    rows.append("-" * (width + 38))
     combined_flag = "  (!) OVER-HARD" if combined > COMBINED_HARD_BYTES else ""
     rows.append(
-        f"{'COMBINED':<12} {'hard':<5} {'':>6} {'':<5} "
+        f"{'COMBINED':<{width}} {'always':<8} {'':>6} "
         f"{combined:>7}/{COMBINED_HARD_BYTES:<6} always-loaded{combined_flag}"
     )
     for r in results:
         if r.over:
             rows.append(f"  - {r.path}: {r.note}")
+    rows.append(
+        "The rulebook only shrinks: lowering a pin is always allowed, raising one "
+        "is not."
+    )
     return "\n".join(rows)
 
 
@@ -277,7 +375,8 @@ def main(argv: list[str] | None = None) -> int:
         if extras:
             print(extras)
         if hard_busted:
-            print("\nHARD budget exceeded -- a file is over the ceiling it declares for itself.")
+            print("\nHARD budget exceeded -- a rulebook file grew past its pin. "
+                  "Displace an old rule instead of adding one.")
         soft_over = [r.path for r in results if r.over and r.kind == "soft"]
         if soft_over:
             print(f"\nSoft target exceeded (advisory): {', '.join(soft_over)} -- "

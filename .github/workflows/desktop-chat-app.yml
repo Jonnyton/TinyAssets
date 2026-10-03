@@ -1,0 +1,97 @@
+name: Desktop chat app (Windows)
+
+# Builds the Electron chat app in desktop-app/ - the Tier-1 client that wraps
+# https://tinyassets.io/app. Not the PyInstaller server tray, which
+# desktop-release.yml builds as TinyAssetsServerSetup-*. Before this workflow
+# nothing built desktop-app/, so installed copies kept whatever URL they were
+# built with and broke when /mcp/app retired (docs/concerns, 2026-10-01).
+#
+# Unsigned CI artifact only: no release, no auto-update feed, no repository
+# write authority. Signing and electron-updater are the remaining items in
+# docs/concerns/2026-10-01-desktop-chat-app-has-no-build.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "desktop-app/**"
+      - "assets/brand/tinyassets-app.ico"
+      - ".github/workflows/desktop-chat-app.yml"
+  # No `pull_request` trigger (2026-09-27 lean pipeline): no platform builds on
+  # PRs. The main push above builds every change that lands; a PR that changes
+  # the shell can run this via workflow_dispatch on its branch.
+  # docs/design-notes/2026-09-27-lean-ci-pipeline.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-chat-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+
+      - name: Install JS deps (lockfile-pinned)
+        working-directory: desktop-app
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build NSIS installer and portable zip (unsigned)
+        working-directory: desktop-app
+        env:
+          # No signing identity is provisioned; do not let electron-builder
+          # pick up a certificate from the runner's store.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx --no-install electron-builder --win nsis zip --x64 --publish never
+
+      - name: Check the artifacts are the chat app, not the server tray
+        shell: pwsh
+        working-directory: desktop-app/dist
+        run: |
+          $setup = @(Get-ChildItem -File "TinyAssetsChatSetup-*-x64.exe")
+          $zip = @(Get-ChildItem -File "TinyAssetsChat-*-x64-win.zip")
+          if ($setup.Count -ne 1 -or $zip.Count -ne 1) {
+            Get-ChildItem -File | Format-Table Name, Length
+            throw "expected exactly one TinyAssetsChatSetup installer and one zip"
+          }
+          if (Get-ChildItem -File "TinyAssetsServerSetup-*" -ErrorAction SilentlyContinue) {
+            throw "a server-tray installer name appeared in the chat app build"
+          }
+          # The packaged config must load the live app, never a retired path.
+          $asar = "win-unpacked/resources/app.asar"
+          if (-not (Test-Path -LiteralPath $asar)) { throw "missing $asar" }
+          npx --no-install asar extract-file $asar config.js
+          $config = Get-Content -Raw config.js
+          if ($config -notmatch "https://tinyassets\.io/app") {
+            throw "packaged config.js does not load https://tinyassets.io/app"
+          }
+          if ($config -match "/mcp/app") {
+            throw "packaged config.js still references the retired /mcp/app"
+          }
+          Get-FileHash $setup[0].FullName, $zip[0].FullName -Algorithm SHA256 |
+            Format-Table Hash, Path
+
+      - name: Upload unsigned CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-chat-windows-x86_64
+          path: |
+            desktop-app/dist/TinyAssetsChatSetup-*-x64.exe
+            desktop-app/dist/TinyAssetsChat-*-x64-win.zip
+          if-no-files-found: error
+          retention-days: 14

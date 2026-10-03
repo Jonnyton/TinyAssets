@@ -1,7 +1,7 @@
 # TinyAssets mobile app (Capacitor: Android + iOS)
 
 A native Android/iOS app that wraps the live TinyAssets web app. It is a thin,
-maintainable **Capacitor** shell whose WebView loads `https://tinyassets.io/mcp/app`
+maintainable **Capacitor** shell whose WebView loads `https://tinyassets.io/app`
 (configured in `capacitor.config.json` → `server.url`). Because that page, the
 `/mcp` API, and the AuthKit sign-in all live on the same origin (`tinyassets.io`),
 the native shell handles the WorkOS OAuth return through `tinyassets://auth`.
@@ -52,7 +52,15 @@ npm install
 rm -rf android               # REQUIRED if you generated it before Capacitor 8
 npx cap add android          # generates the android/ native project
 npx cap sync android         # copies www/ + config into the native project
+python scripts/add_app_scheme.py            # deep link, native plugins, manifest
+python scripts/add_app_icons.py             # launcher icon + splash
+python scripts/configure_android_release.py # version + the separate debug identity
 ```
+
+Run the three scripts after every `cap add android`, exactly as CI does. Skipping
+`configure_android_release.py` leaves the debug build on the Play package, which
+is the collision described below; `npm run build:debug` / `build:release` run it
+for you.
 
 ## App icon + splash (required for release)
 
@@ -78,8 +86,20 @@ cd android && ./gradlew assembleDebug
 # → android/app/build/outputs/apk/debug/app-debug.apk  (sideload to test)
 ```
 
+The debug build installs as **`io.tinyassets.app.debug`**, labelled
+"TinyAssets (debug)", next to (never over) the Play app.
+`scripts/configure_android_release.py` writes that suffix into the debug
+buildType, and `verify_android_release.py` fails on any other `applicationIdSuffix`.
+The reason: a debug APK is signed with a development key, and when it shared
+`io.tinyassets.app` every Play update failed with "Can't install" on a phone
+that had sideloaded it. CI publishes the same build as
+`releases/download/android-latest/app-debug.apk` for developers; people install
+from Google Play. Debug builds have no phone notifications: the published APK is
+built without `google-services.json`, and a local file without an
+`io.tinyassets.app.debug` client fails `assembleDebug` (the materialise step says so).
+
 Verify the full loop on the device: **sign in (WorkOS)** → **connect your AI
-subscription** → **chat with your universe**.
+subscription** → **chat with your command center**.
 
 ## Build a release bundle (.aab) for Google Play
 

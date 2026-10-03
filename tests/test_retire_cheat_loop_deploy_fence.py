@@ -334,7 +334,7 @@ def test_volume_consumer_inventory_includes_stopped_containers():
 
 
 def test_safe_fleet_requires_exact_five_exact_digest_revision_and_no_old_ids():
-    image_ref = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "a" * 64
+    image_ref = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "a" * 64
     revision = "b" * 40
     observation = {
         "containers": {
@@ -360,10 +360,10 @@ def test_safe_fleet_requires_exact_five_exact_digest_revision_and_no_old_ids():
 class LifecycleHost:
     def __init__(self, volume_dir: Path) -> None:
         self.volume = volume_dir
-        self.old_image_ref = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "a" * 64
+        self.old_image_ref = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "a" * 64
         self.old_revision = "a" * 40
         self.target_image_ref = (
-            "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64
+            "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64
         )
         self.target_revision = "b" * 40
         self.image_identities = {
@@ -2292,6 +2292,147 @@ def test_guard_command_can_check_without_running_a_mutation(tmp_path: Path):
     assert evidence["mutation_completed"] is False
 
 
+def test_guarded_mutation_output_reaches_the_workflow_log(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A guarded mutation's own output must be visible, not just `output_present`.
+
+    `Host.run` captures the wrapped command, so on 2026-09-26 `Install host
+    services` reported success in five seconds having printed not one
+    `[host-uptime-install]` line -- no "converged N timers", no "already current",
+    and none of the installer's warnings. Every workflow wrapping a host mutation in
+    `guard-host-mutation` was equally blind, so no workflow log could support a
+    claim about what an installer actually did.
+    """
+
+    class NoisyHost:
+        def __init__(self) -> None:
+            self.last_stderr = "WARNING: systemd-journald restart FAILED\n"
+
+        def unit_present(self, _unit: str) -> bool:
+            return False
+
+        def volume_container_names(self) -> list[str]:
+            return []
+
+        def run(self, _args: Any, **_kwargs: Any) -> str:
+            return (
+                "[host-uptime-install] journald drop-in installed\n"
+                "[host-uptime-install] converged 5 timers at abc123\n"
+            )
+
+    args = fence._parser().parse_args(
+        [
+            "--state-path",
+            str(tmp_path / "missing-state.json"),
+            "guard-host-mutation",
+            "--",
+            "/bin/bash",
+            "-lc",
+            "install",
+        ]
+    )
+
+    evidence = fence._execute(args, NoisyHost())
+    captured = capsys.readouterr()
+
+    assert evidence["mutation_completed"] is True
+    # Both streams, because a failed step's diagnosis is usually on stderr.
+    assert "journald drop-in installed" in captured.err
+    assert "converged 5 timers at abc123" in captured.err
+    assert "systemd-journald restart FAILED" in captured.err
+
+    # STDOUT stays a single machine-readable line: callers parse it, and a command
+    # that printed a brace would otherwise make the verdict unparseable.
+    assert "host-uptime-install" not in captured.out
+
+
+def test_guarded_mutation_echo_keeps_stdout_parseable(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    """The verdict on stdout must survive a mutation that prints JSON of its own."""
+
+    class JsonPrintingHost:
+        last_stderr = ""
+
+        def unit_present(self, _unit: str) -> bool:
+            return False
+
+        def volume_container_names(self) -> list[str]:
+            return []
+
+        def run(self, _args: Any, **_kwargs: Any) -> str:
+            return '{"safe": false, "error": "not the fence verdict"}'
+
+    args = fence._parser().parse_args(
+        [
+            "--state-path",
+            str(tmp_path / "missing-state.json"),
+            "guard-host-mutation",
+            "--",
+            "/bin/bash",
+            "-lc",
+            "emit-json",
+        ]
+    )
+
+    evidence = fence._execute(args, JsonPrintingHost())
+    captured = capsys.readouterr()
+
+    # Exercised through `_execute` rather than `main`, because `main` takes the
+    # host operation lock and `flock` does not exist in Git Bash -- a test that is
+    # red on every Windows box is one each lane re-diagnoses. The property under
+    # test belongs to the echo, not to the locking: the mutation's output must not
+    # be on stdout, so whatever `main` prints there stays a single parseable line.
+    assert "not the fence verdict" not in captured.out
+    assert "not the fence verdict" in captured.err
+
+    # And the verdict itself is unpolluted: `main` serialises exactly this.
+    verdict = json.loads(json.dumps(evidence, sort_keys=True))
+    assert verdict["mutation_completed"] is True
+    assert verdict.get("error") is None
+    assert verdict["safe"] is True, (
+        "the mutation's own JSON leaked into the fence verdict"
+    )
+
+
+def test_guarded_mutation_with_no_output_says_nothing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A silent mutation must not gain a noise banner."""
+
+    class QuietHost:
+        last_stderr = ""
+
+        def unit_present(self, _unit: str) -> bool:
+            return False
+
+        def volume_container_names(self) -> list[str]:
+            return []
+
+        def run(self, _args: Any, **_kwargs: Any) -> str:
+            return ""
+
+    args = fence._parser().parse_args(
+        [
+            "--state-path",
+            str(tmp_path / "missing-state.json"),
+            "guard-host-mutation",
+            "--",
+            "/bin/true",
+        ]
+    )
+
+    evidence = fence._execute(args, QuietHost())
+    captured = capsys.readouterr()
+
+    assert evidence["output_present"] is False
+    assert "[fence] guarded mutation" not in captured.err
+
+
 def test_guard_command_rejects_empty_mutation_after_separator(tmp_path: Path):
     args = fence._parser().parse_args(
         [
@@ -2572,7 +2713,7 @@ def test_prove_rejects_image_identity_not_recorded_in_fence_state(
         "observe_fleet",
         lambda *_args, **_kwargs: pytest.fail("identity must fail before observation"),
     )
-    arbitrary_image = "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "c" * 64
+    arbitrary_image = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "c" * 64
     with pytest.raises(FenceError, match="not admitted by durable fence state"):
         prove(
             host,
@@ -3183,7 +3324,7 @@ def test_post_canary_failure_includes_final_observation_diagnostic(
     with pytest.raises(FenceError, match="volume_container_names"):
         post_canary(
             object(),
-            image_ref="ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64,
+            image_ref="ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64,
             revision="b" * 40,
             run_id=RUN_ID,
             state_path=state_path,
@@ -4524,7 +4665,7 @@ def test_partial_target_removal_replay_refuses_full_volume_fleet(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("image_ref", "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "f" * 64),
+        ("image_ref", "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "f" * 64),
         ("revision", "f" * 40),
         ("project_name", "foreign"),
     ],

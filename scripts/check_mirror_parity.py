@@ -58,8 +58,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mirror-parity: canonical root not found: {canonical_root}")
         return 0
     if not mirror_root.is_dir():
-        print(f"mirror-parity: mirror root not found: {mirror_root}")
-        return 0
+        # Canonical exists, so the whole mirror is missing: drift, not a skip.
+        print(f"mirror-parity: mirror root not found: {mirror_root}; rebuild with "
+              "python packaging/claude-plugin/build_plugin.py", file=sys.stderr)
+        return 1
 
     relative = [_relative(path) for path in args.paths] if args.paths else None
     report = scan_parity(canonical_root, mirror_root, relative_paths=relative)

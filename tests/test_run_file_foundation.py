@@ -125,7 +125,7 @@ def test_byte_only_replay_cannot_borrow_another_scope(tmp_path):
             )
 
 
-def test_byte_only_concurrent_capacity_is_shared_with_workspace(tmp_path):
+def test_transfers_have_no_hourly_refusal(tmp_path):
     db = tmp_path / "runs.db"
     pool.reserve_operation_bytes(
         db,
@@ -133,7 +133,6 @@ def test_byte_only_concurrent_capacity_is_shared_with_workspace(tmp_path):
         run_id="r",
         operation_id="workspace:1",
         max_bytes=40,
-        bytes_per_hour=100,
     )
 
     def reserve(i):
@@ -144,14 +143,13 @@ def test_byte_only_concurrent_capacity_is_shared_with_workspace(tmp_path):
                 run_id="r",
                 operation_id=f"file:{i}",
                 max_bytes=60,
-                bytes_per_hour=100,
-            )
+                    )
             return True
         except pool.WorkspacePoolRefused:
             return False
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        assert sum(executor.map(reserve, range(2))) == 1
+        assert sum(executor.map(reserve, range(2))) == 2
 
 
 def test_standalone_capture_bytes_do_not_invent_run_or_job(tmp_path):

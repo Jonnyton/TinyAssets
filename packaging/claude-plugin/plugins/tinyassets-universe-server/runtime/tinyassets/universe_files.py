@@ -40,6 +40,7 @@ __all__ = [
     "UniverseFileError",
     "list_universe_dir",
     "load_untrusted_yaml",
+    "open_runtime_dir",
     "read_universe_file",
     "read_universe_text",
 ]
@@ -77,7 +78,7 @@ def _lstat_nofollow_windows(root: Path, relpath: str) -> Path:
         except OSError as exc:
             raise UniverseFileError(str(exc)) from exc
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
-            raise UniverseFileError(f"{part!r} is a link; universe files are read link-free")
+            raise UniverseFileError(f"{part!r} is a link; command center files are read link-free")
     return current
 
 
@@ -164,6 +165,33 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
     return sorted(entry.name for entry in os.scandir(directory))
 
 
+def open_runtime_dir(universe_dir: Path | str, *parts: str) -> int:
+    """A descriptor for ``universe_dir/.runtime/<parts>``, created if missing.
+
+    The daemon creates platform state inside a folder other processes of the
+    same universe can write (a workflow provider jail binds it read-write), so
+    every component is created and then opened through the parent descriptor
+    with ``O_NOFOLLOW``: a link planted anywhere on the path refuses rather
+    than redirecting the daemon into another universe. POSIX only; the caller
+    closes the descriptor.
+    """
+    current = fs.open_dir_nofollow(Path(universe_dir).resolve(strict=False))
+    try:
+        for part in (".runtime", *parts):
+            _check_component(part)
+            try:
+                os.mkdir(part, 0o700, dir_fd=current)
+            except FileExistsError:
+                pass
+            child = fs.open_subdir_nofollow(current, part)
+            os.close(current)
+            current = child
+    except BaseException:
+        os.close(current)
+        raise
+    return current
+
+
 def load_untrusted_yaml(text: str, *, max_bytes: int = MAX_CONFIG_BYTES) -> object:
     """Parse YAML from a universe file, refusing what makes a parse hostile.
 
@@ -179,7 +207,8 @@ def load_untrusted_yaml(text: str, *, max_bytes: int = MAX_CONFIG_BYTES) -> obje
     try:
         for event in yaml.parse(text, Loader=yaml.SafeLoader):
             if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None):
-                raise UniverseFileError("YAML anchors and aliases are refused in universe files")
+                raise UniverseFileError("YAML anchors and aliases are refused in command "
+                    "center files")
         return yaml.safe_load(text)
     except RecursionError:
         raise UniverseFileError("YAML nested too deeply") from None

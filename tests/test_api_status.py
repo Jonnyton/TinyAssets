@@ -70,6 +70,9 @@ def status_env(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "test-user")
     universe = tmp_path / "test-universe"
     universe.mkdir()
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, universe.name)
     # Minimal dispatcher config so load_dispatcher_config doesn't error.
     (universe / "dispatcher.json").write_text("{}")
     return universe
@@ -110,7 +113,7 @@ def test_get_status_returns_versioned_contract_keys(status_env):
     assert expected_keys <= set(parsed.keys()), (
         f"missing keys: {expected_keys - set(parsed.keys())}"
     )
-    assert parsed["schema_version"] == 2
+    assert parsed["schema_version"] == 3
 
 
 def test_get_status_active_host_shape(status_env):
@@ -140,20 +143,20 @@ def test_get_status_release_state_reports_missing_receipt(status_env):
 def test_get_status_release_state_reads_deploy_receipt(status_env):
     receipt = {
         "git_sha": "868b8d04abcdef",
-        "image_tag": "ghcr.io/jonnyton/tinyassets-daemon:868b8d04abcd",
-        "image_digest": "ghcr.io/jonnyton/tinyassets-daemon@sha256:abc123",
+        "image_tag": "ghcr.io/tinyassets/tinyassets-daemon:868b8d04abcd",
+        "image_digest": "ghcr.io/tinyassets/tinyassets-daemon@sha256:abc123",
         "build_run_id": "111",
-        "build_run_url": "https://github.com/Jonnyton/TinyAssets/actions/runs/111",
+        "build_run_url": "https://github.com/TinyAssets/TinyAssets/actions/runs/111",
         "deploy_run_id": "222",
-        "deploy_run_url": "https://github.com/Jonnyton/TinyAssets/actions/runs/222",
+        "deploy_run_url": "https://github.com/TinyAssets/TinyAssets/actions/runs/222",
         "config_hash": "sha256:deadbeef",
         "config_version": "tinyassets-env-v1",
         "schema_migration_rev": "not_applicable",
         "canary_bundle_status": "passed",
         "deployed_at": "2026-05-28T12:00:00Z",
-        "rollback_target": "ghcr.io/jonnyton/tinyassets-daemon:previous",
+        "rollback_target": "ghcr.io/tinyassets/tinyassets-daemon:previous",
         "actor": "codex-wiki-patch",
-        "repository": "Jonnyton/TinyAssets",
+        "repository": "TinyAssets/TinyAssets",
         "workflow_event": "workflow_run",
     }
     (status_env.parent / "release-state.json").write_text(
@@ -210,6 +213,8 @@ def test_get_status_explicit_universe_id_overrides_default(status_env, tmp_path)
     """Passing universe_id="other" should resolve to that universe id."""
     other = tmp_path / "other-universe"
     other.mkdir()
+    from tests.conftest import own_universe
+    own_universe(tmp_path, other.name)
     (other / "dispatcher.json").write_text("{}")
     parsed = json.loads(get_status(universe_id="other-universe"))
     assert parsed["universe_id"] == "other-universe"

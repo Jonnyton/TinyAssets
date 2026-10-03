@@ -67,21 +67,78 @@ def _universe_dir(universe_id: str) -> Path:
     return result
 
 
+def _owned_universe_dir_name(base: Path, name: str) -> str:
+    """``name`` if it is a universe here -- an owned id WITH a directory -- else ``""``.
+
+    A pointer (`.active_universe`, ``UNIVERSE_SERVER_DEFAULT_UNIVERSE``, a
+    directory listing) has to satisfy both halves before a resolver hands it
+    back: an ownership row names it, and the directory is really there. The
+    answer is always ``name`` itself, never a re-spelling -- a universe id is
+    simultaneously a path component and an authority key, and any function that
+    returns one spelling to a caller who needs the other breaks it (see
+    `daemon_server.owned_universe_id` for both directions this failed in).
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    candidate = (name or "").strip()
+    if not candidate or not base.is_dir():
+        return ""
+    # Path-traversal guarded like `_universe_dir`: a pointer is caller-influenced
+    # (a marker file, an env var), so `../outside` must not even be stat'ed as a
+    # candidate universe.
+    try:
+        resolved = (base / candidate).resolve()
+        if not resolved.is_relative_to(base.resolve()) or resolved == base.resolve():
+            return ""
+    except OSError:
+        return ""
+    if not resolved.is_dir():
+        return ""
+    return candidate if owned_universe_id(base, candidate) else ""
+
+
 def _default_universe() -> str:
-    """Return the default universe ID, or first available."""
+    """Return the default universe ID, or first available.
+
+    A universe is a directory somebody OWNS (founder, 2026-09-02), so every
+    branch here resolves through :func:`_owned_universe_dir_name`. A MARKER OR
+    AN ENV VALUE IS A POINTER, NOT A GRANT: both used to be returned before any
+    ownership check, so a stale ``.active_universe`` or a configured default
+    naming ``scratch`` routed requests into an operational directory. The final
+    branch returned the first non-hidden directory, which handed out an
+    operational store that sorted first (``cloud-automation-inputs``,
+    ``_aaa-scratch``) as the default universe.
+    """
     base = _base_path()
+    from tinyassets.daemon_server import owned_universe_ids
     from tinyassets.storage import active_universe_id
     active = active_universe_id(base)
     if active:
-        return active
+        resolved = _owned_universe_dir_name(base, active)
+        if resolved:
+            return resolved
 
     default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
     if default:
-        return default
+        resolved = _owned_universe_dir_name(base, default)
+        if resolved:
+            return resolved
+        # An unowned configured default still answers when the data root holds
+        # no universes at all -- a fresh install pointing at the name it is
+        # about to create. It never wins over a real one.
+        if not owned_universe_ids(base):
+            return default
 
     if base.is_dir():
         for child in sorted(base.iterdir()):
-            if child.is_dir() and not child.name.startswith("."):
+            if (
+                child.is_dir()
+                and not child.name.startswith(".")
+                # The DIRECTORY name, resolved case-insensitively against the
+                # ownership rows, so a restored `U-Mine` is returned as the path
+                # that exists rather than the ACL spelling that does not.
+                and _owned_universe_dir_name(base, child.name)
+            ):
                 return child.name
     return "default-universe"
 
@@ -126,19 +183,30 @@ def _designated_public_universe() -> str:
     use a root-global ``.active_universe`` marker to decide which universe a
     chatbot speaks as"). Env-designated default wins; otherwise the first
     non-serial public directory; else the literal ``default-universe``.
+
+    Every branch requires an OWNER, for the same reason as
+    :func:`_default_universe` -- landing an authenticated founder in an
+    operational directory is the same bug whichever resolver does it.
     """
-    default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
-    if default:
-        return default
     from tinyassets.ids import is_universe_serial
 
     base = _base_path()
+    default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
+    if default:
+        resolved = _owned_universe_dir_name(base, default)
+        if resolved:
+            return resolved
     if base.is_dir():
+        from tinyassets.daemon_server import owned_universe_ids
+
+        if default and not owned_universe_ids(base):
+            return default
         for child in sorted(base.iterdir()):
             if (
                 child.is_dir()
                 and not child.name.startswith(".")
                 and not is_universe_serial(child.name)
+                and _owned_universe_dir_name(base, child.name)
             ):
                 return child.name
     return "default-universe"
@@ -154,14 +222,51 @@ def _read_json(path: Path) -> dict[str, Any] | list[Any] | None:
     return None
 
 
-def _read_text(path: Path, default: str = "") -> str:
-    """Safely read a text file."""
+def _read_platform_text(path: Path, default: str, errors: str) -> str:
+    """A text file outside the wiki: a platform log or record the tool jail
+    binds read-only or hides (``activity.log``, run logs)."""
     try:
         if path.exists():
-            return path.read_text(encoding="utf-8")
+            return path.read_text(encoding="utf-8", errors=errors)
     except OSError as exc:
         logger.warning("Failed to read %s: %s", path, exc)
     return default
+
+
+def _read_text(path: Path, default: str = "", *, errors: str = "strict") -> str:
+    """Read a text file; a wiki page is read link-free and bounded.
+
+    The universe's agent writes its own wiki from the tool jail, so a page is
+    untrusted input to the daemon reading it. It is walked from the wiki root
+    with no link at any component. Absent reads as ``default``. A link, a
+    non-regular file or a page over the bound raises
+    :class:`~tinyassets.universe_files.UniverseFileError` instead of reading
+    as empty, because a read-modify-write that saw "" would overwrite the page.
+    Every refusal other than "absent" propagates, whichever ``OSError`` the
+    host's safe reader raises it as.
+
+    Inside a universe-scoped wiki operation (:func:`_scoped_wiki_root`), a path
+    OUTSIDE that wiki is refused rather than read: a page path resolved through
+    a planted link would otherwise land on another universe's file and the
+    plain reader would follow it.
+    """
+    from tinyassets.universe_files import UniverseFileError, read_universe_file
+
+    root = _wiki_root()
+    try:
+        relpath = path.relative_to(root).as_posix()
+    except ValueError:
+        if _WIKI_ROOT_OVERRIDE.get() is not None:
+            raise UniverseFileError(
+                f"{path.name!r} is outside this universe's wiki; nothing was read"
+            ) from None
+        return _read_platform_text(path, default, errors)
+    try:
+        data = read_universe_file(root, relpath)
+    except FileNotFoundError:
+        return default
+    text = data.decode("utf-8", errors=errors)
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -209,13 +314,16 @@ def _find_all_pages(directory: Path) -> list[Path]:
     """Recursively find all .md files under a directory."""
     if not directory.is_dir():
         return []
-    return sorted(p for p in directory.rglob("*.md") if p.is_file())
+    return sorted(
+        p for p in directory.rglob("*.md") if not p.is_symlink() and p.is_file()
+    )
 
 
 __all__ = [
     "_base_path",
     "_default_universe",
     "_find_all_pages",
+    "_owned_universe_dir_name",
     "_read_json",
     "_read_text",
     "_scoped_wiki_root",

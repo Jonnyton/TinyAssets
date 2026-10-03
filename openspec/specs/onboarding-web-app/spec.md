@@ -83,3 +83,142 @@ resumed, including when the user sends a separate inspection question.
 - **WHEN** the user asks another question while older queued messages remain held
 - **THEN** finishing that question does not send the held messages
 - **AND** an explicit queue-resume control sends them only within the same owner, home and login
+
+### Requirement: Working state is the universe's, and waiting lines are ordered last
+The app's working indicator SHALL reflect server-reported turn state for the
+universe, whatever started the turn -- a typed message, an answered request, a
+queued line, another window, another device, or the connector -- and SHALL NOT
+depend on the current page having sent anything. `get_status` SHALL carry, gated
+on write access to the universe, whether a turn is progressing, since when, and
+its journal state, and no prompt or owner; once the running turn has opened a
+round it SHALL also carry that step's number, the model id the step is asking
+(the same id those readers see on every reply's "Answered by" line) and how long
+it has waited. While a step waits on its model the indicator SHALL say which step,
+which model and for how long, and after a long wait SHALL offer the owner another
+model for their next message -- the owner's choice, never an automatic switch
+that abandons a reply still coming. A row past the cap the
+coordinator already enforces SHALL be reported as stale and SHALL NOT be painted
+as activity; a read that failed SHALL be reported as unreadable rather than as
+idle. A message queued behind an in-flight turn SHALL render in the order the
+agent will read it -- after that turn's reply -- and SHALL be marked as queued
+until its own turn starts.
+
+A progressing row is only activity while a process is executing it. The daemon
+SHALL NOT report as working a turn the CURRENT daemon boot is not running, and at
+startup SHALL settle every such row into the terminal state the journal already
+has for the step that died -- preserving what ran and what is merely uncertain,
+never claiming a killed turn completed. A boot owns a turn it created and has not
+finished, or one created after the boot began; ownership is process state and
+SHALL NOT be inferred from age alone.
+
+#### Scenario: A step waits a long time on its model
+- **WHEN** the running turn's step has waited minutes on one model request
+- **THEN** the indicator reads like "step 4 · waiting on qwen3.8 for 7 min"
+- **AND** after three minutes a "Try another model" action opens the model menu for the next message, and the request in flight is not stopped by it
+
+#### Scenario: A turn this page did not start
+- **WHEN** a turn is running for the universe and this page sent nothing
+- **THEN** the working indicator is shown, with how long, and that it started elsewhere
+- **AND** the status poll asks more often until the universe is idle again
+
+#### Scenario: A reload during a live turn
+- **WHEN** the page loads while a turn is still running, so history has no record of it
+- **THEN** the same read that returns history reports the turn and the indicator is shown
+
+#### Scenario: A row no client can still verify
+- **WHEN** the reported row is older than the served-turn cap, or the journal cannot be read
+- **THEN** it is reported rather than hidden, and it is not painted as activity
+- **AND** a status poll that fails neither clears the indicator nor claims it indefinitely
+
+#### Scenario: An answer given while an earlier turn is running
+- **WHEN** the user answers a request and the earlier turn's reply arrives afterwards
+- **THEN** the reply renders above the queued answer, which stays marked queued
+- **AND** the queued mark is removed when that answer's own turn starts
+
+#### Scenario: A deploy recreated the daemon mid-turn
+- **WHEN** the daemon starts and a turn row is still in a progressing state that no
+  process in this boot is running
+- **THEN** it is settled to the terminal state its own last committed step implies,
+  with the uncertainty of that step preserved
+- **AND** it is not reported as working, so no indicator is painted for it
+
+#### Scenario: A turn the current boot is running, older than this boot's start
+- **WHEN** startup reconciliation runs while a turn created by this boot is still
+  progressing
+- **THEN** that turn is left untouched and continues to be reported as working
+- **AND** age alone never makes a live turn eligible for settlement
+
+### Requirement: The app reads its owner's data through the owner door, complete
+ Every read the app renders (the request rail, restore-access, bindings, the model picker, status, conversation history and message expansion, and the reads a custom UI bundle makes through the bridge) SHALL go through the owner door: `POST /app/api/read` (the `read_graph` arguments) and `POST /app/api/status` (the `get_status` arguments). The owner door SHALL be authenticated by the same bearer middleware as every other `/app` route, SHALL execute each read under the request identity through the same domain function and owner gate the connector uses, and SHALL return the complete document. The owner door SHALL contain no size, limit or truncation logic and SHALL NOT import the model-context ceiling or projection modules. Actions (`converse`, `write_graph`) MAY stay on the connector.
+
+The phone app (Capacitor, `server.url` = the live `/app`) and the desktop app
+(Electron over the live SPA) load the same page and therefore the same doors.
+
+#### Scenario: A heavy account gets its whole rail
+- **WHEN** an owner has 40 pending requests totalling more than 60 KB
+- **THEN** the owner door returns all 40, with no truncation marker
+- **AND** the same read on the connector is bounded visibly
+
+#### Scenario: Another account's data is refused exactly as on the connector
+- **WHEN** a signed-in account names a universe it does not own
+- **THEN** the owner door returns the same refusal the connector returns, and none of that universe's data
+
+#### Scenario: Account type is the only per-account difference
+- **WHEN** a free account and a subscription account with the same data read the rail, status and bindings
+- **THEN** the documents are identical apart from tier-derived numbers
+
+### Requirement: An owner surface never vanishes silently
+
+A failed or unreadable owner read SHALL leave its surface visible with a
+statement that it could not load and a way to retry. It SHALL NOT be drawn as
+empty, and it SHALL NOT be hidden.
+
+#### Scenario: The rail read fails
+- **WHEN** the rail read errors, returns an error document, or returns no list
+- **THEN** the rail is shown with a line saying it couldn't load what's waiting, and a retry
+- **AND** items from an earlier successful load stay (a typed answer is not wiped) under that line, so they are not presented as freshly confirmed
+
+### Requirement: History is paged by an explicit cursor
+
+The status read SHALL report, with every conversation page, whether older turns
+exist (`has_more`) and the cursor that reads them (`next_before`). The app SHALL
+offer "Show earlier messages" whenever `has_more` is true. No default page SHALL
+hide older turns without saying so.
+
+#### Scenario: A long conversation
+- **WHEN** an owner's thread holds more turns than one page
+- **THEN** the page reports `has_more: true` and a `next_before` cursor
+- **AND** following the cursor until `has_more` is false returns every turn exactly once
+
+### Requirement: The chat with an agent floats over the command center
+The app SHALL present the chat with an agent (thread, request rail, model bar,
+composer and status lines) as a floating "chat cloud" above the command-center
+stage, which the owner can drag, resize, and shrink to a bubble and expand
+again by pointer, touch or keyboard. It SHALL start open and filling the stage
+for an owner with no command-center layout, and as a bubble when a layout is
+active. Once the owner moves, resizes, shrinks or expands it, the app SHALL
+restore that last state instead, remembered per owner, per agent (`main` by
+default) and per viewport class (`phone` below 760 px, `wide` otherwise). The
+cloud and the bubble SHALL stay wholly on the stage whenever it resizes. The
+bubble SHALL show when the agent is working and when a reply arrived while it
+was shrunk.
+
+#### Scenario: A new owner signs in
+- **WHEN** an owner with no command-center layout and no saved cloud state opens the app
+- **THEN** the chat cloud is open and fills the stage
+
+#### Scenario: A command-center layout is active
+- **WHEN** a custom UI is mounted and the owner has never placed the cloud
+- **THEN** the chat is a bubble in the stage's corner over the layout
+
+#### Scenario: The owner placed it before
+- **WHEN** the owner moved, resized or shrank the cloud on this viewport class and reloads
+- **THEN** it reopens exactly as they left it, layout or not
+
+#### Scenario: The window shrinks
+- **WHEN** the stage becomes smaller than where the cloud or bubble sits
+- **THEN** it is moved and, if needed, shrunk to stay wholly visible
+
+#### Scenario: A bubble is dragged
+- **WHEN** the owner drags the bubble to a new place
+- **THEN** it moves there and does not also open

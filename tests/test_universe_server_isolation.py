@@ -92,6 +92,20 @@ def _authenticate(user_id: str, scopes: list[str] | None = None) -> None:
     auth_middleware("ok")
 
 
+def _own(base: Path, uid: str) -> None:
+    """Give the directory an OWNER, which is what makes it a universe.
+
+    2026-09-02: a universe exists because an ownership row names it, not because
+    a folder is on disk (``tests/test_a_universe_needs_an_owner.py``). A
+    ``founder_home`` binding, NOT an ACL grant -- the D0c model this module
+    asserts hangs on "a universe with zero ACL rows is public", and seeding a
+    grant would make every fixture here private.
+    """
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
+
+
 def _make_universe(base: Path, uid: str) -> Path:
     udir = base / uid
     udir.mkdir(parents=True)
@@ -101,7 +115,8 @@ def _make_universe(base: Path, uid: str) -> Path:
     from tinyassets.api.visibility import set_universe_visibility
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-    set_universe_visibility(uid, "public")
+    _own(base, uid)
+    set_universe_visibility(uid, "public", source="owner")
     return udir
 
 
@@ -116,9 +131,10 @@ def _make_private_universe(base: Path, uid: str) -> Path:
     udir = base / uid
     udir.mkdir(parents=True)
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    _own(base, uid)
     # `private` sets public_read=False AND declares the explicit level, so the
     # legacy gate and the visibility layer agree (no inconsistent row).
-    set_universe_visibility(uid, "private")
+    set_universe_visibility(uid, "private", source="owner")
     return udir
 
 
@@ -854,9 +870,13 @@ class TestRunReadVisibility:
         runs._action_query_runs({})
         f = captured["f"]
         assert f is not None
-        assert f({"actor": "universe:pub"}) is True
-        assert f({"actor": "universe:priv"}) is False
-        assert f({"actor": "host"}) is True
+        # Real rows always carry queue_universe_id (query_runs selects it): an
+        # owner-actor background run is gated by the universe it ran in.
+        assert f({"actor": "universe:pub", "queue_universe_id": None}) is True
+        assert f({"actor": "universe:priv", "queue_universe_id": None}) is False
+        assert f({"actor": "host", "queue_universe_id": None}) is True
+        assert f({"actor": "acct_owner", "queue_universe_id": "priv"}) is False
+        assert f({"actor": "acct_owner", "queue_universe_id": "pub"}) is True
 
     def test_get_status_of_private_universe_denied(self, universe_base):
         from tinyassets.api.status import get_status
@@ -925,7 +945,7 @@ class TestScopeHeader:
             {"universe_id": "alpha"},
         ))
         assert "text" in out
-        assert out["text"].startswith("Universe: alpha")
+        assert out["text"].startswith("Command center: alpha")
         assert out["premise"] == "An alpha premise."
 
     def test_universe_id_is_first_key(self, universe_base):
@@ -948,7 +968,7 @@ class TestScopeHeader:
         ))
         assert out["universe_id"] == "alpha"
         assert "text" in out
-        assert out["text"].startswith("Universe: alpha")
+        assert out["text"].startswith("Command center: alpha")
         assert out["status"] == "updated"
 
     def test_error_without_universe_id_is_unchanged(self, universe_base):
@@ -961,7 +981,7 @@ class TestScopeHeader:
         ))
         assert "error" in out
         if "text" in out:
-            assert not out["text"].startswith("Universe: ")
+            assert not out["text"].startswith("Command center: ")
 
     def test_multi_universe_list_not_scoped(self, universe_base):
         # list_universes returns a multi-universe response with no
@@ -975,14 +995,14 @@ class TestScopeHeader:
         ))
         assert "universes" in out
         if "text" in out:
-            assert not out["text"].startswith("Universe: ")
+            assert not out["text"].startswith("Command center: ")
 
     def test_existing_text_field_preserved_under_header(self):
         # If a handler already emits a `text` field, the helper prepends
         # the header rather than clobbering it.
         fake = json.dumps({"universe_id": "alpha", "text": "Prior prose."})
         wrapped = json.loads(us._scope_universe_response(fake))
-        assert wrapped["text"].startswith("Universe: alpha")
+        assert wrapped["text"].startswith("Command center: alpha")
         assert "Prior prose." in wrapped["text"]
 
     def test_preserves_all_other_fields(self, universe_base):

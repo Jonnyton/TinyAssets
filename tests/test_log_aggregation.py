@@ -16,6 +16,8 @@ VECTOR_YAML = REPO_ROOT / "deploy" / "vector.yaml"
 VECTOR_BETTERSTACK_YAML = REPO_ROOT / "deploy" / "vector-betterstack.yaml"
 VECTOR_ENTRYPOINT = REPO_ROOT / "deploy" / "vector-entrypoint.sh"
 SHIP_LOGS = REPO_ROOT / "deploy" / "ship-logs.sh"
+JOURNALD_DROPIN = REPO_ROOT / "deploy" / "journald-tinyassets.conf"
+INSTALLER = REPO_ROOT / "deploy" / "install-host-uptime-services.sh"
 RUNBOOK = REPO_ROOT / "docs" / "ops" / "log-aggregation-runbook.md"
 
 
@@ -446,3 +448,203 @@ def test_ship_logs_archives_stopped_members_and_fails_closed(tmp_path, failure):
         contents = manifest.read().decode("utf-8")
     assert f"worker-a\t{worker_ids['worker-a']}\trunning\tworker-a.log" in contents
     assert f"worker-b\t{worker_ids['worker-b']}\texited\tworker-b.log" in contents
+
+
+# ---------------------------------------------------------------------------
+# Where the forwarded lines come to rest -- the journal, not a container
+# ---------------------------------------------------------------------------
+#
+# Regression cover for the 2026-09-26 finding
+# (docs/concerns/2026-09-26-daemon-logs-not-shipped.md). The `logs` container is
+# the one place every forwarded line exists on this host (Vector's console sink
+# re-emits them), so ITS logging driver decides whether a deploy erases the
+# evidence. It used to be Docker's default json-file, which lives in the
+# container's own directory and dies with it.
+
+
+def test_logs_service_output_lands_in_the_journal():
+    logging = _load_compose()["services"]["logs"].get("logging") or {}
+    assert logging.get("driver") == "journald", (
+        "the logs sidecar re-emits every forwarded line on its stdout; with a "
+        "container-scoped driver (json-file is Docker's default) that copy is "
+        "deleted when the container is recreated, which every deploy does"
+    )
+
+
+def test_logs_service_carries_a_stable_journal_tag():
+    """Without an explicit tag, Docker's journald driver uses a truncated
+    container id, which changes on every recreate — so the query that is
+    supposed to read ACROSS recreates would need a different value per
+    generation."""
+    options = (_load_compose()["services"]["logs"].get("logging") or {}).get("options") or {}
+    assert options.get("tag") == "tinyassets-logs"
+
+
+def test_logs_service_does_not_forward_to_its_own_listener():
+    """A `logs` container using the fluent anchor would ship its own stdout into
+    the listener that produced it."""
+    logging = _load_compose()["services"]["logs"].get("logging") or {}
+    assert logging.get("driver") != "fluentd"
+    assert "fluentd-address" not in (logging.get("options") or {})
+
+
+def test_journald_dropin_bounds_retention_in_bytes_and_time():
+    """Pointing a chatty container at journald is only safe with caps, and the
+    caps are what decide how much history survives."""
+    text = JOURNALD_DROPIN.read_text(encoding="utf-8")
+    assert "[Journal]" in text
+    # Persistent, or the journal is a tmpfs that a reboot empties.
+    assert "Storage=persistent" in text
+    settings = dict(
+        line.split("=", 1)
+        for line in text.splitlines()
+        if "=" in line and not line.lstrip().startswith("#")
+    )
+    assert settings["SystemMaxUse"] == "1G"
+    assert settings["MaxRetentionSec"] == "14day"
+    assert settings["SystemKeepFree"] == "2G"
+    # Rate limiting drops messages to protect the journal, and a dropped line
+    # during an incident is the evidence this change exists to keep -- so the
+    # ceiling is generous. But it must stay FINITE: disabling it outright left no
+    # bound on write/compression throughput during a storm, and the justification
+    # for doing so ("the Docker driver gates volume") named a limit that is not
+    # configured anywhere (cross-family review,
+    # output/codex-log-durability-review.md §7).
+    assert settings["RateLimitBurst"] != "0", (
+        "an unlimited burst trades an outage risk for evidence; keep a ceiling"
+    )
+    assert int(settings["RateLimitBurst"]) >= 10_000, (
+        "the ceiling must be far above normal volume or it becomes the drop"
+    )
+    assert settings["RateLimitIntervalSec"] != "0"
+
+
+def test_the_dropin_does_not_promise_retention_it_cannot_deliver():
+    """`MaxRetentionSec` is a maximum AGE, not a minimum guarantee: whichever of
+    the age and byte bounds is reached first wins, so 1 GiB can mean hours. The
+    comment used to claim the opposite, which is the kind of false reassurance
+    that gets a window trusted past what it holds."""
+    text = JOURNALD_DROPIN.read_text(encoding="utf-8")
+    assert "maximum age" in text.lower()
+    assert "not a minimum" in text.lower()
+    assert "whichever runs out first" in text.lower()
+    # And it must name the knob, since editing the box is reverted by the installer.
+    assert "SystemMaxUse is the knob" in text
+
+
+def test_installer_owns_the_journald_dropin():
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert "deploy/journald-tinyassets.conf" in text
+    # Shipped by the manifest, or the file never reaches the droplet: the install
+    # workflow builds its bundle from `git archive` over the
+    # TINYASSETS_PRINT_MANIFEST output, so a file missing from the manifest is
+    # one the installer then refuses on.
+    manifest_block = text.split('if [[ "${PRINT_MANIFEST}" == "1" ]]; then', 1)[1]
+    manifest_block = manifest_block.split("exit 0", 1)[0]
+    assert "JOURNALD_DROPIN_SOURCE" in manifest_block
+    assert "restart systemd-journald" in text
+
+
+def test_runbook_leads_with_the_query_that_survives_a_deploy():
+    """The runbook is read mid-incident. `docker logs` is scoped to the current
+    container, so a responder who reaches for it after a deploy finds nothing --
+    which is how the 2026-09-26 evidence was declared lost."""
+    text = RUNBOOK.read_text(encoding="utf-8")
+    assert "journalctl CONTAINER_NAME=tinyassets-logs" in text
+    assert "--output=short-iso-precise" in text
+    assert "deploy/journald-tinyassets.conf" in text
+    # The correction is part of the content: a reader who still believes compose
+    # stdout reaches journald will not understand why the driver had to change.
+    assert "detaches" in text
+
+
+def test_the_journald_dropin_is_pinned_to_lf():
+    """`git archive` ships this file to /etc/systemd/journald.conf.d/ verbatim,
+    and it was authored on Windows. `.gitattributes` already pins `*.service`
+    and `*.timer` for exactly this reason; `*.conf` was missing, so the first
+    build of this change handed the droplet a CRLF drop-in. systemd happens to
+    strip `\r` as whitespace, so it parsed -- which is why nothing would have
+    failed loudly, and why this needs a test rather than a reader's attention.
+    """
+    attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+    rules = [
+        line.split()
+        for line in attributes.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    conf = [rule for rule in rules if rule[0] == "*.conf"]
+    assert conf, "*.conf is not pinned in .gitattributes"
+    assert "eol=lf" in conf[0], conf[0]
+    assert JOURNALD_DROPIN.suffix == ".conf", (
+        "the drop-in must keep the .conf suffix the pinned rule matches"
+    )
+
+
+def test_the_fluentd_drop_gap_has_a_concern_file():
+    """The journal is durable; everything upstream of the sidecar is not.
+
+    A runbook line is guidance, not a tracked item — it has no home to be deleted
+    from when the gap is closed. `docs/concerns/` is that home, and the file's
+    front-matter row is what makes the gap visible in `scripts/concerns_index.py`
+    to a reader who never opens the runbook.
+    """
+    concern = REPO_ROOT / "docs" / "concerns" / (
+        "2026-09-26-fluentd-driver-drops-while-vector-is-down.md"
+    )
+    assert concern.exists(), (
+        "the fluentd-drop gap must be a tracked concern, not only a runbook line"
+    )
+    head = concern.read_text(encoding="utf-8")[:2000]
+    assert head.startswith("---\n") and "\nseverity:" in head, (
+        "concern file has no front-matter, so scripts/concerns_index.py cannot list it"
+    )
+
+    text = concern.read_text(encoding="utf-8")
+    # The blocker is the specific reason this is not fixed in the same change, and
+    # it is the part a future reader would otherwise re-derive.
+    assert "journalctl" in text and "alpine" in text.lower()
+    # And it must say what closing it looks like, or it is a complaint.
+    assert "journald" in text
+    assert "deploy_fail_safe.sh" in text
+
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+    assert concern.name in runbook, (
+        "the runbook must point at the concern file, so the gap is findable from "
+        "the doc someone reads mid-incident"
+    )
+
+
+def test_the_installer_cannot_report_an_unapplied_journald_policy_as_converged():
+    """journald reads its config at START, so bytes on disk are not policy in
+    effect.
+
+    The first version installed the drop-in, tolerated a failed restart, and had a
+    gate comparing only bytes — so every later install said "already current"
+    while journald ran the old policy, forever (cross-family review,
+    output/codex-log-durability-review.md §2). The applied-stamp is what makes
+    "installed but not applied" a state the transaction repairs.
+    """
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert "JOURNALD_STAMP" in text
+    assert "journald_applied()" in text
+
+    gate = text.split("current_release_is_exact() {", 1)[1]
+    gate = gate.split("\nif current_release_is_exact", 1)[0]
+    assert "journald_applied || return 1" in gate, (
+        "the gate exits before the first mutation, so a property it does not "
+        "check is one the installer never converges"
+    )
+
+    # The stamp must be written only AFTER a successful restart, and dropped when
+    # the restart fails — otherwise it asserts something unfalsifiable.
+    apply_block = text.split('|| ! journald_applied; then', 1)[1]
+    apply_block = apply_block.split("\nTIMERS_PAUSED=0", 1)[0]
+    restart_at = apply_block.index("restart systemd-journald")
+    write_at = apply_block.index("${JOURNALD_STAMP}.new.")
+    assert restart_at < write_at, "the stamp is written before the restart is known"
+    assert 'rm -f -- "${JOURNALD_STAMP}"' in apply_block, (
+        "a failed restart must drop any stale stamp, or the next install inherits "
+        "a claim that this policy is live"
+    )
+    # It must not live where systemd would try to parse it.
+    assert '${RUNTIME_ROOT}/.journald-applied' in text

@@ -91,6 +91,11 @@ FailureClass = Literal[
     "provider_idle_timeout",
     "interactive_deadline",
     "provider_protocol_error",
+    "provider_reply_error",
+    "provider_unreadable_reply",
+    "provider_stalled",
+    "provider_refused",
+    "provider_reply_timeout",
 ]
 
 # Idle-watchdog profile defaults (seconds) — a PROFILE, not one wall-clock.
@@ -215,12 +220,12 @@ class ModelConfig:
     (propose_changes) deep. Not a prompt hint; a real subprocess setting."""
 
     workflow_node: bool = False
-    """Set by the run providers for a user universe's workflow node call.
+    """Set by the run providers for a user command center's workflow node call.
 
     Provider-agnostic marker. The cross-user boundary does NOT depend on it:
-    every provider launch made for a universe is OS-jailed to that universe by
+    every provider launch made for a command center is OS-jailed to that command center by
     the shared spawn point, whatever its config (``provider_jail``). A provider
-    may use the mark to narrow further, e.g. pin cwd to the universe and deny
+    may use the mark to narrow further, e.g. pin cwd to the command center and deny
     :data:`HOST_REACH_TOOLS`."""
 
     sandbox_workspace: bool = False
@@ -230,10 +235,10 @@ class ModelConfig:
     # instead of a chat answer (live 2026-08-22). Chat turns run in the same
     # bwrap jail over an EMPTY scratch workspace.
     sandbox_chat: bool = False
-    """Run the CLI subprocess isolated to the universe's OWN dir instead of the
+    """Run the CLI subprocess isolated to the command center's OWN dir instead of the
     host's cwd. When True, subprocess providers set ``cwd=universe_dir`` so the
     call does NOT inherit the daemon's working directory (which may be a source
-    checkout, exposing repo files / ``CLAUDE.md`` / other universes). Set for the
+    checkout, exposing repo files / ``CLAUDE.md`` / other command centers). Set for the
     founder-facing universe-intelligence turn; leave False for host-trusted engine
     roles. The isolation is only as strong as the tool policy below — pair it with
     ``disallowed_tools`` to deny shell escape (a Bash tool can ``cd`` out)."""
@@ -254,10 +259,10 @@ class ModelConfig:
     engine_mcp_enabled: bool = False
     """When True, the founder-facing universe-intelligence turn gets a LOCAL,
     founder-scoped TinyAssets MCP server (``tinyassets.engine_mcp_server``) wired
-    in via ``--mcp-config`` + ``--strict-mcp-config``, so the universe agent has
+    in via ``--mcp-config`` + ``--strict-mcp-config``, so the command center agent has
     the SAME MCP handles the founder's browser chatbot has (read_graph /
     write_graph / run_graph / read_page / write_page / get_status), acting AS the
-    founder, scoped to its OWN universe. Requires ``engine_mcp_actor_id`` +
+    founder, scoped to its OWN command center. Requires ``engine_mcp_actor_id`` +
     ``engine_mcp_graph_id`` — the wiring FAILS CLOSED (no tools) if either is
     empty. Only ever set for a FOUNDER-tier turn; never for the learning
     extractor or a non-founder caller. See ``engine_mcp_server`` for the identity
@@ -268,8 +273,29 @@ class ModelConfig:
     disables the engine MCP wiring (fail-closed)."""
 
     engine_mcp_graph_id: str = ""
-    """The universe graph_id the local engine MCP server PINS every handler call
+    """The command center graph_id the local engine MCP server PINS every handler call
     to. Empty disables the engine MCP wiring (fail-closed)."""
+
+    engine_tool_grant: tuple[str, ...] | None = None
+    """The served engine tools this turn may call. ``None`` = the whole served
+    set (``served_tools.SERVED_ENGINE_MCP_TOOLS``). Set from an agent node's own
+    ``tools_allowed`` grant, resolved from the admitted snapshot; every surface
+    (the HTTP loop and each native turn) reads it through ``served_tools.granted_tools``."""
+
+    agent_node_id: str = ""
+    """The graph compiler's name for the agent node making this call. It selects
+    which node, never whether: the run session resolves it against its own
+    admitted immutable snapshot and refuses an id that is not an agent node."""
+
+    agent_node_key: str = ""
+    """``shared_self.agent_node_key`` of the compiled node and its branch. The run
+    session refuses unless its admitted snapshot's node has the same key."""
+
+    agent_session: object | None = field(default=None, repr=False, compare=False)
+    """``agent_sessions.AgentSessionRef`` naming the thread or agent node this
+    turn continues. An adapter that declares ``native_resume`` resumes that
+    key's native session instead of starting a fresh one; every other adapter
+    ignores it."""
 
     credential_snapshot_dir: Path | None = field(
         default=None,
@@ -306,6 +332,24 @@ class ModelConfig:
     secondary call converts "we spent one extra request" into "the user is
     locked out", and the reply that just succeeded is better evidence about the
     source than the extra call that did not."""
+
+    owns_capacity_siblings: bool = False
+    """This caller holds a candidate ORDER over the source and will settle its
+    cooldown itself.
+
+    The capacity handler withholds a source's cooldown when an unknown window
+    may still be per-model, because cooling the connection would skip the very
+    sibling the caller is about to try. That purchase only makes sense for a
+    caller that HAS a sibling to try and cools the source once it runs out.
+
+    An agent turn already qualifies through ``agent_request``; this is how a
+    WORKFLOW node says the same thing
+    (``_ForegroundRunProviderSession._cool_abandoned_sources``). Additive on
+    purpose: the capacity decoder now runs for every call rather than only agent
+    rounds (live 2026-09-30), so the handler is newly reachable from callers
+    that hold no order -- a post-reply learning extraction, say -- and those
+    must keep being cooled, or a source at a DAILY cap is re-asked by every
+    later turn forever."""
 
     def stream_timeout_profile(self) -> StreamTimeoutProfile:
         """Resolve the idle-watchdog profile, filling ``None`` knobs with the
@@ -374,6 +418,13 @@ class ProviderResponse:
     proof of the model that answered and must not be substituted here.
     """
 
+    requested_model: str = ""
+    """The model id this call explicitly asked the source for; empty for its default.
+
+    A request, never answering evidence: a renderer may show it only labelled as
+    requested, beside an unknown ``reported_model`` -- never in its place.
+    """
+
     provider_display: str = ""
     """The owner's own name for the connection that answered, for display only.
 
@@ -434,17 +485,6 @@ def api_key_providers_enabled() -> bool:
     their universe as their own open provider.
     """
     return False
-
-
-def require_api_key_provider_opt_in(provider_name: str) -> None:
-    """Refuse a built-in provider whose only credential is the host's API key."""
-    from tinyassets.exceptions import ProviderUnavailableError
-
-    raise ProviderUnavailableError(
-        f"{provider_name} can only use an API key from the host's environment, "
-        "and the platform holds no model credential (Hard Rule 15). Connect "
-        "this source to your universe as your own provider instead."
-    )
 
 
 # Legacy denylist retained for regression assertions. Universe-scoped children
@@ -550,7 +590,7 @@ def _ensure_private_provider_dir(path: Path) -> None:
 def _resolved_universe_child(universe_root: Path, path: Path) -> Path:
     resolved = path.resolve(strict=False)
     if not resolved.is_relative_to(universe_root):
-        raise ValueError("provider path escapes universe")
+        raise ValueError("provider path escapes command center")
     return resolved
 
 
@@ -583,14 +623,14 @@ def _preflight_vault_source(universe_root: Path, vault_path: Path) -> None:
         raise ValueError("credential vault source is not a private regular file")
     resolved = vault_path.resolve(strict=True)
     if not resolved.is_relative_to(universe_root):
-        raise ValueError("credential vault source escapes universe")
+        raise ValueError("credential vault source escapes command center")
 
 
 def _provider_child_runtime_env(
     provider_name: str, universe_dir: Path,
 ) -> dict[str, str]:
     if provider_name not in _PROVIDER_AUTH_OVERLAY_ENV_VARS:
-        raise ValueError("unsupported universe provider")
+        raise ValueError("unsupported command center provider")
 
     runtime_root = universe_dir / ".runtime" / "provider-child" / provider_name
     raw_paths = {
@@ -662,8 +702,8 @@ def _valid_provider_auth_overlay(
 #: exactly that with `secret=do-not-leak`), so anything unrecognised is reduced
 #: to its type name.
 _SAFE_RESOLUTION_REASONS: frozenset[str] = frozenset({
-    "provider path escapes universe",
-    "unsupported universe provider",
+    "provider path escapes command center",
+    "unsupported command center provider",
     "auth overlay is not universe-contained",
 })
 
@@ -709,7 +749,7 @@ def subprocess_env_for_provider(
     env: dict[str, str] = {}
     try:
         if provider_name not in _PROVIDER_AUTH_OVERLAY_ENV_VARS:
-            raise ValueError("unsupported universe provider")
+            raise ValueError("unsupported command center provider")
         universe_root = resolved_universe.expanduser().resolve(strict=False)
         if credential_snapshot_dir is not None:
             snapshot = _resolved_universe_child(
@@ -794,7 +834,7 @@ def subprocess_env_for_provider(
         # containment refusal indistinguishable, which cost a live debugging
         # session to unpick.
         logger.warning(
-            "%s credential resolution failed for universe %s: %s",
+            "%s credential resolution failed for command center %s: %s",
             provider_name,
             resolved_universe.name,
             reason,
@@ -994,12 +1034,13 @@ def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
 
     On a busy box this degrades to "inconclusive" rather than queueing. The probe is a
     diagnostic, and making a diagnostic wait behind real user turns is the wrong trade.
+    `try_provider_slot` checks immediately rather than waiting for admission.
     """
-    from tinyassets.provider_admission import ProviderBusy, provider_slot
+    from tinyassets.provider_admission import ProviderBusy, try_provider_slot
 
     def _run() -> dict[str, str]:
         try:
-            with provider_slot():
+            with try_provider_slot():
                 return _codex_live_auth_probe_uncached(timeout_s)
         except ProviderBusy:
             return {"status": "inconclusive",

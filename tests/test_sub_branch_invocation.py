@@ -44,6 +44,13 @@ _DEFAULT_TEST_CTX = BranchExecutionContext(
     actor="tester", universe_id="u", caller_provenance="own"
 )
 
+
+@pytest.fixture(autouse=True)
+def _pin_data_dir(tmp_path, monkeypatch):
+    """Every child run is charged to its universe's admission ledger, which
+    lives under the data dir. Pin it, or the charges land in the real one."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _simple_branch(node_def: NodeDefinition, entry: str = "n1") -> BranchDefinition:
@@ -324,10 +331,12 @@ class TestAwaitBranchRunNode:
                 fn({"child_run_id": "some-run"})
 
 
-# ─── recursion depth cap ──────────────────────────────────────────────────────
+# ─── no recursion depth cap (plan item 6) ──────────────────────────────────────
 
-class TestRecursionDepthCap:
-    def test_depth_at_cap_raises_compiler_error(self, tmp_path):
+class TestNoRecursionDepthCap:
+    def test_a_blocking_invoke_past_the_old_cap_compiles(self, tmp_path):
+        """Depth is not a shape limit: a blocking child runs in its parent's
+        thread and every child run is metered instead."""
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
             invoke_branch_spec={
@@ -337,10 +346,33 @@ class TestRecursionDepthCap:
                 "output_mapping": {},
             },
         )
-        with pytest.raises(CompilerError, match="recursion depth cap"):
+        fn = _build_invoke_branch_node(
+            nd, base_path=tmp_path, event_sink=None,
+            depth=MAX_INVOKE_BRANCH_DEPTH * 10, execution_context=_DEFAULT_TEST_CTX)
+        assert callable(fn)
+
+    def test_an_async_invoke_nests_only_as_deep_as_the_shared_pool(self, tmp_path):
+        """An async child runs on the pool every universe shares, and a parent
+        that awaits it holds a pool thread, so the pool's size bounds it."""
+        from tinyassets.runs import _max_child_workers
+
+        nd = NodeDefinition(
+            node_id="n1", display_name="N1",
+            invoke_branch_spec={
+                "branch_def_id": "child",
+                "wait_mode": "async",
+                "inputs_mapping": {},
+                "output_mapping": {"child_run": "run_id"},
+            },
+        )
+        pool = _max_child_workers()
+        _build_invoke_branch_node(
+            nd, base_path=tmp_path, event_sink=None,
+            depth=pool - 1, execution_context=_DEFAULT_TEST_CTX)
+        with pytest.raises(CompilerError, match="shared sub-branch pool"):
             _build_invoke_branch_node(
                 nd, base_path=tmp_path, event_sink=None,
-                depth=MAX_INVOKE_BRANCH_DEPTH, execution_context=_DEFAULT_TEST_CTX)
+                depth=pool, execution_context=_DEFAULT_TEST_CTX)
 
     def test_depth_below_cap_is_ok(self, tmp_path):
         nd = NodeDefinition(
@@ -617,6 +649,7 @@ def _authorized_version_child_fixture(self):
            "node_defs": [], "edges": []}
     with (
         patch("tinyassets.branch_versions.branch_version_def_id", return_value="child"),
+        patch("tinyassets.branch_versions.branch_version_is_public", return_value=True),
         patch("tinyassets.daemon_server.get_branch_definition", return_value=raw),
     ):
         yield
@@ -737,8 +770,12 @@ class TestCompileInvokeBranchVersionNode:
         # thing that fails when the launch drops it (Codex round 3 §a/§d).
         assert mock_exec.call_args.kwargs["on_node_status"] is on_node_status
 
-    def test_build_invoke_version_node_recursion_cap(self, tmp_path):
-        """Recursion-cap works through the version-spec path too."""
+    def test_a_blocking_version_invoke_nests_only_as_deep_as_the_shared_pool(
+        self, tmp_path,
+    ):
+        """A version invoke runs on the child pool every universe shares, and
+        a blocking one (or an await) holds one of its threads while it waits,
+        so the pool's size -- not a policy number -- bounds how deep it nests."""
         from tinyassets.graph_compiler import _build_invoke_branch_version_node
 
         nd = NodeDefinition(
@@ -748,10 +785,27 @@ class TestCompileInvokeBranchVersionNode:
                 "wait_mode": "blocking",
             },
         )
-        with pytest.raises(CompilerError, match="recursion depth cap"):
+        from tinyassets.runs import _max_child_workers
+
+        pool = _max_child_workers()
+        _build_invoke_branch_version_node(
+            nd, base_path=tmp_path, event_sink=None,
+            depth=pool - 1, execution_context=_DEFAULT_TEST_CTX)
+        with pytest.raises(CompilerError, match="shared sub-branch pool"):
             _build_invoke_branch_version_node(
                 nd, base_path=tmp_path, event_sink=None,
-                depth=MAX_INVOKE_BRANCH_DEPTH, execution_context=_DEFAULT_TEST_CTX)
+                depth=pool, execution_context=_DEFAULT_TEST_CTX)
+        async_nd = NodeDefinition(
+            node_id="n2", display_name="N2",
+            invoke_branch_version_spec={
+                "branch_version_id": "child@abc12345",
+                "wait_mode": "async",
+            },
+        )
+        with pytest.raises(CompilerError, match="shared sub-branch pool"):
+            _build_invoke_branch_version_node(
+                async_nd, base_path=tmp_path, event_sink=None,
+                depth=pool, execution_context=_DEFAULT_TEST_CTX)
 
 
 # ─── Phase A item 5 (Task #76b) — on_child_fail policy + retry + ChildFailure ─
@@ -854,10 +908,8 @@ class TestChildFailurePolicy:
             _retry_budget_reset,
         )
 
-        # Reset the threadlocal to ensure clean budget state.
+        # Reset the threadlocal counter to a clean state.
         _retry_budget_reset()
-        # Generous global cap to not interfere.
-        monkeypatch.setenv("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "10")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -895,7 +947,6 @@ class TestChildFailurePolicy:
             _retry_budget_reset,
         )
         _retry_budget_reset()
-        monkeypatch.setenv("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "10")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -920,16 +971,26 @@ class TestChildFailurePolicy:
         # Initial attempt + retry_budget=1 retry = 2 attempts total.
         assert mock_exec.call_count == 2
 
-    def test_global_cap_overrides_per_spec_budget(self, tmp_path, monkeypatch):
-        """Per-spec retry_budget=10 + global cap=1 → only 1 retry across
-        the parent run, then propagate."""
+    def test_no_env_var_overrides_the_authors_retry_budget(self, tmp_path, monkeypatch):
+        """`retry_budget=10` gets ten retries, whatever the environment says.
+
+        `TINYASSETS_MAX_CHILD_RETRIES_TOTAL` (default 5) used to cap the total
+        across a parent run and then behave as `propagate`, so an author who
+        declared ten retries silently got five. Founder, 2026-09-30: honour the
+        author's retry policy. The bound on a retry storm is that each child run
+        charges admission and holds a seat, and the parent waits on them in turn.
+        """
+        from tinyassets import graph_compiler
         from tinyassets.graph_compiler import (
             ChildFailedError,
             _build_invoke_branch_version_node,
             _retry_budget_reset,
         )
         _retry_budget_reset()
+        # Set as hostilely as the old code would have honoured: 1 total retry.
         monkeypatch.setenv("TINYASSETS_MAX_CHILD_RETRIES_TOTAL", "1")
+        assert not hasattr(graph_compiler, "_retry_budget_max"), "the override is gone"
+        assert not hasattr(graph_compiler, "_retry_budget_remaining")
 
         nd = NodeDefinition(
             node_id="n1", display_name="N1",
@@ -938,7 +999,7 @@ class TestChildFailurePolicy:
                 "wait_mode": "blocking",
                 "output_mapping": {"parent_out": "child_out"},
                 "on_child_fail": "retry",
-                "retry_budget": 10,  # would allow 10 retries, but global cap=1
+                "retry_budget": 10,
             },
         )
         node_fn = _build_invoke_branch_version_node(
@@ -951,8 +1012,8 @@ class TestChildFailurePolicy:
             with pytest.raises(ChildFailedError):
                 node_fn({})
 
-        # Initial attempt + 1 retry (global cap) = 2 attempts.
-        assert mock_exec.call_count == 2
+        # Initial attempt + the author's 10 retries. Under the old cap: 2.
+        assert mock_exec.call_count == 11
 
     def test_failure_class_classification(self, tmp_path):
         """Each child terminal status maps to the correct failure_class."""
@@ -1289,6 +1350,7 @@ class TestInvokeBranchExecutionContext:
         with (
             patch("tinyassets.branch_versions.branch_version_def_id",
                   return_value="child"),
+            patch("tinyassets.branch_versions.branch_version_is_public", return_value=True),
             patch("tinyassets.daemon_server.get_branch_definition",
                   return_value=self._child_raw()),
             patch("tinyassets.branches.BranchDefinition.from_dict",
@@ -1502,39 +1564,11 @@ class TestTwoPoolIsolation:
         assert _runs_mod._parent_pool is None
         assert _runs_mod._child_pool is None
 
-    def test_runtime_max_invocation_depth_env_override(self, monkeypatch):
-        from tinyassets.runs import _runtime_max_invocation_depth
+    def test_the_invocation_depth_env_is_retired(self):
+        """TINYASSETS_INVOCATION_MAX_DEPTH is gone with the cap it tuned."""
+        import tinyassets.runs as runs_mod
 
-        monkeypatch.setenv("TINYASSETS_INVOCATION_MAX_DEPTH", "9")
-        assert _runtime_max_invocation_depth() == 9
-
-        monkeypatch.delenv("TINYASSETS_INVOCATION_MAX_DEPTH", raising=False)
-        # Default should be MAX_INVOKE_BRANCH_DEPTH (5).
-        assert _runtime_max_invocation_depth() == MAX_INVOKE_BRANCH_DEPTH
-
-    def test_runtime_depth_cap_used_in_compile(self, tmp_path, monkeypatch):
-        """Compile-time cap reads runtime helper, so env override
-        flips the cap without a code-change."""
-        monkeypatch.setenv("TINYASSETS_INVOCATION_MAX_DEPTH", "2")
-
-        nd = NodeDefinition(
-            node_id="n1", display_name="N1",
-            invoke_branch_spec={
-                "branch_def_id": "child",
-                "inputs_mapping": {},
-                "output_mapping": {},
-                "wait_mode": "blocking",
-            },
-        )
-        # depth=2 with cap=2 should raise.
-        with pytest.raises(CompilerError, match="recursion depth cap"):
-            _build_invoke_branch_node(
-                nd, base_path=tmp_path, event_sink=None, depth=2,
-                execution_context=_DEFAULT_TEST_CTX,
-            )
-        # depth=1 with cap=2 should NOT raise.
-        _build_invoke_branch_node(
-            nd, base_path=tmp_path, event_sink=None, depth=1, execution_context=_DEFAULT_TEST_CTX)
+        assert not hasattr(runs_mod, "_runtime_max_invocation_depth")
 
 
 class TestInvokeBranchDesignUsedEmit:
@@ -1740,7 +1774,7 @@ class TestInvokeBranchVersionDesignUsedEmit:
         )
         # Publish a version of it.
         record = publish_branch_version(
-            tmp_path,
+            tmp_path, public=True,
             branch_dict={
                 "branch_def_id": "child",
                 "name": "child",

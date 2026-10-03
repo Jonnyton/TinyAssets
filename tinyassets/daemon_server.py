@@ -484,6 +484,13 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
     """
     with _connect(base_path) as conn:
         conn.executescript(schema)
+        # NOT in the schema script: `executescript` autocommits, so the table
+        # would exist before its backfill committed, and a crash between the two
+        # would skip the backfill forever (gpt-6-astra, PR #4139). The table and
+        # its backfill are born in ONE transaction.
+        from tinyassets.universe_owner import migrate_universe_owner
+
+        migrate_universe_owner(conn)
         from tinyassets.storage.accounts import (
             migrate_capability_grants_schema,
         )
@@ -702,7 +709,7 @@ def ensure_default_author(base_path: str | Path) -> dict[str, Any]:
     return register_author(
         base_path,
         display_name="House Daemon",
-        soul_text="Default house daemon for the host-run universe server.",
+        soul_text="Default house daemon for the host-run command center server.",
         created_by="system",
         metadata={"auto_created": True},
     )
@@ -747,6 +754,74 @@ def ensure_universe_registered(
     return get_universe(base_path, universe_id=universe_id)
 
 
+def register_universe_if_absent(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    universe_path: str | Path | None = None,
+) -> bool:
+    """Make sure a universe has a registry row, WITHOUT touching an existing one.
+
+    Returns ``True`` when this call inserted the row. Use this, not
+    :func:`ensure_universe_registered`, whenever you need the universe to exist and
+    have nothing to say about its NAME.
+
+    ``ensure_universe_registered`` is an UPSERT whose conflict clause is
+    ``display_name=excluded.display_name, metadata_json=excluded.metadata_json``,
+    and both of those parameters are optional. Calling it for an ALREADY-registered
+    universe without passing them therefore **destroys** them: the display name
+    becomes the raw ``universe_id`` and the registry metadata becomes ``{}``, and
+    the call reports success. It is the odd one out in this module —
+    :func:`ensure_universe_rules` and :func:`ensure_default_branch` both use
+    ``DO NOTHING`` and preserve what is already there.
+
+    That is not hypothetical, and it was not rare. The visibility backfill did it
+    for every discovered universe on every boot, so a universe its owner had named
+    lost that name at the next restart. The notes, work-target and hard-priority
+    helpers in this module did it on every call, three of them on READS — so
+    listing a universe's notes renamed it.
+
+    **A single atomic statement, deliberately.** An earlier cut checked for the row
+    and then called ``ensure_universe_registered`` when absent, which left a window:
+    between the check and the write another caller could register the universe WITH
+    a name, and this call's UPSERT would then erase it. Reproduced by the
+    cross-family review of PR #4045 (two threads, pause after the absence check) and
+    judged floor-class, because registry metadata has no other copy in this write
+    path. ``INSERT ... ON CONFLICT DO NOTHING`` has no such window: a row that
+    appears in the meantime simply wins.
+
+    Registration is all those callers need. Renaming has its own caller,
+    :func:`set_universe_display_name`, so "never touch an existing row" loses
+    nothing.
+
+    ``universe_path`` defaults to ``base_path / universe_id``. Pass it when you
+    already hold the real path rather than letting this re-derive one.
+    """
+    uid = str(universe_id or "").strip()
+    if not uid:
+        return False
+    initialize_author_server(base_path)
+    resolved = universe_path if universe_path is not None else Path(base_path) / uid
+    with _connect(base_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO universes (
+                universe_id, display_name, host_path, created_at, metadata_json
+            ) VALUES (?, ?, ?, ?, '{}')
+            ON CONFLICT(universe_id) DO NOTHING
+            """,
+            (uid, uid, str(Path(resolved).resolve()), _now()),
+        )
+        inserted = cursor.rowcount == 1
+    # Always, not only when inserted: these are the rows that make the registry row
+    # usable, `universe_rules` is what actually carries the FK onto `universes`, and
+    # both are `DO NOTHING` inserts that preserve anything already recorded. Running
+    # them unconditionally also repairs a universe whose row exists without them.
+    ensure_universe_rules(base_path, universe_id=uid)
+    ensure_default_branch(base_path, universe_id=uid)
+    return inserted
+
+
 def set_universe_display_name(
     base_path: str | Path,
     *,
@@ -773,6 +848,15 @@ def set_universe_display_name(
 
 
 def sync_universes_from_filesystem(base_path: str | Path) -> None:
+    """Index every directory under the data root by path.
+
+    Deliberately NOT filtered by ownership. This table is a path INDEX, not the
+    definition of a universe: a self-hoster restoring a universe directory from
+    a backup needs it indexed before anything can grant on it. What makes a
+    directory a universe is an owner, and that is enforced where it is READ --
+    :func:`owned_universe_ids` and every reader routed through it (founder,
+    2026-09-02). Indexing an unowned directory shows it to nobody.
+    """
     initialize_author_server(base_path)
     root = Path(base_path)
     if not root.exists():
@@ -1949,7 +2033,7 @@ def list_note_dicts(
 ) -> list[dict[str, Any]]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -1982,7 +2066,7 @@ def list_note_dicts(
 def add_note_dict(universe_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2102,7 +2186,7 @@ def delete_note_record(universe_path: str | Path, note_id: str) -> bool:
 def list_work_target_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2129,7 +2213,7 @@ def list_work_target_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
 def upsert_work_target_dict(universe_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2165,7 +2249,7 @@ def upsert_work_target_dict(universe_path: str | Path, payload: dict[str, Any]) 
 def replace_work_target_dicts(universe_path: str | Path, payloads: list[dict[str, Any]]) -> None:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2199,7 +2283,7 @@ def replace_work_target_dicts(universe_path: str | Path, payloads: list[dict[str
 def list_hard_priority_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2226,7 +2310,7 @@ def list_hard_priority_dicts(universe_path: str | Path) -> list[dict[str, Any]]:
 def upsert_hard_priority_dict(universe_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2262,7 +2346,7 @@ def upsert_hard_priority_dict(universe_path: str | Path, payload: dict[str, Any]
 def replace_hard_priority_dicts(universe_path: str | Path, payloads: list[dict[str, Any]]) -> None:
     base_path = base_path_from_universe(universe_path)
     universe_id = universe_id_from_path(universe_path)
-    ensure_universe_registered(
+    register_universe_if_absent(
         base_path,
         universe_id=universe_id,
         universe_path=universe_path,
@@ -2471,9 +2555,12 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
     # ``.keys()``.
     row_keys = row.keys() if hasattr(row, "keys") else []
     goal_id = row["goal_id"] if "goal_id" in row_keys else None
+    # A missing, NULL or blank visibility is PRIVATE (private by default,
+    # founder 2026-09-26). Reading it as "public" here made every reader's
+    # fail-closed check dead code: they only ever saw the normalized value.
     visibility = (
-        row["visibility"] if "visibility" in row_keys else "public"
-    ) or "public"
+        row["visibility"] if "visibility" in row_keys else None
+    ) or "private"
     fork_from = row["fork_from"] if "fork_from" in row_keys else None
     skills = _json_loads(row["skills_json"], []) if "skills_json" in row_keys else []
     # Branch-level execution choices. Same guard: a row predating the
@@ -2512,9 +2599,9 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Community Branches — CRUD
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _branch_definition_insert(
@@ -2608,6 +2695,22 @@ _BRANCH_DEFINITION_INSERT_SQL = """
             """
 
 
+def _charge_branch_write(base_path: str | Path, author: str, values: Any) -> None:
+    """Gate a branch-definition write on the AUTHOR's account storage
+    (account-storage-quota D7: branch/version writes). Raises
+    `storage_accounting.StorageRefused` at the quota before anything is written;
+    an author with no account (platform) is not gated."""
+    from tinyassets import storage_accounting
+
+    nbytes = sum(len(v.encode("utf-8")) for v in values if isinstance(v, str))
+    storage_accounting.charge_now(
+        base_path,
+        account_id=storage_accounting.account_for_actor(base_path, author),
+        store="branches",
+        nbytes=nbytes,
+    )
+
+
 def save_branch_definition(
     base_path: str | Path,
     *,
@@ -2615,6 +2718,7 @@ def save_branch_definition(
 ) -> dict[str, Any]:
     """Insert or replace a branch definition."""
     branch_def_id, values = _branch_definition_insert(branch_def)
+    _charge_branch_write(base_path, str(branch_def.get("author") or ""), values)
     with _connect(base_path) as conn:
         conn.execute(
             _BRANCH_DEFINITION_INSERT_SQL.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1),
@@ -2635,6 +2739,7 @@ def create_branch_definition_once(
     The returned boolean is true only for that winning insert.
     """
     branch_def_id, values = _branch_definition_insert(branch_def)
+    _charge_branch_write(base_path, str(branch_def.get("author") or ""), values)
     with _connect(base_path) as conn:
         cursor = conn.execute(
             _BRANCH_DEFINITION_INSERT_SQL
@@ -2844,6 +2949,12 @@ def update_branch_definition(
 
     params.append(branch_def_id)
 
+    author = str(
+        updates.get("author")
+        or get_branch_definition(base_path, branch_def_id=branch_def_id).get("author")
+        or ""
+    )
+    _charge_branch_write(base_path, author, params)
     with _connect(base_path) as conn:
         conn.execute(
             f"UPDATE branch_definitions SET {', '.join(sets)} "
@@ -2897,9 +3008,9 @@ def fork_branch_definition(
     return save_branch_definition(base_path, branch_def=forked.to_dict())
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 5: Goals — first-class shared primitive above Branches
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 _logger = logging.getLogger(__name__)
@@ -3869,9 +3980,9 @@ def goal_archive_consultation(
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 6: Outcome gates — ladder on goals, claims per branch
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _gate_claim_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -4706,9 +4817,9 @@ def _preview(text: str, max_len: int) -> str:
     return collapsed[: max_len - 1] + "…"
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Memory-scope Stage 2a — universe_acl CRUD
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 #
 # A universe with zero ACL rows is public; a universe with at least one
 # row is private and only the listed actors may access it. Enforcement
@@ -4767,6 +4878,65 @@ def grant_universe_access(
     }
 
 
+def grant_universe_ownership(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    owner_id: str,
+) -> None:
+    """Create-time grant: the creator's admin row AND the universe's owner row,
+    in ONE transaction, so no universe is ever granted but unowned
+    (account-storage-quota D2). Raises `OwnershipConflict` when the universe
+    already belongs to another account; the admin grant then rolls back too.
+    """
+    from tinyassets.universe_owner import record_creation
+
+    owner = named_principal(owner_id)
+    uid = (universe_id or "").strip()
+    if not owner or not uid:
+        raise ValueError("grant_universe_ownership requires universe_id and owner_id.")
+    now = _now()
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO universe_acl
+              (universe_id, actor_id, permission, granted_at, granted_by)
+            VALUES (?, ?, 'admin', ?, ?)
+            ON CONFLICT(universe_id, actor_id) DO UPDATE SET
+                permission = excluded.permission,
+                granted_at = excluded.granted_at,
+                granted_by = excluded.granted_by
+            """,
+            (uid, owner, now, owner),
+        )
+        record_creation(conn, universe_id=uid, owner_id=owner)
+
+
+def revoke_universe_ownership(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    owner_id: str,
+) -> None:
+    """Undo `grant_universe_ownership` for a create that failed: the grant and
+    the owner row go together, and only if this account is the recorded owner."""
+    owner = named_principal(owner_id)
+    uid = (universe_id or "").strip()
+    if not owner or not uid:
+        return
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        conn.execute(
+            "DELETE FROM universe_acl WHERE universe_id = ? AND actor_id = ?",
+            (uid, owner),
+        )
+        conn.execute(
+            "DELETE FROM universe_owner WHERE universe_id = ? AND owner_id = ?",
+            (uid, owner),
+        )
+
+
 def set_founder_home(
     base_path: str | Path,
     *,
@@ -4821,29 +4991,6 @@ def get_founder_home(base_path: str | Path, founder_sub: str) -> str:
             (founder,),
         ).fetchone()
     return str(row[0]) if row and row[0] else ""
-
-
-def founder_subs_for_universe(base_path: str | Path, universe_id: str) -> tuple[str, ...]:
-    """Every founder sub whose bound home is ``universe_id`` — the inverse of
-    :func:`get_founder_home`.
-
-    Needed to recover who a pre-2.1 row belonged to. A legacy ``branch_schedules``
-    row carries only an ``owner_actor``, which may be a bare founder principal;
-    without this inverse only that founder could ever address the row, so a
-    delegated admin of the universe could not clean it up (Codex round 2,
-    finding 6). Returns them sorted, so callers are deterministic.
-    """
-    uid = (universe_id or "").strip()
-    if not uid:
-        return ()
-    initialize_author_server(base_path)
-    with _connect(base_path) as conn:
-        rows = conn.execute(
-            "SELECT founder_sub FROM founder_home WHERE universe_id = ? "
-            "ORDER BY founder_sub",
-            (uid,),
-        ).fetchall()
-    return tuple(str(row[0]) for row in rows if row[0])
 
 
 def founder_home_is_platform_generated(
@@ -4975,6 +5122,72 @@ def list_universe_acl(
         }
         for r in rows
     ]
+
+
+def owned_universe_ids(base_path: str | Path) -> set[str]:
+    """Every universe id somebody owns: an ACL grant, or a founder's home.
+
+    THE DEFINITION of a universe (founder, 2026-09-02: "a universe should only
+    exist if it belongs to a user"). It used to be "a directory under the data
+    root that is not one of four hardcoded names", so the platform's own
+    backups, a past prune's archive, ``scratch`` and ``cloud-automation-inputs``
+    were all universes -- enumerated, declared ``public`` by the boot backfill,
+    and readable by id -- and every new operational directory silently became
+    one. The denylist could not be completed: ``lancedb`` (not the listed
+    ``lance``), daemon memory, retained inputs, the workspace pool and stored
+    offers were already missing from it.
+
+    A home binding counts alongside an ACL row because first contact binds the
+    home BEFORE any grant is written; a universe with a live founder must never
+    depend on which of the two landed first.
+
+    Ownership here is "somebody has a row", not "somebody is admin" -- a
+    universe shared write-only is still somebody's. Callers needing a specific
+    permission ask :func:`universe_access_permission`.
+    """
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        owned = {
+            str(row["universe_id"])
+            for row in conn.execute("SELECT DISTINCT universe_id FROM universe_acl")
+            if str(row["universe_id"] or "").strip()
+        }
+        owned |= {
+            str(row["universe_id"])
+            for row in conn.execute("SELECT DISTINCT universe_id FROM founder_home")
+            if str(row["universe_id"] or "").strip()
+        }
+    return owned
+
+
+def owned_universe_id(base_path: str | Path, name: str) -> str:
+    """The owned universe id ``name`` refers to, or ``""`` when nobody owns it.
+
+    EXACT MATCH, deliberately. An earlier revision resolved case-insensitively so
+    that a directory restored from a backup as ``U-Mine`` would still be the
+    ownership row's ``u-mine``. That is a trap, because a universe id is TWO
+    things at once: a path component (`_universe_dir`) and an authority key
+    (`universe_access_permission` matches it with exact SQL). Resolving them to
+    different spellings breaks whichever one gets the other's answer --
+    returning the row's spelling opens a path that does not exist on a
+    case-sensitive filesystem, and returning the directory's spelling denies an
+    owner's write and, worse, makes `universe_is_private` find no rows, so the
+    other spelling reads as a PUBLIC universe (Codex review, 2026-09-26, P0).
+
+    Requiring the two to be identical is the only arrangement in which they
+    cannot disagree. A directory restored under a different case is therefore
+    unowned: invisible, never deleted, and named by
+    `scripts/universe_ownership_inventory.py` as at-risk so the missing row gets
+    written rather than guessed at.
+
+    A dotted name is never a universe, whatever a row says: ``.deleting/`` is
+    account deletion's staging directory, and a row naming it must not make it
+    readable.
+    """
+    candidate = (name or "").strip()
+    if not candidate or candidate.startswith("."):
+        return ""
+    return candidate if candidate in owned_universe_ids(base_path) else ""
 
 
 def universe_is_private(base_path: str | Path, *, universe_id: str) -> bool:

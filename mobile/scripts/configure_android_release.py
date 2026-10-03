@@ -4,6 +4,11 @@
 Capacitor generates ``versionCode 1`` / ``versionName \"1.0\"`` every time the
 gitignored Android project is recreated.  Keeping the release values in a small,
 reviewable file makes local and CI bundles reproduce the same Play identity.
+
+It also gives the debug buildType its own identity (``<appId>.debug``, labelled
+"TinyAssets (debug)"), so a sideloaded development build can never block a Play
+update. Every Android build -- the debug APK workflow, the release AAB workflow
+and the container -- runs this script, so the split cannot be skipped.
 """
 
 from __future__ import annotations
@@ -17,6 +22,30 @@ from pathlib import Path
 
 DEFAULT_MOBILE = Path(__file__).resolve().parents[1]
 MAX_PLAY_VERSION_CODE = 2_100_000_000
+
+# Debug/sideload builds are a SEPARATE install from the Play app. They are signed
+# with a development key, and Android refuses an update whose signature differs:
+# a debug APK sharing the Play applicationId made every Play update fail with
+# "Can't install" for anyone who had sideloaded it (2026-10-01). A suffixed id
+# lets both live side by side, and the visible name says which one is which.
+DEBUG_APPLICATION_ID_SUFFIX = ".debug"
+DEBUG_APP_NAME = "TinyAssets (debug)"
+DEBUG_BUILD_TYPE = (
+    "        debug {\n"
+    "            // Sideload builds never share the Play identity (configure_android_release.py).\n"
+    f'            applicationIdSuffix "{DEBUG_APPLICATION_ID_SUFFIX}"\n'
+    "        }\n"
+)
+DEBUG_STRINGS = (
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    "<!-- Written by mobile/scripts/configure_android_release.py: the debug build's"
+    " launcher label. -->\n"
+    "<resources>\n"
+    f'    <string name="app_name">{DEBUG_APP_NAME}</string>\n'
+    f'    <string name="title_activity_main">{DEBUG_APP_NAME}</string>\n'
+    "</resources>\n"
+)
+DEBUG_STRINGS_PATH = Path("android/app/src/debug/res/values/strings.xml")
 
 
 @dataclass(frozen=True)
@@ -70,6 +99,35 @@ def load_release(mobile: Path) -> AndroidRelease:
         target_sdk=numbers["targetSdk"],
         compile_sdk=numbers["compileSdk"],
     )
+
+
+def debug_application_id(release: AndroidRelease) -> str:
+    return release.app_id + DEBUG_APPLICATION_ID_SUFFIX
+
+
+def with_debug_identity(gradle: str) -> str:
+    """``gradle`` with the suffixed debug buildType, or ValueError on any other shape.
+
+    Only the debug buildType may change the id: a suffix anywhere else (the
+    release buildType, defaultConfig, a flavor) would ship a Play bundle that is
+    not ``io.tinyassets.app``, so any foreign suffix or debug block fails loudly.
+    """
+    suffixes = len(re.findall(r"^\s*applicationIdSuffix\b", gradle, flags=re.MULTILINE))
+    debug_blocks = len(re.findall(r"^\s*debug\s*\{", gradle, flags=re.MULTILINE))
+    if DEBUG_BUILD_TYPE in gradle and suffixes == 1 and debug_blocks == 1:
+        return gradle
+    if suffixes or debug_blocks:
+        raise ValueError(
+            "generated build.gradle already declares applicationIdSuffix or a debug "
+            f"buildType (suffixes={suffixes}, debug blocks={debug_blocks}); "
+            "only the suffixed debug buildType this script writes is allowed"
+        )
+    gradle, count = re.subn(
+        r"(?m)^(\s*buildTypes\s*\{[ \t]*\n)", lambda m: m.group(1) + DEBUG_BUILD_TYPE, gradle
+    )
+    if count != 1:
+        raise ValueError(f"expected exactly one buildTypes block in build.gradle; found {count}")
+    return gradle
 
 
 def _one_value(text: str, pattern: str, label: str) -> str:
@@ -138,11 +196,16 @@ def configure(mobile: Path, expected_version: str | None = None) -> AndroidRelea
             "generated version fields changed shape: "
             f"versionCode matches={code_count}, versionName matches={name_count}"
         )
+    gradle = with_debug_identity(gradle)
     gradle_path.write_text(gradle, encoding="utf-8")
+    strings_path = mobile / DEBUG_STRINGS_PATH
+    strings_path.parent.mkdir(parents=True, exist_ok=True)
+    strings_path.write_text(DEBUG_STRINGS, encoding="utf-8")
     print(
         f"configured {release.app_id} versionCode={release.version_code} "
         f"versionName={release.version_name} "
-        f"SDK={release.min_sdk}/{release.target_sdk}/{release.compile_sdk}"
+        f"SDK={release.min_sdk}/{release.target_sdk}/{release.compile_sdk}; "
+        f"debug builds install as {debug_application_id(release)} ({DEBUG_APP_NAME!r})"
     )
     return release
 

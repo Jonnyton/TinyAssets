@@ -16,7 +16,7 @@ import pytest
 
 from tinyassets.onboarding import render_app_html
 
-_SLICE_START = "    // ---- your universe's connections ----"
+_SLICE_START = "    // ---- your command center's connections ----"
 _SLICE_END = "    function leaveAccount()"
 
 # A synthetic DOM that records what the controller did to it: attributes (the
@@ -35,7 +35,7 @@ function node(tag){return {tag,children:[],attrs:{},textContent:'',id:'',classNa
 const $=id=>{if(!elements.has(id)){const e=node(id);e.id=id;elements.set(id,e);}
  return elements.get(id);};
 const document={createElement:node};
-// The durable account/home pair the page learns from the verified /mcp/app/me,
+// The durable account/home pair the page learns from the verified /app/me,
 // and the access token, which rotates on an unchanged sign-in.
 let queueOwner='acct-owner',queueScope='u-owner',accessToken='tok-1';
 // The page's own navigation counter: showView() bumps it, and these rows are

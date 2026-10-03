@@ -171,7 +171,7 @@ def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
     assert '"enabled": true' in html
     assert "microphone audio goes directly to that service" in html
     assert "TinyAssets never substitutes a shared" in html
-    assert "that you bound to this universe" in html
+    assert "that you bound to this command center" in html
     assert "not store the raw audio" in html
     assert "browser or device speech service" in html
     assert "may send audio to the browser vendor" in html
@@ -212,39 +212,82 @@ def test_voice_client_keeps_converse_as_the_only_writer():
 # --------------------------------------------------------------------------- #
 
 
-def test_route_is_mcp_app_get(monkeypatch):
+def test_route_is_apex_app_get(monkeypatch):
     routes = onboarding.onboarding_routes()
     by_path = {r.path: r for r in routes}
     # The SPA page (GET) + its same-origin PKCE token-exchange proxy (POST) +
-    # the one-tap OpenAI device-auth broker (POST only, identity-gated).
+    # the one-tap OpenAI device-auth broker (POST only, identity-gated) + the
+    # fixed, unauthenticated bundle host a custom UI runs inside (GET).
     assert set(by_path) == {
-        "/mcp/app", "/mcp/app/token", "/mcp/app/me",
-        "/mcp/app/model-connect/{operation}", "/mcp/app/model-callback/{flow}",
-        "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
-        "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
-        "/mcp/app/voice/status", "/mcp/app/voice/session",
-        "/mcp/app/serving/bind", "/mcp/app/models/preferences",
-        "/mcp/app/billing/status", "/mcp/app/billing/checkout",
-        "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
-        "/mcp/app/account/delete", "/mcp/app/connections", "/mcp/app/files",
+        "/app", "/app/token", "/app/me", "/app/ui-frame",
+        "/app/model-connect/{operation}", "/app/model-callback/{flow}",
+        # The public OAuth client metadata document a sign-in source names.
+        "/app/oauth/client-metadata.json",
+        "/app/openai/device/start", "/app/openai/device/poll",
+        "/app/openai/begin", "/app/openai/exchange", "/app/trace",
+        "/app/voice/status", "/app/voice/session",
+        "/app/serving/bind", "/app/models/preferences",
+        "/app/billing/status", "/app/billing/checkout",
+        "/app/billing/cancel", "/app/billing/webhook",
+        "/app/account/delete", "/app/account/timezone", "/app/rules",
+        "/app/turn/interrupt", "/app/turn/steer",
+        "/app/connections", "/app/files",
+        "/app/devices", "/app/notify", "/app/sw.js",
+        # The owner door: every read the app renders, complete.
+        "/app/api/read", "/app/api/status",
+        # The bytes a custom UI loads, fetched by the app for its sealed frame.
+        "/app/api/ui-asset",
     }
-    assert by_path["/mcp/app/files"].methods == {"POST"}
-    assert "GET" in by_path["/mcp/app"].methods
-    assert "GET" in by_path["/mcp/app/billing/status"].methods
-    assert "GET" in by_path["/mcp/app/me"].methods
-    assert "GET" in by_path["/mcp/app/voice/status"].methods
-    assert {"GET", "POST"} <= by_path["/mcp/app/models/preferences"].methods
-    assert by_path["/mcp/app/connections"].methods == {"GET", "HEAD", "POST"}
+    assert by_path["/app/files"].methods == {"POST"}
+    assert by_path["/app/api/read"].methods == {"POST"}
+    assert by_path["/app/api/ui-asset"].methods == {"POST"}
+    # The owner's clock is a WRITE from their client, never a readable setting.
+    assert by_path["/app/account/timezone"].methods == {"POST"}
+    assert "GET" in by_path["/app"].methods
+    # The bundle host is read-only and takes no input: it carries no user content,
+    # which is why it needs no authentication (tinyassets/onboarding/ui_frame.py).
+    assert by_path["/app/ui-frame"].methods == {"GET", "HEAD"}
+    assert "GET" in by_path["/app/billing/status"].methods
+    assert "GET" in by_path["/app/me"].methods
+    assert "GET" in by_path["/app/voice/status"].methods
+    assert {"GET", "POST"} <= by_path["/app/models/preferences"].methods
+    assert by_path["/app/connections"].methods == {"GET", "HEAD", "POST"}
     for post_only in (
-        "/mcp/app/token", "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
-        "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
-        "/mcp/app/voice/session",
-        "/mcp/app/serving/bind",
-        "/mcp/app/billing/checkout", "/mcp/app/billing/cancel",
-        "/mcp/app/billing/webhook", "/mcp/app/account/delete",
+        "/app/token", "/app/openai/device/start", "/app/openai/device/poll",
+        "/app/openai/begin", "/app/openai/exchange", "/app/trace",
+        "/app/voice/session",
+        "/app/serving/bind",
+        "/app/billing/checkout", "/app/billing/cancel",
+        "/app/billing/webhook", "/app/account/delete",
+        "/app/turn/interrupt", "/app/turn/steer",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
+
+
+def test_no_route_is_mounted_under_the_retired_mcp_app_prefix():
+    """The 2026-09-30 move is clean: `/mcp/app` is not mounted, aliased or
+    redirected. Nothing under the old prefix exists to serve.
+
+    Founder directive: no back-compat. A route left behind — even a redirect —
+    would be the back-compat the move was meant to avoid.
+    """
+    paths = {r.path for r in onboarding.onboarding_routes()}
+    assert not [p for p in paths if p.startswith("/mcp")], sorted(paths)
+    assert all(p == "/app" or p.startswith("/app/") for p in paths), sorted(paths)
+
+
+def test_the_app_path_constant_is_the_single_source_of_truth():
+    """Route table, refresh-cookie scope and redirect-URI check must agree.
+
+    They disagreed once in spirit already: the cookie path was a separate
+    literal. One constant is what makes "the app lives at /app" checkable.
+    """
+    assert onboarding.APP_PATH == "/app"
+    assert onboarding._REFRESH_COOKIE_PATH == "/app/token"
+    paths = {r.path for r in onboarding.onboarding_routes()}
+    assert onboarding.APP_PATH in paths
+    assert onboarding._REFRESH_COOKIE_PATH in paths
 
 
 def test_app_embeds_build_and_serves_matching_header(monkeypatch):
@@ -552,7 +595,9 @@ def test_the_app_restores_the_conversation_on_load():
     assert "turns.slice().sort((a,b)=>a.ts-b.ts)" in html
     assert "turns.slice().reverse()" not in html
     # It must never block the chat on a history failure.
-    assert "history is a convenience; never block the chat on it" in html
+    assert "History never blocks the chat" in html
+    # ...and a failure to read it is SAID, never drawn as an empty thread.
+    assert "historyFailed(conv.error)" in html
 
 def _js_function(html: str, name: str) -> str:
     """Source of ``function NAME(`` / ``async function NAME(`` from the app's
@@ -941,7 +986,7 @@ let connectCalls=[]; function openConnectRequest(guidance){connectCalls.push({gu
   out.browserFallbackDecline={
     disclosureShown:!els["voice-disclosure"].hidden,
     recognitionInstances:recognitionInstances.length,
-    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/mcp/app/voice/session").length
+    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/app/voice/session").length
   };
   await Voice.requestStart();
   Voice.selectBrowserVoice("voice-choice");
@@ -967,7 +1012,7 @@ let connectCalls=[]; function openConnectRequest(guidance){connectCalls.push({gu
     spokenVoices:spokenVoices.slice(),
     trailingEchoSuppressed:turns.length===turnsBeforeTrailingEcho,
     recognitionStarts:recognition.started,recognitionStops:recognition.stopped,
-    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/mcp/app/voice/session").length,
+    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/app/voice/session").length,
     connectCalls:connectCalls.slice()
   };
   out.browserVoiceChoice={
@@ -1056,7 +1101,7 @@ let connectCalls=[]; function openConnectRequest(guidance){connectCalls.push({gu
     commitTimer:Voice.browserCommitTimer,aborted:draftRecognition.aborted,
     staleCommitSuppressed:turns.length===turnsBeforeDraftStop};
   Voice.capability={available:true,state:"ready",mode:"browser"};
-  conversationStatus="Your universe is thinking...";
+  conversationStatus="Your agent is thinking...";
   Voice.state="listening";Voice._render();
   out.statusIndependence={conversationStatus,voiceStatus:status,active:Voice.isActive()};
   els["btn-send"].disabled=true;turnStartedAt=123;
@@ -1166,13 +1211,13 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert out["unpowered"]["label"] == "Voice · Connect"
     assert out["unpowered"]["disclosureShown"] is False
     assert out["unpowered"]["mediaRequests"] == 0
-    assert set(out["unpowered"]["fetched"]) == {"/mcp/app/voice/status"}
+    assert set(out["unpowered"]["fetched"]) == {"/app/voice/status"}
     assert "provider connection" in out["unpowered"]["status"]
     assert out["unpowered"]["connectCalls"] == [
         {
             "guidance": (
                 "Voice needs a realtime-capable provider connection that you authorize "
-                "for this universe. Connect the provider your universe should use; "
+                "for this command center. Connect the provider your command center should use; "
                 "TinyAssets will not supply a platform credential."
             ),
         }
@@ -1228,7 +1273,7 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
             {
                 "guidance": (
                     "Voice needs a realtime-capable provider connection that you "
-                    "authorize for this universe. Connect the provider your universe "
+                    "authorize for this command center. Connect the provider your command center "
                     "should use; TinyAssets will not supply a platform credential."
                 ),
             }
@@ -1436,14 +1481,14 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "staleCommitSuppressed": True,
     }
     assert out["statusIndependence"] == {
-        "conversationStatus": "Your universe is thinking...",
+        "conversationStatus": "Your agent is thinking...",
         "voiceStatus": "Listening...",
         "active": True,
     }
     assert out["stopDuringPending"] == {
-        "conversationStatus": "Your universe is thinking...",
+        "conversationStatus": "Your agent is thinking...",
         "voiceStatus": (
-            "Voice is off. Your universe is still thinking; its text reply will "
+            "Voice is off. Your agent is still thinking; its text reply will "
             "still appear here, but it will not be spoken."
         ),
         "state": "idle",
@@ -1567,12 +1612,35 @@ function appendMessage(role,text,extra){
   return el;
 }
 function setStatusLine(t){ els["status-line"].textContent=t||""; }
+// The working indicator and the queued-bubble mark are collaborators these
+// scenarios do not exercise, stubbed the way healServing/autoGrow are. A
+// harness that DOES exercise them appends the page's own definitions after this
+// shim, and the later function declaration is the one that runs
+// (tests/test_app_working_indicator.py).
+function readServerTurn(){}
+function serverTurnLive(){ return false; }
+function renderWorking(){}
+function pulseHeartbeat(){}
+function markQueued(el){ return el; }
+function unmarkQueued(){}
+function firstQueuedBubble(){ return null; }
 function autoGrow(el){ el.style.height="auto"; }
 function sessionExpired(){ messages.push({role:"session-expired"}); }
 function showConnect(){ messages.push({role:"connect"}); }
 const SCENARIO=__SCENARIO__;
 const converseCalls=[], converseMethods=[], converseChoices=[], consumerRequests=[], statusCalls=[];
 let active=0, maxActive=0;
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={ converse: async (m,inputMethod,modelChoice,consumerRequest) => {
   converseCalls.push(m);
   converseMethods.push(inputMethod);
@@ -1589,7 +1657,7 @@ const MCP={ converse: async (m,inputMethod,modelChoice,consumerRequest) => {
 MCP.callTool=async(name,args)=>{statusCalls.push({name,args});return SCENARIO.consumerStatus;};
 const CFG={build: SCENARIO.build||"b1"};
 const token=()=>"t";
-MCP.getConversation=async()=>{
+Owner.getConversation=async()=>{
   if(SCENARIO.historyError) throw new Error("peek failed");
   return {universe_id: SCENARIO.universe||"u-1", recent_conversation:{turns: SCENARIO.history||[]}};
 };
@@ -1607,7 +1675,7 @@ __APP_FUNCTIONS__
 (async()=>{
   const out={};
   // The account half of a saved row's ownership. The page learns it from
-  // /mcp/app/me at sign-in; here a scenario states it, and `principal: null`
+  // /app/me at sign-in; here a scenario states it, and `principal: null`
   // is a page that never resolved one.
   setQueueOwner(SCENARIO.principal===null?"":(SCENARIO.principal||"p-1"));
   modelChoiceForNextTurn=SCENARIO.modelChoice||null;
@@ -1792,7 +1860,10 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let liveInflight=[^\n]*;",
                     r"const renderedConsumerTurns=[^\n]*;",
                     r"const renderedConsumerFounders=[^\n]*;",
-                    r"let Uploads=[^\n]*;")
+                    r"let Uploads=[^\n]*;",
+                    r"let interruptRequested=[^\n]*;",
+                    r"let steeredLines=[^\n]*;",
+                    r"let pendingSteers=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
@@ -1802,6 +1873,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
         "offerResend", "noteHeldQueue", "offerSavedConversationCheck",
         "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
+        "drawHistoryTurns", "offerEarlier", "loadEarlier", "historyFailed",
         # loadHistory now offers the rest of a turn the peek bounded; without
         # these the call is a ReferenceError its own catch swallows, and the
         # rest of the thread silently stops rendering.
@@ -1809,9 +1881,12 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "restoreInflight", "setQueueScope", "setQueueOwner", "ownsSavedRow",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
         "flushSendQueue", "queueTurn",
+        "takeInterruptFlush", "flushAfterTurn", "drainAfterStop", "takeBatch", "flushBatch",
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
         "sameSavedLine",
         "restoreQueue", "claimedElsewhere", "offerSavedLine",
+        # Harness S2: a line typed mid-turn steers the running turn when it can.
+        "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered", "adoptSteered",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))
@@ -1882,6 +1957,16 @@ def test_answer_model_receipt_is_visible_on_typed_and_spoken_reply(tmp_path, kin
     ({"provider": "codex", "model": "assumed"}, "Answered by codex · Model not reported"),
     ({"provider": "codex", "model": 42, "model_status": "reported"},
      "Answered by codex · Model not reported"),
+    # A source that reports no model: the call's own request is named AS a
+    # request, and never promoted to what answered.
+    ({"provider": "codex", "model": "", "model_status": "unknown",
+      "requested_model": "owner-picked-model"},
+     "Answered by codex · Requested owner-picked-model · answering model not reported"),
+    ({"provider": "source", "model": "actual/model", "model_status": "reported",
+      "requested_model": "owner-picked-model"},
+     "Answered by source · actual/model"),
+    ({"provider": "codex", "model": "", "model_status": "unknown",
+      "requested_model": "bad\nlabel"},"Answered by codex · Model not reported"),
     ({"provider": " my-source ", "model": " 模型/🪐 ", "model_status": "reported"},
      "Answered by my-source · 模型/🪐"),
     ({"provider": "<script>example</script>", "model": "<img src=x>", "model_status": "reported"},
@@ -2159,8 +2244,8 @@ def test_a_held_message_from_another_universe_is_never_shown_here(tmp_path):
     shown = json.dumps([out["messages"], out["notes"]])
     assert "the secret plan" not in shown and "payroll.xlsx" not in shown
     assert [n["text"] for n in out["notes"]] == [
-        "An unconfirmed message from another universe's session on this browser "
-        "is waiting there; open that universe to see it."]
+        "An unconfirmed message from another command center's session on this browser "
+        "is waiting there; open that command center to see it."]
     # preserved on disk for the universe it belongs to
     assert out["inflight"]["scope"] == "u-other"
 
@@ -2176,7 +2261,7 @@ def test_a_held_message_with_no_recorded_universe_is_never_disclosed(tmp_path):
     assert [m["role"] for m in out["messages"]] == []
     assert "the secret plan" not in json.dumps(out["notes"])
     offer = out["notes"][0]
-    assert "recorded its universe" in offer["text"]
+    assert "recorded its command center" in offer["text"]
     assert offer["buttons"] == [], "no click can establish ownership of it"
     # held, not erased: the founder who can prove it still has it
     assert out["inflight"]["message"] == "the secret plan"
@@ -2391,7 +2476,7 @@ def test_enter_mashing_during_a_turn_queues_one_message(tmp_path):
                               "secondMessage": "and this", "repeatSecond": 25, "slowFirst": True})
     assert out["composerWhileQueued"] == ""
     assert out["queuedWhileInFlight"] == 1
-    assert out["statusWhileQueued"] == "Your universe is thinking... 1 waiting"
+    assert out["statusWhileQueued"] == "Your agent is thinking... 1 waiting"
     assert out["converseCalls"] == ["hi", "and this"]
     assert out["maxActive"] == 1
     # the queued line is drawn once, when queued, and not again when it goes out
@@ -2560,7 +2645,7 @@ def test_a_saved_line_from_another_universe_can_only_be_discarded(tmp_path):
     assert out["converseCalls"] == []
     # neither the line nor the other universe's id is shown, nothing can be
     # done to it here, and it stays on disk for its own universe's page
-    note = [n for n in out["notes"] if "another universe" in n["text"]][0]
+    note = [n for n in out["notes"] if "another command center" in n["text"]][0]
     assert line not in note["text"] and "u-1" not in note["text"] and note["buttons"] == []
     assert not any("Still waiting" in n["text"] for n in out["notes"])
     assert out["savedAfter"][0]["message"] == line
@@ -2678,7 +2763,7 @@ def test_a_line_saved_by_another_account_on_this_browser_is_never_offered(tmp_pa
                               "payload": {"reply": "on it"}})
     assert out["converseCalls"] == []
     assert not any("Still waiting" in n["text"] for n in out["notes"])
-    note = [n for n in out["notes"] if "another universe" in n["text"]][0]
+    note = [n for n in out["notes"] if "another command center" in n["text"]][0]
     assert line not in note["text"] and "p-2" not in note["text"]
     assert note["buttons"] == []
     assert out["savedAfter"][0]["message"] == line
@@ -2730,15 +2815,24 @@ def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
     """The owner is invited to click this WHILE being asked for a secret, and
     the agent composing it may be running code pulled from the commons.
 
-    So the visible text is the HOST rather than friendly words -- someone who
-    is about to paste a key can see they are being sent to `evil.example` --
-    and the tab cannot reach back into the opener.
+    So the destination is visible before the click -- someone about to paste a
+    key can see they are being sent to `evil.example` -- the link says the
+    UNIVERSE suggested it rather than borrowing platform styling, and the tab
+    cannot reach back into the opener.
+
+    The host alone was not enough (live 2026-09-30: "Get it from tinyassets.io"
+    over an invented `/settings`), so the path is shown too. The rendered
+    behaviour is executed in ``tests/test_request_card_layout_and_links.py``;
+    this only pins that the page still has the three properties.
     """
     from tinyassets.onboarding import render_app_html
 
     page, _csp = render_app_html()
-    assert 'new URL(f.url).host' in page, "the link does not show its host"
-    assert '"noopener noreferrer"' in page
+    assert "railFieldLink" in page, "the rail no longer renders a field's link"
+    assert "Suggested by your agent:" in page, \
+        "an agent-chosen link is presented without saying who chose it"
+    assert "rtab-link--agent" in page, "an agent's link is styled as platform chrome"
+    assert "noopener noreferrer nofollow" in page
 
 
 def test_the_android_shell_shows_no_checkout_ui():
@@ -2787,7 +2881,7 @@ def test_the_app_itself_links_a_privacy_policy():
     assert "https://tinyassets.io/legal#privacy" in account
     assert "https://tinyassets.io/account" in account
     # Opened externally: a plain navigation would strand a Capacitor user with no
-    # way back to their universe.
+    # way back to their command center.
     assert 'a[data-external]' in html
     assert "openExternal(a.getAttribute(\"href\"))" in html
 

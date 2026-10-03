@@ -127,16 +127,31 @@ def test_direct_run_falls_back_to_the_saved_tail_without_repeating_effects(
     assert len(work_agent.tools) == 1
 
 
-def test_direct_run_without_a_saved_preference_keeps_the_legacy_single_provider_path(
+def test_direct_run_without_a_saved_preference_still_orders_the_owners_catalogue(
     tmp_path, monkeypatch, authenticate_request, work_agent,
 ):
+    """Nothing saved is AUTOMATIC, not "no order at all".
+
+    This asserted `_work_candidates is None` -- the legacy single-provider path
+    -- which is the defect, not the contract. That path resolves an unpinned
+    node to `snapshot.default_model_id or definition.model`, the source's
+    DECLARED default, and live 2026-09-30 a free account's declared model had
+    left its own catalogue: chat ran, every run and automation failed
+    `authority_held`. An owner who has chosen nothing gets the same automatic
+    order their chat turn gets (tests/test_free_account_run_provider_parity.py).
+    """
     built = _observe_sessions(monkeypatch)
     branch, connection = _seed(tmp_path, monkeypatch, authenticate_request)
 
     result, _provider, _captured = _run(tmp_path, monkeypatch, authenticate_request, branch)
 
     assert result["terminal_status"] == "completed", (result, work_agent.errors)
-    assert built and all(session._work_candidates is None for session in built)
+    assert built and all(session._work_candidates is not None for session in built)
+    order = built[0]._work_candidates
+    assert order.automatic is True, "nothing saved must not read as an explicit choice"
+    assert built[0]._model_preference_data["saved"] is None
+    assert {ref.connection_id for ref in order.order} == {connection}
+    assert set(_models(work_agent)) == {PRIMARY}
 
 
 def test_an_explicit_saved_choice_with_no_fallback_stays_exhausted(
@@ -222,6 +237,14 @@ def test_a_sibling_run_inherits_the_captured_document_and_not_the_built_order(
 def test_another_scopes_saved_preference_never_reaches_this_run(
     tmp_path, monkeypatch, authenticate_request, work_agent, scope,
 ):
+    """This run reads its OWN scope: automatic, not the other scope's choice.
+
+    The old assertion was `_work_candidates is None`, which a session that read
+    nothing at all satisfies just as well as one that read the right row. What
+    separates the two is the captured document and the resulting MODE: nothing
+    saved for THIS owner and universe, so the order is automatic and the other
+    scope's explicit primary/tail is nowhere in it.
+    """
     built = _observe_sessions(monkeypatch)
     branch, connection = _seed(tmp_path, monkeypatch, authenticate_request)
     _save_preference(tmp_path, connection,
@@ -231,7 +254,11 @@ def test_another_scopes_saved_preference_never_reaches_this_run(
     result, _provider, _captured = _run(tmp_path, monkeypatch, authenticate_request, branch)
 
     assert result["terminal_status"] == "completed", (result, work_agent.errors)
-    assert built and all(session._work_candidates is None for session in built)
+    assert built and all(session._work_candidates is not None for session in built)
+    assert all(session._model_preference_data["saved"] is None for session in built)
+    assert all(session._model_preference_data["observed_generation"] == 0
+               for session in built)
+    assert built[0]._work_candidates.automatic is True
 
 
 def test_a_revoked_source_refuses_the_saved_choice_rather_than_substituting(

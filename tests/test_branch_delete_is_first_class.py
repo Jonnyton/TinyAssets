@@ -268,7 +268,11 @@ def test_an_ACTIVE_webhook_bound_to_the_branch_is_named(universe_surface, tmp_pa
     assert _delete(us, bid)["status"] == "deleted"
 
 
-def test_an_ACTIVE_schedule_and_subscription_are_named(universe_surface, tmp_path):
+def test_an_ACTIVE_subscription_is_named_and_a_retired_schedule_is_not(
+    universe_surface, tmp_path,
+):
+    """Schedules are retired: a leftover row that was active is stamped retired
+    by the scheduler migration, so it no longer holds the branch."""
     from tinyassets import scheduler
 
     us, _actor = universe_surface
@@ -276,21 +280,23 @@ def test_an_ACTIVE_schedule_and_subscription_are_named(universe_surface, tmp_pat
     # The scheduler lays its tables down at daemon start; do the same here.
     with scheduler._connect(scheduler._runs_db(tmp_path)) as conn:
         conn.executescript(scheduler.SCHEDULER_SCHEMA)
-    sid = scheduler.register_schedule(
-        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", universe_id="u-1",
-        owner_principal_id="alice", interval_seconds=3600,
-    )
+        # A row the retired tick loop would once have fired.
+        conn.execute(
+            "INSERT INTO branch_schedules (schedule_id, branch_def_id, owner_actor, "
+            "universe_id, owner_principal_id, interval_seconds, active, created_at) "
+            "VALUES ('sched-old', ?, 'universe:u-1', 'u-1', 'alice', 3600, 1, 0)",
+            (bid,),
+        )
     sub = scheduler.register_subscription(
-        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", event_type="canon_change",
+        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", event_type="source:s1",
     )
 
     out = _delete(us, bid)
     assert out.get("error") == "branch_has_dependents", out
-    assert out["dependents"]["schedules"] == [sid]
+    assert out["dependents"]["schedules"] == []
     assert out["dependents"]["subscriptions"] == [sub]
 
     # Deactivation authority is the scheduler's own concern, not this test's.
-    assert scheduler.unregister_schedule(tmp_path, sid, requesting_actor="alice", admin=True) is True
     assert scheduler.unregister_subscription(tmp_path, sub, requesting_actor="alice", admin=True) is True
     assert _delete(us, bid)["status"] == "deleted"
 
@@ -388,12 +394,17 @@ def test_a_universe_whose_soul_declares_it_as_the_LOOP_branch_is_named(universe_
     """Codex round 3: request admission queues the universe's declared loop
     branch for every incoming request; deleting it leaves the universe
     queuing a workflow that does not exist."""
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import set_founder_home
     from tinyassets.universe_soul import write_universe_soul
 
     us, _actor = universe_surface
     bid = _create(us, "the-loop")
-    udir = tmp_path / "u-loop"
+    udir = _base_path() / "u-loop"
     udir.mkdir()
+    # ...and an OWNER, or it is not a universe and cannot be a dependent
+    # (2026-09-02 -- tests/test_a_universe_needs_an_owner.py).
+    set_founder_home(_base_path(), founder_sub="test-owner::u-loop", universe_id="u-loop")
     write_universe_soul(udir, name="Loop universe", purpose="runs the loop", loop_branch_def_id=bid)
 
     out = _delete(us, bid)
@@ -402,6 +413,28 @@ def test_a_universe_whose_soul_declares_it_as_the_LOOP_branch_is_named(universe_
     assert bid in _listed(us)
 
     write_universe_soul(udir, clear_loop_branch=True)
+    assert _delete(us, bid)["status"] == "deleted"
+
+
+def test_an_UNOWNED_directory_carrying_the_soul_is_not_a_dependent(
+    universe_surface, tmp_path,
+):
+    """An archived or restored directory keeps the ``soul.md`` it was archived
+    with, so scanning every directory named one as a live dependent -- a wrong
+    refusal, and an id the caller should never have seen. A universe exists
+    because an ownership row says so (2026-09-02)."""
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.universe_soul import write_universe_soul
+
+    us, _actor = universe_surface
+    bid = _create(us, "the-loop")
+    archived = _base_path() / "_removed_universes_20260829"
+    archived.mkdir()
+    write_universe_soul(
+        archived, name="Archived", purpose="used to run the loop",
+        loop_branch_def_id=bid,
+    )
+
     assert _delete(us, bid)["status"] == "deleted"
 
 

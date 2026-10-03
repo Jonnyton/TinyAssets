@@ -741,15 +741,19 @@ def _staging_root(base_path: Path, run_id: str, node_id: str) -> Path:
     A per-operation nonce keeps two operations of the SAME node (a checkout
     then a push, or a retry) from sharing a directory a previous one may still
     be tearing down.
+
+    Created under this process's liveness token (`workspace_staging`), so the
+    sweep can prove whether its owner is still running. EVERY caller removes it
+    with `workspace_staging.remove` in a ``finally``: it holds a credentialed
+    clone, and a failed checkout used to leave it behind forever.
     """
-    staging = (
-        base_path
-        / ".workspace-staging"
-        / _staging_id(run_id)
-        / f"{_staging_id(node_id)}-{secrets.token_hex(4)}"
+    from tinyassets import workspace_staging
+
+    return workspace_staging.create(
+        base_path,
+        _staging_id(run_id),
+        f"{_staging_id(node_id)}-{secrets.token_hex(4)}",
     )
-    staging.mkdir(parents=True, exist_ok=True)
-    return staging
 
 
 def _pool_db(base_path: Path) -> Path:
@@ -862,6 +866,11 @@ def _checkout(
             f"startup reconciliation failed: {type(exc).__name__}",
         ) from None
 
+    # The lease bound is the platform's, never the packet's: a packet-chosen
+    # reservation is a packet choosing its own quota. For a PERMANENT workspace
+    # it is also never more than the owning account can still hold.
+    storage_reservation, bound = _fit_permanent(storage, base_path, universe_id, repo_key, db)
+
     def _admit(*, wait_s: float = 0.0) -> Any:
         return workspace_pool.admit(
             db,
@@ -870,9 +879,7 @@ def _checkout(
             repo_key=repo_key,
             storage_class=storage,
             run_id=str(run_id),
-            # The lease bound is the platform's, never the packet's: a
-            # packet-chosen reservation is a packet choosing its own quota.
-            max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
+            max_bytes=bound,
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
             wait_s=wait_s,
@@ -881,37 +888,43 @@ def _checkout(
             # run's lock. A cancel arriving there must end the wait, not be
             # discovered after the deadline has already bought a lease.
             should_cancel=should_cancel,
-            **_universe_quota_kwargs(storage, base_path),
+            **_universe_quota_kwargs(storage, bound),
         )
 
+    admitted = False
     try:
-        lease = _admit()
-    except Exception as exc:
-        if is_cancellation(exc):
-            raise
-        kind = _pool_error_kind(exc)
-        if kind not in _SWEEPABLE_REFUSALS:
-            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
-        # A lock or a pool slot held by a run that has already finished is
-        # owed to the outbox, not genuinely in use. Sweep ONCE and retry ONCE:
-        # a loop here would turn a real contention into a stall, and the
-        # periodic sweeper is what handles everything this misses.
         try:
-            from tinyassets import runs as _runs
-
-            _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
-        except Exception:
-            logger.exception("workspace sweep before retry failed")
-            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
-        try:
-            lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
-        except Exception as retry_exc:
-            if is_cancellation(retry_exc):
+            lease = _admit()
+        except Exception as exc:
+            if is_cancellation(exc):
                 raise
-            raise _Refused(
-                _pool_error_kind(retry_exc),
-                f"workspace not admitted: {_pool_detail(retry_exc)}",
-            ) from None
+            kind = _pool_error_kind(exc)
+            if kind not in _SWEEPABLE_REFUSALS:
+                raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+            # A lock or a pool slot held by a run that has already finished is
+            # owed to the outbox, not genuinely in use. Sweep ONCE and retry ONCE:
+            # a loop here would turn a real contention into a stall, and the
+            # periodic sweeper is what handles everything this misses.
+            try:
+                from tinyassets import runs as _runs
+
+                _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
+            except Exception:
+                logger.exception("workspace sweep before retry failed")
+                raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+            try:
+                lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
+            except Exception as retry_exc:
+                if is_cancellation(retry_exc):
+                    raise
+                raise _Refused(
+                    _pool_error_kind(retry_exc),
+                    f"workspace not admitted: {_pool_detail(retry_exc)}",
+                ) from None
+        admitted = True
+    finally:
+        if not admitted:  # every give-up path, cancellation included
+            _settle_permanent(storage_reservation, published=False)
 
     # ONE owner for everything created after admission (Codex round 3, P1 #7).
     # `owned` holds what this call opened; the mount takes them ONLY after a
@@ -920,6 +933,8 @@ def _checkout(
     # and nobody wipes is a leak the pool cannot see.
     owned: list[Any] = []
     published = False
+    generation_bytes: int | None = None
+    staging: Path | None = None
     try:
         staging = _staging_root(base_path, run_id, node_id)
         answer = execute(
@@ -959,16 +974,24 @@ def _checkout(
         home = staging / "populate-home"
         home.mkdir(parents=True, exist_ok=True)
         checkout_ref = f"tiny/{_universe_short(universe_id)}/checkout"
+        from tinyassets import workspace_git as _workspace_git
+        from tinyassets import workspace_staging as _workspace_staging
+
         try:
-            populate_workspace_from_bundle(
-                bundle,
-                repo_dir,
-                str(answer.get("ref_name") or "refs/tiny/export"),
-                checkout_ref,
-                home_dir=home,
-                path=_git_path(),
-                dest_fd=_descriptor_or_none(repo_fd),
-            )
+            # The git that populates reads staging's bundle and uses its HOME,
+            # in its own session: it inherits this process's in-use share, so
+            # it keeps the tree marked even if this process is killed first
+            # (gpt-6-astra, PR #4143 round 3).
+            with _workspace_git.inheriting(_workspace_staging.in_use_fd(staging)):
+                populate_workspace_from_bundle(
+                    bundle,
+                    repo_dir,
+                    str(answer.get("ref_name") or "refs/tiny/export"),
+                    checkout_ref,
+                    home_dir=home,
+                    path=_git_path(),
+                    dest_fd=_descriptor_or_none(repo_fd),
+                )
         except _Refused:
             raise
         except Exception as exc:
@@ -980,15 +1003,13 @@ def _checkout(
         # is deleted BEFORE the capability is published, and the deletion is
         # CHECKED: a workspace published while staging survives is a workspace
         # published next to the material it was supposed to replace.
-        try:
-            shutil.rmtree(staging)
-            if staging.exists():
-                raise OSError(f"{staging} still exists after rmtree")
-        except OSError as exc:
+        from tinyassets import workspace_staging
+
+        if not workspace_staging.remove(staging) or os.path.lexists(staging):
             raise _Refused(
                 "workspace_checkout_failed",
-                f"staging could not be removed, so nothing was published: {exc}",
-            ) from None
+                "staging could not be removed, so nothing was published",
+            )
 
         provision_evidence = {}
         if packet.get("provision") is not None:
@@ -1012,6 +1033,11 @@ def _checkout(
 
         replaced = None
         if storage == "universe":
+            # Provisioning may have grown the generation past the bytes the
+            # transfer moved: measure what will be published, and refuse it
+            # (discarded, the previous generation untouched) if it outgrew what
+            # the account could hold.
+            generation_bytes = _require_generation_fits(lease, bound)
             replaced = _publish(
                 db, lease, universe_id=universe_id, repo_key=repo_key, run_id=run_id
             )
@@ -1034,6 +1060,14 @@ def _checkout(
         published = True
         owned.clear()
     finally:
+        # Staging goes on EVERY exit -- refusal, exception, cancellation --
+        # not only on the success path that removes it before publishing. It
+        # holds the credentialed clone; this is what leaked 2.8 GiB.
+        if staging is not None:
+            from tinyassets import workspace_staging
+
+            workspace_staging.remove(staging)
+        _settle_permanent(storage_reservation, published=published, actual=generation_bytes)
         if not published:
             _close_handles(*owned)
             _owe_wipe(base_path, lease, run_id=run_id, universe_id=universe_id)
@@ -1054,31 +1088,100 @@ def _checkout(
     return evidence
 
 
-def _universe_quota_kwargs(storage: str, base_path: Path) -> dict[str, Any]:
+def _fit_permanent(
+    storage: str, base_path: Path, universe_id: str, repo_key: str, db: Path,
+) -> tuple[Any, int]:
+    """``(storage_reservation, lease bound)`` for one workspace admission.
+
+    Scratch: the pool's lease bound, never charged to anyone. Permanent: the
+    OWNING ACCOUNT's storage decides -- the bound is what still fits (plus the
+    generation this checkout replaces, whose discard is owed at publication),
+    capped at the lease bound. account-storage-quota D6: the old fixed 4 GiB
+    reservation against a flat 16 GiB quota refused every permanent workspace on
+    a 2 GiB free account, empty or not. Raises `_Refused` when even the
+    minimum does not fit, before any lease exists.
+    """
+    if storage != "universe":
+        return None, _DEFAULT_MAX_CHECKOUT_BYTES
+    from tinyassets import storage_accounting, workspace_pool
+    from tinyassets.universe_owner import owner_of
+
+    data_root = Path(base_path).parent
+    credit = 0
+    conn = workspace_pool._connect(db)
+    try:
+        workspace_pool.ensure_schema(conn)
+        published = workspace_pool.published_generation(
+            conn, universe_id=universe_id, repo_key=repo_key,
+        )
+    finally:
+        conn.close()
+    if published is not None:
+        old_path, _ = workspace_pool.universe_paths(
+            universe_workspace_root(base_path), repo_key, published,
+        )
+        credit = storage_accounting._walk_bytes(Path(old_path))
+    try:
+        return storage_accounting.reserve_fitted(
+            data_root,
+            account_id=owner_of(data_root, universe_id),
+            scope_id=universe_id,
+            store="workspaces",
+            cap=_DEFAULT_MAX_CHECKOUT_BYTES,
+            credit=credit,
+        )
+    except storage_accounting.StorageRefused as refused:
+        # The effector result reaches whoever drove this run -- possibly a
+        # collaborator in the owner's universe -- so only the charged account
+        # sees its numbers (gpt-6-astra, PR #4167). No bound actor: redacted.
+        record = storage_accounting.visible_record(refused)
+        raise _Refused(record.pop("failure_class"), record.pop("error"), **record) from None
+
+
+def _universe_quota_kwargs(storage: str, bound: int) -> dict[str, Any]:
+    """The pool's own per-universe check, fed the ACCOUNT-derived bound: with no
+    separate "used" number it only stops two in-flight permanent leases from
+    sharing one bound. The account pool (`_fit_permanent`) is the one quota."""
     if storage != "universe":
         return {}
-    from tinyassets import workspace_pool
-
-    return {
-        "universe_quota_bytes": int(_DEFAULT_MAX_CHECKOUT_BYTES * 4),
-        "universe_used_bytes_fn": lambda _uid: _universe_used_bytes(base_path, workspace_pool),
-    }
+    return {"universe_quota_bytes": int(bound), "universe_used_bytes_fn": lambda _uid: 0}
 
 
-def _universe_used_bytes(base_path: Path, _pool: Any) -> int:
-    """Bytes the universe's permanent workspaces already hold. Called INSIDE
-    the admission transaction, so it must not open the pool database."""
-    root = base_path / "workspaces"
-    if not root.is_dir():
-        return 0
-    total = 0
-    for path in root.rglob("*"):
+def _settle_permanent(
+    storage_reservation: Any, *, published: bool, actual: int | None = None,
+) -> None:
+    """Commit the permanent workspace's reservation once published -- at the
+    MEASURED generation size, not the bound, so an empty created workspace is
+    not billed its 4 GiB ceiling -- and release it otherwise. Never raises."""
+    if storage_reservation is None:
+        return
+    from tinyassets import storage_accounting
+
+    if published:
         try:
-            if path.is_file() and not path.is_symlink():
-                total += path.stat().st_size
-        except OSError:
-            continue
-    return total
+            amount = storage_reservation.bytes if actual is None else min(
+                int(actual), storage_reservation.bytes,
+            )
+            storage_accounting.commit(storage_reservation, amount)
+        except Exception:  # noqa: BLE001 -- measurement settles it
+            logger.exception("workspace storage reservation could not be committed")
+    else:
+        storage_accounting.release(storage_reservation)
+
+
+def _require_generation_fits(lease: Any, bound: int) -> int:
+    """Measure the new generation -- provisioning included -- and refuse it if it
+    outgrew its reservation, before publication (D6). Returns its size."""
+    from tinyassets import storage_accounting
+
+    size = storage_accounting._walk_bytes(Path(lease.path))
+    if size > bound:
+        raise _Refused(
+            "storage_quota_exceeded",
+            f"the workspace grew to {size} bytes, past the {bound} bytes its "
+            "account storage could hold; nothing was published",
+        )
+    return size
 
 
 def _publish(db: Path, lease: Any, *, universe_id: str, repo_key: str, run_id: str) -> int | None:
@@ -1192,6 +1295,11 @@ def _create(
                 "it, and re-opening one is not available in this release",
             )
 
+    # A created workspace starts empty, but its bound is still what the owning
+    # account can hold -- and its admission is refused if even the minimum does
+    # not fit (D6). Growth during the run is measured afterwards (founder Q5).
+    storage_reservation, bound = _fit_permanent(storage, base_path, universe_id, repo_key, db)
+
     def _admit(*, wait_s: float = 0.0) -> Any:
         return workspace_pool.admit(
             db,
@@ -1203,7 +1311,7 @@ def _create(
             repo_key=repo_key,
             storage_class=storage,
             run_id=str(run_id),
-            max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
+            max_bytes=bound,
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
             wait_s=wait_s,
@@ -1211,33 +1319,39 @@ def _create(
             # Same contended lock, same pool, same wait: a created workspace is
             # not a lesser admission and must stop for a cancel too.
             should_cancel=should_cancel,
-            **_universe_quota_kwargs(storage, base_path),
+            **_universe_quota_kwargs(storage, bound),
         )
 
+    admitted = False
     try:
-        lease = _admit()
-    except Exception as exc:
-        if is_cancellation(exc):
-            raise
-        kind = _pool_error_kind(exc)
-        if kind not in _SWEEPABLE_REFUSALS:
-            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
         try:
-            from tinyassets import runs as _runs
-
-            _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
-        except Exception:
-            logger.exception("workspace sweep before retry failed")
-            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
-        try:
-            lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
-        except Exception as retry_exc:
-            if is_cancellation(retry_exc):
+            lease = _admit()
+        except Exception as exc:
+            if is_cancellation(exc):
                 raise
-            raise _Refused(
-                _pool_error_kind(retry_exc),
-                f"workspace not admitted: {_pool_detail(retry_exc)}",
-            ) from None
+            kind = _pool_error_kind(exc)
+            if kind not in _SWEEPABLE_REFUSALS:
+                raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+            try:
+                from tinyassets import runs as _runs
+
+                _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
+            except Exception:
+                logger.exception("workspace sweep before retry failed")
+                raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+            try:
+                lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
+            except Exception as retry_exc:
+                if is_cancellation(retry_exc):
+                    raise
+                raise _Refused(
+                    _pool_error_kind(retry_exc),
+                    f"workspace not admitted: {_pool_detail(retry_exc)}",
+                ) from None
+        admitted = True
+    finally:
+        if not admitted:
+            _settle_permanent(storage_reservation, published=False)
 
     owned: list[Any] = []
     published = False
@@ -1283,6 +1397,8 @@ def _create(
         published = True
         owned.clear()
     finally:
+        # Created empty: charged what it holds now (nothing), not its bound.
+        _settle_permanent(storage_reservation, published=published, actual=0)
         if not published:
             _close_handles(*owned)
             _owe_wipe(base_path, lease, run_id=run_id, universe_id=universe_id)
@@ -1331,95 +1447,102 @@ def _push(
     remote_ref = f"refs/heads/tiny/{_universe_short(universe_id)}/{slug}"
 
     staging = _staging_root(base_path, run_id, node_id)
-    destination = staging / "in.bundle"
-    relative = f"repo/{_JAIL_EXPORT_DIR}/{commit_sha}.bundle"
+    try:
+        destination = staging / "in.bundle"
+        relative = f"repo/{_JAIL_EXPORT_DIR}/{commit_sha}.bundle"
 
-    # The hourly ledger sees the push BEFORE any bytes move: a push holds no
-    # lease, so without this it charged nothing at all (Codex round 3, P1 #4).
-    operation_id = _operation_id(run_id, node_id, "push")
-    _reserve_operation(
-        base_path,
-        universe_id=universe_id,
-        run_id=run_id,
-        operation_id=operation_id,
-        max_bytes=_MAX_BUNDLE_BYTES,
-        refusal="workspace_push_refused",
-    )
+        # The hourly ledger sees the push BEFORE any bytes move: a push holds no
+        # lease, so without this it charged nothing at all (Codex round 3, P1 #4).
+        operation_id = _operation_id(run_id, node_id, "push")
+        _reserve_operation(
+            base_path,
+            universe_id=universe_id,
+            run_id=run_id,
+            operation_id=operation_id,
+            max_bytes=_MAX_BUNDLE_BYTES,
+            refusal="workspace_push_refused",
+        )
 
-    # Hold the capability across the copy: a discard racing this must not be
-    # able to close the descriptor mid-read.
-    with _acquired(chain, mount.node_id) as held:
-        try:
-            copied = _fs().copy_regular_file_beneath(
-                held.lease_fd, relative, destination, max_bytes=_MAX_BUNDLE_BYTES
-            )
-        except NotImplementedError as exc:
-            # Same permanent host property, reported against push's own class.
+        # Hold the capability across the copy: a discard racing this must not be
+        # able to close the descriptor mid-read.
+        with _acquired(chain, mount.node_id) as held:
+            try:
+                copied = _fs().copy_regular_file_beneath(
+                    held.lease_fd, relative, destination, max_bytes=_MAX_BUNDLE_BYTES
+                )
+            except NotImplementedError as exc:
+                # Same permanent host property, reported against push's own class.
+                raise _Refused(
+                    "workspace_push_refused",
+                    f"the workspace sink needs POSIX openat semantics; this host is "
+                    f"{os.name!r} ({exc})",
+                ) from None
+            except Exception as exc:
+                raise _Refused(
+                    "workspace_push_refused", f"the export bundle could not be read: {exc}"
+                )
+
+        intent = record_push_intent(
+            base_path,
+            run_id=str(run_id),
+            node_id=node_id,
+            connection_id=mount.connection_id,
+            repo=repo,
+            remote_ref=remote_ref,
+            sha=commit_sha,
+            host=host,
+            grant_id=mount.grant_id,
+            universe_id=universe_id,
+            expected_old_sha=_str_field(packet, "expected_old_sha") or None,
+        )
+        answer = execute(
+            {
+                "op": "push",
+                "universe_dir": str(base_path),
+                "credential_ref": str(getattr(resource, "credential_ref", "")),
+                "host": host,
+                "owner_repo": repo,
+                "remote_ref": remote_ref,
+                "commit_sha": commit_sha,
+                "bundle_path": str(destination),
+                "staging_dir": str(staging),
+            }
+        )
+        # A TIMEOUT is not a failure: the send may have landed. It stays claimable
+        # as `unknown` and the startup reconciler asks the remote (P1 #5).
+        if answer.get("ok"):
+            state = "done"
+        elif str(answer.get("stderr_class") or "") == "timeout":
+            state = "unknown"
+        else:
+            state = "failed"
+        settle_push_intent(
+            base_path, intent, state, observed_sha=str(answer.get("observed_sha") or "") or None
+        )
+        _reconcile_operation(base_path, operation_id, int(answer.get("bytes") or copied or 0))
+        if not answer.get("ok"):
             raise _Refused(
                 "workspace_push_refused",
-                f"the workspace sink needs POSIX openat semantics; this host is "
-                f"{os.name!r} ({exc})",
-            ) from None
-        except Exception as exc:
-            raise _Refused(
-                "workspace_push_refused", f"the export bundle could not be read: {exc}"
+                str(answer.get("error") or "push refused"),
+                stderr_class=str(answer.get("stderr_class") or ""),
+                observed_sha=str(answer.get("observed_sha") or ""),
+                remote_ref=remote_ref,
+                intent_state=state,
             )
-
-    intent = record_push_intent(
-        base_path,
-        run_id=str(run_id),
-        node_id=node_id,
-        connection_id=mount.connection_id,
-        repo=repo,
-        remote_ref=remote_ref,
-        sha=commit_sha,
-        host=host,
-        grant_id=mount.grant_id,
-        universe_id=universe_id,
-        expected_old_sha=_str_field(packet, "expected_old_sha") or None,
-    )
-    answer = execute(
-        {
+        return {
             "op": "push",
-            "universe_dir": str(base_path),
-            "credential_ref": str(getattr(resource, "credential_ref", "")),
-            "host": host,
-            "owner_repo": repo,
+            "repo": repo,
             "remote_ref": remote_ref,
-            "commit_sha": commit_sha,
-            "bundle_path": str(destination),
-            "staging_dir": str(staging),
+            "sha": commit_sha,
+            "bytes": int(answer.get("bytes") or copied or 0),
+            "reconciled": bool(answer.get("reconciled")),
         }
-    )
-    # A TIMEOUT is not a failure: the send may have landed. It stays claimable
-    # as `unknown` and the startup reconciler asks the remote (P1 #5).
-    if answer.get("ok"):
-        state = "done"
-    elif str(answer.get("stderr_class") or "") == "timeout":
-        state = "unknown"
-    else:
-        state = "failed"
-    settle_push_intent(
-        base_path, intent, state, observed_sha=str(answer.get("observed_sha") or "") or None
-    )
-    _reconcile_operation(base_path, operation_id, int(answer.get("bytes") or copied or 0))
-    if not answer.get("ok"):
-        raise _Refused(
-            "workspace_push_refused",
-            str(answer.get("error") or "push refused"),
-            stderr_class=str(answer.get("stderr_class") or ""),
-            observed_sha=str(answer.get("observed_sha") or ""),
-            remote_ref=remote_ref,
-            intent_state=state,
-        )
-    return {
-        "op": "push",
-        "repo": repo,
-        "remote_ref": remote_ref,
-        "sha": commit_sha,
-        "bytes": int(answer.get("bytes") or copied or 0),
-        "reconciled": bool(answer.get("reconciled")),
-    }
+    finally:
+        # Push staging held a copy of the bundle and the git homes, and was
+        # never removed on ANY path before -- success included.
+        from tinyassets import workspace_staging
+
+        workspace_staging.remove(staging)
 
 
 def _discard(
@@ -1677,8 +1800,6 @@ def _pool_detail(exc: Exception) -> str:
 
 
 def _git_path() -> str:
-    import shutil
-
     found = shutil.which("git")
     if not found:
         raise _Refused("workspace_checkout_failed", "git is not available on this host")
@@ -1782,7 +1903,7 @@ def _run(
     db_path = _ledger_db_path(base_path)
     if not universe_id or db_path is None or base_path is None:
         return {
-            "error": "no universe authority is bound to this run",
+            "error": "no command center authority is bound to this run",
             "error_kind": "no_universe_authority",
             "matched_output_key": matched_key,
         }

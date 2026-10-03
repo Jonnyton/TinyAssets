@@ -125,3 +125,48 @@ def test_active_surfaces_have_no_high_confidence_retired_workflow_names():
         "Retired Workflow names found in active source/config surfaces:\n"
         + "\n".join(failures)
     )
+
+
+#: The repository moved from the founder's account to the `TinyAssets` org
+#: (docs/ops/org-transfer-runbook.md). GitHub redirects the old slug, but GHCR
+#: does not: the image under the old owner stops receiving pushes. Matched as a
+#: pattern, not a substring, because sibling repos that did NOT move share the
+#: prefix (`Jonnyton/TinyAssets-catalog`, `Jonnyton/tinyassets-backups`).
+MOVED_REPO_PATTERNS = {
+    r"(?i)jonnyton/tinyassets(?![-\w])": "pre-org repository slug",
+    r"(?i)ghcr\.io/jonnyton/": "pre-org container image path",
+}
+
+#: Records that cite the old slug as evidence of what was true then: review
+#: receipts, run links and image digests in change folders, a captured session.
+#: Their links still resolve through GitHub's redirect, and a digest names the
+#: package it was actually pushed to; rewriting them would alter the record.
+MOVED_REPO_RECORD_DIRS = (
+    ("openspec", "changes"),
+    ("output",),
+    (".cowork-revert-patches",),
+    (".agents",),
+)
+
+
+def test_active_surfaces_name_the_org_owned_repository():
+    import re
+
+    patterns = {re.compile(p): reason for p, reason in MOVED_REPO_PATTERNS.items()}
+    failures: list[str] = []
+    for path in _active_text_files():
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        rel = path.relative_to(ROOT)
+        if any(rel.parts[: len(d)] == d for d in MOVED_REPO_RECORD_DIRS):
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if ALLOW_MARKER in line:
+                continue
+            for pattern, reason in patterns.items():
+                if pattern.search(line):
+                    failures.append(f"{rel}:{lineno}: {reason}: {line.strip()[:120]}")
+
+    assert not failures, (
+        "Pre-org repository references found in active surfaces:\n"
+        + "\n".join(failures)
+    )

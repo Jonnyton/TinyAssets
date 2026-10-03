@@ -17,7 +17,7 @@ python scripts/peer_agent.py claude --out output/peer-review.md \
     --prompt-file brief.md
 
 # Have Codex fix something in a worktree (write mode):
-python scripts/peer_agent.py codex --out output/codex-fix.md \
+python scripts/peer_agent.py codex --model gpt-6-astra --out output/codex-fix.md \
     --prompt "Fix the failing test in tests/test_universe_nodes.py and run it" \
     --cwd ../wf-bug126 --write
 
@@ -30,11 +30,8 @@ For big briefs, write the brief to a file with your Write tool and pass `--promp
 ## A dispatched peer must not dispatch
 
 **State this in every brief.** A peer given a review brief will, left to itself,
-farm the review out rather than do it: on 2026-08-27 two dispatched Codex
-reviews each spawned their own `peer_agent.py claude` children (four in total),
-created three worktrees, and ran full local `pytest -m "not slow"` sweeps. After
-34 minutes neither had written a single byte to its `--out` file, and both had
-to be killed. The work was recursive, not deep.
+farm the review out rather than do it -- two dispatched reviews once spawned four
+children and three worktrees and wrote nothing in 34 minutes. Recursive, not deep.
 
 Put a constraints block in the brief itself -- the CLI has no flag for it:
 
@@ -45,19 +42,23 @@ HARD CONSTRAINTS ON HOW YOU WORK:
 - Do NOT run the full suite. No scripts/ci_required_tests.py, no
   `pytest -m "not slow"`. Run at most the one test file you need.
 - Budget ~10 minutes. Read the diff and the cited files and reason.
+- Lanes are not capped, but they are RECONCILED: if this brief collides with
+  another open lane (shared files or overlapping intent), or the design direction
+  it assumes has changed, say so and stop rather than working around it. The lead
+  folds colliding or superseded lanes into one, or rebases the briefs onto the new
+  direction, so every objective keeps moving. Merges stay serialized.
 ```
 
 Two more habits that fell out of the same incident:
 
 - **One dispatch at a time.** Two concurrent reviews multiplied the spawn storm
   and made it much harder to tell which tree of processes belonged to what.
-- **Set `--timeout` to what you will actually wait** (900s reads better than
-  the 1800s default). A peer that has produced nothing at the halfway mark is
-  not about to; check `Get-CimInstance Win32_Process` command lines before
-  waiting out the rest.
+- **Set `--timeout` to what you will actually wait** (900s over the 1800s
+  default). A peer with nothing at the halfway mark is not about to produce;
+  check its `Get-CimInstance Win32_Process` command line instead of waiting.
 - **A `nohup ... &` dispatch from the Bash tool is not reliably backgrounded** --
-  one such dispatch looked dead (exit 0, no output) and was still running 30
-  minutes later, duplicating a review. Use the tool's own background mode.
+  it can read as dead (exit 0, no output) and still be running. Use the tool's own
+  background mode.
 
 ## Output contract
 
@@ -70,15 +71,15 @@ Two more habits that fell out of the same incident:
 - **Default (read-only-ish).** claude: plain `-p` (Read/Glob/Grep allowed, edit/bash denied). codex: `-s read-only -c approval_policy=never`. Safe to point at the live checkout.
 - **`--write` (full agent).** claude: `--dangerously-skip-permissions`. codex: `--full-auto` (workspace-write sandbox — weak on Windows). **Always point `--cwd` at a `wf-*` worktree in write mode, never the live checkout or main.** The peer can then edit, run tests, and iterate on its own.
 
-Useful flags: `--timeout SEC` (default 1800), `--effort minimal|low|medium|high|xhigh` (codex only — use `low` for trivial tasks, it's much faster), `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
+Useful flags: `--timeout SEC` (default 1800), `--effort low|medium|high|xhigh` (codex only; `low` for trivial tasks). **Never `--effort minimal` — gpt-6-astra rejects it with a 400.** Also `--system TEXT` (codex: prepended to prompt), `--cwd DIR`.
 
-**Model defaults are frontier, always.** claude runs `--model fable` (alias tracking the latest Claude model — currently claude-fable-5 on a Max subscription); codex runs with no `-m`, so it uses the model from the host's `~/.codex/config.toml` (currently `gpt-5.6-sol`) and automatically tracks whatever the host configures next. Override only with a reason: `--model M`, or `WORKFLOW_CODEX_MODEL` for codex.
+**Models are pinned, not inherited.** claude: `--model fable`. codex: `gpt-6-astra`/`medium` is the wrapper default (`DEFAULT_CODEX_MODEL`); the CLI's own default is rejected by a ChatGPT account. Override only with a stated reason (`--model`, `WORKFLOW_CODEX_MODEL`). A failed run writes `[peer_agent] ERROR` + full stderr to `--out`.
 
 ## When to use which peer
 
-- **Cross-family review is the AGENTS.md rule:** research-derived findings and non-trivial changes need opposite-family review. If you are Kimi/Claude, dispatch review to codex; if you are Codex/OpenAI, dispatch to claude.
+- **Which changes need a review is not decided here.** `AGENTS.md` § *The loop* (item 4) owns the scope — floor-class changes and gate files, one round, after the PR opens; this skill owns the mechanics. When one is owed: if you are Kimi/Claude, dispatch to codex; if you are Codex/OpenAI, dispatch to claude.
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
-- **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree. `--effort low` for small tasks.
+- **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree.
 
 - **External implementation examples:** a repo search for precedent owns the focused brief, enforced read-only role, source map, and direct-to-coder return. `peer-agents` may run that role but does not replace its research contract.
 - **Internal repository localization:** use the harness's read-only codebase explorer or a focused read task; do not invoke the external precedent workflow.

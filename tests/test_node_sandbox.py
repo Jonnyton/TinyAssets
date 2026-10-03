@@ -30,6 +30,7 @@ import inspect
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -52,8 +53,10 @@ from tinyassets.node_sandbox import (
 from tinyassets.providers.base import probe_sandbox_available
 
 _PROBE = probe_sandbox_available()
+# The functional probe decides; which("bwrap") is its precondition, spelled out
+# so linux-jail-proof's guard can see this file skips without bubblewrap.
 requires_bwrap = pytest.mark.skipif(
-    not _PROBE.get("bwrap_available"),
+    shutil.which("bwrap") is None or not _PROBE.get("bwrap_available"),
     reason=f"needs a host with bwrap: {_PROBE.get('reason')}",
 )
 
@@ -1318,21 +1321,28 @@ def test_invoke_none_answers_not_available():
     assert time.monotonic() - started < 15.0, "an unanswered call would hang"
 
 
-def test_rpc_calls_are_capped_per_run():
-    """The call after MAX_RPC_CALLS fails the node; every call up to it is
-    answered. The cap is read from node_sandbox, not pinned (2026-09-02)."""
+def test_rpc_calls_are_not_capped():
+    """``MAX_RPC_CALLS = 500`` is gone: every call a node makes is answered.
+
+    It failed the node at call 501 with "too many rpc calls" -- a structural
+    bound on what one node may be. An account has exactly two limits, cloud
+    bytes and concurrent agent seats (founder, 2026-09-30). Each individual
+    reply is still bounded by ``MAX_RPC_REPLY_BYTES``, which is payload
+    validation of one message.
+    """
     seen: list[str] = []
     sandbox = NodeSandbox(timeout=60.0)
-    cap = node_sandbox.MAX_RPC_CALLS
+    assert not hasattr(node_sandbox, "MAX_RPC_CALLS"), "the per-node cap came back"
+    calls = 520  # past the old 500
     source = (
         "def run(state):\n"
-        f"    for i in range({cap + 8}):\n"
+        f"    for i in range({calls}):\n"
         "        invoke_mcp_action('ping', i=i)\n"
         "    return {'done': True}\n"
     )
 
     result = sandbox.run_sync(
-        node_id="rpc-cap",
+        node_id="rpc-uncapped",
         source_code=source,
         input_state={},
         input_keys=[],
@@ -1341,9 +1351,9 @@ def test_rpc_calls_are_capped_per_run():
         timeout=60.0,
     )
 
-    assert result.success is False
-    assert "too many rpc calls" in result.error
-    assert len(seen) == cap, f"cap should let exactly {cap} through, saw {len(seen)}"
+    assert result.success is True, result.error
+    assert result.output_state["done"] is True
+    assert len(seen) == calls, f"every call must be answered, saw {len(seen)}"
 
 
 def test_rpc_reply_is_capped_at_one_mib():
@@ -1754,6 +1764,7 @@ def jail_sandbox(monkeypatch):
     return NodeSandbox(timeout=30.0, launcher=BwrapLauncher())
 
 
+@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_runs_a_node_at_all(jail_sandbox):
     """Positive control: without this, every refusal below could be a broken jail."""
@@ -1769,6 +1780,7 @@ def test_jail_runs_a_node_at_all(jail_sandbox):
     assert result.output_state == {"r": 4}
 
 
+@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_has_no_network(jail_sandbox):
     """--unshare-all with no --share-net: an outbound connection cannot open."""
@@ -1795,6 +1807,7 @@ def test_jail_has_no_network(jail_sandbox):
     assert result.output_state["r"].startswith("refused:"), result.output_state
 
 
+@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_cannot_read_the_hosts_process_environment(jail_sandbox, monkeypatch):
     """/proc is the jail's own; the parent's secrets are not reachable."""
@@ -1823,6 +1836,7 @@ def test_jail_cannot_read_the_hosts_process_environment(jail_sandbox, monkeypatc
     assert body.startswith("refused:") or "TINYASSETS" not in body
 
 
+@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_cannot_see_the_data_dir(jail_sandbox):
     """No /data mount: the universe data dir does not exist in the child."""
@@ -1847,6 +1861,7 @@ def test_jail_cannot_see_the_data_dir(jail_sandbox):
     assert result.output_state["r"] == "refused: FileNotFoundError"
 
 
+@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_cannot_read_unbound_host_files(jail_sandbox):
     """/etc is not bound: host identity files are not readable."""
@@ -1870,6 +1885,7 @@ def test_jail_cannot_read_unbound_host_files(jail_sandbox):
     assert result.output_state["r"].startswith("refused:"), result.output_state
 
 
+@pytest.mark.real_jail
 @requires_bwrap
 def test_jail_working_directory_is_the_private_tmpfs(jail_sandbox):
     """--chdir /tmp: the node starts on scratch space, not in a bound tree."""

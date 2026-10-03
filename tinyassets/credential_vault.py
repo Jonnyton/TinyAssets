@@ -32,6 +32,77 @@ VALID_CREDENTIAL_TYPES = frozenset(
     {"social", "llm_subscription", "llm_api_key", "vcs", "http"}
 )
 
+#: When the secret NOW STORED in an http record was stored. There is no expiry
+#: warning yet -- a key that died on the provider side was first noticed by a
+#: failed run -- and this is the field one needs.
+HTTP_DEPOSITED_AT = "deposited_at"
+
+
+def http_credential_record(*, destination: str, token: str) -> dict[str, Any]:
+    """The ONE shape of an http credential record, stamped with its write time.
+
+    Three paths put a secret in an http slot: the owner's deposit
+    (``api.http_connection.connect_http``), a rotation (``rotate_http``), and an
+    oauth2 refresh (``connection_oauth.tokens``). ``_merge_single_record``
+    REPLACES the whole slot for every non-subscription type, so a field only one
+    of them wrote would silently disappear on the next write by another. One
+    builder, so ``deposited_at`` means the same thing whichever path stored the
+    secret that is there now.
+
+    The token is passed straight through and never inspected, logged or returned.
+    """
+    from datetime import datetime, timezone
+
+    return {
+        "credential_type": "http",
+        "service": destination,
+        "destination": destination,
+        "token": token,
+        HTTP_DEPOSITED_AT: datetime.now(timezone.utc).isoformat(),
+    }
+
+
+#: When the document NOW STORED in a subscription record was last replaced by a
+#: refresh, as the CLI's own ``auth.json`` spells it. Read to decide whether the
+#: platform refreshes before launch: a document past the CLI's refresh threshold
+#: would otherwise be refreshed INSIDE the jail, where the rotated refresh token
+#: cannot be saved.
+SUBSCRIPTION_LAST_REFRESH = "last_refresh"
+
+
+def llm_subscription_credential_record(
+    *,
+    service: str,
+    auth_json_b64: str,
+    last_refresh: str = "",
+) -> dict[str, Any]:
+    """The ONE shape of a subscription credential record, stamped with its times.
+
+    Three paths put a document in a subscription slot: the owner's one-tap
+    sign-in, a re-deposit, and a platform refresh
+    (``tinyassets.subscription_refresh``). Subscription slots MERGE rather than
+    replace (``_merge_subscription_records``), so a field only one path wrote
+    survives — but it survives with the value the OTHER path left, which for a
+    freshness stamp is worse than absent. One builder, so ``deposited_at`` and
+    ``last_refresh`` mean the same thing whichever path stored the document that
+    is there now.
+
+    ``last_refresh`` is the document's OWN stamp when the caller has one (a
+    refresh copies what it just wrote into the document), otherwise now. The
+    document is passed straight through and never inspected, logged or returned.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "credential_type": "llm_subscription",
+        "service": service,
+        "auth_json_b64": auth_json_b64,
+        HTTP_DEPOSITED_AT: now,
+        SUBSCRIPTION_LAST_REFRESH: str(last_refresh or now),
+    }
+
+
 # Map a deposited llm_api_key record's ``service`` to the provider-subprocess
 # env var that CLI providers read. Only CLI-subprocess providers are reachable
 # via the vault env overlay (claude-code / codex); the in-process HTTP free-tier
@@ -174,6 +245,52 @@ def _normalize_record(raw: Any) -> dict[str, Any]:
     ):
         _decode_codex_auth_json(record["auth_json_b64"])
     return record
+
+
+def http_deposit_refusal(
+    universe_dir: str | Path, *, destination: str, owner_user_id: str,
+) -> str:
+    """Why an owned http write for ``destination`` would be refused, or ``""``.
+
+    Read-only, and derived from the SAME rows :func:`write_credential_vault`
+    compares, so a surface that previews a write cannot disagree with the write
+    that follows. There is deliberately no second copy of the rule here — both
+    conditions below are the ones the writer raises ``PermissionError`` for.
+
+    It exists because a ROTATION is previewed before the owner is asked to paste
+    anything: a record left with no ownership row (deposited before http
+    ownership was tracked, or by an owner-less path) is refused by the write, and
+    admitting that card would put an unfulfillable tab in front of the owner
+    (Codex refute-review, P2 #4).
+    """
+    from tinyassets.storage import db_path
+
+    universe = Path(universe_dir).resolve(strict=False)
+    service = (destination or "").strip().lower()
+    owner = (owner_user_id or "").strip()
+    if not service or not owner:
+        return "incomplete_request"
+    conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+    try:
+        _ensure_llm_deposit_owner_schema(conn)
+        rows = conn.execute(
+            "SELECT service, owner_user_id FROM llm_credential_deposit_owners "
+            "WHERE universe_id = ?",
+            (universe.name,),
+        ).fetchall()
+    finally:
+        conn.close()
+    if any(str(row[1]) != owner for row in rows):
+        return "foreign_owner"
+    owned = {str(row[0]) for row in rows}
+    if f"http:{service}" in owned:
+        return ""
+    on_disk = {
+        _service(record)
+        for record in load_credential_vault(universe)
+        if record.get("credential_type") == "http"
+    }
+    return "unowned_record" if service in on_disk else ""
 
 
 def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
@@ -638,7 +755,7 @@ def _write_identity(
     if owner_user_id is not None and not owner:
         raise ValueError("credential owner must be a non-empty server principal")
     if uid != universe.name:
-        raise ValueError("credential universe does not match its canonical directory")
+        raise ValueError("credential command center does not match its canonical directory")
     return owner, uid
 
 
@@ -857,6 +974,103 @@ def _ensure_llm_deposit_owner_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_refresh_state_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_credential_refresh_state (
+            universe_id TEXT NOT NULL,
+            service TEXT NOT NULL,
+            rejected_at TEXT NOT NULL,
+            PRIMARY KEY (universe_id, service)
+        )
+        """
+    )
+
+
+def record_refresh_rejected(
+    base_path: str | Path, *, universe_id: str, service: str, when: str = "",
+) -> None:
+    """Remember that this source's stored sign-in was refused, across restarts.
+
+    NOT a field on the `llm_subscription` record, and that is the whole point.
+    `_subscription_record_digest` hashes the ENTIRE record, and that digest is pinned
+    into the provider binding -- so stamping the rejection where it naturally belongs
+    would invalidate custody and make serving refuse outright, which is worse than
+    the problem: it would replace a turn that falls back to the owner's next model
+    with one that cannot run at all. The requirement is that the fact survives a
+    deploy (the in-memory `SOURCE_HEALTH` mark does not); this store meets it without
+    touching the bytes custody is computed from.
+
+    Idempotent, and never raises: failing to remember a rejection must not fail the
+    turn that discovered it.
+    """
+    from datetime import datetime, timezone
+
+    from tinyassets.storage import db_path
+
+    stamp = when or datetime.now(timezone.utc).isoformat()
+    try:
+        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+    except sqlite3.Error:
+        logger.warning("could not open storage to record a sign-in rejection")
+        return
+    try:
+        _ensure_refresh_state_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO llm_credential_refresh_state (universe_id, service, rejected_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (universe_id, service) DO UPDATE SET rejected_at = excluded.rejected_at
+            """,
+            (str(universe_id).strip(), str(service).strip().lower(), stamp),
+        )
+    except sqlite3.Error:
+        logger.warning("could not record a sign-in rejection")
+    finally:
+        conn.close()
+
+
+def clear_refresh_rejected(base_path: str | Path, *, universe_id: str, service: str) -> None:
+    """Forget a rejection, because a deposit or a successful refresh replaced it."""
+    from tinyassets.storage import db_path
+
+    try:
+        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+    except sqlite3.Error:
+        return
+    try:
+        _ensure_refresh_state_schema(conn)
+        conn.execute(
+            "DELETE FROM llm_credential_refresh_state WHERE universe_id = ? AND service = ?",
+            (str(universe_id).strip(), str(service).strip().lower()),
+        )
+    except sqlite3.Error:
+        logger.warning("could not clear a sign-in rejection")
+    finally:
+        conn.close()
+
+
+def refresh_rejected_sources(base_path: str | Path, *, universe_id: str) -> dict[str, str]:
+    """``{service: rejected_at}`` for this universe. Empty when nothing is refused."""
+    from tinyassets.storage import db_path
+
+    try:
+        conn = sqlite3.connect(db_path(Path(base_path)), isolation_level=None)
+    except sqlite3.Error:
+        return {}
+    try:
+        _ensure_refresh_state_schema(conn)
+        rows = conn.execute(
+            "SELECT service, rejected_at FROM llm_credential_refresh_state WHERE universe_id = ?",
+            (str(universe_id).strip(),),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
 def _read_credential_material(path: Path) -> bytes:
     if path.is_symlink() or not path.is_file():
         raise PermissionError("exactly one usable subscription credential is required")
@@ -1028,6 +1242,42 @@ def _custody_reference_digest(
     })
 
 
+def _subscription_reference_digest(
+    *, reference_id: str, owner_user_id: str, universe_id: str, service: str, generation: int,
+) -> str:
+    """Schema 2: the owner's CONSENT, not the bytes.
+
+    The record digest is left out on purpose. Every authority record downstream
+    (bindings, assignment, manifest, receipts) pins this reference, so a v1
+    reference -- which hashed the bytes in -- made a same-account token rotation
+    republish all of them and void every receipt in flight. The bytes stay pinned
+    by the custody row's ``record_digest``, checked on every read and snapshot.
+    """
+    return _canonical_digest({
+        "generation": generation,
+        "owner_user_id": owner_user_id,
+        "reference_id": reference_id,
+        "schema_version": 2,
+        "service": service,
+        "universe_id": universe_id,
+    })
+
+
+def _subscription_reference_matches(
+    *, reference_id: str, owner_user_id: str, universe_id: str, service: str,
+    generation: int, record_digest: str, reference_digest: str,
+) -> bool:
+    """The stored reference, recomputed under either formula, for this exact row."""
+    identity = dict(
+        reference_id=reference_id, owner_user_id=owner_user_id,
+        universe_id=universe_id, service=service, generation=generation,
+    )
+    return reference_digest in (
+        _subscription_reference_digest(**identity),
+        _custody_reference_digest(**identity, record_digest=record_digest),
+    )
+
+
 def _owned_subscription_record(
     conn: sqlite3.Connection, *, universe_dir: Path, owner: str, uid: str, service: str,
 ) -> dict[str, Any]:
@@ -1115,13 +1365,12 @@ def adopt_llm_subscription_custody(
                 _record_digest=record_digest,
             )
         generation = int(row[1]) + 1
-    reference_digest = _custody_reference_digest(
+    reference_digest = _subscription_reference_digest(
         reference_id=reference_id,
         owner_user_id=owner,
         universe_id=uid,
         service=canonical_service,
         generation=generation,
-        record_digest=record_digest,
     )
     conn.execute(
         """
@@ -1393,15 +1642,15 @@ def current_llm_subscription_custody(
     record_digest = _subscription_record_digest(
         Path(universe_dir), service.strip().lower(), record,
     )
-    expected = _custody_reference_digest(
+    if record_digest != str(row[2]) or not _subscription_reference_matches(
         reference_id=str(row[0]),
         owner_user_id=owner_user_id.strip(),
         universe_id=universe_id.strip(),
         service=service.strip().lower(),
         generation=int(row[1]),
         record_digest=record_digest,
-    )
-    if record_digest != str(row[2]) or expected != str(row[3]):
+        reference_digest=str(row[3]),
+    ):
         return None
     return LLMCredentialCustodyReference(
         reference_id=str(row[0]),
@@ -1412,6 +1661,83 @@ def current_llm_subscription_custody(
         reference_digest=str(row[3]),
         _record_digest=record_digest,
     )
+
+
+def carry_llm_subscription_custody(
+    conn: sqlite3.Connection,
+    *,
+    universe_dir: str | Path,
+    owner_user_id: str,
+    universe_id: str,
+    service: str,
+    expected_record_digest: str,
+) -> bool:
+    """Move a v2 custody row's byte pin onto the rotated record, nothing else.
+
+    The platform's own refresh of the exact pinned document, same account, new
+    tokens: the owner's consent is unchanged, so the reference, the generation
+    and every pin downstream stay as they are and no receipt in flight is voided.
+    The CALLER holds the exclusive vault admission across the byte write and this
+    call. Fenced on the depositor, on the row still pinning
+    ``expected_record_digest``, and on its reference being exactly the v2 formula
+    for its own identity -- a v1 row, or one renewed in between, returns False and
+    the caller renews instead. Returns True only when the pin moved.
+    """
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise ValueError("custody carry requires an active SQLite transaction")
+    owner = owner_user_id.strip()
+    uid = universe_id.strip()
+    key = service.strip().lower()
+    _ensure_llm_deposit_owner_schema(conn)
+    depositor = conn.execute(
+        "SELECT owner_user_id FROM llm_credential_deposit_owners "
+        "WHERE universe_id = ? AND service = ?",
+        (uid, key),
+    ).fetchone()
+    if depositor is None or str(depositor[0]) != owner:
+        return False
+    _ensure_custody_schema(conn)
+    row = conn.execute(
+        """
+        SELECT reference_id, generation, record_digest, reference_digest
+          FROM llm_credential_custody
+         WHERE owner_user_id = ? AND universe_id = ? AND service = ?
+        """,
+        (owner, uid, key),
+    ).fetchone()
+    if row is None or str(row[2]) != expected_record_digest:
+        return False
+    if str(row[3]) != _subscription_reference_digest(
+        reference_id=str(row[0]), owner_user_id=owner, universe_id=uid,
+        service=key, generation=int(row[1]),
+    ):
+        return False
+    try:
+        record = _usable_subscription_record(Path(universe_dir), key)
+    except (PermissionError, ValueError, OSError):
+        return False
+    new_digest = _subscription_record_digest(Path(universe_dir), key, record)
+    moved = conn.execute(
+        """
+        UPDATE llm_credential_custody SET record_digest = ?
+         WHERE reference_id = ? AND owner_user_id = ? AND universe_id = ?
+           AND service = ? AND generation = ? AND reference_digest = ?
+           AND record_digest = ?
+        """,
+        (new_digest, str(row[0]), owner, uid, key, int(row[1]), str(row[3]),
+         expected_record_digest),
+    )
+    return moved.rowcount == 1
+
+
+def pinned_subscription_record_digest(universe_dir: str | Path, service: str) -> str | None:
+    """The digest of the stored record as custody would pin it, or None."""
+    key = service.strip().lower()
+    try:
+        record = _usable_subscription_record(Path(universe_dir), key)
+    except (PermissionError, ValueError, OSError):
+        return None
+    return _subscription_record_digest(Path(universe_dir), key, record)
 
 
 def _is_snapshot_reparse_point(file_stat: os.stat_result) -> bool:
@@ -1591,7 +1917,19 @@ def _locate_tracked_snapshot(snapshot: LLMCredentialSnapshot) -> Path | None:
 
 
 def cleanup_llm_credential_snapshot(snapshot: LLMCredentialSnapshot | None) -> None:
-    """Best-effort identity-anchored snapshot removal; never raise."""
+    """Best-effort identity-anchored snapshot removal; never raise.
+
+    Nothing is recovered from the copy first, and that is deliberate rather than
+    an omission. The brief for this change asked for a rotation the launch copy
+    made to be written back instead of discarded; the copy cannot HOLD one. Its
+    ``auth.json`` is sealed ``0o400`` by ``_write_exclusive_snapshot_file``, and
+    the served path binds each file into the jail read-only
+    (``codex_provider._codex_home_file_mounts``), so the CLI's write fails rather
+    than producing a rotation to save. A recovery hook here could never fire, and
+    an unreachable safety net reads as a guarantee that does not exist. The
+    reachable case is a materialized home the CLI CAN write, which
+    ``subscription_refresh.adopt_newer_on_disk_document`` handles before launch.
+    """
 
     if snapshot is None:
         return
@@ -1676,17 +2014,18 @@ def snapshot_llm_subscription_credential(
         "material_digest": material_digest,
         "record": record,
     })
-    snapshot_reference_digest = _custody_reference_digest(
-        reference_id=custody.reference_id,
-        owner_user_id=custody.owner_user_id,
-        universe_id=custody.universe_id,
-        service=custody.service,
-        generation=custody.generation,
-        record_digest=snapshot_record_digest,
-    )
+    snapshot_reference_digest = custody.reference_digest
     if (
         snapshot_record_digest != custody._record_digest
-        or snapshot_reference_digest != custody.reference_digest
+        or not _subscription_reference_matches(
+            reference_id=custody.reference_id,
+            owner_user_id=custody.owner_user_id,
+            universe_id=custody.universe_id,
+            service=custody.service,
+            generation=custody.generation,
+            record_digest=snapshot_record_digest,
+            reference_digest=custody.reference_digest,
+        )
     ):
         raise PermissionError("credential changed before launch snapshot")
 
@@ -1723,15 +2062,9 @@ def snapshot_llm_subscription_credential(
             ),
             "record": record,
         })
-        copied_reference_digest = _custody_reference_digest(
-            reference_id=custody.reference_id,
-            owner_user_id=custody.owner_user_id,
-            universe_id=custody.universe_id,
-            service=custody.service,
-            generation=custody.generation,
-            record_digest=copied_record_digest,
-        )
-        if copied_reference_digest != custody.reference_digest:
+        # The copied BYTES against the pin, directly: a v2 reference does not
+        # cover the bytes, so comparing references alone would pass a bad copy.
+        if copied_record_digest != custody._record_digest:
             raise PermissionError("credential snapshot custody digest disagrees")
         _chmod_best_effort(directory, 0o700)
         return snapshot
@@ -1905,6 +2238,60 @@ def resolve_codex_home(universe_dir: str | Path | None) -> Path | None:
     return None
 
 
+def _document_stamp(document: Any) -> float | None:
+    """A document's own ``last_refresh`` as a timestamp, or None if unreadable.
+
+    Deliberately narrow: only an ISO-8601 ``last_refresh`` counts. A file mtime is
+    NOT used as a fallback -- materializing a document sets the mtime, so mtime
+    would make the copy look newer than the original that produced it.
+    """
+    from datetime import datetime, timezone
+
+    if isinstance(document, dict):
+        raw = document.get(SUBSCRIPTION_LAST_REFRESH) or document.get(HTTP_DEPOSITED_AT)
+    else:
+        raw = document
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _on_disk_document_is_newer(
+    auth_file: Path, record: dict[str, Any], vault_document: bytes,
+) -> bool:
+    """Whether the materialized document must be kept over the vault's."""
+    try:
+        if auth_file.is_symlink() or not auth_file.is_file():
+            return False
+        document = json.loads(auth_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        # Unreadable on disk: the vault's document is the only usable one, and
+        # nothing about the broken file is logged or chained.
+        return False
+    theirs = _document_stamp(document)
+    if theirs is None:
+        return False  # unstamped never wins: an owner's re-deposit must land
+    # The vault side's stamp comes from its own stored DOCUMENT first and the
+    # record only as a fallback. A legacy record carries no stamp at all, but the
+    # document inside it always does (the sign-in writes one), so reading the
+    # record alone would make every legacy deposit lose to its own copy.
+    ours = None
+    try:
+        ours = _document_stamp(json.loads(vault_document.decode("utf-8")))
+    except (UnicodeDecodeError, ValueError):
+        ours = None
+    if ours is None:
+        ours = _document_stamp(record)
+    return ours is None or theirs > ours
+
+
 def ensure_codex_home_from_vault(universe_dir: str | Path | None) -> Path | None:
     """Materialize any vault-backed Codex auth bundle and return CODEX_HOME."""
     if universe_dir is None:
@@ -1916,9 +2303,22 @@ def ensure_codex_home_from_vault(universe_dir: str | Path | None) -> Path | None
         _chmod_best_effort(home, 0o700)
         auth_b64 = record.get("auth_json_b64")
         auth_file = home / "auth.json"
+        # NEWEST WINS. This wrote the vault's document over the on-disk one
+        # whenever the bytes differed, with no notion of which was newer -- so a
+        # document the CLI had refreshed was replaced by the older vault copy and
+        # the next launch replayed a spent refresh token. It cannot simply stop
+        # writing either: an owner RE-DEPOSITING is also a rotation, and it has to
+        # reach disk (`test_codex_subscription_auth_rotation_replaces_materialized_auth`).
+        #
+        # So the comparison is made, from the stamps both sides now carry. Only a
+        # document whose own `last_refresh` is readable AND strictly newer than the
+        # record's holds its ground; an unstamped or older one is replaced, which
+        # is the previous behaviour for every case that is not the bug. The vault
+        # side of the same decision is
+        # ``subscription_refresh.adopt_newer_on_disk_document``.
         if isinstance(auth_b64, str) and auth_b64.strip():
             auth_bytes = _decode_codex_auth_json(auth_b64)
-            if not auth_file.exists() or auth_file.read_bytes() != auth_bytes:
+            if not _on_disk_document_is_newer(auth_file, record, auth_bytes):
                 tmp = auth_file.with_name("auth.json.tmp")
                 tmp.write_bytes(auth_bytes)
                 _chmod_best_effort(tmp, 0o600)

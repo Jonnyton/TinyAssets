@@ -437,7 +437,7 @@ def validate_provider_request_carrier(
     if capability is None:
         raise PermissionError("provider request capability is revoked")
     if carrier.universe_id != universe_id:
-        raise PermissionError("provider request carrier belongs to another universe")
+        raise PermissionError("provider request carrier belongs to another command center")
     if carrier.agent_binding_id != agent_binding_id:
         raise PermissionError("provider request carrier belongs to another agent binding")
     if carrier.binding_revision != binding_revision:
@@ -486,38 +486,10 @@ def auth_middleware(token: str | None) -> Identity | None:
     return identity
 
 
-def connect_deposit_routes_enabled() -> bool:
-    """Whether the browser deposit flow (``/mcp/connect/*``) is enabled.
-
-    Dark by default: off unless ``TINYASSETS_CONNECT_DEPOSIT_ENABLED`` is truthy.
-    Gates BOTH the route registration (``register_connect_routes``) and the narrow
-    auth exemption below, so a default deployment gets neither the routes nor any
-    change to the MCP bearer challenge.
-    """
-    return os.environ.get(
-        "TINYASSETS_CONNECT_DEPOSIT_ENABLED", ""
-    ).strip().lower() in ("1", "true", "yes", "on")
-
-
-def _is_connect_deposit_path(path: str) -> bool:
-    """Exactly the browser deposit routes: ``/mcp/connect`` and ``/mcp/connect/*``.
-
-    Case-sensitive and traversal-safe so the exemption can NEVER cover a path that
-    normalizes to a target outside the connect subtree:
-    - Reject any ``..`` segment or empty segment (``//``): ``/mcp/connect/../tools``
-      normalizes to ``/mcp/tools`` and MUST stay challenged, not be exempted here.
-    - Case-sensitive: ``/MCP/connect`` / ``/mcp/Connect`` are not this route.
-    - A sibling like ``/mcp/connectxyz`` is not matched (anchored on the boundary).
-    """
-    if ".." in path or "//" in path:
-        return False
-    return path == "/mcp/connect" or path.startswith("/mcp/connect/")
-
-
 def _is_inbound_hook_path(path: str) -> bool:
     """Exactly ``/mcp/hooks/<one-segment-token>`` (non-empty, no deeper path).
 
-    The token is variable so this can't be an equality check like ``/mcp/app``;
+    The token is variable so this can't be an equality check like ``/app``;
     it is pinned to a single non-empty segment after the fixed prefix so no
     deeper ``/mcp/hooks/...`` path is ever exempted.
     """
@@ -555,49 +527,113 @@ _DISCOVERY_PATHS = frozenset({
 })
 
 
+#: Characters that end the ``/app`` segment. ``/`` is the only one an ASGI
+#: ``scope["path"]`` can actually carry -- the server splits the query and the
+#: client never sends the fragment -- but a predicate that decides an auth
+#: boundary fails closed on the forms it cannot receive rather than trusting the
+#: layer above to keep stripping them.
+_APP_SEGMENT_BOUNDARY = ("/", "?", "#")
+
+
+def _is_app_path(path: str) -> bool:
+    """Exactly the web-app subtree: ``/app`` and ``/app`` + a segment boundary.
+
+    Anchored on the boundary so a sibling prefix the apex website owns
+    (``/apple-touch-icon.png``, ``/app-ads.txt``, ``/apps``) is never mistaken
+    for an app route -- those must keep reaching the website origin, and in dev
+    (where every path routes to the daemon) they must not be swept into a 401.
+
+    Deliberately NOT traversal-normalised: every carve-out above is an
+    exact-equality test, so a ``..`` or ``//`` path can only ever be
+    *challenged* here, never exempted.
+    """
+    if path == "/app":
+        return True
+    return path.startswith("/app") and path[4:5] in _APP_SEGMENT_BOUNDARY
+
+
 def _auth_challenge_path(path: str) -> bool:
-    """The MCP endpoint (``/mcp`` + sub-paths) requires auth in challenge mode.
+    """The MCP endpoint (``/mcp`` + sub-paths) and the web app (``/app`` +
+    sub-paths) require auth in challenge mode.
+
     Discovery routes stay public so the client can still find the authorization
     server, and unrelated paths are not swept in.
+
+    The app moved from ``/mcp/app`` to the apex ``/app`` on 2026-09-30. That move
+    took its routes OUT of the ``/mcp/`` prefix this function used to sweep, so
+    ``/app`` is enumerated here explicitly. Without it every app API route
+    (``/app/me``, ``/app/billing/checkout``, ``/app/account/delete``, …) would
+    lose its bearer 401 and reach the handler with no identity — the middleware
+    is the boundary those routes rely on.
+
+    ``/mcp/app*`` is no longer mounted and gets NO carve-out, so it is swept into
+    the ordinary ``/mcp/`` rule: anonymously it answers the connector's 401,
+    exactly like ``/mcp/anything``. Deliberate — an exception that made the
+    retired path answer a "clean" 404 would be a special case *for* the retired
+    path, which is the back-compat the move removes.
     """
     if path in _DISCOVERY_PATHS:
         return False
-    if path.startswith("/mcp/app/model-callback/"):
+    if path.startswith("/app/model-callback/"):
         from tinyassets.onboarding.hosted_model_auth import is_callback_path
 
         if is_callback_path(path):
             return False  # Shell only; authenticated exchange remains challenged.
-    if path == "/mcp/app" or path == "/mcp/app/token":
+    if path == "/app" or path == "/app/token":
         # The onboarding SPA (tinyassets/onboarding) is a public page that MUST
-        # load before sign-in, and /mcp/app/token is its same-origin PKCE
+        # load before sign-in, and /app/token is its same-origin PKCE
         # token-exchange proxy — both run BEFORE any bearer exists, so neither may
         # be swept into the /mcp bearer 401 (mirrors the .well-known carve-out).
         # Their own authenticated /mcp tool calls are still challenged; the dark
         # flag still returns a bare 404 when the app is off.
         return False
-    # Billing webhook: Stripe POSTs here with no MCP bearer, so like /mcp/app and
+    if path == "/app/sw.js":
+        # The web-push service worker. `navigator.serviceWorker.register()` is a
+        # plain same-origin fetch with NO bearer — the browser, not the page,
+        # issues it — so challenging this path makes web push unregisterable,
+        # which is the whole notification channel that needs no third-party
+        # project. Same category as /app itself: a static script that runs
+        # before any bearer exists.
+        #
+        # It carries no secret. The VAPID *public* key is handed to
+        # `pushManager.subscribe` by the already-authenticated page (GET
+        # /app/notify), never baked into the worker, and the worker holds no
+        # identity — so serving it openly grants nothing. Exactly one path, by
+        # equality; no deeper /app/... route is opened.
+        return False
+    if path == "/app/ui-frame":
+        # The custom-UI bootstrap. It is loaded as an <iframe src>, and a browser
+        # attaches no bearer to an iframe navigation, so challenging it rendered
+        # every installed UI as `{"error":"authentication_required"}` (live
+        # 2026-10-01: the founder's GTM Village showed an empty panel; regression
+        # from the 2026-09-30 /mcp/app -> /app move). It is a fixed static page
+        # that sandboxes itself to an opaque origin from its own response header
+        # and holds no identity: the bundle and every read reach it by
+        # postMessage from the authenticated page. Exactly one path, by equality.
+        return False
+    if path == "/app/oauth/client-metadata.json":
+        # The OAuth Client ID Metadata Document a sign-in source names as its
+        # client id: the provider's authorization server fetches it with no
+        # bearer. A constant public document (one redirect URI, no secret, built
+        # from the configured resource, never the request). Exactly one path.
+        return False
+    # Billing webhook: Stripe POSTs here with no MCP bearer, so like /app and
     # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires
     # both Stripe provenance (signed, replay-bounded payload) and entitlement
     # authority (our HMAC-claimed exact plan). Exactly one path is opened; no deeper
-    # /mcp/app/billing/... route is exempt, so checkout and cancel stay identity-gated.
-    if path == "/mcp/app/billing/webhook":
-        return False
-    # Narrow, ordered exemption for the browser deposit flow: when enabled, its
-    # own signed-state / signed-session validation is the sole boundary for these
-    # routes, so they must not be swept into the MCP bearer 401. Scoped to exactly
-    # /mcp/connect(/*) — no other /mcp path is opened.
-    if connect_deposit_routes_enabled() and _is_connect_deposit_path(path):
+    # /app/billing/... route is exempt, so checkout and cancel stay identity-gated.
+    if path == "/app/billing/webhook":
         return False
     # Inbound webhook receiver: /mcp/hooks/<token> is a public POST endpoint whose
     # UNGUESSABLE per-branch token is the sole boundary (the run is author-gated,
     # durably rate-limited, and revocable — webhook Codex findings #1/#3/#5). It
-    # carries no MCP bearer, so — like /mcp/app and /mcp/connect — it must not be
+    # carries no MCP bearer, so — like /app — it must not be
     # swept into the /mcp/* bearer 401. Only exempt when inbound is enabled (the
     # route only exists then) and only the exact /mcp/hooks/<one-segment-token>
     # shape — no deeper /mcp/hooks/... path is opened.
     if _inbound_hooks_enabled() and _is_inbound_hook_path(path):
         return False
-    return path == "/mcp" or path.startswith("/mcp/")
+    return path == "/mcp" or path.startswith("/mcp/") or _is_app_path(path)
 
 
 def _challenge_prm_url() -> str:
@@ -987,7 +1023,7 @@ class AuthContextMiddleware:
                     _current_bearer_present.set(True)
                     canary_authorized = True
                 elif method != "POST" or path not in ("/mcp", "/mcp/"):
-                    # The endpoint itself, not the app, connect, hook or any
+                    # The endpoint itself, not the app, hook or any
                     # other /mcp/* route: those have their own authentication
                     # and the canary has no business there.
                     await _send_forbidden_403(
@@ -1046,7 +1082,7 @@ class AuthContextMiddleware:
                 if _auth_challenge_path(path):
                     # No bearer on the MCP endpoint -> 401 challenge, in EVERY auth
                     # mode: the client launches OAuth. The exempt paths (discovery,
-                    # the app shell and its token route, connect, hooks, and the
+                    # the app shell and its token route, hooks, and the
                     # billing webhook) bind their own principal.
                     await _send_auth_challenge_401(send, invalid_token=False)
                     return

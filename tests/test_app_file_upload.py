@@ -1,7 +1,7 @@
 """Ordinary app byte upload through the real identity middleware and ASGI frames.
 
 No authoring session, file handle or hidden tool seeds custody: the only path
-is POST /mcp/app/files driven with scripted ASGI body frames.
+is POST /app/files driven with scripted ASGI body frames.
 """
 
 import base64
@@ -28,7 +28,7 @@ from tinyassets.storage import _connect as author_connection
 from tinyassets.storage import run_files
 from tinyassets.storage.run_file_lock import _active as active_guards
 
-URL = "/mcp/app/files"
+URL = "/app/files"
 A, B = "user_upload_a", "user_upload_b"
 HOME_A, HOME_B = "u-aaaaaaaaaaaaaaaa", "u-bbbbbbbbbbbbbbbb"
 MIB = 1024 * 1024

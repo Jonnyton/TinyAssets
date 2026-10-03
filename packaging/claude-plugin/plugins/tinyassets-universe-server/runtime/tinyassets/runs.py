@@ -62,6 +62,22 @@ RUN_STATUS_COMPLETED = "completed"
 RUN_STATUS_FAILED = "failed"
 RUN_STATUS_CANCELLED = "cancelled"
 RUN_STATUS_INTERRUPTED = "interrupted"
+
+#: The statuses a run never leaves. ONE definition: it used to be written
+#: twice in this module (once as string literals, once from the constants),
+#: and the later binding silently won. A long-poll ends on these, a sweep
+#: skips them, and a status write onto one of them is a terminal transition.
+_TERMINAL_STATUSES = frozenset({
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
+    RUN_STATUS_CANCELLED,
+    RUN_STATUS_INTERRUPTED,
+})
+
+#: When this process could first have created a run: every run it creates
+#: starts after this. A recovery sweep uses it so a process never interrupts a
+#: run it is executing itself.
+PROCESS_STARTED_AT = time.time()
 RUN_STATUS_RESUMED = "resumed"
 
 NODE_STATUS_PENDING = "pending"
@@ -69,6 +85,13 @@ NODE_STATUS_RUNNING = "running"
 NODE_STATUS_RAN = "ran"
 NODE_STATUS_FAILED = "failed"
 NODE_STATUS_CANCELLED = "cancelled"
+
+#: ``node_id`` for run events that record something about the RUN, not a node
+#: (``recursion_limit_applied``, ``provider_calls``, ``concurrency_stats``,
+#: ``effect``). Not a node: it carries no node status and is never rendered as
+#: one. The literal used to be spelled at every emitter and every reader; the
+#: one reader that did not spell it put it in run summaries as a node.
+SYSTEM_EVENT_NODE_ID = "__system__"
 
 
 class RunCancelledError(Exception):
@@ -124,53 +147,6 @@ def _resolve_owner_user_id(
     return str(daemon.get("owner_user_id") or "")
 
 
-def _orphaned_run_grace_seconds() -> float | None:
-    """Return the read-time orphan recovery grace window.
-
-    Background runs are owned by an in-process ``Future``. After a server
-    restart, durable rows can still say ``queued``/``running`` even though no
-    worker in the new process can complete them. Read paths use this window to
-    avoid showing stale "running" forever while giving active workers time to
-    report progress.
-    """
-    raw = os.environ.get("TINYASSETS_ORPHANED_RUN_GRACE_SECONDS", "3600")
-    lowered = raw.strip().lower()
-    if lowered in {"0", "off", "false", "no", "disabled"}:
-        return None
-    try:
-        seconds = float(lowered)
-    except ValueError:
-        seconds = 3600.0
-    if seconds <= 0:
-        return None
-    return max(60.0, seconds)
-
-
-def _has_live_future(run_id: str) -> bool:
-    try:
-        future = get_future(run_id)
-    except NameError:
-        return False
-    return future is not None and not future.done()
-
-
-def _latest_run_progress_at(conn: sqlite3.Connection, run_id: str) -> float | None:
-    row = conn.execute(
-        """
-        SELECT MAX(COALESCE(finished_at, started_at)) AS progress_at
-        FROM run_events
-        WHERE run_id = ?
-        """,
-        (run_id,),
-    ).fetchone()
-    if row is None or row["progress_at"] is None:
-        return None
-    try:
-        return float(row["progress_at"])
-    except (TypeError, ValueError):
-        return None
-
-
 def _prepared_run_recovery_exclusion(conn: sqlite3.Connection) -> str:
     """Same-store SQL predicate; legacy absence is not a schema-init request.
 
@@ -189,72 +165,6 @@ def _prepared_run_recovery_exclusion(conn: sqlite3.Connection) -> str:
         " AND NOT EXISTS (SELECT 1 FROM run_input_admissions admission "
         "WHERE admission.run_id=runs.run_id)"
     )
-
-
-def _mark_orphaned_run_if_needed(
-    conn: sqlite3.Connection,
-    *,
-    run_id: str,
-    status: str,
-    started_at: float | int | str | None,
-    now: float | None = None,
-) -> bool:
-    if status not in (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING):
-        return False
-    family = conn.execute(
-        "SELECT workspace_budget_root_run_id,workspace_budget_epoch,"
-        "workspace_budget_closing_reason FROM runs WHERE run_id=?", (run_id,),
-    ).fetchone()
-    if family is not None and any(value is not None for value in family):
-        # A local Future inventory cannot establish death of another real
-        # worker. Managed recovery needs exact family/kernel ownership evidence.
-        return False
-    if _has_live_future(run_id):
-        return False
-    grace = _orphaned_run_grace_seconds()
-    if grace is None:
-        return False
-    try:
-        started = float(started_at) if started_at is not None else 0.0
-    except (TypeError, ValueError):
-        started = 0.0
-    progress_at = _latest_run_progress_at(conn, run_id) or started
-    if progress_at <= 0:
-        return False
-    checked_at = now or _now()
-    stale_for = checked_at - progress_at
-    if stale_for < grace:
-        return False
-
-    # Recheck ownership in the existing status-write transaction. This also
-    # fences a concurrently created admission table/row; no probe-then-retire.
-    if not conn.in_transaction:
-        conn.execute("BEGIN IMMEDIATE")
-    prepared_exclusion = _prepared_run_recovery_exclusion(conn)
-
-    message = (
-        "Run marked interrupted because no active background worker owns it "
-        f"and no progress has been recorded for {int(stale_for)}s "
-        f"(threshold {int(grace)}s). Rerun with the same inputs to continue."
-    )
-    cursor = conn.execute(
-        """
-        UPDATE runs
-        SET status = ?, error = ?, finished_at = ?
-        WHERE run_id = ? AND status IN (?, ?)
-          AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL
-          AND workspace_budget_closing_reason IS NULL
-        """ + prepared_exclusion,
-        (
-            RUN_STATUS_INTERRUPTED,
-            message,
-            checked_at,
-            run_id,
-            RUN_STATUS_QUEUED,
-            RUN_STATUS_RUNNING,
-        ),
-    )
-    return cursor.rowcount > 0
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +216,6 @@ def _reset_workspace_reconciliation_after_fork() -> None:
 if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
     os.register_at_fork(after_in_child=_reset_workspace_reconciliation_after_fork)
 _WORKSPACE_SWEEP_INTERVAL_S = 30.0
-_WORKSPACE_PROCESS_STARTED_AT = time.time()
 #: Every workspace failure class the executor classifies (design D6): one
 #: actionable class per refusal, all the universe's to act on.
 WORKSPACE_FAILURE_KINDS: tuple[str, ...] = (
@@ -444,7 +353,7 @@ def _finish_terminal_workspace_release(
     except Exception:
         logger.exception(
             "workspace terminal release enqueue failed for run %s in %s; "
-            "the universe sweep will repair it",
+            "the command center sweep will repair it",
             run_id,
             workspace_base,
         )
@@ -634,19 +543,6 @@ def _never_started_waiters(base_path: str | Path, rows) -> dict[str, Path]:
     return waiting
 
 
-def _is_workspace_waiter(
-    conn: sqlite3.Connection, base_path: str | Path, run_id: str, status: str,
-) -> bool:
-    """A queued run waiting its turn owns no worker BY DESIGN and makes no
-    progress until then: that is waiting, not being orphaned."""
-    if status != RUN_STATUS_QUEUED:
-        return False
-    row = conn.execute(
-        "SELECT run_id, status, queue_universe_id FROM runs WHERE run_id = ?", (run_id,),
-    ).fetchone()
-    return row is not None and bool(_never_started_waiters(base_path, [row]))
-
-
 def _kick_workspace_waiters(universe_base: str | Path) -> threading.Thread:
     """Start the universe's sweeper (the periodic backstop) and nominate now."""
 
@@ -693,7 +589,7 @@ def nominate_workspace_waiter(universe_base: str | Path) -> str | None:
             if cancelled and not _waiter_dispatch_claimed(root, ticket.run_id):
                 _settle_waiting_run(
                     root, ticket.run_id, status=RUN_STATUS_CANCELLED,
-                    error="Cancelled while waiting for the universe workspace.",
+                    error="Cancelled while waiting for the command center workspace.",
                 )
                 workspace_pool.remove_waiter(db, ticket.run_id)
                 continue
@@ -802,9 +698,9 @@ def _dispatch_waiting_run(base_path: str | Path, run_id: str) -> None:
                     enqueue_universe_id=universe_id,
                 )
 
-        future = _get_executor(invocation_depth=0).submit(
-            contextvars.Context().run, _worker,
-        )
+        future = _get_executor(
+            invocation_depth=0, pool_key=run_pool_key(base_path, universe_id),
+        ).submit(contextvars.Context().run, _worker)
         _track_future(run_id, future)
     except Exception as exc:  # noqa: BLE001 - a nomination must never fail its caller
         logger.exception("dispatch of waiting run %s failed", run_id)
@@ -838,7 +734,7 @@ def _admit_workspace_waiter(
     except Exception as exc:  # noqa: BLE001 - settled with the reason below
         logger.exception("could not queue run %s for its workspace", run_id)
         head = None
-        queue_error = f"Could not queue for the universe workspace: {exc}"
+        queue_error = f"Could not queue for the command center workspace: {exc}"
     else:
         queue_error = ""
     my_turn = (
@@ -890,7 +786,7 @@ def _settle_cancelled_waiter(base_path: str | Path, run_id: str) -> None:
         return
     _settle_waiting_run(
         base_path, run_id, status=RUN_STATUS_CANCELLED,
-        error="Cancelled while waiting for the universe workspace.",
+        error="Cancelled while waiting for the command center workspace.",
     )
 
 
@@ -1284,55 +1180,19 @@ def ensure_workspace_reconciled(
     return True
 
 
-def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
-    """Mark stale in-flight rows as interrupted when no worker owns them.
+def _reconcile_workspace_on_read(base_path: str | Path) -> None:
+    """A read finishes the workspace startup barrier; it never ends a run.
 
-    This complements startup recovery. Startup recovery handles rows that
-    exist before a new run action initializes the executor. Read-time recovery
-    handles the public-chatbot case where users keep polling after a restart
-    but no new write action happens to trigger startup recovery.
+    Ending a run is recovery's job, and recovery acts only on proof that the
+    owning process died (``recover_in_flight_runs``). A read has no such
+    proof: "no Future here and no progress for an hour" took a sibling
+    process's live run for dead (run-owner-proof).
     """
     initialize_runs_db(base_path)
     try:
         ensure_workspace_reconciled(base_path)
     except Exception:  # noqa: BLE001 - a read must keep serving
         logger.exception("workspace startup reconciliation failed")
-    count = 0
-    now = _now()
-    releases: list[tuple[str, Path | None, int]] = []
-    with _connect(base_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT run_id, status, started_at FROM runs
-            WHERE status IN (?, ?)
-            """,
-            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
-        ).fetchall()
-        for row in rows:
-            if _is_workspace_waiter(conn, base_path, row["run_id"], row["status"]):
-                continue
-            if _mark_orphaned_run_if_needed(
-                conn,
-                run_id=row["run_id"],
-                status=row["status"],
-                started_at=row["started_at"],
-                now=now,
-            ):
-                count += 1
-                # Same-database work is atomic with the rewrite.  A separate
-                # universe WAL is finished after this transaction commits.
-                run_id = str(row["run_id"])
-                owed = _enqueue_workspace_terminal(conn, base_path, run_id)
-                releases.append(
-                    (run_id, _workspace_terminal_base(conn, base_path, run_id), owed)
-                )
-    for run_id, workspace_base, owed in releases:
-        _finish_terminal_workspace_release(
-            base_path, run_id, workspace_base, local_owed=owed
-        )
-    if count:
-        logger.info("Recovered %d orphaned in-flight runs on read", count)
-    return count
 
 
 def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
@@ -1381,6 +1241,7 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
             ("daemon_id",     "TEXT"),
             ("runtime_instance_id", "TEXT"),
             ("worker_id",     "TEXT"),
+            ("owner_token",   "TEXT"),
             ("branch_task_id", "TEXT"),
             ("queue_universe_id", "TEXT"),
             ("workspace_budget_root_run_id", "TEXT"),
@@ -1393,6 +1254,11 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
             # every public projection; read only via
             # tinyassets.run_admission_envelope after an ownership gate.
             ("admission_envelope_json", "TEXT"),
+            # Who caused this run, recorded when it is created: the actor, or
+            # for a `universe:<id>` run the principal bound for it. An engine
+            # event about the run is stamped with this, never with whatever
+            # identity happens to be ambient when the run ends.
+            ("cause_principal", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in existing_runs:
                 _alter(col, ddl)
@@ -1430,6 +1296,11 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_scope_status_finished "
             "ON runs(queue_universe_id, status, finished_at)"
+        )
+        # Account storage measures each account's runs by owner (storage
+        # accounting `run_records` / `checkpoints`); same placement rule.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_owner_user ON runs(owner_user_id)"
         )
         conn.commit()
     except Exception:
@@ -1483,6 +1354,33 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         run_id         TEXT PRIMARY KEY,
         requested_at   REAL NOT NULL
     );
+
+    -- run-owner-proof D4: every terminal TRANSITION of a run (a resumed run
+    -- ends again), written by the trigger below in the same transaction as
+    -- the status, whatever wrote it, and delivered at least once.
+    CREATE TABLE IF NOT EXISTS run_terminal_outbox (
+        run_id         TEXT NOT NULL,
+        seq            INTEGER NOT NULL,
+        status         TEXT NOT NULL,
+        created_at     REAL NOT NULL,
+        delivered_at   REAL,
+        PRIMARY KEY (run_id, seq)
+    );
+
+    CREATE TRIGGER IF NOT EXISTS run_terminal_outbox_on_transition
+    AFTER UPDATE OF status ON runs
+    WHEN NEW.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+     AND OLD.status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')
+    BEGIN
+        INSERT INTO run_terminal_outbox (run_id, seq, status, created_at)
+        VALUES (
+            NEW.run_id,
+            (SELECT COALESCE(MAX(seq), 0) + 1 FROM run_terminal_outbox
+              WHERE run_id = NEW.run_id),
+            NEW.status,
+            (julianday('now') - 2440587.5) * 86400.0
+        );
+    END;
 
     -- Phase 4: eval + iteration hooks.
 
@@ -1624,9 +1522,9 @@ def initialize_runs_db(base_path: str | Path) -> Path:
     return runs_db_path(base_path)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Run record shape
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -1920,9 +1818,9 @@ def _row_to_receipt(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Persistence CRUD
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def create_run(
@@ -2022,6 +1920,12 @@ def _insert_run_in_transaction(
 
     managed_root = (_workspace_authenticated and owner_user_id and queue_universe_id
                     and _workspace_parent is None and root_enrollment_enabled(conn))
+    # The creating process owns the row until an executor takes it running.
+    # Its liveness lock is a file lock under the runs DB's own data root, taken
+    # before the token is written anywhere (run-owner-proof D2).
+    from tinyassets.process_liveness import owner_token
+
+    owner = owner_token(Path(conn.execute("PRAGMA database_list").fetchone()[2]).parent)
     try:
         conn.execute(
             """
@@ -2030,8 +1934,9 @@ def _insert_run_in_transaction(
                 status, actor, owner_user_id, inputs_json, started_at,
                 branch_version_id, daemon_id, runtime_instance_id,
                 worker_id, branch_task_id, queue_universe_id,
-                workspace_budget_root_run_id,workspace_budget_epoch,workspace_budget_closing_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                workspace_budget_root_run_id,workspace_budget_epoch,workspace_budget_closing_reason,
+                owner_token
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, branch_def_id, run_name, thread_id,
@@ -2046,7 +1951,12 @@ def _insert_run_in_transaction(
                 (run_id if managed_root else None),
                 (1 if managed_root else None),
                 ("" if managed_root else None),
+                owner,
             ),
+        )
+        conn.execute(
+            "UPDATE runs SET cause_principal = ? WHERE run_id = ?",
+            (_cause_principal(actor), run_id),
         )
     except sqlite3.IntegrityError as exc:
         if branch_task_id and "runs.branch_task_id" in str(exc):
@@ -2061,6 +1971,16 @@ def _insert_run_in_transaction(
         if not _workspace_authenticated or type(_workspace_fence) is not FamilyFence:
             raise FamilyRefused("child insertion requires held family fence and identity")
         assign_in_transaction(conn, _workspace_fence, run_id, parent=_workspace_parent)
+
+
+def _cause_principal(actor: str) -> str:
+    """The principal a new run acts for: its actor, or the one bound for a
+    universe's own run. '' when a universe run has nobody bound."""
+    if not actor.startswith("universe:"):
+        return actor
+    from tinyassets.api.permissions import current_request_actor_id
+
+    return current_request_actor_id()
 
 
 def _guard_status_write(function):
@@ -2188,6 +2108,13 @@ def update_run_status(
     if token_count is not None:
         sets.append("token_count = ?")
         params.append(token_count)
+    if status in (RUN_STATUS_RUNNING, RUN_STATUS_RESUMED):
+        # Whoever takes the run forward owns it from here: a resume, or a
+        # worker that is not the process that queued it.
+        from tinyassets.process_liveness import owner_token
+
+        sets.append("owner_token = ?")
+        params.append(owner_token(base_path))
     if status in (
         RUN_STATUS_COMPLETED, RUN_STATUS_FAILED, RUN_STATUS_CANCELLED, RUN_STATUS_INTERRUPTED,
     ):
@@ -2264,6 +2191,7 @@ def update_run_status(
     params.append(run_id)
     workspace_terminal_base: Path | None = None
     owed = 0
+    completed_row: Any = None
     from tinyassets.workspace_family import status_transaction
 
     with status_transaction(base_path, run_id, status, expected=_workspace_member,
@@ -2275,6 +2203,14 @@ def update_run_status(
         )
         if prior is not None and cursor.rowcount != 1:
             raise RunExecutionAuthorityLost("Run status changed before its conditional write.")
+        if (
+            status in _TERMINAL_STATUSES
+            and prior is not None
+            and prior[0] not in _TERMINAL_STATUSES
+        ):
+            # The transition, not every terminal write: a later write that
+            # only re-persists output must not announce the run twice.
+            completed_row = True  # the trigger owed its event in this transaction
         if status in _TERMINAL_STATUSES:
             # A lease in this database is owed THROUGH the outbox in the same
             # transaction (workspace-node D0): never a direct delete.  A
@@ -2347,6 +2283,95 @@ def update_run_status(
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_terminal_base, local_owed=owed
         )
+    if completed_row:
+        deliver_terminal_events(base_path, run_ids=[run_id])
+
+
+#: Undelivered outbox rows younger than this belong to the writer that is about
+#: to deliver them; older ones are redelivered by the watcher and at boot.
+TERMINAL_REDELIVERY_SECONDS = 30.0
+
+_OWED_EVENTS = (
+    "SELECT o.run_id, o.seq, o.status, r.branch_def_id, r.actor, r.queue_universe_id, "
+    "r.cause_principal FROM run_terminal_outbox o JOIN runs r USING (run_id) "
+    "WHERE o.delivered_at IS NULL "
+)
+
+
+def deliver_terminal_events(
+    base_path: str | Path,
+    *,
+    run_ids: list[str] | None = None,
+    older_than: float = TERMINAL_REDELIVERY_SECONDS,
+) -> int:
+    """Emit every owed terminal event, then mark it delivered. Never raises.
+
+    ``run_ids`` delivers exactly those (the writer, right after its commit);
+    otherwise every row owed for longer than ``older_than`` (the watcher, boot).
+    At least once: a crash after the emit and before the mark delivers it again,
+    and the consumer -- one event wake per subscription and run -- is idempotent.
+    """
+    try:
+        with _connect(base_path) as conn:
+            if run_ids is not None:
+                marks = ",".join("?" for _ in run_ids) or "''"
+                owed = conn.execute(
+                    _OWED_EVENTS + f"AND o.run_id IN ({marks}) ORDER BY o.run_id, o.seq",
+                    list(run_ids),
+                ).fetchall()
+            else:
+                owed = conn.execute(
+                    _OWED_EVENTS + "AND o.created_at <= ? ORDER BY o.run_id, o.seq",
+                    (_now() - older_than,),
+                ).fetchall()
+    except sqlite3.Error:
+        logger.exception("terminal outbox read failed")
+        return 0
+    delivered = 0
+    for row in owed:
+        # Acknowledged only after the emit succeeded: a failure leaves the row
+        # owed and the watcher delivers it again (the wake is idempotent).
+        if not _emit_run_completed(
+            base_path, row["run_id"], row["status"], row,
+            event_id=f"{row['run_id']}#{row['seq']}", strict=True,
+        ):
+            continue
+        try:
+            with _connect(base_path) as conn:
+                conn.execute(
+                    "UPDATE run_terminal_outbox SET delivered_at = ? "
+                    "WHERE run_id = ? AND seq = ? AND delivered_at IS NULL",
+                    (_now(), row["run_id"], row["seq"]),
+                )
+            delivered += 1
+        except sqlite3.Error:
+            logger.exception("terminal outbox mark failed run=%s", row["run_id"])
+    return delivered
+
+
+def _emit_run_completed(
+    base_path: str | Path, run_id: str, status: str, row: Any,
+    *, event_id: str = "", strict: bool = False,
+) -> bool:
+    """Wake the owner's ``run_completed`` subscriptions.
+
+    ``event_id`` names this terminal transition (``<run>#<seq>``) so a second
+    delivery of it finds the first wake. ``strict`` reports a failure instead
+    of swallowing it, so the outbox keeps the event owed.
+    """
+    from tinyassets.automation_events import emit_run_completed
+
+    return emit_run_completed(
+        base_path,
+        run_id=run_id,
+        branch_def_id=str(row["branch_def_id"] or ""),
+        outcome=str(status),
+        actor=str(row["actor"] or ""),
+        queue_universe_id=str(row["queue_universe_id"] or ""),
+        cause_principal=str(row["cause_principal"] or ""),
+        event_id=event_id,
+        strict=strict,
+    ) is not None
 
 
 def terminalize_unstarted_run(
@@ -2399,6 +2424,9 @@ def terminalize_unstarted_run(
         owed = _enqueue_workspace_terminal(conn, base_path, run_id)
         workspace_base = _workspace_terminal_base(conn, base_path, run_id)
     _finish_terminal_workspace_release(base_path, run_id, workspace_base, local_owed=owed)
+    # The status trigger owed this run's terminal event; deliver it now rather
+    # than on the watcher's next pass.
+    deliver_terminal_events(base_path, run_ids=[run_id])
     return settled
 
 
@@ -2509,31 +2537,12 @@ def list_run_receipts(
 
 def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
     initialize_runs_db(base_path)
-    workspace_terminal_base: Path | None = None
-    terminal_owed = 0
     with _connect(base_path) as conn:
         row = conn.execute(
             "SELECT * FROM runs WHERE run_id = ?", (run_id,)
         ).fetchone()
         if row is None:
             return None
-        if not _is_workspace_waiter(
-            conn, base_path, row["run_id"], row["status"],
-        ) and _mark_orphaned_run_if_needed(
-            conn,
-            run_id=row["run_id"],
-            status=row["status"],
-            started_at=row["started_at"],
-        ):
-            terminal_owed = _enqueue_workspace_terminal(conn, base_path, run_id)
-            workspace_terminal_base = _workspace_terminal_base(
-                conn, base_path, run_id
-            )
-            row = conn.execute(
-                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
-            if row is None:
-                return None
         result = _row_to_run(row)
         # Surface concurrency stats from the last concurrency_stats system event.
         stats_row = conn.execute(
@@ -2544,13 +2553,6 @@ def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
             """,
             (run_id,),
         ).fetchone()
-    if workspace_terminal_base is not None or terminal_owed:
-        _finish_terminal_workspace_release(
-            base_path,
-            run_id,
-            workspace_terminal_base,
-            local_owed=terminal_owed,
-        )
     if stats_row:
         try:
             result["concurrency"] = json.loads(stats_row["detail_json"] or "{}")
@@ -2896,14 +2898,30 @@ def list_runs(
     branch_def_id: str = "",
     status: str = "",
     limit: int = 50,
+    universe_id: str = "",
 ) -> list[dict[str, Any]]:
+    """Newest runs first, at most ``limit`` of them.
+
+    ``universe_id`` narrows IN SQL, before the limit. Filtering afterwards
+    returned the newest ``limit`` runs of the whole deployment and then kept
+    this universe's share of them -- on a shared host usually none, although
+    the universe had runs. It is a superset of the caller's own universe
+    predicate (``api.runs._run_universe_id``: the ``universe:<uid>`` actor,
+    else the queue binding), which still runs on every row it returns.
+    """
     initialize_runs_db(base_path)
-    _recover_orphaned_runs_on_read(base_path)
+    _reconcile_workspace_on_read(base_path)
     clauses: list[str] = []
     params: list[Any] = []
     if branch_def_id:
         clauses.append("branch_def_id = ?")
         params.append(branch_def_id)
+    if universe_id:
+        clauses.append(
+            "((actor LIKE 'universe:%' AND TRIM(SUBSTR(actor, 10)) = ?)"
+            " OR TRIM(COALESCE(queue_universe_id, '')) = ?)"
+        )
+        params.extend([universe_id, universe_id])
     if status:
         clauses.append("status = ?")
         params.append(status)
@@ -3122,12 +3140,10 @@ def list_events(
     return [_row_to_event(r) for r in rows]
 
 
-# Terminal run statuses end a long-poll immediately regardless of
-# whether new events have landed. Callers don't need to wait the full
-# max_wait_s once the run has resolved.
-_TERMINAL_STATUSES = frozenset({
-    "completed", "failed", "cancelled", "interrupted",
-})
+# Terminal run statuses (_TERMINAL_STATUSES, defined with the status
+# constants) end a long-poll immediately regardless of whether new events
+# have landed. Callers don't need to wait the full max_wait_s once the run
+# has resolved.
 
 
 def await_run_events(
@@ -3185,9 +3201,9 @@ def await_run_events(
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase 4: judgments, lineage, node edit audit
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _iso_now() -> str:
@@ -3582,9 +3598,9 @@ def node_output_from_run(
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Cooperative cancel
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def request_cancel(base_path: str | Path, run_id: str) -> bool:
@@ -3647,9 +3663,9 @@ def is_cancel_requested(base_path: str | Path, run_id: str) -> bool:
         return root is None or root[0] != member[1] or root[1] != ""
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Synchronous runner
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -4276,12 +4292,19 @@ def _initialize_prepared_run(
     )
 
 
-#: Default LangGraph recursion-limit ceiling, raised from LangGraph's
-#: stock 25 → 100 per the Tier-1 investigation Step 6 (BUG-019/021/022).
-#: Stock 25 is too tight for branches with 3+ gate iterations; BUG-020
-#: runs tripped the limit. Callers can override via the explicit
-#: `recursion_limit_override` arg on execute_branch / execute_branch_async.
-DEFAULT_RECURSION_LIMIT = 100
+#: LangGraph needs a recursion ceiling, so there is a number here; it is not a
+#: limit. 100 (raised from LangGraph's stock 25 during the Tier-1 investigation,
+#: BUG-019/021/022) refused a branch whose author wrote a longer loop, with
+#: "Branch loop may be too deep" -- a structural cap on what someone may build,
+#: and an account has exactly two limits, cloud bytes and concurrent agent seats
+#: (founder, 2026-09-30).
+#:
+#: One million is past any graph a person writes and far below Python's own
+#: limits on the structures LangGraph builds per step. What actually bounds an
+#: endless loop is the run's SEAT: it holds one for as long as it runs, and its
+#: owner can stop it. An author may still pass any positive
+#: `recursion_limit_override` -- including a smaller one, as their own guard.
+DEFAULT_RECURSION_LIMIT = 1_000_000
 
 
 def _family_status_writer(member):
@@ -4348,6 +4371,28 @@ def _managed_execution_scope(base_path: str | Path, run_id: str, *, provided=Non
         finally:
             _RUN_EXECUTION_USE.reset(use_token)
             _RUN_EXECUTION_GUARD.reset(token)
+
+
+def _record_seat_wait(base_path, run_id: str, step_index: int, node_id: str,
+                      detail: dict) -> None:
+    """A node is waiting for its account's seat (`universe_seats`).
+
+    A system row, never a node status: the node has not run, so it must not read
+    as ``ran``. It carries the owner's waiting line, upgrade link included. A run
+    cancelled while its node waits stops waiting here: the cancellation
+    propagates out of the seat wait, which gives the queue position back.
+    """
+    record_event(base_path, RunStepEvent(
+        run_id=run_id,
+        step_index=step_index,
+        node_id=SYSTEM_EVENT_NODE_ID,
+        status="waiting_for_seat",
+        started_at=_now(),
+        finished_at=_now(),
+        detail={"node_id": node_id, **detail},
+    ))
+    if is_cancel_requested(base_path, run_id):
+        raise RunCancelledError(f"Run {run_id} cancelled while waiting for a seat.")
 
 
 def _owns_managed_execution(function):
@@ -4524,6 +4569,10 @@ def _invoke_graph(
             _emit_node_status(node_id, NODE_STATUS_RUNNING)
             return
 
+        if phase == "waiting":
+            _record_seat_wait(base_path, run_id, step + _PENDING_OFFSET, node_id, detail)
+            return
+
         if phase == "effect":
             # Design D1: the node's effects fired inside its step. Recorded as
             # a system row (never a node status) so per-node status stays
@@ -4532,7 +4581,7 @@ def _invoke_graph(
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
                 step_index=step + _PENDING_OFFSET,
-                node_id="__system__",
+                node_id=SYSTEM_EVENT_NODE_ID,
                 status="effect",
                 started_at=_now(),
                 finished_at=_now(),
@@ -4645,6 +4694,10 @@ def _invoke_graph(
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         invocation_depth=int(invocation_depth or 0),
         universe_id=_eff_universe_hint or run_universe,
+        # The run's own model reviews a consequential action before it fires
+        # (harness D1d), admitted like any agent call.
+        review_provider=provider_call,
+        review_active=True,
     )
     register_effect_chain(effect_chain)
     try:
@@ -4699,7 +4752,7 @@ def _invoke_graph(
     record_event(base_path, RunStepEvent(
         run_id=run_id,
         step_index=0,
-        node_id="__system__",
+        node_id=SYSTEM_EVENT_NODE_ID,
         status="recursion_limit_applied",
         started_at=_now(),
         detail={"recursion_limit": recursion_limit},
@@ -4970,7 +5023,7 @@ def _invoke_graph(
         record_event(base_path, RunStepEvent(
             run_id=run_id,
             step_index=step + _PENDING_OFFSET,
-            node_id="__system__",
+            node_id=SYSTEM_EVENT_NODE_ID,
             status="concurrency_stats",
             started_at=_now(),
             detail=stats,
@@ -4985,7 +5038,7 @@ def _invoke_graph(
         record_event(base_path, RunStepEvent(
             run_id=run_id,
             step_index=step + _PENDING_OFFSET,
-            node_id="__system__",
+            node_id=SYSTEM_EVENT_NODE_ID,
             status="provider_calls",
             started_at=_now(),
             detail={"calls": provider_tracker["calls"]},
@@ -5223,6 +5276,13 @@ def _collect_external_write_errors(
                     "sink": sink,
                     "error": f"far side answered HTTP {status}: {preview}".rstrip(": "),
                     "error_kind": "far_side_error",
+                    # WHICH connection answered. A `credential_rejected` run is
+                    # fixed by one card naming this destination, and without it
+                    # here the agent has only the url -- the API host, not the
+                    # label the owner deposited the key under. Non-secret: the
+                    # owner chose it and read it on the deposit tab.
+                    **({"destination": str(ev["destination"])}
+                       if str(ev.get("destination") or "").strip() else {}),
                 })
                 continue
             # A refusal before the wire that carries only an error_kind (the
@@ -5512,9 +5572,9 @@ def execute_branch(
     )
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Async executor pool — in-process background worker for graph runs
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase 3.5: the MCP tool returns a `run_id` in <1s. The graph runs in a
 # background thread. `cancel_run` flips the flag, the next inter-node
 # `event_sink` check unwinds the graph. Restart recovery marks in-flight
@@ -5545,9 +5605,10 @@ def _max_workers() -> int:
 def _max_child_workers() -> int:
     """Pool size for sub-branch (depth>=1) invocations.
 
-    Phase A item 5 / Task #76c. Default ``MAX_INVOKE_BRANCH_DEPTH + 1`` so
-    the deepest legal chain plus one buffer slot can run without blocking.
-    Env override: ``TINYASSETS_CHILD_POOL_SIZE``.
+    Phase A item 5 / Task #76c. Default ``MAX_INVOKE_BRANCH_DEPTH + 1``.
+    Env override: ``TINYASSETS_CHILD_POOL_SIZE``. A blocking version invoke
+    may nest at most this deep (``graph_compiler``); nothing else is bounded
+    by it.
     """
     raw = os.environ.get("TINYASSETS_CHILD_POOL_SIZE", "")
     try:
@@ -5557,31 +5618,67 @@ def _max_child_workers() -> int:
     return max(1, val)
 
 
-def _runtime_max_invocation_depth() -> int:
-    """Runtime cap on sub-branch invocation depth.
+#: One pool pair PER ACCOUNT, beside the keyless pair above. A run whose agent
+#: node waits for its account's seat waits on a worker thread; if that thread
+#: belonged to a pool every account shares, one busy account's queued runs would
+#: hold the threads another account's run needs -- the one thing the platform
+#: may never do (memory `the-floor-is-cross-user-only`). So a run is executed by
+#: its own account's pool, and an account can only ever wait behind itself.
+#: The host-wide memory bound is `provider_admission`, underneath, not this.
+_account_pools: dict[tuple[str, str], ThreadPoolExecutor] = {}
 
-    Phase A item 5 / Task #76c. Defaults to ``MAX_INVOKE_BRANCH_DEPTH``
-    (5) but is host-tunable via ``TINYASSETS_INVOCATION_MAX_DEPTH`` for
-    power-user research workflows that need deeper chains.
+
+def run_pool_key(base_path: str | Path, universe_id: str | None) -> str:
+    """The account whose pool runs work for ``universe_id``; '' for none.
+
+    `universe_seats.account_key` -- the same owner resolver seats use, so the
+    pool an account's runs wait in is exactly the account whose seats they wait
+    for. A resolver failure isolates on the universe instead: that pool is still
+    nobody else's.
     """
-    raw = os.environ.get("TINYASSETS_INVOCATION_MAX_DEPTH", "")
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ""
+    from tinyassets.universe_seats import account_key
+
     try:
-        val = int(raw) if raw else MAX_INVOKE_BRANCH_DEPTH
-    except ValueError:
-        val = MAX_INVOKE_BRANCH_DEPTH
-    return max(1, val)
+        return account_key(uid, root=base_path)
+    except Exception:  # noqa: BLE001 - isolation must not depend on the resolver
+        logger.warning("run pool: owner of %s unresolved; isolating on the command center", uid,
+                       exc_info=True)
+        return f"unattributed:{uid}"
 
 
-def _get_executor(invocation_depth: int = 0) -> ThreadPoolExecutor:
-    """Two-pool executor lookup. Depth-0 → _parent_pool; depth>=1 → _child_pool.
+def run_pool_key_for_run(base_path: str | Path, run_id: str) -> str:
+    row = get_run(base_path, run_id) or {}
+    return run_pool_key(base_path, row.get("queue_universe_id"))
+
+
+def _get_executor(invocation_depth: int = 0, *, pool_key: str = "") -> ThreadPoolExecutor:
+    """Two-pool executor lookup. Depth-0 → parent pool; depth>=1 → child pool.
 
     Phase A item 5 / Task #76c. Each pool is lazy-init under the shared
     ``_executor_lock``. Child pool is sized larger than parent pool by
     default so a deep sub-branch chain can't starve top-level runs.
+
+    ``pool_key`` names the ACCOUNT (`run_pool_key`): its runs get a pool pair of
+    their own, so their seat waits never occupy a thread another account's run
+    is owed. The empty key is the keyless pair, for work with no universe.
     """
     global _parent_pool, _child_pool
+    child = invocation_depth >= 1
     with _executor_lock:
-        if invocation_depth >= 1:
+        if pool_key:
+            slot = ("child" if child else "parent", pool_key)
+            pool = _account_pools.get(slot)
+            if pool is None:
+                pool = ThreadPoolExecutor(
+                    max_workers=_max_child_workers() if child else _max_workers(),
+                    thread_name_prefix=f"tinyassets-{slot[0]}-acct",
+                )
+                _account_pools[slot] = pool
+            return pool
+        if child:
             if _child_pool is None:
                 _child_pool = ThreadPoolExecutor(
                     max_workers=_max_child_workers(),
@@ -5597,10 +5694,9 @@ def _get_executor(invocation_depth: int = 0) -> ThreadPoolExecutor:
 
 
 def shutdown_executor(wait: bool = True) -> None:
-    """Shut down both executor pools. Used by tests and graceful shutdown.
+    """Shut down every executor pool. Used by tests and graceful shutdown.
 
-    Phase A item 5 / Task #76c — two-pool model means both pools must be
-    drained on shutdown.
+    Phase A item 5 / Task #76c — two-pool model, and one pair per account.
     """
     global _parent_pool, _child_pool
     with _executor_lock:
@@ -5610,6 +5706,10 @@ def shutdown_executor(wait: bool = True) -> None:
         if _child_pool is not None:
             _child_pool.shutdown(wait=wait)
             _child_pool = None
+        pools = list(_account_pools.values())
+        _account_pools.clear()
+    for pool in pools:
+        pool.shutdown(wait=wait)
     with _futures_lock:
         _futures.clear()
 
@@ -5744,6 +5844,8 @@ def _execute_branch_core(
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
+    _provider_parent=None,
+    _lend_seat: bool = False,
 ) -> RunOutcome:
     """Shared async-execution core for def-based and version-based runs.
 
@@ -5846,7 +5948,10 @@ def _execute_branch_core(
         if waiting is not None:
             return waiting
 
-    executor = _get_executor(invocation_depth=_invocation_depth)
+    executor = _get_executor(
+        invocation_depth=_invocation_depth,
+        pool_key=run_pool_key(base_path, _enqueue_universe_id),
+    )
 
     def _worker() -> RunOutcome:
         return _invoke_prepared_branch(
@@ -5864,7 +5969,20 @@ def _execute_branch_core(
     # authenticated actor): a bare submit gives it the pool thread's empty
     # context, and a code node's RPC then resolves the daemon's env identity
     # (Codex round 3, P0).
-    future = executor.submit(contextvars.copy_context().run, _worker)
+    from tinyassets.provider_admission import independent_provider_work
+
+    # run_graph returns queued: it has not suspended its provider. Only a
+    # blocking compiler invoke may explicitly hand a slot to this worker.
+    with independent_provider_work(parent_slot=_provider_parent):
+        worker_context = contextvars.copy_context()
+    if not _lend_seat:
+        # Nor its account seat: a queued run's caller keeps running, so a borrowed
+        # seat would carry two concurrent agent calls (gpt-6-astra round 2). Only
+        # a blocking invoke, whose caller waits for this run, lends it.
+        from tinyassets.universe_seats import detach_seat
+
+        worker_context.run(detach_seat)
+    future = executor.submit(worker_context.run, _worker)
     _track_future(run_id, future)
 
     return RunOutcome(
@@ -6074,6 +6192,8 @@ def execute_branch_version_async(
     _invocation_depth: int = 0,
     _enqueue_universe_id: str = "",
     _workspace_parent=None,
+    _provider_parent=None,
+    _lend_seat: bool = False,
 ) -> RunOutcome:
     """Execute a published branch_version snapshot (immutable).
 
@@ -6119,6 +6239,8 @@ def execute_branch_version_async(
         branch_version_id=branch_version_id,
         owner_user_id=owner_user_id,
         _workspace_parent=_workspace_parent,
+        _provider_parent=_provider_parent,
+        _lend_seat=_lend_seat,
         _enqueue_universe_id=_enqueue_universe_id,
         _invocation_depth=_invocation_depth,
     )
@@ -6294,7 +6416,7 @@ def resume_run(
     ))
 
     # Background worker: re-invoke graph with None inputs to trigger resume.
-    executor = _get_executor()
+    executor = _get_executor(pool_key=run_pool_key_for_run(base_path, run_id))
 
     def _resume_worker() -> RunOutcome:
         outcome = _invoke_graph_resume(
@@ -6336,7 +6458,14 @@ def resume_run(
         with _managed_execution_scope(base_path, run_id):
             return _resume_worker()
 
-    future = executor.submit(contextvars.copy_context().run, _owned_resume_worker)
+    from tinyassets.provider_admission import independent_provider_work
+
+    with independent_provider_work():
+        worker_context = contextvars.copy_context()
+    from tinyassets.universe_seats import detach_seat
+
+    worker_context.run(detach_seat)  # a resumed run takes its own seats
+    future = executor.submit(worker_context.run, _owned_resume_worker)
     _track_future(run_id, future)
 
     return RunOutcome(
@@ -6402,6 +6531,10 @@ def _invoke_graph_resume(
             ))
             return
 
+        if phase == "waiting":
+            _record_seat_wait(base_path, run_id, step + _PENDING_OFFSET, node_id, detail)
+            return
+
         if phase == "effect":
             # Design D1: the node's effects fired inside its step. Recorded as
             # a system row (never a node status) so per-node status stays
@@ -6410,7 +6543,7 @@ def _invoke_graph_resume(
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
                 step_index=step + _PENDING_OFFSET,
-                node_id="__system__",
+                node_id=SYSTEM_EVENT_NODE_ID,
                 status="effect",
                 started_at=_now(),
                 finished_at=_now(),
@@ -6462,6 +6595,8 @@ def _invoke_graph_resume(
         base_path=_resolve_effector_base(base_path, run_id),
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         universe_id=_resume_universe,
+        review_provider=provider_call,
+        review_active=True,
     )
     # What the interrupted segment already fired and spent, so "at most once
     # per run" and the RPC cap hold across the resume, and the nested depth
@@ -6589,11 +6724,58 @@ def _invoke_graph_resume(
     )
 
 
-def recover_in_flight_runs(base_path: str | Path) -> int:
-    """Interrupt legacy unowned in-flight rows, not family/prepared executions.
+def _dead_owner_rows(
+    base_path: str | Path, rows: list[Any], *, started_before: float | None,
+) -> list[Any]:
+    """The rows whose owner is provably dead, probing each owner once."""
+    from tinyassets.process_liveness import DEAD, owner_state
 
-    Called at TinyAssets Server startup to clean up runs that were in
-    flight when the server died. Returns the number of rows updated.
+    states: dict[str, str] = {}
+    dead: list[Any] = []
+    for row in rows:
+        token = row["owner_token"]
+        if token:
+            if token not in states:
+                states[token] = owner_state(base_path, str(token))
+            if states[token] == DEAD:
+                dead.append(row)
+        elif started_before is None or float(row["started_at"] or 0) < started_before:
+            dead.append(row)
+    return dead
+
+
+def in_flight_owner_tokens(base_path: str | Path) -> set[str]:
+    """Every owner token a queued or running run still names.
+
+    A dead owner's liveness file is the proof its runs need to be recovered,
+    so nothing may delete it while a run names it.
+    """
+    if not runs_db_path(base_path).is_file():
+        return set()
+    initialize_runs_db(base_path)
+    with _connect(base_path) as conn:
+        return {
+            str(row["owner_token"]) for row in conn.execute(
+                "SELECT DISTINCT owner_token FROM runs WHERE status IN (?, ?, ?) "
+                "AND owner_token IS NOT NULL",
+                (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING, RUN_STATUS_RESUMED),
+            )
+        }
+
+
+def recover_in_flight_runs(
+    base_path: str | Path, *, started_before: float | None = None,
+) -> int:
+    """Interrupt in-flight runs whose owning process is provably dead.
+
+    Family/prepared executions are excluded: their own protocols recover them.
+    A row carrying an ``owner_token`` is interrupted only when that owner's
+    liveness lock file exists and nobody holds it (run-owner-proof D3); alive
+    and unknown owners are never touched, however long their run is quiet.
+    A row with no token predates owner proof: it is interrupted when it started
+    before ``started_before`` (the recovering process's own start), a one-time
+    rule for the rows a pre-change process left. Every interruption owes its
+    terminal event through the outbox, delivered after the commit.
 
     v1 contract: ``interrupted`` is terminal. Callers rerun with the
     same ``inputs_json`` to continue; the MCP surface exposes this via
@@ -6609,29 +6791,36 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
     with _connect(base_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         prepared_exclusion = _prepared_run_recovery_exclusion(conn)
-        candidates = conn.execute(
-            "SELECT run_id, status, queue_universe_id FROM runs WHERE status IN (?, ?) "
+        rows = conn.execute(
+            "SELECT run_id, status, queue_universe_id, branch_def_id, actor, "
+            "cause_principal, owner_token, started_at FROM runs WHERE status IN (?, ?, ?) "
             "AND workspace_budget_root_run_id IS NULL AND workspace_budget_epoch IS NULL "
             "AND workspace_budget_closing_reason IS NULL" + prepared_exclusion,
-            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
+            (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING, RUN_STATUS_RESUMED),
         ).fetchall()
+        candidates = _dead_owner_rows(base_path, rows, started_before=started_before)
         # A run still waiting for the workspace never executed a node: it keeps
         # its place instead of being interrupted, and is nominated below.
         waiting = _never_started_waiters(base_path, candidates)
         in_flight = [row["run_id"] for row in candidates if row["run_id"] not in waiting]
         count = 0
+        by_id = {row["run_id"]: row for row in candidates}
+        interrupted_rows: list[Any] = []
         for run_id in in_flight:
-            count += conn.execute(
+            moved = conn.execute(
                 "UPDATE runs SET status = ?, error = ?, finished_at = ? "
-                "WHERE run_id = ? AND status IN (?, ?)",
+                "WHERE run_id = ? AND status IN (?, ?, ?)",
                 (
                     RUN_STATUS_INTERRUPTED,
-                    "Server restarted while this run was in flight.",
+                    "The process running this run stopped before it finished.",
                     now,
                     run_id,
-                    RUN_STATUS_QUEUED, RUN_STATUS_RUNNING,
+                    RUN_STATUS_QUEUED, RUN_STATUS_RUNNING, RUN_STATUS_RESUMED,
                 ),
             ).rowcount
+            count += moved
+            if moved:
+                interrupted_rows.append(by_id[run_id])
         for run_id in in_flight:
             # Same-database work is atomic with the rewrite.  A separate
             # universe WAL is finished after this transaction commits.
@@ -6642,6 +6831,11 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
     for run_id, workspace_base, owed in releases:
         _finish_terminal_workspace_release(
             base_path, run_id, workspace_base, local_owed=owed
+        )
+    # Their owners died; an owner's graph that follows them can resume.
+    if interrupted_rows:
+        deliver_terminal_events(
+            base_path, run_ids=[str(row["run_id"]) for row in interrupted_rows],
         )
     for universe_base in sorted(set(waiting.values())):
         _kick_workspace_waiters(universe_base)
@@ -6658,9 +6852,9 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
 _PENDING_OFFSET = 1_000_000
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Presentation helpers
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def build_node_status_map(
@@ -6672,11 +6866,25 @@ def build_node_status_map(
     Later events dominate earlier ones: a node seen as ``ran`` wins over
     its earlier ``pending`` row. This is the shape Claude.ai visualises
     to auto-build a state diagram.
+
+    ``__system__`` rows are NOT nodes and never appear here. Every emitter of
+    one already says so ("recorded as a system row (never a node status)"), and
+    two readers already re-filtered it, but this fold did not -- so a run
+    summary listed ``__system__: recursion_limit_applied`` among its nodes and
+    the mermaid diagram drew a box for it. Live 2026-09-30 (runs
+    ``61184d8f21724915`` / ``4828ae18e2414e77``): the row reads as a failed step
+    of the workflow to both a user and a chatbot. The applied limit is still
+    surfaced, off the EVENT, as ``recursion_limit``
+    (``api/runs._compose_run_snapshot``).
     """
-    statuses: dict[str, str] = {nid: NODE_STATUS_PENDING for nid in declared_order}
+    statuses: dict[str, str] = {
+        nid: NODE_STATUS_PENDING
+        for nid in declared_order
+        if nid != SYSTEM_EVENT_NODE_ID
+    }
     for ev in events:
         node_id = ev.get("node_id", "")
-        if not node_id:
+        if not node_id or node_id == SYSTEM_EVENT_NODE_ID:
             continue
         statuses.setdefault(node_id, NODE_STATUS_PENDING)
         current = statuses[node_id]
@@ -6692,7 +6900,7 @@ def build_node_status_map(
         if priority.get(incoming, 0) >= priority.get(current, 0):
             statuses[node_id] = incoming
     # Preserve declared order, then append any out-of-order nodes.
-    ordered_ids = list(declared_order)
+    ordered_ids = [nid for nid in declared_order if nid != SYSTEM_EVENT_NODE_ID]
     for nid in statuses:
         if nid not in ordered_ids:
             ordered_ids.append(nid)
@@ -6775,7 +6983,7 @@ def query_runs(
 
     with _connect(base_path) as conn:
         rows = conn.execute(
-            f"SELECT run_id, branch_def_id, status, actor, "
+            f"SELECT run_id, branch_def_id, status, actor, queue_universe_id, "
             f"started_at, finished_at, output_json "
             f"FROM runs {where} "
             f"ORDER BY started_at DESC LIMIT ?",
@@ -6862,32 +7070,29 @@ def query_runs(
     return {"rows": result_rows, "count": len(result_rows)}
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Sub-branch invocation helpers
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
-#: Maximum nesting depth for invoke_branch nodes. A child run increments
-#: the depth counter; reaching this cap raises CompilerError at runtime.
+#: Sizes the shared sub-branch pool (``_max_child_workers`` is this + 1). It
+#: is no longer a depth cap (plan item 6): sub-branch runs are metered per
+#: universe instead. Only a BLOCKING version invoke, which waits on this pool
+#: while holding one of its threads, is bounded -- by the pool's size.
 MAX_INVOKE_BRANCH_DEPTH = 5
-
-_TERMINAL_STATUSES = frozenset({
-    RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_CANCELLED,
-    RUN_STATUS_INTERRUPTED,
-})
 
 
 def poll_child_run_status(
     base_path: str | Path,
     run_id: str,
     *,
-    timeout_seconds: float = 300.0,
+    timeout_seconds: float | None = 300.0,
     poll_interval: float = 1.0,
     expected_actor: str | None = None,
     expected_universe_id: str | None = None,
 ) -> dict[str, Any]:
     """Block until *run_id* reaches a terminal status or *timeout_seconds* elapses.
+
+    ``timeout_seconds=None`` waits until the run is terminal.
 
     Returns the run record dict (same shape as ``get_run``).
     Raises ``TimeoutError`` if the run does not terminate in time.
@@ -6900,7 +7105,7 @@ def poll_child_run_status(
     """
     want_actor = (expected_actor or "").strip()
     want_universe = (expected_universe_id or "").strip()
-    deadline = time.monotonic() + timeout_seconds
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
     while True:
         record = get_run(base_path, run_id)
         if record is None:
@@ -6913,6 +7118,9 @@ def poll_child_run_status(
             raise KeyError(f"Child run '{run_id}' not found in runs DB.")
         if record.get("status") in _TERMINAL_STATUSES:
             return record
+        if deadline is None:
+            time.sleep(poll_interval)
+            continue
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ChildRunAwaitTimeout(
@@ -6926,7 +7134,7 @@ def poll_child_run_status(
         time.sleep(min(poll_interval, remaining))
 
 
-# â”€â”€â”€ Teammate messaging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Teammate messaging ───────────────────────────────────────────────────────
 
 _VALID_MESSAGE_TYPES = frozenset({
     "request", "response", "broadcast",
@@ -7156,6 +7364,33 @@ ACTIONABLE_BY: dict[str, str] = {
     # allow-list or SSRF refusal, its soul's own limits. Only the founder can
     # change that, and the request rail is the channel.
     "external_write_refused": "user",
+    # user — the owner's own Custom Rules (harness D1a) stopped the effect:
+    # "ask first" waits for their approval, "hand off" is theirs to perform.
+    "rule_requires_approval": "user",
+    "rule_hand_off": "user",
+    # host — the rules store could not be read, so the effect was refused rather
+    # than allowed; nothing in the branch or the founder's grants is wrong.
+    "rules_unreadable": "host",
+    # user — the check before a consequential action could not run (no model
+    # connected, or it failed), so the action was held rather than sent.
+    "auto_review_unavailable": "user",
+    # user — the stored key itself is finished: expired, revoked at the provider,
+    # or no longer accepted. Neither a retry (same dead key) nor a widening (the
+    # grant was never the problem) can change it; only a new secret can, and only
+    # the owner has one. Live 2026-09-16: this landed in `external_write_failed`
+    # -> "chatbot", so the universe retried twice and then said "please
+    # reconnect" in chat prose, and the connection stayed dead for ten days.
+    "credential_rejected": "user",
+    # user — the destination's EDGE refused our client before the application
+    # saw the request. Nothing in the packet is wrong, the key was never
+    # presented to anything that reads keys, and an identical retry gets an
+    # identical block. The two real repairs are both the owner's: a client
+    # string this service accepts, declared on the connection, or an allowance
+    # at the destination. Live 2026-09-30: Cloudflare answered a UA-less POST
+    # `error code: 1010`, which landed in `external_write_failed` -> "chatbot",
+    # so the universe was told it was "a reason you can fix", retried twice,
+    # and the founder never heard about it.
+    "destination_blocked_client": "user",
     # user — opaque/internal; chatbot escalates raw error for human judgment
     "unknown": "user",
     "error": "user",
@@ -7176,7 +7411,7 @@ EXTERNAL_WRITE_FAILED_ACTION = (
 )
 
 EFFECT_BUDGET_EXHAUSTED_ACTION = (
-    "This run (or this universe's last hour) has used its outbound budget - the "
+    "This run (or this command center's last hour) has used its outbound budget - the "
     "error names which one. Split the work across runs, fetch less per run, or wait "
     "for the hourly window to clear; the budget is usage, not a limit on your graph."
 )
@@ -7190,23 +7425,23 @@ WORKSPACE_SUGGESTED_ACTIONS: dict[str, str] = {
     ),
     "workspace_push_refused": (
         "The push was refused: the default branch is never a target, the ref "
-        "must be tiny/<universe>/<slug> and fast-forward, and the bundle must "
+        "must be tiny/<command-center-id>/<slug> and fast-forward, and the bundle must "
         "verify. Commit on a fresh tiny/ branch from the checked-out ref and "
         "push again; host branch protection is the repository owner's to change."
     ),
     "workspace_busy": (
-        "Another workspace job of this universe (or the host's single slot) is "
+        "Another workspace job of this command center (or the host's single slot) is "
         "running. Wait for it to finish and run again; do not split the same "
         "job across parallel branches."
     ),
     "workspace_pool_busy": (
         "The shared scratch pool is full right now, or startup reconciliation is "
         "still running. Wait a minute and run again; permanent workspaces "
-        "(storage: universe) do not use the pool."
+        "(storage: command center) do not use the pool."
     ),
     "workspace_quota_exceeded": (
         "A storage or hourly workspace bound was reached - the error names which "
-        "(the 4 GiB lease, the universe's permanent quota, or the hourly jobs/"
+        "(the 4 GiB lease, the command center's permanent quota, or the hourly jobs/"
         "bytes). Check out less, discard what you no longer need, or wait for "
         "the window named in the error to clear."
     ),
@@ -7246,6 +7481,36 @@ EXTERNAL_WRITE_REFUSED_ACTION = (
 
 # error_kind values (from the adapter's summary line) that mean the far side of
 # the refusal is AUTHORITY the founder holds, not something the universe can fix.
+RULE_REQUIRES_APPROVAL_ACTION = (
+    "Your owner's rules ask first for this action. Raise ONE request in the rail "
+    "that says exactly what you will do and where, continue other work, and run "
+    "this again once they approve. Do not retry before then."
+)
+RULE_HAND_OFF_ACTION = (
+    "Your owner's rules hand this action to them: they do it themselves. Raise a "
+    "request telling them exactly what to do and where, prepare everything else, "
+    "and do not perform or retry the action yourself."
+)
+AUTO_REVIEW_UNAVAILABLE_ACTION = (
+    "The check before this action could not run on your owner's model, so "
+    "nothing was sent. Make sure a model is connected, then raise one request "
+    "describing the action; do not retry it blindly."
+)
+RULES_UNREADABLE_ACTION = (
+    "Your owner's rules could not be read, so nothing was sent. Nothing in the "
+    "branch is wrong; report it and try again later."
+)
+#: error_kind -> failure class for a refusal by the owner's Custom Rules.
+_RULE_REFUSAL_CLASSES = (
+    # The auto-review (harness D1d) asked for the owner's approval: the same
+    # remedy as an ask-first rule.
+    ("auto_review_needs_approval", "rule_requires_approval"),
+    ("auto_review_unavailable", "auto_review_unavailable"),
+    ("rule_ask_first", "rule_requires_approval"),
+    ("rule_hand_off", "rule_hand_off"),
+    ("rules_unreadable", "rules_unreadable"),
+)
+
 _EXTERNAL_WRITE_REFUSED_KINDS = (
     "missing_consent",
     "soul_authority_denied",
@@ -7255,6 +7520,141 @@ _EXTERNAL_WRITE_REFUSED_WORDS = (
     "consent", "grant", "revoked", "allowlist", "allow-list", "ssrf",
     "not allowed", "scope", "authority refused",
 )
+
+#: A CDN edge block, by the one wire format that states it unambiguously.
+#:
+#: Cloudflare sits in front of a large share of the services a universe builds
+#: a channel to (and in front of this platform), and it names its own refusals:
+#: the body is literally `error code: NNNN`. The CLIENT-block family is what
+#: this class is for -- 1010 (browser/client refused, the one seen live on
+#: 2026-09-30), 1012/1013, the 1006-1008 bans, and 1020 (an access rule).
+#:
+#: This class earns its place regardless of how OFTEN an edge blocks: whenever
+#: one does, the advice the row carried before was wrong in every part (see
+#: DESTINATION_BLOCKED_CLIENT_ACTION). Frequency changes the priority, never
+#: whether the guidance should be correct.
+#:
+#: Deliberately NOT here: 1015, which is rate limiting. Its repair is to slow
+#: down, not to change who we say we are, and guessing them into one class
+#: would give one of them the wrong advice. Another CDN's shape gets added when
+#: there is a reproduction to add it from -- a guessed pattern in a classifier
+#: is a wrong answer waiting for the first real one.
+_CDN_CLIENT_BLOCK_CODES = ("1006", "1007", "1008", "1010", "1012", "1013", "1020")
+_CDN_CLIENT_BLOCK_RE = re.compile(
+    r"error code:\s*(" + "|".join(_CDN_CLIENT_BLOCK_CODES) + r")\b"
+)
+
+DESTINATION_BLOCKED_CLIENT_ACTION = (
+    "The destination's CDN blocked this request at its edge - the service "
+    "itself never saw it. Nothing in your packet is wrong and the stored key "
+    "was never presented, so DO NOT rotate or widen anything, and do not retry: "
+    "an identical request gets an identical block. Say so plainly and name the "
+    "two fixes, both of which are the owner's. Either this service wants a "
+    "particular client string, which is declared ONCE on the connection (its "
+    "constant headers) rather than per call - raise that as the ask - or the "
+    "destination has to allow calls from this platform, which only they can do "
+    "at their end. Report the destination and the edge's own error code from "
+    "the external_write_errors row so they have something to act on."
+)
+
+CREDENTIAL_REJECTED_ACTION = (
+    "The far side REJECTED the key stored for this connection - it is expired, "
+    "revoked, or no longer accepted. Retrying sends the same dead key and "
+    "widening the grant changes nothing: the only fix is a new secret, and only "
+    "the owner has one. Do not retry, and do not answer them in prose about "
+    "reconnecting something. Raise the ONE card that fixes it, now, in this turn: "
+    'write_graph target="pending_request" operation="ask" with '
+    '{"action": {"type": "rotate_http", "destination": "<the destination on the '
+    'external_write_errors row>"}} and one secret field labelled the way that '
+    "service labels its key. It keeps the connection, its endpoints and its "
+    "scopes - only the key changes, and they paste once. Then continue when it "
+    "is answered."
+)
+
+#: A DELIVERED response's status, exactly as ``first_effect_failure`` and
+#: ``_collect_external_write_errors`` write it. This phrase exists for no other
+#: case, which is what separates "the far side rejected our key" from a refusal
+#: the platform made before the wire (those carry a bracketed `[kind]` instead).
+_DELIVERED_STATUS_RE = re.compile(r"far side answered http (\d{3})")
+
+#: Generic credential vocabulary -- no service or vendor name appears here, and
+#: nothing else in the body is read.
+_CREDENTIAL_NOUN = r"(?:tokens?|credentials?|api[ _-]?keys?|bearer|authorization|auth|grant)"
+_CREDENTIAL_DEAD = r"(?:invalid|expired|revoked|unauthori[sz]ed|bad|rejected)"
+#: At most ONE intervening word, in either order. One word is what the real
+#: strings need (`expired_access_token`, `revoked_access_token`, `bad
+#: credentials`, `invalid api key`, `token_revoked`, and `invalid or expired
+#: token` -- whose `expired token` is adjacent). Two words would admit `invalid
+#: repository for token`, which is a permission problem, not a dead key.
+_CREDENTIAL_GAP = r"[ _\-]+(?:[a-z0-9]+[ _\-]+)?"
+#: `_` is a word character, so `\b` cannot bracket `invalid_token`. These
+#: lookarounds treat `_` and `-` as separators, which is what an API error code
+#: actually uses.
+_CREDENTIAL_DEAD_RE = re.compile(
+    rf"(?<![a-z]){_CREDENTIAL_DEAD}(?![a-z]){_CREDENTIAL_GAP}(?<![a-z]){_CREDENTIAL_NOUN}(?![a-z])"
+    rf"|(?<![a-z]){_CREDENTIAL_NOUN}(?![a-z]){_CREDENTIAL_GAP}(?<![a-z]){_CREDENTIAL_DEAD}(?![a-z])"
+)
+#: The COPULAR form, which a one-word gap cannot reach and a wider gap must not
+#: be used for. Verbatim from a real 403 body (AWS, "Unknown/Missing Access Key
+#: or Session Token"): *"The security token included in the request is
+#: invalid."* -- five words between `token` and `invalid`, which the compact rule
+#: deliberately will not span (Codex refute-review, P1 #3).
+#:
+#: The extra reach is safe here in a way it is not for the compact rule, because
+#: a copula binds its predicate to its SUBJECT: `<credential noun> ... is
+#: invalid` says the credential is invalid, where `invalid <2 words> token` may
+#: be saying something else is invalid. Bounded by characters and stopped at a
+#: sentence break so it cannot cross clauses.
+_CREDENTIAL_DEAD_COPULA_RE = re.compile(
+    rf"(?<![a-z]){_CREDENTIAL_NOUN}(?![a-z])[^.;!?]{{0,48}}?"
+    r"(?:is|was|are|were|has been|have been)[ _\-]+"
+    r"(?:(?:no longer|not)[ _\-]+valid|invalid|expired|revoked|rejected"
+    r"|unauthori[sz]ed)(?![a-z])"
+)
+#: A hard cap on one row's body: the persisted error row previews 160 characters
+#: and the raised message 200, each plus a ` [kind]` tail.
+_CREDENTIAL_BODY_WINDOW = 220
+
+
+def _credential_body(lower: str, match: re.Match) -> str:
+    """The body of the delivered row ``match`` names, and no other row's.
+
+    A summary carries up to five rows joined by ``"; "``, and a body preview can
+    itself contain a semicolon -- so the row boundary is taken as the start of the
+    NEXT delivered-status phrase (or the end of the string), then capped. Codex
+    refute-review, P1 #2: a fixed 220-character window let a short-bodied 403
+    borrow ``invalid_token`` out of a following 404 and classify as a dead key.
+
+    A body long enough to be cut by the producer's own 160/200-character preview
+    can still lose its marker past that cut. That is a MISS, which leaves the row
+    in its existing class -- the safe direction, and not fixable from the string.
+    """
+    rest = lower[match.end():]
+    following = _DELIVERED_STATUS_RE.search(rest)
+    end = following.start() if following else len(rest)
+    return rest[:min(end, _CREDENTIAL_BODY_WINDOW)]
+
+
+def _credential_rejected(lower: str) -> bool:
+    """Whether a row of this summary is a delivered response saying the secret
+    we presented is finished.
+
+    A 401 means it unconditionally (RFC 7235: the request lacked valid
+    authentication credentials, and no retry of the same secret fixes that). A
+    403 counts only when the body names the credential ITSELF as invalid,
+    revoked or expired -- most 403s say "this key may not do that", which is a
+    widening or a provider-side permission, and asking the owner to replace a
+    working key would be the wrong ask.
+    """
+    for match in _DELIVERED_STATUS_RE.finditer(lower):
+        status = match.group(1)
+        if status == "401":
+            return True
+        if status == "403":
+            body = _credential_body(lower, match)
+            if _CREDENTIAL_DEAD_RE.search(body) or _CREDENTIAL_DEAD_COPULA_RE.search(body):
+                return True
+    return False
 
 
 def _classify_external_write(lower: str) -> str:
@@ -7266,9 +7666,26 @@ def _classify_external_write(lower: str) -> str:
             return kind
     if "[effect_budget_exhausted]" in lower:
         return "effect_budget_exhausted"
+    for kind, failure_class in _RULE_REFUSAL_CLASSES:
+        if f"[{kind}]" in lower:
+            return failure_class
     for kind in _EXTERNAL_WRITE_REFUSED_KINDS:
         if f"[{kind}]" in lower:
             return "external_write_refused"
+    # BEFORE both nets below. A CDN edge block is a DELIVERED 4xx, so the
+    # credential check reads it next and the refusal-word net reads it after
+    # that -- and 1020's own wording ("access denied") is one word away from
+    # both. It is neither: the application never saw the request. Matching the
+    # edge's own error code first is exact, so it cannot be borrowed by either
+    # heuristic (live 2026-09-30).
+    if _CDN_CLIENT_BLOCK_RE.search(lower):
+        return "destination_blocked_client"
+    # BEFORE the refusal-word net below, which is a heuristic over the whole
+    # line: a revoked token's own body says "revoked", so a dead key classified
+    # as an authority refusal and the agent was told to raise `extend_http` --
+    # widening a grant that was never the problem (live 2026-09-16).
+    if _credential_rejected(lower):
+        return "credential_rejected"
     if any(word in lower for word in _EXTERNAL_WRITE_REFUSED_WORDS):
         return "external_write_refused"
     return "external_write_failed"
@@ -7281,6 +7698,18 @@ def external_write_suggested_action(failure_class: str) -> str:
         return EFFECT_BUDGET_EXHAUSTED_ACTION
     if failure_class == "external_write_refused":
         return EXTERNAL_WRITE_REFUSED_ACTION
+    if failure_class == "rule_requires_approval":
+        return RULE_REQUIRES_APPROVAL_ACTION
+    if failure_class == "rule_hand_off":
+        return RULE_HAND_OFF_ACTION
+    if failure_class == "rules_unreadable":
+        return RULES_UNREADABLE_ACTION
+    if failure_class == "auto_review_unavailable":
+        return AUTO_REVIEW_UNAVAILABLE_ACTION
+    if failure_class == "destination_blocked_client":
+        return DESTINATION_BLOCKED_CLIENT_ACTION
+    if failure_class == "credential_rejected":
+        return CREDENTIAL_REJECTED_ACTION
     if failure_class == "external_write_failed":
         return EXTERNAL_WRITE_FAILED_ACTION
     return ""
@@ -7349,7 +7778,8 @@ def _classify_failure(run: dict) -> str:
         return "timeout"
     if "exhausted" in lower or "cooldown" in lower:
         return "provider_exhausted"
-    if "code runs only in the universe that authored it" in lower:
+    if any(f"code runs only in the {word} that authored it" in lower
+           for word in ("command center", "universe")):  # pre-rename records
         # A public foreign branch with code was run directly (design D2): the
         # fix is a remix, one tool call away.
         return "node_not_accepted"
@@ -7428,7 +7858,7 @@ def list_recent_runs(
             suggested_action = "Increase node timeout or simplify the prompt."
         elif failure_class == "node_not_accepted":
             suggested_action = (
-                "This branch's code was authored elsewhere. Remix it into your universe "
+                "This branch's code was authored elsewhere. Remix it into your command center "
                 "(write_graph with fork_from) and run your copy."
             )
         elif failure_class == "code_node_failed":
@@ -7451,7 +7881,9 @@ def list_recent_runs(
                 "Wait for the child run to complete. Attaching an existing "
                 "child run is not exposed by the advertised handles."
             )
-        elif failure_class in ("external_write_failed", "external_write_refused"):
+        elif failure_class in ("external_write_failed", "external_write_refused",
+                               "rule_requires_approval", "rule_hand_off",
+                               "rules_unreadable", "auto_review_unavailable"):
             suggested_action = external_write_suggested_action(failure_class)
         elif failure_class == "error":
             suggested_action = "Check error field for details; re-run after fixing root cause."

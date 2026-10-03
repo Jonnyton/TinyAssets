@@ -19,19 +19,22 @@ refresh token is written back through the vault's atomic write before the new
 access token is used. The vault's exclusive admission is taken BEFORE the
 refresh token is spent, so a token the provider rotates can always be saved: if
 the vault cannot be held, nothing is spent and the call fails retryably.
+
+That ordering is not implemented here. It lives in
+:func:`tinyassets.credential_refresh.refresh_credential`, shared with the
+subscription bundle a CLI provider is launched with, which spends the same kind
+of single-use refresh token and needs the same five steps in the same order.
+This module supplies only the ``oauth2`` encoding: what to read, when it is
+stale, how to spend it, and what record to write.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import threading
 import time
-from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from tinyassets.connection_oauth.transport import (
     OAuthError,
@@ -175,60 +178,6 @@ def refresh(bundle: TokenBundle) -> TokenBundle:
 # Single-flight refresh, inside the broker.
 # --------------------------------------------------------------------------- #
 
-_THREAD_LOCKS: dict[str, threading.Lock] = {}
-_THREAD_LOCKS_GUARD = threading.Lock()
-
-
-def _thread_lock(key: str) -> threading.Lock:
-    with _THREAD_LOCKS_GUARD:
-        return _THREAD_LOCKS.setdefault(key, threading.Lock())
-
-
-@contextmanager
-def _file_lock(path: Path, deadline: float) -> Iterator[None]:
-    """An exclusive OS lock on ``path``, polled until ``deadline``."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a+b")
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-            while True:
-                handle.seek(0)
-                try:
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("connection refresh lock is busy") from None
-                    time.sleep(0.02)
-            try:
-                yield
-            finally:
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            while True:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("connection refresh lock is busy") from None
-                    time.sleep(0.02)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    finally:
-        handle.close()
-
 
 class ConnectionTokens:
     """Current access token for one universe's oauth2 connections.
@@ -258,18 +207,16 @@ class ConnectionTokens:
         raise LookupError("credential reference is unavailable")
 
     def _write(self, destination: str, bundle: TokenBundle) -> None:
-        from tinyassets.credential_vault import write_credential_vault
+        from tinyassets.credential_vault import (
+            http_credential_record,
+            write_credential_vault,
+        )
 
         write_credential_vault(
             self._universe_dir,
-            [{"credential_type": "http", "service": destination,
-              "destination": destination, "token": encode(bundle)}],
+            [http_credential_record(destination=destination, token=encode(bundle))],
             owner_user_id=self._owner, universe_id=self._universe_dir.name,
         )
-
-    def _lock_path(self, destination: str) -> Path:
-        digest = hashlib.sha256(destination.encode("utf-8")).hexdigest()[:32]
-        return self._universe_dir / ".oauth-refresh" / f"{digest}.lock"
 
     @staticmethod
     def _failed(detail: str):
@@ -283,80 +230,54 @@ class ConnectionTokens:
         ``rejected`` is an access token the service just answered 401 to; the
         stored one is refreshed unless another holder already replaced it.
         """
+        from tinyassets.credential_refresh import RefreshError, refresh_credential
+        from tinyassets.credential_vault import http_credential_record
+
         try:
             bundle = decode(credential)
         except ValueError:
             raise self._failed("the stored authorization is unreadable; reconnect") from None
         if not rejected and not bundle.expiring():
             return bundle
-        key = f"{self._universe_dir.resolve()}::{destination}"
-        deadline = time.monotonic() + LOCK_WAIT_SECONDS
-        locked = False
-        with _thread_lock(key):
-            try:
-                with _file_lock(self._lock_path(destination), deadline):
-                    locked = True
-                    return self._refresh_locked(destination, rejected, deadline)
-            except TimeoutError:
-                if locked:
-                    raise
-                raise self._failed("another refresh of this connection did not finish") from None
 
-    def _hold_vault(self, deadline: float) -> tuple[ExitStack, Any]:
-        """The vault's exclusive admission, retried until ``deadline``.
-
-        Held BEFORE the refresh token is spent. The cross-process admission is
-        a bounded lock (on Windows it gives up after about a second), so a
-        refresh that took it only to WRITE could rotate the token at the
-        provider and then fail to save it, losing the connection.
-        """
-        from tinyassets.credential_vault import exclusive_credential_vault
-
-        while True:
-            stack = ExitStack()
-            try:
-                write = stack.enter_context(exclusive_credential_vault(self._universe_dir))
-                return stack, write
-            except (TimeoutError, OSError):
-                stack.close()
-                if time.monotonic() >= deadline:
-                    raise self._failed(
-                        "this connection's vault stayed busy; nothing was spent, try again"
-                    ) from None
-                time.sleep(0.05)
-
-    def _refresh_locked(self, destination: str, rejected: str, deadline: float) -> TokenBundle:
-        stack, write = self._hold_vault(deadline)
-        with stack:
+        def read() -> TokenBundle:
             # Re-read INSIDE the locks: the holder before us may have rotated it.
             try:
-                current = decode(self._read(destination))
+                return decode(self._read(destination))
             except (LookupError, ValueError):
-                raise self._failed("the stored authorization is unreadable; reconnect") from None
-            now = time.time()
+                raise RefreshError(
+                    "the stored authorization is unreadable; reconnect") from None
+
+        def stale(current: TokenBundle) -> bool:
             # Another holder already refreshed: use theirs, never spend the
             # (possibly single-use) refresh token a second time.
-            if not current.expiring(now) and (not rejected or current.access_token != rejected):
-                return current
+            now = time.time()
+            return current.expiring(now) or bool(
+                rejected and current.access_token == rejected)
+
+        def spend(current: TokenBundle) -> TokenBundle:
             if not current.refresh_token:
-                raise self._failed(
+                raise RefreshError(
                     "the provider issued no refresh token; reconnect to sign in again")
             try:
-                fresh = refresh(current)
+                return refresh(current)
             except OAuthError as exc:
-                raise self._failed(exc.detail or exc.code) from None
-            record = [{"credential_type": "http", "service": destination,
-                       "destination": destination, "token": encode(fresh)}]
-            # Still holding the vault: only a storage fault can stop this write,
-            # so it is retried until the deadline rather than given up once.
-            while True:
-                try:
-                    write(record, owner_user_id=self._owner,
-                          universe_id=self._universe_dir.name)
-                    return fresh
-                except Exception:  # noqa: BLE001 - a rotated token that is not saved is lost
-                    if time.monotonic() >= deadline:
-                        raise self._failed(
-                            "the refreshed authorization could not be saved; reconnect"
-                        ) from None
-                    time.sleep(0.05)
+                raise RefreshError(exc.detail or exc.code) from None
+
+        try:
+            return refresh_credential(
+                universe_dir=self._universe_dir,
+                lock_id=destination,
+                owner_user_id=self._owner,
+                universe_id=self._universe_dir.name,
+                read=read,
+                stale=stale,
+                spend=spend,
+                records=lambda fresh: [
+                    http_credential_record(destination=destination, token=encode(fresh))
+                ],
+                subject="connection",
+                wait_seconds=LOCK_WAIT_SECONDS,
+            )
+        except RefreshError as exc:
+            raise self._failed(exc.detail) from None

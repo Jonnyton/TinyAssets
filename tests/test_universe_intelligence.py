@@ -52,6 +52,9 @@ def _data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _seed(tmp_path: Path) -> Path:
     udir = tmp_path / "u-test"
     udir.mkdir()
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(udir.parent, udir.name)
     seed_okf_bundle(udir, purpose="To help my founder bring their projects to life.")
     # Register + declare so disclosure is evaluable. Declared `public`, so an
     # unauthenticated in-process caller (T0) is served the universe's public
@@ -66,7 +69,7 @@ def _declare(base: Path, uid: str) -> None:
     from tinyassets.daemon_server import ensure_universe_registered
 
     ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
-    vis.set_universe_visibility(uid, "public")
+    vis.set_universe_visibility(uid, "public", source="owner")
 
 
 def _become_founder(base: Path, uid: str = "u-test", actor_id: str = "founder-1") -> None:
@@ -267,6 +270,7 @@ def test_commit_learning_persists_grounded_soul(tmp_path):
             },
         },
         actor_id="alex",
+        agent_id="main",
     )
     assert result is not None
     assert "founder.md" in result["updated_files"]
@@ -284,6 +288,7 @@ def test_commit_learning_ignores_non_governed_and_empty_bodies(tmp_path):
     result = ui.commit_learning(
         udir,
         {"soul": {"made-up-nonsense.md": "not governed", "founder.md": "   "}},
+        agent_id="main",
     )
     assert result is None
     # governed founder.md untouched; the non-governed file was never created
@@ -293,7 +298,7 @@ def test_commit_learning_ignores_non_governed_and_empty_bodies(tmp_path):
 
 def test_commit_learning_returns_none_when_nothing_grounded(tmp_path):
     udir = _seed(tmp_path)
-    assert ui.commit_learning(udir, {}) is None
+    assert ui.commit_learning(udir, {}, agent_id="main") is None
     assert _fm(udir / "founder.md", "status") == "not-learned"
 
 
@@ -383,6 +388,7 @@ def test_commit_learning_persists_canon_to_universe_wiki(tmp_path, monkeypatch):
             ]
         },
         universe_id="u-test",
+        agent_id="main",
     )
     assert result is not None
     assert result["canon"] == ["The Resonance"]
@@ -469,7 +475,7 @@ def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
 
 def test_generic_identity_detector():
     assert ui._is_generic_identity_boilerplate("a blank slate, a newborn mind")
-    assert ui._is_generic_identity_boilerplate("I am a personified universe")
+    assert ui._is_generic_identity_boilerplate("I am a personified command center")
     assert ui._is_generic_identity_boilerplate("I have no name yet")
     assert not ui._is_generic_identity_boilerplate(
         "I am Atlas, Dana's climate-research companion."
@@ -481,13 +487,13 @@ def test_commit_learning_drops_generic_identity_boilerplate(tmp_path):
     proposed = {
         "soul": {
             "identity.md": (
-                "I am a personified universe that starts blank and learns who "
+                "I am a personified command center that starts blank and learns who "
                 "I am over time."
             ),
             "founder.md": "My founder is Dana, a documentary filmmaker.",
         }
     }
-    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana")
+    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana", agent_id="main")
 
     # Founder fact persisted; generic identity boilerplate dropped (not learned).
     assert _fm(udir / "founder.md", "status") == "learned"
@@ -504,7 +510,7 @@ def test_commit_learning_keeps_founder_grounded_identity(tmp_path):
             ),
         }
     }
-    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana")
+    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana", agent_id="main")
 
     assert _fm(udir / "identity.md", "status") == "learned"
 

@@ -265,6 +265,7 @@ def ensure_default_selector_published(base_path: str | Path) -> str:
         base_path,
         branch_dict=branch_dict,
         publisher=DEFAULT_SELECTOR_PUBLISHER,
+        public=True,
         notes=(
             "Platform default selector v1 — single prompt-template "
             "node ranking candidate branches from collected signals. "
@@ -444,7 +445,7 @@ If `candidate_branches` is empty, return `{{"ranked_entries":[]}}`.
 SELECTOR_RETIRED_MESSAGE = (
     "The platform has no LLM, so leaderboard selectors no longer run: a "
     "selector was a model call the platform made for whoever read the "
-    "leaderboard, not work inside an owner's universe. Rank or pick branches "
+    "leaderboard, not work inside an owner's command center. Rank or pick branches "
     "with your own workflow instead."
 )
 

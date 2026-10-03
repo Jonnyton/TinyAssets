@@ -53,12 +53,12 @@ assert _spec and _spec.loader
 _ci = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_ci)
 
-# The one expression `heavy-tests` may use. Admits schedule, push and
-# workflow_dispatch; excludes pull_request. Pinned exactly rather than by
-# substring: `github.event_name != 'pull_request' && github.event_name ==
-# 'push'` also contains "pull_request" and "!=" while excluding schedules
-# entirely, which is the bug this file guards against.
-_FULL_TESTS_IF = "github.event_name != 'pull_request'"
+# The one expression `heavy-tests` may use: the hourly schedule and manual
+# dispatch, nothing else. Pinned exactly rather than by substring, because a
+# condition that drops `schedule` removes the only automatic coverage of the
+# heavy files, and one that admits `push` (or a future `merge_group`) runs a
+# ~41 min red-at-baseline job on every merge (2026-09-27 lean pipeline).
+_FULL_TESTS_IF = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
 
 _CONCURRENCY_GROUP = (
     "tests-${{ github.event.pull_request.number || github.run_id }}"
@@ -71,6 +71,34 @@ _CANCEL_IN_PROGRESS = "${{ github.event_name == 'pull_request' }}"
 
 def _load() -> dict:
     return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_required_shards_install_the_browser_before_running_tests():
+    steps = _load()["jobs"]["required-tests-shard"]["steps"]
+    install = next(i for i, s in enumerate(steps)
+                   if "playwright install --with-deps chromium" in s.get("run", ""))
+    execute = next(i for i, s in enumerate(steps)
+                   if "ci_required_tests.py" in s.get("run", ""))
+    assert install < execute
+    assert "'.[dev,browser]'" in steps[install]["run"]
+    assert "if" not in steps[install]
+    assert not steps[install].get("continue-on-error", False)
+
+
+def test_required_aggregate_rejects_missing_or_skipped_browser_proofs():
+    steps = _load()["jobs"]["required-tests"]["steps"]
+    aggregate = next(i for i, s in enumerate(steps)
+                     if "--aggregate shards/" in s.get("run", ""))
+    proof = next(i for i, s in enumerate(steps)
+                 if "ci_assert_junit_case.py" in s.get("run", ""))
+    step = steps[proof]
+    assert aggregate < proof
+    assert step["if"] == "github.event_name != 'pull_request'"
+    assert "--junit junit.xml" in step["run"]
+    assert "--marker real_browser" in step["run"]
+    assert "'.[dev,browser]'" in step["run"]
+    assert not step.get("continue-on-error", False)
+    assert "|| true" not in step["run"]
 
 
 def _triggers(wf: dict) -> dict:
@@ -223,14 +251,14 @@ def test_schedule_declares_at_most_one_nominal_slot_per_hour() -> None:
     )
 
 
-def test_heavy_tests_runs_on_every_non_pr_event() -> None:
-    """Pinned exactly — a narrower condition would re-strand the tripwire."""
+def test_heavy_tests_runs_on_schedule_and_dispatch_only() -> None:
+    """Pinned exactly: dropping `schedule` strands the tripwire; adding `push`
+    puts a ~41 min job back on every merge."""
     condition = _expr(_load()["jobs"]["heavy-tests"].get("if", ""))
     assert condition == _FULL_TESTS_IF, (
-        f"heavy-tests `if:` must be exactly {_FULL_TESTS_IF!r} so that schedule, "
-        f"push and workflow_dispatch all run it; got {condition!r}. Narrowing "
-        f"it (e.g. adding `&& github.event_name == 'push'`) silently removes "
-        f"the only automatic coverage of .github/heavy-test-files.txt."
+        f"heavy-tests `if:` must be exactly {_FULL_TESTS_IF!r}; got "
+        f"{condition!r}. Without `schedule` nothing automatic covers "
+        f".github/heavy-test-files.txt; with `push` it runs on every merge."
     )
 
 
@@ -302,11 +330,37 @@ def test_required_tests_cannot_decline_to_report() -> None:
             f"running on out-of-scope PRs, and the required context then hangs "
             f"on 'Expected — waiting for status' forever"
         )
-    assert "if" not in wf["jobs"]["required-tests"], (
-        "the REQUIRED job must have no job-level `if:` — a skipped job reports "
-        "conclusion=skipped, which protection treats as SUCCESS, so a mistaken "
-        "condition fails open and merges untested code"
+    # The aggregate is the one exception, and it is forced rather than
+    # allowed: it `needs` the shards, and a job whose need failed is SKIPPED
+    # unless its condition says otherwise -- so with no `if:` a red shard would
+    # skip the required check and merge green. `always()` is the only condition
+    # that can never evaluate false. Anything else (`success()`, `!cancelled()`)
+    # reintroduces a skip path.
+    condition = _expr(wf["jobs"]["required-tests"].get("if", ""))
+    assert condition == "always()", (
+        f"the REQUIRED aggregate's `if:` must be exactly `always()`, got "
+        f"{condition!r}: without it a failed shard SKIPS the required check, "
+        f"and protection treats skipped as SUCCESS"
     )
+    # The heavy run happens ONCE, on the merge-group commit (founder
+    # 2026-09-30: "cut the double CI run in the merge queue"). Shards may skip
+    # on exactly one event -- the pull request -- and on nothing else, so the
+    # queue, the schedule and a manual dispatch always run them.
+    queue_only = "github.event_name != 'pull_request'"
+    assert _expr(wf["jobs"]["required-tests-shard"].get("if", "")) == queue_only, (
+        "shards skip ONLY on pull_request; any other condition could skip the "
+        "merge-queue run, which is the one that gates main"
+    )
+    assert "merge_group" in triggers, "without merge_group the shards never run at all"
+    agg_steps = wf["jobs"]["required-tests"]["steps"]
+    decide = next(s for s in agg_steps if "--aggregate" in str(s.get("run", "")))
+    assert _expr(decide.get("if", "")) == queue_only, (
+        "the aggregate's gate step must run on every non-PR event"
+    )
+    assert any(
+        _expr(s.get("if", "")) == "github.event_name == 'pull_request'" for s in agg_steps
+    ), "on a PR the aggregate must still REPORT, explicitly deferring to the queue"
+    assert _expr(wf["jobs"]["slow-tests"].get("if", "")) == queue_only
 
 
 def test_required_tests_enforces_an_adequate_vacuity_floor() -> None:
@@ -369,7 +423,7 @@ def test_heavy_tests_uses_the_reviewed_runner_and_floor() -> None:
 def test_required_and_heavy_do_not_overlap() -> None:
     """The point of the split: the suite runs once across the two jobs."""
     jobs = _load()["jobs"]
-    req = "\n".join(s.get("run", "") for s in jobs["required-tests"]["steps"])
+    req = "\n".join(s.get("run", "") for s in jobs["required-tests-shard"]["steps"])
     heavy = "\n".join(s.get("run", "") for s in jobs["heavy-tests"]["steps"])
     assert "--exclude-from .github/heavy-test-files.txt" in req
     assert "--include-from .github/heavy-test-files.txt" in heavy
@@ -399,3 +453,121 @@ def test_every_heavy_listed_path_still_exists() -> None:
         "deleted the tests, or the required gate keeps --ignore-ing a ghost."
     )
     assert len(set(entries)) == len(entries), "duplicate entries in the heavy list"
+
+
+# ---- sharding ----------------------------------------------------------------
+
+
+def _shard_count_declarations() -> dict[str, object]:
+    jobs = _load()["jobs"]
+    shard_job = jobs["required-tests-shard"]
+    shard_run = "\n".join(s.get("run", "") for s in shard_job["steps"])
+    agg_run = "\n".join(s.get("run", "") for s in jobs["required-tests"]["steps"])
+    return {
+        "matrix": shard_job["strategy"]["matrix"]["shard"],
+        "shard_arg": re.findall(r'--shard\s+"\$\{\{ matrix\.shard \}\}/(\d+)"', shard_run),
+        "name": re.findall(r"/(\d+)$", str(shard_job["name"])),
+        "expect": re.findall(r"--expect-shards[\s=]+(\d+)", agg_run),
+    }
+
+
+def test_every_shard_count_declaration_agrees() -> None:
+    """The shard count is written in four places; they must be ONE number.
+
+    Matrix larger than `--shard .../N`: two jobs run the same shard and a
+    duplicate manifest fails the gate. Matrix SMALLER: some hash buckets have
+    no job, those files never run, and -- unless `--expect-shards` also
+    disagrees -- nothing notices. That silent case is why the matrix must be
+    exactly 1..N rather than merely N entries long.
+    """
+    d = _shard_count_declarations()
+    assert len(d["shard_arg"]) == 1 and len(d["expect"]) == 1 and len(d["name"]) == 1, d
+    n = int(d["shard_arg"][0])
+    assert n >= 2, "a single shard is the old serial job with extra steps"
+    assert d["matrix"] == list(range(1, n + 1)), d
+    assert int(d["expect"][0]) == n, d
+    assert int(d["name"][0]) == n, d
+
+
+def test_only_the_aggregate_carries_the_protection_context() -> None:
+    """A shard named `required-tests` would let one green shard satisfy it."""
+    jobs = _load()["jobs"]
+    shard_name = str(jobs["required-tests-shard"]["name"])
+    assert shard_name.startswith("required-tests shard "), shard_name
+    names = [str(j.get("name", k)) for k, j in jobs.items()]
+    assert names.count("required-tests") == 1
+
+
+def test_aggregate_waits_for_every_shard_and_reads_their_results() -> None:
+    jobs = _load()["jobs"]
+    shard, agg = jobs["required-tests-shard"], jobs["required-tests"]
+    assert agg.get("needs") in ("required-tests-shard", ["required-tests-shard"])
+    # fail-fast would cancel sibling shards, turning one real failure into
+    # "missing shards" and hiding what actually broke.
+    assert shard["strategy"].get("fail-fast") is False
+
+    upload = next(s for s in shard["steps"] if "upload-artifact" in str(s.get("uses", "")))
+    assert _expr(upload.get("if", "")) == "always()", "a red shard must still upload"
+    assert upload["with"]["name"] == "junit-required-shard-${{ matrix.shard }}"
+    download = next(s for s in agg["steps"] if "download-artifact" in str(s.get("uses", "")))
+    assert download["with"]["pattern"] == "junit-required-shard-*"
+
+    decide = next(s for s in agg["steps"] if "--aggregate" in str(s.get("run", "")))
+    run = str(decide["run"])
+    assert "ci_required_tests.py --aggregate" in run
+    # The job result is checked as well as the files: a shard that failed
+    # AFTER writing a clean-looking junit must still fail the gate.
+    # The failure itself is unit-tested in test_ci_required_tests; here, pin
+    # that the real job result reaches it and that the step's exit code is the
+    # script's (a single command, nothing after it that could exit 0).
+    assert decide["env"]["SHARD_RESULT"] == "${{ needs.required-tests-shard.result }}"
+    assert '--shard-job-result "$SHARD_RESULT"' in run
+    code = [
+        line.strip()
+        for line in run.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert code[0].startswith("python scripts/ci_required_tests.py --aggregate"), code
+    assert all(line.startswith("--") for line in code[1:]), code
+    assert all(line.endswith("\\") for line in code[:-1]), code
+    assert "continue-on-error" not in decide
+
+
+def test_shards_run_the_reviewed_runner_with_the_shard_floor() -> None:
+    run = "\n".join(s.get("run", "") for s in _load()["jobs"]["required-tests-shard"]["steps"])
+    assert "ci_required_tests.py" in run
+    assert "--profile shard" in run
+    assert "--min-ran" not in run, "the per-shard floor comes from --profile shard"
+
+
+# ---- PR-time affected tests ----------------------------------------------------
+
+
+def test_affected_tests_run_on_the_pr_only_and_never_carry_a_required_name() -> None:
+    """The PR slice is advisory: the merge-group shards stay the gate."""
+    job = _load()["jobs"]["affected-tests"]
+    assert _expr(job.get("if", "")) == "github.event_name == 'pull_request'"
+    assert not str(job["name"]).startswith("required-tests")
+    assert job["strategy"].get("fail-fast") is False
+    checkout = next(s for s in job["steps"] if "actions/checkout" in str(s.get("uses", "")))
+    # HEAD^1 of the pull_request merge commit is the base tip; depth 1 has no parent.
+    assert checkout["with"]["fetch-depth"] == 2
+
+
+def test_affected_tests_select_then_run_their_slice_through_the_gate_script() -> None:
+    job = _load()["jobs"]["affected-tests"]
+    run = "\n".join(s.get("run", "") for s in job["steps"])
+    assert "scripts/affected_tests.py --base HEAD^1 --out affected.txt" in run
+    assert "--affected affected.txt" in run
+    assert "--profile affected" in run
+    # Same exclusion as the required shards: the heavy list is red at baseline.
+    assert "--exclude-from .github/heavy-test-files.txt" in run
+    n = re.findall(r'--shard\s+"\$\{\{ matrix\.shard \}\}/(\d+)"', run)
+    assert len(n) == 1
+    assert job["strategy"]["matrix"]["shard"] == list(range(1, int(n[0]) + 1))
+    assert re.findall(r"/(\d+)$", str(job["name"])) == n
+    # The same split as the queue's shards: a different split co-locates
+    # different neighbours, and an order-dependent test then reds the PR job
+    # on a failure the queue never produces.
+    required = _load()["jobs"]["required-tests-shard"]["strategy"]["matrix"]["shard"]
+    assert job["strategy"]["matrix"]["shard"] == required

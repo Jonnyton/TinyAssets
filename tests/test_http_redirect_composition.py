@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from tests.test_authenticated_external_call_effector import _setup
+from tests.test_authenticated_external_call_effector import _approve, _setup
 from tests.test_effects_at_node_time import _effect_node, _linear, _provider_for
 from tests.test_http_redirect_chain import (
     KEY,
@@ -129,7 +129,8 @@ def test_redirect_effect_reaches_real_code_through_spawned_broker(
     )
     branch = _linear(_effect_node("fetch"), code)
     branch.state_schema += [{"name": "digest", "type": "str"}, {"name": "length", "type": "int"}]
-    effects = EffectChain(run_id="redirect-composition", base_path=str(universe))
+    effects = EffectChain(run_id="redirect-composition", base_path=str(universe),
+                          review_provider=_approve, review_active=True)
     compiled = compile_branch(
         branch, provider_call=_provider_for({"fetch": packet}), effect_chain=effects
     )

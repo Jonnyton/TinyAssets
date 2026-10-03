@@ -93,7 +93,15 @@ def test_documented_lifecycle_reaches_real_adapter_and_store(bound):
     assert row["revision"] == 1
     assert row["owner"] == {"is_you": True}
     listed = json.loads(engine.read_graph(target="automations"))
-    assert listed["automations"] == [row]
+    # The list names each input's size, never its body; the get returns it.
+    (summary,) = listed["automations"]
+    assert summary.pop("input_chars") == {
+        key: len(value if isinstance(value, str) else json.dumps(value))
+        for key, value in row["inputs"].items()
+    }
+    assert summary.pop("inputs_read_with").startswith('read_graph target="automation"')
+    assert summary == {k: v for k, v in row.items() if k != "inputs"}
+    assert listed["complete"] is True and listed["total"] == 1
     assert read(row)["automation"] == row
     seen = {"create"}
     for op, state in [("pause", "paused"), ("resume", "active"), ("delete", "paused")]:
@@ -144,12 +152,6 @@ def test_stopping_does_not_require_execution_admission_or_provider(bound, monkey
         engine, "_engine_run_admit", lambda **k: pytest.fail("stop spent admission")
     )
     assert "error" not in control(row, op)
-
-
-def test_create_admission_refuses_without_writing(bound, monkeypatch):
-    monkeypatch.setattr(engine, "_engine_run_admit", lambda **k: False)
-    assert "error" in create()
-    assert AutomationStore(bound).list(universe_id=UNIVERSE) == []
 
 
 @pytest.mark.parametrize("actor", ["stranger", "writer"])

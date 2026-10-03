@@ -359,19 +359,6 @@ class TestWikiWrite:
         )
         assert result.get("status") in {"drafted", "updated"}, result
 
-    def test_wiki_categories_enum_matches_expanded_taxonomy(self):
-        """Lock-in: the module constant carries the seed-default categories in
-        canonical order. These are defaults, not a closed whitelist — custom
-        categories grow organically (see test_wiki_write_accepts_custom_category)."""
-        from tinyassets.api.wiki import _WIKI_CATEGORIES
-
-        assert _WIKI_CATEGORIES == (
-            "projects", "concepts", "people", "research",
-            "recipes", "workflows", "notes", "references", "plans",
-            "bugs", "feature-requests", "design-proposals", "patch-requests",
-        )
-
-
 class TestWikiDelete:
     def test_delete_dry_run_default_does_not_delete(self, wiki_dir):
         target = wiki_dir / "pages" / "projects" / "test-project.md"
@@ -936,48 +923,10 @@ class TestWikiFileBugDispatch:
         assert out["bug_id"] == "BUG-002"
 
 
-class TestWikiMCPRegistration:
-    def test_wiki_tool_registered(self):
-        tools = asyncio.run(mcp.list_tools(run_middleware=False))
-        tool_names = {t.name for t in tools}
-        assert "wiki" in tool_names
-
-    def test_wiki_tool_metadata(self):
-        tools = asyncio.run(mcp.list_tools(run_middleware=False))
-        wiki_tool = next(t for t in tools if t.name == "wiki")
-        assert wiki_tool.title == "Wiki Knowledge Base"
-        assert {"wiki", "knowledge"} <= wiki_tool.tags
-        assert wiki_tool.annotations.readOnlyHint is False
-        assert wiki_tool.annotations.openWorldHint is True
-
-    def test_wiki_tool_schema_advertises_file_bug_tags_field(self):
-        """BUG-040: MCP clients must not reject backend-supported tags."""
-
-        tools = asyncio.run(mcp.list_tools(run_middleware=False))
-        wiki_tool = next(t for t in tools if t.name == "wiki")
-        properties = wiki_tool.parameters["properties"]
-
-        assert properties["tags"]["type"] == "string"
-        assert properties["tags"]["default"] == ""
-
-    def test_wiki_file_bug_kind_field_is_in_mcp_schema(self):
-        """BUG-042: MCP schema must expose backend-supported file_bug kind."""
-
-        tools = asyncio.run(mcp.list_tools(run_middleware=False))
-        wiki_tool = next(t for t in tools if t.name == "wiki")
-        properties = wiki_tool.parameters["properties"]
-
-        assert properties["kind"] == {"default": "bug", "type": "string"}
-        assert "kind" not in wiki_tool.parameters["required"]
-
-    def test_wiki_since_changed_since_field_is_in_mcp_schema(self):
-        """PR-088: action=since must advertise its timestamp parameter."""
-
-        tools = asyncio.run(mcp.list_tools(run_middleware=False))
-        wiki_tool = next(t for t in tools if t.name == "wiki")
-        properties = wiki_tool.parameters["properties"]
-
-        assert properties["changed_since"]["type"] == "string"
-        assert properties["changed_since"]["default"] == ""
-        assert "action=\"since\"" in properties["changed_since"]["description"]
-        assert "changed_since" not in wiki_tool.parameters["required"]
+class TestWikiIsNotAConnectorTool:
+    def test_wiki_is_reached_through_the_page_handles_only(self):
+        """The `wiki` fat tool is no longer registered (2026-09-30); clients
+        read and write pages through read_page / write_page."""
+        tool_names = {t.name for t in asyncio.run(mcp.list_tools(run_middleware=False))}
+        assert "wiki" not in tool_names
+        assert {"read_page", "write_page"} <= tool_names

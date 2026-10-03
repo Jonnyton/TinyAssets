@@ -12,11 +12,35 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from configure_android_release import AndroidRelease, load_release
+from configure_android_release import (
+    DEBUG_APP_NAME,
+    DEBUG_APPLICATION_ID_SUFFIX,
+    DEBUG_BUILD_TYPE,
+    DEBUG_STRINGS,
+    DEBUG_STRINGS_PATH,
+    AndroidRelease,
+    debug_application_id,
+    load_release,
+)
 
 DEFAULT_MOBILE = Path(__file__).resolve().parents[1]
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 A = f"{{{ANDROID_NS}}}"
+TOOLS = "{http://schemas.android.com/tools}"
+# Contributed by firebase-messaging at manifest-merge time; they are never in the
+# source manifest, so they are allowed but not required.
+MERGED_ONLY_PERMISSIONS = (
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.WAKE_LOCK",
+    "com.google.android.c2dm.permission.RECEIVE",
+)
+NATIVE_SOURCES = (
+    "LocalCallbackPlugin.java",
+    "LocalCallbackService.java",
+    "VoiceWebChromeClient.java",
+    "TinyAssetsMessagingService.java",
+    "NotificationReplyPlugin.java",
+)
 
 
 def _value(text: str, pattern: str, label: str) -> str:
@@ -72,8 +96,19 @@ def verify_gradle(mobile: Path, release: AndroidRelease) -> None:
         for name, (have, want) in checks.items()
         if have != want
     ]
+    suffix = _value(
+        gradle, r'^\s*applicationIdSuffix\s*(?:=\s*)?["\']([^"\']+)', "applicationIdSuffix"
+    )
+    if suffix != DEBUG_APPLICATION_ID_SUFFIX or DEBUG_BUILD_TYPE not in gradle:
+        drift.append(
+            f"applicationIdSuffix={suffix!r} must appear only in the debug buildType as "
+            f"{DEBUG_APPLICATION_ID_SUFFIX!r}"
+        )
     if drift:
         raise ValueError("Android Gradle release drift: " + "; ".join(drift))
+    strings = mobile / DEBUG_STRINGS_PATH
+    if not strings.is_file() or strings.read_text(encoding="utf-8") != DEBUG_STRINGS:
+        raise ValueError(f"debug build label missing or changed: {strings}")
 
 
 def verify_manifest(path: Path, release: AndroidRelease, *, merged: bool) -> None:
@@ -129,9 +164,13 @@ def verify_manifest(path: Path, release: AndroidRelease, *, merged: bool) -> Non
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.RECORD_AUDIO",
         f"{release.app_id}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+        *MERGED_ONLY_PERMISSIONS,
     }
     unexpected = sorted(str(item) for item in permissions - allowed)
-    required = allowed - {f"{release.app_id}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"}
+    required = allowed - {
+        f"{release.app_id}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+        *MERGED_ONLY_PERMISSIONS,
+    }
     missing = sorted(required - permissions)
     if unexpected or missing:
         raise ValueError(f"permission drift: missing={missing}, unexpected={unexpected}")
@@ -184,6 +223,27 @@ def verify_manifest(path: Path, release: AndroidRelease, *, merged: bool) -> Non
             "LocalCallbackService must be non-exported and foregroundServiceType=dataSync"
         )
 
+    notify_service = next(
+        (
+            item
+            for item in components
+            if (item.get(A + "name") or "").endswith("TinyAssetsMessagingService")
+        ),
+        None,
+    )
+    if notify_service is None or notify_service.get(A + "exported") != "false":
+        raise ValueError("TinyAssetsMessagingService must be present and non-exported")
+    # Both services answer MESSAGING_EVENT. If the plugin's own survives the
+    # merge, FCM may hand the data-only message to it and nothing is ever shown.
+    # (The source manifest carries the tools:node="remove" marker that does the
+    # removing; only a service that is NOT so marked would survive the merge.)
+    if any(
+        (item.get(A + "name") or "").endswith("pushnotifications.MessagingService")
+        and item.get(TOOLS + "node") != "remove"
+        for item in components
+    ):
+        raise ValueError("the push plugin's MessagingService must be removed from the manifest")
+
     for component in components:
         if (
             component.get(A + "exported") == "true"
@@ -205,17 +265,19 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
     if not str(server.get("url", "")).startswith("https://"):
         raise ValueError("Capacitor server.url must be HTTPS")
 
-    for name in (
-        "LocalCallbackPlugin.java",
-        "LocalCallbackService.java",
-        "VoiceWebChromeClient.java",
-    ):
+    for name in NATIVE_SOURCES:
         text = (mobile / "native/android" / name).read_text(encoding="utf-8")
         if not re.search(rf"^package\s+{re.escape(release.app_id)};", text, re.MULTILINE):
             raise ValueError(f"{name} package differs from {release.app_id}")
     plugin = (mobile / "native/android/LocalCallbackPlugin.java").read_text(encoding="utf-8")
-    if f"package={release.app_id};end" not in plugin:
-        raise ValueError("LocalCallbackPlugin intent package differs from release identity")
+    # The callback intent targets THIS install's package, so a debug build signs
+    # back into itself and a release build into io.tinyassets.app.
+    if (
+        "callbackPage(page, getContext().getPackageName())" not in plugin
+        or 'package=" + appPackage + ";end"' not in plugin
+        or f"package={release.app_id}" in plugin
+    ):
+        raise ValueError("LocalCallbackPlugin intent must target the running install's package")
     notification_safeguards = (
         "Manifest.permission.POST_NOTIFICATIONS",
         "Build.VERSION_CODES.TIRAMISU",
@@ -242,6 +304,21 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
     missing = [item for item in startup_safeguards if item not in service]
     if missing:
         raise ValueError(f"LocalCallbackService is missing startup safeguards: {missing}")
+    notify = (mobile / "native/android/TinyAssetsMessagingService.java").read_text(
+        encoding="utf-8"
+    )
+    notify_safeguards = (
+        "extends FirebaseMessagingService",
+        "SecureRandom",
+        "Context.MODE_PRIVATE",
+        "EXTRA_NONCE",
+        "PendingIntent.FLAG_IMMUTABLE",
+        'if ("clear".equals(data.get("kind")))',
+        "manager.cancel(requestId, NOTIFICATION_ID)",
+    )
+    missing = [item for item in notify_safeguards if item not in notify]
+    if missing:
+        raise ValueError(f"TinyAssetsMessagingService is missing safeguards: {missing}")
     voice = (mobile / "native/android/VoiceWebChromeClient.java").read_text(encoding="utf-8")
     safeguards = (
         'TRUSTED_SCHEME = "https"',
@@ -269,15 +346,39 @@ def verify_generated_java(mobile: Path, release: AndroidRelease) -> None:
         raise ValueError("generated MainActivity package differs from release identity")
     if "registerPlugin(LocalCallbackPlugin.class)" not in main:
         raise ValueError("generated MainActivity did not register LocalCallbackPlugin")
+    if "registerPlugin(NotificationReplyPlugin.class)" not in main:
+        raise ValueError("generated MainActivity did not register NotificationReplyPlugin")
     if "new VoiceWebChromeClient(bridge, this)" not in main:
         raise ValueError("generated MainActivity did not install VoiceWebChromeClient")
     if "voiceChromeClient.stopCapture(bridge.getWebView())" not in main:
         raise ValueError("generated MainActivity does not stop microphone capture on pause")
-    for name in (
-        "LocalCallbackPlugin.java",
-        "LocalCallbackService.java",
-        "VoiceWebChromeClient.java",
-    ):
+    # Without our own callback the app plugin's always-enabled one swallows the
+    # back gesture at the first history entry, so the opening screen cannot be
+    # left. This is a TEXT gate on Java that ships verbatim, and text cannot show
+    # that the policy runs -- a disabled branch would still carry every token
+    # below. So the decision itself is pinned exactly: changing what the app does
+    # on back has to come here and say so. The behaviour is proved on a device
+    # (docs/ops/google-play-launch.md, the ladder's device check), not here.
+    back_policy = (
+        "installBackPolicy();",
+        "new OnBackPressedCallback(true)",
+        "if (webView != null && webView.canGoBack()) {",
+        "if (exitConfirmAt != 0L && now - exitConfirmAt <= EXIT_CONFIRM_WINDOW_MS) {",
+        "moveTaskToBack(true);",
+    )
+    missing = [item for item in back_policy if item not in main]
+    if missing:
+        raise ValueError(f"generated MainActivity is missing the back-gesture policy: {missing}")
+    # Registered BEFORE super.onCreate(), the plugin's callback is added after
+    # ours and the dispatcher -- which calls the most recently added enabled
+    # callback -- hands every back press to the plugin instead. The policy would
+    # be dead code, and nothing else would say so.
+    if main.index("installBackPolicy();") < main.index("super.onCreate(savedInstanceState);"):
+        raise ValueError(
+            "installBackPolicy() must run after super.onCreate(): registered before it, the "
+            "app plugin's callback is added later and wins every back press"
+        )
+    for name in NATIVE_SOURCES:
         source = mobile / "native/android" / name
         generated = package_dir / name
         if not generated.is_file() or _sha256(generated) != _sha256(source):
@@ -346,6 +447,41 @@ def verify_generated_artwork(mobile: Path) -> None:
             raise ValueError(f"missing adaptive icon XML: {name}")
 
 
+def verify_apk_badging(text: str, release: AndroidRelease, *, variant: str) -> str:
+    """Check ``aapt2 dump badging`` output for a built APK; returns its package.
+
+    A debug APK must NEVER carry the Play package: it is signed with a
+    development key, so on a phone that installed it every Play update fails.
+    """
+    package = re.search(r"^package: name='([^']+)'", text, flags=re.MULTILINE)
+    code = re.search(r"^package: .*\bversionCode='([^']*)'", text, flags=re.MULTILINE)
+    label = re.search(r"^application-label:'([^']*)'", text, flags=re.MULTILINE)
+    if package is None or code is None or label is None:
+        raise ValueError("badging output has no package name, versionCode or application-label")
+    name = package.group(1)
+    if variant == "debug":
+        wanted, wanted_label = debug_application_id(release), DEBUG_APP_NAME
+        if name == release.app_id:
+            raise ValueError(
+                f"debug APK carries the Play package {release.app_id!r}; a sideloaded copy "
+                "would block every Play update"
+            )
+    elif variant == "release":
+        wanted, wanted_label = release.app_id, None
+    else:
+        raise ValueError(f"unknown variant {variant!r}")
+    drift = []
+    if name != wanted:
+        drift.append(f"package={name!r}, expected {wanted!r}")
+    if code.group(1) != str(release.version_code):
+        drift.append(f"versionCode={code.group(1)!r}, expected {release.version_code}")
+    if wanted_label is not None and label.group(1) != wanted_label:
+        drift.append(f"application-label={label.group(1)!r}, expected {wanted_label!r}")
+    if drift:
+        raise ValueError(f"{variant} APK identity drift: " + "; ".join(drift))
+    return name
+
+
 def find_merged_manifest(mobile: Path) -> Path:
     root = mobile / "android/app/build/intermediates/merged_manifest/release"
     candidates = sorted(root.glob("**/AndroidManifest.xml"))
@@ -399,8 +535,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="verify committed mobile and Play artwork without release/package inputs",
     )
+    parser.add_argument(
+        "--apk-badging",
+        type=Path,
+        help="check a saved `aapt2 dump badging` of a built APK (with --variant)",
+    )
+    parser.add_argument("--variant", choices=("debug", "release"))
     args = parser.parse_args(argv)
     try:
+        if args.apk_badging is not None:
+            if args.variant is None or args.source_only or args.merged or args.artwork_only:
+                raise ValueError("--apk-badging needs --variant and no other mode")
+            release = load_release(args.mobile_root.resolve())
+            text = args.apk_badging.read_text(encoding="utf-8")
+            name = verify_apk_badging(text, release, variant=args.variant)
+            print(f"verified {args.variant} APK installs as {name}")
+            return 0
         if args.artwork_only:
             if args.source_only or args.merged:
                 raise ValueError("--artwork-only cannot be combined with other modes")

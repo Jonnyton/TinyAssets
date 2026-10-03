@@ -87,10 +87,15 @@ def _make_universe(
 
 def _declare_public(base: Path, uid: str, udir: Path) -> None:
     from tinyassets.api.visibility import set_universe_visibility
-    from tinyassets.daemon_server import ensure_universe_registered
+    from tinyassets.daemon_server import ensure_universe_registered, set_founder_home
 
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-    set_universe_visibility(uid, "public")
+    # An OWNER is what makes the directory a universe (2026-09-02: a folder on
+    # disk is not one -- tests/test_a_universe_needs_an_owner.py). A
+    # `founder_home` binding rather than an ACL grant, because a universe with
+    # zero ACL rows is PUBLIC and that is the state these tests assert.
+    set_founder_home(base, founder_sub=f"test-owner::{uid}", universe_id=uid)
+    set_universe_visibility(uid, "public", source="owner")
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +372,7 @@ def test_last_activity_ignores_interrupted_run_that_never_started(
     from tinyassets.runs import create_run, recover_in_flight_runs
 
     udir = _make_universe(universe_base, "u1", activity_age_hours=48)
-    create_run(
+    run_id = create_run(
         universe_base,
         branch_def_id="b1",
         thread_id="t1",
@@ -375,7 +380,9 @@ def test_last_activity_ignores_interrupted_run_that_never_started(
         actor="universe:u1",
         queue_universe_id="u1",
     )  # left queued -- never transitioned to running
+    from tests.run_owner_helpers import mark_owner_dead
 
+    mark_owner_dead(universe_base, run_id)  # the restart killed its process
     recovered = recover_in_flight_runs(universe_base)
     assert recovered == 1  # sanity: the sweep actually touched this row
 
@@ -537,7 +544,7 @@ def test_last_activity_ignores_refused_automation_attempt(
         "a1", due_at,
         run_id="",
         status="refused",
-        reason="run_rate_limited",
+        reason="context_unavailable",
         now=now,
         succeeded=None,
     )

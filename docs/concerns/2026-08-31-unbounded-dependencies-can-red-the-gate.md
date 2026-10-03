@@ -1,3 +1,10 @@
+---
+severity: P2
+title: 23 of 37 declared dependencies can ship a major into CI unannounced
+filed: '2026-08-31'
+summary: 'fastmcp 4.0.0 arrived through `>=3.0` and red-ed the gate; #2746 pinned one package, not the shape'
+---
+
 # 23 of 37 declared dependencies can ship a major into CI unannounced
 
 **Found** 2026-08-31 while fixing the fastmcp 4.0.0 break (PR #2746). The pin

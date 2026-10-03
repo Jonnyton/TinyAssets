@@ -33,6 +33,9 @@ from tinyassets.provider_assignment_manifest import (
     manifest_digest,
     store_candidates,
 )
+from tinyassets.providers.owner_binding import (
+    CONNECT_PROVIDER_MESSAGE as _CONNECT_PROVIDER_MESSAGE,
+)
 from tinyassets.storage import db_path
 
 logger = logging.getLogger(__name__)
@@ -1280,7 +1283,7 @@ def _served_request_agent(base_path, universe, request_carrier, role, operation)
     binding_id = str(getattr(request_carrier, "agent_binding_id", ""))
     revision = getattr(request_carrier, "binding_revision", 0)
     if str(getattr(request_carrier, "universe_id", "")) != uid or not binding_id:
-        raise PermissionError("provider request does not match universe")
+        raise PermissionError("provider request does not match command center")
     capability = validate_provider_request_carrier(
         request_carrier, universe_id=uid, agent_binding_id=binding_id,
         binding_revision=revision, operation=operation,
@@ -1364,8 +1367,56 @@ async def authorize_served_provider_call_async(
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.model_selection import prepare_selected_model_async
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+    from tinyassets.subscription_refresh import refresh_deposited_subscriptions
 
     universe = Path(universe_dir)
+    # THE interactive launch path. Wiring only the workflow lanes left the
+    # founder's own served turn -- the surface the outage is on -- never calling
+    # the refresh at all (Codex refute-review, P1 #7).
+    #
+    # Here, at the very top: before the shared admission is taken (the refresh
+    # needs the EXCLUSIVE one, which cannot nest inside it), before `_selected_chain`
+    # resolves custody, and before the snapshot below pins the credential. A refresh
+    # after any of those would make the launch refuse with "credential changed
+    # before launch snapshot".
+    #
+    # `launching` is the source this call actually selected, so another deposited
+    # source's dead credential cannot fail this one.
+    #
+    # The owner is the request's principal, proved by the same check the launch
+    # makes, under the shared admission (released again before the refresh takes
+    # the exclusive one). It is what carries the accepted binding onto a rotated
+    # document. Passing no owner rotated the founder's sign-in and then could not
+    # renew the binding, so custody pinned the old digest and every turn after it
+    # was refused "connect your provider" (live 2026-09-28). A request that proves
+    # no owner refreshes nothing: it is refused below, and it must not spend the
+    # owner's single-use refresh token on its way there.
+    #
+    # A selection that is not a `ModelRef` is refused below, by the checks that
+    # already exist for it, and NOTHING is refreshed for it. Reading a field off an
+    # unvalidated caller-supplied object turned that refusal into an AttributeError
+    # (`test_async_unaccepted_selection_refused_before_discovery`, which passes a
+    # bare object precisely to pin the ordering) -- and more importantly, the
+    # selection decides WHICH source is refreshed and which one may fail the
+    # launch, so an unrecognized one must steer neither.
+    from tinyassets.providers.model_policy import ModelRef
+
+    if isinstance(model_selection, ModelRef):
+        try:
+            with provider_assignment_admission().shared(universe):
+                owner = _served_request_agent(
+                    base_path, universe, request_carrier, role, operation
+                )[0].principal_id
+        except Exception:  # noqa: BLE001 - refused with its own words below
+            owner = ""
+        if owner:
+            refresh_deposited_subscriptions(
+                base_path=base_path,
+                universe_dir=universe,
+                owner_user_id=owner,
+                universe_id=universe.name,
+                launching=_SERVED_PROVIDER_SERVICE.get(model_selection.connection_id, ""),
+            )
     try:
         with provider_assignment_admission().shared(universe):
             capability, agent = _served_request_agent(
@@ -1398,10 +1449,13 @@ async def authorize_served_provider_call_async(
         yield authority
 
 
-_SERVED_AUTHORITY_HELD = (
-    "Connect your provider before running this universe. TinyAssets will not "
-    "borrow platform credentials or start a metered trial."
-)
+#: Which subscription record a served provider launches from. Hoisted out of the
+#: snapshot branch below so the pre-launch refresh names the same source the
+#: launch will, rather than repeating the mapping.
+_SERVED_PROVIDER_SERVICE = {"codex": "codex", "claude-code": "claude"}
+
+#: Imported, not re-declared: `providers.owner_binding` owns the sentence.
+_SERVED_AUTHORITY_HELD = _CONNECT_PROVIDER_MESSAGE
 
 
 def _seal_agent_launch_allowance(conn, store, assignment, capability) -> None:
@@ -1577,9 +1631,7 @@ def _authorize_served_provider_call(
                         ),
                     )
                 else:
-                    service = {"codex": "codex", "claude-code": "claude"}.get(
-                        provider
-                    )
+                    service = _SERVED_PROVIDER_SERVICE.get(provider)
                     if service is None:
                         raise PermissionError("provider is not supported for serving")
                     credential_snapshot = snapshot_llm_subscription_credential(

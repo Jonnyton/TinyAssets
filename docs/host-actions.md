@@ -12,6 +12,189 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Expose your patch intake as a receiver, so new users can be offered it (2026-09-30)
+
+**Why:** PR #4121 seeds a consent request in every new user's rail — "Let your universe
+report problems to TinyAssets" — and approving it connects their universe to your intake.
+The platform has to be TOLD which intake to offer: it is your universe's node, owned by
+you like any user's, so there is no id in the code. It needs a `receiver_id`, and
+production has none yet (`/data/.runs.db` `graph_receivers`: 0 rows, read 2026-09-30).
+
+Your two intakes exist today only as inbound `/mcp/hooks/<token>` webhooks. Those are
+anonymous — whatever arrives is attached to nobody's universe, and the sender has to hold
+a secret. Native delivery carries the sender's identity and needs no secret at all, which
+is why the seeded request has nothing to paste.
+
+**Ask your universe, in the app or the chatbot** (branch `bc19127bde44` is the general
+patch-request one, with `what_they_tried` / `what_was_missing_or_broken` / `request_type`):
+
+> Expose the entry step of my patch-request workflow as a receiver any authenticated user
+> can send to, and list it so they can find it. Accept `what_they_tried`,
+> `what_was_missing_or_broken` and `request_type`. Tell me the receiver id.
+
+It will call `write_graph target="receiver" operation="create"` with `open_to_all: true`
+and `discoverable: true`. **Send the lead the `receiver_id` it returns** — that value goes
+into `TINYASSETS_PATCH_INTAKE_RECEIVER_ID` in the deploy env, and until it is set the
+seeded request does not appear for anyone.
+
+Optional: `TINYASSETS_PATCH_INTAKE_LABEL` changes what the platform calls your intake in
+that request. It defaults to `TinyAssets`.
+
+This blocks the Play closed test: the founder asked for patch requests to be live before
+testers arrive.
+
+## WorkOS: register the app's new redirect URI (2026-09-30)
+
+**One dashboard field. Sign-in is broken at the new URL until it is set.**
+
+The app moved to `https://tinyassets.io/app`
+(your directive, no back-compat). The SPA builds its OAuth `redirect_uri` from the
+page it is served at, so AuthKit now receives `https://tinyassets.io/app` — and
+AuthKit refuses a redirect URI that is not registered. Nothing in the repo can
+register it; this is the single founder action for the move.
+
+1. `dashboard.workos.com` → **Production** environment → **Redirects**.
+2. Add `https://tinyassets.io/app` to **Sign-in callback / Redirect URIs**.
+3. Remove the old app redirect URI once the new one is saved. Leaving it is
+   not dangerous, but it is dead — nothing serves that path any more.
+4. Nothing else changes: same origin, same client ID, same MCP resource
+   (`https://tinyassets.io/mcp`, untouched by the move).
+
+Expected symptom before you do this: sign-in bounces to AuthKit and comes back with
+an `invalid_redirect_uri` / "redirect URI not allowed" error instead of a session.
+The app shell itself loads fine either way, so `curl` proof of `/app` passing does
+not prove sign-in works.
+
+**Third-party OAuth connections with a PRE-REGISTERED client.** The generic
+connection flow's one fixed redirect URI moved too, to
+`https://tinyassets.io/app/model-callback/connect`. Connections that dynamically
+register a client send the new callback automatically and need nothing. But if a
+provider's `client_id` was supplied by hand, that provider's own app settings
+still list the old return path and will refuse the exchange — whoever owns
+that provider account updates the redirect URI there. Nothing in this repo can
+do it, and it is per-connection rather than platform-wide.
+
+**Also, only if Stripe billing is switched on** (it is inert unless
+`STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` are set): the Stripe webhook endpoint
+is registered as a URL and moved with the app. Repoint it to
+`https://tinyassets.io/app/billing/webhook` —
+`python scripts/stripe_go_live.py --check --webhook-url https://tinyassets.io/app/billing/webhook`
+says whether it needs doing, and `--provision` creates the new endpoint (it prints
+the new `whsec_…` once; the old endpoint should then be deleted in the dashboard).
+If billing is not switched on, there is nothing to do.
+
+---
+
+## Store launch: four founder steps (2026-09-29)
+
+Both stores are one founder action away from moving. Apple asked for more information
+(Guideline 2.1) and has build 3; Play approved build 4 on the closed track. The map is
+`docs/ops/mobile-launch-handoff.md`. The four steps are independent, so do them in any
+order. Only the Play one is on a 14-day clock, so it goes first.
+
+### Google Play: opt in and recruit the 12 testers
+
+1. On your phone's Google account, open `https://play.google.com/apps/testing/io.tinyassets.app`.
+   This is Play's standard opt-in address for the closed (Alpha) track. Play Console →
+   **Test and release → Closed testing → Alpha → Testers → Copy link** shows the
+   authoritative one. Tap **Become a tester**.
+2. Add 15 to 18 people's Google-account emails to the `Founder devices` tester list on
+   the same page. Only add people who said yes. The extra 3 to 6 cover drop-offs.
+3. Send each of them the opt-in link, using the invitation text under "start the
+   12-tester closed test" below.
+
+The clock starts when 12 people are actually opted in, and it runs for 14 days. Tell the
+lead the day it starts. The full engagement plan is in that section below.
+
+### Apple: turn on Sign in with Apple
+
+**Why:** the sign-in page offers **Continue with Google**. Apple Guideline 4.8 requires
+any app offering Google sign-in to also offer an equivalent private login, and Sign in
+with Apple is it. TinyAssets' own email/password does not count while Google is offered
+too. Apple has not cited this yet, but a full review would. Sign-in is the hosted WorkOS
+page, so this is dashboard setup only: no app rebuild, and build 3 stays as submitted.
+
+You need two browser tabs. In both, stay in the **Production** environment on the WorkOS
+side.
+
+1. **WorkOS** (`dashboard.workos.com`, Production) → **Authentication → OAuth providers
+   → Sign in with Apple → Enable**. Leave the dialog open. It shows a **Redirect URI**
+   and **Outbound email domains**; you paste both into Apple below.
+2. **Apple Developer** (`developer.apple.com/account` → Certificates, IDs & Profiles):
+   1. Note the **Team ID** shown under your name (top right).
+   2. **Identifiers** → `io.tinyassets.app` → tick **Sign in with Apple** (leave it
+      as *Enable as a primary App ID*) → **Save**. If Apple warns that profiles will be
+      invalidated, accept. Build 3 is already signed and is unaffected. Only a *future*
+      iOS build needs its profile regenerated, and the agent will ask when that comes up.
+   3. **Identifiers → +** → **Services IDs** → Description `TinyAssets Sign In`,
+      Identifier `io.tinyassets.signin` → **Register**. Open it, tick **Sign in with
+      Apple → Configure**: Primary App ID `io.tinyassets.app`; Domains and Subdomains
+      `api.workos.com`; Return URLs = the WorkOS **Redirect URI** from step 1 →
+      **Done → Continue → Save**.
+   4. **Keys → +** → Key Name `TinyAssets Sign in with Apple`, tick **Sign in with
+      Apple → Configure** → `io.tinyassets.app` → **Save → Continue → Register**.
+      Note the **Key ID** and click **Download**. Apple allows only one download.
+   5. **Services → Sign in with Apple for Email Communication → Configure → +**. Enter
+      the WorkOS **Outbound email domains** from step 1 → **Next → Register**. Without
+      this, users who choose *Hide My Email* never receive TinyAssets email.
+3. Back in the **WorkOS** dialog, choose **Your app's credentials** and enter: Apple Team
+   ID = the value from 2.1, Apple Service ID = `io.tinyassets.signin`, Private Key ID =
+   the Key ID from 2.4, Private Key = open the downloaded `AuthKey_<KeyID>.p8` in Notepad
+   and paste its whole contents. Toggle **Enable** on and save.
+4. **Where the key file goes:** Control Panel → **Credential Manager → Windows
+   Credentials → Add a generic credential**. Internet address `TinyAssets Apple SIWA
+   key`, user name = the Key ID, password = the whole `.p8` contents. Then delete the
+   `.p8` from Downloads and empty the Recycle Bin. Never paste it into chat or commit it.
+   The Team ID, Services ID and Key ID are not secret and can be sent to the lead.
+5. Tell the lead it's done. The agent runs `python scripts/authkit_login_parity_probe.py`
+   (it fails today, exit 1, and passes once Apple is offered). Then it checks one real
+   **Continue with Apple** sign-in on `https://tinyassets.io/app`.
+
+### Apple: renew the App Review inference key before 2026-10-10
+
+The dedicated App Review account (`play-review@tinyassets.io`, password in Windows
+Credential Manager) answers through a review-only OpenRouter key that **expires
+2026-10-10**. If Apple reviews after that date, the reviewer signs in to a universe that
+cannot reply, which is a certain rejection. The key must be renewed before resubmission.
+
+1. **OpenRouter** (the account that owns the current review key) → **Keys → Create
+   key**. Name `tinyassets-app-review`, credit limit **$5**, expiry at least
+   2026-12-31. Copy the key; do not save it anywhere else.
+2. In a private browser window, sign in to `https://tinyassets.io/app` as the review
+   account. Open **Connect**, choose OpenRouter, paste the key into **Paste only the
+   key**, and tap **Connect**.
+3. Send one message, for example "What can you help me with?", and confirm a reply
+   appears. This also proves the reviewer universe still answers after the September
+   prune.
+4. Back in OpenRouter, delete the old review key. Tell the lead the new expiry date.
+
+### Apple: record the review video on a physical iPhone
+
+This is Apple's actual ask (Guideline 2.1). Install build 3 from the TestFlight invite
+already sent to you, on an iPhone updated to the latest iOS. Record the six steps in
+`docs/ops/app-store-submission-packet.md`, "Guideline 2.1 response packet". A simulator
+recording is refused. Hand the `.mov` to the lead. The agent attaches it with the written
+answers and resubmits only after the lead's explicit go. Do the key renewal above first,
+or step 4 of the recording (a real reply) will fail after 2026-10-10. Full history is item
+12 under "Apple App Store: enroll" below.
+
+---
+
+## Clear the ACL-locked sandbox temp directories (2026-09-26)
+
+Only an elevated shell can do this one. 68 directories under
+`%TEMP%` plus `.codex-test-tmp/` and `.pytest-tmp/` inside the checkout carry
+sandbox-token ACLs the interactive user cannot read, list, or delete — not just
+cannot delete: `Get-Acl` itself fails. `scripts/dev_hygiene.py` reports them as
+`acl_locked_needs_elevation` and deliberately never tries to force them.
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/clear_sandbox_temp_dirs.ps1 -Apply
+```
+
+Prevention is already in `tests/conftest.py`, which refuses a temp root inside
+the repo.
+
 ## Decide: make a blocking review verdict a required check (2026-09-26)
 
 A Tier 2 review verdict is posted as a PR comment, and auto-merge doesn't read
@@ -24,39 +207,6 @@ it is approved. That is discipline, not enforcement. The durable option: have
 whenever a PR declares `infra-change` or a Tier 2 title, so a BLOCK holds the PR
 the way a failing required check does. That changes a gate file, so it's yours to
 approve. Say yes and an agent builds it.
-
-## Codex is usage-limited, so a cross-family pass is OWED on what lands meanwhile (2026-09-25)
-
-`codex exec` answers only:
-
-> ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage
-> to purchase more credits or try again at Sep 27th, 2026 5:15 PM.
-
-`codex login status` still reports "Logged in using ChatGPT", so this is a
-credit balance, not an auth failure, and no agent can fix it.
-
-**The standing arrangement while it lasts** (founder directive): the
-cross-family pass is POSTPONED, not skipped. An authority-path PR lands on a
-**Claude Tier 2 review plus a lead-stamped receipt** in its place, and the
-cross-family pass is **owed** afterwards for anything that landed that way. The
-founder neither reviews nor stamps; do not record it as though they did.
-
-Owing a cross-family pass after the 2026-09-27 17:15 reset:
-
-- **PR #3981** (`tinyassets/providers/router.py`) -- free-model sibling retry.
-
-Background: `pr-scope-guard` requires an exact-head review receipt for any
-behavioural change to an authority path (`AUTHORITY_RE` in
-`.github/workflows/pr-scope-guard.yml`, checked by
-`scripts/authority_behavior_check.py`). The receipt is head-pinned, so every
-push needs a fresh review -- batch fixes into one push rather than pushing
-incrementally.
-
-The ask: top up Codex credits at https://chatgpt.com/codex/settings/usage, or
-let the 2026-09-27 17:15 reset land and we run the owed passes then. Either way
-an agent must never write the `Drain-Review-Verdict: APPROVE` receipt for its
-own work -- the gate exists because a PR can neuter its own checks from its own
-checkout, and a self-issued receipt is the failure it names.
 
 ## Delete the platform's model-credential repository secrets (2026-09-24)
 
@@ -88,7 +238,7 @@ Its App was never configured on the droplet (no
 `/etc/tinyassets/github-app-token-refresher.env`, no private key; the timer
 skipped every run), and no App ID is recorded in the repo, so an agent cannot
 name it. In GitHub → Settings → Applications (and Developer settings → GitHub
-Apps), uninstall/delete any App installed on `Jonnyton/TinyAssets` for the
+Apps), uninstall/delete any App installed on `TinyAssets/TinyAssets` for the
 community-loop bot identity (Contents + Pull requests write).
 
 ## Rotate the production Cloudflare tunnel token (2026-09-24)
@@ -119,36 +269,14 @@ test (capability C5/C1) needs the second profile's extension connected so it
 can run as that user. No other founder step is needed; the agent drives the
 rest.
 
-## Decide: what should be publicly discoverable, now that the site shows it?
-
-The rewritten `/commons` page lists what the endpoint reports as publicly
-discoverable. Driving it live on 2026-09-02 showed seven of twelve rows are not
-universes anyone published: `_backup_subject_migration_20260829T055340Z`,
-`_removed_legacy_20260829`, `_removed_universes_20260828`,
-`_removed_universes_20260829`, plus the `scratch`, `daemon_wikis` and
-`cloud-automation-inputs` working buckets. All are `visibility=public` because
-maintenance created them that way, not because anyone chose to publish.
-
-Nothing sensitive leaks — the public projection is id, phase, word count and a
-coarse timestamp — but the bucket names disclose when removals and an identity
-migration happened, and the page reads like an accident. The site does **not**
-filter them, deliberately: hiding rows while claiming to show "what is public"
-is exactly the dishonesty the public-read boundary exists to prevent.
-
-Your call, because the fix writes to live universe records. Suggested shape is
-in `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`:
-create maintenance holding records private, flip the seven existing ones (do
-not delete — they are migration backups), and decide whether an unpublished
-universe should default to `public` at all.
-
 ## Decide: should a deposit serve the universe by itself?
 
-The deposit spec (`openspec/changes/byo-llm-deposit-surface/specs/byo-llm-deposit-surface/spec.md`,
-"The deposit result directs the owner to the existing serving re-point") says the deposit
+The deposit spec (`openspec/specs/byo-llm-deposit-surface/spec.md`,
+"The result is non-secret and names the serving re-point") says the deposit
 **SHALL NOT itself enable serving**. On 2026-09-01 a pasted Codex deposit through the app
 left the universe chatting but every run refused with `provider_not_bound`, because the
 paste path never followed the hint. #2760 fixes that in the app (the paste path and the
-heartbeat call the same `/mcp/app/serving/bind` the phone uses); a server-side
+heartbeat call the same `/app/serving/bind` the phone uses); a server-side
 "deposit serves when nothing serves" was built, then withdrawn on Codex review because it
 contradicts the requirement above.
 
@@ -705,7 +833,7 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Sign in details | **done 2026-09-08** — the dedicated reviewer account and rotated 40-character password were verified end-to-end, transferred directly from Windows Credential Manager, and saved in Play without exposing or persisting the value. |
 | Target audience | **done** 2026-09-03 — 18 and over; submitted for review 2026-09-08 |
 | Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; submitted for review 2026-09-08 |
-| Foreground-service declaration + behavior video | **done; submitted 2026-09-08** — the 27.11-second 1080×2340 privacy-redacted candidate has SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. Public URL: `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`. Play accepted **Data sync → Network processing → Other** with this link; App content reports no declarations needing attention. |
+| Foreground-service declaration + behavior video | **done; submitted 2026-09-08** — the 27.11-second 1080×2340 privacy-redacted candidate has SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. Public URL: `https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`. Play accepted **Data sync → Network processing → Other** with this link; App content reports no declarations needing attention. |
 | Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; submitted for review 2026-09-08 |
 | Closed test: 12 testers for 14 days, then apply for production access | **you** — Play approved and published signed code `4 (1.0.3)` on 2026-09-08 at 10:35 PM PT. The Alpha track says **Available to selected testers** across all 177 configured regions. The one-member `Founder devices` list is attached, and its invited founder Google account now sees the live opt-in page with **Become a tester**. The founder has not opted in yet. Opt in that account and recruit at least 11 more real Google-account testers; the 14-day clock begins only when 12 remain continuously opted in. |
 | Promote to Production → submit for review → **Roll out** | you (final click) |
@@ -757,7 +885,7 @@ effect-evidence map of a live `authenticated_external_call` run (`delivered: tru
 reached GitHub and was refused there, not by us):
 
 ```
-POST /repos/jonnyton/tinyassets/git/refs   ->   403
+POST /repos/tinyassets/tinyassets/git/refs   ->   403
 {"message":"Resource not accessible by personal access token",
  "documentation_url":"https://docs.github.com/rest/git/refs#create-a-reference"}
 
@@ -867,7 +995,7 @@ changes; without the regenerate step this looks unfixed.
 **Why it is a host action:** it is a setting in your X account. Nothing in this
 repo can change it.
 
-**Reproduced 2026-08-27 through the webapp**, driving `tinyassets.io/mcp/app`
+**Reproduced 2026-08-27 through the webapp**, driving `tinyassets.io/app`
 as the signed-in founder rather than the MCP — run `948a32670485432a`, same
 branch, same result. Two things that run additionally rules out:
 
@@ -913,5 +1041,56 @@ the only one that was never a code problem.
 **How to verify after changing it:** re-run branch `8ab6516d50c5`. Expect
 `external_write_results.deliver_post.authenticated_external_call.response.status`
 to be 201, and `x-access-level` to read `read-write`.
+
+---
+
+## Firebase project for phone notifications (2026-09-30)
+
+**Why:** a universe's "Waiting on you" requests now push to the owner's devices
+(`openspec/changes/notify-owner-of-requests`). Browser and desktop push need
+nothing from you — web-push keys are self-issued. **Android push needs a Firebase
+project only the account owner can create**, and the Android app (1.0.4, the
+first build that carries push) reads two secrets that come out of it. Until they
+exist, 1.0.4 still builds and runs: the build logs `push DISABLED` and the
+"Request notifications" switch in the phone app says notifications aren't set up
+yet.
+
+**Steps, one browser session** (an agent can drive 1-3 in your signed-in browser
+if you say so; step 4 mints a private key, so it waits for your explicit go):
+
+1. `console.firebase.google.com` -> **Add project**. If the Google Cloud project
+   behind `io.tinyassets.app` is already listed, choose **Add Firebase to an
+   existing Google Cloud project** rather than creating a second one. Decline
+   Google Analytics when asked — the app has none and the Play Data safety /
+   Advertising ID answers assume that.
+2. In that project -> **Add app -> Android**, package name exactly
+   `io.tinyassets.app` (nothing else is needed; skip the SDK steps) ->
+   **Download `google-services.json`**.
+3. **Project settings -> Cloud Messaging**: confirm *Firebase Cloud Messaging API
+   (V1)* shows **Enabled** (it is on by default for new projects). The legacy
+   server-key API is not used and stays off.
+4. **Project settings -> Service accounts -> Generate new private key** -> keep
+   the JSON it downloads.
+
+**Where each file goes** (names are exact; nothing is committed, this repo is
+public):
+
+| File | Secret name | Read by | Where it lives |
+|---|---|---|---|
+| `google-services.json` | `ANDROID_GOOGLE_SERVICES_JSON_B64` (base64 of the file, one line) | the **Android build** — `mobile/scripts/materialize_google_services.py` in `android-release.yml` | GitHub repo secret. For the container build instead: save the file as `~/.tinyassets/android/google-services.json` (it is mounted at `/keys`, or name it with `ANDROID_GOOGLE_SERVICES_JSON_FILE`). |
+| service-account JSON | `TINYASSETS_FCM_SERVICE_ACCOUNT_JSON` (the whole document, compacted to ONE line, e.g. `python -c "import json,sys;print(json.dumps(json.load(open(sys.argv[1]))))" key.json`) | the **server** — `tinyassets/notify/fcm.py`, via FCM HTTP v1 | the vault, then a line in `/etc/tinyassets/env` on the droplet (the daemon container's `env_file`); redeploy/recreate to pick it up. Vault only — never a committed file, never a workflow literal. |
+
+`google-services.json` is not a server credential (its API key is restricted to
+the app), but it is build input and stays out of git. The service-account JSON
+**is** a credential.
+
+**Then:** build 1.0.4 with both in place (the build log should say
+`push ENABLED ... project <id>`), sign and upload it the usual way, and turn
+notifications on in the phone app's Account page. Proof is a request raised by
+your universe arriving on the phone, and tapping it opening that request.
+
+**Play Console, with 1.0.4:** add **Device or other IDs** (the FCM registration
+token; optional, functionality only) to the Data safety form — see
+`docs/ops/google-play-launch.md` §6. Advertising ID stays **No**.
 
 ---

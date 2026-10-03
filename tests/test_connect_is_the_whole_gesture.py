@@ -9,11 +9,11 @@ deposit succeeded and chat worked on it, and every run failed:
 `get_status` said `no_serving_runtime` -- "registering a provider is not
 selecting it". The deposit result carried `next: bind_serving_provider` as a
 hint, to a surface where nobody reads hints. The claude path and the phone
-already finish the gesture through `/mcp/app/serving/bind`; the pasted
+already finish the gesture through `/app/serving/bind`; the pasted
 credential path printed the receipt and stopped.
 
 The deposit itself stays write-only: the spec
-(`openspec/changes/byo-llm-deposit-surface`) says it SHALL NOT enable
+(`openspec/specs/byo-llm-deposit-surface`) says it SHALL NOT enable
 serving, and a server-side auto-bind was withdrawn on Codex review. The app
 finishes the gesture, and the helper the app calls is serialized per universe
 so two first-time gestures cannot leave two bindings and nothing serving.
@@ -222,7 +222,12 @@ def app_html() -> str:
 
 
 def test_the_heartbeat_calls_the_heal(app_html):
-    poll = app_html.index("async function pollStatus()")
-    heal = app_html.index("healServing(s)", poll)
-    assert heal - poll < 1200, "the heal is not on the heartbeat"
+    # Brace-matched, not a character distance from the function header: the
+    # question is whether the heal is INSIDE pollStatus, and a proximity bound
+    # fails the moment anything else is added to the heartbeat (it did, when the
+    # working indicator started reading the same poll).
+    from tests.test_onboarding_app import _js_function
+
+    assert "healServing(s)" in _js_function(app_html, "pollStatus"), \
+        "the heal is not on the heartbeat"
     assert re.search(r"if\(servingHealAttempted\) return;", app_html)

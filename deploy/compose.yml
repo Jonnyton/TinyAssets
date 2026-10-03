@@ -30,6 +30,32 @@ x-tinyassets-log-forwarding: &tinyassets_log_forwarding
     fluentd-async: "true"
     tag: "{{.Name}}"
 
+# Where the forwarded lines come to REST. Vector re-emits everything it receives
+# on its own stdout (vector.yaml's always-on `console` sink), so whatever driver
+# the `logs` container uses is the durable host-side copy of every other
+# container's output.
+#
+# It was Docker's default driver — json-file, 10m x 3 per
+# deploy/hetzner-bootstrap.sh — which lives in the CONTAINER's directory under
+# /var/lib/docker/containers/<id>/ and is deleted with the container. This file
+# and deploy/tinyassets-env.template both already claimed "logs are captured by
+# journald"; they were not. deploy_fail_safe.sh force-recreates this service
+# whenever a vector input changes, and a normal deploy recreates the daemon, so
+# on 2026-09-26 the latency evidence for a live investigation was gone six
+# minutes after the turns that produced it
+# (found 2026-09-26; docs/ops/log-aggregation-runbook.md explains the layering).
+#
+# journald is the fix because its retention is a property of the HOST, not of
+# any container: `journalctl CONTAINER_NAME=tinyassets-logs` reads across every
+# past recreate, and the caps live in the drop-in the host-uptime installer
+# manages (deploy/journald-tinyassets.conf). The explicit `tag` is what makes
+# CONTAINER_TAG/SYSLOG_IDENTIFIER a stable name instead of a truncated
+# container id that changes on every recreate.
+x-tinyassets-log-retention: &tinyassets_log_retention
+  driver: journald
+  options:
+    tag: "tinyassets-logs"
+
 # Dev use:
 #   # Render this compose against a local env file for smoke tests.
 #   cp deploy/tinyassets-env.template /tmp/tinyassets-env
@@ -40,10 +66,32 @@ services:
   daemon:
     # Required immutable image reference. Production writes a digest ref
     # resolved from the short-SHA tag emitted by build-image.yml.
-    image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}
+    image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}
     container_name: tinyassets-daemon
     restart: unless-stopped
     logging: *tinyassets_log_forwarding
+    # How long a stopping daemon may drain before SIGKILL. SHORT ON PURPOSE.
+    #
+    # Uvicorn closes its listener on SIGTERM, and nothing else can bind
+    # 127.0.0.1:8001 until this container is gone, so the drain IS public 502.
+    # 180s here (#4039) let one long codex turn hold production down from
+    # 22:49:48Z to 22:53:04Z on 2026-10-01: the process blocked in lifespan
+    # shutdown on the turn's worker thread until docker force-killed it
+    # (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
+    #
+    # The drain never saved the reply anyway: sse-starlette cancels the SSE
+    # response as shutdown begins (docs/audits/2026-09-26-pr4039-drain-repro.py).
+    # A turn cut off here is settled truthfully at the next boot by
+    # tinyassets/agent_turn_reconcile.py.
+    #
+    # Compose stores this as the container's StopTimeout at CREATE time, so a
+    # change here only binds containers created afterwards. deploy_fail_safe.sh
+    # therefore also passes `up --timeout` explicitly, which binds the container
+    # being replaced no matter what it was created with. That script refuses a
+    # bundle whose value exceeds its MAX_DAEMON_STOP_GRACE_S, and
+    # tests/test_deploy_drains_in_flight_turns.py keeps it above
+    # universe_server.GRACEFUL_SHUTDOWN_S.
+    stop_grace_period: 20s
     # Bound the daemon so a memory runaway kills the CONTAINER, not the host.
     #
     # `docker inspect` reported mem_limit=0 (2026-08-28): the daemon could consume the
@@ -91,7 +139,7 @@ services:
       - no-new-privileges=true
     cap_drop:
       - ALL
-    # Image CMD already runs `python -m tinyassets.universe_server`.
+    # Image CMD already runs `python -m tinyassets.serve` (the universe server).
     # Expose loopback only; cloudflared reaches via Docker network.
     ports:
       - "127.0.0.1:8001:8001"
@@ -124,7 +172,7 @@ services:
       # Pass through anything in the env file.
       TINYASSETS_MCP_CANARY_URL: ${TINYASSETS_MCP_CANARY_URL:-https://tinyassets.io/mcp}
       # MVP go-live (founder directive 2026-08-20): un-dark the two surfaces the
-      # onboarding funnel needs — the daemon-served onboarding SPA at /mcp/app, and
+      # onboarding funnel needs — the daemon-served onboarding SPA at /app, and
       # claude serving so the universe answers on the founder's deposited subscription.
       # Baked here (compose `environment` wins over the env_file) so they ship with
       # the deploy — no droplet SSH / env-file edit needed. Inbound webhook + outbound
@@ -189,8 +237,12 @@ services:
   # Row K — log aggregation sidecar. Receives daemon, tunnel, and worker
   # stdout through Docker's asynchronous Fluent logging driver. The listener
   # is host-loopback-only and Vector has no Docker control socket. Ships to Better Stack when
-  # BETTERSTACK_SOURCE_TOKEN is set in /etc/tinyassets/env; otherwise
-  # logs are captured by compose stdout (journald) only.
+  # BETTERSTACK_SOURCE_TOKEN is set in /etc/tinyassets/env; with or without the
+  # token, Vector's own console sink puts every line in the host journal via the
+  # `logging` block below — `docker compose up -d` detaches, so a container's
+  # stdout goes to its logging driver and never to the systemd unit that ran
+  # compose. That is the correction: this comment used to say "compose stdout
+  # (journald)", which is not a thing a detached container has.
   #
   # vector-entrypoint.sh builds /run/vector-config/ at startup:
   #   - vector.yaml always loaded (sources + transforms + stdout)
@@ -200,6 +252,10 @@ services:
     image: timberio/vector:0.40.0-alpine@sha256:7a81fdd62e056321055a9e4bdec4073d752ecf68f4c192e676b85001721523c2
     container_name: tinyassets-logs
     restart: unless-stopped
+    # NOT the forwarding anchor — this container is where the forwarded lines
+    # land, so pointing it at its own fluent listener would be a loop. See the
+    # x-tinyassets-log-retention comment at the top of this file.
+    logging: *tinyassets_log_retention
     environment:
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
     ports:
@@ -275,7 +331,7 @@ services:
   # workflow's image rollback restarts only the default-profile stack and would
   # leave this one running on a bad image.
   slack-agent:
-    image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}
+    image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest> ref}
     container_name: tinyassets-slack-agent
     profiles: ["slack"]
     restart: unless-stopped

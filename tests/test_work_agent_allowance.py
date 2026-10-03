@@ -48,9 +48,15 @@ def test_other_tools_and_mutable_inputs_cannot_request_agent_allowance():
 
 def test_invalid_agent_subject_does_not_gain_allowance():
     branch = snapshot(agent=True)
-    branch["node_defs"].append(snapshot()["node_defs"][0])
-    with pytest.raises(ValueError, match="requires_one_prompt_node"):
+    branch["node_defs"][0]["source_code"] = "def run(state): return {}"
+    with pytest.raises(ValueError, match="requires_prompt_node"):
         _work_invocation_allowance(branch, minimum=2, ceiling=20)
+
+
+def test_a_plain_prompt_node_beside_an_agent_node_shares_the_allowance():
+    branch = snapshot(agent=True)
+    branch["node_defs"].append(dict(snapshot()["node_defs"][0], node_id="plain"))
+    assert _work_invocation_allowance(branch, minimum=2, ceiling=20) == 20
 
 
 @pytest.mark.parametrize("agent", [False, True])
@@ -83,9 +89,20 @@ def test_actual_foreground_receipt_uses_existing_binding_ceiling(
         binding = bindings[0]
     else:
         binding = next(b for b in bindings if b["binding_id"] == receipt["binding_id"])
-    # Open-provider fixture supplies a policy (three compiler retry slots).
+    # Open-provider fixture supplies a policy, so every candidate it may reach
+    # carries the compiler's retry slots. The node pins a PROVIDER and no model,
+    # so the run's captured automatic order is that source's whole eligible
+    # catalogue (two models in this fixture), fitted under the accepted binding
+    # ceiling. It used to be one slot's worth, because a run with no saved
+    # preference built no order and could only ever attempt the source's
+    # declared default (tests/test_free_account_run_provider_parity.py).
+    from tinyassets.graph_compiler import _POLICY_PROVIDER_RETRY_BACKOFF_SECONDS
+
+    retry_slots = 1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS)
     assert receipt["max_invocations"] == (
-        binding["max_invocations"] if agent else 3 if open_provider else 1
+        binding["max_invocations"] if agent
+        else 2 * retry_slots if open_provider
+        else 1
     )
     assert receipt["max_tokens"] == binding["max_tokens"]
     assert receipt["max_cost_microunits"] == binding["max_cost_microunits"]

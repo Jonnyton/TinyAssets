@@ -90,7 +90,10 @@
 #     and roll forward/back on its result (review #10).
 #   - A candidate that runs an irreversible /data migration before failing can
 #     make an image-only rollback insufficient (review #11). Startup migrations
-#     must stay additive/backward-compatible.
+#     stay additive/backward-compatible, EXCEPT a layout migration, which the
+#     data layout marker (tinyassets/storage_layout.py) records: when it says
+#     anything but layout 1 / stable, the image rollback is refused
+#     (`rollback_needs_restore`) and the fix is restore-from-backup.
 #
 # Usage:
 #   sudo deploy_fail_safe.sh <new_image_ref>
@@ -107,14 +110,15 @@
 # Exit codes:
 #   0  deployed the new image (daemon healthy + cloudflared + logs up)
 #   1  refused, and the box is back where it started: bad args, lock, pull,
-#      import, `bundle_invalid`, `bundle_dirty`, or a post-install failure whose
+#      import, `layout_refused`, `bundle_invalid`, `bundle_dirty`, or a post-install failure whose
 #      restore COMPLETED (`bundle_install_failed`, `bundle_pointer_failed`,
 #      `failed_env_write`)
 #   2  new image unhealthy; rolled back to the previous image + bundle (healthy)
 #   3  manual intervention required — the rollback itself did not complete
 #      (`rollback_failed`, `rollback_env_write_failed`, `rollback_unhealthy`,
-#      `failed_no_rollback_target`). On `rollback_failed` the bundle-dirty
-#      marker is set and normal deploys refuse until `--restore-bundle` clears it.
+#      `failed_no_rollback_target`, `rollback_needs_restore`). On `rollback_failed` the
+#      bundle-dirty marker is set and normal deploys refuse until `--restore-bundle`
+#      clears it. On `rollback_needs_restore` the daemon is left stopped.
 set -uo pipefail
 
 RESTORE_BUNDLE=0
@@ -165,8 +169,25 @@ UNIT_GROUP="${UNIT_GROUP:-root}"
 DAEMON_CONTAINER=tinyassets-daemon
 TUNNEL_CONTAINER=tinyassets-tunnel
 LOGS_CONTAINER=tinyassets-logs
-# Shared host-mutation lock (same path the watchdog uses); serializes all
-# image mutators so deploy/watchdog/autoheal cannot race.
+# The CEILING on how long a converge lets the old daemon drain, in seconds.
+# Uvicorn closes its listener on SIGTERM and nothing else can bind 127.0.0.1:8001
+# until the old container is gone, so every second of drain is public 502. At
+# 180 (#4039) one long turn held production down for 3m16s on 2026-10-01
+# (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
+#
+# Used twice: `restart_stack` passes it as `up --timeout`, which binds the
+# container being REPLACED regardless of the StopTimeout it was created with;
+# and the staged bundle's `daemon.stop_grace_period` must not exceed it, so a
+# unit- or watchdog-driven recreate is bounded the same way.
+#
+# Kept in step with `deploy/compose.yml` and with
+# `universe_server.GRACEFUL_SHUTDOWN_S` by tests/test_deploy_drains_in_flight_turns.py.
+MAX_DAEMON_STOP_GRACE_S=20
+# Shared host-mutation lock. scripts/watchdog.py and deploy/daemon-watchdog.sh
+# check it (read-only, never created) and stand down while it is held. Until
+# 2026-10-01 this comment claimed they did when neither did, and both restarted
+# the daemon mid-deploy. GitHub-driven mutators serialize separately on the
+# `production-host-mutation` workflow concurrency group.
 LOCK_FILE="${LOCK_FILE:-/var/lock/tinyassets-host-mutation.lock}"
 LOCK_WAIT=120            # seconds to wait for the lock before refusing
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"   # seconds to reach 'healthy'
@@ -263,6 +284,53 @@ tunnel_up() {
 
 set_image() { printf '%s' "$1" | bash "$ENV_HELPER" set TINYASSETS_IMAGE; }
 
+# --- data layout guard (tinyassets/storage_layout.py, design D7.2) --------
+# An image-only rollback is safe only while the data is still in the layout
+# EVERY image understands: layout 1, state "stable" (or no marker yet). A
+# storage migration writes "migrating" before its first change and a newer
+# layout when it finishes; an older image started on that data would find
+# renamed tables and could create blank homes. Then the safe action is to
+# stop and restore from backup, never to start the old image.
+layout_marker_path() {
+  local dir
+  dir="$(docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data 2>/dev/null)" || return 1
+  [ -n "$dir" ] || return 1
+  printf '%s/.layout.json' "$dir"
+}
+layout_allows_any_image() {  # $1 = marker path; 0 = any image may start
+  local marker="$1" dir
+  dir="$(dirname "$marker")"
+  # Fail closed: an unreadable volume is not an absent marker.
+  [ -d "$dir" ] || return 1
+  (
+    # Under the shared layout lock, never mid-migration (a migration holds it
+    # exclusively). Non-blocking: a held lock is a refusal, not a wait.
+    exec 8>>"$dir/.layout.lock" || exit 1
+    flock -s -n 8 || exit 1
+    [ -e "$marker" ] || exit 0
+    python3 - "$marker" <<'LAYOUT_PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        doc = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+ok = isinstance(doc, dict) and doc.get("layout") == 1 and doc.get("state") == "stable"
+sys.exit(0 if ok else 1)
+LAYOUT_PY
+  )
+}
+# Refuse and leave the service DOWN: the remedy is restore-from-backup, and an
+# older image serving on newer data is the failure this guard exists to stop.
+refuse_on_layout() {  # $1 = what was about to start
+  err "the data layout marker is not layout 1 / stable, cannot be read, or a migration holds the layout lock: NOT starting $1. Restore the pre-migration backup with deploy/backup-restore.sh, then deploy the image built for the restored layout"
+  docker stop "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
+  echo "deploy_result=rollback_needs_restore"
+  exit 3
+}
+
 # The container must actually be RUNNING the requested image. A healthy daemon
 # is not proof: when the systemd unit could not start (2026-08-21), the OLD
 # container kept running under docker's restart policy, health_ok passed, and
@@ -312,12 +380,53 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up AND l
 # services whose image or config changed (the tunnel keeps running).
 restart_stack() {
   systemctl reset-failed "$UNIT" 2>/dev/null || true
-  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d daemon cloudflared logs; then
-    err "docker compose up -d failed"
+  remove_compose_temp_daemons
+  # Time the converge. `up -d` recreates the daemon, which STOPS the old
+  # container first. `--timeout` bounds that stop to MAX_DAEMON_STOP_GRACE_S
+  # and then SIGKILLs. Without it compose uses the StopTimeout the old
+  # container was CREATED with: 180s on 2026-10-01, all of it public 502.
+  local started elapsed
+  started="$SECONDS"
+  if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d \
+        --timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs; then
+    elapsed=$((SECONDS - started))
+    err "docker compose up -d failed after ${elapsed}s"
     return 1
+  fi
+  elapsed=$((SECONDS - started))
+  log "converge took ${elapsed}s (includes the old daemon's drain, bounded at ${MAX_DAEMON_STOP_GRACE_S}s)"
+  if [ "$elapsed" -ge "$MAX_DAEMON_STOP_GRACE_S" ]; then
+    log "note: the converge reached the ${MAX_DAEMON_STOP_GRACE_S}s drain bound; a turn was very likely cut off (see tinyassets/agent_turn_reconcile.py for what the founder is told)"
   fi
   systemctl start "$UNIT" 2>/dev/null || err "note: ${UNIT} did not start (stack converged directly; see journalctl -u ${UNIT})"
   return 0
+}
+
+# Compose recreates a container by creating `<12-hex>_<name>`, stopping and
+# removing the old one, then renaming. A compose run that dies part-way, or a
+# second compose run racing this one (the unit's did on 2026-10-01), leaves
+# that temp name behind, and the next `up -d` fails on
+# "Conflict. The container name /<hex>_tinyassets-daemon is already in use".
+# That is what turned the 2026-10-01 forward failure into rollback_failed.
+# Runs under the host-mutation lock. Only containers that are NOT running are
+# removed: `compose start` can start a temp-named replacement by id without
+# renaming it, so a running one may be the only serving daemon (Codex refute).
+# A running one is reported and left alone.
+remove_compose_temp_daemons() {
+  local name state
+  while read -r name state; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$name" | grep -Eq "^[0-9a-f]{12}_${DAEMON_CONTAINER}\$" || continue
+    case "$state" in
+      created|exited|dead)
+        log "removing stray compose temp container ${name} (${state})"
+        docker rm -f "$name" >/dev/null 2>&1 || err "note: could not remove stray container ${name}"
+        ;;
+      *)
+        err "note: temp-named container ${name} is '${state}'; leaving it (it may be serving)"
+        ;;
+    esac
+  done < <(docker ps -a --format '{{.Names}} {{.State}}' 2>/dev/null || true)
 }
 
 # `up -d` does NOT recreate a container whose image and compose config are
@@ -560,6 +669,7 @@ validate_bundle() {
   # resolve the same, renders identically (Codex round 2, §2). argv[3] is the
   # uninterpolated render (env_file survives there).
   RUNTIME_DIR="$RUNTIME_DIR" EXPECT_IMAGE="$NEW_IMAGE" ENV_FILE="$ENV_FILE" \
+    MAX_DAEMON_STOP_GRACE_S="$MAX_DAEMON_STOP_GRACE_S" \
     python3 - "$cfg" "${BUNDLE_WORK}/compose.yml" "${cfg}.raw" <<'PY'
 import json
 import os
@@ -603,8 +713,8 @@ def indent_of(line):
     return len(line) - len(line.lstrip())
 
 
-def daemon_image_lines():
-    """`image:` lines of services.daemon, and nothing else.
+def daemon_block_lines():
+    """Every line of services.daemon, and nothing else.
 
     Anchored at a TOP-LEVEL `services:` key and its direct child `daemon:`: an
     earlier `x-anything:` extension mapping with its own indented `daemon:`
@@ -643,15 +753,79 @@ def daemon_image_lines():
         if indent_of(line) <= child_indent:
             break  # the next service, or the end of the mapping
         lines.append(line)
-    return [line for line in lines if re.match(r"^\s*image:\s*\S", line)]
+    return lines
 
 
-image_lines = daemon_image_lines()
+daemon_block = daemon_block_lines()
+image_lines = (
+    None if daemon_block is None
+    else [line for line in daemon_block if re.match(r"^\s*image:\s*\S", line)]
+)
+
+
+def daemon_direct_children(pattern):
+    """Lines matching `pattern` at the daemon mapping's OWN key indent.
+
+    `daemon_block_lines` returns every descendant, so a key nested under
+    `environment:` or `healthcheck:` would satisfy a check that only matched the
+    text. Codex reproduced exactly that against the first version of the
+    stop_grace_period check: moving it under `environment:` passed validation
+    while docker had no service stop grace at all. A service property must be a
+    DIRECT child to mean anything.
+    """
+    if not daemon_block:
+        return []
+    key_indent = indent_of(daemon_block[0])
+    return [
+        line for line in daemon_block
+        if indent_of(line) == key_indent and re.match(pattern, line.strip())
+    ]
 if image_lines is None:
     problems.append(
         "no top-level `services:` mapping with a `daemon:` child in the source file"
     )
     image_lines = []
+    daemon_block = []
+
+# The drain bound, read from the SOURCE rather than either render: compose
+# normalizes durations and this check must not depend on which form this
+# version emits. It is a CEILING: the drain is public 502, because the old
+# daemon has already closed its listener (2026-10-01). Absent is refused too,
+# so the bound stays written down where the next reader looks for it.
+max_grace = int(os.environ["MAX_DAEMON_STOP_GRACE_S"])
+grace_lines = daemon_direct_children(r"^stop_grace_period:\s*\S")
+if len(grace_lines) != 1:
+    problems.append(
+        "daemon must declare exactly one direct `stop_grace_period:` (found %d); without it "
+        "the drain bound silently falls back to docker's 10s default" % (len(grace_lines),)
+    )
+else:
+    grace_text = grace_lines[0].split(":", 1)[1].strip().strip("'\"")
+    # Compose accepts Go duration syntax, so `5m0s`, `300.0s` and `300000ms` are
+    # all the same bound the shipped `180s` expresses. The first version took
+    # `(\d+)(s|m)?` and refused every one of them, which is a foot-gun in a gate
+    # that blocks deploys INCLUDING a rollback: the next person to write the
+    # equivalent value gets a refused bundle (Codex on #4039). Parse the real
+    # grammar instead of narrowing what the file may say.
+    units = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001, "us": 1e-6, "ns": 1e-9}
+    parts = re.findall(r"(\d+(?:\.\d+)?)(h|ms|us|ns|m|s)", grace_text)
+    rebuilt = "".join(number + unit for number, unit in parts)
+    if not parts or rebuilt != grace_text:
+        # Refuse rather than guess. A bare `300` reaches here, and compose itself
+        # rejects it, so the `config` run above has already failed -- this arm is
+        # the belt, not the braces.
+        problems.append(
+            "daemon.stop_grace_period %r is not a duration this check can read; use a "
+            "form like 180s or 3m" % (grace_text,)
+        )
+    else:
+        seconds = sum(float(number) * units[unit] for number, unit in parts)
+        if seconds > max_grace:
+            problems.append(
+                "daemon.stop_grace_period is %gs; it must be at most %ds, because the old "
+                "daemon has closed its listener and every second of drain is public 502"
+                % (seconds, max_grace)
+            )
 if not image_lines:
     problems.append("no `image:` line found in the daemon block of the source file")
 elif "${TINYASSETS_IMAGE" not in image_lines[0]:
@@ -830,6 +1004,39 @@ for source, read_only in sorted(binds.items(), key=lambda item: str(item[0])):
     if not read_only:
         problems.append("logs mount %s is not read-only" % (source,))
 
+# Where the logs come to REST. Vector re-emits every forwarded line on its own
+# stdout, so the `logs` container's driver is the durable host-side copy of every
+# other container's output. With a container-scoped driver (json-file is Docker's
+# default) that copy dies with the container, and this script force-recreates
+# exactly this service whenever a vector input changes -- which is how a live
+# latency investigation lost its evidence six minutes after the turns that
+# produced it (2026-09-26; docs/ops/log-aggregation-runbook.md). A compose
+# file that converges without this is a compose file that logs into a bucket with
+# a hole in it, so it belongs with the other "converges successfully and serves
+# nothing" checks above.
+logs_logging = svc("logs").get("logging") or {}
+if logs_logging.get("driver") != "journald":
+    problems.append(
+        "logs.logging.driver is %r, expected 'journald'; the sidecar's stdout is "
+        "the only host-side copy of every container's output and a "
+        "container-scoped driver is deleted on recreate"
+        % (logs_logging.get("driver"),)
+    )
+if (logs_logging.get("options") or {}).get("tag") != "tinyassets-logs":
+    problems.append(
+        "logs.logging.options.tag is %r, expected 'tinyassets-logs'; without it "
+        "journald records a truncated container id that changes every recreate, "
+        "so the query meant to read ACROSS recreates cannot be written"
+        % ((logs_logging.get("options") or {}).get("tag"),)
+    )
+for service in ("daemon", "cloudflared"):
+    forwarding = svc(service).get("logging") or {}
+    if forwarding.get("driver") != "fluentd":
+        problems.append(
+            "%s.logging.driver is %r, expected 'fluentd'; its output would not "
+            "reach the sidecar at all" % (service, forwarding.get("driver"))
+        )
+
 if problems:
     for problem in problems:
         sys.stderr.write("::error::staged bundle rejected: %s\n" % problem)
@@ -837,7 +1044,7 @@ if problems:
 
 print(
     "[deploy-fail-safe] bundle validated: services=%s, daemon image + mem_limit ok, "
-    "logs mounts read-only" % sorted(services)
+    "logs mounts read-only, log retention on journald" % sorted(services)
 )
 PY
   rc=$?
@@ -1095,6 +1302,16 @@ if ! timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none 
 fi
 log "candidate image loads cleanly"
 
+# --- 3a. the data layout must be one every image understands --------------
+# (tinyassets/storage_layout.py). Checked before anything is mutated, for every
+# mode: --restore-bundle converges an OLDER image too.
+LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_any_image "$LAYOUT_MARKER"; then
+  err "data layout check failed before converging ${NEW_IMAGE}: the marker is not layout 1 / stable, cannot be read, or a migration holds the layout lock; prod untouched"
+  echo "deploy_result=layout_refused"
+  exit 1
+fi
+
 # --- 3b. the runtime bundle: validate -> snapshot -> install ---------------
 if ! ensure_state_dir; then
   err "cannot prepare ${BUNDLE_STATE_DIR}; refusing (prod untouched)"
@@ -1252,6 +1469,12 @@ if [ "$INSTALLED_THIS_RUN" = "1" ]; then
   clear_dirty || true
 else
   log "bundle: this run installed none; leaving the runtime files untouched during the image rollback"
+fi
+# The failed candidate may have migrated (or begun migrating) the data while it
+# booted: re-check before the previous image starts on it.
+LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
+if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_any_image "$LAYOUT_MARKER"; then
+  refuse_on_layout "${PREV_IMAGE}"
 fi
 if ! set_image "$PREV_IMAGE"; then
   err "could not record rollback image ${PREV_IMAGE} in ${ENV_FILE} — manual intervention required"

@@ -4,6 +4,8 @@ Discovery happens outside assignment admission and database transactions. The
 result is advisory: every actual launch still validates its exact member anew.
 """
 
+import logging
+import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -38,9 +40,30 @@ from tinyassets.providers.model_policy import (
 from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
 from tinyassets.providers.wire_dialects import same_dialect
 from tinyassets.storage.current_home import check_current_home
+from tinyassets.storage.learned_models import (
+    LEARNED_SOURCE_KIND,
+    OWN_VERIFIED_BASIS,
+)
 from tinyassets.storage.model_preferences import ModelPreferenceStore
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
+_LOG = logging.getLogger("universe_server.served_model_plan")
+
+#: An id from the reviewed public list for this source kind. A public claim that the
+#: id EXISTS, never permission to use it.
+PUBLIC_LISTED_BASIS = "publicly_listed"
+
+#: Bases that are OFFERS to grant, never admitted candidates. One set, read by the
+#: split below and by api/model_options' legacy plan, so a third basis cannot be added
+#: in one place and admitted in the other.
+_CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
+
+
+
+#: Prefix of the refusal when no accepted model can run. The served turn's
+#: notice reads the held sources after ``HELD_SOURCES`` (universe_server).
+NO_ELIGIBLE_MODEL = "no eligible model in the accepted assignment"
+HELD_SOURCES = "not usable now: "
 
 def _assert_plan_snapshot(snapshot):
     from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
@@ -180,6 +203,28 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
             model.model_id, True, model.input_modalities,
             pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
         ) for model in native_snapshot.catalogue.models)
+    # What the PLATFORM has seen work on this KIND of source, newest of each class.
+    # Without this the list is only what this owner typed into their own access
+    # grant, so a newly released model was invisible until someone shipped a patch
+    # (founder, 2026-09-26: "i cant seem to select fable as a user for the llm").
+    #
+    # These are NOT put through accepted_native_selection: they are candidates the
+    # platform can vouch exist, not ids this universe has granted access to. The
+    # existing access machinery marks them outside the accepted scope, so they
+    # surface as "needs access" and become selectable when the owner grants it.
+    # A catalog row is evidence, never permission.
+    # THIS OWNER's own verified ids first. The founder's rule is that an id which
+    # worked for one owner "stays on that user's own list forever" even when it
+    # never becomes public -- and Codex round 3 found the store was keeping it while
+    # nothing ever listed it, so a solo user's ARN silently vanished from their own
+    # picker as soon as they stopped declaring it. Keeping a row nobody reads is not
+    # keeping it.
+    models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, owner,
+                                          already=models))
+    # ...then the reviewed public list for this kind of source, which is how a newly
+    # released model reaches everyone without a patch: a PR adds the id, review is the
+    # moderation, and every universe on that source kind sees it next read.
+    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, already=models))
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
@@ -188,6 +233,57 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
         member.provider, "native-subscription:" + member.provider, "subscription", "fresh",
         True, True,
         tuple(models), default_model_id="" if "" in declared else None,
+    )
+
+
+def _own_verified_candidates(base, source_kind, owner, *, already):
+    """Ids THIS owner has already made work on this kind of source.
+
+    Their own history, not anyone else's: read from the private evidence table
+    scoped to this owner, so nothing here depends on the promotion threshold. A
+    solo user keeps every id they have ever used even though none of it is public.
+
+    Carries its own basis so the list can be honest about the difference between
+    "you have run this" and "two owners elsewhere have run this". Like the
+    published rows, these are candidates and NOT admitted: the owner may have
+    narrowed their model access since, and re-granting is the existing one-tap path.
+    """
+    from tinyassets.storage.learned_models import OwnModelHistory
+
+    have = {model.model_id for model in already}
+    try:
+        rows = OwnModelHistory(base).ids_for(source_kind, owner)
+    except (OSError, sqlite3.DatabaseError, ValueError) as exc:
+        _LOG.warning("own verified model evidence unreadable: %s", type(exc).__name__)
+        return ()
+    return tuple(
+        Model(row.model_id, True, frozenset({"text"}),
+              pricing=Pricing("fresh", unmetered=True),
+              availability_basis=OWN_VERIFIED_BASIS)
+        for row in rows if row.model_id and row.model_id not in have
+    )
+
+
+def _listed_candidates(source_kind, *, already):
+    """Newest-per-class ids from the reviewed public list for one source kind.
+
+    A UNION, never a filter: an id this universe already has keeps its own row and its
+    own basis, whatever the list says. A user happily running an older model does not
+    lose it because a newer one was listed.
+
+    A malformed list file RAISES rather than reading as empty -- a corrupted list must
+    not silently shrink every user's picker with no signal -- and the caller's own
+    except clause turns that into a source-level reason the repair screen can show.
+    """
+    from tinyassets.providers.public_model_lists import newest_listed_cached
+
+    have = {model.model_id for model in already}
+    return tuple(
+        Model(model_id, True, frozenset({"text"}),
+              pricing=Pricing("fresh", unmetered=True),
+              availability_basis=PUBLIC_LISTED_BASIS)
+        for model_id in newest_listed_cached(source_kind)
+        if model_id and model_id not in have
     )
 
 
@@ -246,6 +342,18 @@ def _reconnect_sources(base, owner, uid, chains):
         if SOURCE_HEALTH.needs_reconnect(source_key(
             base, owner, uid, next(m for m in chain[0].candidates if m.provider == provider),
         ))
+    )
+
+
+def _refused_models(base, owner, chains):
+    """This owner's recently refused models on the sources in this plan."""
+    from tinyassets.storage.refused_models import active_refused_models
+
+    providers = {provider for provider, _chain in chains}
+    return tuple(
+        ModelRef(mark.connection_id, mark.model_id)
+        for mark in active_refused_models(base, owner_user_id=owner)
+        if mark.connection_id in providers
     )
 
 
@@ -318,6 +426,9 @@ def prepare_owned_model_plan(
     all_models, admitted, snapshots, source_policies = [], [], [], []
     interaction = Interaction(True, frozenset({"text"}), frozenset())
     ranking_sources = set()
+    from tinyassets.provider_authority import current as current_authority
+
+    config = current_authority(universe, config)
     allowed = None if config is None else config.allowed_providers
     for provider, chain in chains:
         member = next(m for m in chain[0].candidates if m.provider == provider)
@@ -342,8 +453,33 @@ def prepare_owned_model_plan(
                         # own default. Preserve that lane and expose the gap.
                         rejected.append(Ineligible(ModelRef(provider, ""),
                                                    "native_catalogue_unavailable", scope="source"))
-                catalog = filtered = _native_models(
+                catalog = _native_models(
                     base, universe, owner, member, native_snapshot=native_snapshot,
+                )
+                # A LEARNED id is a candidate to GRANT, never an admitted one.
+                # `catalog` is what a client may SEE; `filtered` is what may be
+                # selected and executed, and the two are deliberately different
+                # here -- the same split the HTTP branch below already makes.
+                #
+                # Codex on #4028 found these identical: one object went to both, so
+                # a learned id arrived with in_candidate_catalog=true, the dropdown
+                # offered it, selection succeeded and only EXECUTION refused it.
+                # Selectable choices that fail are worse than absent ones.
+                contributed = tuple(
+                    model for model in catalog.models
+                    if model.availability_basis in _CANDIDATE_ONLY_BASES
+                )
+                filtered = replace(catalog, models=tuple(
+                    model for model in catalog.models
+                    if model.availability_basis not in _CANDIDATE_ONLY_BASES
+                ))
+                # Said, not merely withheld: the reason is what puts it under the
+                # dropdown's "Needs access" group with the one-tap grant, so the
+                # owner can turn a learned id into a real choice.
+                rejected.extend(
+                    Ineligible(ModelRef(provider, model.model_id),
+                               "model_access_optin_required")
+                    for model in contributed
                 )
                 if native_snapshot is not None:
                     snapshots.append(native_snapshot)
@@ -400,9 +536,19 @@ def prepare_owned_model_plan(
         Catalog(owner, universe.name, tuple(admitted)), policy, interaction, source,
         tuple(source_policies),
         _reconnect_sources(base, owner, universe.name, chains),
+        _refused_models(base, owner, chains),
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
-        raise PermissionError("no eligible model in the accepted assignment")
+        # Name what is held and why: "no model connected" was wrong for an owner
+        # whose accepted sources exist but cannot run (live 2026-09-28).
+        held = [
+            f"{item.ref.connection_id.removeprefix('api_key_http:')} "
+            f"({item.reason.replace('_', ' ')})"
+            for item in rejected if item.scope == "source"
+        ]
+        raise PermissionError(
+            NO_ELIGIBLE_MODEL + (f"; {HELD_SOURCES}{', '.join(held)}" if held else "")
+        )
     result = PreparedPlan(
         plan, Catalog(owner, universe.name, tuple(all_models)), tuple(rejected),
         assignment, tuple(chains), agent, preferences, tuple(snapshots), display_only=allow_empty,

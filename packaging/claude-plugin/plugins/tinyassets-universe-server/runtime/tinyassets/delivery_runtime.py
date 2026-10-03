@@ -270,9 +270,9 @@ def dispatch_accepted_delivery(base, *, delivery_id, attempt=1):
             ).fetchone()
             if row is None:
                 raise ValueError("delivery_attempt_not_found")
-        future = runs._get_executor(invocation_depth=0).submit(
-            contextvars.Context().run, _work, base, delivery_id, attempt,
-        )
+        future = runs._get_executor(
+            invocation_depth=0, pool_key=runs.run_pool_key_for_run(base, row["run_id"]),
+        ).submit(contextvars.Context().run, _work, base, delivery_id, attempt)
         runs._track_future(row["run_id"], future)
         def finished(_future):
             with _submitted_lock:

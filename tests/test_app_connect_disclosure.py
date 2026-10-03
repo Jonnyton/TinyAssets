@@ -18,6 +18,7 @@ the transport are synthetic.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 
@@ -70,6 +71,7 @@ const $=id=>{if(!elements.has(id)){const e=node(id);e.id=id;elements.set(id,e);}
   return elements.get(id);};
 const document={createElement:node,addEventListener(){}};
 const window={};
+const location={search:'',href:'https://tinyassets.io/app',pathname:'/app'};
 const HostedModelConnect={adopt(){},configure(){},setup:null};
 // The real ids the page uses, declared above the slice.
 const CONNECT_REQUEST_ID='sys_connect_llm';
@@ -114,10 +116,18 @@ def run(steps: str) -> dict:
     if not node:  # pragma: no cover - the shipped page is JavaScript
         pytest.skip("node is required to execute the shipped renderer")
     program = HARNESS.replace("__SOURCE__", _slice()).replace("__STEPS__", steps)
-    result = subprocess.run(
-        [node, "-e", program],
-        capture_output=True, text=True, encoding="utf-8", timeout=30,
-    )
+    # A file, not `node -e`: the slice outgrew Windows' 32K command line
+    # (WinError 206). Written outside the repo, like every other harness.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as scratch:
+        script = os.path.join(scratch, "connect_disclosure.cjs")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        result = subprocess.run(
+            [node, script],
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

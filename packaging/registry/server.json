@@ -5,13 +5,13 @@
   "description": "Create, browse, remix, collaborate on, and run durable AI workflow nodes from MCP hosts.",
   "version": "0.2.0",
   "repository": {
-    "url": "https://github.com/Jonnyton/TinyAssets",
+    "url": "https://github.com/TinyAssets/TinyAssets",
     "source": "github"
   },
   "websiteUrl": "https://tinyassets.io/connect",
   "icons": [
     {
-      "src": "https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/assets/icon.png",
+      "src": "https://raw.githubusercontent.com/TinyAssets/TinyAssets/main/assets/icon.png",
       "mimeType": "image/png",
       "sizes": [
         "512x512"

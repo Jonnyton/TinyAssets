@@ -11,7 +11,7 @@
     "WebSite/site-react/public/icon-512.png": "48d3b31242c6eb570cb4f5209ec3016bc282f67a42e0143c56ef4fb42f5a6fa1",
     "WebSite/site-react/public/icon.svg": "86811b0de3ccec32243b300f2fe9d5419fc4c11202e053feb5b303089b2bd0b6",
     "WebSite/site-react/public/logo-mark.png": "48d3b31242c6eb570cb4f5209ec3016bc282f67a42e0143c56ef4fb42f5a6fa1",
-    "WebSite/site-react/public/site.webmanifest": "501dbee16f2254404ac6023c402b760727f3a19796b99b7c65884ca17749445b",
+    "WebSite/site-react/public/site.webmanifest": "0e869b7227a71a5606e3d012ab8cc1533a5d317108681b07cc26c755fb417f51",
     "WebSite/site-react/public/tinyassets-mark.png": "9cb5ae7d9a10c2f0b87197f9fadda6f0f481d9fcb77fc17a37f2987d990a49e4",
     "assets/brand/tinyassets-app.icns": "93f83cd2268c8d82ffe64ff264963ef316264d737d92b18612b9c8b713d2b9ab",
     "assets/brand/tinyassets-app.ico": "962d542a686502c727fbeed01ac2334f51fa1b76caca3edb6559d8cc8f56e727",
@@ -51,11 +51,10 @@
     "mobile/resources/android/mipmap-xxxhdpi/ic_launcher_round.png": "b611cb359fbab713c891e135f76d3dbc9295df6f63312dec286f03653380d301",
     "mobile/resources/icon.png": "577b2b1a2266c07ceabdcb14c32c9da4f3c2d1ae589b74c033cc1df8081926bb",
     "mobile/resources/splash.png": "54fb65163cee6f349e19d8b62b1302c8a2d2fe6bc79f36c7aeb58a4947d06b4d",
-    "tinyassets/desktop/app.ico": "cfbe78e2719ed6543b87d9ea2767ec7493b8d78199855724452ccbf105a6fc87",
-    "tinyassets/onboarding/app.html": "7c1907c2dfe31b2ff3270217e7084a4a2cb5c03ab3374e845a94a1ff7f3d6f55"
+    "tinyassets/desktop/app.ico": "cfbe78e2719ed6543b87d9ea2767ec7493b8d78199855724452ccbf105a6fc87"
   },
   "generators": {
-    "WebSite/brand/render_marks.py": "ca87b1c1a7e1bd5506b709dd7ada47e0c93754751bba3047e0ba8f2d186de6f4",
+    "WebSite/brand/render_marks.py": "2d7c104a94b6d118e0c969885aa6ce43b8885c872d72bb53697762df16a16202",
     "mobile/scripts/render_app_icons.py": "b8cb6182bfab40a762fbc764bcb1af6dc704fd4e8eccc9849c4926f3aed7f5fd",
     "tinyassets/desktop/icon_gen.py": "4ad87af4b04892726b001951fc623799d31ae865e659883b5b325d5877379fbb"
   },

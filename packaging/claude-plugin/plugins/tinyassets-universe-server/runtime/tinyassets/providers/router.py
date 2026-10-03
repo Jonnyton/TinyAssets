@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import logging
 import math
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -29,14 +31,23 @@ from tinyassets.exceptions import (
     ProviderAuthorityHeldError,
     ProviderError,
     ProviderIdleTimeoutError,
+    ProviderModelRefusedError,
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
+    ProviderReplyTimeoutError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     SelectedModelCapacityError,
+    SelectedModelContextError,
 )
 from tinyassets.provider_admission import ProviderBusy as _ProviderBusy
+
+# Admission deadline refusals must release reservations for launches that never ran.
+from tinyassets.provider_admission import (
+    blocking_parent_slot,
+    blocking_provider_child,
+)
 from tinyassets.provider_admission import provider_slot_async as _provider_slot
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
@@ -114,6 +125,20 @@ def _provider_invocation_carrier(
     carrier.validate_for_call(role=role, operation=operation)
     return carrier
 
+def _engine_route(cfg: ModelConfig) -> tuple[str, str] | None:
+    """The engine MCP route this call's provider jail may reach, if any.
+
+    The same three fields every adapter checks before wiring the engine server
+    (``claude_provider._engine_mcp_flags``, ``codex_provider._codex_engine_mcp_args``);
+    the route itself is re-read, owner-checked, by the jail's relay.
+    """
+    actor_id = (cfg.engine_mcp_actor_id or "").strip()
+    graph_id = (cfg.engine_mcp_graph_id or "").strip()
+    if not (cfg.engine_mcp_enabled and actor_id and graph_id):
+        return None
+    return actor_id, graph_id
+
+
 def _resolve_universe_config(
     universe_context: UniverseContext | None,
 ) -> "UniverseConfig | None":
@@ -148,7 +173,11 @@ def _effective_universe_provider_ceiling(
     use only providers the universe itself selected, never the process-global
     fallback chain. Missing/empty selection holds before provider access.
     """
+    from tinyassets.provider_authority import current
+
+    universe_dir = universe_context.universe_dir if universe_context is not None else None
     if carrier_armed or universe_context is None:
+        resolved_config = current(universe_dir, resolved_config)
         return (
             resolved_config.allowed_providers
             if resolved_config is not None
@@ -160,6 +189,7 @@ def _effective_universe_provider_ceiling(
     requester_config = universe_context.config
     if requester_config is None:
         raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+    requester_config = current(universe_dir, requester_config)
     if requester_config.allowed_providers is not None:
         ceiling = [
             str(provider).strip()
@@ -211,9 +241,9 @@ def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
 # only by the provider its owner's authority names. Status surfaces still use
 # this as the catalogue of executor names the host could register.
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "writer": ["claude-code", "codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "judge": ["codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "extract": ["codex", "gemini-free", "groq-free", "ollama-local"],
+    "writer": ["claude-code", "codex", "ollama-local"],
+    "judge": ["codex", "ollama-local"],
+    "extract": ["codex", "ollama-local"],
     "embed": ["ollama-local"],
 }
 
@@ -240,6 +270,31 @@ def _retry_after_cooldown_s(retry_after: object) -> int:
 def _rate_limit_cooldown_s(exc: BaseException) -> int:
     """Cooldown seconds for a genuine rate-limit / overload outcome."""
     return _retry_after_cooldown_s(getattr(exc, "retry_after", None))
+
+
+def _live_interactive_turn():
+    """The owner's live chat turn this call runs under, if any (turn_interrupt)."""
+    from tinyassets.turn_interrupt import current
+
+    return current()
+
+
+def _stoppable_native_turn(operation, provider):
+    """The live chat turn whose Stop may cancel this dispatch, or ``None``.
+
+    Only a NATIVE agent on the ``converse`` operation: cancellation is what ends
+    its process family. An HTTP request cannot be aborted (its provider waits for
+    it even when cancelled), so it returns and its real usage settles, and the
+    turn stops at its next boundary (``tinyassets/turn_interrupt``). A Stop
+    already asked for cancels before anything is claimed or launched, so the
+    reservation is released and the carrier settles cancelled-before-launch
+    rather than indeterminate.
+    """
+    if operation != "converse":
+        return None
+    if getattr(provider, "agent_execution_kind", None) != "native_agent":
+        return None
+    return _live_interactive_turn()
 
 
 def _sync_call_timeout_s(cfg: ModelConfig) -> float:
@@ -392,6 +447,43 @@ def _is_nested(universe_context) -> bool:
     return bool(getattr(universe_context, "provider_invocation", None))
 
 
+@asynccontextmanager
+async def _routable_authorization(inner, selection):
+    """Turn a sign-in refusal raised while AUTHORIZING into a routable outcome.
+
+    The pre-launch credential refresh runs inside this context manager, so a stored
+    sign-in the source has finished with is discovered BEFORE ``_call_routed`` is
+    entered -- which means the provider loop's ``except ProviderAuthenticationError``
+    never sees it and the exception escapes the turn entirely. Measured: the founder's
+    spent-refresh-token path ended with the turn ``abandoned``, no fallback and no
+    reply, which is the outage this exists to fix.
+
+    So it is re-raised as the aggregate the loop would have produced had the provider
+    itself refused: one ``auth_invalid`` attempt, which both turn-coordinator fallback
+    handlers require. ``side_effect_state`` is ``none`` as a FACT here, not an
+    attestation -- nothing was launched, because authorization did not finish -- and
+    that is stronger evidence than any adapter can offer about a run that did start.
+
+    Only ``ProviderAuthenticationError`` is converted. A held authority, a permission
+    refusal or a storage fault keeps travelling as itself; turning those into
+    "exhausted" would report a provider that was never asked as having failed.
+    """
+    try:
+        async with inner as authority:
+            yield authority
+    except ProviderAuthenticationError as exc:
+        raise AllProvidersExhaustedError(
+            "the stored sign-in for this source is no longer accepted",
+            attempts=[ProviderAttemptDiagnostic(
+                provider=getattr(selection, "connection_id", "") or "",
+                status="failed", skip_class="auth_invalid",
+                detail=redacted_failure_detail(str(exc)),
+                failure_class="auth_invalid", side_effect_state="none",
+            )],
+            failure_class="auth_invalid",
+        ) from None
+
+
 class ProviderRouter:
     """Routes one universe's owner-authorized LLM call, with quota tracking.
 
@@ -428,7 +520,7 @@ class ProviderRouter:
     # Shared health
     # ------------------------------------------------------------------
 
-    def _cool(self, cfg: Any, provider_name: str, seconds: int) -> bool:
+    def _cool(self, cfg: Any, provider_name: str, seconds: int, *, daily_detail: str = "") -> bool:
         """The ONE place an in-flight attempt writes the shared cooldown map.
 
         Returns whether it was written. A ``ModelConfig.secondary_call`` is
@@ -447,7 +539,11 @@ class ProviderRouter:
                 "keeps this source", provider_name, seconds,
             )
             return False
-        self._quota.cooldown(provider_name, seconds)
+        # One write site (test_every_router_cooldown_write_goes_through_the_guard);
+        # the keyword is passed only when there is a daily detail, so ordinary
+        # cooldowns keep their original call shape.
+        extra = {"daily_detail": daily_detail} if daily_detail else {}
+        self._quota.cooldown(provider_name, seconds, **extra)
         return True
 
     # ------------------------------------------------------------------
@@ -604,13 +700,16 @@ class ProviderRouter:
 
                 agent_turn = (_agent_execution_kind is not None
                               or config is not None and config.agent_request is not None)
-                async with authorize_served_provider_call_async(
-                    universe_dir.parent,
-                    universe_dir=universe_dir,
-                    request_carrier=universe_context.provider_request,
-                    role=role, operation=operation,
-                    model_selection=universe_context.model_selection,
-                    **({"agent_turn": True} if agent_turn else {}),
+                async with _routable_authorization(
+                    authorize_served_provider_call_async(
+                        universe_dir.parent,
+                        universe_dir=universe_dir,
+                        request_carrier=universe_context.provider_request,
+                        role=role, operation=operation,
+                        model_selection=universe_context.model_selection,
+                        **({"agent_turn": True} if agent_turn else {}),
+                    ),
+                    universe_context.model_selection,
                 ) as authority:
                     if _agent_observer is not None:
                         if not agent_turn or not callable(_agent_observer):
@@ -753,7 +852,11 @@ class ProviderRouter:
             raise PermissionError("native agent cannot use HTTP inference facts")
         if _agent_execution_kind == "engine_inference" and cfg.agent_request is None:
             raise PermissionError("engine inference requires its structured request")
-        from tinyassets.providers.agent_inference import input_size, output_for_settlement
+        from tinyassets.providers.agent_inference import (
+            context_tokens,
+            input_size,
+            output_for_settlement,
+        )
 
         if cfg.agent_request is not None and (
             cfg.selected_model is None or not cfg.engine_mcp_enabled
@@ -791,14 +894,17 @@ class ProviderRouter:
                     # The chosen output limit is itself part of the encoded
                     # agent request. Measure with that field present; otherwise
                     # adding it can overflow an exactly filled context afterward.
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
                         output_limit, cfg.selected_model.context_tokens - required_input,
                     )
                     if output_limit < 1:
-                        raise PermissionError("selected model cannot fit this inference context")
+                        raise SelectedModelContextError(
+                            "selected model cannot fit this inference context",
+                            required_tokens=required_input + 1,
+                        )
                 cfg = replace(cfg, max_tokens=output_limit)
             elif (
                 isinstance(cfg.max_tokens, bool)
@@ -820,14 +926,24 @@ class ProviderRouter:
             if cfg.max_tokens is None:
                 output_limit = invocation_carrier.max_tokens
                 if cfg.selected_model is not None:
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
                         output_limit, cfg.selected_model.context_tokens - required_input,
                     )
                     if output_limit < 1:
-                        raise PermissionError("selected model cannot fit this workflow context")
+                        # Our own measurement, before any launch: this call's
+                        # reservation charged nothing, so it must not hold the
+                        # run's aggregate budget the next model needs.
+                        settle_carrier(
+                            ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                            input_tokens=0, output_tokens=0, cost_microunits=0,
+                        )
+                        raise SelectedModelContextError(
+                            "selected model cannot fit this workflow context",
+                            required_tokens=required_input + 1,
+                        )
                 cfg = replace(cfg, max_tokens=output_limit)
             elif (
                 isinstance(cfg.max_tokens, bool)
@@ -850,14 +966,23 @@ class ProviderRouter:
                 cfg.max_tokens,
             ) > invocation_carrier.max_cost_microunits:
                 raise PermissionError("selected model exceeds this workflow cost allowance")
-            # Match the existing conservative input reservation measure. The
-            # selected catalogue's context limit is not a permission to truncate.
-            required_context = input_size(prompt, system, cfg)
+            # A conservative TOKEN estimate against the window (the reservation
+            # below keeps the byte measure). The selected catalogue's context
+            # limit is not a permission to truncate.
+            required_context = context_tokens(prompt, system, cfg)
             if (
                 cfg.max_tokens is None
                 or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
             ):
-                raise PermissionError("selected model cannot fit this inference context")
+                if invocation_carrier is not None:
+                    settle_carrier(
+                        ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                        input_tokens=0, output_tokens=0, cost_microunits=0,
+                    )
+                raise SelectedModelContextError(
+                    "selected model cannot fit this inference context",
+                    required_tokens=required_context + (cfg.max_tokens or 1),
+                )
 
         # Hard Rule 15: the owner's binding alone names the provider. There is
         # no host pin (``TINYASSETS_PIN_WRITER`` is retired: a host env var must
@@ -898,7 +1023,7 @@ class ProviderRouter:
                 )
                 raise AllProvidersExhaustedError(
                     f"All providers for role={role!r} are blocked by the "
-                    f"universe's allowed_providers={allowlist!r}. Daemon will "
+                    f"command center's allowed_providers={allowlist!r}. Daemon will "
                     f"not silently fall back to a disallowed provider."
                 )
             chain = filtered
@@ -955,7 +1080,7 @@ class ProviderRouter:
                         _uid = served_authority.universe_id
                     else:
                         raise PermissionError(
-                            "open provider invocation requires a universe context"
+                            "open provider invocation requires a command center context"
                         )
                     _def_id = provider_name.split("api_key_http:", 1)[-1]
                     _definition = get_definition(_uid, _def_id)
@@ -995,10 +1120,13 @@ class ProviderRouter:
             if not self._quota.available(provider_name):
                 logger.info("Skipping %s (quota/cooldown)", provider_name)
                 cd = self._quota.cooldown_remaining(provider_name)
+                daily = self._quota.daily_detail(provider_name)
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="skipped",
                     skip_class="quota_or_cooldown",
-                    detail="quota or cooldown gate",
+                    detail=daily or "provider cooldown gate",
+                    failure_class="provider_daily_quota" if daily else None,
+                    capacity_scope="account" if daily else None,
                     cooldown_remaining_s=cd if cd > 0 else None,
                 ))
                 continue
@@ -1062,7 +1190,13 @@ class ProviderRouter:
                     # budget reservation as INDETERMINATE and cooled a provider that had
                     # never started — the caller then saw AllProvidersExhaustedError
                     # instead of "busy, retry" (Codex reproduced this).
-                    async with _provider_slot(nested=_is_nested(universe_context)):
+                    async with _provider_slot(
+                        nested=_is_nested(universe_context),
+                        parent_slot=blocking_parent_slot(),
+                    ):
+                        live_turn = _stoppable_native_turn(operation, provider)
+                        if live_turn is not None and live_turn.requested():
+                            raise asyncio.CancelledError()  # Stop: nothing launched
                         before_launch = getattr(
                             served_authority, "before_provider_launch", None
                         ) if served_authority is not None else None
@@ -1094,10 +1228,15 @@ class ProviderRouter:
                         # refuses a launch with none (provider_jail).
                         with provider_launch_scope(
                             universe_dir, credential_dir=cfg.credential_snapshot_dir,
+                            engine_route=_engine_route(cfg),
                         ):
-                            resp = await provider.complete(
+                            dispatch = provider.complete(
                                 prompt, system, cfg, universe_dir=universe_dir,
                             )
+                            if live_turn is not None:
+                                resp = await live_turn.cancel_on_stop(dispatch)
+                            else:
+                                resp = await dispatch
                 except _ProviderBusy:
                     # Not a provider failure: nothing launched, so the reservation is
                     # released untouched, no cooldown is applied, and the actionable
@@ -1228,7 +1367,6 @@ class ProviderRouter:
                         output_tokens=resp.output_tokens,
                         cost_microunits=resp.cost_microunits,
                     )
-                self._quota.record_success(provider_name)
                 if served_authority is not None:
                     from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
 
@@ -1295,22 +1433,68 @@ class ProviderRouter:
                 # The owner's ceilings are NOT consulted: they price every
                 # attempt anyway, and reading them here made the same refusal
                 # mean different things to a free and a paid account.
-                if exc.signal.scope != "model" and not free_sibling_retry(
-                    scope=exc.signal.scope, failure_class=exc.failure_class,
-                    retry_after_s=exc.retry_after,
-                    turn_budget_s=cfg.stream_timeout_profile().absolute_cap_s,
+                #
+                # Withholding buys exactly one thing -- a sibling on this same
+                # grant -- so it is only for a caller that HAS one and settles
+                # the cooldown once its order runs out. An agent turn does; a
+                # workflow node says so with `ModelConfig.owns_capacity_siblings`
+                # (`_ForegroundRunProviderSession._cool_abandoned_sources`).
+                #
+                # Everyone ELSE is cooled exactly as before. The capacity
+                # decoder now runs for every call rather than only agent rounds,
+                # so this handler is newly reachable from callers that hold no
+                # order at all -- a post-reply learning extraction, say -- and
+                # for them a withheld window is never spent and never settled.
+                # That is the DAILY-cap case `free_sibling_retry` warns about:
+                # every later turn pays the full order again, forever.
+                owns_siblings = (
+                    cfg.agent_request is not None
+                    or getattr(cfg, "owns_capacity_siblings", False)
+                )
+                if not owns_siblings or (
+                    exc.signal.scope != "model" and not free_sibling_retry(
+                        scope=exc.signal.scope, failure_class=exc.failure_class,
+                        retry_after_s=exc.retry_after,
+                        turn_budget_s=cfg.stream_timeout_profile().absolute_cap_s,
+                    )
                 ):
-                    self._cool(cfg, provider_name, _rate_limit_cooldown_s(exc))
+                    daily = exc.failure_class == "provider_daily_quota"
+                    self._cool(
+                        cfg, provider_name,
+                        (_retry_after_cooldown_s(exc.retry_after) if exc.retry_after is not None
+                         else MAX_COOLDOWN_S) if daily else _rate_limit_cooldown_s(exc),
+                        daily_detail=redacted_failure_detail(str(exc)) if daily else "",
+                    )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
                     detail=redacted_failure_detail(str(exc)), failure_class=exc.failure_class,
                     retry_after_s=exc.retry_after, capacity_scope=exc.signal.scope,
+                    # The RAISER now declares whether anything was generated for
+                    # the one class that reaches here -- a whole-response HTTP
+                    # status (`api_key_http_provider._pre_generation`) -- so
+                    # `_side_effect_from` answers "none" on its own and this
+                    # conditional is a second definition of the same fact.
+                    # Left in place deliberately: collapsing it is a no-op for
+                    # every reachable caller and not worth touching the chat
+                    # path for in the same change. See the PR's follow-up note.
                     side_effect_state=(
                         "none" if cfg.agent_request is not None
                         and getattr(provider, "agent_execution_kind", None) == "engine_inference"
                         else _side_effect_from(exc)
                     ),
                     **_tool_wait_evidence(exc),
+                ))
+                continue
+            except ProviderModelRefusedError as exc:
+                # The source refused THIS model (403/404/410) before generating.
+                # That says nothing about the connection's health, and cooling it
+                # would skip the sibling models the turn coordinator may move to
+                # next -- the dead end of 2026-09-28. Nothing was generated, so no
+                # effect: the refusal is a whole-response HTTP status.
+                attempts.append(ProviderAttemptDiagnostic(
+                    provider=provider_name, status="failed", skip_class="provider_error",
+                    detail=redacted_failure_detail(str(exc)), failure_class=exc.failure_class,
+                    side_effect_state="none",
                 ))
                 continue
             except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
@@ -1339,7 +1523,9 @@ class ProviderRouter:
                     **_tool_wait_evidence(exc),
                 ))
                 continue
-            except (ProviderIdleTimeoutError, InteractiveDeadlineError) as exc:
+            except (
+                ProviderIdleTimeoutError, InteractiveDeadlineError, ProviderReplyTimeoutError,
+            ) as exc:
                 # A transient attempt timeout is NOT proof the credential is
                 # down. Do NOT cool the sole served writer — the next turn stays
                 # eligible. The process was already killed by the provider.
@@ -1357,7 +1543,13 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderProtocolError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                # An agent round's unreadable or in-band-error reply is about one
+                # MODEL's answer, not the connection: cooling it skipped every
+                # sibling model on the same key (live 2026-10-02, the free-only
+                # account's whole OpenRouter pool), and made the owner's very next
+                # "continue" a cooldown refusal. The turn coordinator bounds its
+                # own retries (``AgentTurnCoordinator._next_after_bad_reply``).
+                if cfg.agent_request is None and self._cool(cfg, provider_name, COOLDOWN_OTHER):
                     logger.warning(
                         "Provider %s protocol error, cooldown %ds",
                         provider_name, COOLDOWN_OTHER,
@@ -1368,6 +1560,7 @@ class ProviderRouter:
                     detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     side_effect_state=_side_effect_from(exc),
+                    partial_text=getattr(exc, "partial_text", None) or None,
                     **_tool_wait_evidence(exc),
                 ))
                 continue
@@ -1447,7 +1640,7 @@ class ProviderRouter:
         if served_authority is not None:
             raise AllProvidersExhaustedError(
                 f"Served provider {served_authority.provider!r} exhausted; "
-                f"universe {AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
+                f"command center {AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
                 attempts=attempts,
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),
@@ -1554,6 +1747,7 @@ class ProviderRouter:
         return response.text, response.provider, self._call_meta(response, attempts=1)
 
 
+    @blocking_provider_child()
     def call_with_policy_sync(
         self,
         role: str,
@@ -1614,7 +1808,18 @@ class ProviderRouter:
             finally:
                 loop.close()
 
-        future = self._thread_pool.submit(_run)
+        # A synchronous nested caller is blocked until this worker settles.
+        # Copy its explicit loan, not just the universe carrier. Nested work
+        # cannot queue behind blocked ancestors in the fixed sync-worker pool.
+        call_context = contextvars.copy_context()
+        nested_pool = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            if blocking_parent_slot() is not None else None
+        )
+        pool = nested_pool or self._thread_pool
+        future = pool.submit(call_context.run, _run)
+        if nested_pool is not None:
+            nested_pool.shutdown(wait=False)
         try:
             return future.result(timeout=inner_timeout + 30)
         except concurrent.futures.TimeoutError:
@@ -1636,6 +1841,7 @@ class ProviderRouter:
         thread_name_prefix="tinyassets-provider-sync",
     )
 
+    @blocking_provider_child()
     def call_sync(
         self,
         role: str,
@@ -1677,6 +1883,13 @@ class ProviderRouter:
         queued_at = time.monotonic()
         node_budget_s = _caller_deadline_budget_s(cfg)
         drain_deadline = queued_at + inner_timeout
+        # Read on the CALLER's thread and carried into the pool worker, which
+        # does not inherit context variables. Set only inside a served converse
+        # turn; the dispatch site alone decides what a stop may cancel (only a
+        # native ``converse`` dispatch), so nothing else is stoppable from here.
+        from tinyassets.turn_interrupt import TurnInterrupted, bound
+
+        live_turn = _live_interactive_turn()
 
         def _run() -> ProviderResponse:
             waited = time.monotonic() - queued_at
@@ -1700,16 +1913,23 @@ class ProviderRouter:
             )
             loop = asyncio.new_event_loop()
             try:
-                return loop.run_until_complete(
-                    asyncio.wait_for(
-                        self.call(
-                            role, prompt, system, run_cfg,
-                            operation=operation,
-                            universe_context=universe_context,
-                        ),
-                        timeout=run_timeout,
-                    )
-                )
+                with bound(live_turn):
+                    try:
+                        return loop.run_until_complete(
+                            asyncio.wait_for(
+                                self.call(
+                                    role, prompt, system, run_cfg,
+                                    operation=operation,
+                                    universe_context=universe_context,
+                                ),
+                                timeout=run_timeout,
+                            )
+                        )
+                    except asyncio.CancelledError:
+                        # Only the owner's Stop cancels from inside this loop.
+                        if live_turn is not None and live_turn.requested():
+                            raise TurnInterrupted("the owner stopped this turn") from None
+                        raise
             except asyncio.TimeoutError:
                 # wait_for already cancelled the coroutine (subprocess killed).
                 raise ProviderTimeoutError(
@@ -1719,7 +1939,18 @@ class ProviderRouter:
             finally:
                 loop.close()
 
-        future = self._thread_pool.submit(_run)
+        # A synchronous nested caller is blocked until this worker settles.
+        # Copy its explicit loan, not just the universe carrier. Nested work
+        # cannot queue behind blocked ancestors in the fixed sync-worker pool.
+        call_context = contextvars.copy_context()
+        nested_pool = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            if blocking_parent_slot() is not None else None
+        )
+        pool = nested_pool or self._thread_pool
+        future = pool.submit(call_context.run, _run)
+        if nested_pool is not None:
+            nested_pool.shutdown(wait=False)
         try:
             return future.result(timeout=inner_timeout + 30)
         except concurrent.futures.TimeoutError:

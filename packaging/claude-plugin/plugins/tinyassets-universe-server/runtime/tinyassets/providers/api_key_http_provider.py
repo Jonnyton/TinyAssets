@@ -41,10 +41,15 @@ from typing import Any
 
 from tinyassets.exceptions import (
     ProviderAuthenticationError,
+    ProviderModelRefusedError,
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
+    ProviderReplyError,
+    ProviderReplyTimeoutError,
+    ProviderStalledError,
     ProviderUnavailableError,
+    ProviderUnreadableReplyError,
 )
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
 from tinyassets.providers.definition import ProviderDefinition
@@ -52,6 +57,25 @@ from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError
 from tinyassets.providers.wire_dialects import same_dialect
 
 _LOG = logging.getLogger(__name__)
+
+#: Seconds a STREAMED agent reply may go without new bytes before it counts as
+#: stalled. A reply that keeps arriving is never cut for being slow (founder,
+#: 2026-10-02): on a capped free tier an abandoned reply is one of the day's
+#: requests gone. A source may declare its own ``reply_idle_s`` in its preset.
+DEFAULT_REPLY_IDLE_S = 120.0
+
+#: HTTP's own words for "not this model, not for you": forbidden, not found,
+#: gone. Standard status semantics, not a vendor's error envelope.
+_MODEL_REFUSAL_STATUSES = frozenset({403, 404, 410})
+
+
+def _reply_budget_s(config: Any) -> float | None:
+    """The turn's remaining absolute cap, as the budget to ask the broker for."""
+    profile = getattr(config, "stream_timeout_profile", None)
+    if not callable(profile):
+        return None
+    cap = profile().absolute_cap_s
+    return float(cap) if type(cap) in (int, float) and cap > 0 else None
 
 
 def _single_host(view: Any) -> str:
@@ -103,6 +127,32 @@ def _coerce_status(value: Any) -> int | None:
     if isinstance(value, str) and value.strip().isdigit():
         return int(value.strip())
     return None
+
+
+def _pre_generation(error):
+    """Declare an ADMISSION refusal side-effect-free, as a FACT.
+
+    Only for the statuses with which a source refuses a request *before*
+    generating: 429 (its own rate limit) and the model-refusal statuses
+    (access refused, no such model). The source answered with a status and
+    nothing else, so no token was generated and no tool could have run, and
+    saying so at the raise site is what lets `capacity_boundary` certify the
+    transition to the next model.
+
+    **A 5xx is deliberately NOT included.** It can come from a gateway after an
+    upstream model already began producing output, so zero remote generation is
+    unproved and the honest value is "unknown" -- which holds the node rather
+    than replaying it elsewhere. Codex refutation R3, 2026-09-30: an earlier
+    head labelled every 5xx side-effect-free and could not rule out a 502/504
+    following generation.
+
+    Said HERE rather than inferred at the router, because absence of the fact
+    must keep meaning "unknown" for a streaming or native attempt, where a
+    failure genuinely can follow partial work. It travels on the existing
+    `attempt_telemetry` channel so there is one reader, not two.
+    """
+    error.attempt_telemetry = {"side_effect_state": "none"}
+    return error
 
 
 class ApiKeyHttpProvider(BaseProvider):
@@ -223,12 +273,13 @@ class ApiKeyHttpProvider(BaseProvider):
     ) -> ProviderResponse:
         if universe_dir is None:
             raise ProviderUnavailableError(
-                "api_key_http compute requires a universe context (universe_dir)"
+                "api_key_http compute requires a command center context (universe_dir)"
             )
         from tinyassets.storage.outbound_connections import (
             ConnectionAuthorizationError,
             ConnectionLedger,
             GrantResolutionError,
+            OutboundDeadlineExceeded,
         )
 
         universe_dir = Path(universe_dir)
@@ -242,7 +293,8 @@ class ApiKeyHttpProvider(BaseProvider):
         if grant is None or getattr(grant, "revoked_at", None) is not None:
             raise ProviderUnavailableError(f"compute grant {grant_id} is absent or revoked")
         if getattr(grant, "universe_id", "") != universe_id:
-            raise ProviderUnavailableError("compute grant is not bound to the running universe")
+            raise ProviderUnavailableError("compute grant is not bound to the running command "
+                "center")
         connection_id = grant.connection_id
         owner_user_id = grant.owner_user_id
         view = read_ledger.get_connection_view(connection_id)
@@ -295,7 +347,21 @@ class ApiKeyHttpProvider(BaseProvider):
         # broker applies it from the connection's auth_scheme (x-api-key for Claude).
         from tinyassets.providers.protocol_encoders import static_headers_for
 
+        # An agent body already asks to stream (``AgentInferenceRequest.encode``):
+        # every agent wire is chat_messages, whose servers stream on request, and
+        # the decoder folds events and plain JSON alike.
         wire_request: dict[str, Any] = {"url": f"https://{host}{path}", "body": body}
+        # Ask for as long as the turn itself may still run. The broker grants it
+        # only because this connection is a model source, and never beyond its
+        # own ceiling; a model writing a whole app needs minutes, not 30s.
+        reply_budget = _reply_budget_s(config)
+        if reply_budget is not None:
+            wire_request["reply_budget_s"] = reply_budget
+            if agent_request is not None:
+                from tinyassets.providers.free_sources import source_for_host
+
+                idle = source_for_host(host).get("reply_idle_s", DEFAULT_REPLY_IDLE_S)
+                wire_request["reply_idle_s"] = float(idle)
         static_headers = static_headers_for(self._definition.protocol)
         if static_headers:
             wire_request["headers"] = static_headers
@@ -323,6 +389,17 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderUnavailableError(
                 f"compute grant resolution failed: {exc}"
             ) from exc
+        except OutboundDeadlineExceeded:
+            from tinyassets.storage.outbound_connections import INFERENCE_MAX_SECONDS
+
+            # The budget that actually ended it: the broker grants at most its
+            # own ceiling, so the turn's remaining time (live 2026-10-02:
+            # "2591705s") is not the number the owner should read.
+            raise ProviderReplyTimeoutError(
+                "the model did not finish answering within its reply budget"
+                + (f" ({int(min(reply_budget, INFERENCE_MAX_SECONDS))}s)"
+                   if reply_budget is not None else "")
+            ) from None
         except ConnectionAuthorizationError as exc:
             # A refresh that failed is a connection/auth failure (the class
             # maps to the connection stage), with the token endpoint's words.
@@ -347,28 +424,88 @@ class ApiKeyHttpProvider(BaseProvider):
             # the network failed. Fail loud with the secret-free reason.
             reason = str(result.get("reason") or result.get("error") or "unknown")
             raise ProviderUnavailableError(f"compute call failed: {reason}")
-        if agent_request is not None and contract.capacity_decoder is not None:
+        # EVERY call, not only an agent round. `agent_request` is a tool-loop
+        # concern and says nothing about whether the source reported a capacity
+        # window, but it used to gate this decode -- so the identical 429, from
+        # the identical source, through the identical decoder, reached a workflow
+        # node as a bare `ProviderRateLimitedError` with no scope, no
+        # `Retry-After` and no side-effect fact. `capacity_boundary` could not
+        # certify that as a safe transition, so one 429 ended the whole run
+        # while a chat turn on the same source stepped to the next free model
+        # (live 2026-09-30, run `c22c1cb12db74d6a`, one attempt on an account
+        # holding 632 models).
+        if selection is not None:
             from tinyassets.exceptions import SelectedModelCapacityError
+            from tinyassets.providers.daily_quota import daily_detail, daily_quota_signal
+            from tinyassets.providers.free_sources import billing_url_for_host, source_for_host
 
-            capacity = contract.capacity_decoder(status, result.get("headers"))
+            capacity = daily_quota_signal(
+                status, result.get("headers"), result.get("body"),
+                daily_request_headers=source_for_host(host).get("daily_request_headers", False),
+                daily_reset_timezone=source_for_host(host).get("daily_reset_timezone"),
+            )
+            detail = None
             if capacity is not None:
-                raise SelectedModelCapacityError(
-                    capacity, detail=self._capacity_detail(status, result)
+                detail = daily_detail(capacity, billing_url=billing_url_for_host(host))
+            elif contract.capacity_decoder is not None:
+                capacity = contract.capacity_decoder(status, result.get("headers"))
+            if status == 402:
+                from tinyassets.providers.model_capacity import CapacitySignal, retry_after_seconds
+
+                if capacity is None:
+                    capacity = CapacitySignal(
+                        "account", "provider_credit_exhausted",
+                        retry_after_seconds(result.get("headers")),
+                    )
+                detail = "Provider credit exhausted. Add credit: " + billing_url_for_host(host)
+            if capacity is not None:
+                error = SelectedModelCapacityError(
+                    capacity, detail=detail or self._capacity_detail(status, result)
                 )
+                # Only a 4xx admission refusal proves nothing was generated; a
+                # 5xx may be a gateway answering after upstream output began.
+                raise _pre_generation(error) if status < 500 else error
         if status == 401:
             # Still refused after the broker's one refresh-and-retry (oauth2),
             # or a key the service no longer accepts: a sign-in problem.
             raise ProviderAuthenticationError("compute provider rejected the credential (401)")
         if status == 429:
-            raise ProviderRateLimitedError("compute provider rate limited (429)")
+            raise _pre_generation(
+                ProviderRateLimitedError("compute provider rate limited (429)")
+            )
         if 500 <= status < 600:
             raise ProviderOverloadedError(f"compute provider error (HTTP {status})")
+        if status in _MODEL_REFUSAL_STATUSES:
+            # Access refused, or no such model to serve: nothing was generated,
+            # so this is neither a reply we failed to read nor a sick source.
+            raise _pre_generation(
+                ProviderModelRefusedError(self._capacity_detail(status, result))
+            )
         if not (200 <= status < 300):
-            raise ProviderProtocolError(f"compute provider returned HTTP {status}")
+            raise ProviderProtocolError(
+                self._capacity_detail(status, result)
+                or f"compute provider returned HTTP {status}"
+            )
 
+        # A 2xx we cannot read, on an agent round, is the model's slip rather
+        # than the source refusing the request: the turn may retry it.
+        unreadable = (
+            ProviderUnreadableReplyError if agent_request is not None else ProviderProtocolError
+        )
         body_str = result.get("body")
+        if agent_request is not None and result.get("stalled") is True:
+            from tinyassets.providers.agent_chat_codec import partial_stream_text
+
+            partial = partial_stream_text(body_str) if isinstance(body_str, str) else ""
+            idle = wire_request.get("reply_idle_s")
+            raise ProviderStalledError(
+                "the model stopped sending partway through its reply"
+                + (f" (nothing for {int(idle)}s" if idle else " (")
+                + f", {len(partial)} characters of text received)",
+                partial_text=partial,
+            )
         if not isinstance(body_str, str) or not body_str:
-            raise ProviderProtocolError("compute response had an empty body")
+            raise unreadable("compute response had an empty body")
         try:
             if agent_request is not None:
                 from tinyassets.providers.agent_chat_codec import (
@@ -387,7 +524,7 @@ class ApiKeyHttpProvider(BaseProvider):
             else:
                 parsed = json.loads(body_str)
         except (TypeError, ValueError) as exc:
-            raise ProviderProtocolError(f"compute response was not JSON: {exc}") from exc
+            raise unreadable(f"compute response was not JSON: {exc}") from exc
         agent_reply = None
         cost = None
         try:
@@ -398,6 +535,15 @@ class ApiKeyHttpProvider(BaseProvider):
                         item["function"]["name"] for item in agent_request.tools()
                     ),
                 )
+                if (agent_reply.stop == "truncated" and agent_reply.text is None
+                        and not agent_reply.tool_requests):
+                    # "Succeeded with nothing": a cold start, or a reasoning
+                    # model that spent its whole output on thinking. Nothing to
+                    # keep, and the next attempt usually answers.
+                    raise ProviderUnreadableReplyError(
+                        "the model stopped at its output limit before replying "
+                        "(finish_reason length, no content)"
+                    )
                 text = agent_reply.text or ""
                 in_tok, out_tok = agent_reply.input_tokens, agent_reply.output_tokens
             else:
@@ -405,7 +551,17 @@ class ApiKeyHttpProvider(BaseProvider):
             if selection is not None and contract.usage_decoder is not None:
                 cost = contract.usage_decoder(body_str)
         except ProtocolDecodeError as exc:
-            raise ProviderProtocolError(str(exc)) from exc
+            words = getattr(exc, "source_error", None)
+            if isinstance(words, str):
+                # The source said generation failed; keep its own words.
+                from tinyassets.providers.diagnostics import redacted_failure_detail
+
+                # Only the agent wire codec marks one, so this is an agent round.
+                raise ProviderReplyError(
+                    "the model's source reported an error instead of a reply: "
+                    + (redacted_failure_detail(words) or "no detail given")
+                ) from exc
+            raise unreadable(str(exc)) from exc
 
         return ProviderResponse(
             text=text,

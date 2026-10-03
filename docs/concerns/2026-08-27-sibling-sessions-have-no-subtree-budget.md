@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Sibling sessions have no subtree budget
+filed: '2026-08-27'
+summary: async fan-out mints a fresh per-run receipt each time, so breadth is unbounded
+---
+
 # Async sub-branch sessions have no aggregate provider budget
 
 **Filed:** 2026-08-27

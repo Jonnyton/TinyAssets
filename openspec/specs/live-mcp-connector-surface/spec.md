@@ -99,8 +99,9 @@ Every handle result SHALL be wrapped so the MCP response carries both a `structu
 ### Requirement: Cloudflare Worker Public Front Door
 
 `https://tinyassets.io/mcp` SHALL be the only public user-facing MCP URL. A
-Cloudflare Worker on the `tinyassets.io/mcp*` route SHALL proxy only canonical
-`/mcp` traffic to the Access-gated tunnel origin `mcp.tinyassets.io`, injecting
+Cloudflare Worker on the `tinyassets.io/mcp*` and `tinyassets.io/app*` routes
+SHALL proxy only canonical
+`/mcp` and `/app` traffic to the Access-gated tunnel origin `mcp.tinyassets.io`, injecting
 the CF Access service-token headers (`CF-Access-Client-Id` /
 `CF-Access-Client-Secret`) from Worker environment secrets. The Worker SHALL
 stream SSE bodies straight through without buffering, SHALL preserve request
@@ -133,6 +134,67 @@ Access-gated origin and MUST NOT be presented as user-facing.
 
 - **WHEN** the tunnel origin returns a `5xx` status or is unreachable
 - **THEN** the Worker responds `502` with a `bad_gateway` JSON body, never a GoDaddy `404` fallthrough
+
+### Requirement: The Web App Is Served At The Apex `/app`
+
+`https://tinyassets.io/app` SHALL be the app's only public URL. The Cloudflare
+Worker SHALL bind `tinyassets.io/app*` as a suffix wildcard. An exact
+`tinyassets.io/app` route (with or without a `tinyassets.io/app/*` companion) is
+NOT sufficient and SHALL NOT be used: a Cloudflare route is matched against the
+entire URL including the query string, so an exact route matches only a bare
+`/app` and the two URLs carrying the whole sign-in and billing flow —
+`/app?code=…&state=…` (the AuthKit return the page derives from its own
+location) and `/app?subscribed=1` (the Stripe return) — would match no route and
+be answered by the apex website origin.
+
+Because that wildcard matches any character rather than a path segment, it also
+captures apex website paths that merely begin with `app`
+(`/apple-touch-icon.png`, which the site serves). The Worker SHALL hand exactly
+those to the website origin unchanged, and SHALL NOT answer them itself. The
+pass-through SHALL be scoped to `app`-prefixed non-app paths only:
+`/mcp-directory*` SHALL keep terminating at the edge as an ordinary 404.
+
+`/mcp/app*` SHALL NOT be mounted, redirected, aliased, or answered with a
+compatibility response, and SHALL NOT receive a carve-out of any kind: the
+daemon serves no route under that prefix, so it is treated exactly like any
+other absent path inside the connector namespace — an anonymous request receives
+the connector's `401` challenge (the same as `/mcp/anything`) and an
+authenticated one a `404`. Neither serves the app, and no `Location` header is
+ever returned. The connector endpoint `/mcp` itself is unchanged.
+
+Because the app no longer lives inside the `/mcp/` prefix, the auth boundary
+SHALL name the app subtree explicitly: `/app` and `/app/token` SHALL be served
+without an MCP bearer (the shell loads before sign-in; the token proxy runs
+before a bearer exists), `/app/billing/webhook` SHALL be served without one
+(Stripe-signed), the model-callback shell SHALL be served without one, and every
+other `/app/*` path SHALL receive the bearer `401` challenge.
+
+#### Scenario: The app URL reaches the daemon
+
+- **WHEN** a request arrives at `tinyassets.io/app` or any `tinyassets.io/app/...` path
+- **THEN** the Worker proxies it to the tunnel origin preserving method, path, query, and body stream
+
+#### Scenario: The sign-in and billing returns reach the daemon
+
+- **WHEN** AuthKit returns the browser to `tinyassets.io/app?code=…&state=…`, or Stripe to `tinyassets.io/app?subscribed=1`
+- **THEN** the Worker proxies the request, query intact, and the response carries the daemon's `X-TinyAssets-Build`
+- **AND** the apex website origin never answers a query-bearing app URL
+
+#### Scenario: An apex asset whose name starts with "app" is not the app
+
+- **WHEN** a visitor requests `tinyassets.io/apple-touch-icon.png`
+- **THEN** the Worker forwards it to the website origin with its URL unrewritten, never to the tunnel origin, and never answers it 404
+
+#### Scenario: The retired app path is absent, not redirected
+
+- **WHEN** a client requests `tinyassets.io/mcp/app` or any path beneath it
+- **THEN** no redirect, alias, or compatibility body is returned, no `Location` header is sent, and no `X-TinyAssets-Build` header is sent
+- **AND** the status is the connector namespace's ordinary refusal for an absent path — `401` anonymously, `404` authenticated — and never `200`, `3xx`, or `5xx`
+
+#### Scenario: An app API route still requires the bearer
+
+- **WHEN** an anonymous request reaches `/app/me`, `/app/billing/checkout`, `/app/account/delete`, or any other `/app/*` route outside the named public set
+- **THEN** it receives the OAuth `401` challenge before the handler runs
 
 ### Requirement: Public Canary And Canonical Review Surface
 
@@ -310,7 +372,7 @@ and the refusal.
 
 ### Requirement: Owned conversation UI shows viewer-local message instants
 
-The daemon-served conversation app at `/mcp/app` SHALL show message timestamps.
+The daemon-served conversation app at `/app` SHALL show message timestamps.
 The same renderer SHALL show a date and time on every founder, universe, and system-notice
 message across the desktop and mobile shells. A known message instant SHALL be
 formatted by the browser in the viewing user's locale and local timezone with a
@@ -508,6 +570,17 @@ another universe's connection, and SHALL NOT substitute for `provider`,
 names the model beside the label. Records stored before the field existed
 SHALL keep normalizing unchanged.
 
+The receipt MAY additionally carry `requested_model`, the model id that reply's
+own call explicitly asked its source for. It SHALL be absent rather than empty
+when the call asked for the source's default, SHALL NOT change `model` or
+`model_status`, and a renderer SHALL name it only as a request, and only when
+no answering model was reported.
+
+#### Scenario: The source reports no answering model
+- **WHEN** a reply's source stream names no model and its call explicitly requested one
+- **THEN** the receipt keeps `model_status` `unknown` with an empty `model` and carries the request as `requested_model`
+- **AND** the app shows the id labelled as requested beside "answering model not reported", never as the answering model
+
 #### Scenario: A reply is followed by learning or another conversation
 - **WHEN** a writer completes and subsequent inference uses another provider
 - **THEN** the successful reply retains only its own request-local receipt
@@ -537,9 +610,9 @@ SHALL NOT create databases, migrate schemas, reconcile usage or mutate records.
 SQLite's normal coordination sidecars MAY be created by read-only connections;
 reads SHALL preserve locking and visibility of committed WAL transactions.
 No new handle or authority SHALL be introduced.
-Activity SHALL retain observed engine-mutation counts, but its limits SHALL name
-only the enforced total (900) and write-run (300) admission ceilings per rolling
-3600 seconds, without the retired `engine_mutations` category ceiling.
+Account seat observations SHALL report running and waiting counts only to the
+owning account, across all its universes. Other ACL administrators SHALL NOT see
+that account's aggregate occupancy. No account rate ceilings SHALL be exposed.
 
 #### Scenario: Owner asks about usage
 - **WHEN** the app's pinned agent reads status with its owner's existing admin authority for the universe
@@ -552,14 +625,6 @@ only the enforced total (900) and write-run (300) admission ceilings per rolling
 #### Scenario: Canary or unrelated user reads status
 - **WHEN** a caller is not authorized for private universe usage
 - **THEN** no private counts, paths, run identifiers or holder identities are disclosed
-
-#### Scenario: The oldest charge is about to expire
-- **WHEN** status reports a rolling-window expiration
-- **THEN** it gives a UTC next-charge-expiration instant and does not guarantee enough capacity for an unspecified future request
-
-#### Scenario: Engine usage is observed without a separate allowance
-- **WHEN** authorized status reports engine mutations
-- **THEN** activity contains their count and includes them in total, but `activity.limits` contains only `total` and `write_runs`
 
 ### Requirement: Legacy storage telemetry labels freshness and accounting scope
 The existing storage-utilization status SHALL preserve prior response keys while
@@ -670,7 +735,9 @@ universe and enforce the existing record ACL before content or mutation.
 
 ### Requirement: Shared unpowered model catalogue
 The read_graph handle SHALL accept target=model_options without changing its
-arguments or direct string/structured-adapter return contract. The read SHALL
+arguments. On the connector (the model door) its structured reply is the bounded
+catalogue projection; the complete document is served to the owner by the owner
+door. The read SHALL
 require the authenticated owner's complete current home and explicit admin ACL.
 It SHALL NOT create a home, agent, assignment, preference or inference grant.
 
@@ -684,10 +751,11 @@ It SHALL NOT create a home, agent, assignment, preference or inference grant.
 - **THEN** the read refuses without disclosing that graph's model inventory
 - **AND** omitted scope never resolves to a designated public universe
 
-#### Scenario: Complete choices, not a first-page sample
-- **WHEN** approved discovery returns more models than the default read limit
-- **THEN** all protocol-bounded choices survive in structured content
-- **AND** limit does not silently hide models from this catalogue target
+#### Scenario: Complete choices at the owner door, a projection at the model door
+- **WHEN** approved discovery returns more models than fit one model-context reply
+- **THEN** the owner door (`POST /app/api/read` with `target=model_options`) returns every protocol-bounded choice
+- **AND** the connector's `read_graph target=model_options` returns the bounded `compact_model_options` projection, identical to `target=model_options_summary`, whose cursor reaches every model exactly once
+- **AND** neither door silently hides a model: the projection always carries the catalogue totals
 
 #### Scenario: Registration is not execution authority
 - **WHEN** an owned registered HTTP source has approved discovery but is not accepted for inference
@@ -773,7 +841,8 @@ replace the entire current order without modifying saved defaults or authority.
 ### Requirement: Graph handles expose structured cross-user delivery controls
 Canonical top-level handles SHALL retain their signatures. Validated graph
 dispatch SHALL expose receiver create/update/revoke, output-link connect/disconnect,
-explicit deliver_output sends, and receiver/output_links/delivery inspection.
+explicit deliver_output sends, receiver discovery, and
+receiver/output_links/delivery inspection.
 The served read_graph wrapper SHALL accept optional query for those reads;
 served management and sends SHALL remain graph-pinned and operation-authorized.
 These controls SHALL NOT claim file transfer, in-node delivery RPC or receiver
@@ -797,6 +866,58 @@ execution retry, which remain outside this shipped structured MVP.
 #### Scenario: Delivery does not add another top-level tool
 - **WHEN** the public tool inventory is inspected after deployment
 - **THEN** the canonical handle set is unchanged and collaboration uses existing graph handles
+
+### Requirement: Any authenticated user can discover an opened receiver
+The canonical handle set SHALL remain unchanged. Discovery SHALL be reached as an
+additional read_graph target backed by an extensions read action, not a new
+top-level tool.
+
+An authenticated caller holding admin authority on its own universe SHALL be able
+to list or substring-search receivers whose owners marked them discoverable,
+receiving the sender view only. A receiver its owner did not mark discoverable
+SHALL NOT appear in any result, and neither SHALL a revoked one. Results SHALL be
+bounded by an explicit limit and SHALL NOT be presented as an exhaustive
+enumeration.
+
+#### Scenario: A user finds a peer's receiver without being told its id
+- **WHEN** an authenticated user reads the discovery target, optionally with search text
+- **THEN** each result carries the receiver id, owner label, description, contract,
+  generation and exposure flags
+- **AND** carries no owner branch id, node id, snapshot or universe id
+
+#### Scenario: A closed receiver is not findable
+- **WHEN** a receiver's owner has not marked it discoverable
+- **THEN** it is absent from every other user's discovery result, with or without
+  search text matching its description
+
+#### Scenario: Discovery is attributable
+- **WHEN** a caller without a current authenticated principal and admin authority
+  on its own universe reads the discovery target
+- **THEN** the read is refused
+
+### Requirement: The served surface teaches delivering between universes
+The exposure fields SHALL be documented on the connector and served write_graph
+descriptions. The long-form procedure — build a receiver on an owned step, open it,
+find other people's, connect an output, deliver, read the receipt — SHALL be
+reachable as a write_graph handbook chapter named in the resident chapter index,
+and the behavioral prompt SHALL point at it where an agent looks when a user asks
+to let other users send them something.
+
+The guidance SHALL be vendor-neutral and SHALL NOT be written toward one use such
+as bug reports, so it does not narrow what users build on the primitive. Every
+payload field, operation name, refusal string and declaration recipe it states
+SHALL match the implementation, since a dead instruction in a fetched chapter
+misleads as badly as one in a resident description.
+
+#### Scenario: An agent asked to accept work from other users finds the primitive
+- **WHEN** a user asks their universe to let any other user send it something
+- **THEN** the served guidance names the receiver primitive and how to open it
+- **AND** does not require the agent to mint a public unauthenticated endpoint
+
+#### Scenario: The handbook and its index agree
+- **WHEN** the handbook index is read
+- **THEN** it names the delivering chapter, and that chapter is fetchable verbatim
+  through the read handle
 
 ### Requirement: Served owners can edit existing effect and workspace declarations
 
@@ -972,3 +1093,75 @@ uncoupled.
 #### Scenario: the two surfaces are not silently coupled
 - **WHEN** the public and engine descriptions for a shared handle name are compared
 - **THEN** neither is derived from the other, so editing one cannot alter the other
+
+### Requirement: A subscription deposit is a connection operation, not a handle
+The connector SHALL accept a subscription deposit as `write_graph target=connection operation=connect_llm`, dispatched to the owner-scoped writer (`byo-llm-deposit-surface`), and SHALL NOT add an advertised handle for it. The pinned handle set asserted by the public canary is unchanged by it.
+
+#### Scenario: Deposit without a new handle
+- **WHEN** the canary asserts the advertised handles on a deployment that serves `connect_llm`
+- **THEN** the handle set is the canonical one, and `connect_llm` is reachable as an operation of `write_graph`
+
+### Requirement: Served JSON arguments accept the value or its text
+The served engine `write_graph payload_json` and `run_graph inputs_json` arguments SHALL accept a JSON object or array as the value itself, and SHALL keep accepting its JSON text. A string whose content is itself an encoded object or array SHALL be unwrapped once. Every form SHALL reach the handler as one canonical JSON text, so the handler has a single validator. The public connector's argument types SHALL be unchanged.
+
+#### Scenario: an object payload builds
+- **WHEN** a served turn calls `write_graph target=branch operation=create` with `payload_json` as an object whose `prompt_template` contains a newline
+- **THEN** the branch builds and the stored template keeps the newline verbatim
+
+#### Scenario: the string form keeps working
+- **WHEN** a caller sends the same spec as JSON text
+- **THEN** the branch builds exactly as before
+
+### Requirement: Served refusals are errors
+Every served engine tool result that refuses the call SHALL be returned with `isError: true` and its refusal text unchanged. A refusal is a JSON object with a truthy `error` or `errors` and no `status`, or a `status` of `rejected`, `refused` or `error`. A result that describes something read or made, such as a failed run's record, SHALL NOT be flagged, and neither SHALL the result of a file or shell handle (`read`, `write`, `edit`, `bash`), whose text is arbitrary content. A refusal larger than the result ceiling SHALL still be flagged, and SHALL be bounded. A JSON parse failure SHALL name the decoder message, the line and column, and a bounded excerpt, and SHALL say that the object can be passed instead.
+
+#### Scenario: malformed payload text
+- **WHEN** `payload_json` text contains an unescaped newline inside a string
+- **THEN** the result has `isError: true` and names the line, the column and the character
+
+#### Scenario: reading a failed run
+- **WHEN** `read_graph target=run` reads a run whose status is `failed`
+- **THEN** the result has `isError: false`
+
+#### Scenario: reading a file that looks like a refusal
+- **WHEN** `read` returns a file whose content is `{"errors": [...]}`
+- **THEN** the result has `isError: false`, and the content is unchanged
+
+### Requirement: An unwired node list runs in order
+When a branch create spec gives two or more nodes with no edges or conditional edges at all, and either no entry point or one equal to the first node, staging SHALL chain the nodes in the order listed and SHALL report this as a notice. Any edge, any conditional edge, or an entry point other than the first node SHALL be validated exactly as written.
+
+#### Scenario: two nodes, no edges
+- **WHEN** a spec lists nodes `gather` then `write_up` and gives no edges
+- **THEN** the branch builds with the edge `gather -> write_up`, the entry point `gather`, and a notice naming the order
+
+#### Scenario: partial wiring
+- **WHEN** a spec lists three nodes and gives one edge
+- **THEN** no edge is inferred, and the unreachable node is reported
+
+### Requirement: A running run's read waits briefly
+The served `read_graph target=run` SHALL re-read a run that is `queued`, `running` or `resumed` for up to 10 seconds, and SHALL answer as soon as the run leaves those states. Any other payload SHALL be returned on the first read.
+
+#### Scenario: a run that settles inside the window
+- **WHEN** a run completes 3 seconds after the read begins
+- **THEN** one tool call returns the completed record
+
+### Requirement: The connector bounds reads only as a model-door projection
+
+The connector's single-result ceiling SHALL apply to `read_graph` replies as a
+projection at the model door. It SHALL NOT be the path by which the owner's own
+app reads its data; the app reads through the owner door
+(`onboarding-web-app`). The connector's ceiling-exempt set SHALL contain only
+reads whose contract a truncation marker would break: `run_file` and
+`conversation` (caller-bounded chunks carrying a cursor) and `conversation_turn`
+(the universe's committed reply, the same payload `converse` returns). No entry
+SHALL exist because a first-party client reads it.
+
+#### Scenario: A model-sized reply is bounded visibly
+- **WHEN** a `read_graph` reply on the connector exceeds the ceiling
+- **THEN** the reply is the truncation marker with `truncated: true`, the original size and a narrowing hint
+- **AND** the owner door serving the same read returns the complete document
+
+#### Scenario: The pending-request read is complete before any projection
+- **WHEN** an owner has more pending requests than any former default page
+- **THEN** `read_graph target=pending_requests` builds the complete list before the ceiling is applied
+- **AND** `limit` does not cut the owner's own pending rows

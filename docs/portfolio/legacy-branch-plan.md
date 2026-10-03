@@ -30,7 +30,7 @@ For each source repo:
 4. Run history-level secret scan if preserving commits.
 5. Add an archive README.
 6. Push to a test/private remote or local bare repo first.
-7. Only then push the branch to `Jonnyton/TinyAssets`.
+7. Only then push the branch to `TinyAssets/TinyAssets`.
 
 ## Current Scan Finding
 
@@ -64,7 +64,7 @@ These are notes, not commands to run blindly.
 ```powershell
 # From a clean temporary clone/export after cleanup:
 git checkout -b legacy/fantasy-writer
-git remote add workflow https://github.com/Jonnyton/TinyAssets.git
+git remote add workflow https://github.com/TinyAssets/TinyAssets.git
 git push workflow legacy/fantasy-writer
 ```
 

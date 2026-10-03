@@ -7,23 +7,17 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from tinyassets.runs import initialize_runs_db
 from tinyassets.scheduler import (
-    MAX_SCHEDULES_PER_OWNER,
-    MAX_SUBSCRIPTIONS_PER_OWNER,
     VALID_EVENT_TYPES,
     CronParseError,
     CronSchedule,
     Scheduler,
     SchedulerEvent,
-    list_schedules,
-    register_schedule,
     register_subscription,
-    unregister_schedule,
     unregister_subscription,
 )
 
@@ -88,101 +82,8 @@ def base_path(tmp_path: Path) -> Path:
 
 # ─── register_schedule ────────────────────────────────────────────────────────
 
-class TestRegisterSchedule:
-    def test_cron_returns_id(self, base_path):
-        sid = register_schedule(
-            base_path,
-            branch_def_id="b1",
-            owner_actor="alice",
-            cron_expr="0 * * * *",
-        )
-        assert sid
-        rows = list_schedules(base_path)
-        assert len(rows) == 1
-        assert rows[0]["schedule_id"] == sid
-        assert rows[0]["cron_expr"] == "0 * * * *"
-
-    def test_interval_returns_id(self, base_path):
-        sid = register_schedule(
-            base_path,
-            branch_def_id="b1",
-            owner_actor="alice",
-            interval_seconds=300.0,
-        )
-        assert sid
-        rows = list_schedules(base_path)
-        assert rows[0]["interval_seconds"] == 300.0
-
-    def test_no_trigger_raises(self, base_path):
-        with pytest.raises(ValueError, match="cron_expr or interval_seconds"):
-            register_schedule(base_path, branch_def_id="b1", owner_actor="alice")
-
-    def test_invalid_cron_raises(self, base_path):
-        with pytest.raises(CronParseError):
-            register_schedule(
-                base_path, branch_def_id="b1", owner_actor="alice", cron_expr="bad"
-            )
-
-    def test_rate_limit(self, base_path):
-        for i in range(MAX_SCHEDULES_PER_OWNER):
-            register_schedule(
-                base_path,
-                branch_def_id="b1",
-                owner_actor="alice",
-                interval_seconds=float(i + 1),
-            )
-        with pytest.raises(ValueError, match="rate limit"):
-            register_schedule(
-                base_path,
-                branch_def_id="b1",
-                owner_actor="alice",
-                interval_seconds=9999.0,
-            )
-
-    def test_rate_limit_per_owner(self, base_path):
-        for i in range(MAX_SCHEDULES_PER_OWNER):
-            register_schedule(
-                base_path,
-                branch_def_id="b1",
-                owner_actor="alice",
-                interval_seconds=float(i + 1),
-            )
-        # bob is unaffected by alice's count
-        sid = register_schedule(
-            base_path, branch_def_id="b1", owner_actor="bob", interval_seconds=60.0
-        )
-        assert sid
-
 
 # ─── unregister_schedule ─────────────────────────────────────────────────────
-
-class TestUnregisterSchedule:
-    def test_owner_can_unregister(self, base_path):
-        sid = register_schedule(
-            base_path, branch_def_id="b1", owner_actor="alice", interval_seconds=60.0
-        )
-        result = unregister_schedule(base_path, sid, requesting_actor="alice")
-        assert result is True
-        rows = list_schedules(base_path, active_only=True)
-        assert not rows
-
-    def test_non_owner_rejected(self, base_path):
-        sid = register_schedule(
-            base_path, branch_def_id="b1", owner_actor="alice", interval_seconds=60.0
-        )
-        with pytest.raises(PermissionError):
-            unregister_schedule(base_path, sid, requesting_actor="bob")
-
-    def test_admin_can_unregister(self, base_path):
-        sid = register_schedule(
-            base_path, branch_def_id="b1", owner_actor="alice", interval_seconds=60.0
-        )
-        result = unregister_schedule(base_path, sid, requesting_actor="admin", admin=True)
-        assert result is True
-
-    def test_missing_schedule_returns_false(self, base_path):
-        result = unregister_schedule(base_path, "nonexistent", requesting_actor="alice")
-        assert result is False
 
 
 # ─── register_subscription ───────────────────────────────────────────────────
@@ -193,7 +94,7 @@ class TestRegisterSubscription:
             base_path,
             branch_def_id="b1",
             owner_actor="alice",
-            event_type="canon_change",
+            event_type="source:s1",
         )
         assert sub_id
 
@@ -206,31 +107,27 @@ class TestRegisterSubscription:
                 event_type="not_a_real_event",
             )
 
-    def test_rate_limit(self, base_path):
-        for i in range(MAX_SUBSCRIPTIONS_PER_OWNER):
+    def test_no_count_of_subscriptions_per_owner(self, base_path):
+        """Plan item 6: each fire is charged as a run instead of a ceiling of 20."""
+        for i in range(25):
             register_subscription(
                 base_path,
                 branch_def_id=f"b{i}",
                 owner_actor="alice",
-                event_type="canon_change",
-            )
-        with pytest.raises(ValueError, match="rate limit"):
-            register_subscription(
-                base_path,
-                branch_def_id="bX",
-                owner_actor="alice",
-                event_type="canon_change",
+                event_type="source:s1",
             )
 
-    def test_all_valid_event_types_accepted(self, base_path):
-        for i, etype in enumerate(sorted(VALID_EVENT_TYPES)):
-            sub_id = register_subscription(
-                base_path,
-                branch_def_id=f"b{i}",
-                owner_actor=f"actor{i}",
-                event_type=etype,
+    @pytest.mark.parametrize(
+        "etype", ["canon_change", "branch_run_completed", "canon_upload", "pr_open"],
+    )
+    def test_types_nothing_emits_are_refused(self, base_path, etype):
+        """A subscription to an event with no emitter would be stored and never
+        fire. Engine events are automation triggers (``automation_events``)."""
+        assert not VALID_EVENT_TYPES
+        with pytest.raises(ValueError, match="unknown event_type"):
+            register_subscription(
+                base_path, branch_def_id="b1", owner_actor="alice", event_type=etype,
             )
-            assert sub_id
 
 
 # ─── unregister_subscription ─────────────────────────────────────────────────
@@ -238,21 +135,21 @@ class TestRegisterSubscription:
 class TestUnregisterSubscription:
     def test_owner_can_unregister(self, base_path):
         sub_id = register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         result = unregister_subscription(base_path, sub_id, requesting_actor="alice")
         assert result is True
 
     def test_non_owner_rejected(self, base_path):
         sub_id = register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         with pytest.raises(PermissionError):
             unregister_subscription(base_path, sub_id, requesting_actor="bob")
 
     def test_admin_can_unregister(self, base_path):
         sub_id = register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         result = unregister_subscription(base_path, sub_id, requesting_actor="admin", admin=True)
         assert result is True
@@ -278,128 +175,6 @@ def _owned(**overrides):
     return owned
 
 
-class TestSchedulerTick:
-    @pytest.fixture(autouse=True)
-    def _authorized(self, base_path):
-        """Give `_UID` the three facts the tick re-checks before every fire.
-
-        These tests are about WHEN a schedule is due — cron matching, interval
-        arithmetic, skip_if_running. Without a real admin grant, founder home and
-        ready serving assignment the tick refuses on authority (D3) and every one
-        of them would pass or fail for a reason it is not testing.
-        """
-        from tests.test_scheduler_owner import seed_ready_universe
-
-        seed_ready_universe(base_path, universe_id=_UID, principal="founder-tick")
-
-    def _make_scheduler(self, base_path, run_calls):
-        def run_fn(branch_def_id, actor, inputs, run_name, *, principal_id=""):
-            run_calls.append((branch_def_id, actor, inputs, run_name, principal_id))
-
-        return Scheduler(base_path, run_fn)
-
-    def test_interval_fires(self, base_path):
-        run_calls: list = []
-        register_schedule(
-            base_path, branch_def_id="b1", interval_seconds=1.0, **_owned()
-        )
-        s = self._make_scheduler(base_path, run_calls)
-        # Manually call _fire_due_schedules — no real thread needed for unit test.
-        s._fire_due_schedules()
-        assert len(run_calls) == 1
-        branch_id, actor, inputs, run_name, principal_id = run_calls[0]
-        assert branch_id == "b1"
-        # The run actor is the OWNING UNIVERSE. It used to be `scheduler:<id>`,
-        # which the run function rejects as a non-universe actor.
-        assert actor == f"universe:{_UID}"
-        assert principal_id == "founder-tick"
-
-    def test_interval_not_fired_twice_too_soon(self, base_path):
-        run_calls: list = []
-        register_schedule(
-            base_path, branch_def_id="b1", interval_seconds=3600.0, **_owned()
-        )
-        s = self._make_scheduler(base_path, run_calls)
-        s._fire_due_schedules()
-        s._fire_due_schedules()  # second call — should not fire again within 1 hour
-        assert len(run_calls) == 1
-
-    def test_cron_fires_on_matching_minute(self, base_path):
-        run_calls: list = []
-        register_schedule(
-            base_path, branch_def_id="b1", cron_expr="30 12 * * *", **_owned()
-        )
-        s = self._make_scheduler(base_path, run_calls)
-        matching = time.strptime("2026-04-24 12:30:00", "%Y-%m-%d %H:%M:%S")
-        with patch("tinyassets.scheduler.time") as mock_time:
-            mock_time.time.return_value = time.mktime(matching)
-            # gmtime, not localtime: cron is evaluated in UTC so the cadence
-            # floor's wall-clock arithmetic has no DST discontinuity to model.
-            mock_time.gmtime.return_value = matching
-            s._fire_due_schedules()
-        assert len(run_calls) == 1
-
-    def test_cron_does_not_fire_on_non_matching_minute(self, base_path):
-        run_calls: list = []
-        register_schedule(
-            base_path, branch_def_id="b1", cron_expr="30 12 * * *", **_owned()
-        )
-        s = self._make_scheduler(base_path, run_calls)
-        non_matching = time.strptime("2026-04-24 12:31:00", "%Y-%m-%d %H:%M:%S")
-        with patch("tinyassets.scheduler.time") as mock_time:
-            mock_time.time.return_value = time.mktime(non_matching)
-            mock_time.gmtime.return_value = non_matching
-            s._fire_due_schedules()
-        assert len(run_calls) == 0
-
-    def test_skip_if_running_skips(self, base_path):
-        """skip_if_running=True skips when branch has a RUNNING run."""
-        import sqlite3
-        run_calls: list = []
-        register_schedule(
-            base_path,
-            branch_def_id="b1",
-            interval_seconds=1.0,
-            skip_if_running=True,
-            **_owned(),
-        )
-        # Insert a fake RUNNING run.
-        db = base_path / ".runs.db"
-        conn = sqlite3.connect(str(db))
-        conn.execute(
-            "INSERT INTO runs (run_id, branch_def_id, thread_id, status, actor, started_at) "
-            "VALUES ('r1','b1','t1','running','alice',0)"
-        )
-        conn.commit()
-        conn.close()
-
-        s = self._make_scheduler(base_path, run_calls)
-        s._fire_due_schedules()
-        assert len(run_calls) == 0
-
-    def test_inputs_template_passed_to_run(self, base_path):
-        run_calls: list = []
-        register_schedule(
-            base_path,
-            branch_def_id="b1",
-            interval_seconds=1.0,
-            inputs_template={"key": "value"},
-            **_owned(),
-        )
-        s = self._make_scheduler(base_path, run_calls)
-        s._fire_due_schedules()
-        assert run_calls[0][2] == {"key": "value"}
-
-    def test_a_schedule_with_no_owner_never_fires(self, base_path):
-        """A legacy row (no universe, no principal) has no identity to run as."""
-        run_calls: list = []
-        register_schedule(
-            base_path, branch_def_id="b1", owner_actor="alice", interval_seconds=1.0
-        )
-        self._make_scheduler(base_path, run_calls)._fire_due_schedules()
-        assert run_calls == []
-
-
 # ─── Scheduler event loop ─────────────────────────────────────────────────────
 
 class TestSchedulerEventDispatch:
@@ -415,10 +190,10 @@ class TestSchedulerEventDispatch:
             base_path,
             branch_def_id="b1",
             owner_actor="alice",
-            event_type="canon_change",
+            event_type="source:s1",
         )
         s = self._make_scheduler(base_path, run_calls)
-        event = SchedulerEvent(event_type="canon_change", payload={"file": "world.md"})
+        event = SchedulerEvent(event_type="source:s1", payload={"file": "world.md"})
         s._dispatch_event(event)
         assert len(run_calls) == 1
         assert run_calls[0][0] == "b1"
@@ -427,20 +202,20 @@ class TestSchedulerEventDispatch:
     def test_event_does_not_fire_wrong_type(self, base_path):
         run_calls: list = []
         register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         s = self._make_scheduler(base_path, run_calls)
-        event = SchedulerEvent(event_type="pr_open", payload={})
+        event = SchedulerEvent(event_type="source:s2", payload={})
         s._dispatch_event(event)
         assert len(run_calls) == 0
 
     def test_idempotency_no_double_fire(self, base_path):
         run_calls: list = []
         register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         s = self._make_scheduler(base_path, run_calls)
-        event = SchedulerEvent(event_type="canon_change", event_id="fixed-id")
+        event = SchedulerEvent(event_type="source:s1", event_id="fixed-id")
         s._dispatch_event(event)
         s._dispatch_event(event)  # same event_id — should not double-fire
         assert len(run_calls) == 1
@@ -451,19 +226,19 @@ class TestSchedulerEventDispatch:
             base_path,
             branch_def_id="b1",
             owner_actor="alice",
-            event_type="branch_run_completed",
+            event_type="source:s3",
             filter_json={"branch_def_id": "target-branch"},
         )
         s = self._make_scheduler(base_path, run_calls)
         # Matching event
         s._dispatch_event(SchedulerEvent(
-            event_type="branch_run_completed",
+            event_type="source:s3",
             event_id="e1",
             payload={"branch_def_id": "target-branch"},
         ))
         # Non-matching event
         s._dispatch_event(SchedulerEvent(
-            event_type="branch_run_completed",
+            event_type="source:s3",
             event_id="e2",
             payload={"branch_def_id": "other-branch"},
         ))
@@ -475,12 +250,12 @@ class TestSchedulerEventDispatch:
             base_path,
             branch_def_id="b1",
             owner_actor="alice",
-            event_type="canon_change",
+            event_type="source:s1",
             inputs_mapping={"target_file": "file"},
         )
         s = self._make_scheduler(base_path, run_calls)
         s._dispatch_event(SchedulerEvent(
-            event_type="canon_change",
+            event_type="source:s1",
             payload={"file": "world.md"},
         ))
         assert run_calls[0][2] == {"target_file": "world.md"}
@@ -488,11 +263,11 @@ class TestSchedulerEventDispatch:
     def test_unregistered_subscription_not_fired(self, base_path):
         run_calls: list = []
         sub_id = register_subscription(
-            base_path, branch_def_id="b1", owner_actor="alice", event_type="canon_change"
+            base_path, branch_def_id="b1", owner_actor="alice", event_type="source:s1"
         )
         unregister_subscription(base_path, sub_id, requesting_actor="alice")
         s = self._make_scheduler(base_path, run_calls)
-        s._dispatch_event(SchedulerEvent(event_type="canon_change"))
+        s._dispatch_event(SchedulerEvent(event_type="source:s1"))
         assert len(run_calls) == 0
 
 

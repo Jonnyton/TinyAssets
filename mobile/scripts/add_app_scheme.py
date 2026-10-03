@@ -8,7 +8,9 @@ in CI (and locally) to:
 2. install the LocalCallback plugin (mobile/native/android/LocalCallbackPlugin.java)
    and register it in MainActivity, so the app can catch a provider's
    http://localhost:PORT/auth/callback redirect — the same browser sign-in a
-   desktop CLI completes, with no per-account "device code" setting needed.
+   desktop CLI completes, with no per-account "device code" setting needed;
+3. give the back gesture a policy (MainActivity.installBackPolicy), because the
+   plugin default swallows it on the opening screen.
 
 Idempotent.
 """
@@ -30,6 +32,18 @@ SERVICE_SRC = MOBILE / "native/android/LocalCallbackService.java"
 SERVICE_DST = JAVA_PKG_DIR / "LocalCallbackService.java"
 VOICE_CHROME_SRC = MOBILE / "native/android/VoiceWebChromeClient.java"
 VOICE_CHROME_DST = JAVA_PKG_DIR / "VoiceWebChromeClient.java"
+# Native request notifications (FCM): the message service that draws the
+# notification and the plugin that hands an inline Reply's text to the page.
+NOTIFY_SOURCES = (
+    "TinyAssetsMessagingService.java",
+    "NotificationReplyPlugin.java",
+)
+APP_BUILD_GRADLE = ANDROID / "app/build.gradle"
+# Same default @capacitor/push-notifications declares for itself. The app module
+# compiles its own FirebaseMessagingService subclass, and the plugin's
+# `implementation` dependency is not visible to it.
+FIREBASE_MESSAGING = "com.google.firebase:firebase-messaging:25.0.1"
+PLUGIN_SERVICE = "com.capacitorjs.plugins.pushnotifications.MessagingService"
 
 # The loopback listener's keep-alive: a dataSync foreground service. Android 14+
 # requires the type in the manifest, and Play requires a matching Console
@@ -38,6 +52,19 @@ SERVICE_XML = """        <service
             android:name=".LocalCallbackService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+"""
+# Replaces the push plugin's own service (removed via tools:node="remove") so the
+# server's data-only message is drawn by app code, with an inline Reply.
+NOTIFY_SERVICE_XML = """        <service
+            android:name=".TinyAssetsMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <service
+            android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"
+            tools:node="remove" />
 """
 REQUIRED_PERMISSIONS = (
     "android.permission.FOREGROUND_SERVICE",
@@ -66,14 +93,23 @@ FILTER = """            <intent-filter>
 
 MAIN_ACTIVITY_SRC = r"""package io.tinyassets.app;
 
+import android.app.NotificationManager;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.webkit.WebView;
+import android.widget.Toast;
+
+import androidx.activity.OnBackPressedCallback;
+import androidx.core.app.RemoteInput;
 
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.WebViewListener;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -100,28 +136,135 @@ public class MainActivity extends BridgeActivity {
         return new Intent(Intent.ACTION_VIEW, deep);
     }
 
+    // A notification tap or inline Reply (see TinyAssetsMessagingService) opens
+    // the app at /app?request=<id>[&item=<id>]. Cold start: the bridge is not up
+    // yet, so the target waits here until the first page has loaded.
+    private static final String APP_URL = "https://tinyassets.io/app";
+    private String pendingNotificationUrl;
+
+    /**
+     * The in-app URL a notification intent points at, or null when the intent is
+     * not one of ours. Ids are re-validated (this activity is exported, so any
+     * app can send it an intent). A Reply additionally must carry the
+     * per-install secret that only this app's private storage holds; its text is
+     * parked for the page to submit through its own session, and the
+     * notification is taken down because the reply is now the app's to deliver.
+     */
+    private String notificationTarget(Intent intent) {
+        if (intent == null) return null;
+        String action = intent.getAction();
+        boolean reply = TinyAssetsMessagingService.ACTION_REPLY.equals(action);
+        if (!reply && !TinyAssetsMessagingService.ACTION_OPEN.equals(action)) return null;
+        String requestId = TinyAssetsMessagingService.safeId(
+            intent.getStringExtra(TinyAssetsMessagingService.EXTRA_REQUEST_ID));
+        if (requestId == null) return null;
+        String itemId = TinyAssetsMessagingService.safeId(
+            intent.getStringExtra(TinyAssetsMessagingService.EXTRA_ITEM_ID));
+        if (reply) {
+            String nonce = intent.getStringExtra(TinyAssetsMessagingService.EXTRA_NONCE);
+            Bundle results = RemoteInput.getResultsFromIntent(intent);
+            CharSequence text = results == null
+                ? null : results.getCharSequence(TinyAssetsMessagingService.REPLY_KEY);
+            String expected = TinyAssetsMessagingService.replyNonce(this);
+            if (nonce == null || !MessageDigest.isEqual(
+                    nonce.getBytes(StandardCharsets.UTF_8),
+                    expected.getBytes(StandardCharsets.UTF_8))) {
+                return null;
+            }
+            if (text == null || text.toString().trim().isEmpty()) return null;
+            // The reply belongs to the account the notification was for. If the
+            // phone is armed for a different one (or none) -- sign-out, an
+            // account switch -- the text is dropped, never re-homed.
+            String recipient = intent.getStringExtra(TinyAssetsMessagingService.EXTRA_RECIPIENT);
+            String armed = TinyAssetsMessagingService.armedRecipient(this);
+            if (recipient == null || armed == null || !armed.equals(recipient)) return null;
+            NotificationReplyPlugin.park(requestId, itemId, text.toString(), recipient);
+            NotificationManager manager =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager != null) {
+                manager.cancel(requestId, TinyAssetsMessagingService.NOTIFICATION_ID);
+            }
+        }
+        // Handled once: a recreated activity must not replay the reply.
+        intent.setAction(Intent.ACTION_MAIN);
+        return APP_URL + "?request=" + Uri.encode(requestId)
+            + (itemId != null ? "&item=" + Uri.encode(itemId) : "");
+    }
+
+    // The back gesture. @capacitor/app installs an always-enabled
+    // OnBackPressedCallback that walks WebView history and, at the first entry,
+    // does NOTHING -- so on the opening screen the gesture is swallowed and the
+    // app cannot be left by going back at all. This callback is added after the
+    // bridge is built, and the dispatcher calls the most recently added enabled
+    // callback first, so ours decides: walk history while there is history, then
+    // ask once before leaving. The confirmation is the point -- an edge-swipe is
+    // easy to trigger by accident while typing, and the thing behind it is a
+    // conversation in progress.
+    private static final long EXIT_CONFIRM_WINDOW_MS = 2500L;
+    private long exitConfirmAt;
+
+    private void installBackPolicy() {
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                WebView webView = bridge == null ? null : bridge.getWebView();
+                if (webView != null && webView.canGoBack()) {
+                    exitConfirmAt = 0L;
+                    webView.goBack();
+                    return;
+                }
+                long now = SystemClock.elapsedRealtime();
+                if (exitConfirmAt != 0L && now - exitConfirmAt <= EXIT_CONFIRM_WINDOW_MS) {
+                    exitConfirmAt = 0L;
+                    // Leave the way Home does, without tearing down the
+                    // signed-in WebView: coming back resumes the conversation
+                    // instead of reloading the app over the network.
+                    moveTaskToBack(true);
+                    return;
+                }
+                exitConfirmAt = now;
+                Toast.makeText(
+                    MainActivity.this, "Press back again to leave TinyAssets", Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+    }
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        // Local (non-npm) plugin: the loopback OAuth catcher. Must be registered
-        // before super.onCreate() loads the bridge.
+        // Local (non-npm) plugins: the loopback OAuth catcher and the inline
+        // Reply hand-off. Must be registered before super.onCreate() loads the
+        // bridge.
         registerPlugin(LocalCallbackPlugin.class);
+        registerPlugin(NotificationReplyPlugin.class);
         bridgeBuilder.addWebViewListener(new WebViewListener() {
             @Override
             public void onPageLoaded(WebView webView) {
                 VoiceWebChromeClient.installMediaTracker(webView);
+                String target = pendingNotificationUrl;
+                if (target != null) {
+                    pendingNotificationUrl = null;
+                    webView.loadUrl(target);
+                }
             }
         });
         setIntent(rewriteSharedCallback(getIntent()));
+        pendingNotificationUrl = notificationTarget(getIntent());
         super.onCreate(savedInstanceState);
         if (bridge != null) {
             voiceChromeClient = new VoiceWebChromeClient(bridge, this);
             bridge.getWebView().setWebChromeClient(voiceChromeClient);
         }
+        installBackPolicy();
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(rewriteSharedCallback(intent));
+        String target = notificationTarget(intent);
+        if (target != null && bridge != null) {
+            bridge.getWebView().loadUrl(target);
+        }
     }
 
     @Override
@@ -244,8 +387,53 @@ def register_service() -> int:
     return 0
 
 
+def register_notifications() -> int:
+    """Swap in our FCM message service and give the app module Firebase."""
+    text = MANIFEST.read_text(encoding="utf-8")
+    changed = False
+    tools_ns = 'xmlns:tools="http://schemas.android.com/tools"'
+    if tools_ns not in text:
+        match = re.search(r"<manifest\b", text)
+        if not match:
+            print("no <manifest> in manifest", file=sys.stderr)
+            return 1
+        text = text[: match.end()] + " " + tools_ns + text[match.end():]
+        changed = True
+    if 'android:name=".TinyAssetsMessagingService"' not in text:
+        marker = "</application>"
+        if marker not in text:
+            print("no </application> in manifest", file=sys.stderr)
+            return 1
+        text = text.replace(marker, NOTIFY_SERVICE_XML + "    " + marker, 1)
+        changed = True
+    if changed:
+        MANIFEST.write_text(text, encoding="utf-8")
+        print("registered TinyAssetsMessagingService (push plugin service removed)")
+    else:
+        print("notification service already registered")
+
+    gradle = APP_BUILD_GRADLE.read_text(encoding="utf-8")
+    if FIREBASE_MESSAGING in gradle:
+        print("firebase-messaging dependency already present")
+        return 0
+    updated, count = re.subn(
+        r"(?m)^dependencies\s*\{[ \t]*$",
+        lambda m: m.group(0) + f'\n    implementation "{FIREBASE_MESSAGING}"',
+        gradle,
+        count=1,
+    )
+    if count != 1:
+        print("no top-level dependencies block in app/build.gradle", file=sys.stderr)
+        return 1
+    APP_BUILD_GRADLE.write_text(updated, encoding="utf-8")
+    print("added firebase-messaging to the app module")
+    return 0
+
+
 def install_plugin() -> int:
-    for src in (PLUGIN_SRC, SERVICE_SRC, VOICE_CHROME_SRC):
+    for src in (PLUGIN_SRC, SERVICE_SRC, VOICE_CHROME_SRC) + tuple(
+        MOBILE / "native/android" / name for name in NOTIFY_SOURCES
+    ):
         if not src.exists():
             print(f"plugin source missing: {src}", file=sys.stderr)
             return 1
@@ -255,6 +443,8 @@ def install_plugin() -> int:
     PLUGIN_DST.write_bytes(PLUGIN_SRC.read_bytes())
     SERVICE_DST.write_bytes(SERVICE_SRC.read_bytes())
     VOICE_CHROME_DST.write_bytes(VOICE_CHROME_SRC.read_bytes())
+    for name in NOTIFY_SOURCES:
+        (JAVA_PKG_DIR / name).write_bytes((MOBILE / "native/android" / name).read_bytes())
     current = MAIN_ACTIVITY.read_text(encoding="utf-8") if MAIN_ACTIVITY.exists() else ""
     if current == MAIN_ACTIVITY_SRC:
         print("MainActivity already current")
@@ -289,6 +479,9 @@ def main() -> int:
     if rc:
         return rc
     rc = register_service()
+    if rc:
+        return rc
+    rc = register_notifications()
     if rc:
         return rc
     return install_plugin()

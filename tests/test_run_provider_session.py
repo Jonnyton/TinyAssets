@@ -1030,7 +1030,7 @@ def test_foreground_open_provider_settles_fresh_resolution_refusal_before_launch
     )
 
     assert response["terminal_status"] == "failed"
-    assert "Connect your provider before running this universe" in response[
+    assert "Connect your provider before running this command center" in response[
         "terminal_error"
     ]
     assert substituted_provider.calls == []
@@ -1074,16 +1074,33 @@ def test_foreground_run_mints_one_carrier_per_node_and_refuses_n_plus_one(
     assert [row["state"] for row in rows] == ["succeeded", "succeeded"]
 
 
-@pytest.mark.parametrize(
-    "authority_case",
-    ["missing", "stale", "revoked", "cross_universe", "registered_only"],
-)
+#: What each held case must SAY, not merely that it was held. Every one of
+#: these used to read "Connect your provider before running this command center",
+#: including on a universe that had -- live 2026-09-30, where the owner of a
+#: connected, serving `api_key_http` source was sent to connect a provider
+#: (tests/test_free_account_run_provider_parity.py). Only the two cases that
+#: genuinely have no serving binding keep that sentence.
+_HELD_CASE_REASON = {
+    "missing": None,
+    "registered_only": None,
+    "stale": "provider assignment digest is invalid",
+    "revoked": "connect your provider before enabling serving",
+    "cross_universe": "foreground run is not the principal's own command center",
+}
+
+
+@pytest.mark.parametrize("authority_case", sorted(_HELD_CASE_REASON))
 def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
     authority_case: str,
     tmp_path: Path,
     monkeypatch,
     authenticate_request,
 ) -> None:
+    from tinyassets.providers.owner_binding import (
+        AUTHORITY_HELD_DETAIL,
+        CONNECT_PROVIDER_MESSAGE,
+    )
+
     response, provider, captured = _run_branch(
         tmp_path,
         monkeypatch,
@@ -1094,9 +1111,13 @@ def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
     )
 
     assert response["terminal_status"] == "failed"
-    assert "Connect your provider before running this universe" in response[
-        "terminal_error"
-    ]
+    error = response["terminal_error"]
+    reason = _HELD_CASE_REASON[authority_case]
+    if reason is None:
+        assert CONNECT_PROVIDER_MESSAGE in error, error
+    else:
+        assert AUTHORITY_HELD_DETAIL + reason in error, error
+        assert CONNECT_PROVIDER_MESSAGE not in error, error
     assert provider.calls == []
     assert captured["effects"] == []
 

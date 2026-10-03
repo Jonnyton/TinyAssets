@@ -129,3 +129,27 @@ def test_status_repairs_lost_terminal_callback_without_starting_work(public, sto
         assert result["reply"] == "answer"
     messages = conversation_store.load_recent_readonly(store / HOME, f"principal:{OWNER}")
     assert [message.text for message in messages] == [intent["message"], "answer"]
+
+
+def test_a_projected_turn_announces_the_owners_message_once(public, store, monkeypatch):
+    """The selected-consumer thread wakes owner_message subscriptions too, once.
+
+    Only the observation that COMMITS the pair announces it; a second status read
+    of the same turn finds it already projected and announces nothing.
+    """
+    from tests.test_consumer_run_envelope import reserve
+    from tests.test_conversation_run_admissions import complete
+
+    announced = []
+    monkeypatch.setattr(
+        "tinyassets.automation_events.emit_owner_message",
+        lambda udir, *, principal_id: announced.append((udir.name, principal_id)),
+    )
+    key = str(uuid.uuid4())
+    row = reserve(store, key, setup(store, reply_key="reply"))
+    complete(store, row["run_id"])
+    for _ in range(2):
+        result = json.loads(public.read_graph(target="conversation_turn", graph_id=HOME,
+                                             request_key=key))
+        assert result["consumer_turn"]["projection"] == "committed"
+    assert announced == [(HOME, OWNER)]

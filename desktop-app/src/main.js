@@ -1,6 +1,6 @@
 // TinyAssets desktop shell (Electron).
 //
-// A thin native window over the live SPA at https://tinyassets.io/mcp/app — the
+// A thin native window over the live SPA at https://tinyassets.io/app — the
 // SAME page the Android Capacitor app wraps (mobile/capacitor.config.json). No
 // second chat UI: product logic (WorkOS sign-in, connect-subscription, chat)
 // lives in the SPA and is reused verbatim, so every surface stays identical and
@@ -20,11 +20,13 @@
 'use strict';
 
 const { app, BrowserWindow, session, shell } = require('electron');
+const fs = require('node:fs');
 const path = require('node:path');
 const {
   resolveAppUrl,
   BACKGROUND_COLOR,
   isAllowedNavigation,
+  isAllowedSubframe,
   isSafeExternal,
 } = require('../config');
 
@@ -69,11 +71,30 @@ const APP_URL = resolveAppUrl(app.isPackaged);
 
 let mainWindow = null;
 
+// Every navigation handed out of the window, as its ORIGIN only: a path or a
+// query can carry a secret (reset links, OAuth codes), and a non-https URL is
+// never handed out so it is never logged (Codex 2026-10-01). A sign-in hop
+// missing from the allow-list looks to the user like "it sent me to the
+// browser"; this file names the host.
+// <userData>/navigation-handoffs.log, capped at ~64 KB.
+function noteHandedOff(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return;
+    const file = path.join(app.getPath('userData'), 'navigation-handoffs.log');
+    try {
+      if (fs.statSync(file).size > 65536) fs.truncateSync(file, 0);
+    } catch {}
+    fs.appendFileSync(file, `${new Date().toISOString()} ${u.origin}\n`);
+  } catch {}
+}
+
 // Route a blocked navigation target to the system browser — but ONLY if the URL
 // itself is safe to hand to the OS (https). file:/javascript:/data:/custom
 // schemes are dropped silently (openExternal on untrusted input is an RCE vector).
 function openExternalIfSafe(url) {
   if (isSafeExternal(url)) {
+    noteHandedOff(url);
     shell.openExternal(url).catch(() => {});
   }
 }
@@ -86,21 +107,23 @@ function applyNavigationPolicy(contents) {
   // to the system browser. Covering will-frame-navigate stops an iframe from
   // rendering a full-window phishing form inside the URL-less trusted window;
   // covering will-redirect stops an allowed OAuth endpoint 302-ing to an attacker.
-  const guard = (event, url) => {
-    if (!isAllowedNavigation(url)) {
-      event.preventDefault();
-      openExternalIfSafe(url);
-    }
+  // The main frame may only show allow-listed hosts; a subframe may also show
+  // subframe-only hosts. A refused MAIN-frame navigation (or redirect) is handed
+  // to the system browser; a refused SUBFRAME one is cancelled silently -- a
+  // page's hidden iframe is not the user asking to go somewhere (Google's
+  // CheckConnection iframe opened a stray browser tab mid sign-in, 2026-10-01).
+  const decide = (event, url, isMainFrame) => {
+    const allowed = isMainFrame ? isAllowedNavigation(url) : isAllowedSubframe(url);
+    if (allowed) return;
+    event.preventDefault();
+    if (isMainFrame) openExternalIfSafe(url);
   };
-  contents.on('will-navigate', guard);
-  contents.on('will-redirect', guard);
-  // will-frame-navigate (Electron ≥ 22) fires for subframe navigations too.
-  contents.on('will-frame-navigate', (event) => {
-    if (!isAllowedNavigation(event.url)) {
-      event.preventDefault();
-      openExternalIfSafe(event.url);
-    }
-  });
+  // will-navigate fires for the main frame only.
+  contents.on('will-navigate', (event, url) => decide(event, url, true));
+  // will-redirect and will-frame-navigate (Electron >= 22) cover every frame;
+  // event.isMainFrame names the frame being navigated.
+  contents.on('will-redirect', (event) => decide(event, event.url, event.isMainFrame));
+  contents.on('will-frame-navigate', (event) => decide(event, event.url, event.isMainFrame));
   // Deny ALL new windows. An allowed https target opens in the system browser;
   // nothing gets a fresh, policy-less WebContents inside the app.
   contents.setWindowOpenHandler(({ url }) => {

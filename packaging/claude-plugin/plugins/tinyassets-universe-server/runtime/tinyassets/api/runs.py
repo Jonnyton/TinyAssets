@@ -49,6 +49,7 @@ from tinyassets.api.helpers import (
     _request_universe,
     _universe_dir,
 )
+from tinyassets.command_center_names import present_actor
 
 logger = logging.getLogger("universe_server.runs")
 
@@ -185,8 +186,8 @@ def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
                 "action": action,
                 "required": "universe_id",
                 "note": (
-                    "Branches are run by universes. Route the run through "
-                    "the founder's own universe."
+                    "Branches are run by command centers. Route the run through "
+                    "the founder's own command center."
                 ),
             })
         return None
@@ -201,16 +202,27 @@ def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
     return None
 
 
-def _run_universe_id(record: dict[str, Any]) -> str:
-    """The universe a run is bound to, derived from its actor.
-
-    Branch runs are executed by a universe (actor ``universe:<uid>``), so the
-    actor carries the owning universe. A run with any other actor is not
-    universe-brain data.
-    """
+def _run_actor_universe_id(record: dict[str, Any]) -> str:
+    """The universe named by a run's ``universe:<uid>`` actor, else ``""``."""
     actor = str((record or {}).get("actor") or "")
     prefix = "universe:"
     return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
+
+
+def _run_universe_id(record: dict[str, Any]) -> str:
+    """The universe a run is bound to: its ``universe:<uid>`` actor, else its queue.
+
+    A background queue task records the OWNER as its actor and the universe in
+    ``queue_universe_id``. Reading only the actor classed those runs as
+    "not universe data" and let any signed-in caller list them and read their
+    output -- which, once an owner's run reads its own private universe as the
+    owner, is that private content (Codex round 2 on #4060, P1). The queue
+    binding is recorded by the run's own admission, never by a caller.
+    """
+    return (
+        _run_actor_universe_id(record)
+        or str((record or {}).get("queue_universe_id") or "").strip()
+    )
 
 
 def _run_is_unreachable_unowned(record: dict[str, Any]) -> bool:
@@ -318,6 +330,23 @@ _EMPTY_LLM_RESPONSE_ACTION = (
 # execution is task #39 (Phase 3.5).
 
 
+def _branch_readable_by_caller(branch_def_id: str) -> bool:
+    """A run view is enriched from the CURRENT branch only when the caller may
+    read that branch. A readable run of a branch that is private to someone
+    else must not render the branch's name, nodes and edges as they are now
+    (astra refute 2026-09-30)."""
+    import sqlite3
+
+    from tinyassets.api.branches import resolve_branch_id_for_read
+
+    try:
+        return resolve_branch_id_for_read(branch_def_id, str(_base_path())) == branch_def_id
+    except (KeyError, sqlite3.OperationalError):
+        # No branch store, or no such branch: nothing readable to enrich from.
+        # Fail closed -- the run view still reports its own node statuses.
+        return False
+
+
 def _run_mermaid_from_events(
     branch_def_id: str,
     node_statuses: list[dict[str, Any]],
@@ -336,6 +365,8 @@ def _run_mermaid_from_events(
     from tinyassets.daemon_server import get_branch_definition
 
     try:
+        if not _branch_readable_by_caller(branch_def_id):
+            raise KeyError(branch_def_id)
         source_dict = get_branch_definition(
             _base_path(), branch_def_id=branch_def_id,
         )
@@ -394,22 +425,95 @@ def _run_mermaid_from_events(
 
 
 _RUNS_RECOVERY_DONE = False
+#: The held recovery lock, kept for the process lifetime.
+_RUNS_RECOVERY_LOCK: Any = None
+_RUNS_RECOVERY_LOCK_NAME = ".run_recovery.lock"
 
 
 def _ensure_runs_recovery() -> None:
-    """Once per process, mark any queued/running rows in the runs DB as
-    ``interrupted``. Called from Phase 3 run handlers so the recovery
-    happens on first use without needing a server start hook."""
-    global _RUNS_RECOVERY_DONE
+    """Once per process, interrupt the runs a dead process left in flight.
+
+    Only ONE live process sweeps: the one holding the data dir's recovery
+    lock, which the server takes at boot before it starts anything that runs.
+    Every engine MCP child is a separate process that also serves run tools,
+    and the first run tool in one used to sweep EVERY queued/running row --
+    the server's live automation runs included (live 2026-09-30: a background
+    run was marked interrupted while running, and its interrupted event fired
+    a second wake of the same loop). And the sweep takes only runs started
+    before this process began, so it never interrupts a run of its own.
+    """
+    global _RUNS_RECOVERY_DONE, _RUNS_RECOVERY_LOCK
     if _RUNS_RECOVERY_DONE:
         return
     try:
-        from tinyassets.runs import recover_in_flight_runs
+        from tinyassets.runs import PROCESS_STARTED_AT, recover_in_flight_runs
+        from tinyassets.singleton_lock import acquire_singleton_lock
 
-        recover_in_flight_runs(_base_path())
+        base = Path(_base_path())
+        base.mkdir(parents=True, exist_ok=True)
+        # Held already when an earlier attempt took it and then failed.
+        lock = _RUNS_RECOVERY_LOCK or acquire_singleton_lock(
+            base / _RUNS_RECOVERY_LOCK_NAME
+        )
+        if not lock.acquired:
+            logger.info(
+                "in-flight run recovery: another live process (pid %s) owns it",
+                lock.existing_pid,
+            )
+        else:
+            _RUNS_RECOVERY_LOCK = lock
+            recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
     except Exception:
+        # Not marked done: the next run tool tries again.
         logger.exception("in-flight run recovery failed")
+        return
     _RUNS_RECOVERY_DONE = True
+
+
+#: How often the recovery-lock holder looks for runs whose owner died, and
+#: redelivers terminal events still owed (run-owner-proof D3/D4).
+RUN_OWNER_WATCH_SECONDS = 15.0
+
+
+def recover_dead_owner_runs_now() -> int:
+    """One recovery pass, only in the process that holds the recovery lock.
+
+    Interrupts the runs whose owning process is provably dead, then redelivers
+    every terminal event still owed. Called by the watcher and right after the
+    engine supervisor respawns a dead child. Never raises.
+    """
+    if _RUNS_RECOVERY_LOCK is None:
+        return 0
+    try:
+        from tinyassets.runs import (
+            PROCESS_STARTED_AT,
+            deliver_terminal_events,
+            recover_in_flight_runs,
+        )
+
+        base = Path(_base_path())
+        count = recover_in_flight_runs(base, started_before=PROCESS_STARTED_AT)
+        deliver_terminal_events(base)
+        return count
+    except Exception:
+        logger.exception("dead-owner run recovery failed")
+        return 0
+
+
+def start_run_owner_watcher() -> Any:
+    """Start the recovery watcher when this process holds the recovery lock."""
+    import threading
+
+    if _RUNS_RECOVERY_LOCK is None:
+        return None
+    stop = threading.Event()
+
+    def _watch() -> None:
+        while not stop.wait(RUN_OWNER_WATCH_SECONDS):
+            recover_dead_owner_runs_now()
+
+    threading.Thread(target=_watch, name="run-owner-watcher", daemon=True).start()
+    return stop
 
 
 _FAILURE_TAXONOMY: list[tuple[type, str, str]] = []
@@ -457,7 +561,7 @@ _WORK_MODEL_EXHAUSTED_ACTION = (
     "scope, and the classified failure and retry-after the run observed. Retry later, or "
     "widen the order - an explicit choice with no fallbacks stays exhausted "
     "rather than silently moving to another source. " + _OWN_MODEL_ROUTES
-    + " Changing what the universe serves elsewhere cannot rescue a pinned "
+    + " Changing what the command center serves elsewhere cannot rescue a pinned "
     "source, and nobody else needs to act."
 )
 
@@ -614,7 +718,7 @@ def _no_provider_advice() -> str:
     owner connects, so that is the one thing worth pointing at.
     """
     return (
-        "No LLM provider is reachable for this universe. It runs on a provider "
+        "No LLM provider is reachable for this command center. It runs on a provider "
         "you connect to it, not on platform API keys -- connect or reconnect "
         "one from the request in your rail."
     )
@@ -667,10 +771,11 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
             "operator surface before running; approval is not exposed by the "
             "advertised handles.",
         )
-    if "code runs only in the universe that authored it" in msg:
+    if any(f"code runs only in the {word} that authored it" in msg
+           for word in ("command center", "universe")):  # pre-rename records
         return _failure_payload(
             exc, "node_not_accepted",
-            "This branch's code was authored elsewhere. Remix it into your universe "
+            "This branch's code was authored elsewhere. Remix it into your command center "
             "(write_graph with fork_from) and run your copy.",
         )
     if "approv" in msg:
@@ -678,7 +783,7 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
         return _failure_payload(
             exc, "node_not_approved",
             "Approval no longer gates code: a source_code node runs in the OS sandbox, "
-            "in the universe that authored it. If this run named an approval, the "
+            "in the command center that authored it. If this run named an approval, the "
             "branch predates that change - re-store the node and run again.",
         )
     if "workspace not available" in msg:
@@ -763,16 +868,30 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     held = _held_attempt_annotation(error_str, _provider_chain_from_error(error_str))
     if held is not None:
         return held
+    from tinyassets.providers.owner_binding import (
+        AUTHORITY_HELD_DETAIL,
+        LEGACY_AUTHORITY_HELD_DETAIL,
+    )
+
+    if any(lead.lower() in msg
+           for lead in (AUTHORITY_HELD_DETAIL, LEGACY_AUTHORITY_HELD_DETAIL)):
+        # A held run whose universe DOES have a provider connected: the message
+        # carries the refusal's own words after this lead-in. Keyed BEFORE the
+        # substring nets below, because those words are arbitrary -- a wrapped
+        # cause mentioning "timeout" or "credential" would otherwise be
+        # classified as a timeout or an expired key instead of held authority.
+        return ("permission_denied:provider_not_bound", _PROVIDER_NOT_BOUND_ACTION)
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",
             _EMPTY_LLM_RESPONSE_ACTION,
         )
-    if "code runs only in the universe that authored it" in msg:
+    if any(f"code runs only in the {word} that authored it" in msg
+           for word in ("command center", "universe")):  # pre-rename records
         # A public foreign branch with code was run directly (sandboxed-code-node D2).
         return (
             "node_not_accepted",
-            "This branch's code was authored elsewhere. Remix it into your universe "
+            "This branch's code was authored elsewhere. Remix it into your command center "
             "(write_graph with fork_from) and run your copy.",
         )
     if "workspace not available" in msg:
@@ -838,7 +957,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
         return (
             "node_not_approved",
             "Approval no longer gates code: a source_code node runs in the OS sandbox, "
-            "in the universe that authored it. Re-store the node and run again.",
+            "in the command center that authored it. Re-store the node and run again.",
         )
     if "source_code" in msg:
         return (
@@ -893,8 +1012,8 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     if "expired" in msg or "unauthor" in msg or "forbidden" in msg or "401" in msg:
         return (
             "auth_invalid",
-            "The universe's model provider reported a sign-in problem. Check "
-            "the connection and reconnect the provider for this universe if "
+            "The command center's model provider reported a sign-in problem. Check "
+            "the connection and reconnect the provider for this command center if "
             "needed; this is not evidence of a usage or billing limit.",
         )
     if "provider" in msg or "api key" in msg or "api_key" in msg:
@@ -1074,7 +1193,11 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         if isinstance(source_inputs, dict):
             inputs = {**source_inputs, **inputs}
 
-    # Parse + validate recursion_limit_override (10-1000).
+    # Parse `recursion_limit_override`. ANY positive integer: the 10-1000 range
+    # that used to be enforced here refused an author's own number for being
+    # large, which is a cap on what they may build (founder, 2026-09-30). Zero and
+    # negatives are still refused -- those are not a smaller ceiling, they are a
+    # graph that cannot step.
     _rl_raw = kwargs.get("recursion_limit_override", "")
     recursion_limit_override: int | None = None
     if _rl_raw:
@@ -1082,11 +1205,11 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             _rl_val = int(_rl_raw)
         except (TypeError, ValueError):
             return json.dumps({"error": "recursion_limit_override must be an integer."})
-        if not 10 <= _rl_val <= 1000:
+        if _rl_val < 1:
             return json.dumps({
                 "error": (
-                    f"recursion_limit_override {_rl_val} out of range. "
-                    "Valid range: 10-1000."
+                    f"recursion_limit_override {_rl_val} is not a number of steps. "
+                    "Use a positive integer; there is no upper bound."
                 ),
             })
         recursion_limit_override = _rl_val
@@ -1193,7 +1316,7 @@ def enqueue_universe_branch_run(
         _append_global_ledger,
         _resolve_branch_id,
     )
-    from tinyassets.api.permissions import branch_run_actor
+    from tinyassets.api.permissions import branch_run_actor, owner_run_identity
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
     from tinyassets.runs import execute_branch_async
@@ -1215,6 +1338,13 @@ def enqueue_universe_branch_run(
     if errors:
         raise ValueError(f"branch {bid} failed validation: {errors}")
 
+    # Settlement identity only; a triggered run is never refused for usage. It
+    # waits for its account's seats at its agent calls (`universe_seats`).
+    from tinyassets.engine_admissions import attach_run
+    from tinyassets.engine_mcp_server import _engine_run_admit
+
+    ticket = _engine_run_admit(universe_id=uid)
+
     provider_call: Any = None
     try:
         from tinyassets.providers.call import call_provider
@@ -1225,16 +1355,21 @@ def enqueue_universe_branch_run(
     except ImportError:
         provider_call = None
 
-    outcome = execute_branch_async(
-        base_path,
-        branch=branch,
-        inputs=inputs,
-        run_name=run_name or "trigger",
-        actor=actor,
-        provider_call=provider_call,
-        _enqueue_universe_id=uid,
-        owner_user_id=principal_id,
-    )
+    # A schedule or Source event is the owner's own automation, fired from a
+    # thread no request bound. The run's worker copies THIS context, so bind the
+    # owner here or its reads of a private universe refuse their own owner.
+    with owner_run_identity(base_path, uid, principal_id):
+        outcome = execute_branch_async(
+            base_path,
+            branch=branch,
+            inputs=inputs,
+            run_name=run_name or "trigger",
+            actor=actor,
+            provider_call=provider_call,
+            _enqueue_universe_id=uid,
+            owner_user_id=principal_id,
+        )
+    attach_run(ticket, str(outcome.run_id or ""))
     try:
         _append_global_ledger(
             "run_branch",
@@ -1334,12 +1469,14 @@ def _compose_run_snapshot(
     """Pack run metadata + node statuses + mermaid into a phone-legible dict."""
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
-    from tinyassets.runs import build_node_status_map
+    from tinyassets.runs import SYSTEM_EVENT_NODE_ID, build_node_status_map
 
     declared_order: list[str] = []
     branch_name = ""
     declares_effects: bool | None = None
     try:
+        if not _branch_readable_by_caller(run_record["branch_def_id"]):
+            raise KeyError(run_record["branch_def_id"])
         source_dict = get_branch_definition(
             _base_path(), branch_def_id=run_record["branch_def_id"],
         )
@@ -1375,7 +1512,7 @@ def _compose_run_snapshot(
     summary = "\n".join([
         f"**Run on workflow `{header_branch}`** — status "
         f"`{run_record['status']}`",
-        f"Actor: {run_record['actor']}",
+        f"Actor: {present_actor(run_record['actor'])}",
         "",
         "Nodes:",
         *node_lines,
@@ -1384,10 +1521,14 @@ def _compose_run_snapshot(
         mermaid,
     ])
 
-    # Surface the applied recursion limit from the __system__ event if present.
+    # Surface the applied recursion limit from the system event if present. It
+    # is a run FACT, reported as its own field -- never as a node status, which
+    # is why `build_node_status_map` drops the row (live 2026-09-30: summaries
+    # listed `__system__: recursion_limit_applied` among the nodes).
     recursion_limit: int | None = None
     for ev in events:
-        if ev.get("node_id") == "__system__" and ev.get("status") == "recursion_limit_applied":
+        if (ev.get("node_id") == SYSTEM_EVENT_NODE_ID
+                and ev.get("status") == "recursion_limit_applied"):
             try:
                 recursion_limit = int(ev.get("detail", {}).get("recursion_limit", 0)) or None
             except (TypeError, ValueError):
@@ -1415,7 +1556,7 @@ def _compose_run_snapshot(
         # Say so plainly: "queued" alone reads as stuck.
         snapshot["workspace_wait"] = dict(wait)
         wait_line = (
-            "Waiting for the universe workspace (position "
+            "Waiting for the command center workspace (position "
             f"{wait.get('position')} in line). It starts by itself when the "
             "workspace is free, keeps its place across a restart, and can "
             "still be cancelled."
@@ -1474,11 +1615,13 @@ def _compose_run_snapshot(
     # external-call phase", and stopped. Say what the window is.
     if run_record["status"] in ("running", "queued"):
         finished = {"ran", "completed", "skipped"}
-        # Every run also carries __system__ events (recursion_limit_applied,
-        # provider_calls); only real nodes decide whether the graph is done
-        # (Codex: with them counted, "delivering" was unreachable).
-        real = [s for s in node_statuses if s.get("node_id") != "__system__"]
-        all_ran = bool(real) and all(s.get("status") in finished for s in real)
+        # Only real nodes decide whether the graph is done (Codex: with the
+        # system rows counted, "delivering" was unreachable). `node_statuses`
+        # no longer carries one -- `build_node_status_map` drops them at the
+        # fold, which is the single place that decides what a node status is.
+        all_ran = bool(node_statuses) and all(
+            s.get("status") in finished for s in node_statuses
+        )
         if all_ran and declares_effects:
             snapshot["phase"] = "delivering_effects"
             snapshot["suggested_action"] = (
@@ -1542,6 +1685,7 @@ def _action_list_runs(kwargs: dict[str, Any]) -> str:
         branch_def_id=kwargs.get("branch_def_id", ""),
         status=kwargs.get("status", ""),
         limit=int(kwargs.get("limit", 50) or 50),
+        universe_id=str(kwargs.get("universe_id") or "").strip(),
     )
     # Do not expose runs of a private universe the caller cannot read.
     rows = [r for r in rows if _run_matches_scope(r, kwargs) and _run_read_allowed(r)]
@@ -1929,7 +2073,8 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
         )
         provider_call = _bind_run_provider_call(
             provider_call,
-            _run_universe_id(_resume_record or {}),
+            # Provider binding is unchanged by the read gate's queue fallback.
+            _run_actor_universe_id(_resume_record or {}),
         )
     except ImportError:
         provider_call = None
@@ -2121,7 +2266,9 @@ def _action_query_runs(kwargs: dict[str, Any]) -> str:
         limit=limit,
         # Exclude runs of a private universe the caller cannot read BEFORE
         # projection/aggregation, so select/aggregate can't leak private data.
-        row_filter=lambda r: _run_read_allowed({"actor": r["actor"]}),
+        row_filter=lambda r: _run_read_allowed(
+            {"actor": r["actor"], "queue_universe_id": r["queue_universe_id"]}
+        ),
     )
     return json.dumps(result, default=str)
 
@@ -2291,13 +2438,23 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
     active_tiers = all_tiers if flag_on else ["universe_id"]
 
     universe_id = _request_universe(kwargs.get("universe_id") or "")
-    # Don't expose a private universe's activity.log / scope-mismatch warnings.
-    from tinyassets.api.permissions import (
-        universe_access_allows,
-        universe_access_error,
-    )
+    # Don't expose a universe's activity.log / scope-mismatch warnings. These are
+    # raw log LINES, so the gate is `read_content`, not the legacy read bit.
+    #
+    # It used to be `universe_access_allows(write=False)` alone. That bit is
+    # `public_read`, which `set_universe_visibility` turns on whenever a level
+    # grants a public visitor ANY capability — so a `metadata_only` universe,
+    # whose whole point is that it withholds content, disclosed its literal
+    # activity lines to any authenticated principal here. Reproduced by the Codex
+    # cross-family review of PR #4019, which could only be reached deliberately
+    # once that PR gave an owner a way to select `metadata_only`.
+    #
+    # `visibility_permits` is tighten-only — it ANDs the legacy gate with the
+    # declared level — so this subsumes the old check rather than replacing it.
+    from tinyassets.api.permissions import universe_access_error
+    from tinyassets.api.visibility import visibility_permits
 
-    if not universe_access_allows(universe_id, write=False):
+    if not visibility_permits(universe_id, "read_content"):
         return json.dumps(universe_access_error(
             universe_id=universe_id, write=False,
             action="get_memory_scope_status", surface="extensions",
@@ -2330,7 +2487,7 @@ def _action_get_memory_scope_status(kwargs: dict[str, Any]) -> str:
     if not flag_on:
         next_steps.append(
             "Set TINYASSETS_TIERED_SCOPE=on to enable full four-tier"
-            " isolation (universe/goal/branch/user)."
+            " isolation (command center/goal/branch/user)."
         )
     next_steps.append(
         "Check activity.log for 'retrieval.scope_mismatch' to diagnose"
@@ -2399,7 +2556,8 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
                 "error": f"inputs_json is not valid JSON: {exc}",
             })
 
-    # Parse + validate recursion_limit_override (10-1000) — same shape as run_branch.
+    # Parse `recursion_limit_override` — same shape as run_branch: any positive
+    # integer, no upper bound.
     _rl_raw = kwargs.get("recursion_limit_override", "")
     recursion_limit_override: int | None = None
     if _rl_raw:
@@ -2407,14 +2565,26 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             _rl_val = int(_rl_raw)
         except (TypeError, ValueError):
             return json.dumps({"error": "recursion_limit_override must be an integer."})
-        if not 10 <= _rl_val <= 1000:
+        if _rl_val < 1:
             return json.dumps({
                 "error": (
-                    f"recursion_limit_override {_rl_val} out of range. "
-                    "Valid range: 10-1000."
+                    f"recursion_limit_override {_rl_val} is not a number of steps. "
+                    "Use a positive integer; there is no upper bound."
                 ),
             })
         recursion_limit_override = _rl_val
+
+    # Readability BEFORE the snapshot is loaded: every caller, not only the
+    # explicit run_graph path. A goal's canonical run reached this with any
+    # version id, and the preflight then returned the private snapshot's input
+    # names and field descriptions (astra refute 2026-09-30). Unreadable answers
+    # exactly as absent does.
+    from tinyassets.api.branches import _resolve_readable_version
+
+    if _resolve_readable_version(bvid, str(_base_path())) is None:
+        return json.dumps({
+            "error": f"branch_version_id {bvid!r} not found in branch_versions",
+        })
 
     try:
         from tinyassets.api.run_files import dispatch_file_branch

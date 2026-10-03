@@ -14,17 +14,13 @@ on:
       - "packaging/linux/**"
       - "packaging/desktop_metadata.py"
       - ".github/workflows/desktop-release.yml"
-  pull_request:
-    paths:
-      - "tinyassets/**"
-      - "fantasy_daemon/**"
-      - "domains/**"
-      - "tinyassets_tray.py"
-      - "packaging/windows/**"
-      - "packaging/macos/**"
-      - "packaging/linux/**"
-      - "packaging/desktop_metadata.py"
-      - ".github/workflows/desktop-release.yml"
+  # No `pull_request` trigger. The 6-platform installer matrix cost 31.8
+  # runner-min per PR run (60 runs, ~1,900 runner-min in 4 h on 2026-09-27),
+  # more than the required gate, on a user-owned repo capped at ~20 concurrent
+  # jobs, so it queued every required check and the deploy behind it. It is
+  # not a required check; the main push above still builds every change that
+  # lands, and a PR that needs installer proof can use workflow_dispatch.
+  # docs/design-notes/2026-09-27-lean-ci-pipeline.md
   workflow_dispatch:
     inputs:
       publish_signed:
@@ -190,7 +186,7 @@ jobs:
         run: |
           $stage = "packaging/release-stage/windows"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          $artifact = Get-ChildItem "packaging/dist/windows/TinyAssetsSetup-*.exe"
+          $artifact = Get-ChildItem "packaging/dist/windows/TinyAssetsServerSetup-*.exe"
           if ($artifact.Count -ne 1) { throw "expected exactly one Windows installer" }
           Copy-Item -LiteralPath $artifact.FullName -Destination $stage
           $staged = Join-Path $stage $artifact.Name
@@ -307,7 +303,7 @@ jobs:
       - name: Install, probe, repair, and uninstall exact CI artifact
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "packaging/dist/windows/TinyAssetsSetup-*.exe"
+          $installer = Get-ChildItem "packaging/dist/windows/TinyAssetsServerSetup-*.exe"
           if ($installer.Count -ne 1) {
             throw "expected exactly one Windows installer"
           }
@@ -413,7 +409,7 @@ jobs:
           WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_IDENTITY: ${{ secrets.WINDOWS_SIGNING_IDENTITY }}
         run: |
-          $artifact = Get-ChildItem "packaging/dist/windows/TinyAssetsSetup-*.exe"
+          $artifact = Get-ChildItem "packaging/dist/windows/TinyAssetsServerSetup-*.exe"
           if ($artifact.Count -ne 1) { throw "expected exactly one Windows installer" }
           ./packaging/windows/sign.ps1 -Artifact $artifact.FullName
           signtool.exe verify /pa /all $artifact.FullName
@@ -498,7 +494,7 @@ jobs:
             windows)
               identity="$WINDOWS_IDENTITY"
               status=signed
-              patterns=("packaging/dist/windows/TinyAssetsSetup-"*.exe)
+              patterns=("packaging/dist/windows/TinyAssetsServerSetup-"*.exe)
               ;;
             macos)
               identity="$APPLE_IDENTITY"

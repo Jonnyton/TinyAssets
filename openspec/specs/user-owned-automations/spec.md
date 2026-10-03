@@ -34,7 +34,7 @@ host-supplied enrollment manifest.
 - **THEN** the run launches once; the `(automation_id, due_at)` fence prevents a second launch
 
 ### Requirement: A registration that cannot fire is refused loudly
-The daemon SHALL refuse to store an automation or schedule that cannot run at that moment, with
+The daemon SHALL refuse to store an automation that cannot run at that moment, with
 a named reason, instead of accepting it silently. Registration SHALL refuse exactly what
 foreground admission refuses: a row admission would reject is a row that fails every period
 forever. Each reason SHALL reach the owner as a sentence they can act on, not a bare token.
@@ -49,10 +49,9 @@ forever. Each reason SHALL reach the owner as a sentence they can act on, not a 
 - **THEN** the daemon returns `automation_unavailable` with reason `branch_not_owned`
 
 #### Scenario: Serving on an open compute provider
-- **WHEN** the universe's assignment is ready but names an open `api_key_http` provider, which
-  foreground admission refuses outright
-- **THEN** the daemon returns `automation_unavailable` with reason `no_serving_assignment`, and
-  the owner-facing sentence names the subscription requirement rather than an absent assignment
+- **WHEN** the universe's ready assignment names the owner's own open `api_key_http` provider
+- **THEN** registration succeeds exactly as for a subscription source, and each due run launches
+  on that provider under the same owner identity and usage rules
 
 ### Requirement: One principal's failure is one recorded refusal
 When a due run cannot be authorized, the daemon SHALL record one refusal row for that automation
@@ -70,39 +69,22 @@ not a user principal with an admin ACL on its universe.
 - **WHEN** the deploy converges the compose project
 - **THEN** no `worker*` service exists and no `tinyassets.cloud_worker` process runs
 
-### Requirement: Schedule controls are admitted by the owner's coarse scope and authorized by the row's universe ACL
-`pause_schedule`, `unpause_schedule` and `unschedule_branch` SHALL carry the same permission tier
-as the `schedule_branch` they undo (`costly`), so the coarse scope every authenticated founder
-holds admits the call to the handler. The handler SHALL be
-the authority: it MUST require an authenticated request-local identity (never a caller-supplied or
-environment-derived actor) and a CURRENT admin ACL on the schedule row's own universe before
-mutating the row. Platform `admin` scope MUST NOT be required to control a schedule the caller's
-universe owns. A row whose universe cannot be established from its stored owner SHALL be refused for
-every caller.
+### Requirement: Schedules are retired; their rows keep a recorded disposition
+The scheduler's schedule half SHALL NOT exist: `schedule_branch`, `unschedule_branch`,
+`list_schedules`, `pause_schedule` and `unpause_schedule` SHALL be unknown `extensions` actions,
+and no tick loop SHALL fire a `branch_schedules` row. Cadences are automations. Every existing
+`branch_schedules` row SHALL be kept, marked inactive and paused, with the retirement reason as its
+`pause_reason`, so a row is never dropped without a record. The event-subscription actions remain.
 
-#### Scenario: The owner stops their own schedule from their own session
-- **GIVEN** a principal whose grants are `read, write, costly, submit_request, list` and no
-  `tinyassets.extensions.admin`
-- **AND** a schedule row in a universe where that principal holds a current admin ACL
-- **WHEN** they call `extensions action=unschedule_branch` (or `pause_schedule`, `unpause_schedule`)
-- **THEN** the scope gate admits the call and the handler performs the mutation
+#### Scenario: An existing schedule row is kept with its reason
+- **GIVEN** a `branch_schedules` row, active or not
+- **WHEN** the scheduler schema migration runs
+- **THEN** the row still exists, is inactive and paused, and its `pause_reason` names the retirement
 
-#### Scenario: Coarse scope alone does not authorize another universe's schedule
-- **GIVEN** the same coarse-scoped principal
-- **AND** a schedule row in a universe where they hold no admin ACL
-- **WHEN** they call any of the three actions
-- **THEN** the handler refuses with `owner_not_admin` and the row is unchanged
-
-#### Scenario: A delegated universe admin who is not the row's creator may control it
-- **GIVEN** a coarse-scoped principal granted an admin ACL on the row's universe after the row was
-  created by someone else
-- **WHEN** they call any of the three actions
-- **THEN** the mutation succeeds
-
-#### Scenario: A legacy row with no recoverable universe is refused for everyone
-- **GIVEN** a fleet-era schedule row whose stored owner cannot establish a universe
-- **WHEN** any principal, including a universe admin, calls any of the three actions
-- **THEN** the handler refuses with `owner_not_admin`
+#### Scenario: A retired schedule no longer holds its branch
+- **GIVEN** a branch whose only schedule row was active before the retirement
+- **WHEN** its owner deletes the branch
+- **THEN** the retired row is not reported as a dependent
 
 ### Requirement: Served agents can reach the owner's automation lifecycle
 The served graph tools SHALL expose automation list/get/create/pause/resume/delete

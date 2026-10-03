@@ -64,6 +64,42 @@ RUN apt-get update && \
     && rm -f /tmp/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/*
 
+# SQLite >= 3.51.3, built from the pinned sqlite.org amalgamation. Debian
+# trixie ships 3.46.1, which predates the WAL-reset corruption fix in 3.51.3;
+# Litestream replicates the WAL, so the floor comes first (target-architecture
+# S1a.1, docs/concerns/2026-10-02-sqlite-predates-wal-reset-fix.md). The
+# compile options mirror the Debian build the platform already ran on
+# (`pragma compile_options` on prod, 2026-10-02), so behaviour is unchanged:
+# FTS3/4/5 (daemon_brain uses fts5), RTREE, recursive triggers on by default,
+# MAX_VARIABLE_NUMBER=250000, and the rest. Bump all three ARGs together; the
+# SHA-256 is of the tarball sqlite.org lists (its SHA3-256 was checked too).
+ARG SQLITE_AUTOCONF_YEAR=2026
+ARG SQLITE_AUTOCONF_VERSION=3530400
+ARG SQLITE_AUTOCONF_SHA256=0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c
+RUN set -eu; \
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://sqlite.org/${SQLITE_AUTOCONF_YEAR}/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz" \
+        -o /tmp/sqlite.tar.gz; \
+    echo "${SQLITE_AUTOCONF_SHA256}  /tmp/sqlite.tar.gz" | sha256sum -c -; \
+    mkdir /tmp/sqlite-src; \
+    tar -xzf /tmp/sqlite.tar.gz -C /tmp/sqlite-src --strip-components=1; \
+    cd /tmp/sqlite-src; \
+    CFLAGS="-O2 -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_ENABLE_DBSTAT_VTAB \
+      -DSQLITE_ENABLE_DBPAGE_VTAB -DSQLITE_ENABLE_FTS3 -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+      -DSQLITE_ENABLE_FTS3_TOKENIZER -DSQLITE_ENABLE_FTS4 -DSQLITE_ENABLE_FTS5 \
+      -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_UNLOCK_NOTIFY \
+      -DSQLITE_ENABLE_UPDATE_DELETE_LIMIT -DSQLITE_ENABLE_PREUPDATE_HOOK \
+      -DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_STMTVTAB -DSQLITE_SECURE_DELETE \
+      -DSQLITE_SOUNDEX -DSQLITE_MAX_VARIABLE_NUMBER=250000 \
+      -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DSQLITE_ALLOW_ROWID_IN_VIEW \
+      -DSQLITE_DEFAULT_RECURSIVE_TRIGGERS=1 -DSQLITE_USE_URI=1 \
+      -DSQLITE_ENABLE_LOAD_EXTENSION -DSQLITE_MAX_DEFAULT_PAGE_SIZE=32768 \
+      -DSQLITE_MAX_SCHEMA_RETRY=25" \
+      ./configure --prefix=/opt/sqlite --disable-static; \
+    make -j"$(nproc)"; \
+    make install; \
+    rm -rf /tmp/sqlite-src /tmp/sqlite.tar.gz
+
 # Install rust toolchain for lancedb wheels that lack pre-built linux
 # binaries. Pinned to known-good rustup + toolchain versions; bump when
 # lancedb upgrades.
@@ -141,7 +177,7 @@ RUN gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c \
 # final image free of pip metadata + build tools.
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/venv/bin/pip install --no-cache-dir -e ".[mcp,gemini,groq,grok]"
+    /opt/venv/bin/pip install --no-cache-dir -e ".[mcp]"
 
 # ---------- Stage 2: final ----------
 
@@ -168,14 +204,21 @@ ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329
 # Installed from GitHub's immutable release asset with a per-architecture
 # checksum. The cli.github.com apt repository retains only its newest version,
 # so an exact apt pin made every upstream release break all future deploys.
+#
+# git and ripgrep are the universe agent's own toolchain (harness W3, design
+# #4172 §4.3 "its own computer"): its tool jail binds /usr read-only, so what
+# is installed here is what `bash` in the agent's workspace can run. git was
+# present only as a transitive dependency; it is named so it cannot vanish.
 RUN set -e; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         bubblewrap \
         ca-certificates \
         curl \
+        git \
         gnupg \
         libgomp1 \
+        ripgrep \
         tini \
         util-linux; \
     mkdir -p -m 755 /etc/apt/keyrings; \
@@ -217,12 +260,25 @@ COPY deploy/codex-flock-wrapper.sh /usr/local/bin/codex
 RUN chmod 0755 /usr/local/bin/codex && \
     ln -s /opt/claude-code-install/node_modules/.bin/claude /usr/local/bin/claude && \
     /usr/local/bin/codex --version && \
-    /usr/local/bin/claude --version
+    /usr/local/bin/claude --version && \
+    git --version && rg --version && node --version && python3 --version
 
 # Install the drop-first wrapper root-owned 0555 under /usr/local/libexec —
 # OUTSIDE /app and /data, both of which are chowned to uid 1001 further down.
 # A binary that root may one day exec must not live in a tree its target
 # user can write. Not setuid, not setgid: it grants nothing, it retires.
+# The pinned SQLite (see the builder). /usr/local/lib precedes the Debian lib
+# directory in the loader's search order, so after ldconfig Python's _sqlite3
+# loads this libsqlite3.so.0. The build FAILS here if it does not, which is the
+# point: a silent fall-back to 3.46.1 would replicate a WAL the fix is for.
+COPY --from=builder /opt/sqlite/lib/ /tmp/sqlite-lib/
+RUN set -eu; \
+    cp -a /tmp/sqlite-lib/libsqlite3.so* /usr/local/lib/; \
+    rm -rf /tmp/sqlite-lib; \
+    ldconfig; \
+    python3 -c "import sqlite3, sys; v = sqlite3.sqlite_version_info; print('sqlite', sqlite3.sqlite_version); sys.exit(0 if v >= (3, 51, 3) else 1)"; \
+    python3 -c "import sqlite3; sqlite3.connect(':memory:').execute('create virtual table t using fts5(x)')"
+
 COPY --from=builder /tmp/ta-op /usr/local/libexec/ta-op
 RUN chown root:root /usr/local/libexec/ta-op \
     && chmod 0555 /usr/local/libexec/ta-op \
@@ -242,6 +298,12 @@ COPY --from=builder /build/pyproject.toml /app/pyproject.toml
 # relative to the package root (parents[2]/data/). The *.db files in data/
 # are runtime state and live in TINYASSETS_DATA_DIR, not here.
 COPY data/world_rules.lp /app/data/world_rules.lp
+
+# Public model lists, one file per source kind. REVIEWED DATA the runtime reads, not
+# state: `public_model_lists.lists_directory()` resolves `models/` beside the package,
+# so without this COPY every source kind reads as unlisted and the feature silently
+# does nothing in production (Codex on #4028 — it never reached the image).
+COPY models/ /app/models/
 
 # Stdlib-only MCP canary — reused across Layer-1 (local), tier-3 GHA,
 # docker-build CI, cloud canary, and the compose.yml container-health
@@ -286,5 +348,7 @@ EXPOSE 8001
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker-entrypoint.sh"]
 
 # Default command — the FastMCP streamable-http server on 0.0.0.0:8001.
-# Matches `if __name__ == "__main__": main()` in tinyassets/universe_server.py.
-CMD ["python", "-m", "tinyassets.universe_server"]
+# Through a launcher whose import is empty: every broker/workspace child is a
+# multiprocessing spawn child, which re-imports __main__ by name first, and the
+# server as __main__ cost each child ~5 s (tinyassets/serve.py).
+CMD ["python", "-m", "tinyassets.serve"]

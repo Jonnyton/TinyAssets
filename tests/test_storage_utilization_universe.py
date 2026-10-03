@@ -56,6 +56,9 @@ def _make_universe(
     uid = "test-universe"
     udir = tmp_path / uid
     udir.mkdir(parents=True)
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, uid)
     (udir / "activity.log").write_bytes(b"L" * log_bytes)
     out = udir / "output"
     out.mkdir()
@@ -78,7 +81,7 @@ def test_get_status_activity_log_bytes_nonzero(tmp_path, monkeypatch):
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
-        raw = get_status(universe_id=uid)
+        raw = get_status(command_center_id=uid)
 
     result = json.loads(raw)
     su = result.get("storage_utilization", {})
@@ -102,7 +105,7 @@ def test_get_status_universe_outputs_bytes_nonzero(tmp_path, monkeypatch):
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
-        raw = get_status(universe_id=uid)
+        raw = get_status(command_center_id=uid)
 
     result = json.loads(raw)
     su = result.get("storage_utilization", {})
@@ -135,7 +138,7 @@ def test_get_status_checkpoint_db_bytes_nonzero_and_cap_current(
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
-        raw = get_status(universe_id=uid)
+        raw = get_status(command_center_id=uid)
 
     result = json.loads(raw)
     su = result.get("storage_utilization", {})
@@ -158,7 +161,7 @@ def test_get_status_activity_log_path_points_into_udir(tmp_path, monkeypatch):
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
-        raw = get_status(universe_id=uid)
+        raw = get_status(command_center_id=uid)
 
     result = json.loads(raw)
     reported_path = result["storage_utilization"]["per_subsystem"]["activity_log"]["path"]
@@ -175,6 +178,9 @@ def test_get_status_missing_log_and_output_still_reports_zero_not_error(tmp_path
     uid = "empty-universe"
     udir = tmp_path / uid
     udir.mkdir()
+    from tests.conftest import own_universe
+    # A universe needs an OWNER to be readable at all (2026-09-02).
+    own_universe(tmp_path, uid)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     _cfg = _minimal_cfg()
@@ -184,7 +190,7 @@ def test_get_status_missing_log_and_output_still_reports_zero_not_error(tmp_path
         patch("tinyassets.api.helpers._default_universe", return_value=uid),
         patch("tinyassets.api.helpers._universe_dir", return_value=udir),
     ):
-        raw = get_status(universe_id=uid)
+        raw = get_status(command_center_id=uid)
 
     result = json.loads(raw)
     assert "error" not in result, f"get_status returned error: {result.get('error')}"

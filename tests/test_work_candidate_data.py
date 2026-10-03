@@ -83,3 +83,80 @@ def test_graph_pin_cannot_replace_explicit_user_primary_or_discard_tail():
         with pytest.raises(PermissionError, match="conflicts"):
             choices.fit({"node_defs": [{"prompt_template": "hello", "llm_policy": policy}]},
                         ceiling=10, retry_multiplier=3)
+
+
+def subscription_data():
+    """One subscription source whose catalogue holds more than its own default.
+
+    `order_models` deliberately gives a subscription/local connection ONE
+    advisory candidate -- its advertised default -- and keeps its other accepted
+    ids "visible in the catalogue for explicit selection". So the advisory order
+    and the admitted catalogue genuinely differ here, which is the case below.
+    """
+    from tests.test_model_policy import NEEDS, model
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.model_policy import Catalog, ConnectionModels, ModelPolicy
+    from tinyassets.providers.work_candidate_data import WorkCandidateData
+
+    connection = ConnectionModels(
+        "codex", "codex-scope", "subscription", "fresh", True, True,
+        (model(""), model("future-native-model")), default_model_id="",
+    )
+    plan = AgentModelPlan(
+        Catalog("owner", "universe", (connection,)),
+        ModelPolicy(0, "automatic", ()),
+        NEEDS,
+    )
+    return WorkCandidateData(plan)
+
+
+def test_a_graph_pin_the_advisory_order_omits_is_honoured_when_nothing_was_saved():
+    """A node naming an accepted native id must still run.
+
+    The advisory order for a subscription source is only its advertised default,
+    so once EVERY run began capturing an order (the fix for the free-account
+    run/chat divergence) a node pinning an accepted native model id was refused
+    for not appearing in a ranking that never contained it. CI shards 5/6 and
+    6/6 caught it: `test_native_model_execution` and
+    `test_native_discovery_integration` both went red with "graph model
+    constraint conflicts with captured primary".
+
+    The owner chose nothing, so the order ranks rather than decides, and the
+    graph pin IS the explicit choice. The pin still comes from the plan's
+    ADMITTED catalogue, so it cannot reach a model the owner's own ModelAccess
+    excludes.
+    """
+    choices = subscription_data()
+    assert [ref.model_id for ref in choices.order] == [""]
+
+    pinned = {"preferred": {"provider": "codex", "model": "future-native-model"}}
+    choices.fit(
+        {"node_defs": [{"prompt_template": "hello", "llm_policy": pinned}]},
+        ceiling=10, retry_multiplier=1,
+    )
+
+    assert choices.next_candidate(pinned) == ModelRef("codex", "future-native-model")
+
+
+def test_a_graph_pin_outside_the_admitted_catalogue_is_still_refused():
+    """Honouring a pin the ranking omits must not honour one nobody admitted."""
+    choices = subscription_data()
+    absent = {"preferred": {"provider": "codex", "model": "never-granted"}}
+
+    with pytest.raises(PermissionError, match="conflicts"):
+        choices.fit(
+            {"node_defs": [{"prompt_template": "hello", "llm_policy": absent}]},
+            ceiling=10, retry_multiplier=1,
+        )
+
+
+def test_a_graph_pin_cannot_name_a_connection_outside_the_owners_catalogue():
+    """The catalogue read is this owner's admitted sources, and only those."""
+    choices = subscription_data()
+    foreign = {"preferred": {"provider": "api_key_http:provdef_someone_else"}}
+
+    with pytest.raises(PermissionError, match="conflicts"):
+        choices.fit(
+            {"node_defs": [{"prompt_template": "hello", "llm_policy": foreign}]},
+            ceiling=10, retry_multiplier=1,
+        )

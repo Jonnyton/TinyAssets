@@ -288,6 +288,49 @@ def test_nonzero_exit_writes_an_error_marker_carrying_stderr(monkeypatch, tmp_pa
     assert "upstream exploded" in out
 
 
+def test_nonzero_exit_carries_the_end_of_a_long_stderr(monkeypatch, tmp_path):
+    """The reason a CLI died comes LAST, after a long banner; a head slice of
+    stderr made a rejected-model run look like it had produced output."""
+    banner = b"".join(b"config line %d\n" % i for i in range(400))
+    rc, out, _ = _run_main(
+        monkeypatch, tmp_path,
+        _FakeProc(returncode=1, stderr=banner + b"ERROR: model gpt-6.1-sol is not supported"),
+        provider="codex", out_file_text=None,
+    )
+    assert rc == 2
+    assert out.startswith("[peer_agent] ERROR: codex exited 1")
+    assert "model gpt-6.1-sol is not supported" in out
+    assert "config line 0" in out
+
+
+def test_codex_pins_model_and_effort_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(peer_agent, "resolve_codex", lambda: "codex.exe")
+    monkeypatch.delenv("WORKFLOW_CODEX_MODEL", raising=False)
+    monkeypatch.delenv("WORKFLOW_CODEX_EFFORT", raising=False)
+
+    command = peer_agent.build_codex_cmd(_args(write=False), "C:\\result.md")
+
+    assert command[command.index("-m") + 1] == "gpt-6-astra"
+    assert "model_reasoning_effort=medium" in command
+
+
+def test_codex_model_and_effort_overrides_win(monkeypatch) -> None:
+    monkeypatch.setattr(peer_agent, "resolve_codex", lambda: "codex.exe")
+    monkeypatch.setenv("WORKFLOW_CODEX_MODEL", "env-model")
+    monkeypatch.setenv("WORKFLOW_CODEX_EFFORT", "high")
+
+    command = peer_agent.build_codex_cmd(_args(write=False), "C:\\result.md")
+    assert command[command.index("-m") + 1] == "env-model"
+    assert "model_reasoning_effort=high" in command
+
+    args = _args(write=False)
+    args.model, args.effort = "flag-model", "low"
+    command = peer_agent.build_codex_cmd(args, "C:\\result.md")
+    assert command[command.index("-m") + 1] == "flag-model"
+    assert "model_reasoning_effort=low" in command
+    assert command.count("-m") == 1
+
+
 def test_prompt_reaches_the_provider_on_stdin_not_argv(monkeypatch, tmp_path):
     # Windows cmd.exe truncates argv at a newline, which silently shortened
     # multi-line review prompts -- stdin is the contract.
@@ -566,42 +609,4 @@ def test_peer_task_env_returns_a_new_mapping_and_never_mutates_its_input():
     assert base == {"PATH": "x", "HOME": "y"}
 
 
-def test_the_stop_hook_reads_the_same_marker_name_the_wrapper_sets():
-    """Two definitions of one fact: the hook cannot import the wrapper, so pin them."""
-    hook_path = SCRIPT.parents[1] / ".claude" / "hooks" / "keep_working_while_waiting.py"
-    spec = importlib.util.spec_from_file_location("keep_working_hook_for_marker", hook_path)
-    assert spec is not None and spec.loader is not None
-    hook = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(hook)
-    assert hook.PEER_TASK_ENV == peer_agent.PEER_TASK_ENV == "TINYASSETS_PEER_TASK"
 
-
-def test_the_dispatch_ledger_stays_silent_under_pytest(tmp_path, monkeypatch):
-    """The suite must not file rows in the shared dispatch ledger.
-
-    peer_agent's tests drive `main()` directly. Without this guard every run
-    wrote real `started`/`finished` rows to the ledger beside the git common
-    dir, and the Stop hook then reported them as outstanding reviews to act on
-    -- pointing at `verdict.txt` files under a pytest `--basetemp`. Observed
-    2026-08-27: 18 rows, every one a test, surfaced as nine dispatches.
-
-    A ledger whose job is "what is genuinely outstanding" must not be writable
-    by the thing that exercises it.
-    """
-    pa = peer_agent  # loaded at module import above
-
-    ledger = tmp_path / "ledger.jsonl"
-    monkeypatch.setattr(pa, "_ledger_path", lambda: ledger)
-
-    # pytest always sets this while a test is running.
-    assert os.environ.get("PYTEST_CURRENT_TEST")
-    pa._ledger_note("started", "out.md")
-    pa._ledger_note("finished", "out.md", code=0)
-    assert not ledger.exists(), "the suite wrote to the real dispatch ledger"
-
-    # And it DOES write when not under pytest -- otherwise the guard is a
-    # permanent off switch and the hook has nothing to read.
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-    pa._ledger_note("started", "out.md")
-    assert ledger.exists()
-    assert json.loads(ledger.read_text(encoding="utf-8").strip())["out"] == "out.md"

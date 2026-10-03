@@ -1,4 +1,4 @@
-"""POST /mcp/app/files: authenticated raw-byte upload into existing file custody.
+"""POST /app/files: authenticated raw-byte upload into existing file custody.
 
 Authenticates, checks origin, the custom metadata header, the signed-in user's
 complete current home and capacity BEFORE any body byte is read. Bytes stream
@@ -24,6 +24,7 @@ from tinyassets import run_file_upload as upload
 from tinyassets.execution_authority.blob_proof import BlobProofError
 from tinyassets.storage import run_files as store
 from tinyassets.storage.current_home import CurrentHomeChanged
+from tinyassets.storage_accounting import StorageRefused
 
 _LOG = logging.getLogger(__name__)
 _NO_STORE = {"Cache-Control": "no-store"}
@@ -213,6 +214,10 @@ async def handle_file_upload(request: Any) -> Any:
                         declared_length=declared_length,
                     )
                 return {"universe_id": home, **result}, 200
+            except StorageRefused as refused:
+                # The account is at its storage quota: the visible refusal with
+                # its inline Upgrade link. 507 Insufficient Storage.
+                return _visible_refusal(refused), 507
             except (upload.UploadAborted, BlobProofError, store.FileCustodyRefused,
                     CurrentHomeChanged) as exc:
                 reason = _reason(exc, bridge)
@@ -234,3 +239,10 @@ async def handle_file_upload(request: Any) -> Any:
     finally:
         _SLOTS.release()
     return JSONResponse(doc, status, headers=_NO_STORE)
+
+def _visible_refusal(refused):
+    """The refusal the CALLER may see: the charged account's full record only
+    if the caller is that account (storage_accounting.visible_record)."""
+    from tinyassets.storage_accounting import visible_record
+
+    return visible_record(refused)

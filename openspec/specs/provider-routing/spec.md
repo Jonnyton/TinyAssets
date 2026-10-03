@@ -20,7 +20,7 @@ The provider router (`tinyassets/providers/router.py`) SHALL define a fallback c
 - **AND** an unknown role name resolves to the `writer` chain
 
 ### Requirement: User-brought compute of any allowed access method
-The platform SHALL NOT enumerate a compiled provider set. A universe runs on compute the user brings, of any allowed access method — subscription (via CLI), API key (via HTTP), or another published standard — never on platform-supplied compute. This REPLACES the earlier "subscription-only by default" requirement: subscription is one access method, not the only one. "No host writer ever" is preserved — the compute is always the user's own. API-key providers are honored only when the credential is held under the custody owner's contract (no raw key in the control plane / JSON vault). The legacy fixed api-key providers (`gemini-free`, `groq-free`, `grok-free`) remain gated off unless `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is truthy; primary subscription writers are `claude -p` / `codex exec` subprocesses, never API SDKs (project hard rule).
+The platform SHALL NOT enumerate a compiled provider set. A universe runs on compute the user brings, of any allowed access method — subscription (via CLI), API key (via HTTP), or another published standard — never on platform-supplied compute. This REPLACES the earlier "subscription-only by default" requirement: subscription is one access method, not the only one. "No host writer ever" is preserved — the compute is always the user's own. API-key providers are honored only when the credential is held under the custody owner's contract (no raw key in the control plane / JSON vault). There are no fixed built-in api-key providers; primary subscription writers are `claude -p` / `codex exec` subprocesses, never API SDKs (project hard rule).
 
 #### Scenario: an api-key provider serves a universe
 - **GIVEN** a universe whose owner has registered an `api_key_http` provider definition and deposited its credential through the custody owner's path
@@ -196,17 +196,8 @@ The provider runtime SHALL distinguish imported/registered providers, quota or c
 - **THEN** the provider is not invoked and its diagnostic records `skip_class=quota_or_cooldown` plus integer seconds remaining
 
 ### Requirement: A secondary call never writes shared source health
-A provider call the owner did not ask for -- the platform's own bookkeeping
-beside a served turn, marked `ModelConfig.secondary_call` and currently only
-post-reply learning extraction -- SHALL NOT write any shared routing health
-state: no `QuotaTracker` cooldown for any failure class, and no source reconnect
-mark. It SHALL still READ the cooldown gate, so it skips a source already
-cooling rather than spending a request on it, and it SHALL still report its own
-real failure class in `attempts`. Withholding a cooldown is restrictive by
-construction: it admits no model, widens no grant and raises no ceiling, so it
-can only ever make the router try an already-authorized source more. A
-successful secondary call may still record success, because a completed call is
-evidence about the credential whoever made it.
+
+A provider call the owner did not ask for -- the platform's own bookkeeping beside a served turn, marked `ModelConfig.secondary_call` and currently only post-reply learning extraction -- SHALL NOT write any shared routing health state: no `QuotaTracker` cooldown for any failure class, and no source reconnect mark. It SHALL still READ the cooldown gate, so it skips a source already cooling rather than spending a request on it, and it SHALL still report its own real failure class in `attempts`. Withholding a cooldown is restrictive by construction: it admits no model, widens no grant and raises no ceiling, so it can only ever make the router try an already-authorized source more. A successful secondary call may still record success, because a completed call is evidence about the credential whoever made it.
 
 #### Scenario: learning extraction is rate-limited after an answered turn
 - **WHEN** a served reply succeeds and the post-reply learning call on the same source takes a rate-limit refusal
@@ -709,11 +700,7 @@ interactive-deadline outcome, not as provider unavailability.
   that merely mentions compaction is one liveness reset and never opens a window
 ### Requirement: A provider CLI is spawned as an owned family and ended as one
 
-Every provider CLI subprocess the Claude and Codex adapters spawn — streamed and
-non-streamed paths, direct and shell-shim — SHALL be spawned through one
-owned-process helper and ended through it, so a deadline, a cancellation or a
-dropped handle ends the descendants that CLI started (the Windows `.cmd` shim's
-real CLI, the engine-MCP server) and not only the direct child.
+Every provider CLI subprocess the Claude and Codex adapters spawn — streamed and non-streamed paths, direct and shell-shim — SHALL be spawned through one owned-process helper and ended through it, so a deadline, a cancellation or a dropped handle ends the descendants that CLI started (the Windows `.cmd` shim's real CLI, the engine-MCP server) and not only the direct child.
 
 On POSIX, ownership SHALL be held by a **live in-group anchor**, never by a
 recorded numeric group id. The adapter spawns a fresh isolated interpreter
@@ -873,6 +860,42 @@ existing conversation read paths.
   the notice has already said
 - **AND** no vendor error envelope is parsed to obtain them
 
+#### Scenario: A source refusing the model is a refusal, and the turn moves on
+
+- **WHEN** an HTTP source answers a selected model's inference request with 403,
+  404 or 410
+- **THEN** the attempt is `failure_class=provider_refused` with `effects=none`,
+  its `detail` carries the source's own status and scrubbed body, the record is
+  `code=provider_refused`, `stage=model_request`, and the notice says the
+  provider refused to serve the model and to choose another model or check
+  its access settings with that provider, never that a reply was unreadable
+- **AND** the connection is not cooled, and when every attempt of the round was
+  such a refusal the turn moves to the next model in the owner's accepted order
+  with only the refused MODEL excluded; each accepted model is tried at most
+  once per turn, until the owner's accepted list is exhausted
+
+#### Scenario: A model that needs minutes to answer gets them, and a slow answer says so
+
+- **WHEN** an HTTP inference request is sent through the credential broker
+- **THEN** it asks for the turn's remaining absolute cap as its reply budget, and
+  the broker grants up to `INFERENCE_MAX_SECONDS` only for a POST on a connection
+  that itself carries a `model_use` or `model_discovery` capability; every other
+  request keeps the ordinary 30s bounds, and address pinning, the endpoint
+  allowlist, redirects, size caps and the slow-drip deadline are unchanged
+- **AND** a request that does not finish inside its budget crosses the broker as
+  a typed deadline, the attempt is `provider_reply_timeout` with no source
+  cooldown, and the notice says the model took longer to answer than the
+  universe waits and that asking it to continue, in smaller steps, or choosing
+  a faster model usually works
+
+#### Scenario: A turn too large for the selected model moves to one that fits
+
+- **WHEN** our own pre-send measurement finds the served turn does not fit the
+  selected model's published context window
+- **THEN** nothing is sent, and the turn re-asks the owner's accepted order with
+  the measured size as its minimum context, excluding the model that did not
+  fit; only when no accepted model fits is the record `context_window_exceeded`
+
 #### Scenario: A universe with no model connected is told to connect one
 
 - **WHEN** the router refuses the turn because no provider is connected
@@ -971,21 +994,7 @@ authority, implement remote cancellation, or promise a total broker IPC deadline
 
 ### Requirement: A queued synchronous provider call is measured from submit, not from pickup
 
-The synchronous provider-call wrappers (`ProviderRouter.call_sync`,
-`ProviderRouter.call_with_policy_sync`) queue on a bounded thread pool of their
-own, one hop after the compiler's own bounded pool. Each SHALL anchor the
-caller's remaining budget at submit time rather than at worker pickup, so the
-wait in that second queue is deducted from the budget instead of silently
-re-granted. Only an EXPLICIT caller cap (`ModelConfig.absolute_cap_s`) counts as
-a handed-over deadline; the legacy integer `timeout` scalar SHALL NOT be read as
-one, and the default backstop is not a deadline. On reaching the worker, a call
-whose explicit budget has already elapsed SHALL be refused before any provider
-is launched; otherwise the elapsed wait SHALL be subtracted from the cap handed
-to the provider, on a new config object, never raising a call above the budget
-it arrived with. A wait below the scheduling-jitter threshold SHALL hand over
-the caller's own config unchanged. This check sits strictly ahead of the
-provider call: it SHALL NOT cancel, kill or replay work that is already past it,
-and the existing reader-drain margin is preserved (now measured from submit).
+The synchronous provider-call wrappers (`ProviderRouter.call_sync`, `ProviderRouter.call_with_policy_sync`) queue on a bounded thread pool of their own, one hop after the compiler's own bounded pool. Each SHALL anchor the caller's remaining budget at submit time rather than at worker pickup, so the wait in that second queue is deducted from the budget instead of silently re-granted. Only an EXPLICIT caller cap (`ModelConfig.absolute_cap_s`) counts as a handed-over deadline; the legacy integer `timeout` scalar SHALL NOT be read as one, and the default backstop is not a deadline. On reaching the worker, a call whose explicit budget has already elapsed SHALL be refused before any provider is launched; otherwise the elapsed wait SHALL be subtracted from the cap handed to the provider, on a new config object, never raising a call above the budget it arrived with. A wait below the scheduling-jitter threshold SHALL hand over the caller's own config unchanged. This check sits strictly ahead of the provider call: it SHALL NOT cancel, kill or replay work that is already past it, and the existing reader-drain margin is preserved (now measured from submit).
 
 #### Scenario: An expired queued call launches nothing
 
@@ -1039,3 +1048,41 @@ The runtime SHALL distinguish model-local capacity from proven shared account li
 #### Scenario: Ambiguous tool completion
 - **WHEN** an inference fails after a tool might have executed without a durable result
 - **THEN** fallback does not replay that action as a fresh turn
+
+### Requirement: A source's refusal of a model is remembered past the turn
+The system SHALL record a model that the owner's source refused during a served or workflow agent turn (the `provider_refused` class) as a time-limited mark scoped to that owner and connection, carrying the source's scrubbed reason, and a served turn's candidate order SHALL place an unexpired marked model after every unmarked one, except when the owner chose that model for this turn; a model that then answers SHALL lose its mark, and account deletion SHALL remove the owner's marks.
+
+#### Scenario: The next turn skips a recently refused model
+- **WHEN** a model was refused within the mark's lifetime and the owner's order has another accepted model
+- **THEN** the next served turn asks the other model first and does not ask the refused one unless the others fail
+
+#### Scenario: The owner chooses the refused model now
+- **WHEN** the owner selects the marked model for this turn
+- **THEN** it is asked first, and if it answers its mark is cleared
+
+#### Scenario: The mark expires
+- **WHEN** the mark's lifetime has passed
+- **THEN** the model is ordered as if it had never been refused
+
+### Requirement: A reply that fails in flight is retried within a bound, and a small window compacts
+The system SHALL request every engine-inference agent reply as a stream and SHALL judge it by inactivity, not total time: once the response headers arrive, a reply that keeps arriving SHALL NOT be cut for being slow (bounded only by an outer ceiling against a drip), and one that sends nothing for the source's inactivity window (default 120 seconds, per-source configurable) is `provider_stalled`, returned as far as it got. A non-streamed reply that outruns the whole-reply ceiling (`provider_reply_timeout`) SHALL NOT be retried or moved to another model. The system SHALL treat a 2xx agent reply that carries an in-band source error (`provider_reply_error`, with the source's own message and code as detail), that cannot be decoded (`provider_unreadable_reply`), or that stalled, as a failed step of an engine-inference round: the turn SHALL retry the same model once, then at most one other model in the owner's accepted order with only the failed model excluded (at most two such retries per turn), re-rendering only the journal's completed rounds so no tool is re-run; the connection SHALL NOT be cooled for such a failure; an unrecognized non-2xx status SHALL remain `provider_protocol_error` and SHALL NOT be retried. A failed turn's record SHALL state how many model requests the turn sent, and a stalled reply's partial text SHALL be kept in the owner's notice (never in a run record or log). When a turn no longer fits its model's window and no accepted model with a larger window exists, the turn SHALL render older tool results and call arguments clipped (each clip saying what it left out) and retry on the same model, while the journal keeps every round whole.
+
+#### Scenario: An upstream error after real work does not end the build
+- **WHEN** a source answers HTTP 200 with an error object in place of the reply after earlier tool rounds completed
+- **THEN** the same model is asked again with the completed rounds' results, no completed tool runs again, and the turn continues
+
+#### Scenario: The error persists
+- **WHEN** the same model and the remaining accepted models keep failing in flight past the bound
+- **THEN** the record is `code=provider_reply_error` (or `provider_unreadable_reply`), `stage=model_reply`, its detail is the source's own words, and the notice offers asking the turn to continue rather than saying a reply was unreadable
+
+#### Scenario: A slow reply is never abandoned
+- **WHEN** a streamed reply keeps arriving for longer than the old whole-reply ceiling
+- **THEN** it is read to the end and no second request is spent on it
+
+#### Scenario: A reply goes silent
+- **WHEN** a streamed reply sends nothing for the inactivity window
+- **THEN** the same model is asked again, and if the turn still ends the notice quotes what the model had written and how many requests the turn sent
+
+#### Scenario: The turn outgrows its only model
+- **WHEN** the next request would exceed the selected model's window and no accepted model is larger
+- **THEN** older tool results are sent clipped with a marker saying the tool can be called again for the whole result, and only when clipping no longer shrinks the request is the record `context_window_exceeded`

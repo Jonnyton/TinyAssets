@@ -357,9 +357,9 @@ def is_in_flight_for_version(
     """Return the most recent in-flight run on ``branch_version_id``, or None.
 
     "In-flight" = ``status`` ∈ {queued, running} AND ``started_at`` is
-    within the trailing ``window_seconds``. Older queued/running rows
-    are treated as orphaned (recovered by
-    ``_recover_orphaned_runs_on_read``) and do NOT block a refresh.
+    within the trailing ``window_seconds``. Older queued/running rows do
+    NOT block a refresh (recovery ends them once their owner is provably
+    dead: ``runs.recover_in_flight_runs``).
 
     Returns the run row when present so the caller can surface
     ``in_flight_run_id`` / ``in_flight_started_at`` in evidence.
@@ -756,7 +756,7 @@ def _latest_published_version_id(
         )
         return None
     for version in versions:
-        if getattr(version, "status", "active") == "active":
+        if version.public and getattr(version, "status", "active") == "active":
             bvid = version.branch_version_id or ""
             if bvid:
                 return bvid

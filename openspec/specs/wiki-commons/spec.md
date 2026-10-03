@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The shared markdown knowledge/coordination commons: draft-then-promote pages, typed filings (BUG/FEAT/DESIGN/PR) with per-kind IDs and dedup, sha-guarded patch, seed (not closed) category taxonomy, and append-only trigger receipts.
+The shared markdown knowledge/coordination commons: draft-then-promote pages, typed filings (BUG/FEAT/DESIGN/PR) with per-kind IDs and dedup, sha-guarded patch, and seed (not closed) category taxonomy.
 
 ## Requirements
 
@@ -125,36 +125,6 @@ The `wiki` tool SHALL dispatch exactly the fifteen actions in `WIKI_ACTIONS` (`r
 #### Scenario: node publication goes through the effector
 - **WHEN** a branch needs to publish output back to a wiki page
 - **THEN** it declares an external-write packet consumed by the wiki write-back effector rather than writing inline
-
-### Requirement: Trigger receipts use one mutable per-attempt row attempted before enqueue
-Before dispatcher enqueue, each filed-page auto-trigger handler SHALL attempt
-to insert one SQLite row in `pending`. If receipt creation raises, the handler
-SHALL log the failure and continue enqueue without a receipt so bug filing
-survives the receipt-store outage. When a receipt exists, `mark_queued`,
-`mark_failed`, and `mark_skipped` SHALL update that row by
-`trigger_attempt_id`. These helpers
-SHALL NOT condition the update on the previous status or reject a zero affected
-row count, so a later terminal helper can overwrite an earlier terminal status.
-The orphan query SHALL continue to return `pending` or `queued` attempts older
-than the configured cutoff.
-
-#### Scenario: successful pending receipt precedes enqueue
-- **WHEN** pending receipt creation succeeds for a filed-page auto-trigger
-- **THEN** a `pending` receipt row is written before enqueue is attempted
-
-#### Scenario: receipt-store failure does not prevent enqueue
-- **WHEN** pending receipt creation raises
-- **THEN** the handler logs the receipt-store failure
-- **AND** continues the investigation enqueue without a receipt
-
-#### Scenario: a later terminal update can overwrite an earlier terminal status
-- **WHEN** terminal-marking helpers are invoked more than once for the same attempt
-- **THEN** each helper updates by `trigger_attempt_id` without checking the prior status
-- **AND** the last update can replace an earlier `queued`, `failed`, or `skipped` value
-
-#### Scenario: stale attempts are detectable as orphans
-- **WHEN** a receipt remains in `pending` or `queued` past the staleness cutoff
-- **THEN** the orphan query returns it for health checks
 
 ### Requirement: Similar filings can be cosigned without minting a second id
 `cosign_bug` SHALL require a filing id and reporter context, resolve `BUG-`, `FEAT-`, `DESIGN-`, and `PR-` prefixes to their typed page directories, preserve the original filing id and content, append or extend a dated `## Cosigns` section, increment `cosign_count` in frontmatter, and append a wiki log entry. An unknown filing SHALL return an error and write nothing.

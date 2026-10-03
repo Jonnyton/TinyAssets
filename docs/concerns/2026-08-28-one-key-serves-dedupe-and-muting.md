@@ -1,3 +1,10 @@
+---
+severity: P2
+title: One key serves both dedupe and muting
+filed: '2026-08-28'
+summary: the agent rewords its prose, dedupe misses, and the rail grows a second tab for a grant already pending
+---
+
 # One key serves both "same ask?" and "what did they mute?" — so rewording defeats dedupe
 
 **Filed:** 2026-08-28
@@ -21,7 +28,7 @@ They are not a rendering duplicate. They are two stored requests asking for the
 | | request 1 | request 2 |
 |---|---|---|
 | title | *identical* | *identical* |
-| action endpoints | `api.github.com` `/repos/jonnyton/tinyassets/contents/tinyassets/onboarding/request_theme.json` `[GET, PUT]` | **byte-identical** |
+| action endpoints | `api.github.com` `/repos/tinyassets/tinyassets/contents/tinyassets/onboarding/request_theme.json` `[GET, PUT]` | **byte-identical** |
 | body | "…you deposited. **The**…" | "…you deposited. **Bec**…" |
 
 The only difference is the prose. Answering either grants exactly the same

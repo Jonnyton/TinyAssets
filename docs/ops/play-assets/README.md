@@ -13,7 +13,7 @@ Staging for the Play Console listing (see `../google-play-launch.md`). All rende
 
 **Production screenshot gate (2026-09-03):** the unsafe conversation capture was
 removed and replaced with `01-sign-in.png`, captured directly from
-`https://tinyassets.io/mcp/app` in a clean signed-out browser. Both retained captures
+`https://tinyassets.io/app` in a clean signed-out browser. Both retained captures
 meet Play's dimension and aspect-ratio rules and expose no account, universe, branch,
 run, or credential identifiers.
 

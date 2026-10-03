@@ -49,12 +49,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
 from tinyassets.storage.outbound_connections import (
     _SSRF_ALLOWED_METHODS,
+    _URL_SECRET_SCHEME,
     ACCESS_EXACT,
     ACCESS_FULL,
     ActionCap,
@@ -62,6 +64,9 @@ from tinyassets.storage.outbound_connections import (
     SsrfValidationError,
     _parse_allowed_endpoints,
     normalize_access_mode,
+    url_secret_token,
+    validate_url_secret_binding,
+    validate_url_secret_value,
 )
 from tinyassets.storage.workspace_authority import (
     GitScopeError,
@@ -99,15 +104,216 @@ _ABSENT = object()
 #: a smuggling attempt (``Content-Length`` was the one that prompted them).
 #:
 #: Generic on purpose: ``oauth1a`` is what makes every OAuth 1.0a API
-#: depositable with no service code, and ``header`` does the same for every
-#: custom-header API.
-_DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "header", "oauth1a"})
+#: depositable with no service code, ``header`` does the same for every
+#: custom-header API, and ``url_secret`` for every capability URL — a webhook
+#: link whose secret is a path segment, which is how Slack, Discord, Zapier,
+#: Make and this platform's own ``/mcp/hooks/<token>`` all work. Before it, a
+#: universe handed such a link had two options and both were wrong: ask for a
+#: bearer token that does not exist, or hardcode the secret into
+#: ``path_template`` where the grant stores and shows it in the clear. It did
+#: the second, live, on 2026-09-30.
+_DEPOSITABLE_AUTH_SCHEMES = frozenset(
+    {"bearer", "basic", "header", "oauth1a", _URL_SECRET_SCHEME}
+)
+#: The ONE field name a ``url_secret`` card uses. Fixed for the same reason
+#: ``oauth1a``'s four are: the deposit reads it. Label it the way the service
+#: words it ("Webhook URL"), name it this.
+URL_SECRET_FIELD_NAME = "capability_url"
 #: ``oauth2`` is deposited ONLY by a completed sign-in (``connection_oauth.flow``
 #: through ``pending_requests.answer_connect_with_token``), never pasted: its
 #: token bundle names the token URL a refresh token is sent to, so only the
 #: owner's own sign-in may write it.
 _SIGN_IN_AUTH_SCHEME = "oauth2"
 _OAUTH1A_FIELDS = ("api_key", "api_secret", "access_token", "access_token_secret")
+
+
+#: A fixed path segment this long, this mixed and this varied is not a path.
+#: 20 characters with both a letter and a digit and at least 10 DISTINCT
+#: characters clears every ordinary API path segment (``completions``,
+#: ``messages``, ``contents``, ``pulls``, ``v1``, ``2``) and catches every
+#: capability secret in the table in ``proposal.md`` -- a 43-character
+#: ``secrets.token_urlsafe(32)`` hook token, Slack's 24-character webhook token,
+#: Discord's 68. It also catches an opaque PUBLIC id (a Google Sheets id), which
+#: is a deliberate false positive: hardcoding one is still the wrong shape, and
+#: the refusal names the right one (a ``{param}`` with a pattern).
+_EMBEDDED_SECRET_MIN_CHARS = 20
+_EMBEDDED_SECRET_MIN_DISTINCT = 10
+
+
+def looks_like_embedded_secret(segment: str) -> bool:
+    """Whether a FIXED path segment reads as a credential or an opaque id.
+
+    A heuristic, on purpose, and deliberately biased toward the shape the
+    handbook already teaches: whichever of the two it is, the repair is a
+    placeholder, so a false positive costs an agent one better-shaped endpoint
+    and a false negative costs a user their secret stored in the clear.
+    """
+    text = segment if isinstance(segment, str) else ""
+    if len(text) < _EMBEDDED_SECRET_MIN_CHARS:
+        return False
+    if not any(c.isdigit() for c in text) or not any(c.isalpha() for c in text):
+        return False
+    return len(set(text)) >= _EMBEDDED_SECRET_MIN_DISTINCT
+
+
+def embedded_secret_refusal(endpoints: Any) -> dict[str, Any] | None:
+    """Refuse a hardcoded secret in a ``path_template``, or return ``None``.
+
+    THE live 2026-09-30 failure: with no shape for a capability URL, the universe
+    put the friend's webhook secret into ``path_template`` -- a grant field that
+    is stored in the clear, projected to ``read_graph target="connections"``,
+    rendered in the owner's grant sentence and copied into a remixed connector
+    artifact.
+
+    Runs at the AUTHORING doors only (this ask, this deposit, this extension),
+    never in ``_validate_path_template``, which also re-parses STORED templates.
+    Putting it there would make an already-deposited connection unreadable and
+    unremovable, which is a data-loss bug wearing a security fix's name.
+    """
+    if not isinstance(endpoints, list):
+        return None
+    for endpoint in endpoints:
+        template = (
+            endpoint.get("path_template")
+            if isinstance(endpoint, dict)
+            else getattr(endpoint, "path_template", None)
+        )
+        if not isinstance(template, str):
+            continue
+        for index, segment in enumerate(template.split("/")[1:], start=1):
+            if segment.startswith("{") or not looks_like_embedded_secret(segment):
+                continue
+            return {
+                "error": "connection_setup_invalid",
+                "detail": (
+                    f"path_template segment {index} looks like a secret or an "
+                    "opaque id, not a fixed path. If it is a credential (the "
+                    "code in a webhook link), do not put it here: use "
+                    f'"auth_scheme": "{_URL_SECRET_SCHEME}" and write '
+                    "{secret} in its place, and the owner pastes the whole "
+                    "link into the card -- the code goes to the vault instead "
+                    "of into this grant, where it would be stored and shown in "
+                    "the clear. If it is a public identifier, make it a {name} "
+                    "placeholder with a param_patterns regex."
+                ),
+            }
+    return None
+
+
+def extract_url_secret(
+    secret: str, endpoints: tuple[Any, ...]
+) -> tuple[str, str]:
+    """``(stored_segment, error)`` for a ``url_secret`` deposit.
+
+    The owner pastes the WHOLE LINK they were given, because that is what they
+    have -- the live failure asked them to "paste the code at the end of the
+    link", which is the platform making a person do a parse. So this parses it:
+    the URL must be plain https, and its host and path must match exactly ONE
+    declared endpoint whose template carries the reserved placeholder. The
+    captured segment(s) become the credential. A bare segment is still accepted
+    for an owner who pasted only the code.
+
+    NEVER echoes the pasted value. A refusal names the declared TEMPLATE, which
+    is the thing the owner can compare against what they were given.
+    """
+    text = (secret or "").strip()
+    carriers = [
+        (endpoint, url_secret_token(endpoint))
+        for endpoint in endpoints
+        if url_secret_token(endpoint)
+    ]
+    if not carriers:
+        return "", (
+            f"a {_URL_SECRET_SCHEME} deposit needs an endpoint whose "
+            "path_template carries {secret}"
+        )
+    expected = ", ".join(
+        f"https://{endpoint.host}{endpoint.path_template}"
+        for endpoint, _token in carriers
+    )
+    if not text.lower().startswith(("http://", "https://")):
+        # A bare segment. Validated against the grammar of the single carrier;
+        # with several, which one it belongs to would be a guess.
+        if len(carriers) != 1:
+            return "", (
+                "this connection declares several capability endpoints, so "
+                f"paste the whole link (expected one of: {expected})"
+            )
+        try:
+            return validate_url_secret_value(text, carriers[0][1]), ""
+        except SsrfValidationError as exc:
+            return "", str(exc)
+    try:
+        parts = urllib.parse.urlsplit(text)
+        # `parts.port` is lazy AND raises on a non-numeric port, so read it
+        # inside the same guard as the parse.
+        port = parts.port
+        hostname = parts.hostname
+    except ValueError:
+        # `urlsplit` QUOTES ITS INPUT: a netloc that changes under NFKC
+        # normalization (a full-width solidus, U+FF0F) raises
+        # "netloc '<the whole thing>' contains invalid characters", and the
+        # whole thing is the link with the secret in it. Swallowed to fixed
+        # text, with `from None` so no `__context__` carries it either
+        # (gpt-6-astra refute round 1, FINDING 5).
+        return "", (
+            "that link could not be read as a plain https URL -- paste it again "
+            f"exactly as you were given it (expected {expected})"
+        )
+    if (
+        parts.scheme != "https"
+        or parts.username is not None
+        or parts.password is not None
+        or port is not None
+        or parts.query
+        or parts.fragment
+        or not hostname
+    ):
+        # A PORT is refused, not ignored. Reading `hostname` alone accepted
+        # `https://host:8443/mcp/hooks/<secret>` against an endpoint that is
+        # dialed on 443 — so the owner's secret for one origin would be sent to
+        # a different one on the same name (astra round 1, FINDING 6). The
+        # endpoint grammar carries no port, so there is nothing to match against.
+        return "", (
+            "paste the plain https link you were given -- no sign-in prefix, no "
+            f"port, no query string and no #fragment (expected {expected})"
+        )
+    host = hostname.strip().lower()
+    # Zapier and Make show a trailing slash in their own UI; the endpoint
+    # template does not carry one, so tolerate exactly that.
+    path = parts.path.rstrip("/") or "/"
+    matches: list[str] = []
+    for endpoint, token in carriers:
+        if endpoint.host != host:
+            continue
+        prefix, _sep, suffix = endpoint.path_template.partition(token)
+        if suffix.strip("/"):
+            # The placeholder is not the tail of the template: the captured
+            # value is bounded by the fixed segments on both sides.
+            if not (path.startswith(prefix) and path.endswith(suffix)):
+                continue
+            captured = path[len(prefix):len(path) - len(suffix)]
+        else:
+            if not path.startswith(prefix):
+                continue
+            captured = path[len(prefix):]
+        try:
+            matches.append(validate_url_secret_value(captured, token))
+        except SsrfValidationError:
+            continue
+    unique = sorted(set(matches))
+    if not unique:
+        return "", (
+            "that link does not match the endpoint this request declared "
+            f"(expected {expected}). Check you pasted the right link, or raise "
+            "the ask for the link you have."
+        )
+    if len(unique) > 1:
+        return "", (
+            "that link matches more than one declared endpoint, so which part "
+            f"is the secret would be a guess (declared: {expected})"
+        )
+    return unique[0], ""
 
 
 def _secret_shape_error(scheme: str, secret: str) -> str:
@@ -408,7 +614,7 @@ def _connect_http(
     conflicting re-provision (the conflict-check below refuses first).
     """
     from tinyassets.api import permissions
-    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.credential_vault import http_credential_record, write_credential_vault
     from tinyassets.daemon_server import list_universe_acl
 
     # 1. Server-derived authenticated principal (no env fallback).
@@ -522,6 +728,30 @@ def _connect_http(
     except (ValueError, TypeError) as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
     requested_endpoints = [e.as_dict() for e in parsed_endpoints]
+    # A secret hardcoded into an endpoint would be stored in the clear in the
+    # grant. Refused HERE, at the authoring door, with the shape that works.
+    hardcoded = embedded_secret_refusal(requested_endpoints)
+    if hardcoded is not None:
+        return hardcoded
+    # The capability-URL binding, before anything is written, so the owner reads
+    # a precise refusal rather than the storage layer's. The asked access mode
+    # rides along rather than being re-checked here: two statements of one rule
+    # is how the two drift, and the validator is the one the storage boundary
+    # and dispatch also call.
+    try:
+        validate_url_secret_binding(
+            scheme, parsed_endpoints, access_mode=asked_access
+        )
+    except SsrfValidationError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    if scheme == _URL_SECRET_SCHEME:
+        # THE extraction: the owner pasted the whole link, the platform finds the
+        # secret in it, and only the segment is written. Replaces `secret` for
+        # every write below, so no code path can store the full URL.
+        extracted, extract_error = extract_url_secret(secret, parsed_endpoints)
+        if extract_error:
+            return {"error": "connection_setup_invalid", "detail": extract_error}
+        secret = extracted
     # The connection SCOPE for an http connection is the set of HTTP methods it
     # permits — that is the "connection scope string" the authenticated_external_call
     # effector matches the packet ``verb`` against (proxy/broker check
@@ -678,14 +908,7 @@ def _connect_http(
     try:
         write_credential_vault(
             udir,
-            [
-                {
-                    "credential_type": "http",
-                    "service": destination,
-                    "destination": destination,
-                    "token": secret,
-                }
-            ],
+            [http_credential_record(destination=destination, token=secret)],
             owner_user_id=actor,
             universe_id=uid,
         )
@@ -964,6 +1187,353 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     }
 
 
+def _rotation_target(
+    *, uid: str, actor: str, destination: str,
+) -> tuple[Any, Any, str, str, Any] | dict[str, Any]:
+    """The connection a rotation would act on, or the refusal, with NO write.
+
+    One reader for the write and for the raise-time preview, so a card the rail
+    admits is a card the write will honour. Every refusal is the uniform absent
+    envelope: this is reachable by any admin of the universe, and a distinct
+    "wrong owner" answer would say which destinations exist and who deposited
+    them.
+    """
+    base = _base_path()
+    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
+    ledger = ConnectionLedger(
+        Path(base) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    )
+    resource = ledger._get_connection_resource(connection_id)
+    if resource is None or resource.revoked_at is not None:
+        # Nothing to rotate. A revoked row is not rotatable either: the deposit
+        # door refuses to re-provision one, so a key put into it would be inert.
+        return dict(_NOT_FOUND)
+    if resource.owner_user_id != actor:
+        # Mirrors extend_http and remove_http: an admin may act on the universe,
+        # but not on another principal's deposited credential.
+        return dict(_NOT_FOUND)
+    if (
+        resource.connection_type != "http"
+        or resource.connection_class != "http"
+        or resource.provider != "http"
+        or resource.credential_ref != f"vault://http/{destination}"
+    ):
+        # The rotation writes ONE vault slot: `(http, destination)`. A row that
+        # does not read that slot would be reported as rotated while the key it
+        # actually presents was untouched -- a success that changed nothing,
+        # which is the worst outcome available here (hard rule 8). The deposit
+        # door already compares every one of these as an immutable field; not
+        # comparing them here would be the inconsistency, not the check.
+        return dict(_NOT_FOUND)
+    # The connection id is DERIVED from (universe, destination), so another
+    # universe naming this destination already addresses its own row. The grant
+    # is compared anyway: a derivation is not a check, and a connection with no
+    # live grant for this universe is not this universe's to rotate.
+    grant = ledger.get_grant(grant_id)
+    if (
+        grant is None
+        or grant.connection_id != connection_id
+        or grant.owner_user_id != actor
+        or grant.universe_id != uid
+        or grant.revoked_at is not None
+    ):
+        return dict(_NOT_FOUND)
+    return resource, grant, connection_id, grant_id, ledger
+
+
+def _rotation_git_scopes(resource: Any) -> list[str]:
+    try:
+        return sorted(format_git_scope(kind, repo)
+                      for kind, repo in connection_git_scopes(resource))
+    except Exception:  # noqa: BLE001 - never fail a rotation over a readback
+        return []
+
+
+def _unpasteable_scheme(scheme: str) -> dict[str, Any] | None:
+    """The refusal for an auth scheme no pasted value may replace, or None.
+
+    Fail closed on the SET the deposit door accepts rather than on a list of
+    known exceptions: a scheme the engine learns to sign later is not rotatable
+    by paste until someone decides it is. Two land here today, and they fail for
+    different reasons worth saying out loud --
+
+    * ``oauth2``: its stored value is a token bundle naming the URL every refresh
+      token is sent to, so only the owner's own sign-in may write it;
+    * ``none``: there is no credential in the request at all, so a pasted value
+      would be stored, never sent, and reported as a repair. Codex refute-review,
+      P2 #5 -- ``connect_http`` cannot create one, a lower-level path can, and a
+      false repair receipt is worse than a refusal (hard rule 8).
+    """
+    if scheme in _DEPOSITABLE_AUTH_SCHEMES:
+        return None
+    return {
+        "error": "rotation_not_supported",
+        "detail": (
+            "this connection is completed by signing in, so its authorization "
+            "cannot be replaced by pasting one; sign in again"
+            if scheme == _SIGN_IN_AUTH_SCHEME else
+            f"a {scheme!r} connection has no pasted key to replace"
+        ),
+        "auth_scheme": scheme,
+    }
+
+
+def preview_rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """What a rotation would act on, read for an ask that has not been raised yet.
+
+    The rail calls this when the agent raises the card, for two reasons. The owner
+    must never see a tab that cannot be honoured (the rule ``extend_http`` already
+    follows), and the card's boxes have to be named after the auth scheme the
+    connection actually STORES -- one for a single-token scheme, the fixed names
+    for a multi-value one. Reads only; writes nothing.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.credential_vault import http_deposit_refusal
+    from tinyassets.daemon_server import list_universe_acl
+
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
+        return {"error": "authentication_required", "resource": "connection"}
+    uid = _request_universe(universe_id)
+    admin = [
+        row
+        for row in list_universe_acl(_base_path(), universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    destination = str(document.get("destination") or "").strip().lower()
+    if not _DESTINATION_RE.match(destination):
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "destination must name the connection whose key is being replaced",
+        }
+    found = _rotation_target(uid=uid, actor=actor, destination=destination)
+    if isinstance(found, dict):
+        return found
+    resource, _grant, connection_id, grant_id, ledger = found
+    # EVERY refusal the write makes for reasons the owner cannot type their way
+    # out of, applied here too. The rule this module already follows is that the
+    # owner never sees a tab that cannot be honoured; a preview that admitted one
+    # would be the same defect as no preview at all (Codex refute-review, P2
+    # #4/#5).
+    scheme = str(resource.auth_scheme or "").strip().lower()
+    refusal = _unpasteable_scheme(scheme)
+    if refusal:
+        return refusal
+    legacy = http_deposit_refusal(
+        _universe_dir(uid), destination=destination, owner_user_id=actor,
+    )
+    if legacy:
+        return {
+            "error": "credential_ownership_transfer_unsupported",
+            "detail": (
+                "this destination's credential is owned by another principal"
+                if legacy == "foreign_owner" else
+                "this destination's stored credential has no recorded depositor, "
+                "so it cannot be proved to be yours to replace; removing and "
+                "depositing it again is the way back"
+            ),
+        }
+    return {
+        "destination": destination,
+        "connection_id": connection_id,
+        "grant_id": grant_id,
+        "auth_scheme": scheme,
+        "incarnation": ledger.incarnation(connection_id) or "",
+        "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+        "git_scopes": _rotation_git_scopes(resource),
+        "access": getattr(resource, "access_mode", ACCESS_EXACT) or ACCESS_EXACT,
+        "git_host": getattr(resource, "git_host", "") or "",
+    }
+
+
+def rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    from tinyassets.onboarding.serving import _gesture_lock
+
+    with _gesture_lock(_request_universe(universe_id)):
+        return _rotate_http(universe_id=universe_id, payload=payload)
+
+
+def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """Replace the SECRET of an existing connection, and nothing else.
+
+    Founder-visible failure, 2026-09-16: a connection's key died on the provider
+    side (one expired, one was revoked by its user) and the owner had no way to
+    put a new one in. The repair paths were ``remove_http`` + ``connect_http``
+    re-carrying every endpoint and scope, or a ``connect_http`` whose whole
+    allow-list matched the stored one exactly -- and the owner read "remove" as
+    deletion, dismissed three such cards, and the connection stayed dead for ten
+    days.
+
+    This is the one-step replace. It makes EXACTLY ONE state change: the vault
+    upsert for ``(http, destination)``. No ``create_connection``, no
+    ``grant_connection``, no ``set_access_mode``, no endpoint extension -- so the
+    connection id, grant, endpoints, scopes, access mode, git host, effector
+    consents and workspace consents survive by the ABSENCE of a code path rather
+    than by care. The next outbound call presents the new secret with no
+    invalidation, because the broker child resolves the vault per request.
+
+    Two narrower statements than "it never touches the ledger", because that one
+    is not quite true and a claim a reviewer can falsify is worse than a smaller
+    one (Codex refute-review, P2 #8): constructing ``ConnectionLedger`` runs the
+    schema migration and backfills an empty incarnation, as it does for every
+    reader; and the vault upsert READS the existing record in order to merge it,
+    though this handler never looks at the old secret itself.
+
+    Every refusal happens before that write, so a refused rotation leaves the old
+    secret exactly as it was. The auth scheme is the STORED one: a rotation
+    carries none, because a caller who could name it could turn a multi-value
+    connection into a bearer one wearing the same name -- and a scheme outside the
+    deposit door's own set cannot be replaced by pasting at all
+    (``_unpasteable_scheme``).
+    """
+    from tinyassets.api import permissions
+    from tinyassets.credential_vault import (
+        http_credential_record,
+        http_deposit_refusal,
+        write_credential_vault,
+    )
+    from tinyassets.daemon_server import list_universe_acl
+
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
+        return {"error": "authentication_required", "resource": "connection"}
+
+    # Same gate as the deposit and the removal: an explicit admin ACL row for
+    # THIS actor on THIS universe, and the uniform absent envelope, so this
+    # surface cannot be used to probe which destinations exist.
+    uid = _request_universe(universe_id)
+    admin = [
+        row
+        for row in list_universe_acl(_base_path(), universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+
+    destination = str(document.get("destination") or "").strip().lower()
+    if not _DESTINATION_RE.match(destination):
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "destination must name the connection whose key is being replaced",
+        }
+
+    secret = document.get("secret")
+    if not isinstance(secret, str) or not secret.strip():
+        return {"error": "connection_setup_invalid", "detail": "secret is required"}
+    if len(secret) > _MAX_SECRET_CHARS:
+        return {"error": "connection_setup_invalid", "detail": "secret is too large"}
+
+    found = _rotation_target(uid=uid, actor=actor, destination=destination)
+    if isinstance(found, dict):
+        return found
+    resource, _grant, connection_id, grant_id, ledger = found
+
+    scheme = str(resource.auth_scheme or "").strip().lower()
+    refusal = _unpasteable_scheme(scheme)
+    if refusal:
+        return refusal
+    legacy = http_deposit_refusal(
+        _universe_dir(uid), destination=destination, owner_user_id=actor,
+    )
+    if legacy:
+        # The write would refuse this on its own; refusing HERE means the
+        # preview refuses it too, so the owner is never shown a card that
+        # cannot be honoured (Codex refute-review, P2 #4).
+        return {
+            "error": "credential_ownership_transfer_unsupported",
+            "detail": (
+                "this destination's credential is owned by another principal"
+                if legacy == "foreign_owner" else
+                "this destination's stored credential has no recorded depositor, "
+                "so it cannot be proved to be yours to replace; removing and "
+                "depositing it again is the way back"
+            ),
+        }
+    shape_error = _secret_shape_error(scheme, secret)
+    if shape_error:
+        return {"error": "connection_setup_invalid", "detail": shape_error}
+    if scheme == _URL_SECRET_SCHEME:
+        # A capability URL is rotated by pasting the NEW link, which is what a
+        # service hands out when one is regenerated -- so the same extraction as
+        # the deposit runs here, against the STORED endpoints. Without it the
+        # whole URL would land in the vault and every later call would send
+        # `https://host/mcp/hooks/https://host/mcp/hooks/<token>`.
+        extracted, extract_error = extract_url_secret(
+            secret, resource.allowed_endpoints
+        )
+        if extract_error:
+            return {"error": "connection_setup_invalid", "detail": extract_error}
+        secret = extracted
+
+    # Which DEPOSIT this card was raised against. The id and credential_ref are
+    # both derived from (universe, destination), so neither changes when a key is
+    # removed and a different one put in its place -- the incarnation is the only
+    # thing that does.
+    observed = document.get("incarnation")
+    incarnation = ledger.incarnation(connection_id)
+    if observed is not None and observed != incarnation:
+        return {"error": "connection_changed", "resource": "connection"}
+
+    try:
+        write_credential_vault(
+            _universe_dir(uid),
+            [http_credential_record(destination=destination, token=secret)],
+            owner_user_id=actor,
+            universe_id=uid,
+        )
+    except PermissionError:
+        return {
+            "error": "credential_ownership_transfer_unsupported",
+            "detail": "this destination's credential is owned by another principal",
+        }
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    except Exception:  # noqa: BLE001 - fail closed, never leak the secret
+        return {"error": "deposit_failed", "resource": "connection"}
+
+    return {
+        "status": "rotated",
+        "destination": destination,
+        "connection_id": connection_id,
+        "grant_id": grant_id,
+        "auth_scheme": scheme,
+        # Read from the row this call did NOT write, so the receipt is evidence
+        # that the policy survived rather than a restatement of the request.
+        "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+        "git_scopes": _rotation_git_scopes(resource),
+        "access": getattr(resource, "access_mode", ACCESS_EXACT) or ACCESS_EXACT,
+        "git_host": getattr(resource, "git_host", "") or "",
+        "unchanged": (
+            "Only the key changed. The connection, its endpoints, its scopes and "
+            "its consents are the same ones; nothing needs re-approving."
+        ),
+        "in_flight": (
+            "A request already dispatched with the old key may still finish; "
+            "every later call uses the new one."
+        ),
+    }
+
+
 def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Add endpoints to an EXISTING connection, reusing the stored credential.
 
@@ -1034,6 +1604,11 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         asked_access = normalize_access_mode(document.get("access"))
     except ValueError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
+    # The same authoring-door refusal as the deposit: a widening must not be the
+    # way a hardcoded secret gets into a grant.
+    hardcoded = embedded_secret_refusal(added)
+    if hardcoded is not None:
+        return hardcoded
     scope_only = not isinstance(added, list) or not added
     if scope_only and not requested_git_scopes and asked_access != ACCESS_FULL:
         # A full ask names neither: it is the channel, not a list.

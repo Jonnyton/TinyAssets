@@ -1,6 +1,6 @@
 """Daemon-served onboarding web app (dark-flagged).
 
-Serves a self-contained single-page app at ``/mcp/app`` — SAME ORIGIN as the
+Serves a self-contained single-page app at ``/app`` — SAME ORIGIN as the
 canonical ``/mcp`` connector — so a founder can sign in (WorkOS AuthKit,
 in-browser OAuth 2.0 Authorization Code + PKCE), meet their universe, connect a
 subscription, and chat, with **zero local-machine dependency**. The app ships in
@@ -11,8 +11,14 @@ Design boundaries (mirrors the app-experience design note):
 - Same-origin to ``/mcp`` — no CORS, no proxy, no server-side Bearer injection.
   The browser holds the WorkOS access token (sessionStorage) and calls ``/mcp``
   directly with it. The token binds to the MCP resource via RFC 8707.
-- The app is served under ``/mcp/`` so the production Cloudflare tunnel (which
-  forwards only ``/mcp/*`` to the daemon) reaches it with no infra change.
+- The app is served at the apex ``/app`` (founder directive 2026-09-30; it used
+  to live at ``/mcp/app``, which is now simply absent — no redirect, no alias).
+  Reaching it publicly needs the Cloudflare Worker to bind
+  ``tinyassets.io/app*`` alongside ``/mcp*`` — the SUFFIX WILDCARD, because a
+  Cloudflare route matches the whole URL including the query, so an exact
+  ``/app`` route would miss ``/app?code=…`` and dark the sign-in. See
+  ``deploy/cloudflare-worker/wrangler.toml``. Still the same ORIGIN as ``/mcp``,
+  so nothing about the same-origin token/CORS story changes.
 - Dark-flagged: enabling is a pure env flip (``TINYASSETS_ONBOARDING_APP``); the
   route returns 404 until then.
 
@@ -45,7 +51,12 @@ _SCOPES = "openid profile email offline_access"
 # read, sent back solely to the token proxy. 7 days = AuthKit's default
 # maximum session length; AuthKit rotates the token on every refresh.
 _REFRESH_COOKIE = "ta_rt"
-_REFRESH_COOKIE_PATH = "/mcp/app/token"
+#: The app's single public path. One literal so the route table, the cookie
+#: scope and the redirect-URI check can never disagree about where the app
+#: lives. Moved off ``/mcp/app`` on 2026-09-30 (founder directive); the old path
+#: is not mounted, aliased or redirected.
+APP_PATH = "/app"
+_REFRESH_COOKIE_PATH = APP_PATH + "/token"
 _REFRESH_COOKIE_MAX_AGE = 7 * 24 * 3600
 _NO_STORE = {"Cache-Control": "no-store"}
 
@@ -115,6 +126,13 @@ def _same_origin_json(request: Any, public_resource: str = "") -> bool:
     return parts.netloc in allowed
 
 
+#: The one subscription service this daemon can complete by BROKERED SIGN-IN rather
+#: than by the owner pasting something. Named here, in the module that implements that
+#: flow, so a caller deciding whether to OFFER a sign-in can ask instead of knowing:
+#: `api.pending_requests` reads this and names no source itself.
+DEVICE_SIGN_IN_SERVICE = "codex"
+
+
 def onboarding_enabled() -> bool:
     """Whether the onboarding app route serves content (dark flag)."""
     return os.environ.get("TINYASSETS_ONBOARDING_APP", "").strip().lower() in _TRUTHY
@@ -167,7 +185,14 @@ def app_config() -> dict[str, Any]:
 
 def _csp(nonce: str, issuer: str) -> str:
     """Strict CSP: inline script/style only via this request's nonce; network
-    limited to same-origin ``/mcp`` plus the AuthKit token endpoint origin."""
+    limited to same-origin ``/mcp`` plus the AuthKit token endpoint origin.
+
+    ``frame-src 'self'`` is the one grant a user-authored UI bundle needs, and it
+    grants only the fixed ``/app/ui-frame`` bootstrap — which sandboxes itself
+    to an opaque origin from its own response header (``ui_frame.FRAME_CSP``).
+    ``script-src`` stays nonce-only on purpose: a bug that inserted bundle script
+    into this page would still not execute it.
+    """
     connect = "'self'"
     if issuer:
         parts = urlsplit(issuer)
@@ -176,9 +201,11 @@ def _csp(nonce: str, issuer: str) -> str:
     return (
         "default-src 'none'; "
         f"script-src 'nonce-{nonce}'; "
+        "worker-src 'self'; "
         f"style-src 'nonce-{nonce}'; "
         f"connect-src {connect}; "
         "img-src 'self' data:; "
+        "frame-src 'self'; "
         "base-uri 'none'; "
         "form-action 'none'; "
         "frame-ancestors 'none'"
@@ -198,7 +225,7 @@ def render_app_html() -> tuple[str, str]:
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
         _HTML_PATH.read_text("utf-8")
-        .replace("__TA_APP_LAYOUT__", _HTML_PATH.with_name("app_layout.js").read_text("utf-8"))
+        .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)
         .replace(_REQUEST_TEXT_PLACEHOLDER, request_theme()["request_text"])
@@ -381,9 +408,13 @@ async def _handle_token(request: Any) -> Any:
         if not code or not verifier or not redirect_uri:
             return JSONResponse({"error": "missing_fields"}, status_code=400)
         # Defense in depth (AuthKit also re-validates redirect_uri against the
-        # authorize request): only accept an https URL whose path is this app's own.
+        # authorize request): only accept an https URL whose path is this app's
+        # own. EXACT equality, not `endswith`: the page builds the value from
+        # `location.origin + location.pathname`, which is always exactly the
+        # served path, so a suffix test only widened what a crafted body could
+        # claim (`https://host/anything/app` used to pass).
         parts = urlsplit(redirect_uri)
-        if parts.scheme != "https" or not parts.path.endswith("/mcp/app"):
+        if parts.scheme != "https" or parts.path != APP_PATH:
             return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
         token_form = {
             "grant_type": "authorization_code",
@@ -565,12 +596,55 @@ def _read_home(identity: Any, *, raise_errors: bool = False) -> str:
             return ""
 
 
+def _owned_target_universe(identity: Any, wanted: str) -> str | None:
+    """The universe a device sign-in may deposit into, or None when it may not.
+
+    The target comes from the CARD plus the caller's identity, and nothing else. It is
+    resolved through the same check every other write on this surface uses -- an
+    explicit ``admin`` ACL row for this actor, never the permissive access helper -- so
+    a caller naming a universe they do not administer is refused rather than redirected
+    to their own. An empty ``wanted`` means the card named none, and the caller's home
+    is the answer, which is what the surface did for every request before.
+
+    Runs in a worker thread under the request identity, like `_bootstrap_home`.
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.daemon_server import list_universe_acl
+    from tinyassets.principals import named_principal
+
+    target = str(wanted or "").strip()
+    if not target:
+        return _bootstrap_home(identity)
+    with identity_context(identity):
+        actor = named_principal(getattr(identity, "user_id", "") or "")
+        if not actor:
+            return None
+        try:
+            rows = list_universe_acl(_base_path(), universe_id=target)
+        except Exception:  # noqa: BLE001 - an unreadable ACL is not a grant
+            return None
+    owns = any(
+        row.get("actor_id") == actor and row.get("permission") == "admin"
+        for row in rows
+    )
+    return target if owns else None
+
+
 def _bootstrap_home(identity: Any) -> str:
     """The signed-in user's OWN home universe id, created on first contact if
     it does not exist yet (the same ``ensure_founder_home`` the conversation
     entry uses). "" when the identity cannot create one. Runs in a worker
-    thread under the request identity. This is the ONLY universe a credential
-    from the app may land in — a client-supplied universe id is ignored."""
+    thread under the request identity.
+
+    This is the DEFAULT universe a credential from the app lands in, and for every
+    route but the device sign-in it is the only one: a client-supplied universe id is
+    ignored. The sign-in route takes its target from the reconnect card instead,
+    because a card exists precisely to repair one NAMED connection -- and it resolves
+    that target through :func:`_owned_target_universe`, which requires an explicit
+    admin ACL row for the caller and refuses anything else rather than quietly falling
+    back to here. The invariant that mattered is intact: a credential still only lands
+    in a universe this caller administers."""
     from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.api.helpers import _base_path
     from tinyassets.auth.middleware import identity_context
@@ -603,9 +677,34 @@ async def _handle_openai_device_start(request: Any) -> Any:
     data = await _read_small_json(request)
     if data is None:
         return JSONResponse({"error": "invalid_json"}, status_code=400)
+    # The caller says which source it is signing back in to, and this route completes
+    # exactly one. Before, it ignored the field and deposited for its own service
+    # whatever was asked, so a reconnect card for a different source would have
+    # silently replaced the wrong credential (Codex refute-review, P1 #5).
+    #
+    # The universe is NOT taken from the caller, and that is deliberate rather than an
+    # oversight: `_bootstrap_home` states the invariant -- the signed-in user's own
+    # home is the only universe a credential from the app may land in, and a
+    # client-supplied id is ignored. Honouring one here would reverse that decision,
+    # so the card's target is the home and a request naming anything else is refused
+    # rather than quietly redirected.
+    asked = str(data.get("service") or DEVICE_SIGN_IN_SERVICE).strip().lower()
+    if asked != DEVICE_SIGN_IN_SERVICE:
+        # This daemon completes exactly one service by brokered sign-in. A card for any
+        # other source offers its own shapes instead, so reaching here means the caller
+        # asked for a flow that does not exist -- refused loudly rather than silently
+        # completing the one service this route does know.
+        return JSONResponse({"error": "sign_in_unsupported_for_service"}, status_code=400)
     identity = current_identity()
-    home = await run_in_threadpool(_bootstrap_home, identity)
-    if not home:
+    # The TARGET is the card's universe plus this caller's identity, resolved through
+    # the same admin-ACL check every other write here uses. A universe the caller does
+    # not administer fails loudly; it is never quietly replaced with their own.
+    target = await run_in_threadpool(
+        _owned_target_universe, identity, str(data.get("universe_id") or ""),
+    )
+    if target is None:
+        return JSONResponse({"error": "sign_in_universe_not_yours"}, status_code=403)
+    if not target:
         return JSONResponse({"error": "no_home_universe"}, status_code=409)
     try:
         started = await start_device_auth()
@@ -614,7 +713,7 @@ async def _handle_openai_device_start(request: Any) -> Any:
         # opaque handle.
         handle = register_flow(
             user_id=identity.user_id,
-            universe_id=home,
+            universe_id=target,
             device_auth_id=started["device_auth_id"],
             user_code=started["user_code"],
         )
@@ -685,7 +784,22 @@ async def _handle_openai_device_poll(request: Any) -> Any:
         # Re-pin the identity inside the worker thread (same pattern as the
         # browser deposit form) so connect_llm's actor resolution sees the user.
         with identity_context(identity):
-            return deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
+            result = deposit_codex_auth_json(outcome["auth_json"], universe_id=flow.universe_id)
+            if (isinstance(result, dict) and not result.get("error")
+                    and (result.get("serving") or {}).get("status") == "held"):
+                from tinyassets.api.helpers import _base_path
+                from tinyassets.onboarding.source_connect import offer_subscription_source
+
+                try:
+                    offered = offer_subscription_source(
+                        base=_base_path(), uid=flow.universe_id, owner=identity.user_id,
+                        service=DEVICE_SIGN_IN_SERVICE,
+                    )
+                    if offered is not None:
+                        result = {**result, "confirmation": offered["request"]}
+                except Exception:  # noqa: BLE001 - deposit succeeded; expose no private detail
+                    result = {**result, "confirmation_error": "model_confirmation_requires_review"}
+            return result
 
     result = await run_in_threadpool(_deposit)
     if not isinstance(result, dict) or result.get("error"):
@@ -694,10 +808,35 @@ async def _handle_openai_device_poll(request: Any) -> Any:
             err = str(result["error"])
         status = 401 if err == "authentication_required" else 400
         return JSONResponse({"status": "failed", "error": err}, status_code=status)
+    serving = result.get("serving") or {}
+    response = {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE,
+                "serving": {"status": "serving" if serving.get("status") == "serving"
+                            else "held"}}
+    if "confirmation" in result:
+        response["confirmation"] = result["confirmation"]
+    if "confirmation_error" in result:
+        response["confirmation_error"] = result["confirmation_error"]
     return JSONResponse(
-        {"status": "connected", "service": "codex"},
+        response,
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _command_center_name(home: str) -> str:
+    """The command center's learned name, or "" -- never its id.
+
+    A universe row's ``display_name`` defaults to the id until a name is
+    learned, so that default is not a name and is not sent.
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import get_universe
+
+    try:
+        name = str(get_universe(_base_path(), universe_id=home).get("display_name") or "")
+    except KeyError:
+        return ""
+    name = name.strip()
+    return "" if name == home else name
 
 
 async def _handle_me(request: Any) -> Any:
@@ -739,6 +878,7 @@ async def _handle_me(request: Any) -> Any:
                 "home_bound": True,
                 "engine_connected": setup == "connected",
                 "setup": setup,
+                "name": _command_center_name(home),
             }
 
     try:
@@ -871,7 +1011,7 @@ async def _handle_openai_exchange(request: Any) -> Any:
         status = 401 if err == "authentication_required" else 400
         return JSONResponse({"status": "failed", "error": err}, status_code=status)
     return JSONResponse(
-        {"status": "connected", "service": "codex"},
+        {"status": "connected", "service": DEVICE_SIGN_IN_SERVICE},
         headers={"Cache-Control": "no-store"},
     )
 
@@ -890,7 +1030,6 @@ async def _handle_voice_session(request: Any) -> Any:
     from tinyassets.auth.middleware import current_identity
     from tinyassets.onboarding.realtime_voice import (
         RealtimeVoiceError,
-        allow_voice_session,
         create_voice_session,
         realtime_voice_enabled,
     )
@@ -922,13 +1061,9 @@ async def _handle_voice_session(request: Any) -> Any:
             headers=_NO_STORE,
         )
 
+    # No per-user rate gate: the caller here is the authenticated owner asking
+    # their own universe to listen (founder, 2026-09-30 -- storage and seats only).
     identity = current_identity()
-    if not allow_voice_session(identity.user_id):
-        return JSONResponse(
-            {"error": "voice_session_rate_limited"},
-            status_code=429,
-            headers=_NO_STORE,
-        )
     home = await run_in_threadpool(_read_home, identity)
     if not home:
         return JSONResponse(
@@ -957,7 +1092,7 @@ async def _handle_voice_status(request: Any) -> Any:
 
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import current_identity
-    from tinyassets.onboarding.realtime_voice import allow_voice_status, voice_capability
+    from tinyassets.onboarding.realtime_voice import voice_capability
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
@@ -965,12 +1100,6 @@ async def _handle_voice_status(request: Any) -> Any:
     if denied is not None:
         return denied
     identity = current_identity()
-    if not allow_voice_status(identity.user_id):
-        return JSONResponse(
-            {"error": "voice_status_rate_limited"},
-            status_code=429,
-            headers=_NO_STORE,
-        )
     home = await run_in_threadpool(_read_home, identity)
     result = await run_in_threadpool(
         voice_capability,
@@ -1100,6 +1229,336 @@ async def _handle_serving_bind(request: Any) -> Any:
 
 
 
+async def _handle_rules(request: Any) -> Any:
+    """The signed-in owner's Custom Rules for their own agent (harness D1a).
+
+    GET lists them (seeding a new universe's defaults). POST saves one rule
+    (``action_class``, ``behaviour``, optional ``connection`` / ``operation`` /
+    ``note``) or removes a narrowed one (``delete: <id>``). Only the caller's
+    OWN home universe is ever addressed -- nothing in the request names a
+    universe -- so an owner edits their agent's rules and nobody else's.
+    Loosening a hand-back needs ``confirm_handback: true``; without it the
+    answer carries the plain consequence to show before asking again.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets import agent_review, agent_rules
+    from tinyassets.auth.middleware import current_identity
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+    home = await run_in_threadpool(_read_home, identity)
+    if not home:
+        return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
+
+    def _universe_dir():
+        from tinyassets.api.helpers import _universe_dir as resolve
+
+        return resolve(home)
+
+    def _listing():
+        rules = agent_rules.list_rules(_universe_dir())
+        return {
+            "universe_id": home,
+            "rules": [rule.as_dict() for rule in rules],
+            "behaviours": agent_rules.BEHAVIOUR_LABELS,
+            "classes": agent_rules.ACTION_CLASSES,
+            "handbacks": agent_rules.HANDBACK_CONSEQUENCES,
+            "operation_kinds": [k.as_dict() for k in agent_rules.list_kinds(_universe_dir())],
+            "kinds": agent_rules.OPERATION_KINDS,
+            "review_off": sorted(agent_review.switched_off(_universe_dir())),
+            "review_never": sorted(agent_review.NOT_CONSEQUENTIAL),
+            "review_always": sorted(agent_review.ALWAYS_REVIEWED),
+        }
+
+    if request.method == "GET":
+        return JSONResponse(await run_in_threadpool(_listing), headers=_NO_STORE)
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+
+    def _save():
+        if "review" in data:
+            spec = data["review"]
+            if not isinstance(spec, dict) or type(spec.get("enabled")) is not bool:
+                raise ValueError("review needs action_class and enabled")
+            agent_review.set_review(_universe_dir(), str(spec.get("action_class") or ""),
+                                    spec["enabled"], confirm=data.get("confirm") is True)
+            return {"reviewed": spec, **_listing()}
+        if "declare" in data:
+            spec = data["declare"]
+            if not isinstance(spec, dict):
+                raise ValueError("declare must be an object")
+            declared = agent_rules.declare_kind(
+                _universe_dir(), str(spec.get("connection") or ""),
+                str(spec.get("kind") or ""), method=str(spec.get("method") or ""),
+                path_prefix=str(spec.get("path_prefix") or "/"),
+                confirm=data.get("confirm") is True,
+            )
+            return {"declared": declared.as_dict(), **_listing()}
+        if "undeclare" in data:
+            kind_id = data["undeclare"]
+            if type(kind_id) is not int or kind_id <= 0 or kind_id > 9_223_372_036_854_775_807:
+                raise ValueError("undeclare must be a declaration id")
+            return {"undeclared": agent_rules.delete_kind(
+                        _universe_dir(), kind_id, confirm=data.get("confirm") is True),
+                    **_listing()}
+        if "delete" in data:
+            rule_id = data["delete"]
+            # A positive JSON integer only: no float truncation, no bool, no
+            # value outside SQLite's integer range (gpt-6-astra on #4193).
+            if (type(rule_id) is not int or rule_id <= 0
+                    or rule_id > 9_223_372_036_854_775_807):
+                raise ValueError("delete must be a rule id")
+            removed = agent_rules.delete_rule(
+                _universe_dir(), rule_id,
+                confirm_handback=data.get("confirm_handback") is True,
+            )
+            return {"deleted": removed, **_listing()}
+        rule = agent_rules.set_rule(
+            _universe_dir(), str(data.get("action_class") or ""),
+            str(data.get("behaviour") or ""),
+            connection=str(data.get("connection") or ""),
+            operation=str(data.get("operation") or ""),
+            note=str(data.get("note") or ""),
+            confirm_handback=data.get("confirm_handback") is True,
+        )
+        return {"saved": rule.as_dict(), **_listing()}
+
+    try:
+        return JSONResponse(await run_in_threadpool(_save), headers=_NO_STORE)
+    except (agent_rules.RuleRefused, agent_review.ReviewSwitchRefused) as exc:
+        return JSONResponse(
+            {"error": "rule_refused", "detail": str(exc)}, status_code=409, headers=_NO_STORE,
+        )
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid_rule"}, status_code=400, headers=_NO_STORE)
+
+
+async def _handle_account_timezone(request: Any) -> Any:
+    """Record the signed-in user's own clock, as their browser reports it.
+
+    The app has always KNOWN the zone -- it formats every timestamp it displays
+    with ``Intl.DateTimeFormat`` -- and never sent it, while the scheduler
+    matched cron against the container's UTC clock. So a Pacific owner was told
+    "7am server time" for a note that would arrive at midnight (live
+    2026-09-30). This is the one route that closes that gap.
+
+    Same-origin JSON like the other account writes. An unresolvable name is
+    REFUSED rather than stored or blanked: a client that cannot name its zone
+    must not be able to clear one the owner already has, because the value
+    decides when their mornings happen.
+    """
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.schedule_timezone import UnknownTimezone
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    reported = str(data.get("timezone", "")).strip()
+    identity = current_identity()
+
+    def _store() -> str:
+        from tinyassets.api.helpers import _base_path
+        from tinyassets.storage.account_timezone import set_account_timezone
+
+        with identity_context(identity):
+            return set_account_timezone(
+                _base_path(),
+                owner_user_id=identity.user_id,
+                timezone_name=reported,
+            )
+
+    try:
+        from starlette.concurrency import run_in_threadpool
+
+        stored = await run_in_threadpool(_store)
+    except UnknownTimezone as exc:
+        return JSONResponse(
+            {"error": "timezone_invalid", "detail": str(exc)},
+            status_code=400,
+            headers=_NO_STORE,
+        )
+    except Exception:  # noqa: BLE001 - a settings write never breaks sign-in
+        import logging
+
+        logging.getLogger("tinyassets.onboarding").warning(
+            "account timezone could not be stored"
+        )
+        return JSONResponse(
+            {"error": "timezone_unavailable"}, status_code=503, headers=_NO_STORE
+        )
+    return JSONResponse({"timezone": stored}, headers=_NO_STORE)
+
+
+async def _handle_turn_interrupt(request: Any) -> Any:
+    """Stop the signed-in user's own running conversation turn (the Stop button).
+
+    Founder, 2026-09-30: "i can press escape to interrupt and send all pending
+    messages, basically just like it works in claude code". The page posts here,
+    waits for its in-flight ``converse`` to come back marked ``interrupted``, and
+    then sends what was queued behind it.
+
+    Keyed on the VERIFIED caller, never on anything in the body but which
+    universe: ``turn_interrupt.request_interrupt`` only reaches turns this same
+    subject started, so a body naming another user's universe finds nothing to
+    stop. ``interrupted: 0`` is an honest answer, not an error -- the turn may
+    have finished while the button was being pressed.
+    """
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.turn_interrupt import request_interrupt
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    identity = current_identity()
+    universe_id = str(data.get("universe_id", "") or "").strip()
+    if not universe_id:
+        from starlette.concurrency import run_in_threadpool
+
+        try:
+            universe_id = await run_in_threadpool(_read_home, identity, raise_errors=True)
+        except Exception:  # noqa: BLE001 - an unreadable home stops nothing
+            universe_id = ""
+    if not universe_id:
+        return JSONResponse({"interrupted": 0}, headers=_NO_STORE)
+    try:
+        count = request_interrupt(identity.user_id, universe_id)
+    except ValueError:
+        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
+    return JSONResponse({"interrupted": count, "universe_id": universe_id}, headers=_NO_STORE)
+
+
+async def _handle_turn_steer(request: Any) -> Any:
+    """Send the signed-in user's message into their own RUNNING turn (harness S2).
+
+    Founder, 2026-10-01: the agent should hear a message typed while it works,
+    the way Claude Code does, instead of the page holding it until the turn
+    ends. When a turn of this caller's thread is live, the message is queued
+    for the next tool result of that turn (``tinyassets.agent_steering``) and
+    ``steered: true`` comes back. When none is live, ``steered: false``: the
+    page sends it as an ordinary message instead.
+
+    Keyed on the VERIFIED caller exactly like the Stop button: only a turn this
+    subject started in this universe can be steered, and only into this
+    subject's own thread.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.turn_interrupt import live_count
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return JSONResponse({"error": "text_required"}, status_code=400, headers=_NO_STORE)
+    identity = current_identity()
+    universe_id = str(data.get("universe_id", "") or "").strip()
+    if not universe_id:
+        try:
+            universe_id = await run_in_threadpool(_read_home, identity, raise_errors=True)
+        except Exception:  # noqa: BLE001 - no home: nothing running to steer
+            universe_id = ""
+    if not universe_id:
+        return JSONResponse({"steered": False}, headers=_NO_STORE)
+    try:
+        if not live_count(identity.user_id, universe_id):
+            return JSONResponse(
+                {"steered": False, "universe_id": universe_id}, headers=_NO_STORE,
+            )
+    except ValueError:
+        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
+
+    def _queue():
+        from tinyassets import addressed_agents, agent_steering
+        from tinyassets.api.helpers import _base_path, _universe_dir
+
+        # A steer goes to the agent the owner is talking to (harness §4.18):
+        # that agent's own thread, resolved inside the owner's own universe.
+        addressed = addressed_agents.resolve(
+            _base_path(), universe_id=universe_id, owner=identity.user_id,
+            agent_id=data.get("agent_id"),
+        )
+        session = addressed_agents.memory_session(
+            identity.user_id,
+            addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT,
+        )
+        return agent_steering.enqueue(_universe_dir(universe_id), f"thread:{session}", text)
+
+    from tinyassets.addressed_agents import AgentNotAddressable
+    from tinyassets.agent_steering import SteeringRefused
+
+    try:
+        queued = await run_in_threadpool(_queue)
+    except AgentNotAddressable as exc:
+        return JSONResponse(
+            {"error": "agent_not_found", "detail": str(exc)},
+            status_code=404, headers=_NO_STORE,
+        )
+    except SteeringRefused as exc:
+        return JSONResponse(
+            {"error": "steering_refused", "detail": str(exc)},
+            status_code=409, headers=_NO_STORE,
+        )
+    except ValueError:
+        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
+    if queued is None:
+        # The turn settled between the check above and the queue: admission and
+        # settle share one transaction, so the line was refused, never stranded.
+        return JSONResponse({"steered": False, "universe_id": universe_id}, headers=_NO_STORE)
+    return JSONResponse(
+        {"steered": True, "universe_id": universe_id, "steer_id": queued.id},
+        headers=_NO_STORE,
+    )
+
+
 async def _handle_account_delete(request: Any) -> Any:
     """Delete the signed-in user's account: their universe (memory, history,
     deposited credentials), every row keyed to it, any paid plan (cancelled
@@ -1204,15 +1663,21 @@ async def _handle_billing_status(request: Any) -> Any:
                         "reason": "no_home_universe"}
             # Tier and, if it is ending, when. No Stripe round-trip: `ends_at` is
             # persisted by the webhook, so this stays a local read even though it is
-            # polled. Usage limits belong to the metering change, which has NOT
-            # landed - reporting quotas here would advertise enforcement that does
-            # not exist.
+            # polled. Seats are enforced (`universe_seats`); storage is not yet, so
+            # it is not reported as a limit. `upgrade_url` is None on the top tier,
+            # which is what the app's `?upgrade=1` entry reads.
             plan = get_plan(_universe_dir(home))
+            from tinyassets.usage_policy import limits_for, upgrade_url
+
+            limits = limits_for(plan["tier"])
             return {
                 "tier": plan["tier"],
                 "ends_at": plan["ends_at"],
                 "billing_enabled": billing_enabled(),
-                "enforced": [],
+                "enforced": ["seats"],
+                "seats": limits.seats,
+                "interactive_reserve": limits.interactive_reserve,
+                "upgrade_url": upgrade_url(plan["tier"]),
             }
 
     return JSONResponse(
@@ -1371,8 +1836,8 @@ async def _handle_billing_checkout(request: Any) -> Any:
                 try:
                     params = checkout_params(
                         universe_id=home,
-                        success_url=origin + "/mcp/app?subscribed=1",
-                        cancel_url=origin + "/mcp/app?subscribed=0",
+                        success_url=origin + "/app?subscribed=1",
+                        cancel_url=origin + "/app?subscribed=0",
                         expires_at=int(now + CHECKOUT_SESSION_SECONDS),
                     )
                 except AlreadySubscribed:
@@ -1601,41 +2066,79 @@ async def _handle_billing_webhook(request: Any) -> Any:
 
 
 def onboarding_routes() -> list[Any]:
-    """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
+    """Starlette routes for the app, mounted alongside ``/mcp``.
 
-    Served under ``/mcp/`` so the production tunnel reaches it with no infra
-    change, and same-origin so the page calls ``/mcp`` (and the token-exchange
-    proxy) with no CORS.
+    Served at the apex ``/app`` (founder directive 2026-09-30, moved off
+    ``/mcp/app``) — still SAME ORIGIN as ``/mcp``, so the page calls the
+    connector and the token-exchange proxy with no CORS. The public edge binds
+    ``tinyassets.io/app*`` to the same Worker that proxies ``/mcp``
+    (``deploy/cloudflare-worker/wrangler.toml``); that binding is what makes
+    these routes reachable, and the move is not live without it.
+
+    ``/mcp/app`` is GONE, not redirected: nothing here mounts it, and it gets no
+    carve-out anywhere, so it behaves exactly like any other absent path inside
+    the connector namespace (``401`` anonymously, ``404`` with a bearer).
     """
     from starlette.routing import Route
 
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
-    from tinyassets.onboarding.model_connect import handle_model_callback, handle_model_connect
+    from tinyassets.onboarding.model_connect import (
+        handle_client_metadata,
+        handle_model_callback,
+        handle_model_connect,
+    )
     from tinyassets.onboarding.model_preferences import handle_model_preferences
+    from tinyassets.onboarding.notifications import (
+        handle_devices,
+        handle_notify_settings,
+        handle_service_worker,
+    )
+    from tinyassets.onboarding.ui_frame import handle_ui_frame
+    from tinyassets.owner_door import owner_door_routes
 
     return [
-        Route("/mcp/app", _handle_app, methods=["GET", "HEAD"]),
-        Route("/mcp/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
-        Route("/mcp/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
-        Route("/mcp/app/token", _handle_token, methods=["POST"]),
-        Route("/mcp/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
-        Route("/mcp/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
-        Route("/mcp/app/openai/begin", _handle_openai_begin, methods=["POST"]),
-        Route("/mcp/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
-        Route("/mcp/app/voice/status", _handle_voice_status, methods=["GET"]),
-        Route("/mcp/app/voice/session", _handle_voice_session, methods=["POST"]),
-        Route("/mcp/app/me", _handle_me, methods=["GET"]),
-        Route("/mcp/app/trace", _handle_trace, methods=["POST"]),
-        Route("/mcp/app/serving/bind", _handle_serving_bind, methods=["POST"]),
-        Route("/mcp/app/models/preferences", handle_model_preferences, methods=["GET", "POST"]),
-        Route("/mcp/app/billing/status", _handle_billing_status, methods=["GET"]),
-        Route("/mcp/app/billing/checkout", _handle_billing_checkout, methods=["POST"]),
-        Route("/mcp/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
-        Route("/mcp/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
-        Route("/mcp/app/account/delete", _handle_account_delete, methods=["POST"]),
-        Route("/mcp/app/connections", handle_connections, methods=["GET", "POST"]),
-        Route("/mcp/app/files", handle_file_upload, methods=["POST"]),
+        Route("/app", _handle_app, methods=["GET", "HEAD"]),
+        Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
+        Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
+        Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),
+        # Public (carve-out in `_auth_challenge_path`): an authorization server
+        # fetches this client metadata document with no bearer.
+        Route("/app/oauth/client-metadata.json", handle_client_metadata,
+              methods=["GET", "HEAD"]),
+        Route("/app/token", _handle_token, methods=["POST"]),
+        Route("/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
+        Route("/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
+        Route("/app/openai/begin", _handle_openai_begin, methods=["POST"]),
+        Route("/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
+        Route("/app/voice/status", _handle_voice_status, methods=["GET"]),
+        Route("/app/voice/session", _handle_voice_session, methods=["POST"]),
+        Route("/app/me", _handle_me, methods=["GET"]),
+        Route("/app/trace", _handle_trace, methods=["POST"]),
+        Route("/app/serving/bind", _handle_serving_bind, methods=["POST"]),
+        Route("/app/models/preferences", handle_model_preferences, methods=["GET", "POST"]),
+        Route("/app/billing/status", _handle_billing_status, methods=["GET"]),
+        Route("/app/billing/checkout", _handle_billing_checkout, methods=["POST"]),
+        Route("/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
+        Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
+        Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
+        Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
+        Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
+        Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
+        Route("/app/turn/steer", _handle_turn_steer, methods=["POST"]),
+        Route("/app/connections", handle_connections, methods=["GET", "POST"]),
+        Route("/app/files", handle_file_upload, methods=["POST"]),
+        # Notifications. `/app/devices` and `/app/notify` are identity-gated by
+        # `_is_app_path`'s segment-boundary rule -- no enumeration to extend --
+        # and `tests/test_app_notification_routes.py` pins that. `/app/sw.js`
+        # is the exception: a browser fetches a service worker with no bearer,
+        # so it has a carve-out in `_auth_challenge_path`.
+        Route("/app/devices", handle_devices, methods=["GET", "POST"]),
+        Route("/app/notify", handle_notify_settings, methods=["GET", "POST"]),
+        Route("/app/sw.js", handle_service_worker, methods=["GET", "HEAD"]),
+        # The OWNER door: every read the app renders, complete. Identity-gated by
+        # `_is_app_path` like every route above; see `tinyassets/owner_door`.
+        *owner_door_routes(),
     ]
 
 

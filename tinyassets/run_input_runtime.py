@@ -280,7 +280,9 @@ def dispatch_admitted_run(base, *, run_id, prepare, on_settled=None):
             return False
         _submitted.add(key)
     try:
-        future = runs._get_executor(invocation_depth=0).submit(
+        future = runs._get_executor(
+            invocation_depth=0, pool_key=runs.run_pool_key_for_run(base, run_id),
+        ).submit(
             contextvars.Context().run,
             _work,
             base,

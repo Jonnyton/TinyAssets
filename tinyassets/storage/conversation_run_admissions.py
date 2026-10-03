@@ -91,7 +91,12 @@ def _key(value):
 
 def initialize(base):
     """Deployment/schema setup, never called from the admission transaction."""
+    from tinyassets.branch_versions import initialize_branch_versions_db
+
     initialize_runs_db(base)
+    # Source authorization reads branch_versions.public; migrate that table
+    # (column + one-time publication-mark backfill) before any admission.
+    initialize_branch_versions_db(base)
     with sqlite3.connect(runs_db_path(base), timeout=5) as conn:
         conn.executescript(_SCHEMA)
 
@@ -216,9 +221,10 @@ class _AuthorizedSource:
 def authorize_source(scope, version_id, content_hash):
     """Metadata lookup, then current author visibility, BEFORE a runs writer.
 
-    Same exact-id public-or-requester-author rule as resolve_branch_id_for_read;
-    inline transaction-local SELECT avoids that helper opening another author DB
-    connection. Existing compiler provenance still decides foreign code execution.
+    The one version read rule (``branch_versions.version_readable_by``, which
+    the connector's readers use too), applied to rows this scope already holds
+    so no helper opens another author DB connection. Existing compiler
+    provenance still decides foreign code execution.
     """
     scope.check()
     if scope.runs_open:
@@ -230,7 +236,7 @@ def authorize_source(scope, version_id, content_hash):
     _plain(path)
     conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
     try:
-        metadata = conn.execute("SELECT branch_def_id FROM branch_versions "
+        metadata = conn.execute("SELECT branch_def_id, public FROM branch_versions "
                                 "WHERE branch_version_id=?", (version_id,)).fetchone()
     finally:
         conn.close()
@@ -246,7 +252,8 @@ def authorize_source_in_transaction(conn, scope, version_id, content_hash):
             or not isinstance(content_hash, str) or len(content_hash) != 64):
         raise PermissionError("consumer source unavailable")
     metadata = conn.execute(
-        "SELECT branch_def_id FROM branch_versions WHERE branch_version_id=?", (version_id,),
+        "SELECT branch_def_id, public FROM branch_versions WHERE branch_version_id=?",
+        (version_id,),
     ).fetchone()
     return _source_authority(scope, version_id, content_hash, metadata)
 
@@ -256,7 +263,11 @@ def _source_authority(scope, version_id, content_hash, metadata):
         raise PermissionError("consumer source unavailable")
     author = scope.author.execute("SELECT author,visibility FROM branch_definitions "
                                   "WHERE branch_def_id=?", (metadata[0],)).fetchone()
-    if author is None or not (author[0] == scope.owner or (author[1] or "public") == "public"):
+    from tinyassets.branch_versions import version_readable_by
+
+    if author is None or not version_readable_by(
+        scope.owner, author=author[0], visibility=author[1], public=metadata[1],
+    ):
         raise PermissionError("consumer source unavailable")
     return _AuthorizedSource(scope, version_id, metadata[0], content_hash)
 
@@ -491,8 +502,8 @@ def _write_pair(scope, row):
                           f"consumer:{row['admission_id']}:{suffix}", execution, failure))
         conn.execute("INSERT INTO conversation_terminal_projections VALUES (?,?,?,?,?,?)",
                      (row["admission_id"], scope.session, digest, number, number + 1, now))
-        conn.execute("DELETE FROM conversation_turns WHERE session_id=? AND turn_no<=?",
-                     (scope.session, number + 1 - conversation_store.RETENTION_TURNS))
+        # No retention delete. The projected pair joins the transcript and stays
+        # there; see conversation_store, where the 400-turn ceiling used to be.
         conn.commit()
         return number
     finally:

@@ -108,21 +108,55 @@ def _pairs(argv: list[str], flag: str) -> list[tuple[str, str]]:
     return [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv[:-2]) if a == flag]
 
 
+@pytest.mark.parametrize("agent_id,identity_flag", [
+    ("agent_binding_w1", "--ro-bind-try"),
+    ("main", "--bind-try"),
+])
+def test_identity_mount_is_writable_only_for_main(tmp_path, monkeypatch, agent_id, identity_flag):
+    universe = _universe(tmp_path)
+    for name in ("identity.md", "founder.md"):
+        (universe / name).write_text("original", encoding="utf-8")
+    monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id=agent_id)
+    identity = (str(universe.resolve() / "identity.md"), "/u/identity.md")
+    assert identity in _pairs(argv, identity_flag)
+    other_flag = "--bind-try" if identity_flag == "--ro-bind-try" else "--ro-bind-try"
+    assert identity not in _pairs(argv, other_flag)
+    assert (str(universe.resolve() / "founder.md"), "/u/founder.md") in _pairs(
+        argv, "--bind-try")
+
+
+@pytest.mark.parametrize("agent_id", ["", " \t\n"])
+def test_tool_jail_refuses_blank_agent_id(tmp_path, agent_id):
+    with pytest.raises(UniverseToolError, match="agent_id is required"):
+        universe_tools.tool_jail_argv(tmp_path, ["/bin/true"], agent_id=agent_id)
+    with pytest.raises(UniverseToolError, match="agent_id is required"):
+        universe_tools._universe_view(tmp_path, agent_id=agent_id)
+
+
 def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     tmp_path, monkeypatch,
 ):
     universe = _universe(tmp_path)
     (universe / "identity.md").write_text("---\nname: A\n---\n", encoding="utf-8")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
     root = str(universe.resolve())
 
     assert "--share-net" not in argv
     for flag in ("--unshare-all", "--clearenv", "--die-with-parent", "--new-session"):
         assert flag in argv, flag
-    # The universe root is READ-ONLY at /u; only agent-owned paths are rw.
-    assert (root, "/u") in _pairs(argv, "--ro-bind")
-    rw = dict((dest, src) for src, dest in _pairs(argv, "--bind"))
+    # /u is the agent's OWN workspace, bound read-write as a whole (harness W2);
+    # the visible root entries are bound over it, agent-owned ones read-write.
+    workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
+    assert ("--bind", workspace, "/u") == tuple(argv[argv.index(workspace) - 1:
+                                                     argv.index(workspace) + 2])
+    workspace_at = argv.index(workspace)
+    assert all(workspace_at < argv.index(dest) for _src, dest in (
+        _pairs(argv, "--bind-try") + _pairs(argv, "--ro-bind-try")))
+    assert "--remount-ro" not in argv
+    assert root not in argv, "the root itself is never bound"
+    rw = dict((dest, src) for src, dest in _pairs(argv, "--bind-try"))
     assert rw["/u/identity.md"] == str(universe.resolve() / "identity.md")
     assert rw["/u/skills"] == str(universe.resolve() / "skills")
     assert "/u" not in rw
@@ -131,7 +165,8 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     for name in universe_tools.AGENT_HARNESS_DIRS:
         assert (universe / name).is_dir(), f"harness dir {name} is created first"
     # Nothing else of the data root, and no credential snapshot or install tree.
-    for source, _dest in _pairs(argv, "--bind") + _pairs(argv, "--ro-bind"):
+    for source, _dest in (_pairs(argv, "--bind") + _pairs(argv, "--ro-bind")
+                          + _pairs(argv, "--bind-try") + _pairs(argv, "--ro-bind-try")):
         assert source.startswith(root) or not source.startswith(str(tmp_path)), source
     env = {argv[i + 1]: argv[i + 2] for i, a in enumerate(argv) if a == "--setenv"}
     assert env["HOME"] == "/tmp" and set(env) == {"PATH", "HOME", "LANG", "TERM"}
@@ -139,73 +174,94 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     assert argv[argv.index("--") + 1:] == ["/bin/true"]
 
 
-def test_the_owners_credentials_and_authority_state_are_masked_from_the_agent(
+def test_the_owners_credentials_and_authority_state_are_absent_from_the_jail(
     tmp_path, monkeypatch,
 ):
     """The credential vault and the consent / usage databases live in the
-    universe ROOT, not .runtime. Every hidden root entry is masked: a dir by an
-    empty tmpfs, a file by a read-only /dev/null. None is bound read-write."""
+    universe ROOT, not .runtime. No hidden root entry is in the jail at all:
+    not bound, not masked. Visible platform files are read-only."""
     universe = _universe(tmp_path)
     (universe / ".credential-vault.json").write_text('{"k": "SECRET"}', encoding="utf-8")
     (universe / ".credentials").mkdir()
     (universe / ".effector_consents.db").write_bytes(b"sqlite")
+    (universe / ".effector_consents.db-shm").write_bytes(b"shm")
     (universe / ".usage_ledger.db").write_bytes(b"sqlite")
     (universe / ".runtime").mkdir()
     (universe / ".claude").mkdir()
     (universe / "soul.md").write_text("# soul", encoding="utf-8")
     (universe / "config.yaml").write_text("timeout: 5\n", encoding="utf-8")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
 
-    masked_files = {dest for src, dest in _pairs(argv, "--ro-bind") if src == "/dev/null"}
-    assert {"/u/.credential-vault.json", "/u/.effector_consents.db",
-            "/u/.usage_ledger.db"} <= masked_files
-    tmpfs = {argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--tmpfs"}
-    assert {"/u/.credentials", "/u/.runtime", "/u/.claude"} <= tmpfs
-    rw = {dest for _src, dest in _pairs(argv, "--bind")}
-    # Control plane and platform state stay read-only (visible, never writable).
-    for name in ("soul.md", "config.yaml", ".credential-vault.json", ".effector_consents.db"):
-        assert f"/u/{name}" not in rw, name
+    workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
+    for arg in argv:
+        # The one hidden name allowed is the agent's own workspace, as /u's source.
+        assert "/." not in arg or arg == workspace, (
+            f"a hidden root entry reached the jail argv: {arg}")
+    ro = {dest for _src, dest in _pairs(argv, "--ro-bind-try")}
+    assert {"/u/soul.md", "/u/config.yaml"} <= ro
+    rw = {dest for _src, dest in _pairs(argv, "--bind-try")}
+    assert not {"/u/soul.md", "/u/config.yaml"} & rw
 
 
-def test_a_symlinked_hidden_root_entry_is_refused_not_followed(tmp_path, monkeypatch):
+def test_a_symlinked_root_entry_is_never_bound(tmp_path, monkeypatch):
     universe = _universe(tmp_path)
     other = _universe(tmp_path, "u-bravo")
     try:
         (universe / ".runtime").symlink_to(other, target_is_directory=True)
+        (universe / "notes").symlink_to(other, target_is_directory=True)
+        (universe / "founder.md").symlink_to(other / "founder.md")
     except (OSError, NotImplementedError):
         pytest.skip("this host cannot create a symlink")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    with pytest.raises(UniverseToolError, match="is a link"):
-        universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
+    assert not any(str(other.resolve()) in arg for arg in argv)
+    assert "/u/notes" not in argv and "/u/founder.md" not in argv
+
+
+def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkeypatch):
+    """The daemon owns the folder concurrently: a SQLite sidecar or a temp file
+    that exists at the scan may be gone when bubblewrap runs. Every bind is a
+    ``-try``, and the view still validates when its source has vanished."""
+    universe = _universe(tmp_path)
+    (universe / "story.db-shm").write_bytes(b"shm")
+    view = universe_tools._universe_view(universe.resolve(), agent_id="main")
+    (universe / "story.db-shm").unlink()
+    argv = jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
+    assert (str(universe.resolve() / "story.db-shm"), "/u/story.db-shm") in _pairs(
+        argv, "--ro-bind-try")
+    # Replaced by a link after the scan: the argv is refused, not bound to it.
+    other = _universe(tmp_path, "u-bravo")
+    (universe / "lore").mkdir()
+    view = universe_tools._universe_view(universe.resolve(), agent_id="main")
+    (universe / "lore").rmdir()
+    try:
+        (universe / "lore").symlink_to(other, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        with pytest.raises(ProviderConfinementError, match="inside its own command center"):
+            jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
+    with pytest.raises(ProviderConfinementError, match="does not exist"):
+        jail_argv(["/bin/true"], provider_jail.UniverseView(
+            universe_dir=universe, mounts=(provider_jail.JailMount(
+                "ro-bind", "/u/gone", universe / "gone"),),
+        ), bwrap_path="/usr/bin/bwrap")
 
 
 def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monkeypatch):
-    import struct
-
     universe = _universe(tmp_path)
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], seccomp_fd=7)
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main", seccomp_fd=7)
     assert argv[argv.index("--seccomp") + 1] == "7"
     assert argv.index("--seccomp") < argv.index("--")
 
-    program = universe_tools.seccomp_program()
-    insns = [struct.unpack("=HBBI", program[i:i + 8]) for i in range(0, len(program), 8)]
-    # Each arch's deny list is asserted on its OWN branch of the program, so a
-    # syscall missing from one arch cannot hide behind the other's list.
-    arm_at = next(i for i, (code, _jt, _jf, k) in enumerate(insns)
-                  if code == 0x15 and k == 0xC00000B7)
-    x86_denied = {k for code, jt, _jf, k in insns[3:arm_at] if code == 0x15 and jt > 0}
-    arm_denied = {k for code, jt, _jf, k in insns[arm_at + 1:] if code == 0x15 and jt > 0}
-    # x86_64: symlink, symlinkat, mknod, mknodat, io_uring setup/enter/register.
-    assert x86_denied == {88, 266, 133, 259, 425, 426, 427}
-    # aarch64: symlinkat, mknodat, io_uring setup/enter/register.
-    assert arm_denied == {36, 33, 425, 426, 427}
-    assert insns[-1] == (0x06, 0, 0, 0x00050001), "the deny target is EPERM"
-    # Every jump lands inside the program.
-    for pc, (code, jt, jf, _k) in enumerate(insns):
-        if code in (0x15, 0x35):
-            assert pc + 1 + max(jt, jf) < len(insns)
+    # The tool jail runs no CLI sandbox of its own, so it gets the full filter:
+    # links, special files, io_uring, new user namespaces and the kernel
+    # interfaces. What each one decides is asserted in tests/test_jail_seccomp.py.
+    from tinyassets.providers.jail_seccomp import deny_program
+
+    assert universe_tools.seccomp_program() == deny_program(nested_sandbox=False)
 
 
 def test_limits_wrap_the_command_and_prove_themselves_before_it_runs(monkeypatch):
@@ -228,7 +284,7 @@ def test_no_prlimit_refuses_before_anything_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(universe_tools.subprocess, "Popen",
                         lambda *a, **k: spawned.append(a))
     with pytest.raises(UniverseToolError, match="prlimit"):
-        universe_tools.run_jailed(universe, ["/bin/true"])
+        universe_tools.run_jailed(universe, ["/bin/true"], agent_id="main")
     assert spawned == []
 
 
@@ -245,7 +301,7 @@ def test_no_os_sandbox_refuses_before_anything_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(universe_tools.subprocess, "Popen",
                         lambda *a, **k: spawned.append(a))
     with pytest.raises(ProviderConfinementError):
-        universe_tools.run_jailed(universe, ["/bin/true"])
+        universe_tools.run_jailed(universe, ["/bin/true"], agent_id="main")
     assert spawned == []
 
 
@@ -259,7 +315,7 @@ def test_a_jail_that_never_proves_its_limits_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(universe_tools, "TOOL_JAIL_ARGV",
                         lambda udir, inner, **_kw: ["/bin/sh", "-c", "echo unlimited output"])
     with pytest.raises(UniverseToolError, match="did not start under its resource limits"):
-        universe_tools.run_jailed(universe, ["/bin/true"])
+        universe_tools.run_jailed(universe, ["/bin/true"], agent_id="main")
 
 
 @posix_only
@@ -277,7 +333,7 @@ def test_a_root_run_jail_without_a_cgroup_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(universe_tools.subprocess, "Popen",
                         lambda *a, **k: spawned.append(a))
     with pytest.raises(UniverseToolError, match="exempts root from the process limit"):
-        universe_tools.run_jailed(universe, ["/bin/true"])
+        universe_tools.run_jailed(universe, ["/bin/true"], agent_id="main")
     assert spawned == []
 
 
@@ -293,7 +349,6 @@ def test_a_provider_launch_view_masks_every_hidden_root_dir(tmp_path):
         (universe / name).mkdir()
         (universe / name / "settings.json").write_text('{"hooks": {}}', encoding="utf-8")
     (universe / ".runtime").mkdir()
-    (universe / ".hidden-file").write_text("x", encoding="utf-8")
     view = default_view(universe)
     argv = jail_argv(["cli", "-p"], view, bwrap_path="/usr/bin/bwrap")
     for name in (".claude", ".codex", ".some-future-cli"):
@@ -301,9 +356,41 @@ def test_a_provider_launch_view_masks_every_hidden_root_dir(tmp_path):
         assert argv[mask - 1] == "--tmpfs", name
         assert mask > argv.index(str(universe)), "the mask sits over the universe bind"
     assert f"{universe}/.runtime" not in argv, "the launch still needs its runtime"
-    assert f"{universe}/.hidden-file" not in argv
-    # A share-net launch is unchanged: only the tool jail drops the network.
-    assert "--share-net" in argv and "--clearenv" not in argv
+    # No jail shares the host network; only the tool jail clears the env.
+    assert "--share-net" not in argv and "--clearenv" not in argv
+
+
+def test_a_provider_launch_view_masks_every_hidden_root_file(tmp_path):
+    """Per-universe platform state at the root -- the credential vault, the run,
+    consent and usage databases -- is a /dev/null bind, so the provider can
+    neither read it nor replace it with a link the daemon would follow."""
+    universe = _universe(tmp_path).resolve()
+    for name in (".credential-vault.json", ".runs.db", ".runs.db-wal",
+                 ".effector_consents.db", ".usage.db", ".some-future-cli-config"):
+        (universe / name).write_text("platform state", encoding="utf-8")
+    (universe / ".runtime").mkdir()
+    view = default_view(universe)
+    argv = jail_argv(["cli", "-p"], view, bwrap_path="/usr/bin/bwrap")
+    universe_bind = argv.index(str(universe))
+    for name in (".credential-vault.json", ".runs.db", ".runs.db-wal",
+                 ".effector_consents.db", ".usage.db", ".some-future-cli-config"):
+        mask = argv.index(f"{universe}/{name}")
+        assert argv[mask - 2] == "--ro-bind" and argv[mask - 1] == "/dev/null", name
+        assert mask > universe_bind, "the mask sits over the universe bind"
+    assert f"{universe}/.runtime" not in argv, "the launch still needs its runtime"
+
+
+def test_a_provider_launch_refuses_a_symlinked_hidden_file(tmp_path):
+    """A hidden root entry that is already a link cannot be masked over, so the
+    launch is refused rather than following it."""
+    universe = _universe(tmp_path).resolve()
+    (tmp_path / "elsewhere.db").write_text("other", encoding="utf-8")
+    try:
+        (universe / ".runs.db").symlink_to(tmp_path / "elsewhere.db")
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create a symlink")
+    with pytest.raises(ProviderConfinementError, match="is a link"):
+        default_view(universe)
 
 
 def test_a_provider_launch_refuses_a_symlinked_hidden_dir(tmp_path):
@@ -339,7 +426,7 @@ def test_edit_replaces_exactly_one_match_and_writes_it_back(tmp_path, monkeypatc
     universe = _universe(tmp_path)
     spy = _Spy(_ok(b"alpha\nbeta\n"), _ok())
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    assert universe_tools.edit_file(universe, "notes/a.md", "beta", "gamma") == (
+    assert universe_tools.edit_file(universe, "notes/a.md", "beta", "gamma", agent_id="main") == (
         "edited /u/notes/a.md"
     )
     write = spy.calls[1]
@@ -355,7 +442,7 @@ def test_edit_refuses_an_ambiguous_or_missing_passage(tmp_path, monkeypatch, con
     universe = _universe(tmp_path)
     spy = _Spy(_ok(content))
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    assert expect in universe_tools.edit_file(universe, "a.md", "beta", "x")
+    assert expect in universe_tools.edit_file(universe, "a.md", "beta", "x", agent_id="main")
     assert len(spy.calls) == 1, "nothing is written back"
 
 
@@ -363,13 +450,13 @@ def test_paths_are_the_jails_paths_and_the_jail_is_the_boundary(tmp_path, monkey
     universe = _universe(tmp_path)
     spy = _Spy()
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    universe_tools.read_file(universe, "skills/x/SKILL.md")
-    universe_tools.read_file(universe, "/data/u-bravo/founder.md")
+    universe_tools.read_file(universe, "skills/x/SKILL.md", agent_id="main")
+    universe_tools.read_file(universe, "/data/u-bravo/founder.md", agent_id="main")
     assert spy.calls[0]["inner"][4] == "/u/skills/x/SKILL.md"
     # Not rewritten, not "cleaned": outside /u it simply does not exist in the jail.
     assert spy.calls[1]["inner"][4] == "/data/u-bravo/founder.md"
     with pytest.raises(UniverseToolError):
-        universe_tools.read_file(universe, "")
+        universe_tools.read_file(universe, "", agent_id="main")
 
 
 @pytest.mark.parametrize(("run", "trailer"), [
@@ -387,7 +474,7 @@ def test_bash_reports_how_the_command_ended(tmp_path, monkeypatch, run, trailer)
     monkeypatch.setattr(universe_tools.shutil, "which",
                         lambda name, path=None: f"/usr/bin/{name}")
     monkeypatch.setattr(universe_tools, "RUNNER", _Spy(run))
-    assert trailer in universe_tools.bash(universe, "echo hi")
+    assert trailer in universe_tools.bash(universe, "echo hi", agent_id="main")
 
 
 def test_bash_clamps_its_wall_clock(tmp_path, monkeypatch):
@@ -396,8 +483,8 @@ def test_bash_clamps_its_wall_clock(tmp_path, monkeypatch):
                         lambda name, path=None: f"/usr/bin/{name}")
     spy = _Spy(_ok(), _ok())
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    universe_tools.bash(universe, "true", timeout=99999)
-    universe_tools.bash(universe, "true")
+    universe_tools.bash(universe, "true", agent_id="main", timeout=99999)
+    universe_tools.bash(universe, "true", agent_id="main")
     assert spy.calls[0]["wall_seconds"] == universe_tools.MAX_BASH_SECONDS
     assert spy.calls[1]["wall_seconds"] == universe_tools.DEFAULT_LIMITS.wall_seconds
 
@@ -744,7 +831,7 @@ def test_a_soul_edit_refuses_alias_frontmatter_without_expanding_it(tmp_path):
                                           encoding="utf-8")
     with pytest.raises(SoulEditError, match="refused"):
         apply_soul_edit(universe, changes={"identity.md": "new identity body"},
-                        source="test", context="c", summary="s")
+                        agent_id="main", source="test", context="c", summary="s")
 
 
 def test_a_soul_edit_refuses_an_oversized_governed_file(tmp_path):
@@ -755,7 +842,7 @@ def test_a_soul_edit_refuses_an_oversized_governed_file(tmp_path):
                                           encoding="utf-8")
     with pytest.raises(SoulEditError, match="over its bound"):
         apply_soul_edit(universe, changes={"identity.md": "new identity body"},
-                        source="test", context="c", summary="s")
+                        agent_id="main", source="test", context="c", summary="s")
 
 
 def test_soul_versions_are_listed_and_read_without_following_links(tmp_path):
@@ -785,8 +872,107 @@ def test_agent_owned_paths_are_pinned():
     """
     assert universe_tools.AGENT_BRAIN_FILES == (
         "identity.md", "founder.md", "origin.md", "body.md", "orgchart.md",
-        "projects.md", "goals.md", "index.md", "log.md", "voice.md",
+        "projects.md", "goals.md", "index.md", "log.md", "voice.md", "AGENTS.md",
     )
     assert universe_tools.AGENT_HARNESS_DIRS == (
-        "skills", "prompts", "extensions", "workflows", "bin", "notes",
+        "skills", "prompts", "extensions", "workflows", "bin", "notes", "wiki",
     )
+
+
+# ---------------------------------------------------------------------------
+# Host slots: a busy host WAITS, and there is no per-universe count
+# ---------------------------------------------------------------------------
+
+
+def test_there_is_no_per_universe_tool_slot_count():
+    """``_PER_UNIVERSE_SLOTS = 2`` and the 30s refusal deadline are gone.
+
+    They were a second, account-shaped ceiling stacked on the host floor: a
+    universe was told it could not run a third tool even on an otherwise idle
+    host, and a busy host refused after thirty seconds. An account has exactly
+    two limits, cloud bytes and concurrent agent seats (founder, 2026-09-30), and
+    over the concurrency line work WAITS.
+    """
+    import inspect
+
+    assert not hasattr(universe_tools, "_PER_UNIVERSE_SLOTS")
+    assert not hasattr(universe_tools, "_SLOT_WAIT_SECONDS")
+    # The host floor stays -- it is what keeps one universe from being an outage
+    # for the others on a 1 vCPU box.
+    assert universe_tools._HOST_SLOTS == 4
+
+    # Read the CODE, not the prose: the docstring and comments explain what was
+    # removed, so parse the function and unparse it without its docstring.
+    import ast
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(universe_tools._slot)))
+    fn = tree.body[0]
+    if ast.get_docstring(fn) is not None:
+        fn.body = fn.body[1:]
+    body = ast.unparse(fn)
+    assert "deadline" not in body, "a deadline here is a refusal wearing a timeout"
+    assert "raise" not in body, "_slot must never refuse for the host being busy"
+    assert "UniverseToolError" not in body
+
+
+@posix_only
+def test_a_full_host_makes_the_next_call_wait_and_then_run(tmp_path, monkeypatch):
+    """Every host slot held: the next caller queues, is told it is waiting, and runs.
+
+    Drives the real ``_slot`` with real ``flock`` files. The held slots are
+    released after 0.25 s, so what this proves is the WAIT resolving into a run
+    and ``on_wait`` firing.
+
+    It does NOT by itself prove there is no deadline -- a restored 30-second one
+    would pass this too (Codex refute, 2026-09-30). What catches that is
+    ``test_there_is_no_per_universe_tool_slot_count``, which unparses ``_slot``
+    and refuses any ``deadline``, ``raise`` or ``UniverseToolError`` in its body.
+    Asserted here as well so the pair cannot drift apart.
+    """
+    import ast as _ast
+    import inspect as _inspect
+    import textwrap as _textwrap
+
+    _fn = _ast.parse(
+        _textwrap.dedent(_inspect.getsource(universe_tools._slot))
+    ).body[0]
+    if _ast.get_docstring(_fn) is not None:
+        _fn.body = _fn.body[1:]
+    assert "deadline" not in _ast.unparse(_fn)
+    import fcntl
+    import threading
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(universe_tools, "_HOST_SLOTS", 2)
+    monkeypatch.setattr(universe_tools, "_SLOT_POLL_SECONDS", 0.01)
+    universe = _universe(tmp_path)
+
+    directory = universe_tools._slot_dir()
+    held = []
+    for i in range(2):
+        fd = os.open(directory / f"host-{i}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held.append(fd)
+
+    waits: list[float] = []
+    released = threading.Event()
+
+    def _release():
+        for fd in held:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        released.set()
+
+    timer = threading.Timer(0.25, _release)
+    timer.start()
+    try:
+        with universe_tools._slot(universe, on_wait=waits.append):
+            assert released.is_set(), "the call ran only after a slot came free"
+    finally:
+        timer.cancel()
+        if not released.is_set():
+            _release()
+
+    assert len(waits) == 1, "a blocked caller is told exactly once that it is waiting"
+    assert waits[0] >= 0.0

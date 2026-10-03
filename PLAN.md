@@ -18,6 +18,73 @@ The system should get simpler as models improve. Every scaffold is temporary unl
 
 ---
 
+## Operating Principles
+
+Founder-stated principles, kept in the founder's own wording. They shaped the
+architecture below, so they live here rather than in `AGENTS.md`, which holds only
+the loop and the facts a model would otherwise get wrong.
+
+- **24/7 uptime, zero hosts online.** Every surface works with no host online —
+  chatbot users through the live connector, daemon hosts installing the tray in
+  under 5 minutes, contributors cloning and running cleanly, plus discovery,
+  remix, converge, the paid-market inbox, and moderation. Take the task
+  unblocking the largest currently-broken surface; treat every outage as equal
+  severity, because tiering is what starves the quiet surfaces.
+- **The founder's desktop is never infrastructure** (2026-09-21). `DESKTOP-KCPMGP3`
+  is the founder's home PC: never enroll it, route platform work to it, or use it
+  as a fallback. Platform service dependencies are cloud-only, and an existing
+  local registration, tunnel, provider login or heartbeat is not permission.
+- **The platform has no LLM** (2026-09-24). Only a powered universe calls an LLM,
+  with its owner's own connected credentials, for that universe alone. No platform
+  model, no shared/host/maintainer credential, no fallback. The founder's
+  subscription is the founder universe's only.
+- **No vendor-specific compute or connection code** (2026-09-24). Any LLM or
+  platform connects through vendor-neutral connectors the user's agent configures;
+  a new vendor never needs a patch. Existing vendor paths are migration debt
+  (§ *Module: Providers*). Dev tooling is exempt.
+- **Shape → live MVP → user-test → then harden** (2026-08-20). One review for
+  shape, approach and single-user safety holes; ship the MVP live; test as a real
+  user; *then* harden what live use shows matters. Never gate a first draft behind
+  a hardening gauntlet — only live users reveal whether the shape is right.
+- **Private by default** (2026-09-26). *"nodes in users universes should be
+  private unless they make them other user accessible or visible or interactable in
+  some way"*, and *"universes and the nodes in them need to be default private and
+  we need to make sure that is set correctly for new users also"*. The platform
+  never declares an open level on an owner's behalf: every creation path writes
+  `private` — first-contact home materialization included, which is the new-user
+  path — the declaring migration writes `private`, and a Branch is born private
+  too. Exposure is a separate, explicit owner action, and a level the platform does
+  not enforce on every reader is not offered at all. As-built:
+  `openspec/specs/universe-visibility/spec.md`.
+- **The floor, and only the floor, blocks a deploy:** cross-user read or effect;
+  auth or credential exposure; unrecoverable loss of user data; wrong money; an
+  irreversible external act without consent; public connector down. Everything
+  else is tracked and re-judged after live use.
+- **If you know the next step, take it** (2026-09-17/24), approvals inside the
+  agreed work included. Ask only about new spending, irreversible or
+  outward-facing acts outside the agreed work, and PLAN.md changes. Gates default
+  autonomously; a true host-only ask is a `docs/host-actions.md` row with the
+  smallest possible scope, and it must not block unrelated work.
+- **Test through the app agent as a user would** (2026-09-24). Ask the way a
+  casual, naive user would; never feed it an answer it is supposed to work out,
+  because that is a false "works" signal real users get no help behind. Never
+  build or edit users' workflows yourself — enable the agent to do it. Scope is
+  the basic capability set, not the current user's needs: a basic capability stays
+  listed until cleared, even with nobody blocked on it.
+- **User uploads are authoritative.** Preserved verbatim — never summarized,
+  truncated, or reformatted.
+- **A pasted client chat is a bug report.** Extract the issues and fix them.
+- **Spec what is hard to reverse, build the rest.** Public MCP/API surface,
+  storage shape, authority/permissions, migrations and money get a proposal and
+  design before code; everything else is built, proven live, and specced from what
+  shipped, which is more accurate than what was predicted.
+- **The rulebook only shrinks.** A new rule must displace an old one; the ratchet
+  (`scripts/check_context_budget.py`) enforces it. Keep a rule only if it encodes
+  project knowledge unavailable from the repo — and put it where the agent needs
+  it, not in an always-loaded file.
+
+---
+
 ## Scoping Rules
 
 These five rules govern what features, primitives, and architecture get built — and what does not. They run in scoping cadence: irreducibility test first, then composition test, then privacy specialization, then architectural placement, then runtime tier targeting. Any new feature, design note, or audit recommendation must clear all five before it is shippable as platform code. Cross-provider readers (Codex, Cursor, OSS contributors): read these before proposing a new tool, action, evaluator, or primitive. Depth and worked examples live in lead memory files; PLAN.md carries the rule + why + how-to-apply only.
@@ -138,7 +205,7 @@ Depth: lead memory `project_community_build_over_platform_build.md`.
 
 **Why:** Per host directive 2026-04-26: for well-known sensitive categories (invoices, medical, legal, financial, PII), the chatbot uses community-evolved best practices — wiki pages, remixable node compositions, soul-policy templates. For complex/novel sensitive workflows, the community is BETTER at evolving patterns than the platform — they meet the user in their own vocabulary, with their own judgment about what matters. Platform-built privacy features ship a frozen taxonomy; user threat models are open-ended.
 
-**How to apply:** When a sensitive-workflow request comes in (privacy mode, redaction, threat-model preset), the FIRST response is "the chatbot composes this from existing primitives + community best practices." Design-note recommendation: a how-to-compose guide, plus a pointer to community-evolved templates. Platform action ONLY if a primitive is structurally missing — and then ship the smallest primitive, not the policy. The platform DOES still own primitive enforcement boundaries: `TINYASSETS_UPLOAD_WHITELIST`, local-LLM-only routing, file-path enforcement at write time, MCP approval surface. Those are primitives, not policies.
+**How to apply:** When a sensitive-workflow request comes in (privacy mode, redaction, threat-model preset), the FIRST response is "the chatbot composes this from existing primitives + community best practices." Design-note recommendation: a how-to-compose guide, plus a pointer to community-evolved templates. Platform action ONLY if a primitive is structurally missing — and then ship the smallest primitive, not the policy. The platform DOES still own primitive enforcement boundaries: local-LLM-only routing, file-path enforcement at write time, MCP approval surface. Those are primitives, not policies.
 
 **Guidance is community-built; the platform owns enforcement boundaries only (host-approved 2026-07-25).** Privacy *guidance* — how to handle an invoice, what a HIPAA-shaped workflow should avoid, which redaction pattern fits a threat model — is commons content the community writes and remixes, not platform code and not a platform-authored policy surface. Architecture proposals for platform privacy-guidance tools or a platform-authored privacy taxonomy do not clear this rule. **A seeded, remixable wiki taxonomy is acceptable commons content** — seeding a starting vocabulary is not the same as freezing one, exactly as `_WIKI_CATEGORIES` seeds wiki categories while custom categories are sanitized and accepted. The test: can a user replace or extend it without asking us? If yes, seed it in the commons. If it is a boundary a user must not be able to move, it is enforcement, and it is platform code.
 
@@ -238,6 +305,21 @@ all existing code and deployed bindings already enforce it.
 **Agentic hybrid search is memory.** Durable memory is a policy over multiple stores (KG traversal, vector similarity, hierarchical summaries, notes, world-state, direct tool calls). No single *index* owns truth — truth lives in the brain's canonical store and every index over it is derived and rebuildable. For the commons, and as the default organization for a universe brain, that store is the OKF bundle (Brain Module); a founder may design their own brain organization (host-approved 2026-07-25, Design Decisions), and this source-vs-index split holds for whatever organization they choose. Routing across those indexes matters more than any one of them.
 
 **Context is a managed working set.** Prompts are lossy projections over durable state. The goal is not "pack more context" but "give the model the smallest high-signal working set for the current step."
+
+**Owner surfaces are complete; bounding is a model-door projection; the only
+per-account input is account type** (founder, 2026-09-30). There are two doors.
+The *owner door* (`tinyassets/owner_door/`, `/app/api/*`) serves the owner's app
+on web, phone and desktop, and it always returns complete data: it has no size,
+limit or truncation logic and cannot import one. The *model door* (the MCP
+connector and the served-agent engine) bounds what enters a model's context, as a
+projection applied only there. Shared domain reads return every row. Paging is an
+explicit cursor the client drives, never a silent default. The only per-account
+input that may change behaviour is `AccountType` (free | subscription), resolved
+once, per account; connections and data volume never change what an account sees.
+The rule is enforced by structure: import boundaries, not an exempt list. On
+2026-09-30 the founder's request rail vanished because his 34 KB queue crossed a
+24 KB model ceiling that the app shared with chatbots. That bug is the failure
+mode this rule prevents. Change: `openspec/changes/archive/2026-09-30-owner-door-complete-reads/`.
 
 **Platform state transitions are the core abstraction.** Orient, plan, draft, commit, learn, reflect, enrich, task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
 
@@ -433,8 +515,10 @@ _Last audited: 2026-05-19_
   remixable, evaluable commons artifacts composed from ordinary workflow and
   Engine OS primitives where possible; their untrusted output must pass the
   canonical validator and cannot carry ambient credentials or authority.
+- *Users can always take their command center with them* (founder, 2026-10-01). One action exports a whole command center to a folder on the user's computer: harness, roster, rules, workspace, wiki and brain, workflows and schedules, selected memory, and UI layouts. It uses the same bundle format as sharing and import. The folder runs standalone with a local model through a small pi-shaped runner, with no platform account, and it is publish-ready as a repository: README, license placeholder, secret-excluding `.gitignore` and `.env.example`, with credentials never exported. Publishing it anywhere stays user-built. The exportability principle is permanent; the module that implements it is refactored as the harness changes (`openspec/changes/universe-agent-harness` §4.17).
 - *Daemon-driven.* Let the daemon make creative and structural decisions whenever the model can reliably do so. Hardcoded thresholds and stage gates are scaffolding — test each by removing it. When the daemon decides badly, improve goals/context/tools/evals rather than layering recipes.
 - *Always ready for the next user and daemon fleet.* Multi-tenant from the first build. Storage, authorization, queues, budgets, audits, daemon bindings, and runtime activations carry tenant/owner boundaries.
+- *Every command center is a sealed box; the control plane is the only always-on layer* (founder-approved 2026-10-01: "approved, go with the sealed box design"; target shape now, capacity later, 2026-10-02). Each command center runs in exactly one box with its own kernel boundary (Firecracker microVM with snapshot/restore; gVisor behind the same `BoxProvider` interface where KVM is unusable), its own fixed-size disk allocated from the account's storage quota, and no network interface. Tool calls and any CLI run inside it. The daemon reaches box contents only through `BoxProvider` (never a host path) and treats them as untrusted. Platform state (vault, run/consent/usage/attention/conversation stores, rules, activity, sessions) lives outside every box. Boxes are awake only while acting and suspend after at most 60 s idle; the scheduler, triggers, inbox and notifications live in the control plane, and a box keeps no timers. Growth adds cells and box hosts behind fixed seams (`home_cell`, ownership generation, outbox); no code path checks the stage or the tier. Change: `openspec/changes/target-architecture`.
 - *Zero daemons required for authoring.* Node/branch/goal creation, editing, forking, and collaboration work with no daemon running anywhere. Daemon hosting is opt-in for execution work. Load-bearing requirement — any architecture where authoring depends on a running daemon violates it.
 - *Host-independent user loops live with their universe.* If a user asks a recurring workflow to run continuously, its durable definition, schedule, checkpoints, receipts, and health live in that user's cloud universe. Cloud and tray executors may understand the same versioned Branch, but one activation authority owns a normal loop at a time; a host-to-cloud migration stops the host activation before proving cloud acceptance. Turning off a tray cannot erase or pause an accepted cloud-owned loop.
 - *Epoch-2 transactional claiming is the approved sole-authority target (host-approved 2026-07-29; not yet active).* The target transactional control plane owns activation epochs, conditional claims, lease generations, executor identity, fencing, recovery, and integrity checks. A target-state claim is valid only while its `(universe, automation, activation epoch, immutable Branch version, executor class, lease generation)` still matches authoritative state. As built on 2026-07-29, epoch 2 is dark/inactive and epoch-1 file locking remains the live bridge. Migration closes epoch-1 admission and drains or fences already-admitted work before fail-closed epoch-2 activation. After an automation cuts over, epoch 1 cannot admit or mutate it; retained epoch-1 machinery may only reconcile and retire legacy records outside epoch-2-owned automation. The two claim authorities are never dual-active for the same automation.
@@ -557,6 +641,7 @@ _Last audited: 2026-05-19_
 
 **Principles:**
 - *The platform has no LLM* (founder hard rule, 2026-09-24; AGENTS Hard Rule 15). There is no concept of "the platform's LLM". Only a powered universe makes LLM calls, using the credentials its owner connected, for that universe alone. The platform never makes, needs or brokers an LLM call for its own operation: onboarding, selection, moderation, ranking, investigation, maintenance and monitoring all run without one. No platform, host, maintainer or shared credential ever serves a universe, including as a fallback. The founder's subscription belongs to the founder's own universe, like any user's.
+- *The agent loop is thin, shared and vendor-neutral; credentials stay outside the box* (target architecture, 2026-10-02). Turns over standard HTTP model protocols run in the control plane's asynchronous loop, which forwards tool calls to the turn's bound box and never executes model output. Model and API calls go through the credential broker (bound to owner, connection and grant; the only holder of the vault key); API-key CLIs in a box reach it through an in-box endpoint, so neither the loop nor any box holds a credential. A CLI runs inside the owning command center's box only for a command adapter or a credential the CLI must hold itself (file OAuth); one CLI process never serves two accounts. A Claude subscription is used server-side only for its owner's own command center, behind an owner-scoped setting that defaults off (Anthropic's consumer terms; the founder's decision).
 - *The platform is vendor-neutral: any compute source through standard connections, with no vendor code* (founder directive, 2026-09-24). Users connect ANY LLM or compute source to their universe, including ones that do not exist yet, with no patch from TinyAssets. The platform offers only standard, vendor-neutral connection primitives:
   - generic OAuth (with token refresh);
   - API key, bearer or custom-header auth;
@@ -567,6 +652,16 @@ _Last audited: 2026-05-19_
   The user's app agent can set up any of these itself from what the user provides. No vendor-specific code paths, names or special cases exist on the platform. Today's common vendors are regional and transient, so they are configurations of these primitives, never code. A vendor CLI or API update must never require a platform patch. **One modular connector system serves compute and platforms alike.** An LLM is just another universe connection, like Twitter or any online software: the same vendor-neutral connectors plug a universe into any compute source or any platform the user wants it to use. **The connection request is the setup experience.** A universe that needs a connection (an unpowered universe needs an LLM) raises a request notification. From it, the user completes any shape (OAuth, API key, local endpoint, account sign-in, command adapter) in as few clicks as possible, and the app agent can raise and complete the same requests. **Prefer OAuth whenever the provider offers it for what the request needs** (founder, 2026-09-24): it means the fewest user actions and no key copying. Whether a provider supports OAuth, and with which scopes, comes from standard discovery (RFC 8414 authorization-server metadata, OpenID configuration, PKCE for public clients) or from connection data the user or agent supplies, never from per-provider code. Key paste is the fallback when OAuth is unavailable or does not cover the requested use. OAuth tokens refresh generically, with no reconnect. First power needs no LLM call: an unpowered universe is powered by OpenRouter (free, or the user's own OpenRouter account) through the sign-in OAuth flow below, and the user then adds any other sources.
 - *Agent definitions are provider-portable; subscriptions are private bindings.* A public definition declares capabilities and optional model requirements, never credentials. At installation, the universe binds it to the compute sources the user has connected, under the resource ledger and `allowed_providers` policy. Provider choice may change without forking the reusable agent definition.
 - *Model choice belongs to the user and their connection, not a compiled model list* (founder directive, revised 2026-09-09). Explicit user selections, saved defaults and fallback order take precedence. Without a user override, prefer the user's available subscription or locally running LLM sources over OpenRouter. For an OpenRouter-powered interactive agent, automatically select the best eligible available model and order fallbacks from most to least suitable, moving through them when limits are reached. Selection and ordering use current connection-scoped availability and required agent capabilities, not hardcoded model releases; the free OpenRouter onboarding path must not silently enable paid fallback. Where no more specific user-selected policy applies, retain the provider's own model default. Users can see the provider/model actually powering the interactive agent and click that indicator to switch, save a default, or edit fallback order. Distinguish actual execution (including fallback) from configured preference; do not label an unknown resolved model as known. Preserve explicit choices across provider updates and never borrow unbound authority. This revises the September 4 provider-default policy for OpenRouter and mixed-source selection. These are design requirements, not claims that current adapters, ranking, controls or failover already implement them.
+- *A dead sign-in falls back within the turn, when nothing ran* (founder-stated,
+  2026-09-26). An authentication failure on the first-choice source is not a reason
+  for the turn to stop: it continues to the next model the user configured, in the
+  same turn, and the source is marked for reconnect rather than cooled. Fallback is
+  scoped to a failure with PROOF that nothing ran -- a quick exit, no protocol
+  events, the process reaped -- because a turn that may already have acted must not
+  be replayed on another model. Until then only capacity exhaustion advanced a
+  turn, so an expired subscription ended it; that was the founder's complaint, not
+  a design choice. This is required behaviour, not a claim that every launch path
+  already implements it.
 - *Error loudly when the remaining provider can't produce acceptable work.* Fake success is worse than failure. (Hard Rule #8.)
 - *Failures are structured facts, not a catalogue of messages* (founder direction, 2026-09-24). Errors must stay diagnostically relevant without endless platform updates for new providers or failure modes. Every failed turn, node or connection step records the same small set of facts:
   - **Stage:** a fixed pipeline position (before send, connection/auth, model request, model reply, tool, platform).
@@ -776,7 +871,8 @@ _Last audited: 2026-05-19_
 - *Defense in depth, and the alarm path itself is host-independent.* Every self-heal layer assumes the layers below it will fail; the alarm ladder assumes every self-heal layer will fail. None run on a host machine.
 - *Three self-heal layers, each catches a different class.* 1. Container restart (`systemd Restart=always` + `tinyassets-watchdog.timer`) — transient crashes, OOM recovery, hung-but-not-crashed. 2. GHA `p0-outage-triage.yml` auto-repair — six classes covered (OOM, disk-full, image-pull, watchdog-hot-loop, tunnel-token-manual, env-unreadable). 3. Deploy-side invariants — `deploy-prod.yml` asserts `/etc/tinyassets/env` is readable by the daemon user post-mutation and post-restart, then publishes `/data/release-state.json` for live status reconciliation.
 - *Alarm ladder, host-phone-independent.* Pushover paging from GHA `alarm-sink` at threshold-cross (2 consecutive reds ≈ 10 min outage), `priority=2` + vibrate-tier initial, escalating re-page at 1h / 4h / 24h if `p0-outage` issue stays open with no human comment. Probe-without-paging is not an alarm path (2026-04-21 lesson).
-- *DR validated end-to-end.* Weekly drill provisions a fresh VM, bootstraps, restores `/etc/tinyassets/env` + data volume from offsite, starts daemon, asserts canary-green within SLA. Decoupled restore + start, exit-code propagation, SSH-tunnel probe; no host keystrokes bridge any step.
+- *DR validated end-to-end, on a schedule, from off-region copies.* A weekly scheduled drill provisions a fresh VM, bootstraps, restores platform state and a sample of command-center boxes from the off-region copies only into a fresh template environment with the pinned image (never the primary's secrets), starts the daemon, and asserts canary-green within SLA; a failed drill pages. Decoupled restore + start, exit-code propagation, SSH-tunnel probe; no host keystrokes bridge any step. As built (2026-10-02) the drill is dispatch-only, last ran 2026-07-24, and backups share the droplet's region; `target-architecture` S1 closes both.
+- *Deploys cost no downtime, and a fenced standby covers the host and the region* (target architecture, 2026-10-02). Each command center has its own execution owner (agent loop, turn journal writer and reconciliation) under its own generation-fenced lease, and one platform lease runs the scheduler, triggers and outbox, behind blue-green frontends that queue only the affected command center's requests during its handover (amended 2026-10-02: a handover never makes one user wait on another's turn); the old owner drains before the new one reconciles, so no live turn is settled and no request fails. Schema-changing cutovers are declared maintenance windows. A warm standby in a second region restores continuously with its tunnel connector stopped, and is promoted only after every primary execution host is fenced (powered off through a CI-held credential); if fencing cannot be confirmed, promotion stops and pages. Recovery points: ~1 s for platform state (continuous SQLite replication), the backup interval for box files.
 - *Uptime response uses ordinary primitives, never a privileged escape path.* Observation, alarms, diagnosis, approval, and remediation remain user-buildable and remixable workflow designs. Historical incidents may inform new designs but authorize no hidden task dispatch, repair, filing, merge, or deployment behavior.
 - *Public-surface canary is required evidence, not final proof.* MCP/chatbot-facing changes also require live Claude.ai `ui-test` for final acceptance (Hard Rule #11).
 
@@ -828,7 +924,9 @@ Harness / Traces / Tests / Coordination
 
 The daemon writes autonomously. MCP clients and the host dashboard are the user-facing interfaces. Communication is file- and artifact-based: daemon writes to disk, API/MCP expose state and actions, harness inspects artifacts and traces.
 
-**Backend stack (target):** Supabase — Postgres (catalog + ledger + inbox), Realtime broadcast (presence + change broadcast), Row-Level Security (visibility + sensitivity at DB layer), and Storage (S3-compatible canon uploads). Identity is provided by WorkOS AuthKit. Postgres remains self-hostable without application rewrite. Decision: `docs/design-notes/2026-04-18-full-platform-architecture.md §3.2`.
+**Target architecture (founder-approved 2026-10-01/02; `openspec/changes/target-architecture`):** per cell, an always-on control plane (MCP + app API, thin agent loop, scheduler/triggers/inbox/notifications, egress proxy, platform state in per-account SQLite under a platform root, continuously replicated off-region) in front of a box host running one sealed box per command center (Firecracker with snapshot/restore, gVisor fallback; fixed-size disk from the account quota; no NIC; awake only while acting). Postgres holds the cross-user transactional domains (catalog, ledger, inbox, market) behind an outbox. The edge routes each user to their home cell (one cell today). Box hosts and cells are capacity; the interfaces are fixed.
+
+**Backend stack (target):** Postgres for catalog, ledger, inbox and market (decided 2026-07-25); the vendor is open (Supabase was the 2026-04-18 candidate: Realtime broadcast, Row-Level Security, S3-compatible Storage), and the choice is made when `target-architecture` S10 stands Postgres up. Identity is provided by WorkOS AuthKit. Postgres remains self-hostable without application rewrite. Prior reasoning: `docs/design-notes/2026-04-18-full-platform-architecture.md §3.2`.
 
 **Auth + identity:** WorkOS AuthKit is the identity primitive across browser and local MCP clients. OAuth 2.1 + PKCE at the MCP edge (MCP spec 2025-11-25 mandate) maps every client session to the same stable WorkOS subject and therefore the same user universe. There is no anonymous principal and no unauthenticated access to platform data or actions: an unauthenticated request fails closed. Protocol discovery and sign-in bootstrap may be reachable before authentication only when they confer no principal, platform data, or platform action; operational probes use a named service principal. Session tokens are short-lived and scoped per user; refresh, logout, revocation, and concurrent sessions are explicit lifecycle operations. RLS enforces per-user visibility at the DB layer. Decision: founder directive 2026-09-03; supersedes the GitHub-OAuth-at-launch identity choice in `docs/design-notes/2026-04-18-full-platform-architecture.md §7`.
 
@@ -889,10 +987,12 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 - **GitHub is an export sink for the transactional domains, not their canonical store.** GitHub receives a periodic flat-YAML export of public goals/branches/nodes; contributions via GitHub PR are accepted via a round-trip YAML → webhook → Postgres import path. (This says nothing about the commons bundle, whose *canonical* form is already files — for it, a git snapshot is the store, not an export of one.)
 - **A user's brain organization is theirs to design (host-approved 2026-07-25).** The target experience is that a founder **designs their own custom MCP cloud brain organization** — modeled on Hermes, on OpenClaw, on an org-brain shape, or on something nobody has built yet. **OKF is the default organization when a user does not specify one, not a mandate.** Brain organizations are user-designable and remixable commons patterns: a good one is published, discovered, and remixed like any other commons artifact. This is Scoping Rule 1's corollary applied to the brain — "how should a brain be organized" has many plausible shapes, so it belongs to the commons, and the platform ships the substrate that makes any of them expressible.
 - **Local-first execution, git-native sync (bridge state).** DO Droplet self-host is the current bridge. Postgres-canonical replaces local-first when the control-plane backend ships.
+- **Target architecture now, capacity later (founder, 2026-10-02: "i would like to move towards the architecture and dependencies we want later sooner rather than later. i want to do things correct the first time").** The final interfaces and data placement are built at small capacity: sealed command-center boxes behind `BoxProvider`, a thin loop and all timers in the control plane, platform state outside every box, Postgres for the four transactional domains, a user-to-cell seam with one cell, storage + seats with box-lifecycle metering and first-come host admission (wait, never refuse; a compute-hour budget stays a founder decision), one execution owner behind replaceable frontends, a fenced second-region standby and a scheduled off-region drill. Growth adds cells and box hosts; it never adds a code path. Firecracker on the DigitalOcean droplet or on a bare-metal box host is decided by a measured nested-KVM validation (slice S0). Change: `openspec/changes/target-architecture`.
 - **User-controllable state architecture.** Users should eventually inspect, steer, and redesign tinyassets/state structure conversationally.
 - **Multi-host is the destination.** Local-host is important, but end-state is a network of hosts contributing model capacity to shared projects.
 - **Epoch-2 transactional claiming is the approved single-authority target (host-approved 2026-07-29; cutover pending).** The target transactional control plane owns activation, claim, lease, fence, and recovery truth across cloud and host executor classes. Epoch 1 remains the live file-locked bridge until a fail-closed cutover closes legacy admission and drains or fences admitted work; afterward its machinery is compatibility-reconciliation-only and never dual-active for the same automation. This resolves the design choice identified in `docs/audits/2026-07-29-cloud-drain-current-main-prerequisites.md`; it does not claim the runtime migration is complete.
 - **Capabilities are primitives the user's agent composes, not platform operators (founder-approved 2026-08-30).** The user's agent builds whatever workflow it wants from a small set of powerful primitives — ground-up design, build, test, redesign — remixes what others built in the commons, and can build a graph automation it was handed a link to. When a live failure suggests "add an operator / a special case", the question is which *primitive* is missing that would let the agent solve it itself; that primitive ships, the operator does not. Measured cause: 2026-08-29/30, four deploys of `$ta.*` body-transform operators to change one line of a fetched file, because nothing deterministic could run between a fetch and a write. The shape that follows: **effects fire at node time in graph order** (a node's declared channel calls run the moment it returns, a refused or failed write fails the node, later nodes can read earlier responses), and a **sandboxed code node** (deterministic Python with the node's data and every ancestor's response, no credentials, no network — authorship, not host approval, decides whose code runs; the OS sandbox bounds what it touches). The `$ta.*` vocabulary is frozen. **No structural cap on graph size** — nodes, effect nodes, edges — anywhere, served or connector; a big graph is bounded by usage (admissions, budget, consent, the sandbox's limits), never by its shape (founder, 2026-08-30; change `no-graph-size-caps`). OpenSpec change `sandboxed-code-node` (archived 2026-08-30, live proof #2728); next primitive: the `workspace` (change `workspace-node`).
+- **An agent is a node (founder-approved 2026-09-27).** An agent's access is whatever context and tools its owner gives it, and the owner's own agents are "the same as itself" by default. A prompt node whose `tools_allowed` holds `agent` runs the same turn `converse` runs: the persona and brain, the shared agent loop, the engine tools pinned to the run's own universe and owner, and the owner's model preferences, with the node's `llm_policy` as a per-node override. It runs as one workflow step, foreground or background, until the turn finishes (the converse turn's own runaway backstop, not a node timeout), and writes its answer to graph state. A branch may hold any number of agent nodes beside ordinary steps. The run session resolves which node is calling from its admitted snapshot, and refuses a branch another user authored. The rest of `tools_allowed` is the owner's grant: the marker alone means everything the owner's chat has, and listed tool names narrow the node to exactly those on every provider surface. Each round is metered against the run's existing work receipt; no cap is added. A custom agent is a stored configuration of an agent node (instructions, grant, model, inputs and outputs), shared and remixed as a branch. That makes the `agent_runtime_*` second compiler, provider loop and grant model redundant; they are removed in a later lane. Change `agent-node-and-tool-grants`; code nodes reaching granted served tools through `invoke_mcp_action` is its second slice.
 - **The system must evolve itself.** Stagnation is the worst failure mode.
 - **Context is tools, not pre-assembly.** The writer should query through tools. Pre-assembly is transitional.
 - **Bad decisions are data.** When the daemon decides poorly, improve goals/tools/state/evals. Don't reflexively add rules.

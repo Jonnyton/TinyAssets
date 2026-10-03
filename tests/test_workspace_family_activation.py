@@ -15,6 +15,9 @@ def test_unactivated_authenticated_run_retains_ordinary_restart_recovery(tmp_pat
     )
     if status == "running":
         runs.update_run_status(tmp_path, run_id, status=status)
+    from tests.run_owner_helpers import mark_owner_dead
+
+    mark_owner_dead(tmp_path, run_id)
     assert runs.recover_in_flight_runs(tmp_path) == 1
     assert runs.get_run(tmp_path, run_id)["status"] == "interrupted"
 

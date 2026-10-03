@@ -105,6 +105,17 @@ PRINCIPAL_KEYS = (
 #: operational state, not this account's to delete.
 UNIVERSE_KEY = "universe_id"
 
+#: Tables carrying a universe column whose rows are nonetheless ONLY ever the
+#: owner's: deleted by the owner key alone, never by the universe sweep. A
+#: person's saved UI choice about someone else's universe is theirs, so deleting
+#: that universe's owner must not take it -- and sweeping by universe could,
+#: because a collaborator's save can commit between the foreign-row check and
+#: the delete (gpt-6-astra review, 2026-09-26). Left behind, the row names a
+#: universe that no longer exists and goes when its own owner is deleted.
+OWNER_ONLY_TABLES = MappingProxyType({
+    "universe_app_ui": "owner_user_id",
+})
+
 #: Universe-scoped tables that ALSO hold a person-keyed row worth removing
 #: everywhere: an access grant is this account's access, so deleting the account
 #: revokes it wherever it points. Removing it takes nothing from the universe
@@ -185,6 +196,13 @@ REDACTED_TABLES = frozenset({"action_records"})
 #: be deleted.
 ATTRIBUTION_COLUMNS = MappingProxyType({
     "canonical_bindings": ("bound_by_actor_id",),
+    # A universe the person owned that SURVIVES them (not the home, which the
+    # universe sweep deletes with its owner row) keeps an owner -- the opaque
+    # fingerprint -- rather than none. With none it would become unattributed,
+    # which is never refused: a collaborator could fill it without bound
+    # (gpt-6-astra, PR #4139). The fingerprint has no home, so it is charged at
+    # the free tier, and it names nobody.
+    "universe_owner": ("owner_id",),
 })
 
 #: Money the person is a party to. Refuse the deletion rather than discard it:
@@ -325,6 +343,10 @@ def deletion_plan(
         if table in INDIRECTLY_SCOPED_TABLES:
             continue  # deleted through its parent, by home only
         cols = _columns(conn, table)
+        owner_key = OWNER_ONLY_TABLES.get(table)
+        if owner_key and owner_key in cols:
+            plan[table] = [(owner_key, "principal")]
+            continue
         if UNIVERSE_KEY in cols:
             # Universe-scoped: this account owns only its own universe's rows.
             # Its rows in someone else's universe stay with that universe.
@@ -346,6 +368,26 @@ def deletion_plan(
 # --------------------------------------------------------------------------- #
 # what refuses
 # --------------------------------------------------------------------------- #
+
+
+def _redacted_owner_exemption(table: str, key: str, tables: set[str] | list[str]) -> str:
+    """SQL excluding PROVEN redacted owners from the foreign-ownership scan.
+
+    After A deletes their account, a universe A owned that survives -- say, B's
+    home -- carries owner ``deleted:<fingerprint>``. That names nobody, so it
+    must not block B's own deletion forever (gpt-6-astra round 2, PR #4139).
+
+    Narrow on purpose (round 3): ONLY ``universe_owner.owner_id``, and only a
+    value that matches an actual tombstone -- the fingerprint is the first 16 hex
+    of the same digest `deleted_principals` stores. A prefix test alone let a
+    live local principal named ``deleted:...`` have its rows swept.
+    """
+    if (table, key) != ("universe_owner", "owner_id") or "deleted_principals" not in tables:
+        return ""
+    return (
+        ' AND "owner_id" NOT IN '
+        "(SELECT 'deleted:' || substr(founder_sub, 1, 16) FROM deleted_principals)"
+    )
 
 
 def deletion_blockers(
@@ -380,13 +422,13 @@ def deletion_blockers(
         return blockers
 
     checks = (
-        ("another founder is bound to this universe",
+        ("another founder is bound to this command center",
          "SELECT COUNT(*) FROM founder_home WHERE universe_id = ? AND founder_sub <> ?",
          (home, principal)),
-        ("another person holds access to this universe",
+        ("another person holds access to this command center",
          "SELECT COUNT(*) FROM universe_acl WHERE universe_id = ? AND actor_id <> ?",
          (home, principal)),
-        ("another person's requests live in this universe",
+        ("another person's requests live in this command center",
          "SELECT COUNT(*) FROM user_requests WHERE universe_id = ? AND user_id <> ?",
          (home, principal)),
         ("another person authored branches here",
@@ -416,7 +458,7 @@ def deletion_blockers(
          "JOIN user_requests AS request ON request.request_id = dep.request_id "
          "WHERE request.universe_id = ? AND request.user_id <> ?",
          (home, principal)),
-        ("a daemon is still running for this universe",
+        ("a daemon is still running for this command center",
          "SELECT COUNT(*) FROM author_runtime_instances WHERE universe_id = ? "
          f"AND lower(status) IN ({','.join('?' for _ in _ACTIVE_DAEMON_STATES)})",
          (home, *sorted(_ACTIVE_DAEMON_STATES))),
@@ -465,7 +507,8 @@ def deletion_blockers(
                 foreign = _count(
                     conn,
                     f'SELECT COUNT(*) FROM "{table}" '
-                    f'WHERE universe_id = ? AND "{key}" NOT IN (?, \'system\', \'\')',
+                    f'WHERE universe_id = ? AND "{key}" NOT IN (?, \'system\', \'\')'
+                    + _redacted_owner_exemption(table, key, tables),
                     (home, principal),
                 )
             except sqlite3.OperationalError:
@@ -992,6 +1035,25 @@ def delete_account(
         _phase("home_directory", _remove)
         if not home_removed:
             staged_path = str(staged)
+
+    if home:
+        # Session records, Custom Rules and review switches (rules.db) live
+        # beside the universe in .agent-sessions/<home>/, not inside it, so the
+        # home removal above does not take them. Anything but plain directories
+        # all the way down is refused and reported, never followed.
+        from tinyassets.agent_sessions import RECORDS_DIR
+
+        def _session_records() -> None:
+            parent = root / RECORDS_DIR
+            records = parent / _home_dir(root, home).name
+            for path in (parent, records):
+                if not path.exists() and not path.is_symlink():
+                    return
+                if path.is_symlink() or not path.is_dir():
+                    raise AccountDeletionError(f"{path.name} is not a plain directory")
+            _rmtree(records)
+
+        _phase("agent_session_records", _session_records)
 
     billing = "not_configured"
     if home:

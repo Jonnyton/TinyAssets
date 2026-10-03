@@ -640,6 +640,91 @@ def _ledger_db_path(base_path: str | Path | None) -> Path | None:
         return None
 
 
+def _request_path(request: dict[str, Any]) -> str:
+    """The path a request addresses, for classifying it (never for sending)."""
+    absolute = _str_field(request, "url")
+    if absolute:
+        try:
+            return urllib.parse.urlsplit(absolute).path or "/"
+        except ValueError:
+            return "/"
+    path = request.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        return "/"
+    # Parsed the way the transport rebuilds the URL: no query, no fragment, so
+    # "/v1/charges#" classifies as the "/v1/charges" it is sent as
+    # (gpt-6-astra on #4199).
+    try:
+        return urllib.parse.urlsplit(path).path or "/"
+    except ValueError:
+        return "/"
+
+
+def _review_evidence(request: dict[str, Any]) -> str:
+    """The request's own body, bounded, for the auto-review (untrusted there)."""
+    body = request.get("body", request.get("json"))
+    try:
+        text = body if isinstance(body, str) else json.dumps(body, default=str)
+    except (TypeError, ValueError):
+        text = ""
+    return (text or "")[:2000]
+
+
+def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
+                  path: str = "/", *, evidence: str = "") -> dict[str, Any] | None:
+    """``None`` when the owner's rules let this call proceed, else a refusal.
+
+    What the call MEANS comes from the owner's declarations for this connection
+    (harness D1b); an undeclared operation is decided as a write.
+    """
+    from tinyassets import agent_rules
+
+    try:
+        action_class, operation = agent_rules.classify(
+            universe_dir, connection_id, verb, path)
+        decision = agent_rules.decide(
+            universe_dir, action_class, connection=connection_id, operation=operation,
+        )
+    except Exception:
+        logger.exception("authenticated_external_call rule lookup crashed")
+        return {
+            "dry_run": True,
+            "reason": "rules_unreadable",
+            "error_kind": "rules_unreadable",
+            "hint": "Your rules could not be read, so nothing was sent.",
+        }
+    if decision.proceeds:
+        # Allowed by the rules: a consequential action is still checked on the
+        # run's own model first (harness D1d), which can only hold it.
+        from tinyassets.agent_review import review_refusal
+
+        return review_refusal(
+            universe_dir,
+            action={"action_class": action_class, "connection": connection_id,
+                    "operation": operation, "path": path},
+            rule=decision.reason, evidence=evidence,
+        )
+    if decision.behaviour == agent_rules.HAND_OFF:
+        return {
+            "dry_run": True,
+            "reason": "rule_hand_off",
+            "error_kind": "rule_hand_off",
+            "rule": decision.reason,
+            "hint": ("Your owner's rules hand this action to them: ask them to do it "
+                     "themselves; do not perform it."),
+        }
+    # Ask first, and "if pre-approved" until approvals are bound to the exact
+    # action (D1c): the owner is asked before anything is sent.
+    return {
+        "dry_run": True,
+        "reason": "rule_ask_first",
+        "error_kind": "rule_ask_first",
+        "rule": decision.reason,
+        "hint": ("Your owner's rules ask first for this action: raise one request "
+                 "describing it and continue other work until they answer."),
+    }
+
+
 def _check_consent(universe_dir: Path, destination: str) -> bool:
     """Whether an active effector-consent grant exists for this destination.
 
@@ -687,6 +772,76 @@ def _resolve_host(request: dict[str, Any], connection_view: Any) -> tuple[str, s
     if not hosts:
         return "", "no_allowlisted_host"
     return "", "host_ambiguous"
+
+
+def _declared_user_agent_error(headers: Any) -> str:
+    """Refuse a per-CALL ``User-Agent``; it belongs on the connection.
+
+    Every outbound call now carries the platform's own honest client string
+    (``OUTBOUND_USER_AGENT``), because a UA-less request is answered by a CDN
+    before the destination sees it. A service that wants a different client
+    string is a property of the CONNECTION, not of one call: the owner declares
+    it once through the connection's constant headers, where it is visible in
+    the grant and the same for every node.
+
+    Refused rather than dropped, and refused rather than accepted. Dropping it
+    silently would leave an author believing they had set something. Accepting
+    it would let a node choose what to claim to be, per call, which is how a
+    platform ends up impersonating a browser to get past a bot policy on a
+    node's say-so — and this platform says who it is.
+    """
+    from tinyassets.storage.outbound_connections import OUTBOUND_USER_AGENT_HEADER
+
+    if not isinstance(headers, dict):
+        return ""
+    named = [
+        str(name)
+        for name in headers
+        if str(name).strip().lower() == OUTBOUND_USER_AGENT_HEADER
+    ]
+    if not named:
+        return ""
+    return (
+        f"request.headers may not set {named[0]!r}: every outbound call already "
+        "carries this platform's own client string. If this service needs a "
+        "particular one, it is a property of the connection rather than of one "
+        "call — declare it in the connection's constant headers, where the "
+        "owner can see it in the grant and every node sends the same thing."
+    )
+
+
+def _capability_url_shape_error(url: str, connection_view: Any) -> str:
+    """Refuse a ``url_secret`` request that does not address the placeholder.
+
+    The credential of a capability URL — the common incoming-webhook shape,
+    where the secret is a path segment rather than a header — is substituted by
+    the broker child. A node therefore writes ``…/{secret}`` and NEVER the code,
+    so this effector, the run state, the evidence and the receipt only ever hold
+    the placeholder form (design.md D7: redaction is structural). No channel is
+    named here or anywhere in this module: the shape is what is recognised.
+
+    Returns a secret-free message, or ``""``. The message never echoes the
+    offending url: if the author did hardcode a secret, repeating it in the
+    error would put it in the very run record this exists to keep clean.
+    """
+    from tinyassets.storage.outbound_connections import (
+        _URL_SECRET_REST_TOKEN,
+        _URL_SECRET_SCHEME,
+        _URL_SECRET_TOKEN,
+    )
+
+    scheme = str(getattr(connection_view, "auth_scheme", "") or "").strip().lower()
+    if scheme != _URL_SECRET_SCHEME:
+        return ""
+    path = url.partition("?")[0]
+    if _URL_SECRET_TOKEN in path or _URL_SECRET_REST_TOKEN in path:
+        return ""
+    return (
+        "this connection's secret is a path segment held in the vault, so the "
+        f"request path must address it as {_URL_SECRET_TOKEN} (or "
+        f"{_URL_SECRET_REST_TOKEN}) exactly as the endpoint declares it — never "
+        "the code itself, which would be stored with this run"
+    )
 
 
 def _build_url(request: dict[str, Any], host: str) -> tuple[str, str]:
@@ -878,7 +1033,7 @@ def _run(
     if not universe_id or db_path is None:
         # No trusted universe context ⇒ fail closed (never borrow a default).
         return {
-            "error": "no universe authority is bound to this run",
+            "error": "no command center authority is bound to this run",
             "error_kind": "no_universe_authority",
             "matched_output_key": matched_key,
         }
@@ -923,6 +1078,20 @@ def _run(
             "connection_id": connection_id,
             "matched_output_key": matched_key,
         }
+    # The owner's Custom Rules (harness D1a) decide before the standing grant is
+    # consulted, and can only tighten it: "ask first" and "hand off" stop a call
+    # its grant would allow. Every call here counts as a write until connections
+    # declare their operation kinds (D1b). A rule store that cannot be read
+    # refuses the call; it never falls back to allowing it.
+    rule_refusal = _rule_refusal(universe_dir, connection_id, verb, _request_path(request),
+                                 evidence=_review_evidence(request))
+    if rule_refusal is not None:
+        return {
+            **rule_refusal,
+            "destination": destination,
+            "connection_id": connection_id,
+            "matched_output_key": matched_key,
+        }
     if not _check_consent(universe_dir, destination):
         return {
             "dry_run": True,
@@ -956,8 +1125,34 @@ def _run(
             "connection_id": connection_id,
         }
 
+    capability_error = _capability_url_shape_error(url, view)
+    if capability_error:
+        # A capability-URL connection addresses the PLACEHOLDER, never the code.
+        # The allowlist in the child would refuse a real secret here anyway (its
+        # reserved pattern matches only the literal token), but that refusal
+        # arrives AFTER this url has been recorded on the returned evidence and
+        # persisted with the run. Refusing it here keeps a node-authored secret
+        # out of the run record entirely, and tells the author the one thing
+        # they need to change.
+        return {
+            "error": capability_error,
+            "error_kind": "capability_url_not_addressed_by_placeholder",
+            "matched_output_key": matched_key,
+            "connection_id": connection_id,
+            "destination": destination,
+        }
+
     wire_request: dict[str, Any] = {"url": url}
     headers = request.get("headers")
+    user_agent_error = _declared_user_agent_error(headers)
+    if user_agent_error:
+        return {
+            "error": user_agent_error,
+            "error_kind": "user_agent_is_declared_on_the_connection",
+            "matched_output_key": matched_key,
+            "connection_id": connection_id,
+            "destination": destination,
+        }
     if headers is not None:
         wire_request["headers"] = headers
     if "body" in request:
@@ -1040,6 +1235,12 @@ def _run(
         "response_bytes": int(response_bytes),
         "matched_output_key": matched_key,
         "connection_id": connection_id,
+        # Which CONNECTION this call used, by the name its owner gave it. A
+        # delivered 401 means the stored key for this destination is finished,
+        # and the card that replaces it needs the destination -- so the row the
+        # agent reads has to name it rather than leave it to be inferred from
+        # the url (which is the API host, not the connection's label).
+        "destination": destination,
         "grant_id": grant_id,
         "verb": verb,
         "url": url,

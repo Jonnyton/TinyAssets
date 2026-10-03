@@ -111,6 +111,38 @@ def test_unclassified_schema_growth_fails_loudly(seeded: Path) -> None:
         inspect_reset_scope(seeded, principal=_SUBJECT_A)
 
 
+def test_the_retired_fleet_tables_do_not_block_a_scoped_reset(seeded: Path) -> None:
+    """Production still holds the fleet-era cloud-automation and background-
+    branch tables until a host-action drops them (plan C1, 2026-09-28). Created
+    here by their real stores; an unclassified one would block every reset."""
+    from tinyassets.scoped_reset import inspect_reset_scope
+    from tinyassets.storage.background_branch_authority import (
+        SQLiteBackgroundBranchAuthorityStore,
+    )
+    from tinyassets.storage.cloud_automation_continuation import (
+        SQLiteCloudAutomationContinuationStore,
+    )
+    from tinyassets.storage.cloud_automation_control import (
+        CloudAutomationControlStore,
+    )
+
+    for store in (
+        CloudAutomationControlStore(seeded),
+        SQLiteCloudAutomationContinuationStore(seeded),
+    ):
+        with store.connection():
+            pass
+    with SQLiteBackgroundBranchAuthorityStore(seeded)._connection():
+        pass
+    with _connect(seeded) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert {"cloud_automation_controls", "background_branch_bindings"} <= tables
+
+    inspect_reset_scope(seeded, principal=_SUBJECT_A)
+
+
 @pytest.mark.parametrize(
     "growth",
     ["column", "generated_column", "trigger", "incoming_foreign_key"],
@@ -411,6 +443,17 @@ def test_active_root_run_schedule_and_market_obligation_block(
     assert any("active root run" in blocker for blocker in scope.blockers)
     assert any("active schedule" in blocker for blocker in scope.blockers)
     assert any("active market" in blocker for blocker in scope.blockers)
+
+
+def test_the_run_recovery_lock_does_not_block_a_reset(seeded: Path) -> None:
+    """The live server holds it at the data root for its whole life."""
+    from tinyassets.scoped_reset import inspect_reset_scope
+
+    (seeded / ".run_recovery.lock").write_bytes(b"")
+    (seeded / ".run_recovery.lock.pid").write_text("7", encoding="utf-8")
+
+    scope = inspect_reset_scope(seeded, principal=_SUBJECT_A)
+    assert not [b for b in scope.blockers if ".run_recovery" in b], scope.blockers
 
 
 def test_unclassified_root_operational_store_blocks(seeded: Path) -> None:
@@ -1498,6 +1541,20 @@ def test_unclassified_home_store_aborts_without_deletion(
         )
     assert store.read_bytes() == b"future operational state"
     assert (seeded / _HOME_A / "soul.md").is_file()
+
+
+def test_branch_version_tables_are_all_classified(seeded: Path) -> None:
+    """Initializing branch versions -- including its one-time migration marker
+    table -- must not leave a table reset refuses as unclassified."""
+    from tinyassets.branch_versions import initialize_branch_versions_db
+    from tinyassets.scoped_reset import plan_test_identity_reset
+
+    initialize_branch_versions_db(seeded)
+    plan = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+    assert not any(
+        "unclassified root run-history table" in blocker
+        for blocker in plan["blockers"]
+    ), plan["blockers"]
 
 
 def test_unclassified_root_store_and_runs_table_abort_reset(

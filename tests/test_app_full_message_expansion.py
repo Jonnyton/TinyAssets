@@ -39,6 +39,13 @@ const els={ "thread":new El("div"), "thread-empty":new El("div"),
             "status-line":new El("div"), "composer-input":new El("textarea") };
 const $=id=>els[id];
 let hasMessages=false;
+// Collaborators of the real appendMessage / loadHistory that this scenario does
+// not exercise. The working indicator has its own harness
+// (tests/test_app_working_indicator.py) which runs the page's own versions.
+function markQueued(el){ return el; }
+function firstQueuedBubble(){ return null; }
+function readServerTurn(){}
+function renderWorking(){}
 const SCENARIO=__SCENARIO__;
 const chunkCalls=[];
 let queueScope=null, queueOwner="";
@@ -56,6 +63,17 @@ function answerExecutionDetail(row){
 }
 function appendFailureNotice(text){ const e=new El("div"); e.className="msg msg--platform";
   e.textContent=text; els.thread.appendChild(e); }
+// The owner door (reads). This harness has ONE fake server, `MCP` below, so
+// the owner door's reads are answered by it: a read the page makes is
+// recorded and stubbed exactly where the scenario already records it.
+const Owner={
+  read(a){return MCP.callTool("read_graph",a,{idempotent:true});},
+  status(a){return MCP.callTool("get_status",a||{},{idempotent:true});},
+  getStatus(...x){return MCP.getStatus(...x);},
+  getConversation(...x){return MCP.getConversation(...x);},
+  readConversationChunk(...x){return MCP.readConversationChunk(...x);},
+  getModelOptions(...x){return MCP.getModelOptions(...x);},
+  listRequests(...x){return MCP.listRequests(...x);}};
 const MCP={ _loginEpoch:1,
   getConversation: async()=>({universe_id:SCENARIO.universe||"u-1",
     recent_conversation:{turns:SCENARIO.history||[]}}),
@@ -116,7 +134,7 @@ def _run(tmp_path, scenario: dict) -> dict:
     funcs = "\n".join(_js_function(html, f) for f in (
         "formatMessageTimestamp", "appendMessage",
         "messageBody", "expansionHandle", "offerFullMessage", "loadFullMessage",
-        "loadHistory",
+        "loadHistory", "drawHistoryTurns", "offerEarlier", "loadEarlier", "historyFailed",
     ))
     program = (_SHIM.replace("__SCENARIO__", json.dumps(scenario))
                     .replace("__APP_FUNCTIONS__", decls + "\n" + funcs))

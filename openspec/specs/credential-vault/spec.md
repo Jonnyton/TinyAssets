@@ -66,7 +66,7 @@ The vault SHALL NOT provide a forge-specific token resolver (the former `resolve
 
 ### Requirement: Subscription-Home Materialization For CLI Writers
 
-The system SHALL materialize per-universe subscription auth homes for the CLI-subprocess writers from `llm_subscription` records. For Codex it SHALL resolve or create a `CODEX_HOME`, writing an `auth.json` from a non-empty, strictly decoded, valid-JSON vault-provided `auth_json_b64` bundle when absent or when its decoded bytes differ from the materialized file, and writing a minimal `config.toml` when absent, defaulting to a `.credentials/codex` artifact directory when no durable path is configured. A malformed bundle SHALL raise `ValueError` before any existing `auth.json` is replaced. For Claude it SHALL resolve or create a `CLAUDE_CONFIG_DIR`, defaulting to a `.credentials/claude` artifact directory. Availability probes (`codex_subscription_auth_available`, `claude_subscription_auth_available`) SHALL report whether the vault can provide the corresponding auth route.
+The system SHALL materialize per-universe subscription auth homes for the CLI-subprocess writers from `llm_subscription` records. For Codex it SHALL resolve or create a `CODEX_HOME`, writing an `auth.json` from a non-empty, strictly decoded, valid-JSON vault-provided `auth_json_b64` bundle when absent, and when a materialized file exists, ONLY when that file is not provably newer -- newer meaning its own `last_refresh` stamp is readable and strictly later than the vault side's (read from the stored document first, the record's `last_refresh`/`deposited_at` as a fallback). An unstamped file is never preferred, so an owner re-depositing always lands, and writing a minimal `config.toml` when absent, defaulting to a `.credentials/codex` artifact directory when no durable path is configured. A malformed bundle SHALL raise `ValueError` before any existing `auth.json` is replaced. For Claude it SHALL resolve or create a `CLAUDE_CONFIG_DIR`, defaulting to a `.credentials/claude` artifact directory. Availability probes (`codex_subscription_auth_available`, `claude_subscription_auth_available`) SHALL report whether the vault can provide the corresponding auth route.
 
 #### Scenario: Codex auth bundle materializes from the vault
 
@@ -78,6 +78,16 @@ The system SHALL materialize per-universe subscription auth homes for the CLI-su
 - **WHEN** a partial Codex subscription upsert changes `auth_json_b64` while preserving a configured home whose `auth.json` contains different bytes
 - **THEN** the next vault-backed Codex materialization atomically replaces `auth.json` with the decoded incoming blob instead of retaining the stale file
 
+#### Scenario: A CLI-refreshed materialized document is preserved over an older vault copy
+
+- **WHEN** a materialized `auth.json` carries a `last_refresh` strictly later than the vault record's stored document and record stamps
+- **THEN** materialization leaves it in place rather than overwriting it with the older vault copy, so a rotation the CLI performed is not replaced by a spent one
+
+#### Scenario: An unstamped materialized document loses to the vault
+
+- **WHEN** a materialized `auth.json` has no readable `last_refresh`
+- **THEN** the vault's document is written over it, so an owner's re-deposit is never ignored in favour of whatever was left on disk
+
 #### Scenario: Malformed Codex auth bundle preserves materialized auth
 
 - **WHEN** vault-backed Codex materialization encounters an `auth_json_b64` value that cannot be strictly decoded to non-empty valid JSON
@@ -87,6 +97,32 @@ The system SHALL materialize per-universe subscription auth homes for the CLI-su
 
 - **WHEN** the vault holds an `llm_subscription` record for `claude` with a configured `claude_config_dir`
 - **THEN** the resolver returns that directory, `claude_subscription_auth_available` returns true, and the claude-code provider overrides include `CLAUDE_CONFIG_DIR` set to that path
+
+### Requirement: One Shared Single-Flight Credential Refresh
+
+The system SHALL refresh every vault credential that rotates a single-use refresh token through ONE core (`tinyassets.credential_refresh.refresh_credential`), in this order: a per-credential in-process lock, a per-credential cross-process file lock, the vault's exclusive admission taken BEFORE the refresh token is spent, a re-read of the stored value inside those locks, a staleness decision re-made on that re-read value, the network refresh, and an atomic write-back while the vault is still held. The `oauth2` HTTP connection path SHALL supply only its own encoding and retain its existing observable behaviour.
+
+For a deposited `llm_subscription` document the PLATFORM SHALL refresh before launch, ahead of credential custody resolution, and SHALL renew the accepted source afterwards so the provider binding follows the rotated record. It SHALL resolve the token endpoint from the credential itself -- the issuer named by the stored identity token, and that issuer's own RFC 8414 / OpenID metadata -- and SHALL verify the identity token's signature against that issuer's published keys, checking signature and issuer only and NOT expiry. It SHALL NOT refresh a document whose freshness cannot be read, whose issuer it cannot verify, or which is stored as a path rather than inline. A terminal refusal SHALL be reported as a sign-in failure rather than a provider outage, and SHALL be recorded durably OUTSIDE the credential record.
+
+#### Scenario: Concurrent launches spend a single-use refresh token once
+
+- **WHEN** two launches find the same stale stored document at the same time
+- **THEN** the refresh token is spent exactly once and the second launch uses the rotation the first wrote
+
+#### Scenario: The refresh is spent only where the credential says it was issued
+
+- **WHEN** a stored document's identity token names an issuer whose published keys verify its signature
+- **THEN** the refresh is sent to that issuer's advertised token endpoint with the client id the token names, and a document whose issuer cannot be verified is not refreshed at all
+
+#### Scenario: An expired identity token still authorizes endpoint resolution
+
+- **WHEN** the stored identity token's signature verifies but the token itself has expired
+- **THEN** the endpoint is still resolved from it, because expiry is the ordinary condition of the credential being refreshed
+
+#### Scenario: A terminal refusal is a sign-in failure, not an outage
+
+- **WHEN** the token endpoint refuses the stored refresh token itself
+- **THEN** the source is reported as needing a new sign-in rather than placed on a provider cooldown, and the refusal is stored so it survives a restart without altering the bytes credential custody is computed from
 
 ### Requirement: Per-Universe Provider Auth Env Overlay Without Cross-Universe Leakage
 
@@ -387,3 +423,18 @@ Capability metadata SHALL be stored in a `connection_capabilities` table keyed b
 - **WHEN** capability configuration or session signaling succeeds or fails
 - **THEN** application logs, traces, exceptions, capability rows, and conversation history contain no long-lived connection credential
 - **AND** the HTTP response is marked not cacheable
+
+### Requirement: A same-account rotation carries custody forward
+The system SHALL keep a credential custody reference, and every authority record that pins it, unchanged when the platform itself refreshes the exact pinned subscription document, updating only the custody row's byte pin by compare-and-swap inside the same exclusive vault hold as the byte write; an owner deposit, an adopted on-disk rotation, a changed account identity, or a schema-version-1 custody row SHALL renew the accepted source instead.
+
+#### Scenario: Platform refresh during an in-flight run
+- **WHEN** a run holds a receipt and the platform rotates the same account's sign-in
+- **THEN** the run's next launch succeeds on the rotated bytes and no binding, assignment or receipt is republished
+
+#### Scenario: Different account
+- **WHEN** the rotated document names a different account, or the rotation was adopted from a CLI home rather than performed by the platform
+- **THEN** the accepted source renews as before and in-flight receipts are refused
+
+#### Scenario: Bytes nobody pinned
+- **WHEN** the stored bytes differ from the custody byte pin without a carry-forward
+- **THEN** custody reads and launch snapshots refuse

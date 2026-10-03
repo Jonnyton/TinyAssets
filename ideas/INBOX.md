@@ -13,6 +13,13 @@ half-formed experiments.
 
 ## Inbox
 
+- [2026-09-26] (source: host, owner: rulebook-recut, status: captured, priority: infrastructure, size: medium) **Scale disk hygiene past the dev box.**
+  **Why it is captured, not built:** founder, 2026-09-26 — *"scaled with users as needed, but that's mostly later."* Kept here rather than in a reference doc, because an unbuilt plan in `docs/reference/` reads as procedure.
+  **What already survives the move:** every machine-specific value in `scripts/dev_hygiene.py` is a constant or a flag (prefixes, classes, age floors, keep budget, per-pass cap, roots), and the extra temp root defaults to the repo's own drive rather than a literal `C:\`, so the rules apply unchanged to the production host and to per-universe scratch.
+  **The three classes that would have to be added:** **per-universe quotas** (a reclaim decision needs a tier quota, not one global floor), **scratch-lease reclamation** (the proof becomes "the lease expired", not "the mtime is old"), and **host disk expansion** (escalation should be able to end in "grow the volume").
+  **Unchanged either way:** production pressure stays `DISK_AUTOPRUNE_PCT` plus `scripts/daemon_image_retention.py`.
+  **Links:** captured when `docs/reference/dev-disk-hygiene.md` was folded into `scripts/dev_hygiene.py`'s docstring and `--help`; `scripts/dev_hygiene.py`, `.claude/hooks/dev_hygiene_hook.py`.
+
 - [2026-07-30] (source: host, owner: codex-gpt5-desktop, status: promoted, priority: product-capability, size: large) **Universe-scoped custom agents that converse through Slack/other apps and build, test, and improve automations.**
   **Problem statement / HMW:** How might a founder create specialized, persistent agents inside their universe, reach each one from the communication tools they already use, and safely delegate the creation and continuous improvement of workflow automations without turning Slack, an app vendor, or hidden chat history into the system of record?
   **Recommended direction:** "Custom agent" is the user-facing role; the canonical substrate remains a soul-bearing **daemon** registered in the universe's learned org chart. Each agent has an explicit role, authority scope, memory scope, model/resource bindings, and allowed goals. Slack/other apps are replaceable boundary adapters: inbound messages become typed, addressable inbox artifacts; outbound replies and actions pass through scoped user grants, action caps, and the exactly-once effect ledger. The agent authors automation candidates as ordinary graph branches, tests them with locked evaluators/acceptance scenarios, iterates in bounded optimization runs, and promotes a winner only through the universe's existing review/authority gates. The universe remains the durable authority and record; channels are transports.
@@ -264,3 +271,4 @@ Needs promotion to an OpenSpec change before any build.
   The served reply should quote the run's evidence (the node output / the
   delivered body) rather than recompute a number in prose. Served prompt -
   founder-owned.
+- Anchor a refreshable credential's ISSUER outside the credential itself. The refresh endpoint is derived from `iss` in a stored identity token, so a JWKS signature check only proves self-consistency: an attacker-controlled `iss` points at their metadata and their keys. Provenance needs the issuer pinned where the token cannot reach -- recorded at deposit, or bound to the grant. Filed 2026-09-27 after removing a JWKS check that bought self-consistency at the cost of an unhardened key fetch.

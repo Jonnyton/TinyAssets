@@ -33,7 +33,7 @@ monitoring, and rollback shape.
   SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. It shows the
   user-initiated Connect state and immediate notification. Every decoded frame was
   reviewed after masking the unrelated notification row. It is publicly available at
-  `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`;
+  `https://github.com/TinyAssets/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`;
   the anonymous download and release-asset digest were rechecked on 2026-09-08.
 - Play has consumed code 3, so `mobile/android-release.json` reserves corrected
   candidate `4 (1.0.3)`. GitHub Actions run `34276126068` at integrated head
@@ -148,7 +148,10 @@ as the workflow artifact.
   shipped-artifact and exact-candidate verification. Keep that answer only for a
   candidate whose merged manifest passes this repository's permission allowlist.
   `com.google.android.gms.permission.AD_ID` is not allowed, and `mobile/package.json`
-  contains no ads/analytics/Firebase dependency. Any SDK that merges the permission
+  contains no ads/analytics dependency (1.0.4 adds `firebase-messaging` through
+  `@capacitor/push-notifications` for FCM delivery only; its merged `WAKE_LOCK`,
+  `ACCESS_NETWORK_STATE` and `c2dm.permission.RECEIVE` are the allowlist's
+  `MERGED_ONLY_PERMISSIONS`). Any SDK that merges the permission
   must fail the release verifier and force the saved answer to be reconsidered. The
   current change is actioned but has not been sent for review.
 - Foreground service: because the bundle declares a `dataSync` foreground service

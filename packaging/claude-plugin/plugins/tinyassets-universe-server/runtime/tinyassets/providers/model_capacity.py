@@ -11,6 +11,19 @@ MAX_RETRY_SECONDS = 2**31 - 1
 #: credit is deliberately absent: it is about money, not about waiting.
 TRANSIENT_CAPACITY = frozenset({"provider_rate_limited", "provider_overloaded"})
 
+#: How many times ONE piece of work may narrow an unknown window to the failed
+#: MODEL and try a sibling. The bound, not the policy: `free_sibling_retry`
+#: decides whether a narrowing is permitted at all, this caps how often a
+#: caller may act on a guess before accepting the conservative reading.
+#:
+#: One definition, because two surfaces act on the same guess: a conversation
+#: turn (`AgentTurnCoordinator`) and a workflow node
+#: (`_ForegroundRunProviderSession._call_captured_prompt`). The run path had no
+#: bound and no narrowing at all, so one 429 ended a run while a chat turn on
+#: the same source moved to the next free model (live 2026-09-30, run
+#: `c22c1cb12db74d6a`).
+MAX_FREE_SIBLING_RETRIES = 3
+
 
 def free_sibling_retry(
     *, scope, failure_class, retry_after_s=None, turn_budget_s=None,
@@ -93,6 +106,7 @@ class CapacitySignal:
             raise ValueError("invalid capacity scope")
         if self.failure_class not in {
             "provider_credit_exhausted", "provider_rate_limited", "provider_overloaded",
+            "provider_daily_quota",
         }:
             raise ValueError("invalid capacity failure kind")
         delay = self.retry_after_s

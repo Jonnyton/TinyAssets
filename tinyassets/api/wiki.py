@@ -552,7 +552,7 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
     idx_path = _wiki_index_path()
     if not idx_path.exists():
         return
-    idx = idx_path.read_text(encoding="utf-8")
+    idx = _read_text(idx_path)
     if f"[[{slug}]]" in idx:
         return
     header_map = {
@@ -592,15 +592,82 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
     idx_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _charge_commons_write(content: str, path: Path) -> None:
+    """Gate a user-driven wiki page write on the account that will hold it.
+
+    A page under the global commons wiki is charged to the WRITER (founder Q3);
+    a page under a universe's own wiki (``_scoped_wiki_root``) lives in that
+    universe, so it is charged to the universe's OWNER -- a collaborator writing
+    there spends the owner's storage, exactly as their files would. Raises
+    `storage_accounting.StorageRefused` at the quota BEFORE the page is written;
+    `wiki()` returns its record. No account: not gated.
+    """
+    from tinyassets import storage_accounting
+    from tinyassets.api.permissions import current_actor_id
+    from tinyassets.storage import data_dir, wiki_path
+    from tinyassets.universe_owner import owner_of
+
+    base = data_dir()
+    nbytes = len(content.encode("utf-8"))
+    target = Path(path).resolve()
+    try:
+        target.relative_to(wiki_path().resolve())
+    except ValueError:
+        try:
+            uid = target.relative_to(base.resolve()).parts[0]
+        except (ValueError, IndexError):
+            return  # neither commons nor a universe: not a user store
+        account = owner_of(base, uid)
+        if account:
+            # Committed, so the next measurement of the universe (which sees the
+            # page itself) retires it -- counted once, never twice.
+            storage_accounting.commit(storage_accounting.reserve(
+                base, account_id=account, scope_id=uid, store="universe_files",
+                nbytes=nbytes,
+            ))
+        return
+    storage_accounting.charge_now(
+        base,
+        account_id=storage_accounting.account_for_actor(base, current_actor_id()),
+        store="commons_pages",
+        nbytes=nbytes,
+    )
+
+
+def _record_commons_writer(path: Path, content: str) -> None:
+    """Charge this commons page's bytes to the account that last wrote it.
+
+    Commons pages carry no author, so the writer is recorded by the write
+    (account-storage-quota Q3, founder 2026-09-30: commons pages are charged to
+    the writer). The actor is the authenticated request subject; nothing is
+    recorded without one. Never raises: the page is already written.
+    """
+    from tinyassets import storage_accounting
+    from tinyassets.api.permissions import current_actor_id
+    from tinyassets.storage import data_dir
+
+    storage_accounting.record_commons_writer(data_dir(), path, current_actor_id(), content)
+
+
 def _append_wiki_log(msg: str) -> None:
     """Append an entry to the wiki log."""
     log_path = _wiki_log_path()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    line = f"\n## [{today}] {msg}\n"
     try:
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"\n## [{today}] {msg}\n")
+            f.write(line)
     except OSError:
-        pass
+        return
+    # The log grows with user-supplied log entries: charge each appended line to
+    # the authenticated writer (gpt-6-astra, PR #4166). No actor: platform's.
+    from tinyassets import storage_accounting
+    from tinyassets.api.permissions import current_actor_id
+    from tinyassets.storage import data_dir
+
+    storage_accounting.record_commons_log(
+        data_dir(), current_actor_id(), len(line.encode("utf-8")),
+    )
 
 
 def _sanitize_slug(name: str) -> str:
@@ -744,7 +811,7 @@ def _wiki_read(
             "required_permission": "read",
             "detail": (
                 "This page's declared visibility withholds its content from a "
-                "reader without a grant on this universe."
+                "reader without a grant on this command center."
             ),
         })
 
@@ -1132,7 +1199,9 @@ def _wiki_write(
 
     if promoted_path.exists():
         try:
+            _charge_commons_write(content, promoted_path)
             promoted_path.write_text(content, encoding="utf-8")
+            _record_commons_writer(promoted_path, content)
             _append_wiki_log(
                 f"update | {promoted_rel_path.removesuffix('.md')} | "
                 f"{log_entry or 'in-place update'}"
@@ -1149,7 +1218,9 @@ def _wiki_write(
     try:
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         is_new = not draft_path.exists()
+        _charge_commons_write(content, draft_path)
         draft_path.write_text(content, encoding="utf-8")
+        _record_commons_writer(draft_path, content)
         action_word = "draft" if is_new else "draft-update"
         _append_wiki_log(
             f"{action_word} | drafts/{category}/{slug} | {log_entry or 'new draft'}"
@@ -1223,7 +1294,9 @@ def _wiki_patch(
         return json.dumps(response)
 
     try:
+        _charge_commons_write(patched, resolved)
         resolved.write_text(patched, encoding="utf-8")
+        _record_commons_writer(resolved, patched)
         _append_wiki_log(f"patch | {rel} | {log_entry or 'exact replacement'}")
         response.update({"status": "patched"})
         return json.dumps(response)
@@ -1398,7 +1471,9 @@ def _wiki_consolidate(
                 except OSError:
                     pass
             try:
+                _charge_commons_write("".join(sections), primary["path"])
                 primary["path"].write_text("".join(sections), encoding="utf-8")
+                _record_commons_writer(primary["path"], "".join(sections))
             except OSError:
                 pass
             report.append(
@@ -1469,7 +1544,9 @@ def _wiki_promote(
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if "updated:" in content:
             content = re.sub(r"updated:.*", f"updated: {today}", content)
+        _charge_commons_write(content, dest_path)
         dest_path.write_text(content, encoding="utf-8")
+        _record_commons_writer(dest_path, content)
         draft_path.unlink()
         _add_to_index(found_category, slug, meta.get("title", slug))
         _append_wiki_log(
@@ -1496,7 +1573,9 @@ def _wiki_ingest(
     try:
         raw_dir.mkdir(parents=True, exist_ok=True)
         target = raw_dir / Path(filename).name
+        _charge_commons_write(content, target)
         target.write_text(content, encoding="utf-8")
+        _record_commons_writer(target, content)
         url_note = f" ({source_url})" if source_url else ""
         _append_wiki_log(f"ingest | {filename}{url_note}")
         return json.dumps({
@@ -1550,7 +1629,7 @@ def _wiki_supersede(
         })
 
     try:
-        old_content = old_path.read_text(encoding="utf-8")
+        old_content = _read_text(old_path)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         if "confidence:" in old_content:
@@ -1578,7 +1657,9 @@ def _wiki_supersede(
             body = re.sub(r"^> \*\*Superseded\*\*.*\n\n", "", fm_match.group(2))
             old_content = fm_match.group(1) + notice + body
 
+        _charge_commons_write(old_content, old_path)
         old_path.write_text(old_content, encoding="utf-8")
+        _record_commons_writer(old_path, old_content)
         _append_wiki_log(
             f"supersede | {old_category}/{old_slug} -> {new_slug} | {reason}"
         )
@@ -1874,7 +1955,7 @@ def _wiki_sync_projects(**_kwargs: Any) -> str:
             dp = pp / df
             if dp.exists():
                 try:
-                    file_content = dp.read_text(encoding="utf-8")
+                    file_content = _read_text(dp)
                     for line in file_content.split("\n"):
                         tr = line.strip()
                         if (
@@ -2136,7 +2217,7 @@ def _scan_existing_bugs(bugs_dir: Path) -> list[dict[str, Any]]:
         if not m:
             continue
         try:
-            raw = p.read_text(encoding="utf-8", errors="replace")
+            raw = _read_text(p, errors="replace")
         except OSError:
             continue
         fm_title = ""
@@ -2222,7 +2303,7 @@ def _wiki_cosign_bug(
 
     target = matches[0]
     try:
-        raw = target.read_text(encoding="utf-8")
+        raw = _read_text(target)
     except OSError as exc:
         return json.dumps({"error": f"Cannot read bug file: {exc}"})
 
@@ -2254,7 +2335,9 @@ def _wiki_cosign_bug(
         raw = raw.rstrip() + f"\n\n## Cosigns\n{cosign_entry}\n"
 
     try:
+        _charge_commons_write(raw, target)
         target.write_text(raw, encoding="utf-8")
+        _record_commons_writer(target, raw)
     except OSError as exc:
         return json.dumps({"error": f"Cannot write bug file: {exc}"})
 
@@ -2425,8 +2508,10 @@ def _wiki_file_bug(
             effort_classification=effort_classification,
         )
         try:
+            _charge_commons_write(body, target)
             with open(target, "x", encoding="utf-8") as fh:
                 fh.write(body)
+            _record_commons_writer(target, body)
             break
         except FileExistsError:
             if attempt == 2:
@@ -2746,4 +2831,19 @@ def wiki(
             "universe_id": target_universe_id,
         }
 
-        return _stamp_universe_id(handler(**kwargs), target_universe_id)
+        from tinyassets.storage_accounting import StorageRefused
+
+        try:
+            result = handler(**kwargs)
+        except StorageRefused as refused:
+            # At the account's storage quota: the visible refusal, numbers and
+            # inline Upgrade link. Nothing was written.
+            result = json.dumps(_visible_refusal(refused))
+        return _stamp_universe_id(result, target_universe_id)
+
+def _visible_refusal(refused):
+    """The refusal the CALLER may see: the charged account's full record only
+    if the caller is that account (storage_accounting.visible_record)."""
+    from tinyassets.storage_accounting import visible_record
+
+    return visible_record(refused)

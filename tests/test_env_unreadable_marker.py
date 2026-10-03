@@ -127,7 +127,7 @@ def test_entrypoint_passes_through_when_one_sentinel_set():
     """At least one sentinel non-empty -> entrypoint proceeds past the check."""
     result = _run_entrypoint_via_stdin(
         exec_replacement='echo "[harness] would-exec: $@"',
-        extra_env={"TINYASSETS_IMAGE": "ghcr.io/jonnyton/tinyassets-daemon:abc123"},
+        extra_env={"TINYASSETS_IMAGE": "ghcr.io/tinyassets/tinyassets-daemon:abc123"},
     )
     assert result.returncode == 0, (
         f"expected happy-path exit 0; got {result.returncode}. "
@@ -145,7 +145,7 @@ def test_entrypoint_fails_loud_when_required_data_file_missing(tmp_path: Path):
     result = _run_entrypoint_via_stdin(
         exec_replacement='echo "[harness] would-exec: $@"',
         extra_env={
-            "TINYASSETS_IMAGE": "ghcr.io/jonnyton/tinyassets-daemon:abc123",
+            "TINYASSETS_IMAGE": "ghcr.io/tinyassets/tinyassets-daemon:abc123",
             "TINYASSETS_PACKAGE_ROOT": str(tmp_path),
         },
     )
@@ -181,7 +181,7 @@ def test_entrypoint_data_file_probe_accepts_git_bash_windows_package_root(
     result = _run_entrypoint_via_stdin(
         exec_replacement='echo "[harness] would-exec: $@"',
         extra_env={
-            "TINYASSETS_IMAGE": "ghcr.io/jonnyton/tinyassets-daemon:abc123",
+            "TINYASSETS_IMAGE": "ghcr.io/tinyassets/tinyassets-daemon:abc123",
             "TINYASSETS_PACKAGE_ROOT": r"C:\Users\Jonathan\Projects\wf-review-108",
             "TINYASSETS_FAKE_POSIX_ROOT": _bash_readable_path(package_root),
         },
@@ -242,7 +242,9 @@ def test_systemd_unit_compose_loads_tinyassets_env_for_interpolation():
     directives = [ln for ln in service_section.splitlines() if ln and not ln.startswith("#")]
     assert any(
         ln.startswith("ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env")
-        and ln.endswith("up -d daemon cloudflared logs")
+        # `--timeout 20` (the bounded drain, 2026-10-01) sits between them.
+        and " up -d " in ln
+        and ln.endswith(" daemon cloudflared logs")
         for ln in directives
     ), directives
     assert not any(ln.startswith("EnvironmentFile=") for ln in directives), directives
