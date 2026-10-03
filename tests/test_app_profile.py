@@ -126,7 +126,7 @@ def test_account_header_loads_text_and_discards_another_accounts_response(tmp_pa
 
     node = shutil.which("node")
     if not node:
-        pytest.skip("node runs the page's own source")
+        pytest.skip("owner=codex runs-in=cloud-prepush-oracle Node runs the page's own source")
     page, _csp = onboarding.render_app_html()
     assert "loadProfile();" in _js_function(page, "showAccount")
     script = tmp_path / "profile.js"
