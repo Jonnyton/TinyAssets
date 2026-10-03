@@ -1234,6 +1234,49 @@ async def _handle_serving_bind(request: Any) -> Any:
 
 
 
+async def _handle_profile(request: Any) -> Any:
+    """Read the signed-in owner's own agent, like the rules GET door."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.api.status import _universe_active_turn
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding_note import agent_identity
+    from tinyassets.storage.agent_turn_journal import WORKING_STATES
+    from tinyassets.storage.pending_requests import list_pending
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+    home = await run_in_threadpool(_read_home, identity)
+    if not home:
+        return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
+
+    def _profile():
+        universe = _universe_dir(home)
+        name, responsibility = agent_identity(universe)
+        active = _universe_active_turn(universe)
+        if active and active.get("state") == "unreadable":
+            raise OSError("agent turn activity unreadable")
+        working = bool(active and not active.get("stale") and active.get("state") in WORKING_STATES)
+        status = "working" if working else "waiting_on_you" if list_pending(universe) else "idle"
+        # The live journal carries the serving model's label when known. A
+        # preference or provider id is not evidence of which model is serving.
+        model = active.get("model", "") if working else ""
+        return {"name": name, "responsibility": responsibility[:500], "status": status,
+                "model": model if isinstance(model, str) else "", "agent_id": "main"}
+
+    try:
+        profile = await run_in_threadpool(_profile)
+    except OSError:
+        return JSONResponse({"error": "profile_unavailable"}, status_code=503, headers=_NO_STORE)
+    return JSONResponse(profile, headers=_NO_STORE)
+
+
 async def _handle_rules(request: Any) -> Any:
     """The signed-in owner's Custom Rules for their own agent (harness D1a).
 
@@ -2309,6 +2352,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
         Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
+        Route("/app/profile", _handle_profile, methods=["GET"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
         Route("/app/turn/steer", _handle_turn_steer, methods=["POST"]),
         Route("/app/turn/pending", _handle_turn_pending, methods=["POST"]),
