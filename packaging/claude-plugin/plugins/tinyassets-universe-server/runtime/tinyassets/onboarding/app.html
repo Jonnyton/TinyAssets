@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
   <title>TinyAssets</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%20width=%2264%22%20height=%2264%22%20role=%22img%22%20aria-label=%22TinyAssets:%20Mount%20Baker%20under%20a%20wolf%20moon%22%3E%3Cdefs%3E%3CclipPath%20id=%22ta-badge%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2213%22/%3E%3C/clipPath%3E%3C/defs%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2213%22%20fill=%22#1b1b24%22/%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M-3%2027%20C14%2019%2026%209%2043%206%22%20fill=%22none%22%20stroke=%22#c9b6ff%22%20stroke-width=%221.7%22%20stroke-linecap=%22round%22%20opacity=%220.72%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M13%2011.9%20L13.242%2012.758%20L14.1%2013%20L13.242%2013.242%20L13%2014.1%20L12.758%2013.242%20L11.9%2013%20L12.758%2012.758%20Z%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Ccircle%20cx=%2225%22%20cy=%229%22%20r=%220.65%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Ccircle%20cx=%2248%22%20cy=%2214.5%22%20r=%226%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Ccircle%20cx=%2248%22%20cy=%2214.5%22%20r=%225.1%22%20fill=%22#e0703f%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M-5%2064%20L-5%2045%20L3%2039%20L7%2042%20L11%2036%20L15%2041%20L19%2035%20L23%2038%20L31%2028%20L36%2022%20L40%2020.5%20L45%2020.8%20L49%2022.5%20L53%2027%20L57%2029%20L61%2034%20L69%2040%20L69%2064%20Z%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M30%2037%20L37%2024%20L41%2023%20L36%2038%20Z%22%20fill=%22#1b1b24%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M46%2039%20L51%2029%20L55%2032%20L51%2041%20Z%22%20fill=%22#1b1b24%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M-4%2064%20L-4%2056%20Q9%2052.5%2022%2054%20Q35%2056.2%2047%2053.6%20Q57%2051.4%2068%2050%20L68%2064%20Z%22%20fill=%22#1b1b24%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cg%20transform=%22translate%2821%2037.5%29%20scale%280.66%29%22%3E%3Cpath%20d=%22M27.42%200.20%20L19.38%205.10%20L20.39%206.02%20L16.77%209.36%20L6.82%2012.19%20L0%2021.91%20L3.80%2021.52%20L6.09%2018.38%20L4.44%2025.52%20L6.82%2025.97%20L6.12%2023.20%20L10.07%2019.16%20L8.82%2022.55%20L10.35%2025.69%20L12.51%2025.78%20L10.53%2022.81%20L12.90%2018.94%20L12.81%2016.89%20L17.77%2016.84%20L19.23%2025.50%20L21.61%2025.86%20L20.18%2023.37%20L20.94%2017.26%20L22.09%2025.36%20L24.56%2025.69%20L22.94%2023.73%20L23.67%2015.72%20L26.11%2012.64%20L27.17%205.88%20L28.82%202.52%20L27.33%203.22%20Z%22%20fill=%22#14140f%22/%3E%3C/g%3E%3C/g%3E%3C/svg%3E" />
   <style nonce="__TA_NONCE__">
@@ -16,7 +16,7 @@
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
       font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-    .app{height:100dvh;display:flex;flex-direction:column}
+    .app{height:var(--app-h,100dvh);display:flex;flex-direction:column}
     .view{flex:1;min-height:0;display:flex;flex-direction:column}
     [hidden]{display:none!important}
     /* sign-in */
@@ -321,6 +321,41 @@
     @keyframes cloud-pulse{0%,100%{box-shadow:0 0 0 0 rgba(120,140,255,.55)}50%{box-shadow:0 0 0 8px rgba(120,140,255,0)}}
     @media (prefers-reduced-motion:reduce){.chat-cloud-bubble.is-thinking{animation:none;outline:2px dashed var(--accent)}}
     #ui-mode{font-size:.8rem}
+    #btn-header-menu{display:none}
+    @media (max-width:600px){
+      #view-chat > .chat-header{position:relative;flex:0 0 auto;min-height:52px;box-sizing:border-box;
+        padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));
+        gap:8px;z-index:20}
+      #view-chat .chat-title{min-width:0;flex:1}
+      #universe-name{max-width:none;min-width:0}
+      #btn-header-menu{display:block;flex:none;padding:6px 10px}
+      #view-chat .chat-actions{display:none;position:absolute;top:100%;right:8px;flex-direction:column;
+        padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #0008}
+      #view-chat .header-menu--open .chat-actions{display:flex}
+      #chat-cloud{border-radius:0}
+      #chat-cloud-resize{display:none}
+      #chat-cloud-body > *{flex:0 0 auto}
+      #chat-cloud-body > .chat-body{flex:1;min-height:0;flex-direction:column}
+      #thread{flex:1;min-height:0;padding:12px}
+      #request-rail{flex:0 0 auto;width:auto;padding:0 8px;gap:0;max-height:45%;overflow-y:auto}
+      /* Collapsed, the chip and any load error stay; everything else (items,
+         "Add a key yourself") is one tap away. renderRail still decides when
+         the rail shows at all. */
+      #request-rail:not(.rail--open) > :not(#rail-head):not(#rail-error){display:none}
+      #rail-head{padding:8px 0;margin:0;white-space:nowrap;cursor:pointer;text-transform:none;letter-spacing:normal}
+      #model-bar{flex-wrap:nowrap;gap:8px;padding:4px 8px;white-space:nowrap}
+      #model-next{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+      #btn-models{flex:none;font-size:12px;padding:5px 8px;white-space:nowrap}
+      #composer{grid-template-columns:36px 36px minmax(0,1fr) auto;gap:4px;padding:4px 8px;
+        padding-bottom:max(4px,env(safe-area-inset-bottom))}
+      #composer #voice-output-select{display:none}
+      #composer #btn-attach{grid-column:1;grid-row:1;width:36px;height:36px;padding:0}
+      #composer #btn-voice{grid-column:2;grid-row:1;width:36px;height:36px;min-width:0;padding:0;font-size:0}
+      #btn-voice::after{content:"\1f3a4";font-size:18px}
+      #composer #composer-input{grid-column:1/4;grid-row:2;min-width:0}
+      #composer #btn-send,#composer #btn-stop{grid-column:4;grid-row:2;padding:8px 12px}
+      #status-line{padding-bottom:2px;min-height:0}
+    }
   </style>
 </head>
 <body>
@@ -351,6 +386,8 @@
           <span id="dot" class="dot" title="checking..."></span>
           <span id="universe-name" class="universe-name">Your command center</span>
         </div>
+        <button id="btn-header-menu" class="btn btn--ghost" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-label="Menu">&#9776;</button>
         <nav class="chat-actions">
           <span id="ui-mode" hidden></span>
           <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
@@ -4721,7 +4758,9 @@
     const h=fit(state.open.h, Math.min(CLOUD_MIN_H,stage.h), stage.h);
     return {
       mode:state.mode==="bubble" ? "bubble" : "open",
-      open:{x:fit(state.open.x,0,stage.w-w), y:fit(state.open.y,0,stage.h-h), w:w, h:h},
+      open:stage.w<CLOUD_PHONE_MAX && stage.w<=600 && state.mode==="open"
+        ? {x:0,y:0,w:stage.w,h:stage.h}
+        : {x:fit(state.open.x,0,stage.w-w), y:fit(state.open.y,0,stage.h-h), w:w, h:h},
       bubble:{x:fit(state.bubble.x,0,stage.w-CLOUD_BUBBLE), y:fit(state.bubble.y,0,stage.h-CLOUD_BUBBLE)},
       userSet:!!state.userSet,
     };
@@ -6146,7 +6185,68 @@
       graph_id:graph_id, payload_json:JSON.stringify({file_id:file_id})});
   }
 
+  function fitToVisualViewport(){
+    // Height x scale: the on-screen keyboard shrinks the visual viewport, a
+    // pinch-zoom only rescales it, and only the keyboard should shrink the app.
+    // Phones only: desktop and the Electron app keep 100dvh exactly as before.
+    const vv=window.visualViewport, root=document.documentElement;
+    if(vv && window.matchMedia("(max-width:600px)").matches)
+      root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
+    else root.style.removeProperty("--app-h");
+  }
+  function setHeaderMenu(open){
+    const button=$("btn-header-menu");
+    button.setAttribute("aria-expanded",String(open));
+    button.closest("header").classList.toggle("header-menu--open",open);
+  }
+  function paintRailChip(){
+    const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
+    const count=$("rail-items").children.length;
+    rail.dataset.phoneEmpty=String(count===0);
+    if(phone){
+      // Only what is outstanding counts: an offered row ("Connect another LLM")
+      // is not waiting on anyone (the same rule as the desktop heading).
+      const waiting=typeof railCache!=="undefined"
+        ? railCache.filter(r=>!(typeof isOptionalRequest==="function" && isOptionalRequest(r))).length : count;
+      const label=waiting ? waiting+" waiting on you" : "Nothing waiting on you";
+      if(head.textContent!==label) head.textContent=label;
+      head.setAttribute("role","button"); head.tabIndex=0;
+      head.setAttribute("aria-expanded",String(rail.classList.contains("rail--open")));
+    }else if(head.hasAttribute("role")){
+      head.textContent=typeof railCache!=="undefined" && !railCache.some(r=>!isOptionalRequest(r))
+        ? "Nothing waiting on you" : "Waiting on you";
+      head.removeAttribute("role"); head.removeAttribute("tabindex"); head.removeAttribute("aria-expanded");
+    }
+  }
+  function toggleRailChip(event){
+    if(!window.matchMedia("(max-width:600px)").matches) return;
+    if(event.type==="keydown" && event.key!=="Enter" && event.key!==" ") return;
+    event.preventDefault(); $("request-rail").classList.toggle("rail--open"); paintRailChip();
+  }
+  function wirePhoneConversation(){
+    fitToVisualViewport();
+    if(window.visualViewport){
+      window.visualViewport.addEventListener("resize",fitToVisualViewport);
+      window.visualViewport.addEventListener("scroll",fitToVisualViewport);
+    }
+    const button=$("btn-header-menu"), header=button.closest("header");
+    button.addEventListener("click",()=>setHeaderMenu(button.getAttribute("aria-expanded")!=="true"));
+    header.querySelector("nav").addEventListener("click",event=>{if(event.target.closest("button,a")) setHeaderMenu(false);});
+    document.addEventListener("click",event=>{if(!header.contains(event.target)) setHeaderMenu(false);});
+    document.addEventListener("keydown",event=>{if(event.key==="Escape" && button.getAttribute("aria-expanded")==="true"){
+      setHeaderMenu(false); button.focus();
+    }});
+    $("rail-head").addEventListener("click",toggleRailChip);
+    $("rail-head").addEventListener("keydown",toggleRailChip);
+    new MutationObserver(paintRailChip).observe($("rail-items"),{childList:true,subtree:true});
+    new MutationObserver(()=>{
+      if(window.matchMedia("(max-width:600px)").matches) paintRailChip();
+    }).observe($("rail-head"),{childList:true});
+    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();setHeaderMenu(false);fitToVisualViewport();});
+    paintRailChip();
+  }
   function wire(){
+    if(typeof wirePhoneConversation === "function") wirePhoneConversation();
     // Default-hidden in HTML prevents a pre-script flash inside the native shell.
     // Reveal and initialise Voice only on the web surface; NATIVE covers both iOS
     // and Android Capacitor shells.
