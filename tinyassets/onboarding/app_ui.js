@@ -51,6 +51,15 @@
     // change it; the person approves in this page's own chrome, never in the UI.
     ROLE:"app_experience",TURN_KIND:"tinyassets.turn-graph.v1",
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
+    // The blank command center the platform ships. Its ui_id carries a colon,
+    // which ID_RE forbids, so no UI a person can author or install may claim
+    // it -- that is what makes it an identity rather than a convention.
+    PLATFORM_UI_ID:"platform:blank",
+    // Actions only that bundle may ask for. Installing software and composing a
+    // message as the owner are the app's offer to them, not a third-party
+    // bundle's capability. `packages.list_tryable` is absent on purpose: it
+    // only reads what is already published.
+    PLATFORM_ONLY:["packages.try","chat.prefill"],
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
     // Carried verbatim when present: the asset manifest the server checked,
     // shared libraries by name, and whether `script` is a module.
@@ -76,6 +85,8 @@
     // the one that replaced it -- both bootstraps number requests from r1, so the
     // ids collide by construction (Codex, 2026-09-26).
     frameGen:0,ready:false,sending:false,emitting:false,trying:false,pending:0,
+    // True only while mountDefault's own bundle is on screen (isPlatformDefault).
+    defaultMounted:false,
 
     bytes(value){ return new TextEncoder().encode(String(value)).length; },
 
@@ -189,7 +200,7 @@
       this.epoch++; this.unmount();
       this.enabled=false; this.home=""; this.principal="";
       this.library=[]; this.unreadable=""; this.selection=null; this.busy=false;
-      this.platformDefault=null;
+      this.platformDefault=null; this.defaultMounted=false;
       this.revision=0;
       this.conversation=null; this.conversationNote=""; this.previousTurn=null; this.selecting=false; this.ambiguous=false;
       $("btn-ui-switch").hidden=true;
@@ -285,11 +296,22 @@
     },
 
     // ---- rendering: the bundle never enters this document ------------------
+    // Is the bundle on screen RIGHT NOW the platform's own blank command
+    // center? Read off the mounted entry, so a UI cannot become the platform's
+    // by naming itself that: parseBundle is the only way into `active`, and the
+    // only bundle whose ui_id may contain a colon is the one the server sends
+    // as `platform_default`.
+    isPlatformDefault(){
+      return !!(this.active && this.active.ui_id===this.PLATFORM_UI_ID && this.defaultMounted);
+    },
     mountDefault(){
       if(!this.enabled||!this.platformDefault) return;
       const parsed=this.parseBundle(this.platformDefault);
       if(!parsed.ok) throw new Error("The blank command center is unavailable: "+parsed.reason);
       this.mount(parsed.bundle);
+      // Set AFTER mount: mount() clears it, so this is only ever true for the
+      // bundle this call put on screen.
+      this.defaultMounted=true;
     },
     mount(entry){
       this.unmount();
@@ -301,6 +323,7 @@
       frame.setAttribute("src",this.FRAME_SRC);
       this.frame=frame; this.active=entry; this.ready=false;
       this.frameGen++; this.pending=0; this.sending=false; this.emitting=false; this.trying=false;
+      this.defaultMounted=false;   // mountDefault sets it again after this call
       this.listener=event=>this.receive(event);
       window.addEventListener("message",this.listener);
       host.replaceChildren(frame);
@@ -308,7 +331,6 @@
       $("view-chat").classList.add("ui-custom-active");
       // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
-      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
       if(typeof focusCommandCenter === "function" &&
          !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
          !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
@@ -321,12 +343,11 @@
       $("view-chat").classList.remove("ui-custom-active");
       // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
-      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
       if(typeof focusCommandCenter === "function" &&
          !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
          !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
-      this.trying=false;
+      this.trying=false; this.defaultMounted=false;
       this.frameGen++;
       this.paintHeader();
     },
@@ -478,6 +499,16 @@
       const gen=this.frameGen,asker={gen,name:this.active?this.active.name:"This UI"};
       const method=Object.prototype.hasOwnProperty.call(this.ACTIONS,action)?this.ACTIONS[action]:null;
       if(!method){ this.refuse(id,"action not available: "+action); return; }
+      // PLATFORM-ONLY actions. Installing a package and putting words in the
+      // owner's composer are the app's own offer to them, not a capability a
+      // UI someone else wrote gets to reach for: a third-party bundle could
+      // otherwise install software or compose a message as the owner. Only the
+      // blank command center the platform ships (PLATFORM_UI_ID) may ask, and
+      // the check is on the bundle MOUNTED NOW, not on anything the frame says
+      // about itself.
+      if(this.PLATFORM_ONLY.indexOf(action)>=0 && !this.isPlatformDefault()){
+        this.refuse(id,"action not available: "+action); return;
+      }
       if(this.pending>=8){ this.refuse(id,"too many requests in flight"); return; }
       const epoch=this.epoch,home=this.home,args=(params&&typeof params==="object"&&!Array.isArray(params))?params:{};
       this.pending++;

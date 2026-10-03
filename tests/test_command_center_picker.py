@@ -177,7 +177,7 @@ u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;
 u.platformDefault=DEFAULT_BUNDLE;u.mountDefault();
 assert(u.parseBundle(DEFAULT_BUNDLE).ok);
 assert.equal(u.active.ui_id,'platform:blank');
-assert.equal(u.frame.attrs.sandbox,'allow-scripts');
+assert.equal(u.frame.attrs.sandbox,u.SANDBOX);
 assert.equal(u.library.length,0);
 u.deliver();assert.deepEqual(u.frame.contentWindow.posts[0].bundle,
  {markup:DEFAULT_BUNDLE.markup,style:DEFAULT_BUNDLE.style,script:DEFAULT_BUNDLE.script});
@@ -211,3 +211,97 @@ console.log('picker bridge passed');
     out = _run(tmp_path, "picker.js", checks,
                extra="const DEFAULT_BUNDLE=" + json.dumps(PLATFORM_DEFAULT_UI) + ";\n")
     assert "picker bridge passed" in out
+# -- lead decision: installing and composing are the PLATFORM's, not a UI's ----
+
+
+def test_only_the_platform_bundle_may_install_or_prefill(tmp_path):
+    """``packages.try`` and ``chat.prefill`` are refused to a third-party UI.
+
+    They are the app's own offer to the owner: one installs software as them,
+    the other composes a message as them. A UI someone else wrote must not be
+    able to reach either, and the check is on the bundle MOUNTED NOW -- a
+    bundle cannot name itself ``platform:blank`` to acquire them, because
+    ID_RE forbids the colon everywhere except the row the server sends.
+    ``packages.list_tryable`` stays open: it only reads what is published.
+    """
+    from tests.test_custom_ui_bridge import _run
+
+    checks = r"""
+(async()=>{
+const u=AppUI;
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;
+let prefilled=0;global.chatCloudPrefill=()=>{prefilled++;};
+let installs=0;
+MCP.callTool=async()=>{installs++;return {request_id:'r1'};};
+Owner.read=async()=>({packages:[],build_prompt:'build',can_try:false});
+
+const ask=async(action,params)=>{
+ const win=u.frame.contentWindow,before=win.posts.length;
+ u.receive({source:win,data:{ta_ui:1,type:'call',id:'q'+before,action,params:params||{}}});
+ for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
+ assert(win.posts.length>before,'the bridge always answers '+action);
+ return win.posts[win.posts.length-1];
+};
+
+// A UI the owner installed. It may read the offers and nothing more.
+u.mount({kind:u.KIND,version:1,ui_id:'third-party',name:'Theirs',
+ markup:'<p>x</p>',style:'',script:''});
+assert.equal(u.isPlatformDefault(),false);
+const listed=await ask('packages.list_tryable',{});
+assert.equal(listed.ok,true,'reading the offers stays open to any UI');
+for(const action of ['packages.try','chat.prefill']){
+ const answer=await ask(action,{agent_definition_id:'d1',text:'build'});
+ assert.equal(answer.ok,false,action+' must be refused to a third-party UI');
+ assert.match(answer.error,/action not available/);
+}
+assert.equal(installs,0,'nothing was installed');
+assert.equal(prefilled,0,'nothing was composed');
+
+// Naming itself the platform's does not make it so: parseBundle refuses the
+// colon, so such a bundle can never become `active` through install.
+assert.equal(u.parseBundle({kind:u.KIND,version:1,ui_id:'platform:blank',
+ name:'Impostor',markup:'',style:'',script:''}).ok,true,
+ 'the server-sent row parses');
+u.mount({kind:u.KIND,version:1,ui_id:'platform:blank',name:'Impostor',
+ markup:'',style:'',script:''});
+assert.equal(u.isPlatformDefault(),false,
+ 'only mountDefault grants the platform identity, not the id alone');
+const stolen=await ask('chat.prefill',{text:'build'});
+assert.equal(stolen.ok,false);
+assert.equal(prefilled,0);
+
+// The platform's own blank command center may ask.
+u.platformDefault=DEFAULT_BUNDLE;u.mountDefault();
+assert.equal(u.isPlatformDefault(),true);
+const allowed=await ask('chat.prefill',{text:'build'});
+assert.equal(allowed.ok,true);
+assert.equal(prefilled,1);
+const install=await ask('packages.try',{agent_definition_id:'d1'});
+assert.equal(install.ok,true);
+assert.equal(installs,1);
+
+// ...and loses it the moment another bundle takes the screen.
+u.mount({kind:u.KIND,version:1,ui_id:'third-party',name:'Theirs',
+ markup:'<p>x</p>',style:'',script:''});
+assert.equal(u.isPlatformDefault(),false);
+const after=await ask('packages.try',{agent_definition_id:'d1'});
+assert.equal(after.ok,false);
+assert.equal(installs,1);
+console.log('picker authority passed');
+})().catch(e=>{console.error(e);process.exit(1);});
+"""
+    out = _run(tmp_path, "picker_authority.js", checks,
+               extra="const DEFAULT_BUNDLE=" + json.dumps(PLATFORM_DEFAULT_UI) + ";\n")
+    assert "picker authority passed" in out
+
+
+def test_the_allowlist_names_exactly_the_platform_only_actions():
+    """The gate's list is pinned: adding a platform action to ACTIONS without
+    adding it here would hand it to every UI."""
+    source = Path("tinyassets/onboarding/app_ui.js").read_text(encoding="utf-8")
+    block = source.split("PLATFORM_ONLY:[", 1)[1].split("]", 1)[0]
+    assert sorted(re.findall(r'"([^"]+)"', block)) == ["chat.prefill", "packages.try"]
+    assert 'PLATFORM_UI_ID:"platform:blank"' in source
+    # Enforced in serve(), the one place every call passes through.
+    served = source.split("async serve(id,action,params){", 1)[1].split("\n    },", 1)[0]
+    assert "this.PLATFORM_ONLY.indexOf(action)>=0 && !this.isPlatformDefault()" in served

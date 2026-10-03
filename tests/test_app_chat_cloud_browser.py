@@ -124,7 +124,10 @@ def test_shrink_to_a_bubble_that_drags_without_opening_and_opens_on_click(app_ur
     page.click("#btn-cloud-shrink")
     assert page.locator("#chat-cloud").is_hidden()
     assert page.locator("#chat-cloud-bubble").is_visible()
-    assert page.evaluate("document.activeElement.id") == "cc-blank"
+    # Focus left the chat. There is no in-document stand-in to name any more:
+    # the command center is a mounted bundle, and with none mounted here the
+    # point is simply that the shrunk chat does not keep the keyboard.
+    assert page.evaluate("document.activeElement.closest('#chat-cloud') === null")
 
     before = _box(page, "#chat-cloud-bubble")
     _drag(page, "#chat-cloud-bubble", -300, -200)
@@ -236,8 +239,16 @@ def test_auto_shrink_preserves_typing_until_focus_leaves_the_composer(app_url, b
     assert page.locator("#composer-input").evaluate(
         "e => [e.selectionStart, e.selectionEnd]") == [5, 9]
 
-    page.evaluate("focusCommandCenter(); refreshChatCloud()")
+    # Focus leaves the composer. No layout is mounted in this harness, so
+    # focusCommandCenter has no frame to hand the keyboard to and would leave
+    # the draft focused -- the owner moving off the composer is what releases
+    # the hold, so that is what this does.
+    page.evaluate("""() => {
+        document.getElementById('composer-input').blur();
+        refreshChatCloud();
+    }""")
     assert page.locator("#chat-cloud").is_hidden()
-    assert page.evaluate("document.activeElement.id") == "cc-blank"
+    assert page.evaluate(
+        "document.activeElement.closest('#chat-cloud') === null"), "not the chat's any more"
     page.click("#chat-cloud-bubble")
     assert page.input_value("#composer-input") == "Keep this draft"

@@ -15,19 +15,24 @@ let focused='', messages=[];
 const frame={setAttribute(k,v){this[k]=v},focus(){focused='frame'},
  contentWindow:{focus(){focused='frame'},postMessage(m,origin){messages.push([m,origin])}}};
 const nodes={'ui-frame':frame,'ui-frame-host':{hidden:false},
- 'cc-blank':{focus(){focused='blank'}}, 'chat-stage':{}, 'composer-input':{tagName:'TEXTAREA'},
+ 'chat-stage':{}, 'composer-input':{tagName:'TEXTAREA'},
  'cloud-menu':{hidden:true}};
 const $=id=>nodes[id]; const document={body:{}};
 """
 
 
-def test_focus_frame_or_blank():
+def test_focus_only_ever_targets_the_frame():
+    """ONE code path. The command center is always a mounted bundle -- the
+    platform's own blank one when the owner has chosen nothing -- so there is
+    no in-document stand-in to fall back to and no second branch to keep
+    working. With no frame at all this does nothing rather than inventing a
+    target."""
     out = run_js(functions('focusCommandCenter') + DOM + """
 focusCommandCenter(); const first=focused;
-delete nodes['ui-frame']; focusCommandCenter();
+focused=''; delete nodes['ui-frame']; focusCommandCenter();
 console.log(JSON.stringify({first,focused,tabindex:frame.tabindex,messages}));
 """)
-    assert out == {"first": "frame", "focused": "blank", "tabindex": "0",
+    assert out == {"first": "frame", "focused": "", "tabindex": "0",
                    "messages": [[{"ta_ui": 1, "type": "focus"}, "*"]]}
 
 
@@ -35,7 +40,7 @@ def test_forward_only_from_unclaimed_focus():
     out = run_js(functions('isTypingTarget', 'forwardCommandCenterKey') + DOM + """
 const e={key:'ArrowRight',code:'ArrowRight',shiftKey:true,altKey:false,
  ctrlKey:false,metaKey:true,repeat:true,preventDefault(){}};
-for(const target of [document.body,nodes['chat-stage'],nodes['cc-blank']]){
+for(const target of [document.body,nodes['chat-stage'],nodes['ui-frame-host']]){
  for(const type of ['keydown','keyup']) forwardCommandCenterKey({...e,target,type});
 }
 forwardCommandCenterKey({...e,target:nodes['composer-input'],type:'keydown'});
