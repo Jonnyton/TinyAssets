@@ -12,6 +12,7 @@ from tests import test_interactive_http_agent as base
 from tests.agent_loop_fakes import FakeBox
 from tinyassets.agent_loop import served_chat
 from tinyassets.engine_tool_client import EngineToolError
+from tinyassets.storage.account_agent_loop import set_account_agent_loop
 
 rig = base.rig
 reader = base.reader
@@ -21,7 +22,10 @@ run = base.run
 
 @pytest.fixture
 def agent(base_agent, monkeypatch):
-    monkeypatch.setenv(served_chat.ENV_SWITCH, served_chat.THIN)
+    set_account_agent_loop(
+        base_agent.served.context.universe_dir.parent,
+        owner_user_id="owner", agent_loop="thin", updated_by="test",
+    )
     box = FakeBox(lambda argv, stdin: (b"box says hi", 0))
     monkeypatch.setattr(served_chat, "_box_provider", box)
     base_agent.box = box
@@ -83,8 +87,29 @@ def test_no_box_provider_refuses_before_any_tool_runs(agent, monkeypatch):
     assert agent.wires == [] and agent.tools == []
 
 
-def test_switch_off_keeps_todays_path(agent, monkeypatch):
-    monkeypatch.delenv(served_chat.ENV_SWITCH)
+def test_account_on_engine_keeps_todays_path(agent):
+    set_account_agent_loop(
+        agent.served.context.universe_dir.parent,
+        owner_user_id="owner", agent_loop="engine", updated_by="test",
+    )
     agent.tool_call = ("bash", '{"command": "true"}')
     assert run(agent) == "finished exact answer"
     assert agent.box.starts == [] and agent.tools == [("bash", {"command": "true"})]
+
+
+def test_another_accounts_thin_setting_keeps_this_owners_path(base_agent):
+    set_account_agent_loop(
+        base_agent.served.context.universe_dir.parent,
+        owner_user_id="another-owner", agent_loop="thin", updated_by="test",
+    )
+    base_agent.tool_call = ("bash", '{"command": "true"}')
+    assert run(base_agent) == "finished exact answer"
+    assert base_agent.tools == [("bash", {"command": "true"})]
+
+
+def test_unresolved_owner_keeps_todays_path(agent, monkeypatch):
+    def refuse(context):
+        raise PermissionError("no current served request")
+
+    monkeypatch.setattr(served_chat, "check_served_agent_tool_authority", refuse)
+    assert not served_chat.thin_loop_selected(agent.served.context)

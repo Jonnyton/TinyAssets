@@ -64,9 +64,17 @@ existing engine route, so the owner's rules and the auto-review continue to
 gate consequential actions where they are enforced today. With the thin loop
 not selected, every turn SHALL behave exactly as before this change.
 
-#### Scenario: switch off is today's path
-- **WHEN** `TINYASSETS_AGENT_LOOP` is unset
-- **THEN** the four tools are served by the engine route and no box is bound
+#### Scenario: an account on engine keeps today's path
+- **WHEN** the turn owner's account setting is `engine` or absent, or its owner
+  cannot be resolved through the coordinator's served authority check
+- **THEN** the four tools are served by the engine route and no box is bound,
+  even if another account is set to `thin`
+
+#### Scenario: the founder account opts in first
+- **WHEN** the harness owner writes `thin` for the founder's account through
+  the maintainer script on the production data root and reads it back
+- **THEN** that owner's HTTP turns select the thin loop and other accounts
+  retain their own settings, defaulting to `engine`
 
 #### Scenario: two edits never silently lose one
 - **WHEN** several edits of one file run concurrently, each having read the
