@@ -183,7 +183,7 @@ def app_config() -> dict[str, Any]:
     }
 
 
-def _csp(nonce: str, issuer: str) -> str:
+def _csp(nonce: str, issuer: str, resource: str = "") -> str:
     """Strict CSP: inline script/style only via this request's nonce; network
     limited to same-origin ``/mcp`` plus the AuthKit token endpoint origin.
 
@@ -191,8 +191,13 @@ def _csp(nonce: str, issuer: str) -> str:
     grants only the fixed ``/app/ui-frame`` bootstrap — which sandboxes itself
     to an opaque origin from its own response header (``ui_frame.FRAME_CSP``).
     ``script-src`` stays nonce-only on purpose: a bug that inserted bundle script
-    into this page would still not execute it.
+    into this page would still not execute it. Its one addition is the app's
+    own ES-module path (``app_modules.script_source``): a path-restricted source
+    that can only load our allowlisted module files, NOT ``'strict-dynamic'``.
     """
+    from tinyassets.onboarding.app_modules import script_source
+
+    modules = f" {script_source(resource)}" if script_source(resource) else ""
     connect = "'self'"
     if issuer:
         parts = urlsplit(issuer)
@@ -200,7 +205,7 @@ def _csp(nonce: str, issuer: str) -> str:
             connect += f" {parts.scheme}://{parts.netloc}"
     return (
         "default-src 'none'; "
-        f"script-src 'nonce-{nonce}'; "
+        f"script-src 'nonce-{nonce}'{modules}; "
         "worker-src 'self'; "
         f"style-src 'nonce-{nonce}'; "
         f"connect-src {connect}; "
@@ -230,7 +235,7 @@ def render_app_html() -> tuple[str, str]:
         .replace(_CONFIG_PLACEHOLDER, blob)
         .replace(_REQUEST_TEXT_PLACEHOLDER, request_theme()["request_text"])
     )
-    return html, _csp(nonce, cfg["issuer"])
+    return html, _csp(nonce, cfg["issuer"], cfg["resource"])
 
 
 def request_theme() -> dict[str, str]:
@@ -2145,6 +2150,7 @@ def onboarding_routes() -> list[Any]:
     """
     from starlette.routing import Route
 
+    from tinyassets.onboarding.app_modules import handle_app_module
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
     from tinyassets.onboarding.model_connect import (
@@ -2201,6 +2207,8 @@ def onboarding_routes() -> list[Any]:
         Route("/app/devices", handle_devices, methods=["GET", "POST"]),
         Route("/app/notify", handle_notify_settings, methods=["GET", "POST"]),
         Route("/app/sw.js", handle_service_worker, methods=["GET", "HEAD"]),
+        # The app's ES modules (app_modules.py): static, public, build-keyed.
+        Route("/app/m/{build}/{name}", handle_app_module, methods=["GET", "HEAD"]),
         # The OWNER door: every read the app renders, complete. Identity-gated by
         # `_is_app_path` like every route above; see `tinyassets/owner_door`.
         *owner_door_routes(),
