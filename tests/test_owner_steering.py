@@ -633,13 +633,13 @@ console.log(JSON.stringify({during, sent:converseCalls.slice(), queuedAfter:send
 """
 
 
-def _other_window(tmp_path, scenario):
+def _other_window(tmp_path, scenario, script=None):
     from tests.test_app_working_indicator import _NODE, _run
     from tinyassets import onboarding
 
     assert _NODE is not None, "node is required to execute the page's own source"
     page, _csp = onboarding.render_app_html()
-    return _run(tmp_path, page, scenario, _OTHER_WINDOW)
+    return _run(tmp_path, page, scenario, script or _OTHER_WINDOW)
 
 
 def test_a_send_during_another_windows_turn_is_held_not_a_competing_turn(tmp_path):
@@ -790,3 +790,133 @@ def test_a_reload_mid_turn_shows_the_message_being_worked_on_then_its_reply(tmp_
     assert out["during"] == ["build the village map|working"]
     assert out["after"] == ["build the village map", "Here is the village map."]
     assert out["sent"] == [], "nothing sent again"
+
+
+# -- gpt-6-astra on #4290, P1: an agent switch while a claim is in flight ------
+
+_SWITCH_DURING_CLAIM = r"""
+globalThis.authHeaders=()=>({});
+// The page is showing one of the owner's OTHER agents, injected the way the
+// agent switcher reaches this code.
+let liveAgent="w1";
+globalThis.addressedAgentId=()=>liveAgent;
+const claims=[]; let releaseClaim=null;
+globalThis.fetch=(url,init)=>{
+  const body=init&&init.body?JSON.parse(init.body):{};
+  if(body.claim){
+    claims.push(body);
+    // Held open, so the owner can switch agents while the claim is on the wire.
+    return new Promise(resolve=>{ releaseClaim=()=>resolve({ok:true,status:200,
+      json:async()=>({claimed:body.claim})}); });
+  }
+  return Promise.resolve({ok:true,status:200,json:async()=>(
+    {pending:[{id:7,text:"check the methods section",state:"held"}]})});
+};
+// Which agent each converse went to; converseCalls keeps its own shape.
+const agentCalls=[], realConverse=MCP.converse;
+MCP.converse=async(m,im,mc,cr,agentId)=>{ agentCalls.push({m,agentId});
+  return realConverse(m,im,mc,cr,agentId); };
+setQueueOwner("p-1"); setQueueScope("u-1");
+queueRestored=false; restoreQueue();
+await settle(); await settle();
+// The claim is on the wire and the line is already OUT of the queue: with no
+// active turn, no queued line and no pending steer, this is exactly the state
+// in which addressAgent permits a switch.
+const during={claims:claims.slice(), queued:sendQueue.length,
+  sent:converseCalls.slice()};
+liveAgent="w2";                       // the owner switches agents, as allowed
+releaseClaim();
+await settle(); await settle();
+console.log(JSON.stringify({during, agentCalls, sent:converseCalls.slice(),
+  inflightAgent:(readInflight()||{}).agent||null}));
+"""
+
+
+def test_an_agent_switch_while_a_claim_is_in_flight_does_not_redirect_the_line(tmp_path):
+    """A held line claimed for one agent is SENT to that agent, even if the
+    owner switches agents while the claim is on the wire.
+
+    The claim deletes the server's copy and the line is already out of the
+    queue -- which is what lets ``addressAgent`` switch at all. Re-reading the
+    live agent after the claim spoke one agent's held line to another
+    (gpt-6-astra on #4290, P1). Dropping the line instead would lose it: its
+    server copy is gone by then.
+    """
+    out = _other_window(tmp_path, {}, _SWITCH_DURING_CLAIM)
+
+    # The window is real: the line left the queue before the claim answered.
+    assert out["during"]["queued"] == 0 and out["during"]["sent"] == []
+    # The claim named the agent the line was held for.
+    assert [c["agent_id"] for c in out["during"]["claims"]] == ["w1"]
+    # ...and so does the send that follows it, after the switch to w2.
+    assert out["sent"] == ["check the methods section"]
+    assert [c["agentId"] for c in out["agentCalls"]] == ["w1"]
+    # The recovery record describes the turn on the wire, not the screen.
+    assert out["inflightAgent"] == "w1"
+
+
+_RESTORED_LINE_KEEPS_ITS_AGENT = r"""
+globalThis.authHeaders=()=>({});
+let liveAgent="w1";
+globalThis.addressedAgentId=()=>liveAgent;
+// No flush: a turn is running, so the restored line stays queued and saved.
+globalThis.fetch=(url,init)=>{
+  const body=init&&init.body?JSON.parse(init.body):{};
+  if(body.claim) return Promise.resolve({ok:true,status:200,
+    json:async()=>({claimed:body.claim})});
+  return Promise.resolve({ok:true,status:200,json:async()=>(
+    {pending:[{id:7,text:"check the methods section",state:"held"}]})});
+};
+setQueueOwner("p-1"); setQueueScope("u-1");
+readServerTurn({active_turn:{turn_id:"t9",state:"inference_started",age_s:5,stale:false}});
+queueRestored=false; restoreQueue();
+await settle(); await settle();
+console.log(JSON.stringify({queued:sendQueue.length,
+  opts:sendQueue.map(q=>q.opts.agentId),
+  saved:(JSON.parse(store[QUEUE_KEY]||"[]")).map(r=>r.agent)}));
+"""
+
+
+def test_a_restored_held_line_is_saved_under_the_agent_it_was_held_for(tmp_path):
+    """A line restored for one agent records THAT agent on disk.
+
+    ``savedItem`` reads the agent off ``opts.agentId``; without it a line held
+    for another agent is written as the main agent's, and the next reload
+    offers it on the wrong thread."""
+    out = _other_window(tmp_path, {}, _RESTORED_LINE_KEEPS_ITS_AGENT)
+
+    assert out["queued"] == 1, "a running turn keeps it queued"
+    assert out["opts"] == ["w1"]
+    assert out["saved"] == ["w1"], "the saved row names the agent, not 'main'"
+
+
+_CLAIM_PINS_AN_UNPINNED_LINE = r"""
+globalThis.authHeaders=()=>({});
+let liveAgent="w1";
+globalThis.addressedAgentId=()=>liveAgent;
+const claims=[];
+globalThis.fetch=(url,init)=>{
+  const body=init&&init.body?JSON.parse(init.body):{};
+  claims.push(body);
+  return Promise.resolve({ok:true,status:200,json:async()=>({claimed:body.claim})});
+};
+setQueueOwner("p-1"); setQueueScope("u-1");
+// A held line that reached the queue WITHOUT an agent of its own.
+const item={message:"m", display:"m", owner:"p-1", scope:"u-1", bubble:null,
+  heldId:11, opts:{echoed:true}, ts:Date.now()};
+const kept=await claimHeldLines([item]);
+liveAgent="w2";                       // the switch lands after the claim
+console.log(JSON.stringify({claims, kept:kept.length, pinned:item.opts.agentId}));
+"""
+
+
+def test_the_claim_pins_the_agent_onto_a_line_that_had_none(tmp_path):
+    """The claim writes the agent it claimed for onto the line.
+
+    This is the invariant the send depends on: whatever agent the claim named,
+    the line now carries, so no later reader can resolve a different one."""
+    out = _other_window(tmp_path, {}, _CLAIM_PINS_AN_UNPINNED_LINE)
+
+    assert [c["agent_id"] for c in out["claims"]] == ["w1"]
+    assert out["kept"] == 1
+    assert out["pinned"] == "w1", "pinned at claim time, before the switch"

@@ -96,7 +96,7 @@ _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued
               "drainAfterStop", "takeBatch", "flushBatch",
               "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
               "adoptSteered", "markHeld", "restoreHeldSteers", "readServerTurnRow",
-              "claimHeldLines", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
+              "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
               "readPendingTurns", "sendBatch", "shortModelName", "waitMinutes", "waitDetail",
               "renderTryModel", "toolLine", "paintToolLine")
 

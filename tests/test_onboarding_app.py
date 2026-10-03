@@ -1891,7 +1891,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered", "adoptSteered",
         # A held line (no turn could take it) and its return after a reload.
         "markHeld", "restoreHeldSteers", "readServerTurnRow",
-        "claimHeldLines", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
+        "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
         "readPendingTurns", "sendBatch",
     ))
     program = (_APP_SHIM
@@ -2336,8 +2336,11 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
 
     html, _csp = render_app_html()
     assert "ta_inflight_turn" in html
+    # `agent` is last and defaulted: a claimed held line names the agent it was
+    # sent to, because the owner may have switched since (#4290 P1).
     assert ("rememberInflight(message, display, sentAt, inputMethod, modelChoice, "
-            "consumerRequest=null)") in html
+            "consumerRequest=null,") in html
+    assert "agent=null)" in html
     assert "inputMethod:turnInputMethod(inputMethod)" in html
     # Cleared on success, KEPT on failure — a failed send is still the user's.
     assert "forgetInflight();" in html

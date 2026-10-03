@@ -82,7 +82,7 @@ _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
                    # Harness S2: steering a running turn, and settling it.
                    "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
                    "adoptSteered", "markHeld", "restoreHeldSteers", "readServerTurnRow",
-                   "claimHeldLines", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
+                   "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
                    "readPendingTurns", "sendBatch")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the

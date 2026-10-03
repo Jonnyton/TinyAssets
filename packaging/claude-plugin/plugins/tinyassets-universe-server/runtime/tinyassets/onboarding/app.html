@@ -3726,12 +3726,18 @@
   // does: another founder signing in on this browser must never be shown, or
   // offered to resend, a message this one held - nor the filenames it names
   // (Fable 21633 on the app byte-intake shape, 2026-09-20).
-  function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null){
+  function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null,
+                            agent=null){
     const record={message, display: display||message,
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
-       agent:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
+       // The agent this turn was SENT to. A pinned line (a claimed held line)
+       // names it, because the owner may have switched agents since: the
+       // record has to describe the turn on the wire, not the screen, or the
+       // recovery offer reappears under the wrong agent.
+       agent:String((typeof agent==="string"&&agent)||
+         (typeof addressedAgentId==="function"?addressedAgentId():"main")),
        owner:queueOwner,
        scope:queueScope,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()};
@@ -3776,7 +3782,8 @@
       if(opts.keepInflight)throw new Error("Resolve the earlier unconfirmed conversation first.");
       opts.consumerRequest={version:1,request_key:crypto.randomUUID(),
         binding_id:s.binding_id,binding_revision:s.binding_revision};
-      rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+      rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest,
+        opts.agentId);
       const saved=readInflight();
       if(!saved||JSON.stringify(saved.consumerRequest)!==JSON.stringify(opts.consumerRequest))
         throw new Error("Could not save safe conversation recovery. No workflow was started.");
@@ -4262,16 +4269,35 @@
   async function claimHeldLines(items){
     const ids=items.filter(i=>i.heldId).map(i=>i.heldId);
     if(!ids.length) return items;
+    // PINNED before the request suspends. A claim DELETES the server's copy,
+    // and the lines are already out of the queue -- which is what lets
+    // addressAgent switch while this is in flight. So the claim and the send
+    // that follows it must name the one agent the line was held for, or the
+    // line is deleted from one agent's thread and spoken to another's
+    // (gpt-6-astra on #4290, P1). Dropping the line instead is not an option:
+    // its server copy is gone.
+    const agent=pinLineAgent(items);
     let doc=null;
     try{
       const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({universe_id:queueScope,claim:ids,
-          agent_id:(typeof addressedAgentId==="function"?addressedAgentId():"main")})});
+        body:JSON.stringify({universe_id:queueScope,claim:ids,agent_id:agent})});
       doc=r.ok?await r.json():null;
     }catch(e){ doc=null; }
     if(!doc||!Array.isArray(doc.claimed)) return items;
     return items.filter(i=>!i.heldId||doc.claimed.indexOf(i.heldId)>=0);
+  }
+  // The agent a queued line belongs to, written onto the line itself so every
+  // later step reads the same answer. The precedence is captureTurnOptions's,
+  // so a pinned line and a fresh send resolve their agent identically.
+  function pinLineAgent(items){
+    const live=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const held=items.filter(i=>i&&i.heldId);
+    const first=held.length?held[0]:items[0];
+    const agent=String((first&&first.opts&&typeof first.opts.agentId==="string"
+      &&first.opts.agentId)||live);
+    items.forEach(item=>{ if(item&&item.opts) item.opts.agentId=agent; });
+    return agent;
   }
   function alreadyHandled(item){
     unmarkQueued(item.bubble);
@@ -4337,6 +4363,10 @@
     if(!doc||!Array.isArray(doc.pending)) return [];
     if(doc.active && !activeTurn) showActiveTurn(doc.active);
     const restored=[];
+    // The agent this answer is FOR: readPendingTurns asked for it by name and
+    // refuses an answer that lands after a switch, so a restored line is
+    // stamped with it rather than with whichever agent is on screen later.
+    const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main");
     for(const line of doc.pending){
       const text=line&&typeof line.text==="string"?line.text:"";
       if(!text||sendQueue.some(q=>q.message===text)) continue;
@@ -4344,7 +4374,7 @@
         markSteered(appendMessage("founder", text, null,
           (typeof line.created_at==="number"?line.created_at:Date.now()/1000)));
       }else{
-        queueTurn(text, text, {inputMethod:"typed", keepComposer:true});
+        queueTurn(text, text, {inputMethod:"typed", keepComposer:true, agentId:agent});
         const item=sendQueue[sendQueue.length-1];
         if(item&&item.message===text){ item.heldId=line.id; markHeld(item.bubble, true); }
       }
@@ -4455,7 +4485,8 @@
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
     if(!opts.keepInflight) rememberInflight(
-      message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null);
+      message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null,
+      opts.agentId);
     // A relayed answer or a side send did not come from the composer: what
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
@@ -4568,7 +4599,7 @@
     if($("btn-send").disabled || interruptPending) throw new Error("voice_turn_busy");
     const opts=captureTurnOptions({inputMethod:"spoken"});
     appendMessage("founder",message);
-    rememberInflight(message,message,undefined,"spoken",opts.modelChoice);
+    rememberInflight(message,message,undefined,"spoken",opts.modelChoice,null,opts.agentId);
     // A spoken turn takes the composer too, so a typed turn's late cleanup can
     // see that it is no longer the one holding it.
     const myTurn={}; activeTurn=myTurn;
