@@ -439,7 +439,15 @@ def test_the_apps_pin_table_is_the_manifest():
                      for name, e in ui_library_set.manifest().items()}
 
 
-def test_the_plugin_mirror_ships_the_manifest_but_not_the_files():
+def test_the_plugin_mirror_ships_the_manifest_but_not_the_files(tmp_path):
+    """The BUILD ships the manifest and excludes the 3 MB of vendored libraries.
+
+    Asserted against a runtime this test builds, not the checkout: the plugin
+    runtime is generated and gitignored, so the committed tree has neither file
+    and a developer's leftover local build would hide that. Reading the real
+    tree passed locally and failed on a fresh CI checkout, which is the whole
+    failure mode (Codex refute of #4223, finding A).
+    """
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -447,10 +455,11 @@ def test_the_plugin_mirror_ships_the_manifest_but_not_the_files():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert "ui_libraries" in module._TREE_EXCLUDES
-    runtime = Path("packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
-                   "tinyassets/onboarding")
-    assert (runtime / "ui_libraries.json").is_file()
-    assert not (runtime / "ui_libraries").exists()
+
+    module._stage_runtime(tmp_path)
+    onboarding = tmp_path / "tinyassets" / "onboarding"
+    assert (onboarding / "ui_libraries.json").is_file(), "the pinned manifest must ship"
+    assert not (onboarding / "ui_libraries").exists(), "the vendored libraries must not"
 
 
 def test_library_load_order_puts_requirements_first():
