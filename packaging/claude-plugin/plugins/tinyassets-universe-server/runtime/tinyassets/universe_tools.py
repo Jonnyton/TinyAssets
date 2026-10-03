@@ -16,12 +16,18 @@ Every call -- reads included -- runs as a process inside bubblewrap, built by
 the SAME :func:`tinyassets.providers.provider_jail.jail_argv` as a provider
 launch, with a narrower view:
 
-* the owning command center at ``/u``, and nothing else of ``/data``. ``/u`` is an
-  allowlist, not the root with holes punched in it: a read-only tmpfs holding
-  one bind per VISIBLE root entry. Only what the agent owns is bound
-  read-write (its brain files, its own ``wiki/`` and the harness directories
-  ``skills/``, ``prompts/``, ``notes/`` ...), see :data:`AGENT_BRAIN_FILES`;
-  every other visible entry is read-only;
+* the agent's OWN workspace in the owning command center, at ``/u``
+  (harness W2, design #4172 §4.3: "the
+  agent has its own workspace it fully owns"). ``/u`` is the universe's
+  ``.agent-workspace/`` directory, bound read-write as a whole, so the agent
+  can create, rename and delete anything at the top of its workspace like on
+  its own computer. Platform state stays where it is, in the universe root,
+  which is never bound. On top of the workspace, each VISIBLE root entry is
+  bound at its own name: what the agent owns read-write (its brain files, its
+  own ``wiki/`` and the harness directories ``skills/``, ``prompts/``,
+  ``notes/`` ...), see :data:`AGENT_BRAIN_FILES`; every other visible entry
+  read-only. A new name the agent creates lands in its workspace, which no
+  daemon code trusts or reads as platform state;
 * no hidden root entry at all -- the credential vault
   (``.credential-vault.json``, ``.credentials/``), ``.runtime/``, the consent,
   usage and receipt databases and their SQLite sidecars -- so the agent can
@@ -87,6 +93,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from tinyassets import jail_disk
+from tinyassets.addressed_agents import MAIN_AGENT
 from tinyassets.providers import provider_jail
 from tinyassets.providers.provider_jail import (
     PLATFORM_RUNTIME_DIR,
@@ -136,6 +143,11 @@ AGENT_BRAIN_FILES: tuple[str, ...] = (
 AGENT_HARNESS_DIRS: tuple[str, ...] = (
     "skills", "prompts", "extensions", "workflows", "bin", "notes", "wiki",
 )
+
+#: The agent's own workspace inside the universe: the tool jail's ``/u``.
+#: Hidden (a dot name), so it is never itself bound as a root entry, every
+#: provider launch masks it, and it is platform-created without following a link.
+WORKSPACE_DIR = provider_jail.AGENT_WORKSPACE_DIR
 
 #: Kept for callers that name the platform-owned runtime directory.
 MASKED_DIRS: tuple[str, ...] = (PLATFORM_RUNTIME_DIR,)
@@ -280,20 +292,72 @@ def _system_binary(name: str) -> str:
     return found
 
 
-def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseView:
-    """The tool jail's view of ``root``: a read-only ``/u`` holding the visible
-    entries, agent-owned paths read-write, hidden entries absent.
+def _workspace(root: Path) -> Path:
+    """The universe's ``.agent-workspace/``, created if absent, never a link."""
+    try:
+        return provider_jail.ensure_agent_workspace(root)
+    except provider_jail.ProviderConfinementError:
+        raise UniverseToolError(
+            f"the agent workspace {WORKSPACE_DIR}/ is not a plain directory; nothing ran"
+        ) from None
 
-    Order is fixed: the empty tmpfs, one bind per entry, then the remount that
-    makes ``/u`` itself read-only (the binds under it keep their own flags).
-    Every bind is ``-try``: the daemon owns this folder concurrently, and an
+
+def _promote_brain_files(root: Path, workspace: Path, *, agent_id: str) -> None:
+    """A brain file the agent wrote while the root had none moves to the root.
+
+    Brain files are bound only when they exist at the root (an empty one would
+    read as "learned"), so writing an absent ``identity.md`` landed in the
+    workspace, where the daemon's grounding never looks (gpt-6-astra on #4194).
+    The root copy is agent-writable anyway, so moving a plain regular file
+    there grants nothing new.
+    """
+    for name in AGENT_BRAIN_FILES:
+        # identity.md is the main agent's own: another agent's call never
+        # promotes it (harness §4.18).
+        if name == "identity.md" and agent_id != MAIN_AGENT:
+            continue
+        source, target = workspace / name, root / name
+        if os.path.lexists(target) or source.is_symlink() or not source.is_file():
+            continue
+        try:
+            # link() never replaces: a root file created meanwhile is kept.
+            os.link(source, target)
+        except FileExistsError:
+            continue
+        source.unlink()
+
+
+def _clear_link_mountpoint(workspace: Path, name: str) -> None:
+    """A link left where a root entry is about to be bound is removed first.
+
+    bubblewrap would follow it inside the jail when it creates the mountpoint.
+    Removing the link itself never follows it.
+    """
+    candidate = workspace / name
+    if candidate.is_symlink():
+        candidate.unlink()
+
+
+def _universe_view(
+    root: Path, egress_socket: Path | None = None, *, agent_id: str,
+) -> UniverseView:
+    """The tool jail's view of ``root``: the agent's own workspace at ``/u``,
+    read-write, with the visible root entries bound on top at their names
+    (agent-owned read-write, the rest read-only) and hidden entries absent.
+
+    Order is fixed: the workspace, then one bind per entry over it. Every
+    entry bind is ``-try``: the daemon owns this folder concurrently, and an
     entry it removes after the scan is simply not in this call's view.
     """
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     for name in AGENT_HARNESS_DIRS:
         path = root / name
         if not os.path.lexists(path):
             path.mkdir(mode=0o755)
-    mounts = [JailMount("tmpfs", MOUNT_POINT)]
+    workspace = _workspace(root)
+    _promote_brain_files(root, workspace, agent_id=agent_id)
+    mounts = [JailMount("bind", MOUNT_POINT, workspace)]
     with os.scandir(root) as entries:
         listing = sorted(entries, key=lambda entry: entry.name)
     for entry in listing:
@@ -307,9 +371,11 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
         owned = (
             entry.name in AGENT_HARNESS_DIRS if is_dir else entry.name in AGENT_BRAIN_FILES
         )
+        if entry.name == "identity.md" and agent_id != MAIN_AGENT:
+            owned = False
         op = "bind-try" if owned else "ro-bind-try"
+        _clear_link_mountpoint(workspace, entry.name)
         mounts.append(JailMount(op, f"{MOUNT_POINT}/{entry.name}", root / entry.name))
-    mounts.append(JailMount("remount-ro", MOUNT_POINT))
     setenv = _JAIL_ENV
     if egress_socket is not None:
         # The jail still has no interface but loopback; this socket is its only
@@ -327,10 +393,12 @@ def _universe_view(root: Path, egress_socket: Path | None = None) -> UniverseVie
 
 
 def tool_jail_argv(
-    universe_dir: Path, inner: Sequence[str], *, seccomp_fd: int | None = None,
+    universe_dir: Path, inner: Sequence[str], *, agent_id: str, seccomp_fd: int | None = None,
     egress_socket: Path | None = None,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     try:
         root = Path(universe_dir).resolve(strict=True)
     except OSError:
@@ -338,7 +406,7 @@ def tool_jail_argv(
     if not root.is_dir():
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
-    view = _universe_view(root, egress_socket)
+    view = _universe_view(root, egress_socket, agent_id=agent_id)
     return jail_argv(
         list(inner), view, bwrap_path=bwrap, clearenv=True,
         seccomp_fd=seccomp_fd,
@@ -544,6 +612,7 @@ def run_jailed(
     universe_dir: Path,
     inner: Sequence[str],
     *,
+    agent_id: str,
     stdin: bytes | None = None,
     limits: ToolLimits = DEFAULT_LIMITS,
     wall_seconds: float | None = None,
@@ -557,6 +626,8 @@ def run_jailed(
     host being busy. ``on_wait`` is invoked once when that happens, so a caller
     with a user in front of it can surface a waiting state.
     """
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     wall = float(wall_seconds if wall_seconds is not None else limits.wall_seconds)
     cap = int(output_bytes if output_bytes is not None else limits.output_bytes)
     cpu = min(int(limits.cpu_seconds), int(wall) + 1)
@@ -576,7 +647,7 @@ def run_jailed(
     filter_fd = _seccomp_fd()
     try:
         egress = {} if egress_socket is None else {"egress_socket": egress_socket}
-        argv = TOOL_JAIL_ARGV(root, limited, seccomp_fd=filter_fd, **egress)
+        argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
         with _slot(root, on_wait=on_wait, waited=queued):
             try:
                 budget = jail_disk.open_budget(
@@ -851,9 +922,11 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
 
 def read_file(
     universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Up to ``limit`` lines of a file from line ``offset`` (1-based)."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
     start = max(1, int(offset or 1))
     count = int(limit) if limit and int(limit) > 0 else DEFAULT_READ_LINES
@@ -864,7 +937,7 @@ def read_file(
     )
     run = RUNNER(
         universe_dir, ["/bin/sh", "-c", script, "sh", target, str(start), str(count)],
-        limits=limits,
+        agent_id=agent_id, limits=limits,
     )
     note = _waited_note(run)
     if run.killed == "output_limit":
@@ -881,16 +954,18 @@ def read_file(
 
 def write_file(
     universe_dir: Path, path: str, content: str,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Create or replace a file, making parent directories."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
     payload = (content or "").encode("utf-8")
     if len(payload) > MAX_WRITE_BYTES:
         raise UniverseToolError(f"content is over the {MAX_WRITE_BYTES}-byte write limit")
     script = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"'
     run = RUNNER(
-        universe_dir, ["/bin/sh", "-c", script, "sh", target],
+        universe_dir, ["/bin/sh", "-c", script, "sh", target], agent_id=agent_id,
         stdin=payload, limits=limits,
     )
     note = _waited_note(run)
@@ -902,16 +977,18 @@ def write_file(
 
 def edit_file(
     universe_dir: Path, path: str, old_text: str, new_text: str,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Replace the one exact occurrence of ``old_text`` with ``new_text``."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
     if not old_text:
         raise UniverseToolError("old_text is required: the exact passage to replace")
     run = RUNNER(
         universe_dir,
         ["/bin/sh", "-c", '[ -f "$1" ] || { echo "no such file: $1"; exit 1; }; cat -- "$1"',
-         "sh", target],
+         "sh", target], agent_id=agent_id,
         limits=limits, output_bytes=MAX_EDIT_BYTES,
     )
     note = _waited_note(run)
@@ -933,7 +1010,8 @@ def edit_file(
             "surrounding text so it matches exactly one"
         )
     written = write_file(
-        universe_dir, target, current.replace(old_text, new_text, 1), limits=limits,
+        universe_dir, target, current.replace(old_text, new_text, 1),
+        agent_id=agent_id, limits=limits,
     )
     if written.startswith("error:"):
         return written
@@ -953,9 +1031,11 @@ def _egress_socket(universe_dir: Path) -> Path | None:
 
 def bash(
     universe_dir: Path, command: str, timeout: float = 0,
-    *, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome."""
+    if not agent_id.strip():
+        raise UniverseToolError("agent_id is required")
     if not (command or "").strip():
         raise UniverseToolError("a command is required")
     wall = float(timeout) if timeout and float(timeout) > 0 else limits.wall_seconds
@@ -969,7 +1049,7 @@ def bash(
 
         inner = universe_egress.forwarder_argv(python, inner)
         egress = {"egress_socket": socket_path}
-    run = RUNNER(universe_dir, inner, limits=limits, wall_seconds=wall, **egress)
+    run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits, wall_seconds=wall, **egress)
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"
@@ -1057,11 +1137,12 @@ _HARNESS_HEAD = (
     "work does not belong there: it is workflows and automations in this "
     "command center, never a service hosted elsewhere -- handbook chapter "
     "write_graph.systems). Relative paths are under /u. Nothing outside "
-    "/u is mine or reachable. I can write my brain files (identity.md, "
-    "founder.md, origin.md, body.md, orgchart.md, projects.md, goals.md, "
-    "index.md, log.md, voice.md) and anything under skills/, prompts/, "
-    "extensions/, workflows/, bin/ and notes/; the rest of /u is the "
-    "platform's and read-only.\n"
+    "/u is mine or reachable. /u is my own workspace: I can create, change and "
+    "delete anything in it, including new folders at the top. My brain files "
+    "(identity.md, founder.md, origin.md, body.md, orgchart.md, projects.md, "
+    "goals.md, index.md, log.md, voice.md), my wiki/ and skills/, prompts/, "
+    "extensions/, workflows/, bin/ and notes/ are mine too; a few platform "
+    "files such as soul.md and config.yaml are read-only.\n"
     "A skill is `skills/<name>/SKILL.md`, starting with frontmatter that has a "
     "`name:` and a one-line `description:` of when to use it. Only the list "
     "below is in this prompt: when a request matches a skill, I `read` its "

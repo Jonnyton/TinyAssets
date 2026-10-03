@@ -90,7 +90,7 @@ __all__ = [
     "confine_launch",
     "default_view",
     "jail_argv",
-    "hidden_dir_masks",
+    "hidden_root_masks",
     "provider_launch_scope",
 ]
 
@@ -200,9 +200,15 @@ _RESERVED_DESTS: tuple[str, ...] = (
 _LAUNCH_CREDENTIALS = Path(".runtime") / "provider-launch-credentials"
 
 #: The platform-owned directory in every universe. Never masked wholesale by
-#: :func:`hidden_dir_masks`: a launch needs its provider home and its own
+#: :func:`hidden_root_masks`: a launch needs its provider home and its own
 #: credential snapshot from under it.
 PLATFORM_RUNTIME_DIR = _LAUNCH_CREDENTIALS.parts[0]
+
+#: Masks a hidden root FILE: a read-only bind of ``/dev/null`` over it, so the
+#: provider reads it empty, cannot write through the bind and cannot replace the
+#: file (or plant a link in its place) while the mount holds it. A tmpfs can
+#: only mask a directory, so files need this instead.
+_NULL_MASK = Path("/dev/null")
 
 
 def _refuse(detail: str) -> ProviderConfinementError:
@@ -239,6 +245,29 @@ def _covered(path: str, roots: Iterable[str]) -> bool:
     return any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
 
 
+#: The universe agent's own workspace, inside the universe: its tool jail's
+#: ``/u`` (harness W2). Hidden, so every provider launch masks it.
+AGENT_WORKSPACE_DIR = ".agent-workspace"
+
+
+def ensure_agent_workspace(universe_dir: Path) -> Path:
+    """The universe's agent workspace, created if absent, never a link.
+
+    Created BEFORE any launch is built, provider or tool: a provider launch
+    then always finds it present and masks it, so a process in a workflow's
+    jail can never create the name first (as a link to another universe)
+    for the tool jail to bind as ``/u`` (gpt-6-astra on #4194).
+    """
+    path = Path(universe_dir) / AGENT_WORKSPACE_DIR
+    try:
+        path.mkdir(mode=0o755)
+    except FileExistsError:
+        pass
+    if path.is_symlink() or not path.is_dir():
+        raise _refuse(f"the universe's {AGENT_WORKSPACE_DIR} is not a plain directory")
+    return path
+
+
 def default_view(
     universe_dir: Path,
     *,
@@ -247,14 +276,22 @@ def default_view(
 ) -> UniverseView:
     """The universe read-write at its own path, other launch snapshots masked."""
     root = universe_dir.resolve(strict=False)
+    if root.is_dir():
+        ensure_agent_workspace(root)
     mounts = [JailMount("bind", str(root), root)]
     launch_root = root / _LAUNCH_CREDENTIALS
     if launch_root.is_dir():
         mounts.append(JailMount("tmpfs", str(launch_root)))
-    mounts.extend(hidden_dir_masks(root))
+    mounts.extend(hidden_root_masks(root))
     if credential_dir is not None:
         own = credential_dir.resolve(strict=False)
-        if own.is_dir() and _within(own, root):
+        # A launch snapshot is a directory UNDER the platform runtime dir, never
+        # the universe root itself: a rebind of the root after the masks would
+        # re-expose every hidden entry the masks just hid (gpt-6-astra refute,
+        # 2026-10-01). So the rebind is accepted only for a strict descendant of
+        # ``.runtime``.
+        runtime = root / PLATFORM_RUNTIME_DIR
+        if own.is_dir() and own != root and _within(own, runtime):
             # Bound back read-write: the CLI writes its lock / session files
             # beside the credential exactly as it did before the jail.
             mounts.append(JailMount("bind", str(own), own))
@@ -266,18 +303,29 @@ def default_view(
     return UniverseView(universe_dir=root, mounts=tuple(mounts), chdir=chdir)
 
 
-def hidden_dir_masks(universe_dir: Path) -> list[JailMount]:
-    """Empty ``tmpfs`` masks over the hidden root directories, or refuse.
+def hidden_root_masks(universe_dir: Path) -> list[JailMount]:
+    """Masks over every hidden root entry except ``.runtime``, or refuse.
 
     The universe's harness is vendor-neutral, visible files the platform
     assembles for every adapter (``tinyassets.universe_tools``). A CLI started
     with the universe as its working directory would also load its OWN project
     settings directory from there -- hooks and permissions the universe's agent
     can now write with its own tools -- beside the owner's launch credential.
-    Hiding every hidden root directory except ``.runtime`` removes that second,
-    vendor-specific harness path for any CLI, present or future, without
-    naming one. A hidden entry that is a symlink cannot be masked by mounting
-    over it (the mount would follow the link), so the launch is refused.
+
+    Hidden root entries are also where the daemon keeps per-universe PLATFORM
+    state that the provider must neither read nor forge: the credential vault
+    (``.credential-vault.json``, ``.credentials/``), the consent, usage and run
+    databases (``.runs.db`` and its ``-wal``/``-shm`` sidecars) and so on. The
+    daemon reads and WRITES those from OUTSIDE the jail, so a provider that
+    could replace one with a link (``.runs.db -> /data/<other>/.runs.db``) would
+    steer the daemon's own ``sqlite3.connect`` into another universe.
+
+    So every hidden root entry except ``.runtime`` is masked: a directory with
+    an empty ``tmpfs``, a file with a read-only ``/dev/null`` bind
+    (:data:`_NULL_MASK`). Either mask holds the name for the life of the jail,
+    so the provider can neither read the entry nor swap it for a link. A hidden
+    entry that is already a symlink cannot be masked by mounting over it (the
+    mount would follow the link), so the launch is refused.
     """
     masks: list[JailMount] = []
     try:
@@ -287,10 +335,13 @@ def hidden_dir_masks(universe_dir: Path) -> list[JailMount]:
     for entry in entries:
         if not entry.name.startswith(".") or entry.name == PLATFORM_RUNTIME_DIR:
             continue
+        dest = str(Path(universe_dir) / entry.name)
         if entry.is_symlink():
             raise _refuse(f"the command center's {entry.name} is a link; it cannot be masked")
         if entry.is_dir(follow_symlinks=False):
-            masks.append(JailMount("tmpfs", str(Path(universe_dir) / entry.name)))
+            masks.append(JailMount("tmpfs", dest))
+        else:
+            masks.append(JailMount("ro-bind", dest, _NULL_MASK))
     return masks
 
 
@@ -323,6 +374,11 @@ def _validated_view(view: UniverseView) -> UniverseView:
             continue
         if mount.source is None:
             raise _refuse("a bind needs a source")
+        # A read-only /dev/null is the file mask (see _NULL_MASK): not a path
+        # inside the universe, but a device that reveals and carries nothing.
+        if mount.op == "ro-bind" and mount.source == _NULL_MASK:
+            checked.append(mount)
+            continue
         try:
             source = mount.source.resolve(strict=not mount.op.endswith("-try"))
         except OSError:
