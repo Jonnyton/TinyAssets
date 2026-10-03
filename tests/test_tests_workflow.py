@@ -538,3 +538,8 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
     assert len(n) == 1
     assert job["strategy"]["matrix"]["shard"] == list(range(1, int(n[0]) + 1))
     assert re.findall(r"/(\d+)$", str(job["name"])) == n
+    # The same split as the queue's shards: a different split co-locates
+    # different neighbours, and an order-dependent test then reds the PR job
+    # on a failure the queue never produces.
+    required = _load()["jobs"]["required-tests-shard"]["strategy"]["matrix"]["shard"]
+    assert job["strategy"]["matrix"]["shard"] == required
