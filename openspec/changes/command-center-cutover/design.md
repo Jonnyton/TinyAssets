@@ -7,6 +7,12 @@ step must produce.
 
 ## E1. Read-only first: the inventory is a deliverable
 
+**R1 implementation hold (2026-10-03):** #4273's original ADAPT remains open.
+[The inventory repair contract](inventory-repair-contract.md) records the missing
+provable acquisition boundary, required fail-closed coverage semantics and fixture
+proofs. The current script is not a verified no-write or zero-count migration
+oracle. This contract is design-only; it authorizes no production inventory.
+
 `scripts/command_center_inventory.py` runs read-only against a data root and
 prints a machine-readable report:
 

@@ -22,6 +22,11 @@ Today `config.yaml` is not agent-writable. The tool jail binds it read-only
       tests. It classifies every home entry by the E6 layout, and an entry it
       cannot classify fails the run. Attach a production-copy report.
 
+      **R1 remains blocked, 2026-10-03:** the original implementation has no
+      completed unpublished fold. Resolve [the acquisition/coverage contract](inventory-repair-contract.md)
+      before runtime repairs; names/schema observations below are historical,
+      not proof of no source writes, complete coverage or migration readiness.
+
       **First result, 2026-10-02.** This was a names-and-schema pass
       (`--no-values`), read-only, against live production via
       `scripts/droplet.py`. The value scan runs on the dry-run copy (task 8).
