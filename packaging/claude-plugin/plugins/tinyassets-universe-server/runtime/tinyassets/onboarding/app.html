@@ -1669,10 +1669,12 @@
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
-    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null){
+    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null,agentId="main"){
       const args={message,input_method:turnInputMethod(inputMethod)};
       if(modelChoice!==null) args.model_choice=copyModelChoice(modelChoice);
       if(consumerRequest!==null) args.consumer_request=JSON.parse(JSON.stringify(consumerRequest));
+      // Which of the owner's agents this turn talks to; "main" is the default.
+      if(agentId && agentId!=="main") args.agent_id=String(agentId);
       return this.callTool("converse",args);
     },
     // Deposit a generic outbound HTTP connection (an API key + the endpoints it
@@ -1783,14 +1785,18 @@
     getConversation(before){
       const args={include_conversation:true};
       if(Number.isSafeInteger(before)) args.conversation_before=before;
+      const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+      if(agent!=="main") args.conversation_agent=agent;
       return this.status(args);
     },
     // The rest of a message the peek bounded. Keyed by the turn's own stored id
     // — never by its text or timestamp — and continued ONLY from the offset the
     // server returned: JS String#length counts UTF-16 code units, so a client
     // computing its own offset desynchronises on the first emoji.
-    readConversationChunk(id,offset,scope){
-      return this.read({target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset});
+    readConversationChunk(id,offset,scope,agent){
+      agent=agent||(typeof addressedAgentId==="function"?addressedAgentId():"main");
+      return this.read({target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset,
+        ...(agent!=="main"?{agent_binding_id:agent}:{})});
     },
     // The agent's pending asks: EVERY one. Same read from every surface, which
     // is what makes them answerable from the phone with no second mechanism.
@@ -3635,6 +3641,7 @@
   function captureTurnOptions(opts){
     opts=opts||{};
     return Object.assign({},opts,{
+      agentId:typeof opts.agentId==="string"&&opts.agentId?opts.agentId:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
       inputMethod:turnInputMethod(opts.inputMethod),
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(opts,"modelChoice")
         ? opts.modelChoice : modelChoiceForNextTurn)});
@@ -3648,6 +3655,7 @@
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
+       agent:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
        owner:queueOwner,
        scope:queueScope,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()};
@@ -3674,7 +3682,7 @@
   async function sendConversationRequest(message,display,sentAt,opts){
     const epoch=MCP._loginEpoch;
     const checkLogin=()=>{if(epoch!==MCP._loginEpoch)throw new Error("Conversation account changed.");};
-    let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null);
+    let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null,opts.agentId);
     // From here on the server has ANSWERED a converse for this message, and a
     // chosen-conversation turn may be accepted and running. A later failure (a
     // poll whose handshake fails, a 401 whose renewal is down) is not sent for
@@ -3696,7 +3704,7 @@
       const saved=readInflight();
       if(!saved||JSON.stringify(saved.consumerRequest)!==JSON.stringify(opts.consumerRequest))
         throw new Error("Could not save safe conversation recovery. No workflow was started.");
-      payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+      payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId);
       checkLogin();
     }
     const started=Date.now();
@@ -3711,7 +3719,7 @@
       if(payload&&payload.consumer_turn&&payload.consumer_turn.state==="held"&&
          ["completed","failed","cancelled","interrupted"].includes(payload.consumer_turn.run_status)){
         // Exact replay repairs only the already-terminal pair after a crash gap.
-        payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+        payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId);
         checkLogin();
       }
     }
@@ -3762,6 +3770,88 @@
     if(queueScope && value && value!==queueScope && typeof AppUI!=="undefined") AppUI.homeChanged(value);
     queueScope=value;
   }
+  // ---- The agent the chat is talking to (harness §4.18) --------------------
+  // A command center can hold many agents: the main one and any the owner
+  // bound into it. Each has its own thread on the server and they share one
+  // brain. The chat talks to ONE at a time; switching shows that agent's thread
+  // and every send, steer and read names it. A switch waits for the current
+  // turn and its queue, so a reply can never land on another agent's thread.
+  let addressedAgent={agent_id:"main",name:"Your agent"};
+  function addressedAgentId(){ return addressedAgent.agent_id; }
+  // Collaborators below call these through `typeof`, as they do refreshChatCloud.
+  function resetAddressedAgent(){
+    addressedAgent={agent_id:"main",name:"Your agent"}; paintAddressedAgent();
+  }
+  async function addressAgent(agent){
+    const id=String((agent&&agent.agent_id)||"main");
+    const name=String((agent&&agent.name)||"Your agent");
+    if(id!==addressedAgent.agent_id){
+      if(activeTurn||sendQueue.length||interruptPending||pendingSteers)
+        throw new Error("finish or stop the current message first, then switch agents");
+      if(typeof Voice!=="undefined"&&typeof Voice.stop==="function")
+        Voice.stop(Boolean(Voice.browserDraftUtterance||Voice.browserPendingUtterance||Voice.browserRecognizing),
+          "The chat switched agents; unsent voice input was discarded.");
+      addressedAgent={agent_id:id,name};
+      historyLoaded=false; inflightRestored=false; queueRestored=false;
+      renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
+      clearThread(); historyFailed(null);
+      paintAddressedAgent(); openAddressedChat();
+      await loadHistory();
+      return;
+    }
+    addressedAgent={agent_id:id,name};
+    paintAddressedAgent(); openAddressedChat();
+  }
+  function paintAddressedAgent(){
+    const label=addressedAgent.agent_id==="main"?"Your agent":addressedAgent.name;
+    const cloud=$("chat-cloud"); if(cloud) cloud.dataset.agent=addressedAgent.agent_id;
+    if(typeof refreshChatCloud==="function") refreshChatCloud();
+    const title=$("chat-cloud-title"); if(title) title.textContent=label;
+    const input=$("composer-input");
+    if(input) input.setAttribute("aria-label","Message "+label);
+    const pick=$("agent-switcher"); if(pick) pick.value=addressedAgent.agent_id;
+  }
+  // A chat shrunk to a bubble opens when a screen asks to talk to an agent.
+  function openAddressedChat(){
+    if(typeof setChatCloudMode==="function"&&typeof cloudState!=="undefined"&&
+       cloudState&&cloudState.mode==="bubble") setChatCloudMode("open");
+  }
+  // Shown only when there is more than the main agent to talk to. The list is
+  // the bridge's own (the viewer's agents in their verified home), so it needs
+  // the custom-UI controller enabled; an unreadable list keeps what is shown.
+  async function refreshAgentSwitcher(){
+    if(typeof AppUI==="undefined"||!AppUI.enabled) return;
+    const gen=refreshAgentSwitcher.gen=(refreshAgentSwitcher.gen||0)+1;
+    let agents;
+    try{ agents=(await AppUI.listAgents()).agents; }catch(_e){ return; }
+    if(gen!==refreshAgentSwitcher.gen) return;
+    let pick=$("agent-switcher");
+    if(!pick){
+      const home=$("chat-cloud-bar")||document.querySelector("#view-chat .chat-actions");
+      if(!home) return;
+      pick=document.createElement("select");
+      pick.id="agent-switcher"; pick.className="agent-switcher";
+      pick.setAttribute("aria-label","Which agent you are talking to");
+      // A drag starting on the picker is not a drag of the chat window.
+      pick.addEventListener("pointerdown",ev=>ev.stopPropagation());
+      pick.addEventListener("change",async()=>{
+        const chosen=Array.from(pick.options).find(o=>o.value===pick.value);
+        try{ await addressAgent({agent_id:pick.value,name:chosen?chosen.textContent:""}); }
+        catch(err){ pick.value=addressedAgent.agent_id; setStatusLine((err&&err.message)||"could not switch agents"); }
+      });
+      home.insertBefore(pick, home.firstChild&&home.firstChild.nextSibling||null);
+    }
+    pick.replaceChildren(...agents.map(a=>{
+      const option=document.createElement("option");
+      option.value=a.agent_id; option.textContent=a.name; return option;
+    }));
+    pick.hidden=agents.length<2;
+    // The agent on screen may have been removed: back to the main agent.
+    if(addressedAgent.agent_id!=="main"&&agents.length&&!agents.some(a=>a.agent_id===addressedAgent.agent_id)){
+      try{ await addressAgent({agent_id:"main",name:"Your agent"}); }catch(_e){ /* busy: next refresh */ }
+    }
+    pick.value=addressedAgent.agent_id;
+  }
   // The ACCOUNT half of "may this page read what this browser saved". A home id
   // alone does not answer it: two accounts can sign in on one browser and the
   // second must not read the first's held lines. Learned from /app/me.
@@ -3793,7 +3883,8 @@
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(q,"modelChoice")
         ? q.modelChoice : q.opts&&q.opts.modelChoice),
       owner:(q.owner!==undefined)?q.owner:queueOwner,
-      scope:(q.scope!==undefined)?q.scope:queueScope};
+      scope:(q.scope!==undefined)?q.scope:queueScope,
+      agent:String(q.agent||(q.opts&&q.opts.agentId)||"main")};
   }
   function saveQueue(){
     try{
@@ -3874,6 +3965,13 @@
           "here: this page cannot tell which account and command center saved it. "+
           "Send your message again if you still need it.",
         null, now/1000);
+      return;
+    }
+    // A line queued to another of the owner's agents waits for that agent's
+    // own thread; it is never offered, or sent, to the agent on screen.
+    if(String(item.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")){
+      appendMessage("system","A line queued to another of your agents is waiting; "+
+        "open that agent to send or discard it.", null, now/1000);
       return;
     }
     const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
@@ -4057,7 +4155,8 @@
     try{
       const r=await fetch("/app/turn/steer",{method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({universe_id:scope,text:message})});
+        body:JSON.stringify(Object.assign({universe_id:scope,text:message},
+          item.opts&&item.opts.agentId&&item.opts.agentId!=="main"?{agent_id:item.opts.agentId}:{}))});
       doc=r.ok?await r.json():null;
     }catch(e){ doc=null; }
     finally{ pendingSteers--; }
@@ -4155,6 +4254,7 @@
       settleSteered((answer&&answer.steering)||{delivered:[],undelivered:[]});
       delivered=true;setStatusLine("");
       if(typeof AppUI!=="undefined") AppUI.turnSettled();
+      if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(!stillHere()) return;
@@ -4442,11 +4542,13 @@
     // after a sign-out or an account switch belongs to the PREVIOUS account: it
     // paints nothing here and stops the load.
     const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const agent=typeof addressedAgentId==="function"?addressedAgentId():"main";
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+      agent===(typeof addressedAgentId==="function"?addressedAgentId():"main");
     let failed=null;
     more.addEventListener("click", ()=>{
       more.disabled=true; more.textContent="Loading the rest…";
-      loadFullMessage(id,stillOwner,scope).then(full=>{
+      loadFullMessage(id,stillOwner,scope,agent).then(full=>{
         if(!stillOwner()) return;
         if(typeof full!=="string"){
           // The preview stays exactly as it was and the control is re-armed:
@@ -4472,12 +4574,12 @@
   // Pages one message by the SERVER's offsets. Returns the whole text, or null
   // when it could not be recovered - it never returns a partial answer as if it
   // were the message.
-  async function loadFullMessage(id,stillOwner,scope){
+  async function loadFullMessage(id,stillOwner,scope,agent){
     const parts=[]; let offset=0, total=null;
     try{
       while(true){
         if(!stillOwner()) return null;
-        const r=await Owner.readConversationChunk(id,offset,scope);
+        const r=await Owner.readConversationChunk(id,offset,scope,agent);
         if(!stillOwner()) return null;            // previous account's response
         if(!r||r.available!==true||typeof r.chunk!=="string"||r.error||
            r.offset!==offset||r.offset_unit!=="unicode_code_points"||
@@ -5006,6 +5108,7 @@
     if(typeof AppUI!=="undefined"){
       if(connected) AppUI.enable(me.universe_id,me.principal_id); else AppUI.reset();
     }
+    if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
     // Powered or not, this is the command center's own chat. The owner and home were
     // taken above, from the same verified `me`.
     showView("chat"); startHeartbeat(); warmSession();
@@ -5206,6 +5309,7 @@
   }
   function clearAccountScopedState(){
     queueScope=""; queueOwner="";
+    if(typeof resetAddressedAgent==="function") resetAddressedAgent();
     // The other writer of the home. A custom UI's bridge is account- AND
     // home-scoped, so an account-scoped clear must end it here too; leaving it to
     // the sign-out path only would miss every other caller of this.
@@ -8319,8 +8423,10 @@
     // The account and home this peek is FOR. A response that lands after a
     // sign-out or an account change is the PREVIOUS account's conversation: it
     // paints nothing, renames no home, and does not mark this page loaded.
-    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const agentNow=()=>(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope, agent=agentNow();
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+      agent===agentNow();
     let turns = [];
     try{
       const r = await Owner.getConversation();
@@ -8469,6 +8575,14 @@
         "on this browser is waiting there; open that command center to see it.");
       restoreQueue(); return;   // preserved on disk for that command center's own page
     }
+    // Another agent's unconfirmed message waits for that agent's own thread,
+    // where its reply would land; it is never resent to the agent on screen.
+    if((pending.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")){
+      inflightRestored = true;
+      appendMessage("system","An unconfirmed message to another of your agents is waiting; "+
+        "open that agent to see it.");
+      restoreQueue(); return;
+    }
     if(!pending.scope||!pending.owner){
       // Written before this page recorded its command center, so it may belong to
       // another account signed in on this browser. CLICKING A BUTTON DOES NOT
@@ -8492,7 +8606,8 @@
     if(pending.consumerRequest){
       inflightRestored=true;
       const epoch=MCP._loginEpoch, scope=queueScope, owner=queueOwner;
-      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner;
+      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner&&
+        (pending.agent||"main")===(typeof addressedAgentId==="function"?addressedAgentId():"main");
       try{
         const observed=await Owner.read({target:"conversation_turn",
           request_key:pending.consumerRequest.request_key});
@@ -8517,14 +8632,14 @@
           // Keep this exact request available for a user-requested observation
           // or terminal projection repair, never a new workflow invocation.
           offerResend(pending.message,pending.display,new Error("Conversation is still pending."),
-            {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+            {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
              consumerRequest:pending.consumerRequest});
           restoreQueue();return;
         }
       }catch(_e){ /* Unknown status retains the exact durable local request. */ }
       if(!stillOwner())return;
       offerResend(pending.message,pending.display,new Error("Conversation status is unavailable."),
-        {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+        {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
          consumerRequest:pending.consumerRequest});
       restoreQueue();return;
     }
@@ -8545,13 +8660,14 @@
     const again = document.createElement("button");
     again.className = "btn btn--link"; again.textContent = pending.consumerRequest?"Check this conversation":"Send it again";
     again.addEventListener("click", ()=>{
-      if(!ownsSavedRow(pending)) return;
+      if(!ownsSavedRow(pending)||
+         (pending.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")) return;
       // The bubble is already drawn above, so do not echo it a second time.
       // Only THIS record is forgotten: a turn sent meanwhile owns the disk
       // slot now, and the resend queues behind it rather than erasing it.
       note.remove(); forgetInflightIf(pending);
       sendTurn(pending.message, pending.display,
-        {echoed:true,inputMethod:turnInputMethod(pending.inputMethod),
+        {echoed:true,agentId:pending.agent||"main",inputMethod:turnInputMethod(pending.inputMethod),
          consumerRequest:pending.consumerRequest||null,
          modelChoice:copyModelChoice(pending.modelChoice)});
     });
