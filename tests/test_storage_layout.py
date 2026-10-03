@@ -29,11 +29,16 @@ def _write(base: Path, document) -> None:
 
 
 def test_a_fresh_data_dir_gets_the_layout_this_code_writes(tmp_path):
-    assert layout.check(tmp_path) == {"layout": 1, "state": "stable"}
+    # The marker also records the one-way moves this data has had, so a fresh
+    # root is "already moved" -- it never had platform state in the wrong place.
+    moved = {"consents_outside_command_centers": "done"}
+    assert layout.check(tmp_path) == {"layout": 1, "state": "stable", "moves": moved}
     assert json.loads((tmp_path / layout.MARKER).read_text(encoding="utf-8")) == {
-        "layout": 1, "state": "stable",
+        "layout": 1, "state": "stable", "moves": moved,
     }
-    assert layout.check(tmp_path) == {"layout": 1, "state": "stable"}  # idempotent
+    # Idempotent, including the move: a second admission re-reads "done" and
+    # does not run it again.
+    assert layout.check(tmp_path) == {"layout": 1, "state": "stable", "moves": moved}
 
 
 @pytest.mark.parametrize("document,reason", [

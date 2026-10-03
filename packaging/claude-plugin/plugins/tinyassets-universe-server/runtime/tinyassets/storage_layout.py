@@ -40,6 +40,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from tinyassets.storage import platform_state_move as psm
+
 #: The layout this code reads and writes. The cutover's image bumps it to 2.
 LAYOUT = 1
 #: Layouts this code understands. A newer one means "migrated past me".
@@ -166,6 +168,16 @@ def _validated(base: Path, document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
+def _mark_move(base: Path, state: str) -> None:
+    """Record a one-way move's state in the marker, durably, before it changes
+    anything. A crash between the two writes leaves ``migrating``, which the
+    next admission sees and resumes from."""
+    document = read_marker(base) or {"layout": LAYOUT, "state": STABLE}
+    moves = dict(document.get(psm.MOVES) or {})
+    moves[psm.CONSENTS] = state
+    _write_atomically(marker_path(base), {**document, psm.MOVES: moves})
+
+
 def _admit(base: Path, *, hold: bool) -> dict[str, Any]:
     """Lock shared, then read and validate; initialise under the exclusive lock."""
     base = Path(base)
@@ -187,6 +199,23 @@ def _admit(base: Path, *, hold: bool) -> dict[str, Any]:
             if document is None:
                 raise LayoutRefused(f"{marker_path(base)} vanished during first start")
         _validated(base, document)
+        # One-way moves of platform state out of command-center-writable
+        # folders, under the EXCLUSIVE lock and before any role opens the data.
+        # Checked on every admission, not only first start: existing data
+        # already has a marker, and the move still has to happen exactly once.
+        if psm.move_needed(document):
+            _unlock(fd)
+            _lock(fd, exclusive=True)
+            try:
+                if psm.move_needed(read_marker(base)):
+                    psm.run(base, mark=lambda state: _mark_move(base, state))
+            finally:
+                _unlock(fd)
+                _lock(fd, exclusive=False)
+            document = read_marker(base)
+            if document is None:
+                raise LayoutRefused(f"{marker_path(base)} vanished during the move")
+            _validated(base, document)
     except BaseException:
         os.close(fd)
         raise
