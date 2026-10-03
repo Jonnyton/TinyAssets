@@ -909,21 +909,47 @@ def test_the_founders_private_grounding_never_travels(tmp_path):
     and reporting lines.
     """
     from tinyassets.api.interlocutor import FOUNDER_PRIVATE_GROUNDING
+    from tinyassets.automation_context import BRAIN_FILES
 
-    # The ratchet: the package's exclusions are DERIVED from that set, so a file
-    # added there later cannot start travelling without this test failing.
+    # The ratchet, over both authorities: the package's exclusions are DERIVED
+    # from these, so a file added to either cannot start travelling without
+    # this test failing.
     assert {ccp.fold(n) for n in FOUNDER_PRIVATE_GROUNDING} <= ccp._BRAIN_F
+    governed = set(BRAIN_FILES) - set(ccp.HARNESS_ROOT_FILES)
+    assert {ccp.fold(n) for n in governed} <= ccp._BRAIN_F
 
     universe = tmp_path / "cc"
     universe.mkdir()
-    (universe / "orgchart.md").write_text(
-        "Alice reports to Bob. Planned replacement: Carol.\n", encoding="utf-8")
+    for name in ("orgchart.md", "origin.md", "body.md"):
+        (universe / name).write_text(f"private {name}\n", encoding="utf-8")
     (universe / "keep.md").write_text("a shareable note\n", encoding="utf-8")
 
     files, excluded = ccp.collect(universe, exclude=[], memory_items={})
     assert "keep.md" in files
-    assert "orgchart.md" not in files
-    assert any(row["path"] == "orgchart.md" for row in excluded)
+    for name in ("orgchart.md", "origin.md", "body.md"):
+        assert name not in files
+        assert any(row["path"] == name for row in excluded)
+
+
+def test_the_published_roster_agents_identity_still_travels(tmp_path):
+    """``identity.md`` is a brain file AND a harness root file, and the harness
+    set travels on purpose: ``destination`` remaps those into
+    ``agents/<slug>/`` so a published command center arrives as a roster agent.
+    Excluding it with the rest of the governed set would install an agent with
+    no identity, so the derivation subtracts ``HARNESS_ROOT_FILES``.
+    """
+    from tinyassets.automation_context import BRAIN_FILES
+
+    assert "identity.md" in BRAIN_FILES and "identity.md" in ccp.HARNESS_ROOT_FILES
+    assert ccp.fold("identity.md") not in ccp._BRAIN_F
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    (universe / "identity.md").write_text("I am the village keeper.\n", encoding="utf-8")
+
+    files, _excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "identity.md" in files
+    assert ccp.destination("identity.md", "alice-village") == "agents/alice-village/identity.md"
 
 
 def test_the_publishers_own_request_queue_never_travels(tmp_path):

@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from tinyassets.api.interlocutor import FOUNDER_PRIVATE_GROUNDING as _FOUNDER_PRIVATE
+from tinyassets.automation_context import BRAIN_FILES as _GOVERNED_BRAIN
 from tinyassets.universe_files import (
     MAX_UNIVERSE_FILE_BYTES,
     list_universe_dir,
@@ -101,14 +102,28 @@ _HARNESS_FILES_F = frozenset(fold(n) for n in HARNESS_ROOT_FILES)
 _HARNESS_DIRS_F = frozenset(fold(n) for n in HARNESS_ROOT_DIRS)
 _MEMORY_F = fold(MEMORY_FILE)
 
-#: Brain files that never travel. ``FOUNDER_PRIVATE_GROUNDING`` is unioned in
-#: rather than re-listed: those files are withheld from every non-founder
-#: interlocutor *regardless of the command center's visibility level*
-#: (``api/interlocutor.py``), so a published package must not carry them either.
-#: Spelling them out here once let ``orgchart.md`` through while the publish
-#: confirmation said brain files were left out -- deriving from the authority
-#: means the next file added there is excluded without touching this module.
-_BRAIN_FILES = frozenset({"founder.md", "soul.md", "soul.edit.md", "log.md"}) | _FOUNDER_PRIVATE
+#: Brain files that never travel. Derived from two authorities rather than
+#: re-listed by name, because spelling them out once is what let ``orgchart.md``
+#: through while the publish confirmation said brain files were left out:
+#:
+#: * ``FOUNDER_PRIVATE_GROUNDING`` (``api/interlocutor.py``) -- withheld from
+#:   every non-founder interlocutor *regardless of the command center's
+#:   visibility level*: a command center may be fully public without its
+#:   founder's private description becoming public.
+#: * ``automation_context.BRAIN_FILES`` -- the governed grounding set, private by
+#:   default (host decision 2026-10-03).
+#:
+#: Minus ``HARNESS_ROOT_FILES``, which travel on purpose: ``destination``
+#: remaps them into ``agents/<slug>/`` so a published command center arrives as
+#: a roster agent, and ``identity.md`` is that agent's own self-description --
+#: the thing being shared, not a founder fact. Excluding it would install an
+#: agent with no identity. ``MEMORY.md`` is in that set too and is handled
+#: per-item by the scrub, not wholesale.
+_BRAIN_FILES = (
+    frozenset({"founder.md", "soul.md", "soul.edit.md", "log.md"})
+    | _FOUNDER_PRIVATE
+    | (frozenset(_GOVERNED_BRAIN) - HARNESS_ROOT_FILES)
+)
 #: Platform-written runtime state at the folder root. ``requests.json`` is named
 #: from ``work_targets.REQUESTS_FILENAME`` for the same reason: it holds the
 #: publisher's own pending request text, and the daemon turns pending rows into
