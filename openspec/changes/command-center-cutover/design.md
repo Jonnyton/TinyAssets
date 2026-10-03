@@ -12,8 +12,11 @@ it copies the root into a private artifact outside it -- regular files only, no
 symlink or reparse traversal, bounded, with the descriptor re-checked after
 opening -- and runs SQLite's online backup API on *that copy* to get the
 standalone database it scans. No source database or LanceDB store is opened by a
-library, and `immutable=1` is gone. A source file that changes during acquisition
-is fatal, which is how a live root is refused: measured, not asserted.
+library, and `immutable=1` is gone. A source file that changes while it is being
+copied fails the run -- a measured fact, not an assertion. It is NOT a refusal of
+a live root: a writer that holds still for the copy is indistinguishable from an
+idle one, which is why the report calls itself consistent per database and never
+a proven cross-store snapshot.
 
 `scripts/command_center_inventory.py` prints a machine-readable report:
 

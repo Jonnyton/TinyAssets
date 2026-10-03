@@ -76,6 +76,27 @@ def test_registry_names_have_source_provenance():
     assert sqlite_family("x") == ("x", "x-wal", "x-shm", "x-journal")
 
 
+def test_names_real_creators_write_into_a_home_are_classified(tmp_path):
+    """Provenance by behaviour, not by grepping for a literal.
+
+    A string literal proves a name is mentioned somewhere; it does not prove the
+    table knows what a creator actually puts in a home. `.provider-authority`
+    passed the literal check and was still unclassified.
+    """
+    from tinyassets import provider_authority, soul_edit
+
+    home = tmp_path / HOME
+    home.mkdir()
+    provider_authority.write_record(home, {})
+    with soul_edit._soul_lock(home):
+        pass
+    created = sorted(p.name for p in home.iterdir())
+    assert created, "the creators wrote nothing -- this test would prove nothing"
+    unknown = [name for name in created if classify(name) is None]
+    assert not unknown, f"creators wrote home entries the table does not know: {unknown}"
+    assert classify(".provider-authority") == PLATFORM
+
+
 def _fixture(root: Path) -> None:
     home = root / HOME
     home.mkdir(parents=True)
@@ -137,6 +158,7 @@ def test_the_inventory_finds_what_the_cutover_must_change_and_writes_nothing(tmp
     assert cells[("universes", "universe_id")]["u_ids"] == 1
     assert report["json"][f"{HOME}/status.json"] == {
         "keys": 1, "u_id_keys": 0, "u_id_values": 2, "word_values": 0, "actor_values": 0,
+        "values_truncated": 0,
     }
     assert report["totals"]["unclassified_entries"] == 1
     assert report["totals"]["configs_with_authority"] == 1
@@ -282,12 +304,54 @@ def test_limits_oversize_prunes_and_deadline_are_explicit(tmp_path):
         assert any(reason in r for r in report["incomplete_reasons"])
 
 
+def test_the_value_limit_binds_json_and_lancedb_not_only_sqlite(tmp_path):
+    """An id past --max-value-bytes is not counted, and the gap is recorded.
+
+    The cap used to apply only to SQLite, so JSON and LanceDB read whole values
+    and reported `complete: true` while advertising a bound they did not apply.
+    """
+    buried = "x" * 100 + "-" + HOME
+    (tmp_path / "status.json").write_text(json.dumps({"actor": buried}), encoding="utf-8")
+
+    report = inv.inventory(tmp_path, limits=inv.Limits(max_value_bytes=4))
+
+    assert report["json"]["status.json"]["u_id_values"] == 0
+    assert report["json"]["status.json"]["values_truncated"]
+    assert not report["complete"]
+    assert any("JSON value limit: status.json" in r for r in report["incomplete_reasons"])
+    # The same id inside the cap is still found, so the bound is what changed.
+    assert inv.inventory(tmp_path)["json"]["status.json"]["u_id_values"] == 1
+
+
+def test_the_value_limit_binds_lancedb_rows(tmp_path):
+    lancedb = pytest.importorskip("lancedb")
+    store = lancedb.connect(str(tmp_path / "lancedb"))
+    store.create_table("ids", [{"id": "x" * 100 + "-" + HOME}])
+
+    report = inv.inventory(tmp_path, limits=inv.Limits(max_value_bytes=4))
+
+    found = report["lancedb"]["lancedb"]["tables"]["ids"]
+    assert found["u_ids"] == 0
+    assert found["values_truncated"]
+    assert not report["complete"]
+    assert any("LanceDB row/value limit" in r for r in report["incomplete_reasons"])
+    assert inv.inventory(tmp_path)["lancedb"]["lancedb"]["tables"]["ids"]["u_ids"] == 1
+
+
+def test_an_argparse_usage_error_exits_one_like_every_other_usage_error(tmp_path):
+    """Exit 1 is the documented usage code; argparse's own exit 2 means incomplete."""
+    assert inv.main([]) == 1
+    assert inv.main([str(tmp_path), "--strict"]) == 1
+    assert inv.main([str(tmp_path), "--max-rows", "not-a-number"]) == 1
+    with pytest.raises(SystemExit) as asked_for_help:
+        inv.main(["--help"])
+    assert not asked_for_help.value.code
+
+
 def test_failure_semantics_default_exit_partial_and_corrupt_sqlite(tmp_path, capsys):
     _fixture(tmp_path)
     assert inv.main([str(tmp_path)]) == 2
     assert "mystery.bin" in capsys.readouterr().out
-    with pytest.raises(SystemExit):
-        inv.main([str(tmp_path), "--strict"])
     (tmp_path / HOME / "mystery.bin").unlink()
     assert inv.main([str(tmp_path)]) == 0
     capsys.readouterr()
@@ -412,20 +476,130 @@ def test_replaced_file_descriptor_is_rechecked_before_read(tmp_path, monkeypatch
     assert not report["complete"]
 
 
-def test_sqlite_deadline_cancels_backup_and_is_reported(tmp_path, monkeypatch):
+def test_an_already_expired_deadline_refuses_the_scan_before_it_opens_anything(
+        tmp_path, monkeypatch):
+    """The cheap case: the deadline is gone before the scan starts."""
     source = tmp_path / "source"
     source.mkdir()
     db = sqlite3.connect(source / "data")
     db.execute("CREATE TABLE t (value TEXT)")
     db.close()
     original = inv.scan_sqlite
+    opened = []
 
     def expired_scan(path, standalone, **kwargs):
         kwargs["deadline"] = 0
         return original(path, standalone, **kwargs)
 
     monkeypatch.setattr(inv, "scan_sqlite", expired_scan)
+    monkeypatch.setattr(inv.sqlite3, "connect",
+                        lambda *a, **k: opened.append(a) or pytest.fail("opened a database"))
     report = inv.inventory(source)
     assert report["sqlite"]["data"]["deadline_hit"]
+    assert not opened, "an expired deadline must refuse before opening anything"
     assert not report["complete"]
     assert any("deadline_hit: data" in r for r in report["incomplete_reasons"])
+
+
+def _scan_with_clock_tripping_after(monkeypatch, trips_after):
+    """Run the real scan with a clock that runs out mid-scan, not before it.
+
+    `trips_after` monotonic reads happen inside the deadline; the next one is
+    past it. Only the sqlite scan sees this clock -- acquisition has already
+    finished, and the real clock is restored before the caller continues.
+    """
+    original_scan = inv.scan_sqlite
+    real_monotonic = inv.time.monotonic
+    reads = {"n": 0}
+
+    def scan(path, standalone, **kwargs):
+        deadline = kwargs["deadline"]
+
+        def clock():
+            reads["n"] += 1
+            return deadline - 1 if reads["n"] <= trips_after else deadline + 1
+
+        inv.time.monotonic = clock
+        try:
+            return original_scan(path, standalone, **kwargs)
+        finally:
+            inv.time.monotonic = real_monotonic
+
+    monkeypatch.setattr(inv, "scan_sqlite", scan)
+    return reads
+
+
+def test_the_deadline_cancels_a_backup_already_under_way(tmp_path, monkeypatch):
+    """Running out of time DURING the backup is reported, not swallowed.
+
+    The first monotonic read is scan_sqlite's own check, which passes; nothing
+    else reads the clock before `Connection.backup`, so the read that trips is
+    inside it.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    db = sqlite3.connect(source / "data")
+    db.execute("CREATE TABLE t (value TEXT)")
+    db.executemany("INSERT INTO t VALUES (?)", [(f"row-{i}",) for i in range(2000)])
+    db.commit()
+    db.close()
+    reads = _scan_with_clock_tripping_after(monkeypatch, trips_after=1)
+
+    report = inv.inventory(source)
+
+    found = report["sqlite"]["data"]
+    assert reads["n"] > 1, "the backup never read the clock"
+    assert found["deadline_hit"] and found["error"]
+    assert found["table_values"] == {}, "it stopped in the backup, before any table"
+    assert not report["complete"]
+
+
+def test_the_deadline_cancels_a_value_scan_part_way_through_a_table(tmp_path, monkeypatch):
+    """Running out of time while READING rows abandons the rest, and says so.
+
+    The clock is tripped once the first row's value has been examined, so the
+    backup and the schema pass are already done and the cancellation can only
+    come from inside the row loop.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    db = sqlite3.connect(source / "data")
+    db.execute("CREATE TABLE t (value TEXT)")
+    db.executemany("INSERT INTO t VALUES (?)", [(f"{HOME}-{i}",) for i in range(2000)])
+    db.commit()
+    db.close()
+
+    original_scan = inv.scan_sqlite
+    real_monotonic = inv.time.monotonic
+    real_as_bytes = inv._as_bytes
+
+    def scan(path, standalone, **kwargs):
+        deadline = kwargs["deadline"]
+        state = {"read_a_value": False}
+
+        def as_bytes(value):
+            state["read_a_value"] = True
+            return real_as_bytes(value)
+
+        inv.time.monotonic = lambda: (
+            deadline + 1 if state["read_a_value"] else deadline - 1)
+        inv._as_bytes = as_bytes
+        try:
+            return original_scan(path, standalone, **kwargs)
+        finally:
+            inv.time.monotonic = real_monotonic
+            inv._as_bytes = real_as_bytes
+
+    monkeypatch.setattr(inv, "scan_sqlite", scan)
+
+    report = inv.inventory(source)
+
+    found = report["sqlite"]["data"]
+    assert found["table_values"]["t"]["rows_total"] == 2000, "the backup completed"
+    assert found["table_values"]["t"]["rows_scanned"] == 1, "it read past the deadline"
+    assert found["error"] == "TimeoutError" and found["deadline_hit"]
+    assert not report["complete"]
+    assert report["totals"]["value_rows_with_u_ids"] == 1, (
+        "the one row it did read is still counted -- an abandoned scan reports "
+        "what it saw, it does not report a zero"
+    )

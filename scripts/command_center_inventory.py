@@ -3,8 +3,9 @@
 Copies regular files into a private artifact outside the source, with bounded
 iterative traversal and explicit verbatim/prune exemptions. SQLite and LanceDB
 NEVER open source databases. SQLite recovery and online backup run on the copy;
-only the resulting standalone database is scanned with mode=ro. Size/mtime
-rechecks detect changes, but do not establish a fenced cross-store snapshot.
+only the resulting standalone database is scanned with mode=ro. A size/mtime
+recheck fails the run when the source CHANGED while being copied; it does not
+refuse a live root, because a writer that happens to hold still looks idle.
 
 Operational-name counts (``operational_word`` includes ``universes``) are meaningful
 outside verbatim stores only; verbatim text matches are not migration work. Raw
@@ -62,7 +63,12 @@ MATCHERS = {"u_ids": U_ID, "actor_prefix": ACTOR, "operational_word": WORD}
 MAGIC = b"SQLite format 3\x00"
 DEFERRED = [
     "derived identities (hashed lease keys, custody and grant digests) -- discovery "
-    "belongs to cutover tasks 3/4 (design E4b); this scan cannot see them"
+    "belongs to cutover tasks 3/4 (design E4b); this scan cannot see them",
+    "checkpoint serialization is matched as raw bytes, not decoded through its "
+    "serde, so an id this scan does not find there is unproven, not absent",
+    "acquisition is not producer-attested: a writer that holds the source still "
+    "while it is copied is indistinguishable from an idle one, so a complete "
+    "report is consistent per database, never a proven cross-store snapshot",
 ]
 
 
@@ -381,26 +387,41 @@ def scan_sqlite(path: Path, standalone: Path, *, values: bool,
     return report
 
 
-def _json_counts(node: Any, counts: dict[str, int], *, values: bool = True) -> None:
+def _bounded(text: str, counts: dict[str, int], cap: int) -> bytes:
+    """The first ``cap`` bytes, recording that the rest was never matched."""
+    raw = text.encode("utf-8", "surrogatepass")
+    if len(raw) > cap:
+        counts["values_truncated"] = 1
+        return raw[:cap]
+    return raw
+
+
+def _json_counts(node: Any, counts: dict[str, int], *, values: bool = True,
+                 cap: int) -> None:
     stack = [node]
     while stack:
         current = stack.pop()
         if isinstance(current, dict):
             for key, value in current.items():
-                counts["keys"] += int(bool(WORD.search(key.encode())))
-                counts["u_id_keys"] += int(bool(U_ID.search(key.encode())))
+                bounded = _bounded(key, counts, cap)
+                counts["keys"] += int(bool(WORD.search(bounded)))
+                counts["u_id_keys"] += int(bool(U_ID.search(bounded)))
                 stack.append(value)
         elif isinstance(current, list):
             stack.extend(current)
         elif values and isinstance(current, str):
-            counts["u_id_values"] += int(bool(U_ID.search(current.encode())))
-            counts["word_values"] += int(current.lower() == "universe")
-            counts["actor_values"] += int(current.startswith("universe:"))
+            bounded = _bounded(current, counts, cap)
+            counts["u_id_values"] += int(bool(U_ID.search(bounded)))
+            counts["word_values"] += int(bounded.lower() == b"universe")
+            counts["actor_values"] += int(bounded.startswith(b"universe:"))
 
 
-def scan_json(path: Path, *, values: bool) -> dict[str, int]:
-    counts = dict.fromkeys(("keys", "u_id_keys", "u_id_values", "word_values", "actor_values"), 0)
-    _json_counts(json.loads(path.read_text(encoding="utf-8")), counts, values=values)
+def scan_json(path: Path, *, values: bool, cap: int) -> dict[str, int]:
+    counts = dict.fromkeys(
+        ("keys", "u_id_keys", "u_id_values", "word_values", "actor_values",
+         "values_truncated"), 0)
+    _json_counts(json.loads(path.read_text(encoding="utf-8")), counts,
+                 values=values, cap=cap)
     return counts
 
 
@@ -428,6 +449,7 @@ def scan_lancedb(path: Path, *, values: bool, limits: Limits, deadline: float) -
                           and str(field.type) in ("string", "large_string"))]
             result = {
                 "fields": fields, "rows_total": table.count_rows(), "rows_scanned": 0,
+                "values_truncated": 0,
                 "truncated": False, **_counts(),
             }
             tables[name] = result
@@ -439,9 +461,15 @@ def scan_lancedb(path: Path, *, values: bool, limits: Limits, deadline: float) -
                             return {"scanned": False, "reason": "deadline", "tables": tables,
                                     "deadline_hit": True}
                         result["rows_scanned"] += 1
+                        bounded = []
+                        for value in row.values():
+                            raw = _as_bytes(value)
+                            if len(raw) > limits.max_value_bytes:
+                                result["values_truncated"] = 1
+                                raw = raw[:limits.max_value_bytes]
+                            bounded.append(raw)
                         for key, matcher in MATCHERS.items():
-                            result[key] += int(any(matcher.search(_as_bytes(v))
-                                                   for v in row.values()))
+                            result[key] += int(any(matcher.search(raw) for raw in bounded))
             result["truncated"] = bool(fields) and result["rows_scanned"] < result["rows_total"]
         return {"scanned": values, "tables": tables,
                 "reason": None if values else "--no-values skips LanceDB rows"}
@@ -545,8 +573,8 @@ def _inventory_artifact(root: Path, artifact: Path, acquisition: dict,
         if not found["scanned"]:
             reasons.append(f"unscanned LanceDB: {rel}: {found['reason']}")
         for table, counts in found.get("tables", {}).items():
-            if counts["truncated"]:
-                reasons.append(f"LanceDB row limit: {rel}:{table}")
+            if counts["truncated"] or counts.get("values_truncated"):
+                reasons.append(f"LanceDB row/value limit: {rel}:{table}")
     for rel in files:
         if rel in blocked or rel in databases:
             continue
@@ -566,7 +594,10 @@ def _inventory_artifact(root: Path, artifact: Path, acquisition: dict,
             continue
         try:
             if path.suffix == ".json":
-                report["json"][rel] = scan_json(path, values=values)
+                counts = scan_json(path, values=values, cap=limits.max_value_bytes)
+                report["json"][rel] = counts
+                if counts["values_truncated"]:
+                    reasons.append(f"JSON value limit: {rel}")
             elif path.name == "config.yaml":
                 fields = config_authority(path)
                 if path.parent.name in report["homes"]:
@@ -598,7 +629,10 @@ def _inventory_artifact(root: Path, artifact: Path, acquisition: dict,
         "universe_tables": sum(len(s["tables"]) for s in sql),
         "universe_columns": sum(len(s["columns"]) for s in sql),
         "schema_objects": sum(len(s["schema_sql"]) for s in sql),
-        "json_files_with_findings": sum(any(j.values()) for j in report["json"].values()),
+        # values_truncated is a coverage flag, not a finding
+        "json_files_with_findings": sum(
+            any(count for key, count in j.items() if key != "values_truncated")
+            for j in report["json"].values()),
         "lancedb_unscanned": sum(not v["scanned"] for v in report["lancedb"].values()),
     }
     for key in MATCHERS:
@@ -637,7 +671,12 @@ def main(argv: list[str] | None = None) -> int:
     for field, default in vars(Limits()).items():
         flag = "--deadline" if field == "deadline_s" else "--" + field.replace("_", "-")
         parser.add_argument(flag, dest=field, type=type(default), default=default)
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exit_request:
+        if exit_request.code:  # argparse's own exit 2 is a usage error like any other
+            return 1
+        raise  # --help / --version asked to stop, and succeeded
     try:
         limits = Limits(**{key: getattr(args, key) for key in vars(Limits())})
         report = inventory(args.data_root, values=not args.no_values, limits=limits,

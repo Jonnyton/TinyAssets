@@ -56,6 +56,9 @@ PLATFORM_NAMES = frozenset({
     "app_refresh_sessions", "import", "import-verify", "verify",
     # stores
     "lancedb",
+    # the provider authority record the tool jail never maps
+    # (provider_authority.py _DIR / write_record)
+    ".provider-authority",
     # credentials and runtime
     ".credentials", ".credentials.json", ".credential-vault.json", ".oauth-refresh", ".runtime",
     ".runtime_status.json", ".engine_mcp_config.json", ".engine_mcp_http_routes.json",
