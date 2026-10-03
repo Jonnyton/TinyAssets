@@ -257,7 +257,10 @@ def test_symlinks_including_config_are_never_read(tmp_path):
         os.symlink(outside, home / "config.yaml")
         os.symlink(tmp_path, source / "escape", target_is_directory=True)
     except (OSError, NotImplementedError) as exc:
-        pytest.skip(str(exc))
+        # owner=cowork-agent runs-in=linux-ci: this host cannot create a symlink
+        # (os.symlink raises WinError 1314 without developer mode), and the case
+        # is also covered by the POSIX containment probe under WSL.
+        pytest.skip(f"owner=cowork-agent runs-in=linux-ci: no symlink here ({exc})")
     report = inv.inventory(source)
     assert {e["path"] for e in report["unscanned"]} == {f"{HOME}/config.yaml", "escape"}
     assert not report["homes"][HOME]["config_authority"]
@@ -266,7 +269,7 @@ def test_symlinks_including_config_are_never_read(tmp_path):
 
 def test_fifo_is_never_opened(tmp_path):
     if not hasattr(os, "mkfifo"):
-        pytest.skip("mkfifo unavailable")
+        pytest.skip("owner=cowork-agent runs-in=linux-ci: os.mkfifo is POSIX-only")
     os.mkfifo(tmp_path / "pipe")
     report = inv.inventory(tmp_path)
     assert {"path": "pipe", "category": "link-or-special"} in report["unscanned"]
@@ -343,7 +346,16 @@ def test_the_value_limit_binds_json_and_lancedb_not_only_sqlite(tmp_path):
 
 
 def test_the_value_limit_binds_lancedb_rows(tmp_path):
-    lancedb = pytest.importorskip("lancedb")
+    try:
+        import lancedb
+    except ImportError:
+        # Without the library there are no rows to bound, and the store being
+        # reported unscanned is the assertion that matters -- which the test
+        # below already makes. Branch rather than skip, so both environments
+        # check something.
+        (tmp_path / "lancedb").mkdir()
+        assert not inv.inventory(tmp_path)["lancedb"]["lancedb"]["scanned"]
+        return
     store = lancedb.connect(str(tmp_path / "lancedb"))
     store.create_table("ids", [{"id": "x" * 100 + "-" + HOME}])
 
