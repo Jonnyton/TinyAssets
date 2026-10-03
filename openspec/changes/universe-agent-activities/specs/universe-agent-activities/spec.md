@@ -33,7 +33,13 @@ A dispatcher SHALL run on the automation pump's cadence and whenever an activity
 - **WHEN** an activity's run is alive but slow
 - **THEN** no second run is started for it
 
+#### Scenario: A durable answer outlives its immediate wake
+- **WHEN** an owner request is resolved before the activity records its wait, or its immediate activity-wake hook fails after the answer commits
+- **THEN** a later dispatcher tick SHALL reconcile waiting activities against the durable request status and requeue only the activity still waiting on that exact resolved request
+- **AND** repeated reconciliation SHALL make no additional transition, a paused or stopped activity SHALL remain so, and the retiring run SHALL end before a replacement can claim the activity
+
 ### Requirement: Schedules start activities through ordinary automations
+
 An automation targeting the Activities branch with a title and brief SHALL start one activity per firing. The record SHALL be created only from a platform-owned firing context (the claimed attempt's owner, automation id and due time), never from run inputs, idempotent on the automation id and due time, so re-firing the same attempt after a crash returns the same activity. A run of the Activities branch that no activity record names SHALL be refused before it executes. Automations SHALL need no new target kind.
 
 #### Scenario: a weekly report

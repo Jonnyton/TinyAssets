@@ -141,6 +141,7 @@ def dispatch_universe(base_path: str | Path, universe_id: str, *,
 
 def _dispatch_universe(base_path: Path, universe_id: str, budget: list[int] | None) -> None:
     universe_dir = base_path / universe_id
+    activities.reconcile_answers(universe_dir)
 
     def replaceable(run_id: str) -> bool:
         return runner.state(base_path, run_id) == runner.ENDED

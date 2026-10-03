@@ -79,6 +79,67 @@ def test_a_queued_activity_gets_one_run_and_a_live_run_is_left_alone(monkeypatch
     assert record["status"] == acts.IN_PROGRESS and record["runner_token"] == "run-1"
 
 
+@pytest.mark.parametrize("answer_first", [False, True])
+@pytest.mark.parametrize("resolution", ["answered", "dismissed"])
+def test_dispatch_reconciles_a_durable_answer_after_a_missed_wake(
+    monkeypatch, universe, answer_first, resolution,
+):
+    from tinyassets.storage import pending_requests
+
+    runs = _Runs(monkeypatch, universe)
+    aid = _new(universe)
+    _dispatch(universe)
+    request = pending_requests.create_request(
+        universe, kind="API", title="Proceed?", body="b", fields=[],
+        action={"type": "answer"}, dedupe_key="activity-decision",
+    )
+    request_id = request["request_id"]
+
+    def failed_hook(*args):
+        raise OSError("the activity store was unavailable after the answer committed")
+
+    monkeypatch.setattr(acts, "answered_request", failed_hook)
+    if not answer_first:
+        assert acts.wait_on(universe, aid, request_id)
+    assert pending_requests.resolve_request(universe, request_id, status=resolution, answer={})
+    if answer_first:
+        assert acts.wait_on(universe, aid, request_id)
+    assert acts.get(universe, aid)["status"] == acts.WAITING_ON_YOU
+    # A repeated answer returns early; durable reconciliation must still repair it.
+    assert not pending_requests.resolve_request(universe, request_id, status=resolution)
+    _dispatch(universe)
+    record = acts.get(universe, aid)
+    assert record["status"] == acts.SCHEDULED and record["retiring_token"] == "run-1"
+    assert runs.started == [(aid, 1)], "the retiring run must end before another can start"
+    revision = record["revision"]
+    _dispatch(universe)
+    assert acts.get(universe, aid)["revision"] == revision
+    runs.status["run-1"] = "completed"
+    _dispatch(universe)
+    _dispatch(universe)
+    assert runs.started == [(aid, 1), (aid, 2)]
+
+
+def test_answer_reconciliation_leaves_pending_and_paused_activities_alone(monkeypatch, universe):
+    from tinyassets.storage import pending_requests
+
+    runs = _Runs(monkeypatch, universe)
+    aid = _new(universe)
+    _dispatch(universe)
+    request = pending_requests.create_request(
+        universe, kind="API", title="Proceed?", body="b", fields=[],
+        action={"type": "answer"}, dedupe_key="still-pending",
+    )
+    assert acts.wait_on(universe, aid, request["request_id"])
+    _dispatch(universe)
+    assert acts.get(universe, aid)["status"] == acts.WAITING_ON_YOU
+    acts.transition(universe, aid, acts.PAUSED)
+    assert pending_requests.resolve_request(universe, request["request_id"], status="answered")
+    _dispatch(universe)
+    assert acts.get(universe, aid)["status"] == acts.PAUSED
+    assert runs.started == [(aid, 1)]
+
+
 def test_a_completed_run_completes_the_activity_with_its_result(monkeypatch, universe):
     runs = _Runs(monkeypatch, universe)
     aid = _new(universe)

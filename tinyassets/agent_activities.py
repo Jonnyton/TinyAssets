@@ -679,6 +679,30 @@ def answered_request(universe_dir: Path, request_id: str) -> str | None:
     return row[0] if answered(universe_dir, row[0], request_id) else None
 
 
+@_when_absent(lambda: 0)
+def reconcile_answers(universe_dir: Path) -> int:
+    """Repair missed answer wakes from the two durable stores, idempotently.
+
+    The answer can commit before the activity starts waiting, or its immediate
+    notification can fail. Read requests outside the activity transaction;
+    ``answered`` then compares the exact waiting request again under the lock.
+    A read failure leaves the activity waiting for the next dispatcher tick.
+    """
+    from tinyassets.storage.pending_requests import get_request
+
+    with closing(_connect(universe_dir)) as conn:
+        waiting = conn.execute(
+            "SELECT activity_id, waiting_request_id FROM activities WHERE status = ?",
+            (WAITING_ON_YOU,),
+        ).fetchall()
+    requeued = 0
+    for activity_id, request_id in waiting:
+        request = get_request(universe_dir, request_id) if request_id else None
+        if request is not None and request.get("status") in {"answered", "dismissed"}:
+            requeued += int(answered(universe_dir, activity_id, request_id))
+    return requeued
+
+
 @_when_absent(lambda: False)
 def has_in_progress(universe_dir: Path, agent_id: str = "main") -> bool:
     """Whether one of ``agent_id``'s activities is running now (platform state
