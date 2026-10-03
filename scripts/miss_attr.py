@@ -39,7 +39,9 @@ from __future__ import annotations
 
 import argparse
 import collections
+import functools
 import json
+import os
 import re
 import subprocess
 import sys
@@ -49,7 +51,39 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-REPO = "Jonnyton/TinyAssets"
+
+
+@functools.cache
+def repo_slug() -> str:
+    """``owner/name`` for this checkout, asked rather than hardcoded.
+
+    A literal slug here named the founder's pre-org account, which the rename
+    ratchet in ``tests/test_hard_rename_surfaces.py`` correctly refuses on every
+    active surface -- and because this file is collected by the required suite,
+    that refusal failed every merge group the PR was queued in. (This docstring
+    deliberately does not quote the old slug: the ratchet would catch it here
+    too, and claiming its `rename-allow` exemption to explain the bug would
+    leave an exemption to maintain forever.) Deriving it cannot go stale at the
+    next move either.
+
+    ``GITHUB_REPOSITORY`` first because in Actions it is already exact and
+    costs nothing; `gh` second for a local run; then a loud failure, because a
+    wrong slug would silently measure another repository.
+    """
+    env = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if env:
+        return env
+    proc = subprocess.run(
+        ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+    slug = (proc.stdout or "").strip()
+    if proc.returncode != 0 or "/" not in slug:
+        raise SystemExit(
+            "cannot determine the repository: set GITHUB_REPOSITORY or make "
+            f"`gh repo view` work here (gh said: {(proc.stderr or '').strip()[:200]})"
+        )
+    return slug
 _QUEUE = re.compile(r"^gh-readonly-queue/main/pr-(\d+)-([0-9a-f]{40})$")
 
 
@@ -134,7 +168,7 @@ def _git(*args: str, cwd: Path | None = None) -> str:
 
 def failed_runs(limit: int) -> list[dict]:
     runs = _gh(
-        f"repos/{REPO}/actions/runs?per_page=100&event=merge_group&status=failure",
+        f"repos/{repo_slug()}/actions/runs?per_page=100&event=merge_group&status=failure",
         '[.workflow_runs[] | select(.name=="Tests") '
         "| {id, br:.head_branch, head:.head_sha, at:.created_at}]",
     ) or []
@@ -153,7 +187,7 @@ def junit_failures(run_id: int, cache: Path) -> list[str] | None:
     if not xml.exists():
         dest.mkdir(parents=True, exist_ok=True)
         subprocess.run(
-            ["gh", "run", "download", str(run_id), "--repo", REPO,
+            ["gh", "run", "download", str(run_id), "--repo", repo_slug(),
              "-n", "junit-required-tests", "-D", str(dest)],
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
