@@ -33,7 +33,8 @@ def test_phone_conversation(app_url, browser, tmp_path):
     page.wait_for_function(
         "() => document.getElementById('rail-head').textContent === '3 waiting on you'"
     )
-    header = _box(page, '#view-chat .chat-header')
+    assert page.locator('#view-chat .chat-header').count() == 0
+    header = _box(page, '#chat-cloud-bar')
     thread = _box(page, '#thread')
     field = _box(page, '#composer-input')
     assert header['height'] <= 56
@@ -57,21 +58,21 @@ def test_phone_conversation(app_url, browser, tmp_path):
     page.wait_for_function(
         "() => document.getElementById('rail-head').textContent === 'Nothing waiting on you'"
     )
-    page.locator('#btn-header-menu').tap()
+    page.locator('#btn-cloud-menu').tap()
     assert page.locator('#btn-account').is_visible()
     assert page.locator('#btn-signout').is_visible()
     page.keyboard.press('Escape')
     assert page.locator('#btn-account').is_hidden()
-    page.locator('#btn-header-menu').tap()
+    page.locator('#btn-cloud-menu').tap()
     page.locator('#thread').tap()
     assert page.locator('#btn-account').is_hidden()
-    page.locator('#btn-header-menu').tap()
+    page.locator('#btn-cloud-menu').tap()
     page.locator('#btn-account').tap()
-    assert page.locator('#btn-header-menu').get_attribute('aria-expanded') == 'false'
+    assert page.locator('#btn-cloud-menu').get_attribute('aria-expanded') == 'false'
     page.evaluate("showView('chat'); refreshChatCloud();")
     page.screenshot(path=tmp_path / 'phone-p0.png')
     (tmp_path / 'phone-p0-measurements.txt').write_text(
-        f"header={header['height']}, thread={thread['height']}, input={field['width']}")
+        f"cloud_bar={header['height']}, thread={thread['height']}, input={field['width']}")
     page.set_viewport_size({'width': 390, 'height': 500})
     page.wait_for_function(
         "() => document.documentElement.style.getPropertyValue('--app-h') === '500px'"
@@ -79,6 +80,12 @@ def test_phone_conversation(app_url, browser, tmp_path):
     page.wait_for_function(
         "() => document.getElementById('composer-input').getBoundingClientRect().bottom <= 500"
     )
+    composer = _box(page, '#composer')
+    send = _box(page, '#btn-send')
+    assert composer['y'] >= 0 and composer['y'] + composer['height'] <= 500
+    assert send['y'] + send['height'] <= 500
+    with (tmp_path / 'phone-p0-measurements.txt').open('a') as output:
+        output.write(f", composer_at_500={composer}, send_at_500={send}")
     # With nothing listed, the chip stays and "Add a key yourself" is one tap away;
     # renderRail, not the phone CSS, decides whether the rail shows at all.
     page.evaluate("""() => { railCache = [];
@@ -93,13 +100,15 @@ def test_phone_conversation(app_url, browser, tmp_path):
 
 
 @pytest.mark.parametrize('width', [601, 768, 1280])
-def test_wide_header_stays_inline(app_url, browser, width):
+def test_wide_cloud_menu(app_url, browser, width):
     page = browser.new_page(viewport={'width': width, 'height': 800})
     _enter_chat(page, app_url)
-    assert page.locator('#btn-header-menu').is_hidden()
-    account, signout = _box(page, '#btn-account'), _box(page, '#btn-signout')
-    assert account['y'] == signout['y']
-    assert account['x'] + account['width'] <= signout['x']
+    assert page.locator('#view-chat .chat-header').count() == 0
+    assert page.locator('#btn-cloud-menu').is_visible()
+    assert page.locator('#btn-account').is_hidden()
+    page.click('#btn-cloud-menu')
+    assert page.locator('#btn-account').is_visible()
+    assert page.locator('#btn-signout').is_visible()
     assert page.locator('#rail-head').text_content() == 'Waiting on you'
     # Desktop and the Electron app keep 100dvh: no visual-viewport height.
     assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ''

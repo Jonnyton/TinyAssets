@@ -77,8 +77,6 @@
     .model-dialog li{margin:.5rem 0;overflow-wrap:anywhere}
     .model-dialog .model-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin:.7rem 0}
     /* chat */
-    .chat-header{display:flex;align-items:center;justify-content:space-between;padding:.8rem 1rem;
-      border-bottom:1px solid var(--line);background:var(--surface);padding-top:max(.8rem,env(safe-area-inset-top))}
     .chat-title{display:flex;align-items:center;gap:.55rem;font-weight:600}
     .universe-name{max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .chat-actions{display:flex;gap:.3rem}
@@ -160,6 +158,16 @@
     .connect-go{width:100%;margin:.6rem 0 .25rem}
     .connect-other{margin-top:.6rem}
     .connect-other summary{cursor:pointer;font-size:.8rem;color:var(--ink-dim)}
+    /* The connect screen: one heading, then each source as a small card. */
+    .connect-heading{font-size:.95rem;margin:.6rem 0 .1rem}
+    .connect-source{border-top:1px solid var(--line);padding:.55rem 0 .2rem;margin-top:.5rem}
+    .connect-source .btn{width:100%;margin-top:.4rem}
+    .connect-source-name{font-size:.85rem}
+    .connect-terms{font-size:.72rem;color:var(--muted);margin:.25rem 0}
+    /* The daily-cap card under a failed turn: plain, dismissable, never a modal. */
+    .daily-cap{border:1px solid var(--line);border-radius:10px;padding:.6rem .75rem;margin-top:.5rem}
+    .daily-cap p{margin:.2rem 0}
+    .daily-cap .rtab-row .btn{text-decoration:none}
     .connect-shapes{display:flex;flex-wrap:wrap;gap:.35rem;margin:.5rem 0}
     .connect-shapes .btn{padding:.3rem .6rem;font-size:.8rem}
     .connect-shapes .btn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
@@ -276,7 +284,14 @@
     #ui-frame-host{position:absolute;inset:0;display:flex;min-height:0}
     .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
     /* The chat cloud: the conversation floats over the command center. */
+    #cc-blank{position:absolute;inset:0;padding:2rem;box-sizing:border-box;background:var(--bg)}
+    #cc-blank[hidden]{display:none}
+    #cloud-menu{position:absolute;right:.5rem;top:2.5rem;z-index:10;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.4rem}
+    #cloud-menu button{display:block}
+    .chat-cloud-bar .universe-name{max-width:40%;font-size:.82rem}
     .chat-stage{position:relative;flex:1;min-height:0;overflow:hidden}
+    /* With no header, the stage itself keeps clear of a phone's status bar. */
+    .view--chat{padding-top:env(safe-area-inset-top)}
     .chat-cloud{position:absolute;display:flex;flex-direction:column;min-width:0;min-height:0;
       background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
       box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;z-index:5}
@@ -321,17 +336,10 @@
     @keyframes cloud-pulse{0%,100%{box-shadow:0 0 0 0 rgba(120,140,255,.55)}50%{box-shadow:0 0 0 8px rgba(120,140,255,0)}}
     @media (prefers-reduced-motion:reduce){.chat-cloud-bubble.is-thinking{animation:none;outline:2px dashed var(--accent)}}
     #ui-mode{font-size:.8rem}
-    #btn-header-menu{display:none}
     @media (max-width:600px){
-      #view-chat > .chat-header{position:relative;flex:0 0 auto;min-height:52px;box-sizing:border-box;
-        padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));
-        gap:8px;z-index:20}
-      #view-chat .chat-title{min-width:0;flex:1}
-      #universe-name{max-width:none;min-width:0}
-      #btn-header-menu{display:block;flex:none;padding:6px 10px}
-      #view-chat .chat-actions{display:none;position:absolute;top:100%;right:8px;flex-direction:column;
-        padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #0008}
-      #view-chat .header-menu--open .chat-actions{display:flex}
+      #chat-cloud-bar{flex-wrap:nowrap;min-height:40px}
+      #chat-cloud-bar button{min-width:36px;min-height:36px}
+      #cloud-menu button{min-height:40px}
       #chat-cloud{border-radius:0}
       #chat-cloud-resize{display:none}
       #chat-cloud-body > *{flex:0 0 auto}
@@ -381,27 +389,6 @@
 
     <!-- Signed-in: the single chat thread. -->
     <section id="view-chat" class="view view--chat" hidden>
-      <header class="chat-header">
-        <div class="chat-title">
-          <span id="dot" class="dot" title="checking..."></span>
-          <span id="universe-name" class="universe-name">Your command center</span>
-        </div>
-        <button id="btn-header-menu" class="btn btn--ghost" type="button"
-                aria-haspopup="true" aria-expanded="false" aria-label="Menu">&#9776;</button>
-        <nav class="chat-actions">
-          <span id="ui-mode" hidden></span>
-          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
-          <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
-          <button id="btn-account" class="btn btn--link">Account</button>
-          <button id="btn-signout" class="btn btn--link">Sign out</button>
-        </nav>
-      </header>
-      <div id="history-error" class="muted history-error" role="status" hidden></div>
-      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
-        <span id="notify-prompt-text" class="notify-prompt-text"></span>
-        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
-        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
-      </div>
       <!-- The stage is the command center: a custom UI fills it, and the chat with
            your agent floats above it as a movable, resizable "chat cloud" that can
            shrink to a bubble. Every element of the chat keeps its id. -->
@@ -409,18 +396,42 @@
       <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
            sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
            bundle markup, style or script is ever assigned into this document. -->
+      <div id="cc-blank" tabindex="-1" aria-label="Command center">
+        <p>Your command center is empty.</p>
+        <p>Build your own with your agent, or try one.</p>
+        <button id="btn-cc-build" class="btn" type="button">Build one with my agent</button>
+        <button id="btn-cc-try" class="btn" type="button">Try one</button>
+        <div id="cc-blank-picker"></div>
+      </div>
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
       <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
            aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
            aria-describedby="chat-cloud-title">
+        <span id="dot" class="dot" title="checking..."></span>
+        <span id="universe-name" class="universe-name">Your command center</span>
+        <button id="btn-cloud-menu" class="chat-cloud-btn" type="button" aria-label="Command center menu" aria-haspopup="true" aria-expanded="false" aria-controls="cloud-menu">&#8943;</button>
+        <div id="cloud-menu" hidden>
+          <span id="ui-mode" hidden></span>
+          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
+          <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
+          <button id="btn-account" class="btn btn--link">Account</button>
+          <button id="btn-signout" class="btn btn--link">Sign out</button>
+        </div>
         <span id="chat-cloud-title" class="chat-cloud-title">Your agent</span>
         <button id="btn-cloud-shrink" class="chat-cloud-btn" type="button"
                 aria-label="Shrink the chat to a bubble" aria-controls="chat-cloud-body"
                 aria-expanded="true" title="Shrink">&#8211;</button>
       </div>
       <div id="chat-cloud-body" class="chat-cloud-body">
+      <div id="history-error" class="muted history-error" role="status" hidden></div>
+      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
+        <span id="notify-prompt-text" class="notify-prompt-text"></span>
+        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
+        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
+      </div>
+
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
@@ -500,7 +511,14 @@
                the notification request"). ONE node: renderRail moves it into the
                request's tab, so what the user typed survives the rail refresh. -->
           <div id="connect-panel" class="connect-panel" hidden>
-            <div id="free-source-cards"></div>
+            <!-- The connect screen (founder 2026-10-02): the guided free sign-in
+                 first, a backup free source, a subscription for more volume, and
+                 pasted keys folded away. Every provider name arrives as data. -->
+            <div id="connect-intro" hidden>
+              <h3 class="connect-heading">Connect free AI</h3>
+              <span class="rtab-help">Your agent thinks with AI you connect. Each source runs on
+                your own account there, and you approve it at the provider.</span>
+            </div>
             <div id="connect-primary">
               <button id="btn-hosted-model" class="btn btn--primary connect-go" type="button"></button>
               <span id="connect-primary-note" class="rtab-help">Free models only; nothing is bought.
@@ -521,6 +539,23 @@
             </div>
             <a id="hosted-manage-link" class="rtab-link" data-external target="_blank"
               rel="noreferrer noopener" hidden>Manage your keys there</a>
+            <!-- Ordered by what an agent can actually run on: the guided sign-in
+                 above, then pasted keys (largest daily allowances first, as data),
+                 then the small monthly sign-in source, then a subscription. -->
+            <details id="connect-paste" class="connect-other" hidden>
+              <summary id="connect-paste-summary">Paste a key</summary>
+              <div id="free-source-cards"></div>
+            </details>
+            <div id="connect-sign-in-sources"></div>
+            <div id="connect-subscriptions"></div>
+            <div id="sub-signin" class="connect-source" hidden>
+              <div id="sub-signin-code" class="rtab-note" hidden>
+                <span id="sub-signin-code-value"></span>
+                <a id="sub-signin-code-link" class="rtab-link" data-external target="_blank"
+                  rel="noreferrer noopener">Open the sign-in page</a>
+              </div>
+              <div id="sub-signin-result" class="rtab-note" role="status" aria-live="polite"></div>
+            </div>
             <details id="connect-other" class="connect-other">
               <summary>Other ways to connect</summary>
               <div id="connect-shapes" class="connect-shapes" role="group" aria-label="How to connect"></div>
@@ -693,6 +728,7 @@
         Your history and designs stay. Your provider account is not deleted.
         Requests already sent may still finish.</p>
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
+        <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
         <h3>Your agent's rules</h3>
@@ -2496,13 +2532,20 @@
         this.capability=null;this.disclosureOpen=false;$("voice-disclosure").hidden=true;
         this.returnFocus=null;this.state="checking";
         this._render("Voice capability could not be confirmed. Typed chat still works.");
-      }finally{this.acceptingDisclosure=false;button.disabled=false;}
+      }finally{
+        this.acceptingDisclosure=false;button.disabled=false;
+        if(!this.disclosureOpen && typeof focusCommandCenter === "function" &&
+           !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+           !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
+      }
     },
     cancelDisclosure(){
       this.disclosureOpen=false;$("voice-disclosure").hidden=true;
       const target=this.returnFocus&&typeof this.returnFocus.focus==="function"
         ?this.returnFocus:$("btn-voice");
-      target.focus(); this.returnFocus=null;
+      if(typeof isTypingTarget === "function" && isTypingTarget(target)) target.focus();
+      else if(typeof focusCommandCenter === "function") focusCommandCenter();
+      this.returnFocus=null;
     },
     async _session(offerSdp){
       await ensureFreshToken();
@@ -3018,9 +3061,10 @@
     error.failureRecorded=recorded;
     error.historySaved=recorded&&payload.history_saved===true;
     error.failureCode=recorded?failure.code:"";
+    error.failure=recorded?failure:null;
     return error;
   }
-  function appendFailureNotice(text,original,instant,failureCode){
+  function appendFailureNotice(text,original,instant,failureCode,failure){
     // No guessed/page-truncated original, no automatic replay. A saved failure
     // remains history; a user click starts a NEW turn rather than erasing it.
     let again=null;
@@ -3042,6 +3086,9 @@
       connect.className="btn btn--link"; connect.textContent="Connect a model";
       connect.addEventListener("click",()=>openConnectRequest());
       note.appendChild(connect);
+    }
+    if(failureCode==="provider_daily_quota"&&failure&&typeof DailyCapCard!=="undefined"){
+      note.appendChild(DailyCapCard.build(failure));
     }
     return note;
   }
@@ -3145,7 +3192,7 @@
       const menu=$("model-menu");if(!menu||menu.hidden) return;
       menu.hidden=true;menu.replaceChildren();
       $("btn-models").setAttribute("aria-expanded","false");
-      if(!opts||opts.restoreFocus!==false) $("btn-models").focus();
+      if((!opts||opts.restoreFocus!==false) && typeof focusCommandCenter === "function") focusCommandCenter();
     },
     menuItems(){
       return Array.from(($("model-menu")||{children:[]}).children)
@@ -3624,7 +3671,6 @@
         this.menuClose({restoreFocus:false});
       });
       $("btn-model-close").addEventListener("click",()=>$("model-dialog").close());
-      $("model-dialog").addEventListener("close",()=>$("btn-models").focus());
       $("btn-model-refresh").addEventListener("click",()=>this.refresh());
       $("btn-model-fallback-add").addEventListener("click",()=>this.addFallback($("model-fallback-add").value));
       $("btn-model-restore").addEventListener("click",()=>this.restoreAccess());
@@ -4266,7 +4312,7 @@
       // at a parser string with nothing to do (founder, 2026-08-28).
       if(err.historySaved){
         if(!opts.keepInflight)forgetInflight();
-        appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode);
+        appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode,err.failure);
       }else{
         unconfirmed=!!(err&&err.transport)&&!err.notSent;
         offerResend(message, display, err, Object.assign({}, opts||{}, {sentAt}));
@@ -4372,7 +4418,7 @@
       if(error&&error.authRequired){ sessionExpired(); throw error; }
       if(error.historySaved){
         forgetInflight();
-        appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode);
+        appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode,error.failure);
       }else{
         unconfirmed=!!(error&&error.transport)&&!error.notSent;
         offerResend(message,message,error,
@@ -4738,7 +4784,7 @@
   // ---- Chat cloud -------------------------------------------------------------
   // The chat with an agent floats over the command center as a "chat cloud" the
   // owner can move, resize and shrink to a bubble (founder, 2026-10-02). It
-  // starts BIG for an owner with no command-center layout and SMALL when a
+  // starts MEDIUM for an owner with no command-center layout and SMALL when a
   // layout is active; once the owner moves, resizes or shrinks it, their last
   // state is restored instead. Remembered per owner, per agent and per viewport
   // class, because a phone and a desktop want different windows. There is no
@@ -4746,6 +4792,123 @@
   const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
         CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
   let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
+  function refreshCommandCenter(){
+    $("cc-blank").hidden=!$("ui-frame-host").hidden;
+  }
+  function isTypingTarget(el){
+    if(!el) return false;
+    const tag=(el.tagName||"").toLowerCase();
+    return el.isContentEditable===true || tag==="textarea" || tag==="select" ||
+      (tag==="input" && !["button","submit","checkbox","radio","range","file","color","reset","image"].includes((el.type||"text").toLowerCase()));
+  }
+  function focusCommandCenter(){
+    const frame=$("ui-frame");
+    if(frame){
+      frame.setAttribute("tabindex","0"); frame.focus();
+      if(frame.contentWindow) frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
+    }else if($("cc-blank")) $("cc-blank").focus();
+  }
+  function cloudCoversStage(){
+    const cloud=$("chat-cloud"), stage=$("chat-stage");
+    if(!cloud || !stage || !cloudState || cloudState.mode!=="open") return false;
+    if(window.matchMedia("(max-width:600px)").matches) return true;
+    const c=cloud.getBoundingClientRect(), s=stage.getBoundingClientRect();
+    return c.x===s.x && c.y===s.y && c.width===s.width && c.height===s.height;
+  }
+  function forwardCommandCenterKey(event){
+    const frame=$("ui-frame"), host=$("ui-frame-host");
+    if(!frame || !host || host.hidden || !frame.contentWindow) return;
+    const target=event.target;
+    if(event.defaultPrevented || event.key==="Tab" ||
+       (typeof isTypingTarget === "function" && isTypingTarget(target))) return;
+    if(target.closest && (target.closest("dialog[open]") ||
+       (!$("cloud-menu").hidden && target.closest("#cloud-menu")))) return;
+    if((event.key==="Enter" || event.key===" ") && target.closest &&
+       target.closest("button, a, [role=button]")) return;
+    const {key,code,shiftKey,altKey,ctrlKey,metaKey,repeat}=event;
+    frame.contentWindow.postMessage({ta_ui:1,type:"key",key,code,shiftKey,altKey,ctrlKey,metaKey,repeat,
+      phase:event.type==="keyup" ? "up" : "down"},"*");
+    event.preventDefault();
+  }
+  // Puts text in the chat input without sending it, opening the cloud first if
+  // it is a bubble. The one entry point for "start this sentence for me": the
+  // blank command center's button, and the default bundle's chat.prefill.
+  function chatCloudPrefill(text){
+    if(cloudState && cloudState.mode==="bubble") setChatCloudMode("open");
+    const input=$("composer-input");
+    if(!input) return;
+    input.value=String(text||""); input.focus();
+    input.setSelectionRange(input.value.length,input.value.length);
+  }
+  // TEMPORARY: #cc-blank and these two buttons stand in until cc-package's
+  // platform-default command-center bundle lands; that change mounts the bundle
+  // in the frame when no layout is active and deletes #cc-blank, so
+  // focusCommandCenter only ever targets the frame (one code path).
+  function ccBlankBuild(){ chatCloudPrefill("Build me a command center for "); }
+  function ccBlankTryOne(){ $("btn-ui-switch").click(); }
+  function closeCloudMenu(){
+    if($("cloud-menu").hidden) return;
+    $("cloud-menu").hidden=true;
+    $("btn-cloud-menu").setAttribute("aria-expanded","false");
+    if(!(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement))) focusCommandCenter();
+  }
+  function wireCommandCenter(){
+    $("btn-cc-build").addEventListener("click",ccBlankBuild);
+    $("btn-cc-try").addEventListener("click",ccBlankTryOne);
+    $("view-chat").addEventListener("pointerdown",event=>{
+      if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
+        // Avoid the pointer's default focus step undoing the handoff; buttons still click.
+        if(!event.target.closest("button")) event.preventDefault();
+        focusCommandCenter();
+      }
+    });
+    $("chat-cloud").addEventListener("pointerdown",event=>{
+      if(event.target===$("chat-cloud")) event.preventDefault();
+    });
+    $("chat-cloud").addEventListener("pointerup",event=>{
+      if(event.target===$("chat-cloud")) focusCommandCenter();
+    });
+    $("btn-cloud-menu").addEventListener("click",()=>{
+      if(!$("cloud-menu").hidden){ closeCloudMenu(); return; }
+      $("cloud-menu").hidden=false;
+      $("btn-cloud-menu").setAttribute("aria-expanded","true");
+    });
+    $("cloud-menu").addEventListener("click",event=>{
+      if(event.target.closest("button")) closeCloudMenu();
+    });
+    document.addEventListener("click",event=>{
+      if(!event.target.closest("#cloud-menu, #btn-cloud-menu")) closeCloudMenu();
+    });
+    document.addEventListener("keydown",event=>{
+      if(event.key==="Escape" && !$("cloud-menu").hidden){
+        event.preventDefault(); event.stopImmediatePropagation(); closeCloudMenu();
+      }
+    },true);
+    // Clicks inside an opaque frame do not bubble into the parent document.
+    window.addEventListener("blur",()=>{
+      setTimeout(()=>{
+        if(document.activeElement===$("ui-frame")) closeCloudMenu();
+      },0);
+    });
+    document.addEventListener("close",event=>{
+      if(event.target.tagName!=="DIALOG") return;
+      if(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) return;
+      if(document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) return;
+      if(typeof focusCommandCenter === "function") focusCommandCenter();
+    },true);
+    window.addEventListener("focus",()=>{
+      const active=document.activeElement;
+      if(document.querySelector("dialog[open]")) return;
+      if(typeof isTypingTarget === "function" && isTypingTarget(active)) return;
+      if(active.closest("dialog[open], #cloud-menu:not([hidden])")) return;
+      if(active===document.body || active===document.documentElement ||
+         active.closest("#chat-cloud")){
+        if(typeof focusCommandCenter === "function") focusCommandCenter();
+      }
+    });
+    document.addEventListener("keydown",forwardCommandCenterKey);
+    document.addEventListener("keyup",forwardCommandCenterKey);
+  }
   function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
   function cloudStorageKey(owner, agentId, viewport){
     return CLOUD_KEY_PREFIX+":"+(owner||"")+":"+(agentId||"main")+":"+viewport;
@@ -4767,9 +4930,11 @@
   }
   function cloudDefaultState(hasLayout, stage){
     const m=cloudViewportClass(stage.w)==="phone" ? 0 : CLOUD_MARGIN;
+    const w=m ? Math.min(440,stage.w-2*m) : stage.w;
+    const h=m ? Math.min(620,stage.h-2*m) : Math.round(stage.h*.6);
     return cloudClamp({
       mode:hasLayout ? "bubble" : "open",
-      open:{x:m, y:m, w:stage.w-2*m, h:stage.h-2*m},
+      open:{x:stage.w-w-m, y:stage.h-h-m, w:w, h:h},
       bubble:{x:stage.w-CLOUD_BUBBLE-CLOUD_MARGIN, y:stage.h-CLOUD_BUBBLE-CLOUD_MARGIN},
       userSet:false,
     }, stage);
@@ -4816,6 +4981,10 @@
   function applyChatCloud(){
     const cloud=$("chat-cloud"), bubble=$("chat-cloud-bubble"), s=cloudState;
     if(!cloud || !bubble || !s) return;
+    // A default layout may arrive while the owner is still writing a draft.
+    // Leave it unsaved so the next refresh can shrink once typing focus leaves.
+    if(s.mode==="bubble" && !s.userSet && bubble.hidden &&
+       cloud.contains(document.activeElement) && isTypingTarget(document.activeElement)) s.mode="open";
     cloud.dataset.mode=s.mode;
     cloud.style.left=s.open.x+"px"; cloud.style.top=s.open.y+"px";
     cloud.style.width=s.open.w+"px"; cloud.style.height=s.open.h+"px";
@@ -4823,10 +4992,10 @@
     const stage=cloudStageSize(), size=Math.min(CLOUD_BUBBLE, stage.w, stage.h);
     bubble.style.width=size+"px"; bubble.style.height=size+"px";
     // Shrinking on its own (a layout arrived) must not strand focus inside a
-    // hidden window: it moves to the bubble.
+    // hidden window: it moves to the command center.
     const strand=s.mode==="bubble" && bubble.hidden && document.activeElement && cloud.contains(document.activeElement);
     bubble.hidden=s.mode!=="bubble";
-    if(strand) bubble.focus();
+    if(strand && typeof focusCommandCenter === "function") focusCommandCenter();
     $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
     if(s.mode==="open") setCloudUnread(false);
   }
@@ -4841,9 +5010,11 @@
   function setChatCloudMode(mode){
     if(!cloudState) return;
     cloudState.mode=mode;
+    cloudState.userSet=true;
+    cloudState=cloudClamp(cloudState, cloudStageSize());
     applyChatCloud(); saveChatCloud();
-    const target=mode==="open" ? $("composer-input") : $("chat-cloud-bubble");
-    if(target) target.focus();
+    if(mode==="open") $("composer-input").focus();
+    else if(typeof focusCommandCenter === "function") focusCommandCenter();
   }
   // Moves (dx, dy) and resizes (dw, dh) from a starting state, clamped.
   function cloudShifted(from, dx, dy, dw, dh){
@@ -4870,7 +5041,7 @@
   function wireCloudDrag(handle, kind){
     handle.addEventListener("pointerdown", ev=>{
       if(ev.button!==0 || !cloudState) return;
-      if(kind==="move" && ev.target.closest && ev.target.closest(".chat-cloud-btn")) return;
+      if(kind==="move" && ev.target.closest && ev.target.closest("button, #cloud-menu, .chat-cloud-btn")) return;
       const start={x:ev.clientX, y:ev.clientY}, origin=cloudState;
       let moved=false;
       try{ handle.setPointerCapture(ev.pointerId); }catch(_error){ /* synthetic pointer */ }
@@ -4888,6 +5059,8 @@
         handle.removeEventListener("pointerup",end);
         handle.removeEventListener("pointercancel",end);
         $("chat-cloud").classList.remove("is-dragging");
+        if(e.type==="pointerup" && (kind!=="bubble" || moved) && !cloudCoversStage() &&
+           typeof focusCommandCenter === "function") focusCommandCenter();
         // Only a completed drag produces a click to swallow; a cancelled one does not.
         if(moved){ saveChatCloud(); if(kind==="bubble" && e.type==="pointerup") cloudSuppressClick=true; }
       };
@@ -4909,6 +5082,7 @@
   }
   function wireChatCloud(){
     cloudWired=true;
+    if(typeof wireCommandCenter === "function") wireCommandCenter();
     wireCloudDrag($("chat-cloud-bar"),"move");
     wireCloudDrag($("chat-cloud-resize"),"resize");
     wireCloudDrag($("chat-cloud-bubble"),"bubble");
@@ -6194,11 +6368,6 @@
       root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
     else root.style.removeProperty("--app-h");
   }
-  function setHeaderMenu(open){
-    const button=$("btn-header-menu");
-    button.setAttribute("aria-expanded",String(open));
-    button.closest("header").classList.toggle("header-menu--open",open);
-  }
   function paintRailChip(){
     const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
     const count=$("rail-items").children.length;
@@ -6229,20 +6398,13 @@
       window.visualViewport.addEventListener("resize",fitToVisualViewport);
       window.visualViewport.addEventListener("scroll",fitToVisualViewport);
     }
-    const button=$("btn-header-menu"), header=button.closest("header");
-    button.addEventListener("click",()=>setHeaderMenu(button.getAttribute("aria-expanded")!=="true"));
-    header.querySelector("nav").addEventListener("click",event=>{if(event.target.closest("button,a")) setHeaderMenu(false);});
-    document.addEventListener("click",event=>{if(!header.contains(event.target)) setHeaderMenu(false);});
-    document.addEventListener("keydown",event=>{if(event.key==="Escape" && button.getAttribute("aria-expanded")==="true"){
-      setHeaderMenu(false); button.focus();
-    }});
     $("rail-head").addEventListener("click",toggleRailChip);
     $("rail-head").addEventListener("keydown",toggleRailChip);
     new MutationObserver(paintRailChip).observe($("rail-items"),{childList:true,subtree:true});
     new MutationObserver(()=>{
       if(window.matchMedia("(max-width:600px)").matches) paintRailChip();
     }).observe($("rail-head"),{childList:true});
-    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();setHeaderMenu(false);fitToVisualViewport();});
+    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();fitToVisualViewport();});
     paintRailChip();
   }
   function wire(){
@@ -6312,7 +6474,10 @@
       });
     }
     $("btn-attach").addEventListener("click",()=>$("file-input").click());
-    $("file-input").addEventListener("change",(e)=>{ Uploads.add(e.target.files); e.target.value=""; });
+    $("file-input").addEventListener("change",(e)=>{
+      Uploads.add(e.target.files); e.target.value="";
+      if(!isTypingTarget(document.activeElement)) focusCommandCenter();
+    });
     $("composer").addEventListener("submit",(e)=>{ e.preventDefault();
       const typed=$("composer-input").value.trim();
       const turn=Uploads.buildTurn(typed);
@@ -6321,7 +6486,9 @@
       if(turn.blocked){ setStatusLine(turn.reason); return; }
       if(!turn.send) return;            // nothing typed and no usable attachment
       Uploads.clear();
-      sendTurn(turn.send, turn.display, {inputMethod:"typed"}); });
+      sendTurn(turn.send, turn.display, {inputMethod:"typed"});
+      if(cloudCoversStage()) $("composer-input").focus();
+      else if(typeof focusCommandCenter === "function") focusCommandCenter(); });
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
@@ -6332,9 +6499,15 @@
     // page already used this Escape (a menu or dialog closing handles it first).
     document.addEventListener("keydown",(e)=>{
       if(e.key!=="Escape"||e.defaultPrevented||e.isComposing) return;
-      if($("btn-stop").hidden||$("btn-stop").disabled) return;
+      if($("btn-stop").hidden||$("btn-stop").disabled){
+        if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && !cloudCoversStage() && typeof focusCommandCenter === "function"){
+          e.preventDefault(); focusCommandCenter();
+        }
+        return;
+      }
       if(document.querySelector("dialog[open]")) return;
       e.preventDefault(); interruptTurn();
+      if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && !cloudCoversStage() && typeof focusCommandCenter === "function") focusCommandCenter();
     });
     $("btn-rail-add").addEventListener("click",toggleAddKey);
     $("btn-rail-retry").addEventListener("click",()=>{ refreshRail(); });
@@ -6673,6 +6846,8 @@
       return item;
     }
     $("btn-refresh-connections").addEventListener("click",loadConnections);
+    // Settings' way into the one connect screen: the chat, with it open.
+    $("btn-connect-free-ai").addEventListener("click",()=>openConnectRequest());
     // Back to the command center's chat, re-reading what powers it: after a
     // disconnect that is chat with the connect request first, never a
     // separate setup screen.
@@ -6947,6 +7122,7 @@
         return {error:true,title:saved&&saved.title};
       }
       const out={flow:saved.flow,code:query.get("code"),code_verifier:saved.verifier,title:saved.title};
+      if(saved.source===true) out.source=true;
       // RFC 9207: the server's own issuer, checked server-side against discovery.
       const iss=query.get("iss");
       if(iss&&iss.length<=2048) out.iss=iss;
@@ -6967,13 +7143,15 @@
       }
       return result;
     },
-    async begin(req,note,button){
+    async begin(req,note,button,opts){
       if(NATIVE) return;
+      // Server-confirmed platform provenance survives retries from the rail.
+      const source=req.origin==="platform"||!!(opts&&opts.source);
       button.disabled=true;
       note.textContent="Opening the provider's sign-in. You choose there whether to allow it.";
       try{
         const verifier=randToken(32),code_challenge=await challengeFor(verifier);
-        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title}));
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source}));
         const result=await this.post("oauth_begin",{request_id:req.request_id,code_challenge});
         const url=new URL(result.authorize_url);
         if(url.protocol!=="https:"||url.username||url.password||
@@ -6981,7 +7159,7 @@
            !Number.isFinite(result.expires_in)||result.expires_in<=0||result.expires_in>600){
           throw new Error("invalid_sign_in_response");
         }
-        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,
+        sessionStorage.setItem(this.storageKey,JSON.stringify({verifier,title:req.title,source,
           flow:result.flow,expires:Date.now()+result.expires_in*1000}));
         window.location.assign(url.href);
       }catch(err){
@@ -7002,6 +7180,19 @@
         const payload={flow:cb.flow,code:cb.code,code_verifier:cb.code_verifier};
         if(cb.iss) payload.iss=cb.iss;
         const result=await this.post("oauth_exchange",payload);
+        if(cb.source){
+          // The platform's own ask: nothing for the agent to hear, and no turn
+          // spent telling it. A powered command center adds the source on the
+          // owner's explicit yes, which is now waiting in the rail.
+          appendMessage("system",result.confirmation
+            ?"Signed in. Confirm \""+frameTitle({title:result.confirmation.title||cb.title})+
+              "\" under Waiting on you to add it to your agent."
+            :result.confirmation_error
+              ?"Signed in, but adding it to your agent needs a look: open Change model."
+              :"Signed in. Your agent can use it now.");
+          await refreshRail();
+          return;
+        }
         appendMessage("system","Connected. "+(result.receipt||""));
         await refreshRail();
         // The owner's own line, as for any answered request: the command center
@@ -7056,6 +7247,175 @@
   ConnectOAuth.pending=ConnectOAuth.takeCallback();
   ConnectOAuth.resumeWhenSignedIn();
   // End connect OAuth controller.
+
+  // The connect screen's subscription sign-in: the same device client as "Sign in
+  // again", with its own elements and its own state, started from its own button.
+  // Built on first use, because that client is defined further down the page.
+  let subscriptionConnect=null;
+  function subscriptionClient(){
+    if(!subscriptionConnect) subscriptionConnect=Object.assign({},SignInConnect,{
+      ids:{code:"sub-signin-code",value:"sub-signin-code-value",link:"sub-signin-code-link",
+        result:"sub-signin-result"},
+      connectedText:"Signed in. Your agent can run on your subscription now.",
+    });
+    return subscriptionConnect;
+  }
+
+  // Subscriptions the connect screen offers for more volume (data on the setup
+  // request: a service and its words). The page names none of them itself.
+  const SubscriptionCards={
+    signature:"",
+    render(subscriptions){
+      const host=$("connect-subscriptions");
+      const valid=(Array.isArray(subscriptions)?subscriptions:[]).filter(s=>s&&
+        typeof s.service==="string"&&/^[a-z0-9_-]{1,32}$/.test(s.service)&&
+        typeof s.label==="string"&&s.label.length>0&&s.label.length<=80);
+      $("sub-signin").hidden=!valid.length;
+      const signature=JSON.stringify(valid);
+      if(this.signature===signature) return;
+      this.signature=signature;host.replaceChildren();
+      for(const subscription of valid){
+        const card=document.createElement("div");card.className="connect-source";
+        const note=document.createElement("p");note.className="connect-terms";
+        note.textContent=typeof subscription.note==="string"?subscription.note:"";card.appendChild(note);
+        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
+        button.textContent=subscription.label;card.appendChild(button);
+        button.addEventListener("click",()=>{
+          const client=subscriptionClient();
+          client.configure(subscription.service,"");
+          client.start();
+        });
+        host.appendChild(card);
+      }
+    },
+  };
+
+  // Sources completed by SIGNING IN (installed data on the setup request). One tap
+  // asks the server for the platform's own connect request, then hands it to the
+  // generic sign-in client: the browser names only the source's id.
+  const SignInSourceCards={
+    signature:"",busy:false,
+    render(sources){
+      const host=$("connect-sign-in-sources");
+      const valid=(Array.isArray(sources)?sources:[]).filter(s=>s&&typeof s.id==="string"&&
+        /^[a-z0-9_]{1,64}$/.test(s.id)&&typeof s.name==="string"&&typeof s.label==="string"&&
+        s.label.length>0&&s.label.length<=80);
+      const signature=JSON.stringify(valid);
+      if(this.signature===signature) return;
+      this.signature=signature;host.replaceChildren();
+      for(const source of valid){
+        const card=document.createElement("div");card.className="connect-source";
+        const name=document.createElement("strong");name.className="connect-source-name";
+        name.textContent=source.name;card.appendChild(name);
+        const offer=document.createElement("p");offer.className="connect-terms";
+        offer.textContent=typeof source.offer==="string"?source.offer:"";card.appendChild(offer);
+        const terms=document.createElement("p");terms.className="connect-terms";
+        terms.textContent=typeof source.billing_note==="string"?source.billing_note:"";
+        card.appendChild(terms);
+        const button=document.createElement("button");button.type="button";button.className="btn btn--ghost";
+        button.textContent=source.label;card.appendChild(button);
+        const status=document.createElement("p");status.className="rtab-note";
+        status.setAttribute("role","status");card.appendChild(status);
+        button.addEventListener("click",()=>this.start(source,button,status));
+        host.appendChild(card);
+      }
+    },
+    async start(source,button,status){
+      if(this.busy||NATIVE) return;
+      this.busy=true;button.disabled=true;status.textContent="Opening the sign-in…";
+      try{
+        const result=await ConnectOAuth.post("source_sign_in",{preset_id:source.id});
+        const req=result&&result.request;
+        if(!req||typeof req.request_id!=="string"||!req.action||req.action.type!=="connect"||
+           !req.action.oauth) throw new Error("sign_in_unavailable");
+        await ConnectOAuth.begin(req,status,button,{source:true});
+      }catch(error){
+        status.textContent="Sign-in could not be started ("+((error&&error.message)||"unknown error")+
+          "). Nothing was connected; try again in a moment.";
+        button.disabled=false;
+      }finally{this.busy=false;}
+    },
+  };
+
+  // Under a turn that stopped because a source spent its free requests for the
+  // day: what happened, and the three honest ways on. The limit, the credit and
+  // the provider's name are installed data on the setup request, matched by the
+  // credit page the failure itself names; without a match the card says less,
+  // never more. Dismissable; never a modal; never a sales line.
+  const DailyCapCard={
+    setup(){
+      const rows=typeof railCache!=="undefined"&&Array.isArray(railCache)?railCache:[];
+      const row=rows.find(r=>r&&r.request_id===CONNECT_REQUEST_ID);
+      return (row&&row.action&&row.action.setup)||{};
+    },
+    creditUrl(detail){
+      const match=/Add credit: (https:\/\/[^\s"]+)/.exec(typeof detail==="string"?detail:"");
+      if(!match) return null;
+      try{ const u=new URL(match[1]); return (u.protocol==="https:"&&!u.username&&!u.password)?u:null; }
+      catch(_e){ return null; }
+    },
+    resetText(detail){
+      const match=/Reset: (\d{4}-\d\d-\d\d) (\d\d):(\d\d) UTC/.exec(typeof detail==="string"?detail:"");
+      if(!match) return "";
+      const at=new Date(match[1]+"T"+match[2]+":"+match[3]+":00Z");
+      if(!Number.isFinite(at.getTime())) return "";
+      return " (they reset at about "+at.toLocaleTimeString([],{hour:"numeric",minute:"2-digit"})+")";
+    },
+    others(setup){
+      const names=[];
+      (Array.isArray(setup.sign_in_sources)?setup.sign_in_sources:[]).forEach(s=>{
+        if(s&&typeof s.name==="string") names.push(s.name); });
+      (Array.isArray(setup.subscriptions)?setup.subscriptions:[]).forEach(s=>{
+        if(s&&typeof s.name==="string") names.push("your "+s.name+" subscription"); });
+      names.push("a key");
+      return names.length>1?names.slice(0,-1).join(", ")+", or "+names[names.length-1]:names[0];
+    },
+    build(failure){
+      const detail=failure&&typeof failure.provider_detail==="string"?failure.provider_detail:"";
+      const setup=this.setup(), credit=this.creditUrl(detail);
+      const cap=credit&&(Array.isArray(setup.daily_caps)?setup.daily_caps:[])
+        .find(c=>c&&c.host===credit.host&&typeof c.name==="string");
+      const card=document.createElement("div");card.className="daily-cap";
+      card.setAttribute("role","group");
+      const head=document.createElement("p"), body=document.createElement("p");
+      const reset=this.resetText(detail), others=this.others(setup);
+      let creditLabel="", creditHref=credit?credit.href:"";
+      if(cap){
+        head.textContent="You've used today's free "+cap.name+" requests.";
+        body.textContent="On a free "+cap.name+" account that is "+cap.free_requests_per_day+
+          "/day. Adding "+cap.credit_amount+" credit to your own "+cap.name+
+          " account once raises your "+cap.name+" daily limit to "+
+          Number(cap.credit_requests_per_day).toLocaleString("en-US")+" requests; the money goes to "+
+          cap.name+", not TinyAssets. It can be used again after the daily reset"+reset+
+          ". Or connect another AI: "+others+".";
+        creditLabel="Add credit on "+cap.name;
+        try{ const u=new URL(cap.credit_url); if(u.protocol==="https:") creditHref=u.href; }catch(_e){}
+      }else{
+        head.textContent="This AI source reached its daily limit.";
+        body.textContent="It can be used again after the daily reset"+reset+"."+
+          (credit?" You can add credit at "+credit.host+
+            " (the money goes to that provider, not TinyAssets).":"")+
+          " Or connect another AI: "+others+".";
+        if(credit) creditLabel="Add credit at "+credit.host;
+      }
+      card.setAttribute("aria-label",head.textContent);
+      card.appendChild(head);card.appendChild(body);
+      const row=document.createElement("div");row.className="rtab-row";
+      if(creditLabel&&creditHref){
+        const add=document.createElement("a");add.className="btn btn--ghost";add.textContent=creditLabel;
+        add.href=creditHref;add.target="_blank";add.rel="noopener noreferrer";row.appendChild(add);
+      }
+      const another=document.createElement("button");another.type="button";
+      another.className="btn btn--ghost";another.textContent="Connect another AI";
+      another.addEventListener("click",()=>openConnectRequest());row.appendChild(another);
+      const wait=document.createElement("button");wait.type="button";wait.className="btn btn--link";
+      wait.textContent="Wait until tomorrow";
+      wait.addEventListener("click",()=>{card.hidden=true;});row.appendChild(wait);
+      card.appendChild(row);
+      return card;
+    },
+  };
+  // End connect screen sources.
 
   // ---- Native (Android / FCM) notifications ----
   // Same route, same ownership model as the browser: the token is POSTed to
@@ -7688,6 +8048,16 @@
     // not, because it is connecting something new.
     SignInConnect.configure(setup.service || "", setup.universe_id || "");
     HostedModelConnect.configure(req.sticky ? (setup.primary || null) : null);
+    // The connect screen is every setup card that names no source; a reconnect
+    // card names the one it repairs and shows only that.
+    const screen = !setup.service;
+    $("connect-intro").hidden = !screen;
+    if(typeof SignInSourceCards!=="undefined") SignInSourceCards.render(screen ? setup.sign_in_sources : []);
+    if(typeof SubscriptionCards!=="undefined") SubscriptionCards.render(screen ? setup.subscriptions : []);
+    const keyCards = Array.isArray(setup.sources) ? setup.sources : [];
+    $("connect-paste").hidden = !keyCards.length;
+    $("connect-paste-summary").textContent = keyCards.length
+      ? "Paste a key: " + keyCards.map(s => s && s.name).filter(Boolean).join(", ") : "Paste a key";
     if(typeof FreeSourceCards!=="undefined") FreeSourceCards.render(setup.sources || []);
     ConnectShapes.render(Array.isArray(setup.shapes) ? setup.shapes : [], !req.sticky || !setup.primary);
     const panel = $("connect-panel");
@@ -7715,6 +8085,11 @@
         const label=document.createElement("label");label.textContent="API key";
         const input=document.createElement("input");input.type="password";input.autocomplete="off";
         label.appendChild(input);card.appendChild(label);
+        if(typeof source.terms==="string"&&source.terms){
+          // The provider's own terms that matter before connecting, inline.
+          const caveat=document.createElement("p");caveat.className="connect-terms";
+          caveat.textContent=source.terms;card.appendChild(caveat);
+        }
         const terms=document.createElement("p");
         terms.textContent="Use your own free or trial account with paid usage disabled. Calls follow your provider's billing settings; TinyAssets cannot enforce them.";
         card.appendChild(terms);
@@ -7821,6 +8196,10 @@
   // daemon deposit; the credential never touches this page.
   const SignInConnect={
     flow:"", timer:0, busy:false, blips:0, epoch:0, service:"", universe:"",
+    // Where this instance draws. The connect screen's subscription sign-in is a
+    // second instance of the same client with its own elements and state.
+    ids:{code:"signin-code",value:"signin-code-value",link:"signin-code-link",result:"signin-result"},
+    connectedText:"Signed in. Your agent can use this connection again.",
     // Which source the visible card is for. Set from the card, so a reconnect for one
     // source can never start a flow for another: switching cards resets whatever was
     // in flight before the new service is adopted.
@@ -7834,7 +8213,7 @@
     // kept a timer alive against a flow that had already expired, polling for as
     // long as the page stayed open -- found by the test for this, not in review.
     MAX_BLIPS:5,
-    status(text){ $("signin-result").textContent=text; },
+    status(text){ $(this.ids.result).textContent=text; },
     stop(){ if(this.timer){ clearTimeout(this.timer); this.timer=0; } },
     reset(){
       // The epoch is what cancels work already in flight. Clearing the timer is not
@@ -7844,7 +8223,7 @@
       // P1 #6). Same generation pattern the model dialog above already uses.
       this.epoch++;
       this.stop(); this.flow=""; this.busy=false; this.blips=0;
-      $("signin-code").hidden=true; $("signin-code-value").textContent="";
+      $(this.ids.code).hidden=true; $(this.ids.value).textContent="";
       this.status("");
     },
     async start(){
@@ -7879,9 +8258,9 @@
           return;
         }
         this.flow=doc.flow; this.blips=0;
-        $("signin-code-value").textContent="Your code: "+(doc.user_code||"");
-        if(doc.verification_url) $("signin-code-link").href=doc.verification_url;
-        $("signin-code").hidden=false;
+        $(this.ids.value).textContent="Your code: "+(doc.user_code||"");
+        if(doc.verification_url) $(this.ids.link).href=doc.verification_url;
+        $(this.ids.code).hidden=false;
         this.status("Enter the code on the sign-in page, then come back here.");
         // The interval the SOURCE asked for, floored so a bad value cannot spin.
         const wait=Math.max(2,Math.min(Number(doc.interval)||5,30))*1000;
@@ -7906,7 +8285,12 @@
         }
         this.reset();
         if(doc.status==="connected"){
-          this.status("Signed in. Your agent can use this connection again.");
+          this.status(doc.confirmation
+            ? "Signed in. Confirm \""+frameTitle({title:doc.confirmation.title||"Use this source"})+
+              "\" under Waiting on you to add it to your agent."
+            : doc.serving&&doc.serving.status==="serving"
+              ? this.connectedText
+              : "Signed in. Your credential was saved, but your agent's model setup still needs review. Open Change model.");
           // The card is derived from the stored rejection, which the deposit just
           // cleared, so refreshing the rail is what makes it disappear.
           if(typeof refreshRail==="function") refreshRail();
@@ -8348,7 +8732,9 @@
       if(t.speaker==="platform"){
         const previous=ordered[index-1];
         const paired=previous&&typeof t.ts==="number"&&Number.isFinite(t.ts)&&previous.ts===t.ts;
-        appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code);
+        // Only the newest turn offers the daily-cap card: an old day's limit is history.
+        appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code,
+          index===ordered.length-1?t.failure:null);
         return;
       }
       const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
@@ -8489,7 +8875,8 @@
             if(!renderedConsumerTurns.has(turn.turn_id)){
               if(observed.reply)renderConverse(observed);
               else if(observed.turn_failure){
-                appendFailureNotice(observed.failure_notice,null,undefined,observed.turn_failure.code);
+                appendFailureNotice(observed.failure_notice,null,undefined,observed.turn_failure.code,
+                  observed.turn_failure);
                 renderedConsumerTurns.add(turn.turn_id);
               }
             }
