@@ -25,6 +25,9 @@ def owner(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_ACTOR_ID", "owner")
     monkeypatch.setattr(server, "_GRAPH_ID", "u-test")
     mock_engine_admission(monkeypatch, {"u-test"})
+    # Proposing is research-only, so the research session is the baseline every
+    # case here starts from; the cases about refusing it override this.
+    monkeypatch.setattr(engine_steering, "_session_key", lambda: "research:agent:turn")
     yield root
     _logout()
 
@@ -33,10 +36,8 @@ def propose(payload=None):
     return api.propose(universe_id="u-test", payload=PROPOSAL if payload is None else payload)
 
 
-@pytest.mark.parametrize("session", ["research:agent:turn", "thread:owner"])
 @pytest.mark.asyncio
-async def test_served_proposal(owner, monkeypatch, session):
-    monkeypatch.setattr(engine_steering, "_session_key", lambda: session)
+async def test_served_proposal(owner, monkeypatch):
     async with Client(server.mcp) as client:
         result = await client.call_tool("write_graph", {
             "target": "proposal", "operation": "propose", "payload_json": PROPOSAL,
@@ -116,19 +117,45 @@ def test_decline_does_not_start(owner, monkeypatch, decline):
     assert result["status"] in {"answered", "dismissed"}
 
 
-def test_unwired_approval_stays_pending(owner):
-    row = propose()
-    with pytest.raises(NotImplementedError, match="needs #4221"):
-        api.answer_request(universe_id="u-test", payload={
-            "request_id": row["request_id"], "values": {},
-        })
-    assert get_request(owner, row["request_id"])["status"] == "pending"
+def test_unwired_approval_refuses_in_the_open_and_stays_pending(owner):
+    """Approve on a proposal whose start path is unwired is a refusal, not a crash.
 
-
-@pytest.mark.xfail(strict=True, reason="needs #4221", raises=NotImplementedError)
-def test_real_activity_start(owner):
+    The owner reads why nothing started and keeps a pending request to retry
+    once #4221 lands; an unhandled NotImplementedError reached them instead.
+    """
     row = propose()
     result = api.answer_request(universe_id="u-test", payload={
         "request_id": row["request_id"], "values": {},
     })
-    assert result["activity_id"]
+    assert result["error"] == "proposal_start_unavailable"
+    assert result["request_pending"] is True
+    assert "#4221" in result["detail"]
+    assert get_request(owner, row["request_id"])["status"] == "pending"
+    # Still refused on a second Approve, and still never resolved.
+    assert api.answer_request(universe_id="u-test", payload={
+        "request_id": row["request_id"], "values": {},
+    })["error"] == "proposal_start_unavailable"
+    assert get_request(owner, row["request_id"])["status"] == "pending"
+
+
+@pytest.mark.parametrize("session", ["thread:owner", "", "researchx:agent", "agent:research:x"])
+def test_only_a_research_session_may_propose(owner, monkeypatch, session):
+    """``write_graph target=proposal`` reaches one propose() for every caller.
+
+    Everything that is not the reserved ``research:`` prefix is refused, so a
+    malformed key cannot buy the one write research is allowed.
+    """
+    monkeypatch.setattr(engine_steering, "_session_key", lambda: session)
+    assert propose()["error"] == "proposals_are_research_only"
+    assert list_pending(owner) == []
+
+
+@pytest.mark.asyncio
+async def test_served_proposal_refused_outside_research(owner, monkeypatch):
+    monkeypatch.setattr(engine_steering, "_session_key", lambda: "thread:owner")
+    async with Client(server.mcp) as client:
+        result = await client.call_tool("write_graph", {
+            "target": "proposal", "operation": "propose", "payload_json": PROPOSAL,
+        }, raise_on_error=False)
+    assert json.loads(result.content[0].text)["error"] == "proposals_are_research_only"
+    assert list_pending(owner) == []

@@ -2783,7 +2783,9 @@ def write_graph(
 
     target=proposal operation=propose takes payload_json {action, why, evidence}:
     one planned action (one line, <=200 chars), reason (<=1000), and observations
-    (<=2000). Creates an owner approval request, including during research.
+    (<=2000). Creates an owner approval request. RESEARCH SESSIONS ONLY, the one
+    write research may do; any other session is refused and uses its own request
+    tools instead.
 
     FILE INPUTS, exact shape (an app attachment is already a six-field
     reference; full example under FILE INPUTS below). Create with

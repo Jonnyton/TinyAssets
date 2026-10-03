@@ -21,6 +21,25 @@ def is_research_session(session_key: str) -> bool:
     return isinstance(session_key, str) and session_key.startswith("research:")
 
 
+def non_research_proposal_refusal() -> dict[str, str] | None:
+    """Refuse creating a proposal outside research, or ``None`` to allow it.
+
+    A proposal is how a research turn hands one finding to its owner, and
+    approving it is meant to start an activity. ``write_graph target=proposal``
+    routes to the same ``propose`` for every caller, so an ordinary session
+    could put an owner-visible approval on the rail using the one write
+    research is allowed -- while having its own request tools for that. Checked
+    here, below the MCP boundary, so a second route cannot miss it (the same
+    reason ``write_file``/``edit_file``/``bash`` refuse below it).
+    """
+    from tinyassets.engine_steering import _session_key
+
+    if is_research_session(_session_key()):
+        return None
+    return {"error": "proposals_are_research_only",
+            "detail": "only a research session may propose an action"}
+
+
 def research_refusal(tool: str, arguments: dict | None = None) -> str | None:
     from tinyassets.engine_steering import _session_key
 

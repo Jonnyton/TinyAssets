@@ -2485,13 +2485,20 @@ def _answer_item(
 
 
 def propose(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
-    """Store one proposed action for this owner; never accept a request shape."""
+    """Store one proposed action for this owner; never accept a request shape.
+
+    Research sessions only: see ``research_capability``.
+    """
     from tinyassets.proposals import dedupe_key, validate
+    from tinyassets.research_capability import non_research_proposal_refusal
     from tinyassets.storage.pending_requests import create_request
 
     _uid, udir, denied = _owner_gate(universe_id)
     if denied is not None:
         return denied
+    refusal = non_research_proposal_refusal()
+    if refusal is not None:
+        return refusal
     try:
         document = validate(_payload(payload))
     except ValueError as exc:
@@ -2510,10 +2517,17 @@ def _start_approved_proposal(universe_id: str, row: dict[str, Any]) -> dict[str,
     """TODO(#4221): start the approved activity, idempotently by request_id.
 
     Call api.activities.write(operation="start", payload={"title": ..., "brief": ...})
-    with the stored action and approval id when that subsystem lands. Until then
-    raise before resolving, preserving the owner's still-pending proposal.
+    with the stored action and approval id when that subsystem lands.
+
+    Until then this REFUSES rather than raising. ``answer_request`` returns an
+    error from here unchanged and leaves the request pending, so the owner's
+    Approve reads as a truthful "not yet" they can retry once #4221 lands. A
+    raise reached them as an unhandled error instead, which is the crash Hard
+    Rule 8 rules out -- loud, but never a crash and never a silent success.
     """
-    raise NotImplementedError("needs #4221: approved proposal activity start")
+    return {"error": "proposal_start_unavailable",
+            "detail": "approved proposals can't start activities yet; D2a #4221 wires this",
+            "request_pending": True}
 
 
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
