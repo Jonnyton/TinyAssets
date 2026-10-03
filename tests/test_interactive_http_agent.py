@@ -582,9 +582,17 @@ def test_the_context_is_the_only_source_of_the_agent(agent, monkeypatch):
     happened to be registrable. The context is set at ingress; nothing else gets
     a vote.
     """
-    from tinyassets import turn_interrupt
+    from tinyassets import addressed_agents, engine_steering, turn_interrupt
 
     uid = agent.served.context.universe_dir.name
+    # A session key that NAMES a different agent, so "not a session key" is
+    # actually exercised rather than only asserted in prose: a
+    # session-first/context-fallback implementation would pass without this
+    # (Codex refute of this PR, finding E).
+    monkeypatch.setattr(
+        engine_steering, "_session_key",
+        lambda: f"thread:{addressed_agents.memory_session('owner', 'a-someone-else')}",
+    )
     with turn_interrupt.interactive_turn("owner", uid, agent_id="a-someone-else"):
         universe_intelligence._call_writer(
             "exact user prompt",
