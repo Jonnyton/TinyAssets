@@ -898,6 +898,41 @@ def test_a_bare_opaque_run_is_listed_for_review_not_dropped():
     assert ccp.review_note(data) == ccp.N_OPAQUE
 
 
+def test_the_publish_sentence_does_not_claim_more_than_the_scrub_does():
+    """The confirmation summarised the scrub more confidently than the code.
+
+    It said "your memory, your brain files and platform state were left out",
+    but ``identity.md`` is a brain file that travels on purpose (it becomes the
+    published roster agent's identity) and ``MEMORY.md`` travels wherever the
+    owner picked an entry. The file listing above the sentence was always
+    honest; the summary was not, and a false assurance on a confirmation is
+    worse than no assurance.
+
+    This pins the prose to the behaviour, because prose is what drifted.
+    """
+    from tinyassets.api.publish_requests import PACKAGE_SENTENCE
+
+    # identity.md is publishable, so the sentence must qualify "brain files".
+    assert ccp.structural_exclusion("identity.md") is None
+    assert "your brain files" not in PACKAGE_SENTENCE
+    assert "your private brain files" in PACKAGE_SENTENCE
+
+    # Memory is conditional on the owner's choice, so it is not an exclusion.
+    memory = b"- [m_abc] a remembered line\n"
+    assert ccp.classify(ccp.MEMORY_FILE, memory, exclude=[],
+                        memory_items={})[0] is None
+    assert ccp.classify(ccp.MEMORY_FILE, memory, exclude=[],
+                        memory_items={ccp.MEMORY_FILE: ["m_abc"]})[0] is not None
+    assert "your memory travels only where you chose an entry" in PACKAGE_SENTENCE
+
+    # The categories it still claims outright must really be excluded. Only
+    # names already excluded on this base are asserted; #4363 adds origin.md,
+    # body.md and requests.json, and its own tests pin those.
+    for name in ("founder.md", "soul.md", "status.json", "ledger.json",
+                 "work_targets.json"):
+        assert ccp.structural_exclusion(name) is not None, name
+
+
 def test_a_one_class_value_is_neither_excluded_nor_flagged():
     # A one-class run the parser reads as opaque, even assigned to a secret
     # name: in the live village these were minified-code identifiers, not keys.
