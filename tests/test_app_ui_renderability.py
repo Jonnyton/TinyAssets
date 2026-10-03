@@ -229,7 +229,7 @@ def test_the_python_mirror_agrees_with_the_app_on_adversarial_shapes() -> None:
 
     node = shutil.which("node")
     if not node:
-        pytest.skip("Node required to compare against the real controller")
+        pytest.skip("node is not installed, so the real controller cannot be run here")
 
     cases = [
         _bundle(),
