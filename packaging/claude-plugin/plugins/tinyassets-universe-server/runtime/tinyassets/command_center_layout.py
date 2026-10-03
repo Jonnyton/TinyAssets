@@ -10,7 +10,8 @@ daemon as untrusted.
 `classify` is the one table both the read-only inventory and the migration use.
 An entry it does not know returns ``None``: the inventory reports it, and the
 migration refuses to run until it is classified here, so nothing is guessed into
-the box. Extend the table; never add a default.
+the box. Classification uses exact names and creator-backed DB families only.
+Extend the table; never add a default.
 """
 
 from __future__ import annotations
@@ -29,8 +30,9 @@ USER_NAMES = frozenset({
     "notes.json", "wiki",
     # agent-editable settings; its authority fields move out (design E6)
     "config.yaml",
+    # fantasy_daemon/api.py creates workspace for verbatim uploads.
     # content the agent or a run wrote, uploads, permanent workspaces
-    "workspaces", "canon", "output", "artifacts", "PROGRAM.md", "progress.md",
+    "workspace", "workspaces", "canon", "output", "artifacts", "PROGRAM.md", "progress.md",
     "design-proposals", "feature-requests", "patch-requests",
     # fiction-domain brain data the agent maintains
     "timeline.json", "promises.json", "facts.json", "characters.json",
@@ -50,27 +52,56 @@ PLATFORM_NAMES = frozenset({
     "reviews", "settlements", "discarded_targets", "archived",
     "app_refresh_sessions", "import", "import-verify", "verify",
     # stores
-    "lancedb", "rules.db",
+    "lancedb",
     # credentials and runtime
-    ".credentials", ".credential-vault.json", ".oauth-refresh", ".runtime",
+    ".credentials", ".credentials.json", ".credential-vault.json", ".oauth-refresh", ".runtime",
     ".runtime_status.json", ".engine_mcp_config.json", ".engine_mcp_http_routes.json",
     ".pause", ".agent-sessions", ".consumer_liveness", ".quarantine",
     ".workspace-staging", ".authoring_blobs", ".tinyassets_auth_probe.json",
     ".idle_cycle_stamp.json",
+    # the queue consumer's heartbeat (api/universe.py _WORKER_SUPERVISOR_FILENAME,
+    # runtime/assigned_queue_consumer.py SUPERVISOR_HEARTBEAT_FILENAME)
+    ".worker_supervisor.json",
 })
 
-#: Name patterns for platform bookkeeping: databases and their WAL family,
-#: locks, worker-supervisor state, id markers.
-_PLATFORM_PATTERNS = (
-    re.compile(r".+\.db(?:-wal|-shm|-journal)?$"),
-    re.compile(r".+\.db\.bak-.+$"),  # migration backups of a database, with their WAL
-    re.compile(r".+\.lock$"),
-    re.compile(r"^\.worker_supervisor(?:\..+)?\.json$"),
-    re.compile(r"^\.(?:universe|command_center)_id$"),
+#: storage_accounting.UNIVERSE_ENTRIES; rules/steering in ROOT_ENTRIES.
+PLATFORM_DB_NAMES: frozenset[str] = frozenset({
+    ".conversation_memory.db", ".conversation_attention.db", ".subscription_state.db",
+    ".pending_requests.db", ".usage_ledger.db", ".wiki_write_back_destination_markers.db",
+    ".authoring.db", ".effector_consents.db", ".external_write_receipts.db",
+    ".idempotency.db", "rules.db", "steering.db",
+})
+
+#: UNIVERSE_ENTRIES and soul_edit.py: SOUL_LOCK_FILENAME / _soul_lock.
+PLATFORM_LOCK_NAMES: frozenset[str] = frozenset({
+    ".lock", ".provider-assignment-admission.lock", ".soul.lock",
+})
+
+VERBATIM_EXEMPT_NAMES: frozenset[str] = frozenset({
+    "workspace", "workspaces", "output", "artifacts", "canon", "notes", "wiki", "soul_versions",
+})
+PRUNE_DIR_NAMES: frozenset[str] = frozenset({
+    ".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache",
+})
+
+
+def sqlite_family(db_name: str) -> tuple[str, ...]:
+    """Main file and SQLite's three possible sidecars, including for a backup."""
+    return (db_name, *(db_name + suffix for suffix in ("-wal", "-shm", "-journal")))
+
+
+# Backup family observed in production 2026-10-02: command-center-cutover/tasks.md,
+# task 1, the three .conversation_memory.db.bak-premigrate-* unclassified entries.
+_DB_PATTERNS = tuple(
+    re.compile(re.escape(name) + r"(?:\.bak-[A-Za-z0-9][A-Za-z0-9._-]*)?(?:-wal|-shm|-journal)?")
+    for name in PLATFORM_DB_NAMES
 )
 
-#: Top-level markdown the agent writes (notes, reports) is content.
-_USER_PATTERNS = (re.compile(r"^[^.].*\.md$"),)
+#: The ONE name family with a creator that mints the middle segment per worker:
+#: ``_WORKER_SUPERVISOR_PREFIX`` + an assignment key + ``_WORKER_SUPERVISOR_SUFFIX``
+#: (api/universe.py). Production holds hundreds of these; an exact-name table
+#: cannot enumerate a minted key, so the pattern is the provenance.
+_MINTED_PATTERNS = (re.compile(r"\.worker_supervisor\.[^.][^/\\]*\.json"),)
 
 #: Authority fields that must leave the agent-editable config.yaml (#4263 D8a):
 #: config.py:60-66 and the routing ceiling the router enforces.
@@ -84,12 +115,10 @@ CONFIG_AUTHORITY_FIELDS = (
 
 def classify(name: str) -> str | None:
     """``user``, ``platform``, or ``None`` when this table does not know it."""
-    if name in PLATFORM_NAMES:
+    if name in PLATFORM_NAMES or name in PLATFORM_LOCK_NAMES:
         return PLATFORM
     if name in USER_NAMES:
         return USER
-    if any(pattern.match(name) for pattern in _PLATFORM_PATTERNS):
+    if any(pattern.fullmatch(name) for pattern in _DB_PATTERNS + _MINTED_PATTERNS):
         return PLATFORM
-    if any(pattern.match(name) for pattern in _USER_PATTERNS):
-        return USER
     return None
