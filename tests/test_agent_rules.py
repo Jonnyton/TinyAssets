@@ -476,6 +476,20 @@ def test_the_owner_door_reads_and_edits_the_ADDRESSED_agents_rules(monkeypatch, 
     assert not any(r["id"] == rule_id
                    for r in call("GET", query={"agent_id": "a-weaver"})[1]["rules"])
 
+    # And the scoping holds in the other direction: MAIN cannot delete the
+    # weaver's rule by its id. Proving deletion WORKS is not the same as
+    # proving it is agent-scoped (Codex refute of this PR, finding E).
+    status, mine = call("POST", {"agent_id": "a-weaver", "action_class": "app.read",
+                                 "behaviour": "ask_first", "connection": "linear"})
+    assert status == 200
+    weaver_rule = mine["saved"]["id"]
+    status, refused = call("POST", {"delete": weaver_rule})      # addressed to main
+    assert status == 200 and refused["deleted"] is False, (
+        "main deleted a custom agent's rule by id")
+    assert any(r["id"] == weaver_rule
+               for r in call("GET", query={"agent_id": "a-weaver"})[1]["rules"]), (
+        "the weaver's rule was removed by a delete addressed to main")
+
 
 def test_an_agent_that_is_not_the_owners_is_refused_by_name_not_treated_as_main(
         monkeypatch, tmp_path):
