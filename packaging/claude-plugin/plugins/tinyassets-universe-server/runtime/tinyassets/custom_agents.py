@@ -1823,8 +1823,22 @@ APP_UI_KIND = "tinyassets.app-ui.v1"
 APP_UI_FORMAT_VERSION = 1
 APP_UI_COMPONENT_FIELDS = ("kind", "markup", "name", "script", "style", "ui_id", "version")
 APP_UI_OPTIONAL_COMPONENT_FIELDS = ("assets", "libraries", "script_type")
-_APP_UI_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+#: Matched with ``fullmatch``, never ``match``: Python's ``$`` also matches
+#: BEFORE a trailing newline, so ``"x" * 64 + "\n"`` passed here while the app
+#: refused it -- a mirror saying "renderable" about a UI the app will not show
+#: is worse than no report at all (Codex, 2026-10-03).
+_APP_UI_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 APP_UI_MAX_NAME = 120
+
+
+def _utf16_units(text: str) -> int:
+    """The length JavaScript measures: UTF-16 code units, not code points.
+
+    ``name.length <= MAX_NAME`` in the app counts surrogate pairs twice, so 61
+    emoji are 122 units there and 61 characters here. Python said renderable
+    about a name the app refuses (Codex, 2026-10-03).
+    """
+    return len(text.encode("utf-16-le")) // 2
 
 
 def app_ui_renderability(entry: Any) -> dict[str, str]:
@@ -1862,11 +1876,12 @@ def app_ui_renderability(entry: Any) -> dict[str, str]:
                         f'Set it back to {APP_UI_FORMAT_VERSION} with replace_ui. Nothing needs '
                         "busting: the app re-reads this row whenever its revision moves, and an "
                         "asset is addressed by its own sha256"}
-    if not isinstance(entry["ui_id"], str) or not _APP_UI_ID_RE.match(entry["ui_id"]):
+    if (not isinstance(entry["ui_id"], str) or _utf16_units(entry["ui_id"]) > 64
+            or not _APP_UI_ID_RE.fullmatch(entry["ui_id"])):
         return {"reason": "ui_id must be lowercase letters, digits or dashes",
                 "hint": "use up to 64 characters of lowercase letters, digits or dashes"}
     if (not isinstance(entry["name"], str) or not entry["name"].strip()
-            or len(entry["name"]) > APP_UI_MAX_NAME):
+            or _utf16_units(entry["name"]) > APP_UI_MAX_NAME):
         return {"reason": "name must be a non-empty string of at most "
                           f"{APP_UI_MAX_NAME} characters",
                 "hint": f"set a name of 1 to {APP_UI_MAX_NAME} characters"}
@@ -1874,6 +1889,17 @@ def app_ui_renderability(entry: Any) -> dict[str, str]:
         if not isinstance(entry[field], str):
             return {"reason": f"{field} must be a string",
                     "hint": f'set "{field}" to a string (empty is fine)'}
+    # The rest of the contract -- script_type, library names, the asset manifest
+    # and the text bound -- is already defined once, by the check the write path
+    # makes. Delegating keeps this a COMPLETE mirror of what the app renders
+    # rather than a partial one: a differential test compares every verdict
+    # against app_ui.js, and a partial mirror that says "renderable" about a UI
+    # the app refuses is worse than no report (Codex, 2026-10-03, which found
+    # script_type and libraries diverging exactly here).
+    try:
+        _check_component(entry)
+    except AgentValidationError as exc:
+        return {"reason": str(exc), "hint": "correct it with replace_ui"}
     return {}
 
 
@@ -1945,11 +1971,33 @@ def _check_etag(payload: dict[str, Any], entry: dict[str, Any]) -> None:
         )
 
 
+def _refuse_unrenderable(component: Any) -> None:
+    """Refuse a component no app can ever render, naming the reason and the fix.
+
+    The write and the read now share ONE definition of a valid component. They
+    did not: the write checked only what the server's own stores depend on, so
+    ``replace_ui`` ACCEPTED ``"version": 1791005187`` and answered with a
+    success receipt (revision 50 -> 51), while the app refused to render it.
+    The agent, told it had saved, assured the founder the UI was intact
+    (founder, P1, 2026-10-03).
+
+    Only ``add_ui`` and ``replace_ui`` go through here -- a whole component
+    supplied by the caller. ``save`` deliberately does NOT: it writes the whole
+    library, and the app carries entries it cannot render through that write so
+    they are not destroyed. Refusing there would make a stored bad entry
+    impossible to write back, which is the data loss this guards against.
+    """
+    refusal = app_ui_renderability(component)
+    if refusal:
+        raise AgentValidationError(f"{refusal['reason']}. {refusal['hint']}")
+
+
 def _component(payload: dict[str, Any]) -> dict[str, Any]:
     component = payload.get("component")
     if not isinstance(component, dict):
         raise AgentValidationError("component must be an object")
     _check_app_ui_fields({"ui_library": [component]})
+    _refuse_unrenderable(component)
     return component
 
 
@@ -2053,6 +2101,11 @@ def _apply_app_ui_entry_operation(
         return updated, selection, outcome
     replacement = (_component(payload) if operation == "replace_ui"
                    else _edited_entry(entry, payload))
+    # An edit may not BREAK a UI that rendered. It is not refused for a fault
+    # the stored entry already had, because then the agent could not edit its
+    # way out of one -- `replace_ui` is the way back, and it is checked above.
+    if operation == "edit_ui" and not app_ui_renderability(entry):
+        _refuse_unrenderable(replacement)
     updated = list(library)
     updated[position] = replacement
     return updated, selection, {"ui_id": ui_id, "etag": app_ui_etag(replacement)}

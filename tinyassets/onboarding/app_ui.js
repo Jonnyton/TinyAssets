@@ -165,11 +165,18 @@
       const raw=configuration&&configuration.ui_library;
       if(raw===undefined||raw===null) return {ok:true,entries:[],broken:[]};
       if(!Array.isArray(raw)) return this.unsupported("ui_library is not a list");
-      const entries=[],broken=[],seen=new Set();
-      raw.forEach((component,index)=>{
-        const parsed=this.parseBundle(component);
+      // Of several entries sharing a ui_id, the LAST is used. `install` appends,
+      // so the later entry is the more recently written one; taking the first
+      // would let a stale copy win silently (Codex, 2026-10-03). A write refuses
+      // duplicates, so this only arises in a row that already has them.
+      const read=raw.map((component,index)=>({component,index,parsed:this.parseBundle(component)}));
+      const newest=new Map();
+      for(const item of read) if(item.parsed.ok) newest.set(item.parsed.bundle.ui_id,item.index);
+      const entries=[],broken=[];
+      read.forEach(({component,index,parsed})=>{
+        const superseded=parsed.ok&&newest.get(parsed.bundle.ui_id)!==index;
         const reason=!parsed.ok?parsed.reason
-          :seen.has(parsed.bundle.ui_id)?"ui_id "+parsed.bundle.ui_id+" is listed twice":"";
+          :superseded?"ui_id "+parsed.bundle.ui_id+" is listed twice; the later entry is the one in use":"";
         if(reason){
           // The id is recorded only when it is a well-formed one, so a saved
           // choice can still be matched to the entry that cannot render.
@@ -178,7 +185,7 @@
           broken.push({ui_id:id,label:this.brokenLabel(component,index),reason,component});
           return;
         }
-        seen.add(parsed.bundle.ui_id); entries.push(parsed.bundle);
+        entries.push(parsed.bundle);
       });
       return {ok:true,entries,broken};
     },
@@ -1091,11 +1098,20 @@
         const observed=this.readLibrary(row);
         if(!observed.ok) throw Error("Your installed UIs cannot be read ("+observed.reason+"); nothing was overwritten");
         next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
-        // Entries this app cannot render are written back EXACTLY as stored.
+        // Entries this app cannot render are written back as they were read.
         // This write replaces the whole list, so anything left out is destroyed:
         // carrying them is what lets an install proceed beside a component with
         // a bad version instead of being refused (founder, P1, 2026-10-03). An
         // entry whose ui_id this install replaces is the one case that drops.
+        //
+        // NOT byte-exact, and it cannot be from here: `fetchRow` has already
+        // parsed the row as JSON, so an integer outside JavaScript's exact
+        // range was rounded before this code saw it (Codex, 2026-10-03:
+        // 9007199254740993 -> ...92 inside a field the app does not render).
+        // Reachable only through an extra field on an already-unrenderable
+        // entry. The fix is for the client to stop rewriting entries it did not
+        // author -- splice server-side with add_ui/replace_ui --
+        // docs/concerns/2026-10-03-whole-library-write-rounds-carried-numbers.md
         keptBroken=observed.broken.filter(b=>!b.ui_id||b.ui_id!==parsed.bundle.ui_id);
         // No library-wide limit, so no install is ever turned away for the size
         // of what is already there. The bundle itself was validated above, and

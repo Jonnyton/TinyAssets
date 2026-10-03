@@ -27,6 +27,7 @@ from tinyassets.custom_agents import (
     APP_UI_OPTIONAL_COMPONENT_FIELDS,
     app_ui_index,
     app_ui_renderability,
+    get_app_ui,
     save_app_ui,
 )
 
@@ -140,6 +141,159 @@ def test_the_python_contract_matches_the_app_that_enforces_it() -> None:
     assert listed("OPTIONAL") == tuple(sorted(APP_UI_OPTIONAL_COMPONENT_FIELDS))
     assert f"MAX_NAME:{APP_UI_MAX_NAME}," in source
     assert "ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/" in source
+
+
+def test_replace_ui_refuses_the_founders_component_with_the_fix_text(tmp_path) -> None:
+    """Addendum 2: the write accepted it and answered "saved".
+
+    The founder's agent installed through replace_ui, got revision 50 -> 51 back,
+    and told them the UI was intact -- while the app refused to render it. The
+    write and the read now share one definition.
+    """
+    from tinyassets.custom_agents import AgentValidationError, change_app_ui_entry
+
+    save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                expected_revision=0, changes={"ui_library": [_bundle(ui_id="furry-house")]})
+    with pytest.raises(AgentValidationError) as refused:
+        change_app_ui_entry(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                            operation="replace_ui",
+                            payload={"component": _bundle(ui_id="furry-house",
+                                                           version=CACHE_BUSTER)})
+    detail = str(refused.value)
+    assert str(CACHE_BUSTER) in detail
+    assert "FORMAT version" in detail, "the agent is told what to change"
+    assert "cache-buster" in detail
+
+    # And the stored row is untouched: a refusal is not a partial write.
+    document = get_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME)
+    assert document["ui_library"] == [_bundle(ui_id="furry-house")]
+    assert document["revision"] == 1, "no revision was burned"
+
+
+def test_add_ui_refuses_it_too_and_names_the_operation(tmp_path) -> None:
+    from tinyassets.custom_agents import AgentValidationError, change_app_ui_entry
+
+    with pytest.raises(AgentValidationError, match="FORMAT version"):
+        change_app_ui_entry(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                            operation="add_ui",
+                            payload={"component": _bundle(version=CACHE_BUSTER)})
+
+
+def test_save_still_accepts_a_library_holding_an_unrenderable_entry(tmp_path) -> None:
+    """The write refusal must NOT reach `save`, or the app cannot heal a row.
+
+    `save` writes the whole library, and the app carries entries it cannot
+    render through that write so they are not destroyed. If `save` refused
+    them, a row that already holds a bad entry could never be written again --
+    turning a hidden UI into an unfixable one.
+    """
+    library = [_bundle(ui_id="office"), _bundle(ui_id="furry-house", version=CACHE_BUSTER)]
+    saved = save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                        expected_revision=0, changes={"ui_library": library})
+    assert saved["ui_library"] == library
+
+
+def test_edit_ui_may_not_break_a_working_ui_but_may_edit_a_broken_one(tmp_path) -> None:
+    """An edit is refused for a fault it INTRODUCES, never one it inherited."""
+    from tinyassets.custom_agents import AgentValidationError, change_app_ui_entry
+
+    save_app_ui(tmp_path, owner_user_id=ALICE, universe_id=HOME, expected_revision=0,
+                changes={"ui_library": [_bundle(ui_id="office"),
+                                        _bundle(ui_id="broken", version=CACHE_BUSTER)]})
+    # Breaking a working one: refused.
+    with pytest.raises(AgentValidationError, match="name must be"):
+        change_app_ui_entry(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                            operation="edit_ui",
+                            payload={"ui_id": "office", "set": {"name": "   "}})
+    # Editing one that was ALREADY unrenderable: allowed, so the agent is not
+    # locked out of a row it has to repair.
+    outcome = change_app_ui_entry(tmp_path, owner_user_id=ALICE, universe_id=HOME,
+                                  operation="edit_ui",
+                                  payload={"ui_id": "broken", "set": {"style": "p{}"}})
+    assert outcome["ui_id"] == "broken"
+
+
+def test_the_python_mirror_agrees_with_the_app_on_adversarial_shapes() -> None:
+    """Differential: run app_ui.js's own parseBundle and compare verdicts.
+
+    The constant-spelling test below cannot see BEHAVIOURAL drift, and two real
+    ones were found that way (Codex, 2026-10-03): Python's ``$`` also matches
+    before a trailing newline, and ``len()`` counts code points where
+    JavaScript counts UTF-16 units. A mirror that says "renderable" about a UI
+    the app refuses is worse than no report, so the equivalence is measured.
+    """
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node required to compare against the real controller")
+
+    cases = [
+        _bundle(),
+        _bundle(version=CACHE_BUSTER),
+        _bundle(version="1"),
+        _bundle(version=True),
+        _bundle(version=1.0),
+        {**_bundle(), "kind": "other"},
+        {**_bundle(), "build_id": "7"},
+        _bundle(ui_id="x" * 64),
+        _bundle(ui_id="x" * 64 + "\n"),      # Python's `$` used to allow this
+        _bundle(ui_id="x" * 65),
+        _bundle(ui_id="Office"),
+        _bundle(ui_id=""),
+        _bundle(name="n" * APP_UI_MAX_NAME),
+        _bundle(name="n" * (APP_UI_MAX_NAME + 1)),
+        _bundle(name="\U0001f600" * 61),     # 61 code points, 122 UTF-16 units
+        _bundle(name="\U0001f600" * 60),
+        _bundle(name=" "),
+        _bundle(markup=None),
+        _bundle(script=42),
+        _bundle(style=["x"]),
+        {k: v for k, v in _bundle().items() if k != "script"},
+        _bundle(script_type="esm"),
+        _bundle(script_type="module"),
+        _bundle(libraries="three"),
+        _bundle(libraries=["three"]),
+        _bundle(libraries=["three", "three"]),
+        _bundle(libraries=["nosuchlib"]),
+        _bundle(assets=[]),
+        _bundle(assets={"img/a.png": {"sha256": "0" * 64, "size": 1,
+                                      "media_type": "image/png"}}),
+        _bundle(assets={"img/a.png": {"sha256": "nothex", "size": 1,
+                                      "media_type": "image/png"}}),
+        _bundle(assets={"../escape.png": {"sha256": "0" * 64, "size": 1,
+                                          "media_type": "image/png"}}),
+    ]
+    controller = Path("tinyassets/onboarding/app_ui.js").read_text(encoding="utf-8")
+    # Via files, not argv: the cases plus the controller are far past Windows'
+    # command-line limit (WinError 206).
+    work = Path(tempfile.mkdtemp())
+    (work / "cases.json").write_text(json.dumps(cases), encoding="utf-8")
+    (work / "probe.js").write_text(
+        "const $=()=>({});const document={createElement:()=>({})};\n"
+        "const window={addEventListener(){},removeEventListener(){}};\n"
+        + controller
+        + "const cases=require('fs').readFileSync(process.argv[2],'utf8');\n"
+          "console.log(JSON.stringify(JSON.parse(cases).map(c=>AppUI.parseBundle(c).ok)));\n",
+        encoding="utf-8")
+    out = subprocess.run([node, str(work / "probe.js"), str(work / "cases.json")],
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stdout + out.stderr
+    app_says = json.loads(out.stdout)
+    assert len(app_says) == len(cases)
+
+    disagreements = [
+        (index, case, app, not python)
+        for index, (case, app) in enumerate(zip(cases, app_says))
+        for python in [bool(app_ui_renderability(case))]
+        if app is not (not python)
+    ]
+    assert not disagreements, (
+        "the Python mirror and the app disagree about these components "
+        f"(index, case, app_ok, python_ok): {disagreements}")
 
 
 def test_the_interfaces_chapter_says_version_is_the_format_version() -> None:

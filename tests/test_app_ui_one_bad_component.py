@@ -125,6 +125,34 @@ assert(/1791005187/.test(why),why);
 assert(!/no longer installed/.test(why),'it IS installed; it cannot render: '+why);
 assert(/your other UIs still work/i.test(why),why);
 
+// ---- the LATER of two entries sharing an id is the one in use ----------
+// `install` appends, so the later entry is the more recently written. Taking
+// the first would silently resurrect a stale copy (Codex, 2026-10-03).
+const stale=bundleOf({ui_id:'office',name:'Stale'});
+const current=bundleOf({ui_id:'office',name:'Current'});
+appUi=stored([stale,current],{version:1,state:'active',ui_id:'office'});
+u.adopt(clone(appUi));
+assert.equal(u.library.length,1);
+assert.equal(u.library[0].name,'Current','the later entry wins, not the stale one');
+assert(u.active&&u.active.name==='Current',JSON.stringify(u.active));
+assert.equal(u.broken.length,1);
+assert.equal(u.broken[0].label,'Stale');
+assert(/listed twice/.test(u.broken[0].reason),u.broken[0].reason);
+
+// ---- the founder's exact state leaves the ordinary chat on screen ------
+// A branch that says "Default chat is in use" must actually show it. On this
+// branch the default chat IS the page's own chat view, which `unmount` reveals
+// by dropping the custom-UI class and hiding the frame host; #4358 turns the
+// default into a MOUNTED platform bundle and adds mountDefault(), which this
+// branch does not have -- see the note in the PR.
+appUi=stored([GOOD_A,BROKEN],{version:1,state:'active',ui_id:'furry-house'});
+u.adopt(clone(appUi));
+assert.equal(u.frame,null,'no custom frame is mounted');
+assert.equal($('ui-frame-host').hidden,true,'the empty frame host is hidden');
+assert.equal($('view-chat').classes.has('ui-custom-active'),false,
+ 'the chat view is not left in custom-UI mode, so the stage is not blank');
+assert(/Default chat is in use/.test($('ui-status').textContent),$('ui-status').textContent);
+
 // ---- a library that is not a list at all is still library-wide ---------
 u.adopt({...stored([],null),ui_library:'not a list'});
 assert(u.unreadable,'that one really is unreadable');
