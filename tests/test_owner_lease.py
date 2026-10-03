@@ -432,3 +432,37 @@ def test_a_live_holder_is_not_recovered(base, owner, monkeypatch):
         assert owner_lease.held_generation(base, A) == (1, owner.tree_id)
     finally:
         second.leave()
+
+
+def test_tree_files_live_only_at_the_data_root(base):
+    """The reason ``owner_lease``'s raw file ops are pinned, not routed.
+
+    ``tests/test_universe_path_io_guard.py`` lets a module keep raw I/O only
+    where no universe can plant a link on the path. Every file this module
+    touches is a registered data-root platform entry, so the claim has to stay
+    true as the module changes: a universe folder sitting beside them is never
+    written into, and the names stay classified in ``ROOT_ENTRIES``.
+    """
+    from tinyassets import storage_accounting
+
+    assert "platform" in storage_accounting.ROOT_ENTRIES[owner_lease.TREE_DIR]
+    assert "platform" in storage_accounting.ROOT_ENTRIES[owner_lease.LEASE_DB_NAME]
+
+    universe = base / "u-someone"
+    universe.mkdir()
+    before = set(base.rglob("*"))
+
+    founder = OwnerTree.start(base)
+    try:
+        assert founder.founder_alive() is True
+        member = OwnerTree(base, founder.tree_id).join()
+        member.leave()
+        acquire(base, A)
+    finally:
+        founder.leave()
+
+    for path in set(base.rglob("*")) - before:
+        top = path.relative_to(base).parts[0]
+        assert top == owner_lease.TREE_DIR or top.startswith(owner_lease.LEASE_DB_NAME), (
+            f"owner_lease wrote outside its registered data-root entries: {path}")
+    assert not list(universe.rglob("*")), "a universe folder was written into"
