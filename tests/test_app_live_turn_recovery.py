@@ -87,6 +87,8 @@ _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.
 _EXTRA_SHIM = r"""
 els["dot"]=new El("div"); els["universe-name"]=new El("div");
+for(const id of ["profile-name","profile-responsibility","profile-status"])
+  els[id]=new El("div");
 let healed=[]; async function healServing(s){ healed.push(s); }
 let uploadRestores=0; function restoreUploadRecords(){ uploadRestores++; }
 ModelPicker.reset=()=>{}; ModelPicker.snapshot=null;
