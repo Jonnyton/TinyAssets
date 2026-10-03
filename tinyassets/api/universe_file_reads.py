@@ -293,4 +293,24 @@ def read_file(
     }
 
 
-__all__ = ["MAX_LIST_ENTRIES", "MAX_READ_BYTES", "list_files", "read_file"]
+def read_whole_file(*, universe_id: str = "", path: str = "") -> bytes | None:
+    """The whole file under the caller's own folder, or None for any refusal.
+
+    The same owner gate and link-free traversal as ``read_file``, for a server
+    caller that needs the bytes rather than a page of them (a custom UI asset
+    taken from a file the agents wrote). Bounded by the universe file read bound.
+    """
+    owned = _owner_universe(universe_id)
+    rel = _relative(path)
+    # _owner_universe answers a not-found DOCUMENT when the folder cannot be
+    # resolved; only a (uid, folder) pair is an admission.
+    if not isinstance(owned, tuple) or not rel:
+        return None
+    uid, folder = owned
+    try:
+        return _read(folder.parent, uid, rel)
+    except OSError:
+        return None
+
+
+__all__ = ["MAX_LIST_ENTRIES", "MAX_READ_BYTES", "list_files", "read_file", "read_whole_file"]

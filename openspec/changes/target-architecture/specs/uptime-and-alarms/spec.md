@@ -1,20 +1,39 @@
 ## ADDED Requirements
 
-### Requirement: One execution owner behind replaceable frontends; deploys fail no requests
+### Requirement: Per-command-center owners behind replaceable frontends; deploys fail no requests
 
-The control plane SHALL run exactly one execution owner at a time, under a
-lease fenced by generation. The execution owner covers the agent loop, the turn
-journal writer and its reconciliation, the scheduler, triggers, the outbox
-pump, metering and the storage allocator. Every owner-side mutation SHALL re-check
-the lease generation inside its own transaction. Box and broker effects SHALL
-carry the generation and SHALL be refused below the highest generation seen.
-Every turn row SHALL record the generation that created it. Reconciliation
-SHALL run only after the lease is acquired, and SHALL settle only rows of older
-generations. Frontends SHALL hold no turn ownership, and SHALL be replaced
+Each command center SHALL have at most one execution owner at a time, under
+that command center's own lease, fenced by generation. That owner covers the
+command center's agent loop and its turn journal writer and reconciliation.
+The scheduler, triggers, the outbox pump, metering aggregation and the storage
+allocator SHALL run under one platform lease.
+
+Every owner-side mutation SHALL re-check its command center's fence inside its
+own transaction. Box and broker effects SHALL carry `(command_center,
+generation)`, and SHALL be refused below that command center's fenced
+generation. Every turn row SHALL record the command center and the generation
+that created it. Reconciliation SHALL run only after the command center's lease
+is acquired, and SHALL settle only that command center's rows of older
+generations.
+
+Per-account seats and host admission SHALL live in shared stores, not in an
+owner process's memory. Frontends SHALL route each turn start and cancel
+through a map from command center to its current owner and lease generation.
+A handover of one command center SHALL NOT make any other command center's
+requests wait. A command center's lease SHALL be released only in the
+transaction that observes it idle. A busy command center SHALL keep its current
+owner until its in-flight turn ends; no automatic time bound SHALL interrupt
+it. Only an explicit operator force SHALL stop an owner with running turns, and
+those turns SHALL reconcile into a visible held state, never replayed. An alarm
+SHALL fire when an old owner process outlives a threshold (default two hours).
+For each command center, at most two owner generations SHALL coexist: a further
+deploy SHALL wait for that command center, leaving it on its current owner,
+instead of starting a third.
+The user SHALL see that an update is pending for their command center until
+its key moves. Frontends SHALL hold no turn ownership, and SHALL be replaced
 blue-green. While the owner hands over, frontends SHALL queue requests rather
-than fail them. A handover SHALL drain the old owner first: it stops admitting,
-finishes in-flight turns up to the drain bound, journals the rest, cancels
-outstanding box executions and releases the lease. A turn still running at the
+than fail them. A handover SHALL move each command center at its idle instant
+and SHALL affect no other command center. A turn still running at the
 bound SHALL reconcile into a visible held state, and SHALL NOT be replayed. A
 frontend-only deploy SHALL interrupt no turn. Schema-changing cutovers
 SHALL be declared maintenance windows under the cutover exclusion protocol.
@@ -23,13 +42,21 @@ SHALL be declared maintenance windows under the cutover exclusion protocol.
 - **WHEN** only the frontends are deployed while a user's turn is streaming
 - **THEN** the old frontend keeps the stream until it ends, the turn completes, and no request fails
 
-#### Scenario: An owner handover with a turn longer than the drain bound
-- **WHEN** the execution owner is replaced while a turn runs past the drain bound
-- **THEN** that turn reconciles into a held state the user can see and resume, it is not replayed, and new requests queue instead of failing
+#### Scenario: A long turn keeps its owner during a deploy
+- **WHEN** an owner deploy starts while command center A has an hour-long turn running
+- **THEN** A stays on the old owner until that turn finishes, every idle command center moves at once, and no turn is interrupted unless an operator forces it
 
 #### Scenario: A standby successor does not misjudge live turns
 - **WHEN** a successor owner starts in standby, the old owner then creates a turn, and the old owner dies
 - **THEN** the successor, after acquiring the lease at a higher generation, settles that turn as interrupted, because its generation is older
+
+#### Scenario: One user's long turn does not delay another user
+- **WHEN** an owner deploy is in progress while command center A has a long turn running, and a request for command center B arrives
+- **THEN** B's request is served without waiting for A
+
+#### Scenario: A third owner generation is refused
+- **WHEN** a deploy starts while command center A is still busy on the previous-but-one owner generation
+- **THEN** A waits on its current owner rather than starting a third generation, the lingering-owner alarm has fired after its threshold, and A's owner sees the update-pending status
 
 #### Scenario: A stalled old owner cannot write
 - **WHEN** an old owner resumes after the new owner acquired the lease at a higher generation
